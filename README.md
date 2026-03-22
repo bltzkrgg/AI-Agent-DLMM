@@ -68,8 +68,8 @@ src/
 ### 1. Clone & install
 
 ```bash
-git clone https://github.com/bltzkrgg/meteora-dlmm-bot
-cd meteora-dlmm-bot
+git clone https://github.com/bltzkrgg/Meteora-DLMM-Bot
+cd Meteora-DLMMM-Bot
 npm install
 ```
 
