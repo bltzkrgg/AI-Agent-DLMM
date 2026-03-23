@@ -5,10 +5,17 @@ import { getWalletBalance } from '../solana/wallet.js';
 import { getOpenPositions, savePosition } from '../db/database.js';
 import { getLessonsContext } from '../learn/lessons.js';
 import { getAllStrategies, parseStrategyParameters } from '../strategies/strategyManager.js';
+import { checkMaxDrawdown, validateStrategyForMarket, requestConfirmation, getSafetyStatus } from '../safety/safetyManager.js';
+import { matchStrategyToMarket, getLibraryStats } from '../market/strategyLibrary.js';
+import { getMarketSnapshot } from '../market/oracle.js';
+import { getInstinctsContext } from '../market/memory.js';
 
 
 let lastCandidates = [];
 let lastReport = null;
+let hunterNotifyFn = null;
+let hunterBotRef = null;
+let hunterAllowedId = null;
 
 export function getCandidates() { return lastCandidates; }
 export function getLastHunterReport() { return lastReport; }
@@ -79,7 +86,24 @@ async function executeTool(name, input) {
 
     case 'get_pool_detail': {
       const info = await getPoolInfo(input.pool_address);
-      return JSON.stringify(info, null, 2);
+
+      // Get market snapshot and match strategy
+      let strategyMatch = null;
+      try {
+        const snapshot = await getMarketSnapshot(info.tokenX, input.pool_address);
+        strategyMatch = matchStrategyToMarket(snapshot);
+      } catch { /* optional */ }
+
+      return JSON.stringify({
+        poolInfo: info,
+        strategyRecommendation: strategyMatch ? {
+          recommended: strategyMatch.recommended?.name,
+          confidence: strategyMatch.recommended?.matchScore,
+          reason: strategyMatch.recommended?.entryConditions,
+          alternatives: strategyMatch.alternatives?.map(s => s.name),
+          currentMarketConditions: strategyMatch.currentConditions,
+        } : null,
+      }, null, 2);
     }
 
     case 'get_wallet_status': {
@@ -94,13 +118,70 @@ async function executeTool(name, input) {
     }
 
     case 'deploy_position': {
+      // ── Safety: Drawdown check ──────────────────────────────
+      const drawdown = checkMaxDrawdown();
+      if (drawdown.triggered) {
+        return JSON.stringify({ blocked: true, reason: drawdown.reason }, null, 2);
+      }
+
+      // ── Safety: Validasi strategi vs market ─────────────────
+      let strategyType = 'spot';
+      let stratParams = { priceRangePercent: 5 };
+      const strategies = getAllStrategies();
+      const strategy = strategies.find(s => s.name === input.strategy_name) || strategies[0];
+      if (strategy) {
+        strategyType = strategy.strategy_type;
+        stratParams = parseStrategyParameters(strategy);
+      }
+
+      // Ambil pool info untuk validasi
+      let validation = { valid: true, warning: null, recommendation: strategyType };
+      try {
+        const poolInfo = await getPoolInfo(input.pool_address);
+        validation = validateStrategyForMarket(strategyType, poolInfo);
+      } catch { /* skip validasi jika gagal fetch */ }
+
+      if (!validation.valid) {
+        const warningMsg = `${validation.warning}\n\n💡 Rekomendasi: gunakan strategi tipe \`${validation.recommendation}\``;
+        if (isDryRun()) {
+          return JSON.stringify({
+            dryRun: true,
+            strategyWarning: warningMsg,
+            message: `[DRY RUN] Deploy dicegah oleh validasi strategi`,
+            reasoning: input.reasoning,
+          }, null, 2);
+        }
+        // Di live mode, lanjut tapi dengan warning di notifikasi
+        if (hunterNotifyFn) await hunterNotifyFn(`⚠️ *Strategy Validation Warning*\n\n${warningMsg}`);
+      }
+
       if (isDryRun()) {
         return JSON.stringify({
           dryRun: true,
-          message: `[DRY RUN] Akan deploy ke pool ${input.pool_address} dengan strategi "${input.strategy_name || 'default'}"`,
+          message: `[DRY RUN] Akan deploy ke pool ${input.pool_address} dengan strategi "${strategy?.name || 'default'}"`,
+          strategyValidation: validation,
           reasoning: input.reasoning,
           wouldDeploy: { tokenX: input.token_x_amount, tokenY: input.token_y_amount },
         }, null, 2);
+      }
+
+      // ── Safety: Konfirmasi Telegram ─────────────────────────
+      const cfg2 = getConfig();
+      if (cfg2.requireConfirmation && hunterNotifyFn && hunterBotRef && hunterAllowedId) {
+        const confirmMsg =
+          `🚀 *Hunter Alpha ingin deploy posisi baru:*\n\n` +
+          `📍 Pool: \`${input.pool_address.slice(0,8)}...\`\n` +
+          `📊 Strategi: ${strategy?.name || 'default'}\n` +
+          `💰 Token X: ${input.token_x_amount} | Token Y: ${input.token_y_amount}\n\n` +
+          `💭 Reasoning: ${input.reasoning}`;
+
+        const confirmed = await requestConfirmation(
+          hunterNotifyFn, hunterBotRef, hunterAllowedId, confirmMsg
+        );
+
+        if (!confirmed) {
+          return JSON.stringify({ blocked: true, reason: 'Ditolak oleh user via Telegram.' }, null, 2);
+        }
       }
 
       const strategies = getAllStrategies();
@@ -122,23 +203,39 @@ async function executeTool(name, input) {
   }
 }
 
-export async function runHunterAlpha(notifyFn) {
+export async function runHunterAlpha(notifyFn, bot = null, allowedId = null) {
+  hunterNotifyFn = notifyFn;
+  hunterBotRef = bot;
+  hunterAllowedId = allowedId;
   const cfg = getConfig();
   const lessonsCtx = getLessonsContext();
+  const instincts = getInstinctsContext();
+  const libraryStats = getLibraryStats();
 
-  const systemPrompt = `Kamu adalah Hunter Alpha — autonomous pool screening agent untuk Meteora DLMM.
+  const systemPrompt = `Kamu adalah Hunter Alpha — autonomous pool screening & deployment agent untuk Meteora DLMM.
 
 Tugasmu setiap siklus:
-1. Screen pool terbaik menggunakan tool screen_pools
-2. Evaluasi wallet status — apakah bisa buka posisi baru
-3. Jika ada kandidat bagus DAN wallet cukup DAN belum maxPositions, deploy ke pool terbaik
-4. Jika tidak ada kondisi yang tepat, jelaskan kenapa tidak deploy
-5. Selalu reasoning out loud sebelum ambil keputusan
+1. Screen pool terbaik dengan screen_pools
+2. Cek wallet status dengan get_wallet_status
+3. Untuk setiap kandidat pool menarik, gunakan get_pool_detail — ini akan otomatis:
+   - Analisa kondisi market pool tersebut
+   - Merekomendasikan strategi terbaik dari Strategy Library
+4. Pilih pool + strategi terbaik, lalu deploy
 
-Mode saat ini: ${isDryRun() ? '🧪 DRY RUN (simulasi, tidak ada transaksi nyata)' : '🔴 LIVE (transaksi nyata)'}
+STRATEGY LIBRARY (${libraryStats.totalStrategies} strategi tersedia):
+${libraryStats.topStrategies.map(s => `- ${s.name} (${s.type}, confidence: ${(s.confidence * 100).toFixed(0)}%)`).join('\n')}
+
+Cara pilih strategi:
+- Gunakan rekomendasi dari get_pool_detail (sudah di-match ke kondisi market)
+- Kalau confidence rekomendasi > 0.6 → pakai otomatis
+- Kalau confidence < 0.6 atau kondisi tidak jelas → pilih Spot Balanced sebagai default
+- JANGAN gunakan single-side kalau whale risk HIGH
+
+Mode: ${isDryRun() ? '🧪 DRY RUN' : '🔴 LIVE'}
 ${lessonsCtx}
+${instincts}
 
-Selalu gunakan Bahasa Indonesia. Format output dengan emoji untuk readability.`;
+Gunakan Bahasa Indonesia. Explain strategi apa yang dipilih dan kenapa.`;
 
   const messages = [
     { role: 'user', content: 'Jalankan siklus screening pool sekarang. Screen kandidat terbaik, evaluasi kondisi, dan ambil keputusan deploy jika tepat.' }
