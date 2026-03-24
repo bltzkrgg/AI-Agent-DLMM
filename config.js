@@ -35,6 +35,16 @@ const DEFAULTS = {
   takeProfitFeePct: 5,
   outOfRangeWaitMinutes: 30,
   minFeeClaimUsd: 1.0,
+
+  // Safety
+  stopLossPct: 5,               // Close posisi kalau rugi > 5%
+  maxDailyDrawdownPct: 10,      // Freeze semua kalau rugi > 10% dalam sehari
+  requireConfirmation: true,    // Minta konfirmasi Telegram sebelum deploy
+
+  // Proactive exit — close kalau profit & chart bearish
+  proactiveExitEnabled: true,
+  proactiveExitMinProfitPct: 1.0,       // Minimal profit sebelum proactive exit aktif
+  proactiveExitBearishConfidence: 0.7,  // Confidence threshold untuk auto-close
 };
 
 function loadUserConfig() {
