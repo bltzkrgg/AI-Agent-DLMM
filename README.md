@@ -69,7 +69,7 @@ src/
 
 ```bash
 git clone https://github.com/bltzkrgg/Meteora-DLMM-Bot
-cd Meteora-DLMMM-Bot
+cd Meteora-DLMM-Bot
 npm install
 ```
 
