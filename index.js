@@ -1,18 +1,13 @@
-import 'dotenv/config';
-import cron from 'node-cron';
+import { evolveStrategy } from './evolution.js';
+import { evolveWithAI } from './aiEvolution.js';
 
-import { initSolana } from './wallet.js';
-import { runHunterAlpha } from './agents/hunterAlpha.js';
-import { runHealerAlpha } from './agents/healerAlpha.js';
+cron.schedule('*/15 * * * *', async () => {
+  console.log('🧬 Evolution running...');
 
-initSolana();
+  evolveStrategy();
 
-console.log('🚀 Bot started');
-
-cron.schedule('*/5 * * * *', async () => {
-  await runHunterAlpha();
-});
-
-cron.schedule('*/3 * * * *', async () => {
-  await runHealerAlpha();
+  const ai = await evolveWithAI();
+  if (ai) {
+    console.log('🤖 AI suggests:', ai);
+  }
 });
