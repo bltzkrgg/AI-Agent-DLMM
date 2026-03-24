@@ -7,7 +7,7 @@
   "scripts": {
     "start": "node src/index.js",
     "dev": "DRY_RUN=true node --watch src/index.js",
-    "dry": "DRY_RUN=true node src/index.js"
+    "dry": "DRY_RUN=true node index.js""
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.39.0",
