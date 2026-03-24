@@ -5,6 +5,11 @@ import { getOHLCV } from '../oracle.js';
 
 import { calculateVolatility } from '../utils/volatility.js';
 import { getAdaptiveRange } from '../utils/range.js';
+import { getAIStrategy } from '../strategyAI.js';
+
+const strat = await getAIStrategy({ vol, trend: market.trend });
+
+if (strat === 'SAFE' && vol > 0.03) return; // skip risky
 
 export async function runHunterAlpha() {
   const cfg = getConfig();
