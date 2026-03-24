@@ -4,7 +4,7 @@ import cron from 'node-cron';
 import { initSolana, getWalletBalance } from './solana/wallet.js';
 import { processMessage } from './agent/claude.js';
 import { handleStrategyCommand, isInStrategySession } from './strategies/strategyHandler.js';
-import { runHunterAlpha, getCandidates } from './agents/hunterAlpha.js';
+import { runHunterAlpha } from './agents/hunterAlpha.js';
 import { runHealerAlpha } from './agents/healerAlpha.js';
 import { learnFromPool, learnFromMultiplePools, loadLessons } from './learn/lessons.js';
 import { getConfig, isDryRun, getThresholds, updateConfig } from './config.js';
