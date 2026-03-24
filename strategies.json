@@ -1,0 +1,15 @@
+[
+  {
+    "name": "Volatility Breakout",
+    "description": "Wide range for high volatility",
+    "conditions": {
+      "volatilityMin": 0.03,
+      "trend": "UP"
+    },
+    "params": {
+      "range": 10,
+      "tp": 5,
+      "sl": -7
+    }
+  }
+]
