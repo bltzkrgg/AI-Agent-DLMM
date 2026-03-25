@@ -81,7 +81,7 @@ node --version  # harus v20.x.x
 ### 2. Clone & install dependencies
 
 ```bash
-git clone https://github.com/bltzkrgg/Meteor-DLMM-Bot.git
+git clone https://github.com/bltzkrgg/Meteora-DLMM-Bot.git
 cd Meteor-DLMM-Bot
 npm install
 ```
