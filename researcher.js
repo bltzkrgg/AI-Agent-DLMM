@@ -1,3 +1,4 @@
+import { safeParseAI, fetchWithTimeout } from '../utils/safeJson.js';
 /**
  * Strategy Researcher
  * 
@@ -66,8 +67,8 @@ Kalau artikel tidak mengandung strategi DLMM yang konkret, return array kosong: 
     }],
   });
 
-  const text = response.content[0].text.trim().replace(/```json|```/g, '');
-  const strategies = JSON.parse(text);
+  
+  const strategies = safeParseAI(text);
 
   if (!Array.isArray(strategies) || strategies.length === 0) {
     return { extracted: [], message: 'Tidak ada strategi DLMM konkret yang ditemukan di artikel ini.' };
