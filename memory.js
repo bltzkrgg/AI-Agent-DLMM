@@ -1,3 +1,4 @@
+import { safeParseAI, fetchWithTimeout } from '../utils/safeJson.js';
 /**
  * Memory & Evolution Layer
  * 
@@ -193,8 +194,8 @@ Respond HANYA dengan JSON:
     messages: [{ role: 'user', content: prompt }],
   });
 
-  const text = response.content[0].text.trim().replace(/```json|```/g, '');
-  const result = JSON.parse(text);
+  
+  const result = safeParseAI(text);
 
   // Merge instincts baru dengan yang lama
   const newInstincts = result.instincts.map(inst => ({
