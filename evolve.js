@@ -1,3 +1,4 @@
+import { safeParseAI, fetchWithTimeout } from '../utils/safeJson.js';
 import { createMessage, resolveModel } from '../agent/provider.js';
 import { getConfig, updateConfig, getThresholds } from '../config.js';
 import { getClosedPositions, getPositionStats } from '../db/database.js';
@@ -51,8 +52,8 @@ Respond HANYA dengan JSON format:
     messages: [{ role: 'user', content: prompt }],
   });
 
-  const text = response.content[0].text.trim().replace(/```json|```/g, '');
-  const result = JSON.parse(text);
+  
+  const result = safeParseAI(text);
 
   // Apply changes
   const before = { ...currentThresholds };
