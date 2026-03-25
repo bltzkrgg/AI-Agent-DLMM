@@ -1,148 +1,108 @@
 import Database from 'better-sqlite3';
-import path from 'path';
+import { join, dirname } from 'path';
+import { fileURLToPath } from 'url';
 
-// 🔥 FIX path (biar aman di codespace / prod)
-const dbPath = path.resolve(process.cwd(), 'data.db');
-const db = new Database(dbPath);
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const db = new Database(join(__dirname, '../../data.db'));
 
-// ================= INIT =================
+// Setup strategy tables
 db.exec(`
-CREATE TABLE IF NOT EXISTS strategies (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  name TEXT NOT NULL UNIQUE,
-  description TEXT,
-  strategy_type TEXT NOT NULL,
-  parameters TEXT NOT NULL,
-  logic TEXT,
-  created_by TEXT DEFAULT 'admin',
-  is_active INTEGER DEFAULT 1,
-  created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-  updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
-);
+  CREATE TABLE IF NOT EXISTS strategies (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL UNIQUE,
+    description TEXT,
+    strategy_type TEXT NOT NULL,
+    parameters TEXT NOT NULL,
+    logic TEXT,
+    created_by TEXT DEFAULT 'admin',
+    is_active INTEGER DEFAULT 1,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+  );
+
+  -- Seed default strategies kalau belum ada
+  INSERT OR IGNORE INTO strategies (name, description, strategy_type, parameters, created_by) VALUES
+  (
+    'Spot Balanced',
+    'Distribusi likuiditas merata di sekitar harga aktif. Cocok untuk market sideways.',
+    'spot',
+    '{"priceRangePercent": 5, "binStep": 10, "strategyType": 0}',
+    'system'
+  ),
+  (
+    'Curve Concentrated',
+    'Likuiditas terkonsentrasi di tengah range. Maksimalkan fee tapi lebih cepat out of range.',
+    'curve',
+    '{"priceRangePercent": 3, "binStep": 5, "strategyType": 1}',
+    'system'
+  ),
+  (
+    'Bid-Ask Wide',
+    'Spread lebar, cocok untuk aset volatile. Lebih tahan terhadap pergerakan harga ekstrem.',
+    'bid_ask',
+    '{"priceRangePercent": 15, "binStep": 20, "strategyType": 2}',
+    'system'
+  );
 `);
 
-// ================= SEED =================
-db.prepare(`
-INSERT OR IGNORE INTO strategies (name, description, strategy_type, parameters, created_by)
-VALUES (?, ?, ?, ?, ?)
-`).run(
-  'Volatility Breakout',
-  'Wide range for high volatility',
-  'volatility',
-  JSON.stringify({
-    volatilityMin: 0.03,
-    range: 10,
-    tp: 5,
-    sl: -7
-  }),
-  'system'
-);
-
-// ================= HELPERS =================
-
-export function parseParams(p) {
-  try {
-    return typeof p === 'string' ? JSON.parse(p) : p;
-  } catch {
-    return {};
-  }
-}
-
-// 🔥 convert ke format bot
-export function normalizeStrategy(row) {
-  const params = parseParams(row.parameters);
-
-  return {
-    name: row.name,
-    description: row.description,
-
-    conditions: {
-      volatilityMin: params.volatilityMin || 0,
-    },
-
-    params: {
-      range: params.range || 5,
-      tp: params.tp || 3,
-      sl: params.sl || -5,
-    },
-  };
-}
-
-// ================= GET =================
-
 export function getAllStrategies() {
-  const rows = db
-    .prepare(`SELECT * FROM strategies WHERE is_active = 1`)
-    .all();
-
-  return rows.map(normalizeStrategy);
+  return db.prepare(`SELECT * FROM strategies WHERE is_active = 1 ORDER BY created_at DESC`).all();
 }
 
 export function getStrategyByName(name) {
-  const row = db
-    .prepare(`SELECT * FROM strategies WHERE name = ? AND is_active = 1`)
-    .get(name);
-
-  return row ? normalizeStrategy(row) : null;
+  return db.prepare(`SELECT * FROM strategies WHERE name = ? AND is_active = 1`).get(name);
 }
 
-// ================= ADD =================
+export function getStrategyById(id) {
+  return db.prepare(`SELECT * FROM strategies WHERE id = ? AND is_active = 1`).get(id);
+}
 
-export function addStrategy({ name, description, parameters }) {
-  // 🔥 VALIDATION WAJIB
-  if (!name) throw new Error('Strategy name required');
-
-  const params = {
-    volatilityMin: parameters.volatilityMin || 0,
-    range: parameters.range || 5,
-    tp: parameters.tp || 3,
-    sl: parameters.sl || -5,
-  };
-
+export function addStrategy({ name, description, strategyType, parameters, logic, createdBy }) {
   try {
+    const paramsStr = typeof parameters === 'string' ? parameters : JSON.stringify(parameters);
     const result = db.prepare(`
-      INSERT INTO strategies (name, description, strategy_type, parameters)
-      VALUES (?, ?, ?, ?)
-    `).run(
-      name,
-      description || '',
-      'custom',
-      JSON.stringify(params)
-    );
-
-    return result.lastInsertRowid;
+      INSERT INTO strategies (name, description, strategy_type, parameters, logic, created_by)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `).run(name, description, strategyType, paramsStr, logic || null, createdBy || 'admin');
+    return { success: true, id: result.lastInsertRowid };
   } catch (e) {
     if (e.message.includes('UNIQUE')) {
-      throw new Error(`Strategy "${name}" already exists`);
+      throw new Error(`Strategi dengan nama "${name}" sudah ada.`);
     }
     throw e;
   }
 }
 
-// ================= UPDATE =================
+export function updateStrategy(name, updates) {
+  const fields = [];
+  const values = [];
 
-export function updateStrategy(name, parameters) {
-  const params = JSON.stringify(parameters);
+  if (updates.description !== undefined) { fields.push('description = ?'); values.push(updates.description); }
+  if (updates.parameters !== undefined) { fields.push('parameters = ?'); values.push(JSON.stringify(updates.parameters)); }
+  if (updates.logic !== undefined) { fields.push('logic = ?'); values.push(updates.logic); }
+  if (updates.strategyType !== undefined) { fields.push('strategy_type = ?'); values.push(updates.strategyType); }
 
-  const result = db.prepare(`
-    UPDATE strategies
-    SET parameters = ?, updated_at = CURRENT_TIMESTAMP
-    WHERE name = ?
-  `).run(params, name);
+  fields.push('updated_at = CURRENT_TIMESTAMP');
+  values.push(name);
 
+  const result = db.prepare(`UPDATE strategies SET ${fields.join(', ')} WHERE name = ?`).run(...values);
   return result.changes > 0;
 }
 
-// ================= DELETE =================
-
 export function deleteStrategy(name) {
-  const result = db.prepare(`
-    UPDATE strategies
-    SET is_active = 0
-    WHERE name = ? AND created_by != 'system'
-  `).run(name);
-
+  // Soft delete
+  const result = db.prepare(`UPDATE strategies SET is_active = 0 WHERE name = ? AND created_by != 'system'`).run(name);
   return result.changes > 0;
+}
+
+export function parseStrategyParameters(strategy) {
+  try {
+    return typeof strategy.parameters === 'string'
+      ? JSON.parse(strategy.parameters)
+      : strategy.parameters;
+  } catch {
+    return {};
+  }
 }
 
 export default db;
