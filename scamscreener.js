@@ -8,6 +8,8 @@
  * 4. Article rules — patterns from experienced LPer
  */
 
+import { fetchWithTimeout } from '../utils/safeJson.js';
+
 const RUGCHECK_BASE = 'https://api.rugcheck.xyz';
 const GMGN_BASE = 'https://gmgn.ai/defi/quotation/v1';
 const DEXSCREENER_BASE = 'https://api.dexscreener.com';
@@ -38,7 +40,7 @@ const JUSTICE_PATTERNS = [
 
 async function getRugCheckReport(tokenMint) {
   try {
-    const res = await fetch(
+    const res = await fetchWithTimeout(
       `${RUGCHECK_BASE}/v1/tokens/${tokenMint}/report/summary`,
       {
         headers: {
@@ -46,7 +48,8 @@ async function getRugCheckReport(tokenMint) {
             ? `Bearer ${process.env.RUGCHECK_API_KEY}`
             : '',
         },
-      }
+      },
+      8000
     );
     if (!res.ok) return null;
     return await res.json();
@@ -59,13 +62,14 @@ async function getRugCheckReport(tokenMint) {
 
 async function getGMGNData(tokenMint) {
   try {
-    const res = await fetch(
+    const res = await fetchWithTimeout(
       `${GMGN_BASE}/token/sol/${tokenMint}`,
       {
         headers: {
           'Authorization': `Bearer ${process.env.GMGN_API_KEY || ''}`,
         },
-      }
+      },
+      8000
     );
     if (!res.ok) return null;
     const data = await res.json();
@@ -79,7 +83,7 @@ async function getGMGNData(tokenMint) {
 
 async function getDexScreenerInfo(tokenMint) {
   try {
-    const res = await fetch(`${DEXSCREENER_BASE}/latest/dex/tokens/${tokenMint}`);
+    const res = await fetchWithTimeout(`${DEXSCREENER_BASE}/latest/dex/tokens/${tokenMint}`, {}, 8000);
     if (!res.ok) return null;
     const data = await res.json();
     const pairs = data.pairs || [];
