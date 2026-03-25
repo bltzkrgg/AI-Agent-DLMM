@@ -1,3 +1,4 @@
+import { safeParseAI, fetchWithTimeout } from '../utils/safeJson.js';
 /**
  * Market Analyst Agent
  * 
@@ -76,8 +77,8 @@ Buat keputusan: apakah ${currentPosition ? 'posisi ini harus di-HOLD atau di-CLO
       messages: [{ role: 'user', content: userPrompt }],
     });
 
-    const text = response.content[0].text.trim().replace(/```json|```/g, '');
-    const analysis = JSON.parse(text);
+    
+    const analysis = safeParseAI(text);
 
     // Simpan snapshot + analysis ke memory untuk evolusi
     saveMarketEvent({
