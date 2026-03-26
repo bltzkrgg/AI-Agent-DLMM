@@ -9,8 +9,8 @@ const DEFAULTS = {
   dryRun: true, // ALWAYS default true — never accidentally go live
 
   // Position sizing
-  deployAmountSol: 0.5,
-  maxPositions: 3,
+  deployAmountSol: 0.1,
+  maxPositions: 10,
   minSolToOpen: 0.07,
 
   // Agent intervals (minutes)
