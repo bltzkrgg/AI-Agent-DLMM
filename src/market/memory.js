@@ -42,7 +42,11 @@ export function loadMemory() {
 }
 
 export function saveMemory(memory) {
-  writeFileSync(MEMORY_PATH, JSON.stringify(memory, null, 2));
+  try {
+    writeFileSync(MEMORY_PATH, JSON.stringify(memory, null, 2));
+  } catch (e) {
+    console.error('⚠️ Failed to save memory.json:', e.message);
+  }
 }
 
 // ─── Record closed trade dengan market context ────────────────────

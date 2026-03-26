@@ -55,12 +55,18 @@ export function resolveModel(modelFromConfig) {
   return defaults[PROVIDER] || 'anthropic/claude-sonnet-4';
 }
 
+// Model fallback — dipakai otomatis saat provider error 502/503/529
+const FALLBACK_MODEL = process.env.FALLBACK_AI_MODEL || 'nvidia/llama-3.1-nemotron-ultra-253b-v1:free';
+
 /**
- * createMessage with retry — handles transient API errors
+ * createMessage with retry + model fallback — dari Meridian resilience patterns.
+ * - Retry 3x dengan exponential backoff untuk error transient
+ * - Auto switch ke fallback model di attempt ke-2 jika error 502/503/529
+ * - Rate limit (429) tunggu 30s sebelum retry
  */
 export async function createMessage({ model, maxTokens = 4096, system, tools, messages }) {
   const client = getClient();
-  const resolvedModel = resolveModel(model);
+  let resolvedModel = resolveModel(model);
 
   const params = {
     model: resolvedModel,
@@ -70,11 +76,9 @@ export async function createMessage({ model, maxTokens = 4096, system, tools, me
 
   if (system) params.system = system;
   if (tools && tools.length > 0) {
-    // Tools supported on Anthropic and OpenRouter
     if (PROVIDER === 'anthropic' || PROVIDER === 'openrouter') {
       params.tools = tools;
     } else {
-      // Fallback: inject tool descriptions into system prompt
       const toolDesc = tools.map(t =>
         `Tool: ${t.name}\nDescription: ${t.description}\nInput schema: ${JSON.stringify(t.input_schema)}`
       ).join('\n\n');
@@ -83,18 +87,46 @@ export async function createMessage({ model, maxTokens = 4096, system, tools, me
     }
   }
 
-  // Retry up to 3 times with exponential backoff
   let lastError;
   for (let attempt = 0; attempt < 3; attempt++) {
     try {
-      return await client.messages.create(params);
+      const response = await client.messages.create(params);
+      // Cek respons kosong (bug beberapa model free)
+      if (!response?.content?.length) {
+        lastError = new Error('API returned empty content');
+        await new Promise(r => setTimeout(r, 3000));
+        continue;
+      }
+      return response;
     } catch (e) {
       lastError = e;
-      const isRetryable = e.status === 429 || e.status === 500 || e.status === 503 || e.code === 'ECONNRESET';
-      if (!isRetryable || attempt === 2) break;
-      const delay = 1000 * Math.pow(2, attempt);
-      console.warn(`⚠️ AI API error (attempt ${attempt + 1}/3), retrying in ${delay}ms: ${e.message}`);
-      await new Promise(r => setTimeout(r, delay));
+
+      // Rate limit — tunggu 30 detik
+      if (e.status === 429) {
+        console.warn(`⚠️ Rate limited, waiting 30s... (attempt ${attempt + 1}/3)`);
+        await new Promise(r => setTimeout(r, 30000));
+        continue;
+      }
+
+      // Provider error — switch ke fallback model di attempt ke-2
+      const isProviderError = e.status === 502 || e.status === 503 || e.status === 529 || e.status === 500;
+      if (isProviderError) {
+        if (attempt === 1 && resolvedModel !== FALLBACK_MODEL) {
+          console.warn(`⚠️ Provider error (${e.status}), switching to fallback model: ${FALLBACK_MODEL}`);
+          resolvedModel = FALLBACK_MODEL;
+          params.model = FALLBACK_MODEL;
+          // Hapus tools jika model fallback mungkin tidak support
+          if (params.tools) delete params.tools;
+          continue;
+        }
+        const delay = (attempt + 1) * 5000;
+        console.warn(`⚠️ Provider error (${e.status}), retrying in ${delay}ms...`);
+        await new Promise(r => setTimeout(r, delay));
+        continue;
+      }
+
+      // Error tidak bisa di-retry
+      break;
     }
   }
   throw lastError;

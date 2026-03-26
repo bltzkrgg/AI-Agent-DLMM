@@ -18,7 +18,11 @@ export function loadLessons() {
 }
 
 export function saveLessons(lessons) {
-  writeFileSync(LESSONS_PATH, JSON.stringify(lessons, null, 2));
+  try {
+    writeFileSync(LESSONS_PATH, JSON.stringify(lessons, null, 2));
+  } catch (e) {
+    console.error('⚠️ Failed to save lessons.json:', e.message);
+  }
 }
 
 export function getLessonsContext() {

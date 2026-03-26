@@ -49,49 +49,83 @@ console.log(`🦞 Meteora DLMM Bot started! Mode: ${isDryRun() ? 'DRY RUN' : 'LI
 
 const TG_MAX = 4000; // Telegram limit 4096, sisakan buffer untuk formatting
 
-// Kirim teks panjang dalam beberapa bagian
-async function sendLong(chatId, text, opts = {}) {
-  if (text.length <= TG_MAX) {
-    await bot.sendMessage(chatId, text, opts);
-    return;
-  }
-  // Potong di batas paragraf/baris supaya tidak putus di tengah kata
+// Potong teks panjang menjadi chunks di batas baris
+function splitText(text) {
+  if (text.length <= TG_MAX) return [text];
   const chunks = [];
   let remaining = text;
   while (remaining.length > 0) {
-    if (remaining.length <= TG_MAX) {
-      chunks.push(remaining);
-      break;
-    }
+    if (remaining.length <= TG_MAX) { chunks.push(remaining); break; }
     let cutAt = remaining.lastIndexOf('\n', TG_MAX);
-    if (cutAt < TG_MAX * 0.5) cutAt = TG_MAX; // fallback potong paksa
+    if (cutAt < TG_MAX * 0.5) cutAt = TG_MAX;
     chunks.push(remaining.slice(0, cutAt));
     remaining = remaining.slice(cutAt).trimStart();
   }
+  return chunks;
+}
+
+// Kirim dengan Markdown, fallback ke plain text kalau Telegram reject
+async function sendLong(chatId, text, opts = {}) {
+  const chunks = splitText(String(text));
   for (const chunk of chunks) {
-    await bot.sendMessage(chatId, chunk, opts);
+    try {
+      await bot.sendMessage(chatId, chunk, opts);
+    } catch (e) {
+      // Kalau Markdown error, kirim ulang tanpa formatting
+      if (e.message?.includes('parse') || e.message?.includes('Bad Request')) {
+        try {
+          const plainOpts = { ...opts };
+          delete plainOpts.parse_mode;
+          await bot.sendMessage(chatId, chunk, plainOpts);
+        } catch (e2) {
+          console.error('sendLong fallback error:', e2.message);
+        }
+      } else {
+        console.error('sendLong error:', e.message);
+      }
+    }
   }
 }
 
+// Fire-and-forget notify — tidak pernah throw, tidak pernah crash agent
 async function notify(text) {
-  try { await sendLong(ALLOWED_ID, text, { parse_mode: 'Markdown', disable_web_page_preview: true }); }
-  catch (e) { console.error('Notify error:', e.message); }
+  sendLong(ALLOWED_ID, String(text), { parse_mode: 'Markdown', disable_web_page_preview: true })
+    .catch(e => console.error('Notify error:', e.message));
 }
+
+// ─── Busy flags — cegah 2 cycle jalan bersamaan ──────────────────
+let _hunterBusy = false;
+let _healerBusy = false;
 
 // ─── Cron jobs ───────────────────────────────────────────────────
 
 cron.schedule(`*/${cfg.screeningIntervalMin} * * * *`, async () => {
+  if (_hunterBusy) { console.log('⏭ Hunter skip — masih berjalan'); return; }
+
+  // Pre-flight check: jangan screening kalau sudah max posisi
+  const openPos = getOpenPositions();
+  if (openPos.length >= cfg.maxPositions) {
+    console.log(`⏭ Hunter skip — posisi penuh (${openPos.length}/${cfg.maxPositions})`);
+    return;
+  }
+
+  _hunterBusy = true;
   try { await runHunterAlpha(notify, bot, ALLOWED_ID); }
-  catch (e) { await notify(`❌ Hunter error: ${e.message}`); }
+  catch (e) { notify(`❌ Hunter error: ${e.message}`).catch(() => {}); }
+  finally { _hunterBusy = false; }
 });
 
 cron.schedule(`*/${cfg.managementIntervalMin} * * * *`, async () => {
+  if (_healerBusy) { console.log('⏭ Healer skip — masih berjalan'); return; }
+
+  _healerBusy = true;
   try {
     await runHealerAlpha(notify);
     // Auto-evolve threshold tiap 5 posisi closed — tanpa perlu manual
-    await autoEvolveIfReady(notify);
+    autoEvolveIfReady(notify).catch(e => console.error('Auto-evolve error:', e.message));
   }
-  catch (e) { await notify(`❌ Healer error: ${e.message}`); }
+  catch (e) { notify(`❌ Healer error: ${e.message}`).catch(() => {}); }
+  finally { _healerBusy = false; }
 });
 
 // ─── Daily Briefing jam 7 pagi ───────────────────────────────────
@@ -352,6 +386,8 @@ bot.onText(/\/(strategies|addstrategy|deletestrategy)(.*)/, (msg) => {
 
 // ─── Message handler ─────────────────────────────────────────────
 
+let _chatBusy = false;
+
 bot.on('message', async (msg) => {
   if (msg.from.id !== ALLOWED_ID) return;
   if (msg.text?.startsWith('/')) return;
@@ -370,21 +406,53 @@ bot.on('message', async (msg) => {
     return;
   }
 
+  // Cegah double-request saat AI masih berpikir
+  if (_chatBusy) {
+    bot.sendMessage(msg.chat.id, '⏳ Masih memproses pesan sebelumnya...').catch(() => {});
+    return;
+  }
+
   await handleMessage(msg, msg.text);
 });
 
 async function handleMessage(msg, text) {
-  bot.sendChatAction(msg.chat.id, 'typing');
+  _chatBusy = true;
+  bot.sendChatAction(msg.chat.id, 'typing').catch(() => {});
   try {
     const response = await processMessage(text);
     await sendLong(msg.chat.id, response, { parse_mode: 'Markdown', disable_web_page_preview: true });
   } catch (e) {
-    await bot.sendMessage(msg.chat.id, `❌ Error: ${e.message}`);
+    bot.sendMessage(msg.chat.id, `❌ Error: ${e.message}`).catch(() => {});
+  } finally {
+    _chatBusy = false;
   }
 }
 
 bot.on('polling_error', (e) => console.error('Polling error:', e.message));
-process.on('SIGINT', () => { bot.stopPolling(); process.exit(0); });
+
+// ─── Graceful shutdown ───────────────────────────────────────────
+async function shutdown(signal) {
+  console.log(`\n🛑 Received ${signal}. Shutting down...`);
+  try {
+    const openPos = getOpenPositions();
+    console.log(`📍 Open positions at shutdown: ${openPos.length}`);
+    bot.stopPolling();
+  } catch {}
+  process.exit(0);
+}
+process.on('SIGINT',  () => shutdown('SIGINT'));
+process.on('SIGTERM', () => shutdown('SIGTERM'));
+
+// Tangkap uncaught exceptions supaya bot tidak mati tiba-tiba
+process.on('uncaughtException', (e) => {
+  console.error('❌ Uncaught Exception:', e.message, e.stack);
+  notify(`⚠️ Uncaught error (bot tetap jalan): ${e.message}`).catch(() => {});
+});
+process.on('unhandledRejection', (reason) => {
+  const msg = reason instanceof Error ? reason.message : String(reason);
+  console.error('❌ Unhandled Rejection:', msg);
+  notify(`⚠️ Unhandled promise rejection: ${msg}`).catch(() => {});
+});
 
 // ─── Startup ─────────────────────────────────────────────────────
 
