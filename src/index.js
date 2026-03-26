@@ -17,6 +17,7 @@ import { getOpenPositions, getPositionStats } from './db/database.js';
 import { initMonitor } from './monitor/positionMonitor.js';
 import { autoEvolveIfReady } from './learn/evolve.js';
 import { getTodayResults, formatDailyReport, savePerformanceSnapshot, backupAllData } from './market/strategyPerformance.js';
+import { runStartupModelCheck, formatModelStatus } from './agent/modelCheck.js';
 
 // ─── Validate env ────────────────────────────────────────────────
 const required = ['TELEGRAM_BOT_TOKEN', 'ALLOWED_TELEGRAM_ID', 'OPENROUTER_API_KEY', 'SOLANA_RPC_URL', 'WALLET_PRIVATE_KEY'];
@@ -191,6 +192,15 @@ cron.schedule('0 * * * *', async () => {
 
 // ─── Commands ────────────────────────────────────────────────────
 
+bot.onText(/\/testmodel/, async (msg) => {
+  if (msg.from.id !== ALLOWED_ID) return;
+  bot.sendMessage(msg.chat.id, '🔍 Testing model...');
+  try {
+    const text = await formatModelStatus();
+    await sendLong(msg.chat.id, text, { parse_mode: 'Markdown' });
+  } catch (e) { bot.sendMessage(msg.chat.id, `❌ ${e.message}`); }
+});
+
 bot.onText(/\/results/, async (msg) => {
   if (msg.from.id !== ALLOWED_ID) return;
   try {
@@ -207,6 +217,7 @@ bot.onText(/\/start/, (msg) => {
     `🩺 Healer — manage posisi tiap ${cfg.managementIntervalMin}min\n\n` +
     `*Commands:*\n` +
     `/status /pools /hunt /heal\n` +
+    `/testmodel — cek & ganti model AI\n` +
     `/results — hasil hari ini per strategi\n` +
     `/check <mint> — screen token scam\n` +
     `/strategies /addstrategy <pw>\n` +
@@ -494,5 +505,7 @@ setTimeout(async () => {
       `🦅 Hunter: ${cfg.screeningIntervalMin}min | 🩺 Healer: ${cfg.managementIntervalMin}min\n\n` +
       `/start untuk semua commands`
     );
+    // Test model aktif — kasih tahu langsung kalau ada masalah
+    await runStartupModelCheck(notify);
   } catch (e) { console.error('Startup error:', e.message); }
 }, 2000);
