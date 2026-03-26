@@ -8,7 +8,7 @@ import { safeParseAI, fetchWithTimeout } from '../utils/safeJson.js';
  * Output: { signal, confidence, thesis, reasoning, holdRecommendation }
  */
 
-import { createMessage, resolveModel } from '../agent/provider.js';
+import { createMessage, resolveModel, extractText } from '../agent/provider.js';
 import { getConfig } from '../config.js';
 import { getMarketSnapshot } from './oracle.js';
 import { loadMemory, saveMemory } from './memory.js';
@@ -78,7 +78,7 @@ Buat keputusan: apakah ${currentPosition ? 'posisi ini harus di-HOLD atau di-CLO
     });
 
     
-    const analysis = safeParseAI(response.content[0].text);
+    const analysis = safeParseAI(extractText(response));
 
     // Simpan snapshot + analysis ke memory untuk evolusi
     saveMarketEvent({

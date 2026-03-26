@@ -1,7 +1,7 @@
 import { readFileSync, writeFileSync, existsSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
-import { createMessage, resolveModel } from '../agent/provider.js';
+import { createMessage, resolveModel, extractText } from '../agent/provider.js';
 import { getConfig } from '../config.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -86,7 +86,7 @@ Jangan ada teks lain selain JSON.`;
     messages: [{ role: 'user', content: prompt }],
   });
 
-  const text = response.content[0].text.trim();
+  const text = extractText(response).trim();
   const clean = text.replace(/```json|```/g, '').trim();
   const newLessons = JSON.parse(clean);
 

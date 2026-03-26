@@ -56,7 +56,18 @@ export function resolveModel(modelFromConfig) {
 }
 
 // Model fallback — dipakai otomatis saat provider error 502/503/529
-const FALLBACK_MODEL = process.env.FALLBACK_AI_MODEL || 'meta-llama/llama-3.3-70b-instruct:free';
+const FALLBACK_MODEL = process.env.FALLBACK_AI_MODEL || 'nvidia/nemotron-nano-12b-v2-vl:free';
+
+/**
+ * Extract teks dari response content — skip thinking/redacted_thinking blocks
+ * yang dikembalikan oleh reasoning models (nvidia nemotron, deepseek, dll).
+ * Tanpa ini, response.content[0].text = undefined kalau block pertama adalah thinking.
+ */
+export function extractText(response) {
+  if (!response?.content?.length) return '';
+  const block = response.content.find(b => b.type === 'text');
+  return block?.text ?? '';
+}
 
 // Bersihkan error message — buang HTML, batasi panjang
 function cleanError(e) {

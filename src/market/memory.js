@@ -14,7 +14,7 @@ import { safeParseAI } from '../utils/safeJson.js';
 import { readFileSync, writeFileSync, existsSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
-import { createMessage, resolveModel } from '../agent/provider.js';
+import { createMessage, resolveModel, extractText } from '../agent/provider.js';
 import { getConfig } from '../config.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -261,7 +261,7 @@ Respond HANYA dengan JSON:
     messages: [{ role: 'user', content: prompt }],
   });
 
-  const result = safeParseAI(response.content[0].text);
+  const result = safeParseAI(extractText(response));
 
   const newInstincts = result.instincts.map(inst => ({
     ...inst,

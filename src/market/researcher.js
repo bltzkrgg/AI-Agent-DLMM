@@ -6,7 +6,7 @@ import { safeParseAI, fetchWithTimeout } from '../utils/safeJson.js';
  * Menghasilkan strategi terstruktur yang disimpan ke Strategy Library.
  */
 
-import { createMessage, resolveModel } from '../agent/provider.js';
+import { createMessage, resolveModel, extractText } from '../agent/provider.js';
 import { getConfig } from '../config.js';
 import { addResearchedStrategy } from './strategyLibrary.js';
 
@@ -68,7 +68,7 @@ Kalau artikel tidak mengandung strategi DLMM yang konkret, return array kosong: 
   });
 
   
-  const strategies = safeParseAI(response.content[0].text);
+  const strategies = safeParseAI(extractText(response));
 
   if (!Array.isArray(strategies) || strategies.length === 0) {
     return { extracted: [], message: 'Tidak ada strategi DLMM konkret yang ditemukan di artikel ini.' };
@@ -95,5 +95,5 @@ export async function summarizeArticle(articleText) {
     }],
   });
 
-  return response.content[0].text.trim();
+  return extractText(response).trim();
 }

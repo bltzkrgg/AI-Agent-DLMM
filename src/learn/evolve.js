@@ -1,5 +1,5 @@
 import { safeParseAI } from '../utils/safeJson.js';
-import { createMessage, resolveModel } from '../agent/provider.js';
+import { createMessage, resolveModel, extractText } from '../agent/provider.js';
 import { getConfig, updateConfig, getThresholds } from '../config.js';
 import { getClosedPositions, getPositionStats } from '../db/database.js';
 import { loadMemory, saveMemory } from '../market/memory.js';
@@ -149,7 +149,7 @@ Respond HANYA dengan JSON format:
     messages: [{ role: 'user', content: prompt }],
   });
 
-  const result = safeParseAI(response.content[0].text);
+  const result = safeParseAI(extractText(response));
 
   const before = { ...currentThresholds };
   updateConfig(result.changes);

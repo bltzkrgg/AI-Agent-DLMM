@@ -17,10 +17,10 @@ const DEFAULTS = {
   managementIntervalMin: 10,
   screeningIntervalMin: 30,
 
-  // Models — OpenRouter format
-  managementModel: 'anthropic/claude-sonnet-4',
-  screeningModel: 'anthropic/claude-sonnet-4',
-  generalModel: 'anthropic/claude-sonnet-4',
+  // Models — OpenRouter free tier
+  managementModel: 'nvidia/nemotron-3-super-120b-a12b:free',
+  screeningModel: 'nvidia/nemotron-3-super-120b-a12b:free',
+  generalModel: 'nvidia/nemotron-3-super-120b-a12b:free',
 
   // Screening thresholds
   minFeeActiveTvlRatio: 0.05,
