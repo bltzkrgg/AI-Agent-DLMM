@@ -49,7 +49,7 @@ const DEFAULTS = {
 
 // Bounds for AI-driven config updates — prevent AI from setting dangerous values
 const CONFIG_BOUNDS = {
-  deployAmountSol:            { min: 0.01,  max: 10 },
+  deployAmountSol:            { min: 0.01,  max: 50 },
   maxPositions:               { min: 1,     max: 20 },
   minSolToOpen:               { min: 0.01,  max: 1 },
   managementIntervalMin:      { min: 1,     max: 1440 },
