@@ -9,6 +9,7 @@ import { checkMaxDrawdown, validateStrategyForMarket, requestConfirmation } from
 import { matchStrategyToMarket, getLibraryStats } from '../market/strategyLibrary.js';
 import { getMarketSnapshot } from '../market/oracle.js';
 import { getInstinctsContext } from '../market/memory.js';
+import { getStrategyIntelligenceContext } from '../market/strategyPerformance.js';
 import { screenToken, formatScreenResult } from '../market/scamScreener.js';
 import { parseTvl } from '../utils/safeJson.js';
 
@@ -230,6 +231,7 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null) {
   const cfg = getConfig();
   const lessonsCtx = getLessonsContext();
   const instincts = getInstinctsContext();
+  const strategyIntel = getStrategyIntelligenceContext();
   const libraryStats = getLibraryStats();
 
   const systemPrompt = `Kamu adalah Hunter Alpha — autonomous pool screening & deployment agent untuk Meteora DLMM.
@@ -261,6 +263,7 @@ ${libraryStats.topStrategies.map(s => `- ${s.name} (${s.type}, ${(s.confidence *
 Mode: ${isDryRun() ? '🧪 DRY RUN (tidak ada transaksi nyata)' : '🔴 LIVE'}
 ${lessonsCtx}
 ${instincts}
+${strategyIntel}
 
 Gunakan Bahasa Indonesia. Reasoning out loud untuk setiap keputusan.`;
 

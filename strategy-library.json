@@ -1,0 +1,183 @@
+{
+  "strategies": [
+    {
+      "id": "builtin_spot",
+      "name": "Spot Balanced",
+      "type": "spot",
+      "source": "builtin",
+      "description": "Distribusi likuiditas merata di sekitar harga aktif.",
+      "marketConditions": {
+        "trend": [
+          "SIDEWAYS"
+        ],
+        "volatility": [
+          "LOW",
+          "MEDIUM"
+        ],
+        "sentiment": [
+          "NEUTRAL",
+          "BULLISH"
+        ],
+        "volumeVsAvg": {
+          "min": 0.5,
+          "max": 2
+        }
+      },
+      "parameters": {
+        "priceRangePercent": 5,
+        "binStep": 10,
+        "strategyType": 0,
+        "tokenXWeight": 50,
+        "tokenYWeight": 50
+      },
+      "entryConditions": "Market sideways, volume normal, tidak ada trend kuat.",
+      "exitConditions": "Kalau trend mulai terbentuk, switch ke bid-ask atau single-side.",
+      "confidence": 0.7,
+      "performanceHistory": []
+    },
+    {
+      "id": "builtin_curve",
+      "name": "Curve Concentrated",
+      "type": "curve",
+      "source": "builtin",
+      "description": "Likuiditas terkonsentrasi di dekat harga aktif. Fee maksimal tapi cepat out of range.",
+      "marketConditions": {
+        "trend": [
+          "SIDEWAYS"
+        ],
+        "volatility": [
+          "LOW"
+        ],
+        "sentiment": [
+          "NEUTRAL"
+        ],
+        "volumeVsAvg": {
+          "min": 0.3,
+          "max": 1.5
+        }
+      },
+      "parameters": {
+        "priceRangePercent": 2,
+        "binStep": 5,
+        "strategyType": 1,
+        "tokenXWeight": 50,
+        "tokenYWeight": 50
+      },
+      "entryConditions": "Market sangat sideways, volatilitas rendah, stable pair.",
+      "exitConditions": "Kalau ada breakout atau volatilitas naik, segera exit.",
+      "confidence": 0.65,
+      "performanceHistory": []
+    },
+    {
+      "id": "builtin_bidask",
+      "name": "Bid-Ask Wide",
+      "type": "bid_ask",
+      "source": "builtin",
+      "description": "Spread lebar di dua sisi. Tahan volatile, fee terkumpul dari swing.",
+      "marketConditions": {
+        "trend": [
+          "UPTREND",
+          "DOWNTREND",
+          "SIDEWAYS"
+        ],
+        "volatility": [
+          "HIGH",
+          "MEDIUM"
+        ],
+        "sentiment": [
+          "BULLISH",
+          "BEARISH",
+          "NEUTRAL"
+        ],
+        "volumeVsAvg": {
+          "min": 1,
+          "max": 999
+        }
+      },
+      "parameters": {
+        "priceRangePercent": 15,
+        "binStep": 20,
+        "strategyType": 2,
+        "tokenXWeight": 50,
+        "tokenYWeight": 50
+      },
+      "entryConditions": "Volatilitas tinggi, volume di atas rata-rata, ada momentum.",
+      "exitConditions": "Kalau market mulai stabil dan fee APR turun drastis.",
+      "confidence": 0.75,
+      "performanceHistory": []
+    },
+    {
+      "id": "builtin_singleside_x",
+      "name": "Single-Side Token X",
+      "type": "single_side_x",
+      "source": "builtin",
+      "description": "Hanya deposit token X (SOL/base token). Cocok kalau yakin harga naik.",
+      "marketConditions": {
+        "trend": [
+          "UPTREND"
+        ],
+        "volatility": [
+          "LOW",
+          "MEDIUM"
+        ],
+        "sentiment": [
+          "BULLISH"
+        ],
+        "volumeVsAvg": {
+          "min": 1.2,
+          "max": 999
+        }
+      },
+      "parameters": {
+        "priceRangePercent": 8,
+        "binStep": 10,
+        "strategyType": 0,
+        "tokenXWeight": 100,
+        "tokenYWeight": 0,
+        "singleSide": "x"
+      },
+      "entryConditions": "Strong uptrend, buy pressure dominan > 65%, momentum kuat.",
+      "exitConditions": "Kalau momentum melemah atau sentiment berubah bearish.",
+      "confidence": 0.7,
+      "performanceHistory": []
+    },
+    {
+      "id": "builtin_singleside_y",
+      "name": "Single-Side USDC",
+      "type": "single_side_y",
+      "source": "builtin",
+      "description": "Hanya deposit USDC/quote token. Cocok kalau expect harga turun lalu balik.",
+      "marketConditions": {
+        "trend": [
+          "DOWNTREND"
+        ],
+        "volatility": [
+          "LOW",
+          "MEDIUM"
+        ],
+        "sentiment": [
+          "BEARISH",
+          "NEUTRAL"
+        ],
+        "volumeVsAvg": {
+          "min": 0.8,
+          "max": 999
+        }
+      },
+      "parameters": {
+        "priceRangePercent": 8,
+        "binStep": 10,
+        "strategyType": 0,
+        "tokenXWeight": 0,
+        "tokenYWeight": 100,
+        "singleSide": "y"
+      },
+      "entryConditions": "Downtrend tapi expect reversal, sell pressure dominan.",
+      "exitConditions": "Kalau reversal terjadi, switch ke spot atau single-side X.",
+      "confidence": 0.65,
+      "performanceHistory": []
+    }
+  ],
+  "lastUpdated": null,
+  "totalResearched": 0
+}

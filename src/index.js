@@ -16,6 +16,7 @@ import { screenToken, formatScreenResult } from './market/scamScreener.js';
 import { getOpenPositions, getPositionStats } from './db/database.js';
 import { initMonitor } from './monitor/positionMonitor.js';
 import { autoEvolveIfReady } from './learn/evolve.js';
+import { getTodayResults, formatDailyReport, savePerformanceSnapshot, backupAllData } from './market/strategyPerformance.js';
 
 // ─── Validate env ────────────────────────────────────────────────
 const required = ['TELEGRAM_BOT_TOKEN', 'ALLOWED_TELEGRAM_ID', 'OPENROUTER_API_KEY', 'SOLANA_RPC_URL', 'WALLET_PRIVATE_KEY'];
@@ -123,9 +124,28 @@ cron.schedule(`*/${cfg.managementIntervalMin} * * * *`, async () => {
     await runHealerAlpha(notify);
     // Auto-evolve threshold tiap 5 posisi closed — tanpa perlu manual
     autoEvolveIfReady(notify).catch(e => console.error('Auto-evolve error:', e.message));
+    // Auto-save strategy performance snapshot ke file lokal
+    savePerformanceSnapshot();
   }
   catch (e) { notify(`❌ Healer error: ${e.message}`).catch(() => {}); }
   finally { _healerBusy = false; }
+});
+
+// ─── Daily Backup jam 2 pagi ─────────────────────────────────────
+cron.schedule('0 2 * * *', () => {
+  try {
+    savePerformanceSnapshot();
+    const count = backupAllData();
+    console.log(`💾 Daily backup selesai: ${count} file disimpan ke backups/`);
+  } catch (e) { console.error('Daily backup error:', e.message); }
+});
+
+// ─── Daily Results Report jam 9 malam ────────────────────────────
+cron.schedule('0 21 * * *', async () => {
+  try {
+    const results = getTodayResults();
+    await notify(formatDailyReport(results));
+  } catch (e) { console.error('Daily results error:', e.message); }
 });
 
 // ─── Daily Briefing jam 7 pagi ───────────────────────────────────
@@ -171,6 +191,14 @@ cron.schedule('0 * * * *', async () => {
 
 // ─── Commands ────────────────────────────────────────────────────
 
+bot.onText(/\/results/, async (msg) => {
+  if (msg.from.id !== ALLOWED_ID) return;
+  try {
+    const results = getTodayResults();
+    await sendLong(msg.chat.id, formatDailyReport(results), { parse_mode: 'Markdown' });
+  } catch (e) { bot.sendMessage(msg.chat.id, `❌ ${e.message}`); }
+});
+
 bot.onText(/\/start/, (msg) => {
   if (msg.from.id !== ALLOWED_ID) return;
   bot.sendMessage(msg.chat.id,
@@ -179,6 +207,7 @@ bot.onText(/\/start/, (msg) => {
     `🩺 Healer — manage posisi tiap ${cfg.managementIntervalMin}min\n\n` +
     `*Commands:*\n` +
     `/status /pools /hunt /heal\n` +
+    `/results — hasil hari ini per strategi\n` +
     `/check <mint> — screen token scam\n` +
     `/strategies /addstrategy <pw>\n` +
     `/library /research\n` +

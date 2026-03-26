@@ -7,6 +7,7 @@ import { getLessonsContext } from '../learn/lessons.js';
 import { checkStopLoss, checkMaxDrawdown, recordPnl, getSafetyStatus } from '../safety/safetyManager.js';
 import { analyzeMarket } from '../market/analyst.js';
 import { getInstinctsContext } from '../market/memory.js';
+import { getStrategyIntelligenceContext } from '../market/strategyPerformance.js';
 
 // ─── Trailing Take Profit Config ──────────────────────────────────
 // Terinspirasi dari Meridian: aktifkan trailing setelah profit mencapai
@@ -295,6 +296,7 @@ export async function runHealerAlpha(notifyFn) {
 
   const safety   = getSafetyStatus();
   const instincts = getInstinctsContext();
+  const strategyIntel = getStrategyIntelligenceContext();
 
   const systemPrompt = `Kamu adalah Healer Alpha — autonomous position management agent untuk Meteora DLMM.
 
@@ -333,6 +335,7 @@ Mode: ${isDryRun() ? '🧪 DRY RUN' : '🔴 LIVE'}
 
 ${lessonsCtx}
 ${instincts}
+${strategyIntel}
 
 Gunakan Bahasa Indonesia. Selalu explain kenapa HOLD atau CLOSE.`;
 
