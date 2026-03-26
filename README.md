@@ -1,84 +1,63 @@
-# 🦞 Meteora DLMM Bot
+# 🦞 Meteora DLMM AI Agent Bot
 
-**Autonomous AI Agent untuk Meteora DLMM liquidity management di Solana, diakses via Telegram.**
+**Autonomous AI Agent untuk Meteora DLMM liquidity management di Solana, dikontrol via Telegram.**
 
-Inspired by [Meridian](https://github.com/yunus-0x/meridian) — dibangun ulang dengan arsitektur modular, multi-provider AI, dan sistem safety yang lebih robust.
+> Repo: [github.com/bltzkrgg/AI-Agent-DLMM](https://github.com/bltzkrgg/AI-Agent-DLMM)  
+> Inspired by [Meridian](https://github.com/yunus-0x/meridian)
 
 ---
 
-## ✨ Fitur
+## ✨ Fitur Utama
 
 | Fitur | Deskripsi |
 |---|---|
 | 🦅 **Hunter Alpha** | Auto screen & deploy ke pool terbaik tiap 30 menit |
 | 🩺 **Healer Alpha** | Monitor & manage semua posisi tiap 10 menit |
-| 🧠 **Market Analyst** | Analisa chart (OHLCV, volume, sentiment, on-chain) sebelum keputusan |
+| 🧠 **Market Analyst** | Analisa OHLCV, volume, sentiment, on-chain sebelum keputusan |
+| 📊 **Daily Results** | Laporan harian fees + performa per strategi, auto-inject ke AI |
+| 🧬 **Auto-Evolve** | Tiap 5 posisi ditutup, bot otomatis improve instincts-nya |
 | 📚 **Learn** | Pelajari behavior top LPers, simpan lessons |
-| 🧬 **Evolve** | Auto-adjust strategi dari trading history |
 | 🔬 **Research** | Paste artikel → agent extract & simpan strategi otomatis |
 | 🚫 **Scam Screener** | Deteksi rug/scam via RugCheck + GMGN + pattern analysis |
-| 🛡️ **Safety System** | Stop-loss, max drawdown harian, konfirmasi sebelum deploy |
-| 🔔 **Notifikasi** | Alert out-of-range, laporan setiap siklus Hunter/Healer |
-| 🧪 **Dry Run Mode** | Simulasi penuh tanpa transaksi nyata |
+| 🛡️ **Safety System** | Stop-loss, max drawdown, trailing take profit, konfirmasi deploy |
+| 🤖 **Multi AI Provider** | OpenRouter, Anthropic, OpenAI, atau custom API |
+| 💾 **Auto Backup** | Semua data auto-save ke root folder, siap di-push ke GitHub |
 
 ---
 
-## 💻 Spesifikasi Sistem
+## 📋 Yang Perlu Disiapkan Sebelum Install
 
-### Minimum (bisa jalan, mepet)
-| Komponen | Requirement |
-|---|---|
-| **OS** | Linux, macOS, atau Windows (dengan WSL) |
-| **Node.js** | v18.x – v20.x (**v20 LTS recommended**) |
-| **RAM** | 512 MB |
-| **CPU** | 1 core |
-| **Storage** | 1 GB free (untuk node_modules ~400MB + data) |
-| **Internet** | Koneksi stabil (bukan kecepatan, tapi uptime) |
-
-### Recommended (untuk stable production)
-| Komponen | Requirement |
-|---|---|
-| **Node.js** | v20.x LTS |
-| **RAM** | 1 GB+ |
-| **CPU** | 1-2 core |
-| **Storage** | 2 GB free |
-| **Internet** | Uptime > 99% |
-
-> ⚠️ **Penting:** Gunakan Node.js **v20**, bukan v22/v24. Package `@meteora-ag/dlmm` memiliki ESM compatibility issue di Node v22+.
-
-### Ukuran Instalasi
-| Komponen | Ukuran |
-|---|---|
-| Source code | ~200 KB |
-| `node_modules/` | ~400 MB |
-| Database + logs | Kecil, tumbuh seiring waktu |
-| **Total** | **~500 MB** |
-
-### Memory saat runtime
-- **~100–200 MB RAM** — tidak butuh GPU, semua AI computation di-offload ke cloud API
-
-### Rekomendasi Hosting (untuk running 24/7)
-| Platform | Harga | Cocok untuk |
-|---|---|---|
-| **VPS Contabo** | ~$5/bulan | 1–3 agent, paling hemat |
-| **Railway.app** | ~$5/bulan | Deploy mudah, auto-restart |
-| **DigitalOcean Droplet** | $6/bulan | Stabil, dokumentasi lengkap |
-| **MacBook lokal** | Gratis | Testing/dev — mati kalau laptop mati |
+1. **Node.js v20** via nvm (v21+ tidak kompatibel)
+2. **Telegram Bot Token** — dari [@BotFather](https://t.me/BotFather)
+3. **Telegram User ID** — dari [@userinfobot](https://t.me/userinfobot)
+4. **OpenRouter API Key** — dari [openrouter.ai/keys](https://openrouter.ai/keys), top up min $5
+5. **Solana Wallet** — wallet BARU khusus bot, bukan wallet utama
+6. **Solana RPC URL** — public atau Helius gratis di [helius.dev](https://helius.dev)
 
 ---
 
-## 🔧 Setup
+## 🚀 Tutorial Install Lengkap
 
-### 1. Install Node.js v20
+### Step 1 — Install nvm & Node.js v20
 
 ```bash
-# Pakai nvm (recommended)
+# Install nvm
+curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.7/install.sh | bash
+
+# Tutup dan buka ulang terminal, lalu:
 nvm install 20
 nvm use 20
-node --version  # harus v20.x.x
+
+# Verifikasi
+node --version   # harus v20.x.x
+npm --version    # harus 10.x.x
 ```
 
-### 2. Clone & install dependencies
+> ⚠️ Jangan pakai Node dari Homebrew atau system default — harus lewat nvm.
+
+---
+
+### Step 2 — Clone Repo & Install
 
 ```bash
 git clone https://github.com/bltzkrgg/AI-Agent-DLMM.git
@@ -86,132 +65,200 @@ cd AI-Agent-DLMM
 npm install
 ```
 
-### 3. Setup environment
+Proses install ±2–5 menit karena ada native addon (`better-sqlite3`).
+
+---
+
+### Step 3 — Buat Telegram Bot
+
+1. Buka Telegram → cari **@BotFather**
+2. Ketik `/newbot` → ikuti instruksi
+3. Dapat **Bot Token** (format: `123456789:AAGxxx...`)
+4. Buka **@userinfobot** → dapat **User ID** kamu (angka, bukan @username)
+
+---
+
+### Step 4 — Daftar & Top Up OpenRouter
+
+1. Daftar di [openrouter.ai](https://openrouter.ai)
+2. Top up minimal **$5** di [openrouter.ai/credits](https://openrouter.ai/credits)
+3. Buat API Key di [openrouter.ai/keys](https://openrouter.ai/keys)
+4. Salin key — format: `sk-or-v1-xxx...`
+
+---
+
+### Step 5 — Siapkan Wallet Solana
+
+> ⚠️ **WAJIB gunakan wallet baru khusus bot.** Jangan pakai wallet utama.
+
+Buat wallet baru di Phantom/Solflare, export private key (base58), isi dengan SOL secukupnya (mulai 0.5–1 SOL untuk testing).
+
+---
+
+### Step 6 — Konfigurasi `.env`
 
 ```bash
 cp .env.example .env
 ```
 
-Edit `.env` dan isi semua value:
+Edit `.env`:
 
 ```env
-# Telegram
-TELEGRAM_BOT_TOKEN=        # dari @BotFather
-ALLOWED_TELEGRAM_ID=       # dari @userinfobot (angka, bukan @username)
+# ── Telegram ──────────────────────────────────────────────────────
+TELEGRAM_BOT_TOKEN=123456789:AAGxxx...    # dari BotFather
+ALLOWED_TELEGRAM_ID=123456789             # dari @userinfobot (angka!)
 
-# AI Provider
+# ── AI Provider ───────────────────────────────────────────────────
 AI_PROVIDER=openrouter
-OPENROUTER_API_KEY=        # dari openrouter.ai
-AI_MODEL=anthropic/claude-sonnet-4   # atau model lain (lihat daftar di bawah)
+OPENROUTER_API_KEY=sk-or-v1-xxx...        # dari openrouter.ai/keys
+AI_MODEL=openai/gpt-4o-mini               # model rekomendasi
 
-# Solana
+# ── Solana ────────────────────────────────────────────────────────
 SOLANA_RPC_URL=https://api.mainnet-beta.solana.com
-WALLET_PRIVATE_KEY=        # base58 — WALLET KHUSUS BOT, bukan wallet utama!
+WALLET_PRIVATE_KEY=your-base58-private-key
 
-# Bot
-ADMIN_PASSWORD=            # password untuk fitur admin
-DRY_RUN=true               # SELALU true dulu saat pertama kali!
+# ── Bot ───────────────────────────────────────────────────────────
+ADMIN_PASSWORD=password-kuat-kamu
+DRY_RUN=true                              # SELALU true dulu!
 ```
 
-### 4. Jalankan (DRY RUN dulu!)
+---
+
+### Step 7 — Jalankan Bot (Dry Run)
 
 ```bash
+nvm use 20
 npm run dry
 ```
 
-Kalau berhasil, bot Telegram akan kirim pesan:
+Terminal akan tampil:
+```
+🤖 AI Provider: openrouter | Model: openai/gpt-4o-mini
+🦞 Meteora DLMM Bot started! Mode: DRY RUN
+```
+
+Telegram kamu dapat pesan:
 ```
 🚀 Bot Started!
 💰 X.XXXX SOL | Mode: DRY RUN
+🦅 Hunter: 30min | 🩺 Healer: 10min
 ```
 
-### 5. Switch ke LIVE (setelah yakin semua OK)
+---
+
+### Step 8 — Verifikasi Model AI
+
+Di Telegram ketik:
+
+```
+/testmodel
+```
+
+Harusnya muncul:
+```
+🤖 Model Status
+Provider: openrouter
+Model: openai/gpt-4o-mini
+Status: ✅ OK
+```
+
+Kalau ❌ Error → cek API key, ganti model di `.env`, restart bot.
+
+---
+
+### Step 9 — Test Fitur Utama
+
+```
+/status    → cek balance & posisi
+/hunt      → test Hunter Alpha manual
+/heal      → test Healer Alpha manual
+/results   → laporan hari ini
+/memory    → lihat instincts bot
+```
+
+---
+
+### Step 10 — Go Live
+
+Setelah DRY RUN berjalan normal minimal 1 hari, ketik di Telegram:
 
 ```
 /dryrun off PASSWORD_KAMU
 ```
 
+Bot sekarang live — Hunter otomatis cari pool & deploy, Healer monitor posisi tiap 10 menit.
+
 ---
 
-## 🤖 Supported AI Models (via OpenRouter)
+## 🤖 Pilihan Model AI
 
-| Model | Kecepatan | Kualitas | Biaya/hari* |
-|---|---|---|---|
-| `anthropic/claude-sonnet-4` | Sedang | ⭐⭐⭐⭐⭐ | ~$0.85 |
-| `deepseek/deepseek-r1` | Sedang | ⭐⭐⭐⭐ | ~$0.10 |
-| `google/gemini-2.0-flash` | Cepat | ⭐⭐⭐⭐ | ~$0.07 |
-| `anthropic/claude-haiku-4-5` | Sangat cepat | ⭐⭐⭐ | ~$0.30 |
-| `nvidia/llama-3.1-nemotron-ultra-253b-v1:free` | Lambat | ⭐⭐⭐ | Gratis** |
+Ganti kapanpun di `.env`:
 
-*estimasi untuk 1 agent, interval default  
-**free tier memiliki rate limit ketat
-
-Ganti model di `.env`:
 ```env
-AI_MODEL=deepseek/deepseek-r1
+AI_MODEL=nama-model
 ```
 
+| Model | Kualitas | Estimasi/bulan | Notes |
+|---|---|---|---|
+| `openai/gpt-4o-mini` | ⭐⭐⭐⭐ | ~$5 | **Recommended** |
+| `google/gemini-flash-1.5` | ⭐⭐⭐ | ~$3 | Paling hemat |
+| `anthropic/claude-3-haiku` | ⭐⭐⭐⭐⭐ | ~$8 | Terbaik untuk reasoning |
+| `openai/gpt-4o` | ⭐⭐⭐⭐⭐ | ~$30 | Paling pintar |
+
+> ❌ **Hindari free models** (`:free`) — sering rate-limited, tidak reliable untuk bot 24/7.
+
+Setelah ganti model → `/testmodel` untuk konfirmasi.
+
 ---
 
-## 📱 Telegram Commands
+## 📱 Semua Commands Telegram
 
-### Agent Control
-| Command | Deskripsi |
+### Agent & Status
+| Command | Fungsi |
 |---|---|
 | `/start` | Lihat semua commands |
 | `/status` | Balance wallet & posisi terbuka |
 | `/hunt` | Jalankan Hunter Alpha manual |
 | `/heal` | Jalankan Healer Alpha manual |
-| `/pools` | Screen kandidat pool terbaik sekarang |
+| `/pools` | Tampilkan kandidat pool terbaik |
+| `/testmodel` | Cek status model AI + list model tersedia |
+| `/results` | Laporan hasil hari ini per strategi |
 
-### Scam & Token
-| Command | Deskripsi |
+### Token & Scam Check
+| Command | Fungsi |
 |---|---|
 | `/check <mint>` | Screen token scam/rug manual |
 
 ### Strategy & Learning
-| Command | Deskripsi |
+| Command | Fungsi |
 |---|---|
 | `/library` | Lihat Strategy Library |
 | `/research` | Tambah strategi dari artikel (paste teks) |
-| `/strategies` | Lihat strategi tersedia |
-| `/addstrategy <pw>` | Tambah strategi baru step-by-step |
-| `/learn [pool]` | Pelajari top LPers di pool |
+| `/strategies` | Lihat strategi tersimpan |
+| `/addstrategy <pw>` | Tambah strategi baru |
+| `/learn [pool]` | Pelajari behavior top LPers |
 | `/lessons` | Lihat lessons tersimpan |
 | `/memory` | Lihat trading memory & instincts |
-| `/evolve` | Auto-evolve instincts dari trading history |
+| `/evolve` | Manual trigger evolve instincts |
 
 ### Config & Safety
-| Command | Deskripsi |
+| Command | Fungsi |
 |---|---|
 | `/thresholds` | Lihat screening thresholds & performance |
-| `/safety` | Status safety, drawdown harian |
+| `/safety` | Status safety & drawdown harian |
 | `/dryrun <on\|off> <pw>` | Toggle DRY RUN / LIVE mode |
 
 ### Free-form Chat
-Langsung ketik ke bot:
-- *"Buka posisi di pool SOL-USDC"*
+Langsung ketik natural language:
+- *"Pool mana yang fee APR tertinggi sekarang?"*
+- *"Analisa market SOL hari ini"*
 - *"Tutup semua posisi yang out of range"*
-- *"Pool mana yang fee APR tertinggi hari ini?"*
 
 ---
 
-## 🛡️ Safety System
+## ⚙️ Konfigurasi Lanjutan (`user-config.json`)
 
-Bot dilengkapi 4 layer safety:
-
-1. **Stop-loss** — auto close posisi kalau rugi > `stopLossPct` (default 5%)
-2. **Max drawdown harian** — freeze semua aktivitas kalau rugi > `maxDailyDrawdownPct` (default 10%)
-3. **Validasi strategi** — cek kesesuaian strategi vs kondisi market sebelum deploy
-4. **Konfirmasi Telegram** — minta approval kamu sebelum buka posisi baru
-
-Semua bisa dikonfigurasi di `user-config.json`.
-
----
-
-## ⚙️ Konfigurasi (`user-config.json`)
-
-Auto-dibuat saat pertama run. Edit sesuai kebutuhan:
+Auto-dibuat di root folder saat pertama run:
 
 ```json
 {
@@ -233,94 +280,132 @@ Auto-dibuat saat pertama run. Edit sesuai kebutuhan:
 
 ---
 
-## 🌐 Arsitektur
+## 💾 Data & Backup
 
+Bot auto-save semua data ke root folder. Untuk backup ke GitHub:
+
+```bash
+git add memory.json lessons.json strategyPerformance.json strategy-library.json
+git commit -m "backup data"
+git push origin main
 ```
-src/
-├── index.js                  # Entry point, Telegram bot, cron
-├── config.js                 # Config management + bounds validation
-├── utils/safeJson.js         # Safe JSON parse, fetchWithTimeout, retry
-│
-├── agent/
-│   ├── claude.js             # Free-form AI chat agent
-│   └── provider.js           # AI provider abstraction (OpenRouter/Anthropic/OpenAI)
-│
-├── agents/
-│   ├── hunterAlpha.js        # Autonomous pool screening & deployment
-│   └── healerAlpha.js        # Autonomous position management
-│
-├── market/
-│   ├── oracle.js             # Data: OHLCV, liquidity, on-chain, sentiment
-│   ├── analyst.js            # AI market analysis & thesis
-│   ├── memory.js             # Trading memory & instinct evolution
-│   ├── researcher.js         # Extract strategi dari artikel
-│   ├── strategyLibrary.js    # Strategy Library + market matching
-│   └── scamScreener.js       # Scam/rug detection
-│
-├── safety/
-│   └── safetyManager.js      # Stop-loss, drawdown, confirmation
-│
-├── learn/
-│   ├── lessons.js            # Learn dari top LPers
-│   └── evolve.js             # Threshold evolution
-│
-├── db/database.js            # SQLite: positions, notifications, history
-├── solana/
-│   ├── meteora.js            # Meteora DLMM SDK integration
-│   └── wallet.js             # Solana wallet & RPC
-│
-├── strategies/
-│   ├── strategyManager.js    # Strategy CRUD (SQLite)
-│   └── strategyHandler.js    # Telegram conversation flow
-│
-└── monitor/positionMonitor.js # Out-of-range alerts (30min cooldown)
-```
+
+| File | Isi | Kapan Update |
+|---|---|---|
+| `memory.json` | Trading history & instincts | Tiap posisi ditutup |
+| `lessons.json` | Lessons dari top LPers | Tiap `/learn` |
+| `strategyPerformance.json` | Performa per strategi | Tiap Healer cycle |
+| `strategy-library.json` | Library strategi | Tiap `/research` |
+
+Backup harian otomatis jam 02:00.
 
 ---
 
-## 🔒 Security
+## 🛡️ Safety System
 
-1. **Gunakan wallet KHUSUS bot** — jangan wallet utama, isi secukupnya saja
-2. **`DRY_RUN=true` dulu** — verifikasi behavior sebelum live
-3. **Jangan commit `.env`** — sudah ada di `.gitignore`
-4. **Password admin yang kuat** — dipakai untuk `/addstrategy`, `/dryrun`, dll
-5. **Gunakan Helius RPC** untuk production — public RPC sering rate-limited
+| Layer | Fungsi |
+|---|---|
+| **Stop-loss** | Auto close kalau rugi > `stopLossPct` (default 5%) |
+| **Trailing Take Profit** | Aktif saat profit ≥ 3%, close kalau turun 1.5% dari peak |
+| **Max drawdown harian** | Freeze semua aktivitas kalau rugi > `maxDailyDrawdownPct` (default 10%) |
+| **Konfirmasi Telegram** | Minta approval sebelum buka posisi baru |
 
 ---
 
 ## 🔧 Troubleshooting
 
-**`ERR_UNSUPPORTED_DIR_IMPORT` saat start**
+**`SyntaxError: Unexpected reserved word`**
 ```bash
-# Downgrade ke Node.js v20
 nvm install 20 && nvm use 20
-rm -rf node_modules && npm install
+npm run dry
 ```
 
 **`Cannot find module 'better-sqlite3'`**
 ```bash
-npm install better-sqlite3 --build-from-source
+npm rebuild better-sqlite3
 ```
+
+**`ERR_UNSUPPORTED_DIR_IMPORT`**
+```bash
+nvm use 20
+rm -rf node_modules && npm install
+```
+
+**Bot tidak bales di Telegram (`401 Unauthorized`)**
+- Token expired → generate baru di @BotFather
+
+**`ALLOWED_TELEGRAM_ID` tidak dikenali**
+- Harus angka, bukan `@username` → cek via [@userinfobot](https://t.me/userinfobot)
+
+**`⚠️ Model tidak bisa dipakai` saat startup**
+```
+/testmodel   → lihat model yang tersedia
+```
+Ganti `AI_MODEL` di `.env`, restart bot.
 
 **RPC 429 Too Many Requests**
-```bash
-# Ganti ke Helius (gratis di helius.dev)
+```env
 SOLANA_RPC_URL=https://mainnet.helius-rpc.com/?api-key=YOUR_KEY
 ```
+Daftar gratis di [helius.dev](https://helius.dev).
 
-**Bot tidak bales di Telegram**
-Pastikan `ALLOWED_TELEGRAM_ID` berisi angka (bukan `@username`). Cek via [@userinfobot](https://t.me/userinfobot).
-
-**xcode-select error di Mac**
+**`xcode-select` error di Mac**
 ```bash
 xcode-select --install && npm install
 ```
 
 ---
 
+## 🌐 Arsitektur
+
+```
+src/
+├── index.js                    # Entry point, Telegram bot, cron
+├── config.js                   # Config management
+├── agent/
+│   ├── provider.js             # AI provider (OpenRouter/Anthropic/OpenAI/Custom)
+│   ├── claude.js               # Free-form chat agent
+│   └── modelCheck.js           # Startup model validation
+├── agents/
+│   ├── hunterAlpha.js          # Pool screening & deployment agent
+│   └── healerAlpha.js          # Position management agent
+├── market/
+│   ├── oracle.js               # Data: OHLCV, on-chain, sentiment
+│   ├── analyst.js              # AI market analysis
+│   ├── memory.js               # Trading memory & instinct evolution
+│   ├── researcher.js           # Extract strategi dari artikel
+│   ├── strategyLibrary.js      # Strategy Library
+│   ├── strategyPerformance.js  # Daily results & strategy intelligence
+│   └── scamScreener.js         # Scam/rug detection
+├── safety/safetyManager.js     # Stop-loss, drawdown, confirmation
+├── learn/
+│   ├── lessons.js              # Learn dari top LPers
+│   └── evolve.js               # Threshold evolution
+├── db/database.js              # SQLite: positions, history
+├── solana/
+│   ├── meteora.js              # Meteora DLMM SDK
+│   └── wallet.js               # Solana wallet
+├── strategies/
+│   ├── strategyManager.js      # Strategy CRUD
+│   └── strategyHandler.js      # Telegram conversation flow
+└── monitor/positionMonitor.js  # Out-of-range alerts
+```
+
+---
+
+## 🔒 Security
+
+1. **Wallet khusus bot** — isi secukupnya, jangan wallet utama
+2. **`DRY_RUN=true` dulu** — minimal 1 hari sebelum live
+3. **Jangan commit `.env`** — sudah ada di `.gitignore`
+4. **Password admin yang kuat** — dipakai untuk `/dryrun`, `/addstrategy`
+5. **Helius RPC untuk production** — public RPC sering rate-limited
+
+---
+
 ## ⚠️ Disclaimer
 
-Software ini disediakan apa adanya tanpa jaminan. Menjalankan autonomous trading agent membawa risiko finansial nyata — kamu bisa kehilangan dana. Selalu mulai dengan DRY RUN sebelum live. Jangan deploy modal yang tidak siap kamu kehilangkan. Ini bukan financial advice.
+Software ini disediakan apa adanya tanpa jaminan. Autonomous trading bot membawa risiko finansial nyata — kamu bisa kehilangan sebagian atau seluruh dana. Selalu mulai dengan DRY RUN. Jangan deploy modal yang tidak siap kamu kehilangkan. Ini bukan financial advice.
 
 ---
 
