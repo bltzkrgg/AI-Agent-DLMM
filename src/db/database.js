@@ -19,6 +19,7 @@ db.exec(`
     pnl_usd REAL DEFAULT 0,
     pnl_pct REAL DEFAULT 0,
     fees_collected_usd REAL DEFAULT 0,
+    range_efficiency_pct REAL DEFAULT 0,
     strategy_used TEXT,
     close_reason TEXT,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
@@ -39,17 +40,21 @@ db.exec(`
     content TEXT NOT NULL,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP
   );
-
-  -- Add missing columns to existing installs (safe, ignores if exists)
-  ALTER TABLE positions ADD COLUMN pnl_usd REAL DEFAULT 0;
-  ALTER TABLE positions ADD COLUMN pnl_pct REAL DEFAULT 0;
-  ALTER TABLE positions ADD COLUMN fees_collected_usd REAL DEFAULT 0;
-  ALTER TABLE positions ADD COLUMN strategy_used TEXT;
-  ALTER TABLE positions ADD COLUMN close_reason TEXT;
-  ALTER TABLE positions ADD COLUMN deployed_usd REAL DEFAULT 0;
 `);
-// Note: ALTER TABLE will error if columns exist — that's fine, we ignore it
-// SQLite doesn't support IF NOT EXISTS for ALTER TABLE
+
+// Migrasi kolom — setiap ALTER dijalankan sendiri supaya error satu tidak block yang lain
+const migrations = [
+  'ALTER TABLE positions ADD COLUMN pnl_usd REAL DEFAULT 0',
+  'ALTER TABLE positions ADD COLUMN pnl_pct REAL DEFAULT 0',
+  'ALTER TABLE positions ADD COLUMN fees_collected_usd REAL DEFAULT 0',
+  'ALTER TABLE positions ADD COLUMN strategy_used TEXT',
+  'ALTER TABLE positions ADD COLUMN close_reason TEXT',
+  'ALTER TABLE positions ADD COLUMN deployed_usd REAL DEFAULT 0',
+  'ALTER TABLE positions ADD COLUMN range_efficiency_pct REAL DEFAULT 0',
+];
+for (const sql of migrations) {
+  try { db.exec(sql); } catch { /* kolom sudah ada, skip */ }
+}
 
 export function savePosition(data) {
   return db.prepare(`

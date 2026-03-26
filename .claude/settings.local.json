@@ -13,7 +13,9 @@
       "Bash(gh repo:*)",
       "Bash(git commit:*)",
       "Bash(npm install:*)",
-      "Bash(npx patch-package:*)"
+      "Bash(npx patch-package:*)",
+      "Bash(grep:*)",
+      "Bash(node:*)"
     ]
   }
 }
