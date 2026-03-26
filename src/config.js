@@ -17,10 +17,10 @@ const DEFAULTS = {
   managementIntervalMin: 10,
   screeningIntervalMin: 30,
 
-  // Models — OpenRouter free tier
-  managementModel: 'nvidia/nemotron-3-super-120b-a12b:free',
-  screeningModel: 'nvidia/nemotron-3-super-120b-a12b:free',
-  generalModel: 'nvidia/nemotron-3-super-120b-a12b:free',
+  // Models — default ke gpt-4o-mini, bisa override di .env via AI_MODEL
+  managementModel: 'openai/gpt-4o-mini',
+  screeningModel: 'openai/gpt-4o-mini',
+  generalModel: 'openai/gpt-4o-mini',
 
   // Screening thresholds
   minFeeActiveTvlRatio: 0.05,
