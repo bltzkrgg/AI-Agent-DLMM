@@ -279,7 +279,7 @@ export async function getTopPools(limit = 5) {
   // API baru: https://dlmm.datapi.meteora.ag/pools
   // Sort by apr desc (fee/tvl ratio 24h = apr field)
   const res = await fetchWithTimeout(
-    `https://dlmm.datapi.meteora.ag/pools?limit=${Math.max(limit * 2, 20)}&sort_by=apr&order=desc`,
+    `https://dlmm.datapi.meteora.ag/pools?limit=${Math.max(limit * 2, 20)}&sort_by=fee_24h:desc`,
     { headers: { Accept: 'application/json' } },
     10000
   );
@@ -288,21 +288,20 @@ export async function getTopPools(limit = 5) {
 
   const pools = data.data || [];
   return pools.slice(0, limit).map(pool => {
-    const fees24h = pool.fees?.['24h'] || 0;
-    const tvl     = pool.tvl || 0;
-    const apr     = typeof pool.apr === 'number' ? pool.apr : 0;
+    const fees24h  = pool.fees?.['24h'] || 0;
+    const apr24h   = (pool.fee_tvl_ratio?.['24h'] || 0) * 100;
+    const tvl      = pool.tvl || 0;
+    const vol24h   = pool.volume?.['24h'] || 0;
 
     return {
       address:  pool.address,
       name:     pool.name || 'Unknown',
-      apr:      (apr * 100).toFixed(2) + '%',
-      feeApr:   (apr * 100).toFixed(2) + '%',
+      apr:      apr24h.toFixed(2) + '%',
+      feeApr:   apr24h.toFixed(2) + '%',
       tvl,
       tvlStr:   tvl >= 1e6 ? '$' + (tvl / 1e6).toFixed(2) + 'M' : '$' + (tvl / 1e3).toFixed(1) + 'K',
       fees24h:  fees24h >= 1e3 ? '$' + (fees24h / 1e3).toFixed(2) + 'K' : '$' + fees24h.toFixed(2),
-      volume24h: pool.volume?.['24h']
-        ? '$' + (pool.volume['24h'] / 1e6).toFixed(2) + 'M'
-        : 'N/A',
+      volume24h: vol24h >= 1e6 ? '$' + (vol24h / 1e6).toFixed(2) + 'M' : '$' + (vol24h / 1e3).toFixed(1) + 'K',
       binStep:  pool.pool_config?.bin_step,
       tokenX:   pool.token_x?.address,
       tokenY:   pool.token_y?.address,
