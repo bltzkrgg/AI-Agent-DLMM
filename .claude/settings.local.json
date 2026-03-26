@@ -1,0 +1,19 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npm --version)",
+      "Bash(xargs -I{} node --check {})",
+      "Bash(DRY_RUN=true timeout 10 node -e \"\nimport\\('./src/utils/safeJson.js'\\).then\\(m => console.log\\('✅ utils/safeJson'\\)\\).catch\\(e => console.log\\('❌ utils/safeJson:', e.message\\)\\);\nimport\\('./src/config.js'\\).then\\(m => console.log\\('✅ config'\\)\\).catch\\(e => console.log\\('❌ config:', e.message\\)\\);\nimport\\('./src/db/database.js'\\).then\\(m => console.log\\('✅ db/database'\\)\\).catch\\(e => console.log\\('❌ db/database:', e.message\\)\\);\nimport\\('./src/market/memory.js'\\).then\\(m => console.log\\('✅ market/memory'\\)\\).catch\\(e => console.log\\('❌ market/memory:', e.message\\)\\);\nimport\\('./src/market/strategyLibrary.js'\\).then\\(m => console.log\\('✅ market/strategyLibrary'\\)\\).catch\\(e => console.log\\('❌ market/strategyLibrary:', e.message\\)\\);\nimport\\('./src/market/scamScreener.js'\\).then\\(m => console.log\\('✅ market/scamScreener'\\)\\).catch\\(e => console.log\\('❌ market/scamScreener:', e.message\\)\\);\nimport\\('./src/safety/safetyManager.js'\\).then\\(m => console.log\\('✅ safety/safetyManager'\\)\\).catch\\(e => console.log\\('❌ safety/safetyManager:', e.message\\)\\);\n\" --input-type=module 2>&1)",
+      "Bash(brew list:*)",
+      "Bash(git check-ignore:*)",
+      "Bash(git rm:*)",
+      "Bash(git add:*)",
+      "Bash(git push:*)",
+      "Bash(gh auth:*)",
+      "Bash(gh repo:*)",
+      "Bash(git commit:*)",
+      "Bash(npm install:*)",
+      "Bash(npx patch-package:*)"
+    ]
+  }
+}
