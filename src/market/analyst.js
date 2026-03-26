@@ -78,7 +78,7 @@ Buat keputusan: apakah ${currentPosition ? 'posisi ini harus di-HOLD atau di-CLO
     });
 
     
-    const analysis = safeParseAI(text);
+    const analysis = safeParseAI(response.content[0].text);
 
     // Simpan snapshot + analysis ke memory untuk evolusi
     saveMarketEvent({

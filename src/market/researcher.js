@@ -68,7 +68,7 @@ Kalau artikel tidak mengandung strategi DLMM yang konkret, return array kosong: 
   });
 
   
-  const strategies = safeParseAI(text);
+  const strategies = safeParseAI(response.content[0].text);
 
   if (!Array.isArray(strategies) || strategies.length === 0) {
     return { extracted: [], message: 'Tidak ada strategi DLMM konkret yang ditemukan di artikel ini.' };

@@ -14,6 +14,7 @@ import { extractStrategiesFromArticle, summarizeArticle } from './market/researc
 import { getLibraryStats } from './market/strategyLibrary.js';
 import { screenToken, formatScreenResult } from './market/scamScreener.js';
 import { getOpenPositions, getPositionStats } from './db/database.js';
+import { initMonitor } from './monitor/positionMonitor.js';
 
 // ─── Validate env ────────────────────────────────────────────────
 const required = ['TELEGRAM_BOT_TOKEN', 'ALLOWED_TELEGRAM_ID', 'OPENROUTER_API_KEY', 'SOLANA_RPC_URL', 'WALLET_PRIVATE_KEY'];
@@ -41,6 +42,7 @@ try {
 
 const bot = new TelegramBot(process.env.TELEGRAM_BOT_TOKEN, { polling: true });
 const cfg = getConfig();
+initMonitor(bot, ALLOWED_ID);
 
 console.log(`🦞 Meteora DLMM Bot started! Mode: ${isDryRun() ? 'DRY RUN' : 'LIVE'}`);
 
