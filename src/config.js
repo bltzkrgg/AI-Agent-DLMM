@@ -39,7 +39,7 @@ const DEFAULTS = {
   // Safety
   stopLossPct: 5,
   maxDailyDrawdownPct: 10,
-  requireConfirmation: true,
+  requireConfirmation: false,
 
   // Proactive exit
   proactiveExitEnabled: true,
