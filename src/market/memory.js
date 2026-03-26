@@ -1,9 +1,14 @@
-import { safeParseAI, fetchWithTimeout } from '../utils/safeJson.js';
+import { safeParseAI } from '../utils/safeJson.js';
 /**
  * Memory & Evolution Layer
- * 
+ *
  * Menyimpan pengalaman agent dan menghasilkan "instincts" —
  * pattern yang terbukti profitable, di-inject ke agent berikutnya.
+ *
+ * Improvement dari Meridian:
+ * - Range efficiency tracking (% waktu in-range)
+ * - Instincts disort: AVOID/EXIT duluan supaya AI belajar menghindari kerugian
+ * - Performance bucketing per hold-duration & close-reason
  */
 
 import { readFileSync, writeFileSync, existsSync } from 'fs';
@@ -16,14 +21,16 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const MEMORY_PATH = join(__dirname, '../../memory.json');
 
 const DEFAULT_MEMORY = {
-  instincts: [],        // Pattern yang terbukti profitable
-  closedTrades: [],     // History semua posisi yang ditutup + context market waktu itu
-  marketEvents: [],     // Snapshot market + keputusan agent
-  lastEvolution: null,  // Timestamp evolusi terakhir
+  instincts: [],
+  closedTrades: [],
+  marketEvents: [],
+  lastEvolution: null,
   evolutionCount: 0,
+  lastEvolvedAtCount: 0,
+  lastAutoEvolution: null,
 };
 
-// ─── Load / Save ─────────────────────────────────────────────────
+// ─── Load / Save ──────────────────────────────────────────────────
 
 export function loadMemory() {
   if (!existsSync(MEMORY_PATH)) return { ...DEFAULT_MEMORY };
@@ -38,7 +45,7 @@ export function saveMemory(memory) {
   writeFileSync(MEMORY_PATH, JSON.stringify(memory, null, 2));
 }
 
-// ─── Record closed trade dengan market context ───────────────────
+// ─── Record closed trade dengan market context ────────────────────
 
 export function recordClosedTrade({
   positionAddress,
@@ -50,12 +57,23 @@ export function recordClosedTrade({
   pnlUsd,
   pnlPct,
   holdDurationMinutes,
-  closeReason,       // 'stop_loss' | 'take_profit' | 'out_of_range' | 'manual' | 'market_signal'
-  marketAnalysis,    // analysis dari analyst.js saat close
-  marketAtEntry,     // snapshot market saat posisi dibuka
-  marketAtExit,      // snapshot market saat posisi ditutup
+  minutesInRange,        // NEW: berapa menit posisi in-range
+  rangeEfficiencyPct,    // NEW: minutesInRange / holdDurationMinutes * 100
+  strategy,             // NEW: nama strategi yang dipakai
+  volatility,           // NEW: volatilitas pool saat deploy
+  closeReason,
+  marketAnalysis,
+  marketAtEntry,
+  marketAtExit,
 }) {
   const memory = loadMemory();
+
+  // Hitung range efficiency kalau belum dihitung
+  const effPct = rangeEfficiencyPct != null
+    ? rangeEfficiencyPct
+    : (holdDurationMinutes > 0 && minutesInRange != null)
+      ? parseFloat(((minutesInRange / holdDurationMinutes) * 100).toFixed(1))
+      : null;
 
   const trade = {
     id: Date.now(),
@@ -68,15 +86,19 @@ export function recordClosedTrade({
     pnlUsd,
     pnlPct,
     holdDurationMinutes,
+    minutesInRange:      minutesInRange  ?? null,
+    rangeEfficiencyPct:  effPct,
+    strategy:            strategy        ?? null,
+    volatility:          volatility      ?? null,
     closeReason,
     profitable: pnlUsd > 0,
     marketAtEntry: marketAtEntry ? summarizeSnapshot(marketAtEntry) : null,
-    marketAtExit: marketAtExit ? summarizeSnapshot(marketAtExit) : null,
-    analystSignalAtClose: marketAnalysis?.signal,
+    marketAtExit:  marketAtExit  ? summarizeSnapshot(marketAtExit)  : null,
+    analystSignalAtClose:   marketAnalysis?.signal,
     analystConfidenceAtClose: marketAnalysis?.confidence,
     analystWasRight: marketAnalysis
       ? (marketAnalysis.holdRecommendation && pnlUsd > 0) ||
-        (!marketAnalysis.holdRecommendation && pnlUsd < 0) // analyst benar kalau prediksinya sesuai hasil
+        (!marketAnalysis.holdRecommendation && pnlUsd < 0)
       : null,
     timestamp: new Date().toISOString(),
   };
@@ -92,30 +114,42 @@ export function recordClosedTrade({
 
 function summarizeSnapshot(snapshot) {
   return {
-    trend: snapshot.ohlcv?.trend,
-    priceChange: snapshot.ohlcv?.priceChange,
-    volumeVsAvg: snapshot.ohlcv?.volumeVsAvg,
-    sentiment: snapshot.sentiment?.sentiment,
-    buyPressure: snapshot.sentiment?.buyPressurePct,
-    whaleRisk: snapshot.onChain?.whaleRisk,
+    trend:        snapshot.ohlcv?.trend,
+    priceChange:  snapshot.ohlcv?.priceChange,
+    volumeVsAvg:  snapshot.ohlcv?.volumeVsAvg,
+    sentiment:    snapshot.sentiment?.sentiment,
+    buyPressure:  snapshot.sentiment?.buyPressurePct,
+    whaleRisk:    snapshot.onChain?.whaleRisk,
   };
 }
 
-// ─── Get Instincts Context ───────────────────────────────────────
+// ─── Get Instincts Context ────────────────────────────────────────
+// Dari Meridian: sort AVOID/bad duluan, supaya AI belajar menghindari
+// kerugian sebelum belajar mengejar profit.
 
 export function getInstinctsContext() {
   const memory = loadMemory();
   if (!memory.instincts || memory.instincts.length === 0) return '';
 
-  const top = memory.instincts
-    .sort((a, b) => (b.confidence || 0) - (a.confidence || 0))
-    .slice(0, 8);
+  // Priority: avoid → exit → enter/hold (bad lessons dulu biar AI waspada)
+  const typePriority = { avoid: 0, exit: 1, enter: 2, hold: 3 };
+  const sorted = [...memory.instincts]
+    .sort((a, b) => {
+      const pa = typePriority[a.type] ?? 2;
+      const pb = typePriority[b.type] ?? 2;
+      if (pa !== pb) return pa - pb;
+      return (b.confidence || 0) - (a.confidence || 0);
+    })
+    .slice(0, 10);
 
-  return `\n\n🧠 INSTINCTS (dari pengalaman ${memory.closedTrades.length} posisi):\n` +
-    top.map((inst, i) => `${i + 1}. [${(inst.confidence * 100).toFixed(0)}%] ${inst.pattern}`).join('\n');
+  return `\n\n🧠 INSTINCTS (dari ${memory.closedTrades.length} posisi — hindari dulu, baru kejar profit):\n` +
+    sorted.map((inst, i) => {
+      const badge = inst.type === 'avoid' ? '🚫' : inst.type === 'exit' ? '🚪' : '✅';
+      return `${i + 1}. ${badge} [${(inst.confidence * 100).toFixed(0)}%] ${inst.pattern}`;
+    }).join('\n');
 }
 
-// ─── Evolve: Generate Instincts dari Closed Trades ───────────────
+// ─── Evolve: Generate Instincts dari Closed Trades ────────────────
 
 export async function evolveFromTrades() {
   const memory = loadMemory();
@@ -127,17 +161,41 @@ export async function evolveFromTrades() {
 
   const cfg = getConfig();
 
-  // Statistik dasar
   const profitable = trades.filter(t => t.profitable);
-  const losers = trades.filter(t => !t.profitable);
-  const winRate = (profitable.length / trades.length * 100).toFixed(1);
-  const avgPnl = (trades.reduce((s, t) => s + (t.pnlUsd || 0), 0) / trades.length).toFixed(2);
+  const losers     = trades.filter(t => !t.profitable);
+  const winRate    = (profitable.length / trades.length * 100).toFixed(1);
+  const avgPnl     = (trades.reduce((s, t) => s + (t.pnlUsd || 0), 0) / trades.length).toFixed(2);
 
-  // Analyst accuracy
   const withAnalysis = trades.filter(t => t.analystWasRight !== null);
   const analystAccuracy = withAnalysis.length > 0
     ? (withAnalysis.filter(t => t.analystWasRight).length / withAnalysis.length * 100).toFixed(1)
     : 'N/A';
+
+  // Performance bucketing — dari Meridian: analisa per durasi & close reason
+  const buckets = {
+    shortHold:  trades.filter(t => (t.holdDurationMinutes || 0) < 60),
+    mediumHold: trades.filter(t => (t.holdDurationMinutes || 0) >= 60 && (t.holdDurationMinutes || 0) < 240),
+    longHold:   trades.filter(t => (t.holdDurationMinutes || 0) >= 240),
+    byCloseReason: {},
+    byRangeEfficiency: {
+      poor:   trades.filter(t => t.rangeEfficiencyPct != null && t.rangeEfficiencyPct < 40),
+      medium: trades.filter(t => t.rangeEfficiencyPct != null && t.rangeEfficiencyPct >= 40 && t.rangeEfficiencyPct < 75),
+      high:   trades.filter(t => t.rangeEfficiencyPct != null && t.rangeEfficiencyPct >= 75),
+    },
+  };
+
+  for (const t of trades) {
+    const r = t.closeReason || 'unknown';
+    if (!buckets.byCloseReason[r]) buckets.byCloseReason[r] = [];
+    buckets.byCloseReason[r].push(t);
+  }
+
+  function bucketSummary(arr) {
+    if (!arr.length) return null;
+    const wins = arr.filter(t => t.profitable).length;
+    const avg  = (arr.reduce((s, t) => s + (t.pnlUsd || 0), 0) / arr.length).toFixed(2);
+    return { count: arr.length, winRate: ((wins / arr.length) * 100).toFixed(0) + '%', avgPnl: '$' + avg };
+  }
 
   const prompt = `Kamu adalah sistem evolusi untuk AI trading agent Meteora DLMM.
 
@@ -149,36 +207,41 @@ STATISTIK:
 - Avg PnL: $${avgPnl}
 - Analyst accuracy: ${analystAccuracy}%
 
+PERFORMANCE BUCKETING:
+- Hold < 1 jam: ${JSON.stringify(bucketSummary(buckets.shortHold))}
+- Hold 1-4 jam: ${JSON.stringify(bucketSummary(buckets.mediumHold))}
+- Hold > 4 jam: ${JSON.stringify(bucketSummary(buckets.longHold))}
+- Range efficiency rendah (<40%): ${JSON.stringify(bucketSummary(buckets.byRangeEfficiency.poor))}
+- Range efficiency tinggi (>75%): ${JSON.stringify(bucketSummary(buckets.byRangeEfficiency.high))}
+- Per alasan close: ${JSON.stringify(Object.fromEntries(Object.entries(buckets.byCloseReason).map(([k, v]) => [k, bucketSummary(v)])))}
+
 PROFITABLE TRADES (${profitable.length}):
 ${JSON.stringify(profitable.slice(-10).map(t => ({
-  reason: t.closeReason,
-  pnl: t.pnlPct,
-  duration: t.holdDurationMinutes,
-  marketAtEntry: t.marketAtEntry,
-  analystSignal: t.analystSignalAtClose,
+  reason: t.closeReason, pnl: t.pnlPct, duration: t.holdDurationMinutes,
+  rangeEff: t.rangeEfficiencyPct, strategy: t.strategy, volatility: t.volatility,
+  marketAtEntry: t.marketAtEntry, analystSignal: t.analystSignalAtClose,
 })), null, 2)}
 
 LOSING TRADES (${losers.length}):
 ${JSON.stringify(losers.slice(-10).map(t => ({
-  reason: t.closeReason,
-  pnl: t.pnlPct,
-  duration: t.holdDurationMinutes,
-  marketAtEntry: t.marketAtEntry,
-  analystSignal: t.analystSignalAtClose,
+  reason: t.closeReason, pnl: t.pnlPct, duration: t.holdDurationMinutes,
+  rangeEff: t.rangeEfficiencyPct, strategy: t.strategy, volatility: t.volatility,
+  marketAtEntry: t.marketAtEntry, analystSignal: t.analystSignalAtClose,
 })), null, 2)}
 
 Tugasmu:
 1. Identifikasi pattern yang konsisten menghasilkan profit
-2. Identifikasi pattern yang konsisten menghasilkan kerugian (untuk dihindari)
-3. Evaluasi apakah Market Analyst perlu adjustment
-4. Generate 5-10 instincts yang actionable
+2. Identifikasi pattern yang harus DIHINDARI (type: "avoid") — ini paling penting!
+3. Rekomendasi kapan harus exit lebih cepat vs hold (type: "exit")
+4. Evaluasi apakah Market Analyst perlu adjustment
+5. Generate 6-10 instincts yang actionable — prioritaskan "avoid" duluan
 
 Respond HANYA dengan JSON:
 {
   "instincts": [
     {
       "pattern": "deskripsi pattern konkret dalam Bahasa Indonesia",
-      "type": "enter" | "exit" | "avoid" | "hold",
+      "type": "avoid" | "exit" | "enter" | "hold",
       "confidence": 0.0-1.0,
       "basedOn": "berapa trade yang support ini",
       "example": "contoh konkret dari data di atas"
@@ -194,22 +257,26 @@ Respond HANYA dengan JSON:
     messages: [{ role: 'user', content: prompt }],
   });
 
-  
-  const result = safeParseAI(text);
+  const result = safeParseAI(response.content[0].text);
 
-  // Merge instincts baru dengan yang lama
   const newInstincts = result.instincts.map(inst => ({
     ...inst,
     generatedAt: new Date().toISOString(),
     evolutionRound: (memory.evolutionCount || 0) + 1,
   }));
 
-  // Keep top 20 instincts by confidence
+  // Sort: avoid duluan, lalu by confidence
+  const typePriority = { avoid: 0, exit: 1, enter: 2, hold: 3 };
   const allInstincts = [...(memory.instincts || []), ...newInstincts]
-    .sort((a, b) => (b.confidence || 0) - (a.confidence || 0))
+    .sort((a, b) => {
+      const pa = typePriority[a.type] ?? 2;
+      const pb = typePriority[b.type] ?? 2;
+      if (pa !== pb) return pa - pb;
+      return (b.confidence || 0) - (a.confidence || 0);
+    })
     .slice(0, 20);
 
-  memory.instincts = allInstincts;
+  memory.instincts    = allInstincts;
   memory.lastEvolution = new Date().toISOString();
   memory.evolutionCount = (memory.evolutionCount || 0) + 1;
   saveMemory(memory);
@@ -222,20 +289,27 @@ Respond HANYA dengan JSON:
   };
 }
 
-// ─── Memory Stats ─────────────────────────────────────────────────
+// ─── Memory Stats ──────────────────────────────────────────────────
 
 export function getMemoryStats() {
   const memory = loadMemory();
   const trades = memory.closedTrades || [];
   const profitable = trades.filter(t => t.profitable);
 
+  const withEff = trades.filter(t => t.rangeEfficiencyPct != null);
+  const avgRangeEff = withEff.length > 0
+    ? (withEff.reduce((s, t) => s + t.rangeEfficiencyPct, 0) / withEff.length).toFixed(1) + '%'
+    : 'N/A';
+
   return {
     totalTrades: trades.length,
     winRate: trades.length > 0
       ? (profitable.length / trades.length * 100).toFixed(1) + '%'
       : 'N/A',
+    avgRangeEfficiency: avgRangeEff,
     instinctCount: (memory.instincts || []).length,
     lastEvolution: memory.lastEvolution,
     evolutionCount: memory.evolutionCount || 0,
+    lastAutoEvolution: memory.lastAutoEvolution || null,
   };
 }

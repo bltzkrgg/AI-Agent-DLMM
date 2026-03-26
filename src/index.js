@@ -15,6 +15,7 @@ import { getLibraryStats } from './market/strategyLibrary.js';
 import { screenToken, formatScreenResult } from './market/scamScreener.js';
 import { getOpenPositions, getPositionStats } from './db/database.js';
 import { initMonitor } from './monitor/positionMonitor.js';
+import { autoEvolveIfReady } from './learn/evolve.js';
 
 // ─── Validate env ────────────────────────────────────────────────
 const required = ['TELEGRAM_BOT_TOKEN', 'ALLOWED_TELEGRAM_ID', 'OPENROUTER_API_KEY', 'SOLANA_RPC_URL', 'WALLET_PRIVATE_KEY'];
@@ -59,8 +60,36 @@ cron.schedule(`*/${cfg.screeningIntervalMin} * * * *`, async () => {
 });
 
 cron.schedule(`*/${cfg.managementIntervalMin} * * * *`, async () => {
-  try { await runHealerAlpha(notify); }
+  try {
+    await runHealerAlpha(notify);
+    // Auto-evolve threshold tiap 5 posisi closed — tanpa perlu manual
+    await autoEvolveIfReady(notify);
+  }
   catch (e) { await notify(`❌ Healer error: ${e.message}`); }
+});
+
+// ─── Daily Briefing jam 7 pagi ───────────────────────────────────
+cron.schedule('0 7 * * *', async () => {
+  try {
+    const balance  = await getWalletBalance();
+    const openPos  = getOpenPositions();
+    const stats    = getPositionStats();
+    const memStats = getMemoryStats();
+    const instincts = getInstinctsContext();
+
+    let text = `☀️ *Daily Briefing*\n\n`;
+    text += `💰 Balance: ${balance} SOL\n`;
+    text += `📍 Posisi: ${openPos.length}/${cfg.maxPositions}\n`;
+    text += `📈 Closed total: ${stats.closedPositions} | Win rate: ${stats.winRate}\n`;
+    text += `💵 Total PnL: $${stats.totalPnlUsd} | Fees: $${stats.totalFeesUsd}\n`;
+    text += `🎯 Avg range efficiency: ${memStats.avgRangeEfficiency}\n`;
+    text += `🧠 Instincts: ${memStats.instinctCount} | Evolusi: ${memStats.evolutionCount}x\n`;
+    text += `🔄 Auto-evolusi terakhir: ${memStats.lastAutoEvolution ? new Date(memStats.lastAutoEvolution).toLocaleString('id-ID') : 'Belum pernah'}\n`;
+    text += `🧪 Mode: ${isDryRun() ? 'DRY RUN' : 'LIVE'}`;
+    if (instincts) text += `\n${instincts}`;
+
+    await notify(text);
+  } catch (e) { console.error('Daily briefing error:', e.message); }
 });
 
 cron.schedule('0 * * * *', async () => {
