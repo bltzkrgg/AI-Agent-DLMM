@@ -1,0 +1,47 @@
+diff --git a/node_modules/@coral-xyz/anchor/anchor-esm.mjs b/node_modules/@coral-xyz/anchor/anchor-esm.mjs
+new file mode 100644
+index 0000000..e71311f
+--- /dev/null
++++ b/node_modules/@coral-xyz/anchor/anchor-esm.mjs
+@@ -0,0 +1,41 @@
++// ESM wrapper for @coral-xyz/anchor (CJS package)
++// Enables named imports from ESM modules like @meteora-ag/dlmm
++import { createRequire } from 'module';
++const require = createRequire(import.meta.url);
++const anchor = require('./dist/cjs/index.js');
++
++export const {
++  BN,
++  web3,
++  getProvider,
++  setProvider,
++  AnchorProvider,
++  utils,
++  IdlError,
++  ProgramErrorStack,
++  AnchorError,
++  ProgramError,
++  LangErrorCode,
++  LangErrorMessage,
++  translateError,
++  BorshInstructionCoder,
++  BorshAccountsCoder,
++  BorshEventCoder,
++  BorshCoder,
++  SystemCoder,
++  Program,
++  parseIdlErrors,
++  toInstruction,
++  validateAccounts,
++  translateAddress,
++  splitArgsAndCtx,
++  EventManager,
++  EventParser,
++  AccountClient,
++  MethodsBuilderFactory,
++  Native,
++  workspace,
++  Wallet,
++} = anchor;
++
++export default anchor;
