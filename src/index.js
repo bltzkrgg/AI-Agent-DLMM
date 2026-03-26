@@ -47,8 +47,34 @@ initMonitor(bot, ALLOWED_ID);
 
 console.log(`🦞 Meteora DLMM Bot started! Mode: ${isDryRun() ? 'DRY RUN' : 'LIVE'}`);
 
+const TG_MAX = 4000; // Telegram limit 4096, sisakan buffer untuk formatting
+
+// Kirim teks panjang dalam beberapa bagian
+async function sendLong(chatId, text, opts = {}) {
+  if (text.length <= TG_MAX) {
+    await bot.sendMessage(chatId, text, opts);
+    return;
+  }
+  // Potong di batas paragraf/baris supaya tidak putus di tengah kata
+  const chunks = [];
+  let remaining = text;
+  while (remaining.length > 0) {
+    if (remaining.length <= TG_MAX) {
+      chunks.push(remaining);
+      break;
+    }
+    let cutAt = remaining.lastIndexOf('\n', TG_MAX);
+    if (cutAt < TG_MAX * 0.5) cutAt = TG_MAX; // fallback potong paksa
+    chunks.push(remaining.slice(0, cutAt));
+    remaining = remaining.slice(cutAt).trimStart();
+  }
+  for (const chunk of chunks) {
+    await bot.sendMessage(chatId, chunk, opts);
+  }
+}
+
 async function notify(text) {
-  try { await bot.sendMessage(ALLOWED_ID, text, { parse_mode: 'Markdown', disable_web_page_preview: true }); }
+  try { await sendLong(ALLOWED_ID, text, { parse_mode: 'Markdown', disable_web_page_preview: true }); }
   catch (e) { console.error('Notify error:', e.message); }
 }
 
@@ -351,7 +377,7 @@ async function handleMessage(msg, text) {
   bot.sendChatAction(msg.chat.id, 'typing');
   try {
     const response = await processMessage(text);
-    await bot.sendMessage(msg.chat.id, response, { parse_mode: 'Markdown', disable_web_page_preview: true });
+    await sendLong(msg.chat.id, response, { parse_mode: 'Markdown', disable_web_page_preview: true });
   } catch (e) {
     await bot.sendMessage(msg.chat.id, `❌ Error: ${e.message}`);
   }
