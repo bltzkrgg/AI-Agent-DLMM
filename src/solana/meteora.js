@@ -56,17 +56,8 @@ export async function getPositionInfo(poolAddress) {
     const activeBin = await dlmmPool.getActiveBin();
 
     // Fetch PnL from API (best-effort, with timeout)
-    let pnlMap = {};
-    try {
-      const res = await fetchWithTimeout(
-        `https://dlmm-api.meteora.ag/position/${wallet.publicKey.toString()}`,
-        {}, 8000
-      );
-      if (res.ok) {
-        const data = await res.json();
-        if (Array.isArray(data)) data.forEach(p => { pnlMap[p.position] = p; });
-      }
-    } catch { /* PnL optional */ }
+    // API lama dlmm-api.meteora.ag sudah 404 — PnL dihitung dari on-chain data
+    const pnlMap = {};
 
     return userPositions.map(pos => {
       const pd = pos.positionData;
@@ -285,26 +276,36 @@ export async function claimFees(poolAddress, positionAddress) {
 // ─── Top Pools ───────────────────────────────────────────────────
 
 export async function getTopPools(limit = 5) {
+  // API baru: https://dlmm.datapi.meteora.ag/pools
+  // Sort by apr desc (fee/tvl ratio 24h = apr field)
   const res = await fetchWithTimeout(
-    `https://dlmm-api.meteora.ag/pair/all_with_pagination?limit=${Math.max(limit * 2, 20)}&sort_key=fees&order_by=desc`,
+    `https://dlmm.datapi.meteora.ag/pools?limit=${Math.max(limit * 2, 20)}&sort_by=apr&order=desc`,
     { headers: { Accept: 'application/json' } },
     10000
   );
   if (!res.ok) throw new Error(`Meteora API error: ${res.status}`);
   const data = await res.json();
 
-  const pools = data.data || data.pairs || data || [];
-  return pools.slice(0, limit).map(pool => ({
-    address: pool.address,
-    name: pool.name || 'Unknown',
-    apr: typeof pool.apr === 'number' ? pool.apr.toFixed(2) + '%' : 'N/A',
-    feeApr: typeof pool.fee_apr === 'number' ? pool.fee_apr.toFixed(2) + '%' : 'N/A',
-    tvl: pool.liquidity || 0,
-    tvlStr: pool.liquidity ? '$' + (pool.liquidity / 1e6).toFixed(2) + 'M' : 'N/A',
-    volume24h: pool.trade_volume_24h ? '$' + (pool.trade_volume_24h / 1e6).toFixed(2) + 'M' : 'N/A',
-    fees24h: pool.fees_24h ? '$' + (pool.fees_24h / 1e3).toFixed(2) + 'K' : 'N/A',
-    binStep: pool.bin_step,
-    tokenX: pool.mint_x,
-    tokenY: pool.mint_y,
-  }));
+  const pools = data.data || [];
+  return pools.slice(0, limit).map(pool => {
+    const fees24h = pool.fees?.['24h'] || 0;
+    const tvl     = pool.tvl || 0;
+    const apr     = typeof pool.apr === 'number' ? pool.apr : 0;
+
+    return {
+      address:  pool.address,
+      name:     pool.name || 'Unknown',
+      apr:      (apr * 100).toFixed(2) + '%',
+      feeApr:   (apr * 100).toFixed(2) + '%',
+      tvl,
+      tvlStr:   tvl >= 1e6 ? '$' + (tvl / 1e6).toFixed(2) + 'M' : '$' + (tvl / 1e3).toFixed(1) + 'K',
+      fees24h:  fees24h >= 1e3 ? '$' + (fees24h / 1e3).toFixed(2) + 'K' : '$' + fees24h.toFixed(2),
+      volume24h: pool.volume?.['24h']
+        ? '$' + (pool.volume['24h'] / 1e6).toFixed(2) + 'M'
+        : 'N/A',
+      binStep:  pool.pool_config?.bin_step,
+      tokenX:   pool.token_x?.address,
+      tokenY:   pool.token_y?.address,
+    };
+  });
 }
