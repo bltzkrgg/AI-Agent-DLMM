@@ -56,13 +56,26 @@ export function resolveModel(modelFromConfig) {
 }
 
 // Model fallback — dipakai otomatis saat provider error 502/503/529
-const FALLBACK_MODEL = process.env.FALLBACK_AI_MODEL || 'nvidia/llama-3.1-nemotron-ultra-253b-v1:free';
+const FALLBACK_MODEL = process.env.FALLBACK_AI_MODEL || 'deepseek/deepseek-r1-0528:free';
+
+// Bersihkan error message — buang HTML, batasi panjang
+function cleanError(e) {
+  let msg = e?.message || String(e);
+  // Kalau isinya HTML (model tidak ditemukan / 404 OpenRouter), beri pesan yang jelas
+  if (msg.includes('<!DOCTYPE') || msg.includes('<html')) {
+    const status = e?.status || e?.statusCode || '?';
+    return `Model tidak ditemukan di provider (HTTP ${status}). Ganti model di .env atau user-config.json.`;
+  }
+  // Batasi panjang supaya tidak spam
+  return msg.slice(0, 200);
+}
 
 /**
  * createMessage with retry + model fallback — dari Meridian resilience patterns.
  * - Retry 3x dengan exponential backoff untuk error transient
  * - Auto switch ke fallback model di attempt ke-2 jika error 502/503/529
  * - Rate limit (429) tunggu 30s sebelum retry
+ * - 404 = model tidak ada → langsung switch ke fallback
  */
 export async function createMessage({ model, maxTokens = 4096, system, tools, messages }) {
   const client = getClient();
@@ -91,7 +104,6 @@ export async function createMessage({ model, maxTokens = 4096, system, tools, me
   for (let attempt = 0; attempt < 3; attempt++) {
     try {
       const response = await client.messages.create(params);
-      // Cek respons kosong (bug beberapa model free)
       if (!response?.content?.length) {
         lastError = new Error('API returned empty content');
         await new Promise(r => setTimeout(r, 3000));
@@ -108,14 +120,26 @@ export async function createMessage({ model, maxTokens = 4096, system, tools, me
         continue;
       }
 
+      // Model tidak ditemukan (404) — langsung switch ke fallback tanpa retry
+      if (e.status === 404) {
+        if (resolvedModel !== FALLBACK_MODEL) {
+          console.warn(`⚠️ Model "${resolvedModel}" tidak ditemukan (404). Switch ke fallback: ${FALLBACK_MODEL}`);
+          resolvedModel = FALLBACK_MODEL;
+          params.model = FALLBACK_MODEL;
+          if (params.tools) delete params.tools;
+          continue;
+        }
+        // Fallback juga 404 — lempar error yang bersih
+        throw new Error(`Model tidak tersedia: ${resolvedModel}. Cek model di .env atau user-config.json`);
+      }
+
       // Provider error — switch ke fallback model di attempt ke-2
       const isProviderError = e.status === 502 || e.status === 503 || e.status === 529 || e.status === 500;
       if (isProviderError) {
         if (attempt === 1 && resolvedModel !== FALLBACK_MODEL) {
-          console.warn(`⚠️ Provider error (${e.status}), switching to fallback model: ${FALLBACK_MODEL}`);
+          console.warn(`⚠️ Provider error (${e.status}), switching to fallback: ${FALLBACK_MODEL}`);
           resolvedModel = FALLBACK_MODEL;
           params.model = FALLBACK_MODEL;
-          // Hapus tools jika model fallback mungkin tidak support
           if (params.tools) delete params.tools;
           continue;
         }
@@ -125,11 +149,15 @@ export async function createMessage({ model, maxTokens = 4096, system, tools, me
         continue;
       }
 
-      // Error tidak bisa di-retry
       break;
     }
   }
-  throw lastError;
+
+  // Bersihkan pesan error sebelum di-throw (buang HTML)
+  const cleaned = cleanError(lastError);
+  const err = new Error(cleaned);
+  err.status = lastError?.status;
+  throw err;
 }
 
 const cfg = getConfig();
