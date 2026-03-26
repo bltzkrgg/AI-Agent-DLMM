@@ -47,7 +47,7 @@ export function resolveModel(modelFromConfig) {
   if (process.env.AI_MODEL) return process.env.AI_MODEL;
   if (modelFromConfig) return modelFromConfig;
   const defaults = {
-    openrouter: 'anthropic/claude-sonnet-4',
+    openrouter: 'meta-llama/llama-3.3-70b-instruct:free',
     anthropic: 'claude-sonnet-4-20250514',
     openai: 'gpt-4o',
     custom: 'gpt-4o',
@@ -56,7 +56,7 @@ export function resolveModel(modelFromConfig) {
 }
 
 // Model fallback — dipakai otomatis saat provider error 502/503/529
-const FALLBACK_MODEL = process.env.FALLBACK_AI_MODEL || 'deepseek/deepseek-r1-0528:free';
+const FALLBACK_MODEL = process.env.FALLBACK_AI_MODEL || 'meta-llama/llama-3.3-70b-instruct:free';
 
 // Bersihkan error message — buang HTML, batasi panjang
 function cleanError(e) {
