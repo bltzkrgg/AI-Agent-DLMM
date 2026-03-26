@@ -56,7 +56,7 @@ export function resolveModel(modelFromConfig) {
 }
 
 // Model fallback — dipakai otomatis saat provider error 502/503/529
-const FALLBACK_MODEL = process.env.FALLBACK_AI_MODEL || 'nvidia/nemotron-nano-12b-v2-vl:free';
+const FALLBACK_MODEL = process.env.FALLBACK_AI_MODEL || 'openai/gpt-4o-mini';
 
 /**
  * Extract teks dari response content — skip thinking/redacted_thinking blocks
