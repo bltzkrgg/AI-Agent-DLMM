@@ -8,7 +8,6 @@
 import { VersionedTransaction, PublicKey } from '@solana/web3.js';
 import { getConnection, getWallet } from './wallet.js';
 import { fetchWithTimeout } from '../utils/safeJson.js';
-import { isDryRun } from '../config.js';
 
 export const SOL_MINT  = 'So11111111111111111111111111111111111111112';
 export const USDC_MINT = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
@@ -56,13 +55,6 @@ export async function swapToSOL(inputMint, amountRaw, slippageBps = 100) {
   }
   if (!amountRaw || parseInt(amountRaw) <= 0) {
     return { skipped: true, reason: 'Amount is zero' };
-  }
-
-  if (isDryRun()) {
-    return {
-      dryRun: true,
-      message: `[DRY RUN] Would swap ${amountRaw} of ${inputMint.slice(0, 8)}... → SOL`,
-    };
   }
 
   const wallet = getWallet();

@@ -1,5 +1,5 @@
 import { createMessage, resolveModel } from '../agent/provider.js';
-import { getConfig, isDryRun, getThresholds } from '../config.js';
+import { getConfig, getThresholds } from '../config.js';
 import { getPositionInfo, closePositionDLMM, claimFees, getPoolInfo } from '../solana/meteora.js';
 import { getWalletBalance } from '../solana/wallet.js';
 import { getOpenPositions, saveNotification } from '../db/database.js';
@@ -214,13 +214,6 @@ async function executeTool(name, input) {
     }
 
     case 'claim_fees': {
-      if (isDryRun()) {
-        return JSON.stringify({
-          dryRun: true,
-          message: `[DRY RUN] Akan claim fees dari posisi ${input.position_address}`,
-          reasoning: input.reasoning,
-        }, null, 2);
-      }
       const claimResult = await claimFees(input.pool_address, input.position_address);
 
       // Auto-swap fee tokens ke SOL setelah claim
@@ -243,13 +236,6 @@ async function executeTool(name, input) {
     }
 
     case 'close_position': {
-      if (isDryRun()) {
-        return JSON.stringify({
-          dryRun: true,
-          message: `[DRY RUN] Akan tutup posisi ${input.position_address}`,
-          reasoning: input.reasoning,
-        }, null, 2);
-      }
       const closeResult = await closePositionDLMM(input.pool_address, input.position_address);
       outOfRangeTracker.delete(input.position_address);
       peakPnlTracker.delete(input.position_address);
@@ -413,18 +399,6 @@ export async function runHealerAlpha(notifyFn) {
         ? `📡 Chart: *${sig}* (${(conf * 100).toFixed(0)}%)\n💬 _${thesis}_\n⚠️ Risk: ${keyRisks}`
         : `📡 Chart: data tidak tersedia`;
 
-      // ── DRY RUN ──────────────────────────────────────────────
-      if (isDryRun()) {
-        await notifyFn?.(
-          `🧪 [DRY RUN] *${triggerLabel}* — keputusan: ${decision}\n\n` +
-          `📍 \`${addr.slice(0, 8)}...\`\n` +
-          `📊 PnL: ${pnlPct >= 0 ? '+' : ''}${pnlPct.toFixed(2)}%\n` +
-          `${sigLine}\n\n` +
-          (decision !== 'CLOSE' ? `⏳ HOLD: ${holdReason}` : `✅ Akan ditutup`)
-        );
-        continue;
-      }
-
       // ── HOLD / HOLD_TRAIL ─────────────────────────────────────
       if (decision === 'HOLD') {
         await notifyFn?.(
@@ -528,7 +502,7 @@ ALUR KERJA:
 
 Safety hari ini: Daily PnL $${safety.dailyPnlUsd} | Drawdown ${safety.drawdownPct}%
 Trailing TP: aktif di ${TRAILING_TP_ACTIVATE_PCT}%, close kalau turun ${TRAILING_TP_DROP_PCT}% dari peak
-Mode: ${isDryRun() ? '🧪 DRY RUN' : '🔴 LIVE'}
+Mode: 🔴 LIVE
 
 ${lessonsCtx}
 ${instincts}

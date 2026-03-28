@@ -1,5 +1,5 @@
 import { createMessage, resolveModel } from '../agent/provider.js';
-import { getConfig, isDryRun, getThresholds } from '../config.js';
+import { getConfig, getThresholds } from '../config.js';
 import { getTopPools, getPoolInfo, openPosition } from '../solana/meteora.js';
 import { getWalletBalance } from '../solana/wallet.js';
 import { getOpenPositions } from '../db/database.js';
@@ -283,24 +283,6 @@ async function executeTool(name, input) {
         }
       } catch { /* skip */ }
 
-      // DRY RUN
-      if (isDryRun()) {
-        return JSON.stringify({
-          dryRun: true,
-          message: `[DRY RUN] Akan deploy ke pool ${input.pool_address.slice(0,8)}...`,
-          strategy: strategy?.name || 'default',
-          sizing: {
-            deployAmountSol,
-            tokenXWeight: `${tokenXWeight}%`, tokenYWeight: `${tokenYWeight}%`,
-            tokenXAmount: parseFloat(tokenXAmount.toFixed(6)),
-            tokenYAmount: parseFloat(tokenYAmount.toFixed(6)),
-            pricePerToken,
-          },
-          strategyValidation: validation,
-          reasoning: input.reasoning,
-        }, null, 2);
-      }
-
       // Konfirmasi Telegram
       if (cfg.requireConfirmation && hunterNotifyFn && hunterBotRef && hunterAllowedId) {
         const confirmed = await requestConfirmation(
@@ -430,7 +412,7 @@ FILTER TOKEN (dari Coin Filter — GMGN bisa tidak tersedia, itu OK):
 STRATEGY LIBRARY (${libraryStats.totalStrategies} strategi):
 ${libraryStats.topStrategies.map(s => `  ${s.name} (${s.type}, ${(s.confidence * 100).toFixed(0)}% conf)`).join('\n')}
 
-Mode: ${isDryRun() ? '🧪 DRY RUN' : '🔴 LIVE'} | Deploy: ${cfg.deployAmountSol} SOL/posisi
+Mode: 🔴 LIVE | Deploy: ${cfg.deployAmountSol} SOL/posisi
 ${lessonsCtx}
 ${instincts}
 ${strategyIntel}
@@ -442,7 +424,7 @@ Gunakan Bahasa Indonesia untuk laporan akhir. Reasoning singkat, action langsung
       role: 'user',
       content: `Jalankan siklus screening & deployment sekarang. ` +
                `Temukan pool terbaik, filter token, dan deploy LANGSUNG tanpa menunggu input apapun. ` +
-               `Mode: ${isDryRun() ? 'DRY RUN' : 'LIVE — eksekusi nyata'}. ` +
+               `Mode: LIVE — eksekusi nyata. ` +
                `Deploy ${cfg.deployAmountSol} SOL per posisi, strategi dihitung otomatis.`,
     }
   ];

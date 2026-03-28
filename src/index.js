@@ -7,7 +7,7 @@ import { handleStrategyCommand, isInStrategySession } from './strategies/strateg
 import { runHunterAlpha, getCandidates } from './agents/hunterAlpha.js';
 import { runHealerAlpha } from './agents/healerAlpha.js';
 import { learnFromPool, learnFromMultiplePools, loadLessons } from './learn/lessons.js';
-import { getConfig, isDryRun, getThresholds, updateConfig } from './config.js';
+import { getConfig, getThresholds, updateConfig } from './config.js';
 import { handleConfirmationReply, getSafetyStatus } from './safety/safetyManager.js';
 import { evolveFromTrades, getMemoryStats, getInstinctsContext } from './market/memory.js';
 import { extractStrategiesFromArticle, summarizeArticle } from './market/researcher.js';
@@ -47,7 +47,7 @@ const bot = new TelegramBot(process.env.TELEGRAM_BOT_TOKEN, { polling: true });
 const cfg = getConfig();
 initMonitor(bot, ALLOWED_ID);
 
-console.log(`🦞 Meteora DLMM Bot started! Mode: ${isDryRun() ? 'DRY RUN' : 'LIVE'}`);
+console.log(`🦞 Meteora DLMM Bot started! Mode: LIVE`);
 
 const TG_MAX = 4000; // Telegram limit 4096, sisakan buffer untuk formatting
 
@@ -166,7 +166,7 @@ cron.schedule('0 7 * * *', async () => {
     text += `🎯 Avg range efficiency: ${memStats.avgRangeEfficiency}\n`;
     text += `🧠 Instincts: ${memStats.instinctCount} | Evolusi: ${memStats.evolutionCount}x\n`;
     text += `🔄 Auto-evolusi terakhir: ${memStats.lastAutoEvolution ? new Date(memStats.lastAutoEvolution).toLocaleString('id-ID') : 'Belum pernah'}\n`;
-    text += `🧪 Mode: ${isDryRun() ? 'DRY RUN' : 'LIVE'}`;
+    text += `🔴 Mode: LIVE`;
     if (instincts) text += `\n${instincts}`;
 
     await notify(text);
@@ -184,8 +184,7 @@ cron.schedule('0 * * * *', async () => {
       `💰 Balance: ${balance} SOL\n` +
       `📍 Posisi: ${openPos.length}/${cfg.maxPositions}\n` +
       `📈 Closed: ${stats.closedPositions} | Win rate: ${stats.winRate}\n` +
-      `🧠 Instincts: ${memStats.instinctCount}\n` +
-      `🧪 Mode: ${isDryRun() ? 'DRY RUN' : 'LIVE'}`
+      `🧠 Instincts: ${memStats.instinctCount}`
     );
   } catch (e) { console.error('Health check error:', e.message); }
 });
@@ -212,7 +211,7 @@ bot.onText(/\/results/, async (msg) => {
 bot.onText(/\/start/, (msg) => {
   if (msg.from.id !== ALLOWED_ID) return;
   bot.sendMessage(msg.chat.id,
-    `🦞 *Meteora DLMM Bot* ${isDryRun() ? '`[DRY RUN]`' : '`[LIVE]`'}\n\n` +
+    `🦞 *Meteora DLMM Bot* \`[LIVE]\`\n\n` +
     `🦅 Hunter — screening tiap ${cfg.screeningIntervalMin}min\n` +
     `🩺 Healer — manage posisi tiap ${cfg.managementIntervalMin}min\n\n` +
     `*Commands:*\n` +
@@ -224,8 +223,7 @@ bot.onText(/\/start/, (msg) => {
     `/library /research\n` +
     `/learn [pool] /lessons\n` +
     `/memory /evolve\n` +
-    `/thresholds /safety\n` +
-    `/dryrun <on|off> <pw>\n\n` +
+    `/thresholds /safety\n\n` +
     `Atau chat bebas langsung!`,
     { parse_mode: 'Markdown' }
   );
@@ -410,16 +408,6 @@ bot.onText(/\/safety/, (msg) => {
   bot.sendMessage(msg.chat.id, text, { parse_mode: 'Markdown' });
 });
 
-bot.onText(/\/dryrun\s+(on|off)\s+(\S+)/, (msg, match) => {
-  if (msg.from.id !== ALLOWED_ID) return;
-  if (match[2] !== process.env.ADMIN_PASSWORD) { bot.sendMessage(msg.chat.id, '❌ Password salah.'); return; }
-  const dryRun = match[1] === 'on';
-  updateConfig({ dryRun });
-  bot.sendMessage(msg.chat.id,
-    `${dryRun ? '🧪 DRY RUN aktif' : '🔴 LIVE aktif'}\n${dryRun ? 'Transaksi disimulasikan.' : '⚠️ Transaksi nyata!'}`,
-    { parse_mode: 'Markdown' }
-  );
-});
 
 bot.onText(/\/(strategies|addstrategy|deletestrategy)(.*)/, (msg) => {
   if (msg.from.id !== ALLOWED_ID) return;
@@ -503,7 +491,7 @@ setTimeout(async () => {
     const balance = await getWalletBalance();
     await notify(
       `🚀 *Bot Started!*\n\n` +
-      `💰 ${balance} SOL | Mode: ${isDryRun() ? 'DRY RUN' : 'LIVE'}\n` +
+      `💰 ${balance} SOL | Mode: 🔴 LIVE\n` +
       `🦅 Hunter: ${cfg.screeningIntervalMin}min | 🩺 Healer: ${cfg.managementIntervalMin}min\n\n` +
       `/start untuk semua commands`
     );

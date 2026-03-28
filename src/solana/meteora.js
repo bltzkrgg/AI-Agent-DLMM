@@ -3,7 +3,6 @@ import { PublicKey, Keypair } from '@solana/web3.js';
 import BN from 'bn.js';
 import { getConnection, getWallet } from './wallet.js';
 import { savePosition, closePosition, closePositionWithPnl } from '../db/database.js';
-import { isDryRun } from '../config.js';
 import { fetchWithTimeout, withRetry, parseTvl } from '../utils/safeJson.js';
 
 // ─── Safe BN conversion — avoids floating point errors ──────────
@@ -269,10 +268,6 @@ export async function closePositionDLMM(poolAddress, positionAddress, pnlData = 
 // ─── Claim Fees ──────────────────────────────────────────────────
 
 export async function claimFees(poolAddress, positionAddress) {
-  if (isDryRun()) {
-    return { dryRun: true, message: `[DRY RUN] Would claim fees from ${positionAddress.slice(0, 8)}...` };
-  }
-
   const connection = getConnection();
   const wallet = getWallet();
   const poolPubkey = new PublicKey(poolAddress);

@@ -6,8 +6,6 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const CONFIG_PATH = join(__dirname, '../user-config.json');
 
 const DEFAULTS = {
-  dryRun: true, // ALWAYS default true — never accidentally go live
-
   // Position sizing
   deployAmountSol: 0.1,
   maxPositions: 10,
@@ -139,10 +137,5 @@ export function getThresholds() {
 }
 
 export function isDryRun() {
-  // Priority: env var > user-config.json > ALWAYS default true
-  if (process.env.DRY_RUN === 'false') return false;
-  if (process.env.DRY_RUN === 'true') return true;
-  const userCfg = loadUserConfig();
-  if (userCfg.dryRun === false) return false;
-  return true; // default safe
+  return false; // Always live — dry run mode removed
 }
