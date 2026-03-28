@@ -12,7 +12,7 @@ import { handleConfirmationReply, getSafetyStatus } from './safety/safetyManager
 import { evolveFromTrades, getMemoryStats, getInstinctsContext } from './market/memory.js';
 import { extractStrategiesFromArticle, summarizeArticle } from './market/researcher.js';
 import { getLibraryStats } from './market/strategyLibrary.js';
-import { screenToken, formatScreenResult } from './market/scamScreener.js';
+import { screenToken, formatScreenResult } from './market/coinfilter.js';
 import { getOpenPositions, getPositionStats } from './db/database.js';
 import { initMonitor } from './monitor/positionMonitor.js';
 import { autoEvolveIfReady } from './learn/evolve.js';

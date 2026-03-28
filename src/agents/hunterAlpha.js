@@ -10,7 +10,7 @@ import { matchStrategyToMarket, getLibraryStats } from '../market/strategyLibrar
 import { getMarketSnapshot } from '../market/oracle.js';
 import { getInstinctsContext } from '../market/memory.js';
 import { getStrategyIntelligenceContext } from '../market/strategyPerformance.js';
-import { screenToken, formatScreenResult } from '../market/scamScreener.js';
+import { screenToken, formatScreenResult } from '../market/coinfilter.js';
 import { parseTvl } from '../utils/safeJson.js';
 
 // ─── State ───────────────────────────────────────────────────────
