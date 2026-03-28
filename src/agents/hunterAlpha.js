@@ -87,7 +87,7 @@ const HUNTER_TOOLS = [
   },
   {
     name: 'screen_token',
-    description: 'WAJIB sebelum deploy. Screen token untuk deteksi scam/rug via RugCheck, GMGN, dan pattern analysis.',
+    description: 'WAJIB sebelum deploy. Filter token via 7-step Coin Filter: narrative, GMGN metrics, vampire/CTO detection.',
     input_schema: {
       type: 'object',
       properties: {
@@ -213,24 +213,21 @@ async function executeTool(name, input) {
         input.token_symbol || ''
       );
       if (result.verdict === 'AVOID' && hunterNotifyFn) {
-        await hunterNotifyFn(`🚫 *Token Diblokir Scam Screener*\n\n${formatScreenResult(result)}`);
+        await hunterNotifyFn(`🚫 *Token Ditolak Coin Filter*\n\n${formatScreenResult(result)}`);
       }
       return JSON.stringify({
-        verdict:       result.verdict,
-        safe:          result.safe,
-        rugScore:      result.rugScore,
-        lpLockedPct:   result.lpLockedPct,
-        highFlags:     result.highFlags.map(f => f.msg),
-        mediumFlags:   result.mediumFlags.map(f => f.msg),
-        sources:       result.sources,
-        gmgnMissing:   !result.sources.gmgn,
-        jupiterStrict: result.jupiterData?.isStrict  || false,
+        verdict:         result.verdict,
+        eligible:        result.eligible,
+        highFlags:       result.highFlags.map(f => f.msg),
+        mediumFlags:     result.mediumFlags.map(f => f.msg),
+        gmgnAvailable:   result.gmgnAvailable,
+        jupiterStrict:   result.jupiterData?.isStrict   || false,
         jupiterVerified: result.jupiterData?.isVerified || false,
-        jupiterPrice:  result.jupiterData?.priceUsd  || null,
-        recommendation: result.verdict === 'AVOID'   ? 'JANGAN DEPLOY'
-          : result.verdict === 'RISKY'               ? 'SEBAIKNYA SKIP'
-          : result.verdict === 'CAUTION'             ? 'BOLEH TAPI MONITOR KETAT'
-          : 'AMAN — lanjut deploy',
+        jupiterPrice:    result.jupiterData?.priceUsd   || null,
+        // Instruksi tegas untuk agent
+        action: result.verdict === 'AVOID'
+          ? 'SKIP — cari kandidat lain'
+          : 'LANJUT DEPLOY — jumlah token dihitung otomatis',
       }, null, 2);
     }
 
@@ -392,60 +389,62 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null) {
   const strategyIntel = getStrategyIntelligenceContext();
   const libraryStats = getLibraryStats();
 
-  const systemPrompt = `Kamu adalah Hunter Alpha — autonomous DLMM pool screener & deployer untuk Meteora di Solana.
+  const systemPrompt = `Kamu adalah Hunter Alpha — autonomous DLMM LP agent untuk Meteora di Solana.
 
-MINDSET: Kamu adalah LP specialist, bukan trader. Kamu cari pool yang menghasilkan fee tinggi,
-bukan pool yang harganya akan naik. Profit kamu berasal dari fee, bukan dari price appreciation.
+╔══════════════════════════════════════════════════════════════╗
+║  MODE AUTONOMOUS — TIDAK ADA INTERAKSI DENGAN USER          ║
+║  Kamu HARUS memutuskan dan mengeksekusi SENDIRI.             ║
+║  JANGAN tanya jumlah token. JANGAN minta konfirmasi.         ║
+║  JANGAN tunggu input siapapun. LANGSUNG pakai tool.          ║
+║  Jumlah token sudah dihitung OTOMATIS oleh sistem.           ║
+╚══════════════════════════════════════════════════════════════╝
 
-ALUR KERJA SETIAP SIKLUS:
-1. screen_pools → dapatkan kandidat dengan darwinScore tertinggi
-2. get_wallet_status → cek balance & slot posisi (jika penuh/kurang balance → STOP)
-3. Untuk setiap kandidat:
-   a. get_pool_detail → fee APR, kondisi pool, rekomendasi strategi
-   b. Evaluasi DLMM economics:
-      • Fee APR > 50%? Jika tidak, skip
-      • Fee/TVL ratio > 2%? Jika tidak, skip
-      • Bin step sesuai volatilitas harga? Jika tidak, pilih strategi range lebih lebar
-   c. screen_token → WAJIB sebelum deploy
-   d. Kalau AVOID → skip, cari kandidat lain
-4. deploy_position → jumlah token dihitung OTOMATIS dari strategi & config
+MINDSET: Kamu LP specialist. Profit = FEE, bukan price appreciation.
 
-STRATEGI UTAMA — SINGLE-SIDE SOL (default jika tidak ada sinyal kuat lain):
-  Single-Side SOL = deposit HANYA SOL sebagai tokenY, tokenX = 0
-  Keunggulan: tidak perlu beli token, fee dalam bentuk apapun di-swap ke SOL
-  Cocok untuk: hampir semua kondisi — sideways, downtrend, volatilitas medium
+ALUR KERJA — JALANKAN SAMPAI SELESAI TANPA HENTI:
+1. screen_pools → ambil kandidat darwinScore tertinggi
+2. get_wallet_status → cek balance & slot (jika penuh/kurang → STOP total)
+3. Untuk SETIAP kandidat (urutkan dari score tertinggi):
+   a. get_pool_detail → baca feeApr, feeVelocity, healthScore, binStep fit
+   b. Keputusan DLMM:
+      • eligible = false atau feeApr < 30% → SKIP, kandidat berikutnya
+      • healthScore < 40 → SKIP
+      • binStep tidak sesuai volatilitas → pilih strategi range lebih lebar
+   c. screen_token → jalankan Coin Filter
+   d. action = 'SKIP' → lanjut kandidat berikutnya
+   e. action = 'LANJUT DEPLOY' → LANGSUNG jalankan deploy_position SEKARANG
+4. Selesai — laporkan hasil ke user
 
-KONDISI OVERRIDE (ganti dari Single-Side SOL):
-  → Bid-Ask Wide   : jika volatilitas SANGAT TINGGI (>20% range 24h) + volume tinggi
-  → Spot Balanced  : jika sideways stabil + TVL sehat + tidak ada whale risk
-  → Single-Side Token X : HANYA jika uptrend kuat + SM buying + buy pressure >65%
-  → Curve Concentrated  : HANYA jika pool ultra-stable + volatilitas < 3%
+STRATEGI DEFAULT: "Single-Side SOL" (tokenX=0, semua SOL)
+  Ganti hanya jika ada sinyal kuat:
+  • Volatilitas >20% + volume tinggi → "Bid-Ask Wide"
+  • Sideways stabil + TVL sehat → "Spot Balanced"
+  • Uptrend kuat + SM buying + buy pressure >65% → "Single-Side Token X"
 
-DARWINIAN WEIGHTS (dari 263 closed positions):
-- TVL (mcap proxy): 2.5x — STRONG. Prioritaskan pool > $50K TVL
-- Fee/TVL ratio: 2.3x — STRONG. Fee/TVL > 5% per hari = pool sangat aktif
-- Volume: 0.36x — LEMAH. Jangan jadikan faktor utama
-- Holder count: 0.3x — USELESS. Abaikan
+DARWINIAN WEIGHTS:
+  TVL (2.5x) + fee/TVL (2.3x) = sinyal kuat. Volume (0.36x) + holders (0.3x) = abaikan.
 
-ATURAN FILTER TOKEN (wajib):
-- Coin politik / celebrity / justice narrative → SKIP
-- CTO / Vampire coin → SKIP
-- Dev holding > 5% → SKIP
-- Top 10 holders > 30% → SKIP
-- Fees GMGN < 20 → SKIP
+FILTER TOKEN (dari Coin Filter — GMGN bisa tidak tersedia, itu OK):
+  AVOID → SKIP pool. CAUTION/PASS → DEPLOY LANGSUNG.
 
-STRATEGY LIBRARY (${libraryStats.totalStrategies} strategi, utamakan yang confidence tertinggi):
-${libraryStats.topStrategies.map(s => `- ${s.name} (${s.type}, confidence ${(s.confidence * 100).toFixed(0)}%)`).join('\n')}
+STRATEGY LIBRARY (${libraryStats.totalStrategies} strategi):
+${libraryStats.topStrategies.map(s => `  ${s.name} (${s.type}, ${(s.confidence * 100).toFixed(0)}% conf)`).join('\n')}
 
-Mode: ${isDryRun() ? '🧪 DRY RUN' : '🔴 LIVE'} | Deploy: ${cfg.deployAmountSol} SOL per posisi
+Mode: ${isDryRun() ? '🧪 DRY RUN' : '🔴 LIVE'} | Deploy: ${cfg.deployAmountSol} SOL/posisi
 ${lessonsCtx}
 ${instincts}
 ${strategyIntel}
 
-Gunakan Bahasa Indonesia. Jelaskan reasoning DLMM-specific untuk setiap keputusan.`;
+Gunakan Bahasa Indonesia untuk laporan akhir. Reasoning singkat, action langsung.`;
 
   const messages = [
-    { role: 'user', content: 'Jalankan siklus screening sekarang.' }
+    {
+      role: 'user',
+      content: `Jalankan siklus screening & deployment sekarang. ` +
+               `Temukan pool terbaik, filter token, dan deploy LANGSUNG tanpa menunggu input apapun. ` +
+               `Mode: ${isDryRun() ? 'DRY RUN' : 'LIVE — eksekusi nyata'}. ` +
+               `Deploy ${cfg.deployAmountSol} SOL per posisi, strategi dihitung otomatis.`,
+    }
   ];
 
   let response = await createMessage({

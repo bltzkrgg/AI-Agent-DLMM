@@ -16,11 +16,10 @@
 
 import { fetchWithTimeout } from '../utils/safeJson.js';
 
-const GMGN_BASE        = 'https://gmgn.ai/defi/quotation/v1';
-const DEXSCREENER_BASE = 'https://api.dexscreener.com';
+const GMGN_BASE          = 'https://gmgn.ai/defi/quotation/v1';
+const DEXSCREENER_BASE   = 'https://api.dexscreener.com';
 const JUPITER_TOKEN_BASE = 'https://tokens.jup.ag';
 const JUPITER_PRICE_BASE = 'https://api.jup.ag';
-const RUGCHECK_BASE    = 'https://api.rugcheck.xyz';
 
 // ─── Narrative patterns ──────────────────────────────────────────
 
@@ -116,23 +115,6 @@ async function getJupiterData(tokenMint) {
       isVerified: !!(tokenData?.extensions?.coingeckoId || tokenData?.tags?.includes('verified')),
       priceUsd:   priceInfo?.price || null,
     };
-  } catch { return null; }
-}
-
-async function getRugCheckReport(tokenMint) {
-  try {
-    const res = await fetchWithTimeout(
-      `${RUGCHECK_BASE}/v1/tokens/${tokenMint}/report/summary`,
-      {
-        headers: {
-          ...(process.env.RUGCHECK_API_KEY
-            ? { 'Authorization': `Bearer ${process.env.RUGCHECK_API_KEY}` } : {}),
-        },
-      },
-      8000
-    );
-    if (!res.ok) return null;
-    return await res.json();
   } catch { return null; }
 }
 
@@ -253,55 +235,42 @@ function step6_ctoCoins(name, symbol, gmgn) {
   return rejects;
 }
 
-function step7_bubblemaps(rugReport) {
+// Step 7: cluster pattern check via GMGN fields (no external API needed)
+function step7_clusterCheck(gmgn) {
   const rejects = [];
-  const warnings = [];
-  if (!rugReport) {
-    warnings.push({ rule: 'BUBBLEMAPS_UNAVAILABLE', msg: 'Bubblemaps / cluster data tidak tersedia — skip step 7' });
-    return { rejects, warnings };
+  if (!gmgn) return rejects;
+  // GMGN menyediakan data cluster/bundling yang cukup — tidak perlu Bubblemaps
+  const snipers = gmgn.sniper_rate ?? 0;
+  if (snipers > 30) {
+    rejects.push({ rule: 'HIGH_SNIPER', msg: `Sniper rate: ${snipers}% (>30%) — cluster wallet koordinasi terdeteksi` });
   }
-  // Map rug check cluster/insider risks to virus_cluster_detected
-  const risks = rugReport.risks || [];
-  const hasVirusCluster = risks.some(r =>
-    r.level === 'danger' && /cluster|insider|concentrated|linked/i.test(r.name || '')
-  );
-  if (hasVirusCluster) {
-    rejects.push({ rule: 'VIRUS_CLUSTER_DETECTED', msg: 'Clustered wallets terdeteksi — insider control, REJECT' });
-  }
-  // Also check LP lock
-  const lpLocked = rugReport.lpLockedPct || 0;
-  if (lpLocked < 80) {
-    rejects.push({ rule: 'LP_NOT_LOCKED', msg: `LP hanya ${lpLocked}% locked — dev bisa tarik likuiditas` });
-  }
-  return { rejects, warnings };
+  return rejects;
 }
 
 // ─── Main filter function ────────────────────────────────────────
 
 export async function screenToken(tokenMint, tokenName = '', tokenSymbol = '') {
-  const [dexResult, gmgnResult, jupResult, rugResult] = await Promise.allSettled([
+  const [dexResult, gmgnResult, jupResult] = await Promise.allSettled([
     getDexScreenerInfo(tokenMint),
     getGMGNData(tokenMint),
     getJupiterData(tokenMint),
-    getRugCheckReport(tokenMint),
   ]);
 
-  const dex = dexResult.status === 'fulfilled' ? dexResult.value : null;
+  const dex  = dexResult.status  === 'fulfilled' ? dexResult.value  : null;
   const gmgn = gmgnResult.status === 'fulfilled' ? gmgnResult.value : null;
-  const jup  = jupResult.status === 'fulfilled'  ? jupResult.value  : null;
-  const rug  = rugResult.status === 'fulfilled'  ? rugResult.value  : null;
+  const jup  = jupResult.status  === 'fulfilled' ? jupResult.value  : null;
 
   const name   = tokenName   || dex?.name   || jup?.name   || tokenSymbol || '';
   const symbol = tokenSymbol || dex?.symbol || jup?.symbol || '';
 
-  // Run all 7 steps
+  // Run 7 steps — GMGN unavailable = info warning only, TIDAK block deploy
   const s1 = step1_basicValidation(dex);
   const s2 = step2_narrativeFilter(name, symbol, gmgn);
-  const s3 = step3_gmgnTotalFees(gmgn);
-  const s4 = step4_gmgnMetrics(gmgn);
+  const s3 = step3_gmgnTotalFees(gmgn);   // jika GMGN down = warning saja
+  const s4 = step4_gmgnMetrics(gmgn);     // jika GMGN down = skip (tidak ada data)
   const s5 = step5_vampedCoins(gmgn);
   const s6 = step6_ctoCoins(name, symbol, gmgn);
-  const s7 = step7_bubblemaps(rug);
+  const s7 = step7_clusterCheck(gmgn);
 
   const allRejects = [
     ...s1,
@@ -310,13 +279,12 @@ export async function screenToken(tokenMint, tokenName = '', tokenSymbol = '') {
     ...s4.rejects,
     ...s5,
     ...s6,
-    ...s7.rejects,
+    ...s7,
   ];
 
   const allWarnings = [
     ...s3.warnings,
     ...s4.warnings,
-    ...s7.warnings,
   ];
 
   // Verdict: any reject = AVOID, warnings only = CAUTION, clean = PASS
@@ -348,13 +316,11 @@ export async function screenToken(tokenMint, tokenName = '', tokenSymbol = '') {
     allFlags:   [...allRejects, ...allWarnings],
     steps: { s1, s2, s3, s4, s5, s6, s7 },
     jupiterData: jup,
-    rugScore:    rug?.score_normalised || null,
-    lpLockedPct: rug?.lpLockedPct || null,
+    gmgnAvailable: !!gmgn,
     sources: {
       dexscreener: !!dex,
       gmgn:        !!gmgn,
       jupiter:     !!(jup?.found),
-      rugcheck:    !!rug,
     },
   };
 }
@@ -362,19 +328,12 @@ export async function screenToken(tokenMint, tokenName = '', tokenSymbol = '') {
 // ─── Format for Telegram ─────────────────────────────────────────
 
 export function formatScreenResult(result) {
-  const emoji = {
-    AVOID:   '🚫',
-    CAUTION: '👀',
-    PASS:    '✅',
-  }[result.verdict] || '❓';
+  const emoji = { AVOID: '🚫', CAUTION: '👀', PASS: '✅' }[result.verdict] || '❓';
+  const label = result.eligible ? 'ELIGIBLE FOR DLMM' : result.verdict;
 
-  const verdict_label = result.eligible ? 'ELIGIBLE FOR DLMM' : result.verdict;
-
-  let text = `${emoji} *${result.name || result.symbol || result.tokenMint.slice(0, 8)}* — ${verdict_label}\n`;
+  let text = `${emoji} *${result.name || result.symbol || result.tokenMint.slice(0, 8)}* — ${label}\n`;
   text += `\`${result.tokenMint.slice(0, 16)}...\`\n\n`;
 
-  if (result.rugScore !== null)   text += `📊 RugCheck score: ${result.rugScore}/1000\n`;
-  if (result.lpLockedPct !== null) text += `🔒 LP Locked: ${result.lpLockedPct}%\n`;
   if (result.jupiterData?.found) {
     const jupStatus = result.jupiterData.isStrict ? '✅ Strict'
       : result.jupiterData.isVerified ? '✓ Verified' : '⚠️ Unverified';
@@ -382,22 +341,18 @@ export function formatScreenResult(result) {
     if (result.jupiterData.priceUsd) text += ` | $${parseFloat(result.jupiterData.priceUsd).toFixed(6)}`;
     text += '\n';
   }
-  if (!result.sources.gmgn) {
-    text += `⚠️ GMGN: tidak tersedia — screening tidak lengkap\n`;
+  if (!result.gmgnAvailable) {
+    text += `ℹ️ GMGN: tidak tersedia — filter dilanjut tanpa data holders/fees\n`;
   }
-
   if (result.highFlags.length > 0) {
-    text += `\n🔴 *Rejected (${result.highFlags.length}):*\n`;
+    text += `\n🔴 *Ditolak (${result.highFlags.length}):*\n`;
     result.highFlags.forEach(f => text += `• ${f.msg}\n`);
   }
   if (result.mediumFlags.length > 0) {
-    text += `\n🟡 *Warnings (${result.mediumFlags.length}):*\n`;
+    text += `\n🟡 *Peringatan (${result.mediumFlags.length}):*\n`;
     result.mediumFlags.forEach(f => text += `• ${f.msg}\n`);
   }
-
-  if (result.eligible) {
-    text += `\n✅ Lolos semua 7 filter. Eligible for DLMM.`;
-  }
+  if (result.eligible) text += `\n✅ Lolos semua filter — Eligible for DLMM.`;
 
   const srcList = Object.entries(result.sources).filter(([, v]) => v).map(([k]) => k).join(', ');
   text += `\n\n_Sources: ${srcList}_`;
