@@ -432,8 +432,8 @@ bot.on('message', async (msg) => {
   // ── Setup wizard — intercept sampai konfigurasi awal selesai ────
   if (setupState.phase === 'waiting_sol') {
     const sol = parseFloat(msg.text.replace(',', '.'));
-    if (isNaN(sol) || sol <= 0) {
-      bot.sendMessage(msg.chat.id, '⚠️ Masukkan angka SOL yang valid. Contoh: `2.5`', { parse_mode: 'Markdown' });
+    if (isNaN(sol) || sol < 0.1 || sol > 50) {
+      bot.sendMessage(msg.chat.id, '⚠️ SOL harus antara *0.1 – 50*. Contoh: `2.5`', { parse_mode: 'Markdown' });
       return;
     }
     setupState.totalSol = sol;
@@ -546,6 +546,6 @@ setTimeout(async () => {
     );
     await runStartupModelCheck(notify);
     // Minta konfigurasi awal dari user
-    await notify(`❓ *Berapa SOL yang Mau Kamu Entry?*\n\n_Balas dengan angka. Contoh: \`2.5\` untuk 2.5 SOL total_`);
+    await notify(`❓ *Berapa SOL yang Mau Kamu Entry?*\n\n_Minimal: \`0.1\` SOL | Maksimal: \`50\` SOL\nContoh: \`2.5\` untuk 2.5 SOL total_`);
   } catch (e) { console.error('Startup error:', e.message); }
 }, 2000);
