@@ -123,15 +123,16 @@ const BUILTIN_STRATEGIES = [
   },
   {
     id: 'builtin_singleside_y',
-    name: 'Single-Side USDC',
+    name: 'Single-Side SOL',
     type: 'single_side_y',
     source: 'builtin',
-    description: 'Hanya deposit USDC/quote token. Cocok kalau expect harga turun lalu balik.',
+    priority: 1,
+    description: 'Hanya deposit SOL. Strategi utama — tidak perlu pegang token, risiko IL terbatas pada SOL.',
     marketConditions: {
-      trend: ['DOWNTREND'],
-      volatility: ['LOW', 'MEDIUM'],
-      sentiment: ['BEARISH', 'NEUTRAL'],
-      volumeVsAvg: { min: 0.8, max: 999 },
+      trend: ['SIDEWAYS', 'DOWNTREND', 'UPTREND'],
+      volatility: ['LOW', 'MEDIUM', 'HIGH'],
+      sentiment: ['NEUTRAL', 'BEARISH', 'BULLISH'],
+      volumeVsAvg: { min: 0.5, max: 999 },
     },
     parameters: {
       priceRangePercent: 8,
@@ -141,9 +142,9 @@ const BUILTIN_STRATEGIES = [
       tokenYWeight: 100,
       singleSide: 'y',
     },
-    entryConditions: 'Downtrend tapi expect reversal, sell pressure dominan.',
-    exitConditions: 'Kalau reversal terjadi, switch ke spot atau single-side X.',
-    confidence: 0.65,
+    entryConditions: 'DEFAULT STRATEGY. Hanya butuh SOL, tidak perlu beli token. Fee dikumpulkan saat harga ada di range.',
+    exitConditions: 'Kalau range keluar terlalu lama atau fee APR turun drastis. Auto-swap fee ke SOL setelah claim.',
+    confidence: 0.80,
     performanceHistory: [],
   },
 ];
@@ -204,14 +205,20 @@ export function matchStrategyToMarket(marketSnapshot) {
   const sentiment = marketSnapshot.sentiment;
   const onChain = marketSnapshot.onChain;
 
+  const smBuying = marketSnapshot.okx?.smartMoneyBuying ?? null;
+  const trend    = ohlcv?.trend || 'SIDEWAYS';
+  const buyPressure = sentiment?.buyPressurePct || 50;
+
   // Determine current market state
   const currentConditions = {
-    trend: ohlcv?.trend || 'SIDEWAYS',
+    trend,
     volatility: classifyVolatility(ohlcv),
     sentiment: sentiment?.sentiment || 'NEUTRAL',
     volumeVsAvg: parseFloat(ohlcv?.volumeVsAvg || 1.0),
-    buyPressure: sentiment?.buyPressurePct || 50,
-    whaleRisk: onChain?.whaleRisk || 'LOW',
+    buyPressure,
+    whaleRisk: marketSnapshot.onChain?.whaleRisk || onChain?.whaleRisk || 'LOW',
+    // Sinyal kuat uptrend: trend UP + SM buying + buy pressure tinggi
+    strongUptrend: trend === 'UPTREND' && smBuying === true && buyPressure > 65,
   };
 
   // Score each strategy against current conditions
@@ -238,47 +245,59 @@ function scoreStrategy(strategy, conditions) {
   if (!mc) return 0.5;
 
   let score = 0;
-  let factors = 0;
+
+  // ── Priority bonus — Single-Side SOL selalu dapat base score lebih tinggi ──
+  if (strategy.type === 'single_side_y') {
+    score += 0.30; // default priority bonus
+  }
 
   // Trend match
   if (mc.trend && mc.trend.includes(conditions.trend)) {
-    score += 0.35;
-  } else if (mc.trend) {
-    score -= 0.1;
+    score += 0.25;
+  } else if (mc.trend && !mc.trend.includes(conditions.trend)) {
+    score -= 0.05; // penalti kecil, bukan eliminasi
   }
-  factors++;
 
   // Volatility match
   if (mc.volatility && mc.volatility.includes(conditions.volatility)) {
-    score += 0.25;
+    score += 0.20;
   }
-  factors++;
 
   // Sentiment match
   if (mc.sentiment && mc.sentiment.includes(conditions.sentiment)) {
-    score += 0.2;
+    score += 0.15;
   }
-  factors++;
 
   // Volume match
   if (mc.volumeVsAvg) {
     const vol = conditions.volumeVsAvg;
     if (vol >= mc.volumeVsAvg.min && vol <= mc.volumeVsAvg.max) {
-      score += 0.2;
+      score += 0.15;
     }
   }
-  factors++;
 
-  // Boost from performance history
-  if (strategy.performanceHistory && strategy.performanceHistory.length > 0) {
+  // Performance history boost
+  if (strategy.performanceHistory?.length > 0) {
     const wins = strategy.performanceHistory.filter(p => p.profitable).length;
     const winRate = wins / strategy.performanceHistory.length;
-    score += winRate * 0.1;
+    score += winRate * 0.10;
   }
 
-  // Whale risk penalty for single-side strategies
-  if (conditions.whaleRisk === 'HIGH' &&
-    (strategy.type === 'single_side_x' || strategy.type === 'single_side_y')) {
+  // Whale risk penalty — HANYA untuk single_side_x (token side),
+  // bukan untuk single_side_y (SOL) karena whale sell justru bagus untuk SOL range
+  if (conditions.whaleRisk === 'HIGH' && strategy.type === 'single_side_x') {
+    score -= 0.20;
+  }
+
+  // Kondisi khusus: kalau whale risk HIGH, single-side SOL justru dapat bonus
+  // karena whale menjual token ke SOL range kamu = fee terkumpul stabil
+  if (conditions.whaleRisk === 'HIGH' && strategy.type === 'single_side_y') {
+    score += 0.10;
+  }
+
+  // Override: kalau uptrend SANGAT kuat (SM buying), kurangi score single_side_y
+  // karena SOL range akan habis terlalu cepat
+  if (conditions.strongUptrend && strategy.type === 'single_side_y') {
     score -= 0.15;
   }
 

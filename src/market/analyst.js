@@ -1,17 +1,18 @@
 /**
- * DLMM Position Analyst
+ * DLMM Position Analyst — multi-lens, LP-focused
  *
- * Menganalisa kondisi pool DLMM dan posisi LP untuk memutuskan
- * HOLD, CLOSE, atau perlu rebalance.
+ * Mengintegrasikan semua signal (OHLCV, on-chain, smart money, pool metrics)
+ * tapi semua diinterpretasi dalam konteks DLMM LP, bukan futures trading.
  *
- * BUKAN untuk analisa futures/trading. Fokus ke LP economics:
- * - Apakah fee APR masih worth it?
- * - Apakah range masih valid?
- * - Apakah ada IL risk yang melebihi fee income?
- * - Apakah pool masih sehat (volume, TVL)?
+ * Pertanyaan yang dijawab:
+ *   1. Apakah pool ini masih menghasilkan fee yang cukup?
+ *   2. Apakah range SOL kamu masih aktif atau sudah keluar range?
+ *   3. Apakah ada risiko SOL kamu ter-absorb terlalu cepat (whale/SM buying)?
+ *   4. Apakah strategi saat ini masih cocok dengan kondisi?
+ *   5. Kalau harus pilih: HOLD, CLOSE, atau REBALANCE?
  */
 
-import { safeParseAI, fetchWithTimeout } from '../utils/safeJson.js';
+import { safeParseAI } from '../utils/safeJson.js';
 import { createMessage, resolveModel, extractText } from '../agent/provider.js';
 import { getConfig } from '../config.js';
 import { getMarketSnapshot } from './oracle.js';
@@ -19,10 +20,8 @@ import { loadMemory, saveMemory } from './memory.js';
 
 export async function analyzeMarket(tokenMint, poolAddress, currentPosition = null) {
   const cfg = getConfig();
-
   const snapshot = await getMarketSnapshot(tokenMint, poolAddress);
 
-  // Memory — hanya ambil lesson yang relevan untuk posisi aktif
   const memory = loadMemory();
   const relevantMemory = memory.instincts
     .filter(m => m.tokenMint === tokenMint || m.pattern)
@@ -32,45 +31,52 @@ export async function analyzeMarket(tokenMint, poolAddress, currentPosition = nu
 
   const ctx = buildDLMMContext(snapshot, currentPosition);
 
-  const systemPrompt = `Kamu adalah spesialis DLMM (Concentrated Liquidity Market Maker) untuk Meteora di Solana.
+  const systemPrompt = `Kamu adalah DLMM LP specialist untuk Meteora di Solana.
 
-PRINSIP DASAR DLMM LP:
-- Kamu hanya earn fees saat harga aktif berada di DALAM range posisimu
-- Saat harga keluar range: tidak ada fee tapi posisi masih ada (perlu close + redeploy)
-- Impermanent Loss (IL) terjadi saat harga bergerak jauh dari range entry
-- Fee harus > IL agar posisi profitable secara keseluruhan
+PERAN KAMU: LP (Liquidity Provider), bukan trader.
+Profit kamu berasal dari FEE — kamu tidak perlu prediksi harga naik/turun.
+Kamu hanya perlu tahu: apakah range SOL kamu aktif dan apakah fee-nya cukup?
 
-FRAMEWORK KEPUTUSAN (khusus DLMM — bukan futures trading):
+═══════════════════════════════════════════════════════════
+CARA BACA SETIAP SIGNAL DALAM KONTEKS DLMM LP:
+═══════════════════════════════════════════════════════════
 
-1. FEE APR & VELOCITY
-   - APR > 100% = excellent, HOLD selama masih in range
-   - APR 30-100% = acceptable, tergantung kondisi lain
-   - APR < 30% = pool kurang aktif, pertimbangkan CLOSE
-   - Fee makin turun (DECREASING) = trader pindah ke pool lain → CLOSE
+📊 OHLCV / PRICE ACTION:
+  Bukan untuk prediksi arah, tapi untuk:
+  • Volatilitas tinggi → perlu range lebih lebar (bin step lebih besar) atau Bid-Ask Wide
+  • Trend UPTREND → single-side SOL akan cepat ter-convert ke token (range habis duluan)
+  • Trend SIDEWAYS → single-side SOL ideal, range aktif lama, fee terkumpul stabil
+  • Support/Resistance → batas range atas/bawah yang natural
+  • Volume tinggi vs rata-rata → lebih banyak trader → lebih banyak fee terkumpul
 
-2. STATUS RANGE
-   - In range = posisi aktif menghasilkan fee → cenderung HOLD
-   - Out of range = tidak ada fee, hitung berapa lama keluar
-   - Lama out of range tapi fee/TVL masih tinggi = harga mungkin kembali → wait
-   - Lama out of range + fee/TVL turun = CLOSE, redeploy di range baru
+🐋 ON-CHAIN (Whale/Holder):
+  Bukan untuk "whale accumulate = harga naik", tapi:
+  • Whale selling → orang jual token dapat SOL dari range kamu → SOL range aktif lama → fee stabil
+  • Whale buying → orang beli token pakai SOL → SOL range kamu habis cepat → keluar range duluan
+  • Top 10 holder tinggi → dump risk → kalau dump, semua orang jual ke range SOL kamu sekaligus
 
-3. BIN STEP vs VOLATILITAS
-   - Volatilitas 24h >> bin step pool → IL terlalu besar → CLOSE atau REBALANCE
-   - Volatilitas 24h sesuai bin step → range masih valid → HOLD
+🧠 SMART MONEY (OKX):
+  Bukan untuk follow SM trading, tapi untuk:
+  • SM buying token → demand tinggi → single-side SOL akan habis cepat, range singkat
+  • SM selling token → supply tinggi → range SOL tetap aktif lama, fee terkumpul banyak
+  • SM neutral → single-side SOL atau spot balanced sama-sama viable
 
-4. TVL & POOL HEALTH
-   - TVL naik = banyak LP masuk = fee diluted → fee per posisi turun
-   - TVL turun drastis = LP lari = pool mati → CLOSE segera
-   - Volume turun tapi TVL stabil = trader sepi → fee turun
+📦 POOL DLMM METRICS (PALING PENTING):
+  • Fee APR > 100% = sangat bagus, HOLD selama in range
+  • Fee APR 30-100% = acceptable tergantung kondisi lain
+  • Fee APR < 30% = pertimbangkan CLOSE, pool kurang aktif
+  • Fee INCREASING → pool semakin aktif → HOLD
+  • Fee DECREASING → trader pindah → pertimbangkan CLOSE
+  • Fee/TVL ratio harian > 2% = pool sangat aktif = target utama
 
-5. UNTUK OPEN POSISI (hunter):
-   - Pool eligible kalau feeApr > 50%, feeTvlRatio > 2%, volume aktif
-   - Pilih strategi berdasarkan volatilitas dan arah harga:
-     * Sideways + low vol → Spot Balanced
-     * Sideways + low vol, pool stabil → Curve Concentrated
-     * Volatile/momentum → Bid-Ask Wide
-     * Uptrend kuat → Single-Side Token X
-     * Downtrend + expect reversal → Single-Side USDC
+═══════════════════════════════════════════════════════════
+STRATEGI PRIORITAS (default: Single-Side SOL):
+═══════════════════════════════════════════════════════════
+1. Single-Side SOL  → DEFAULT jika tidak ada sinyal kuat lain
+2. Spot Balanced    → jika sideways + volume normal + tidak ada whale risk
+3. Bid-Ask Wide     → jika volatilitas tinggi + volume di atas rata-rata
+4. Single-Side Token X → HANYA jika uptrend kuat + SM buying + volume sangat tinggi
+5. Curve Concentrated → HANYA jika pool sangat stabil + volatilitas rendah
 
 Respond HANYA dalam JSON:
 {
@@ -78,87 +84,112 @@ Respond HANYA dalam JSON:
   "confidence": 0.0-1.0,
   "holdRecommendation": true | false,
   "action": "HOLD" | "CLOSE" | "REBALANCE",
-  "dlmmReason": "alasan spesifik berdasarkan fee APR, range status, IL risk — 1-2 kalimat",
-  "thesis": "ringkasan 1 kalimat",
-  "keyRisks": ["risk 1", "risk 2"],
+  "recommendedStrategy": "Single-Side SOL" | "Spot Balanced" | "Bid-Ask Wide" | "Single-Side Token X" | "Curve Concentrated",
+  "strategyReason": "kenapa strategi itu cocok dalam konteks LP saat ini",
+  "thesis": "1 kalimat ringkasan kondisi LP",
+  "dlmmReason": "alasan spesifik DLMM: fee APR, range status, IL risk — 2-3 kalimat",
+  "keyRisks": ["risk LP 1", "risk LP 2"],
   "urgency": "immediate" | "next_cycle" | "monitor"
 }`;
 
-  const userPrompt = `Analisa kondisi DLMM pool ini:
+  const userPrompt = `Analisa kondisi LP untuk posisi ini:
 
 ${ctx}
-${relevantMemory ? `\nPengalaman sebelumnya:\n${relevantMemory}` : ''}
+${relevantMemory ? `\nPengalaman sebelumnya dengan token/kondisi serupa:\n${relevantMemory}` : ''}
 
 ${currentPosition
   ? `Status posisi aktif:
 - In range: ${currentPosition.inRange ?? 'unknown'}
-- PnL saat ini: ${currentPosition.pnlPct != null ? currentPosition.pnlPct.toFixed(2) + '%' : 'N/A'}
+- PnL: ${currentPosition.pnlPct != null ? (currentPosition.pnlPct >= 0 ? '+' : '') + currentPosition.pnlPct.toFixed(2) + '%' : 'N/A'}
 - Out-of-range selama: ${currentPosition.outOfRangeMins ?? 0} menit`
-  : 'Evaluasi untuk entry posisi baru.'}
+  : 'Evaluasi untuk posisi baru — apakah worth deploy?'}
 
-Keputusan: apakah ${currentPosition ? 'posisi ini HOLD atau CLOSE?' : 'pool ini layak untuk deploy?'}
-Fokus pada DLMM LP economics — bukan price prediction atau futures logic.`;
+Pertanyaan: ${currentPosition
+  ? 'Apakah posisi ini HOLD, CLOSE, atau REBALANCE? Lihat dari sudut pandang LP, bukan trader.'
+  : 'Apakah pool ini layak? Strategi apa yang paling cocok? Utamakan Single-Side SOL jika tidak ada sinyal kuat lain.'}`;
 
   try {
     const response = await createMessage({
       model: resolveModel(cfg.generalModel),
-      maxTokens: 800,
+      maxTokens: 1000,
       system: systemPrompt,
       messages: [{ role: 'user', content: userPrompt }],
     });
-
     const analysis = safeParseAI(extractText(response));
-
     saveMarketEvent({ tokenMint, poolAddress, snapshot, analysis, positionContext: currentPosition });
-
     return { ...analysis, snapshot };
   } catch (e) {
     return {
-      signal: 'NEUTRAL',
-      confidence: 0.3,
-      holdRecommendation: true,
-      action: 'HOLD',
-      dlmmReason: `Analisa tidak tersedia: ${e.message}`,
-      thesis: 'Data analisa tidak tersedia',
-      keyRisks: [],
-      urgency: 'monitor',
-      snapshot,
+      signal: 'NEUTRAL', confidence: 0.3,
+      holdRecommendation: true, action: 'HOLD',
+      recommendedStrategy: 'Single-Side SOL',
+      strategyReason: 'Default ke Single-Side SOL karena data tidak tersedia',
+      thesis: 'Analisa tidak tersedia', dlmmReason: `Error: ${e.message}`,
+      keyRisks: [], urgency: 'monitor', snapshot,
     };
   }
 }
 
-// ─── Build DLMM-specific context ────────────────────────────────
+// ─── Context builder — semua signal, dibingkai DLMM ──────────────
 
 function buildDLMMContext(snapshot, position) {
   const parts = [];
 
   if (snapshot.pool) {
     const p = snapshot.pool;
-    parts.push(`📊 POOL DLMM:
-- Fee APR: ${p.feeApr}% (${p.feeAprCategory}) — ${p.feeVelocity}
-- Fee/TVL ratio: ${(p.feeTvlRatio * 100).toFixed(3)}% per hari
-- TVL: $${p.tvl >= 1e6 ? (p.tvl / 1e6).toFixed(2) + 'M' : (p.tvl / 1000).toFixed(1) + 'K'}
-- Volume 24h: $${p.volume24h >= 1e6 ? (p.volume24h / 1e6).toFixed(2) + 'M' : (p.volume24h / 1000).toFixed(1) + 'K'}
-- Fees 24h: $${p.fees24h?.toFixed(2) ?? 'N/A'}
+    parts.push(`📦 POOL DLMM:
+- Fee APR: ${p.feeApr}% (${p.feeAprCategory}) — trend: ${p.feeVelocity}
+- Fee/TVL: ${(p.feeTvlRatio * 100).toFixed(3)}%/hari | TVL: $${p.tvl >= 1e6 ? (p.tvl/1e6).toFixed(2)+'M' : (p.tvl/1000).toFixed(1)+'K'}
+- Volume 24h: $${p.volume24h >= 1e6 ? (p.volume24h/1e6).toFixed(2)+'M' : (p.volume24h/1000).toFixed(1)+'K'} | Fees 24h: $${p.fees24h?.toFixed(2)}
 - Bin step: ${p.binStep}`);
   } else {
     parts.push('⚠️ Data pool DLMM tidak tersedia');
   }
 
-  if (snapshot.price) {
-    const pr = snapshot.price;
-    parts.push(`💹 HARGA & VOLATILITAS:
-- Trend: ${pr.trend} | Volatilitas 24h: ${pr.volatility24h}% (${pr.volatilityCategory})
-- Perubahan: 1h ${pr.priceChange1h >= 0 ? '+' : ''}${pr.priceChange1h}% | 6h ${pr.priceChange6h >= 0 ? '+' : ''}${pr.priceChange6h}% | 24h ${pr.priceChange24h >= 0 ? '+' : ''}${pr.priceChange24h}%
-- Buy pressure: ${pr.buyPressurePct}% (${pr.sentiment})
-- Bin step minimum yang cocok: ${pr.suggestedBinStepMin}`);
+  if (snapshot.ohlcv) {
+    const o = snapshot.ohlcv;
+    parts.push(`📊 PRICE ACTION (${o.timeframe}):
+- Harga: $${o.currentPrice} | Trend: ${o.trend}
+- Range 24h: ${o.range24hPct}% (${o.volatilityCategory}) | Vol vs avg: ${o.volumeVsAvg}x
+- Support: $${o.support} | Resistance: $${o.resistance}
+- LP Note: ${o.dlmmNote}`);
   }
 
-  if (snapshot.pool && snapshot.price) {
-    const binOk = snapshot.pool.binStep >= snapshot.price.suggestedBinStepMin;
-    parts.push(`🔍 DLMM FIT CHECK:
-- Volatilitas ${snapshot.price.volatilityCategory} vs bin step ${snapshot.pool.binStep}: ${binOk ? '✅ sesuai' : '⚠️ volatilitas terlalu tinggi untuk bin step ini — IL risk meningkat'}
-- Health score pool: ${snapshot.healthScore}/100`);
+  if (snapshot.onChain?.available) {
+    const oc = snapshot.onChain;
+    parts.push(`🐋 ON-CHAIN:
+- Top 10 holders: ${oc.top10HolderPct}% | Whale risk: ${oc.whaleRisk}
+- Recent tx: ${oc.recentTxCount} | Token aktif: ${oc.tokenActive ? 'Ya' : 'Sepi'}
+- LP Note: ${oc.dlmmNote}`);
+  }
+
+  if (snapshot.sentiment) {
+    const s = snapshot.sentiment;
+    parts.push(`💹 TEKANAN PASAR:
+- Buy pressure: ${s.buyPressurePct}% (${s.sentiment})
+- Change: 1h ${s.priceChange1h >= 0 ? '+' : ''}${s.priceChange1h}% | 6h ${s.priceChange6h >= 0 ? '+' : ''}${s.priceChange6h}% | 24h ${s.priceChange24h >= 0 ? '+' : ''}${s.priceChange24h}%
+- LP Note: ${s.dlmmNote}`);
+  }
+
+  if (snapshot.okx?.available) {
+    const ox = snapshot.okx;
+    const riskFlags = [
+      ox.isHoneypot   ? 'HONEYPOT' : null,
+      ox.isMintable   ? 'Mintable' : null,
+      ox.riskLevel    ? `Risk: ${ox.riskLevel}` : null,
+    ].filter(Boolean);
+    parts.push(`🧠 SMART MONEY (OKX):
+- SM Signal: ${ox.smartMoneySignal || 'N/A'} | Buying: ${ox.smartMoneyBuying ?? 'N/A'} | Selling: ${ox.smartMoneySelling ?? 'N/A'}
+- Token risk: ${riskFlags.length ? riskFlags.join(', ') : 'Aman'}
+- LP Note: ${ox.dlmmNote}`);
+  }
+
+  if (snapshot.pool && snapshot.ohlcv) {
+    const binOk = snapshot.pool.binStep >= snapshot.ohlcv.suggestedBinStepMin;
+    parts.push(`🔍 BIN STEP FIT CHECK:
+- Pool bin step: ${snapshot.pool.binStep} vs volatilitas 24h ${snapshot.ohlcv.range24hPct}%
+- Fit: ${binOk ? '✅ Sesuai' : `⚠️ Butuh bin step ≥${snapshot.ohlcv.suggestedBinStepMin} — IL risk meningkat`}
+- Health score: ${snapshot.healthScore}/100`);
   }
 
   return parts.join('\n\n') || 'Data tidak tersedia.';
@@ -169,9 +200,7 @@ function saveMarketEvent(event) {
     const memory = loadMemory();
     memory.marketEvents = memory.marketEvents || [];
     memory.marketEvents.push({ ...event, timestamp: new Date().toISOString() });
-    if (memory.marketEvents.length > 200) {
-      memory.marketEvents = memory.marketEvents.slice(-200);
-    }
+    if (memory.marketEvents.length > 200) memory.marketEvents = memory.marketEvents.slice(-200);
     saveMemory(memory);
   } catch { /* non-critical */ }
 }

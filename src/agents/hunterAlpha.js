@@ -410,11 +410,16 @@ ALUR KERJA SETIAP SIKLUS:
    d. Kalau AVOID → skip, cari kandidat lain
 4. deploy_position → jumlah token dihitung OTOMATIS dari strategi & config
 
-CARA PILIH STRATEGI (dari /library — pakai yang confidence tertinggi):
-- Harga SIDEWAYS + volatilitas LOW → Spot Balanced atau Curve Concentrated
-- Harga SIDEWAYS + volatilitas MEDIUM/HIGH → Bid-Ask Wide
-- Harga UPTREND kuat → Single-Side Token X (100% tokenX, 0% SOL)
-- Harga DOWNTREND + expect reversal → Single-Side USDC (0% tokenX, 100% SOL)
+STRATEGI UTAMA — SINGLE-SIDE SOL (default jika tidak ada sinyal kuat lain):
+  Single-Side SOL = deposit HANYA SOL sebagai tokenY, tokenX = 0
+  Keunggulan: tidak perlu beli token, fee dalam bentuk apapun di-swap ke SOL
+  Cocok untuk: hampir semua kondisi — sideways, downtrend, volatilitas medium
+
+KONDISI OVERRIDE (ganti dari Single-Side SOL):
+  → Bid-Ask Wide   : jika volatilitas SANGAT TINGGI (>20% range 24h) + volume tinggi
+  → Spot Balanced  : jika sideways stabil + TVL sehat + tidak ada whale risk
+  → Single-Side Token X : HANYA jika uptrend kuat + SM buying + buy pressure >65%
+  → Curve Concentrated  : HANYA jika pool ultra-stable + volatilitas < 3%
 
 DARWINIAN WEIGHTS (dari 263 closed positions):
 - TVL (mcap proxy): 2.5x — STRONG. Prioritaskan pool > $50K TVL
