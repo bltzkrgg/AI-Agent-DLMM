@@ -133,6 +133,35 @@ export function getPositionStats() {
   };
 }
 
+export function getPoolStats(poolAddress) {
+  const positions = db.prepare(`
+    SELECT * FROM positions WHERE pool_address = ? AND status = 'closed' ORDER BY closed_at DESC
+  `).all(poolAddress);
+  if (!positions.length) return null;
+
+  const winners = positions.filter(p => (p.pnl_usd || 0) > 0);
+  const avgPnlPct = positions.reduce((s, p) => s + (p.pnl_pct || 0), 0) / positions.length;
+  const avgRangeEff = positions.filter(p => p.range_efficiency_pct > 0);
+  const reasonCounts = {};
+  for (const p of positions) {
+    const r = p.close_reason || 'unknown';
+    reasonCounts[r] = (reasonCounts[r] || 0) + 1;
+  }
+  const dominantCloseReason = Object.entries(reasonCounts).sort((a, b) => b[1] - a[1])[0]?.[0] || null;
+
+  return {
+    poolAddress,
+    totalDeploys: positions.length,
+    winRate: parseFloat((winners.length / positions.length * 100).toFixed(1)),
+    avgPnlPct: parseFloat(avgPnlPct.toFixed(2)),
+    avgRangeEfficiency: avgRangeEff.length
+      ? parseFloat((avgRangeEff.reduce((s, p) => s + p.range_efficiency_pct, 0) / avgRangeEff.length).toFixed(1))
+      : null,
+    dominantCloseReason,
+    lastDeployedAt: positions[0]?.closed_at || null,
+  };
+}
+
 export function saveNotification(type, message) {
   // Deduplicate — don't send same notification within 30 minutes
   const recent = db.prepare(`

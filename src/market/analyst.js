@@ -26,7 +26,7 @@ export async function analyzeMarket(tokenMint, poolAddress, currentPosition = nu
   const relevantMemory = memory.instincts
     .filter(m => m.tokenMint === tokenMint || m.pattern)
     .slice(-3)
-    .map(m => `- ${m.lesson}`)
+    .map(m => `- ${m.pattern}`)
     .join('\n');
 
   const ctx = buildDLMMContext(snapshot, currentPosition);

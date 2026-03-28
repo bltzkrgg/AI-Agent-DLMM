@@ -2,12 +2,12 @@ import { createMessage, resolveModel } from '../agent/provider.js';
 import { getConfig, getThresholds } from '../config.js';
 import { getTopPools, getPoolInfo, openPosition } from '../solana/meteora.js';
 import { getWalletBalance } from '../solana/wallet.js';
-import { getOpenPositions } from '../db/database.js';
+import { getOpenPositions, getPoolStats } from '../db/database.js';
 import { getLessonsContext } from '../learn/lessons.js';
 import { getAllStrategies, parseStrategyParameters } from '../strategies/strategyManager.js';
 import { checkMaxDrawdown, validateStrategyForMarket, requestConfirmation } from '../safety/safetyManager.js';
 import { matchStrategyToMarket, getLibraryStats } from '../market/strategyLibrary.js';
-import { getMarketSnapshot } from '../market/oracle.js';
+import { getMarketSnapshot, getOKXData } from '../market/oracle.js';
 import { getInstinctsContext } from '../market/memory.js';
 import { getStrategyIntelligenceContext } from '../market/strategyPerformance.js';
 import { screenToken, formatScreenResult } from '../market/coinfilter.js';
@@ -87,7 +87,7 @@ const HUNTER_TOOLS = [
   },
   {
     name: 'screen_token',
-    description: 'WAJIB sebelum deploy. Filter token via 7-step Coin Filter: narrative, GMGN metrics, vampire/CTO detection.',
+    description: 'WAJIB sebelum deploy. Filter token via 7-step Coin Filter: narrative, price health, holder check, token safety (DexScreener, BirdEye, OKX).',
     input_schema: {
       type: 'object',
       properties: {
@@ -102,6 +102,28 @@ const HUNTER_TOOLS = [
     name: 'get_wallet_status',
     description: 'Cek balance wallet dan jumlah posisi terbuka saat ini',
     input_schema: { type: 'object', properties: {}, required: [] },
+  },
+  {
+    name: 'get_okx_signal',
+    description: 'Cek OKX smart money signal untuk token tertentu. Gunakan untuk cross-reference kandidat — SM masih holding = conviction tinggi, SM sudah jual = skip.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        token_mint: { type: 'string' },
+      },
+      required: ['token_mint'],
+    },
+  },
+  {
+    name: 'get_pool_memory',
+    description: 'Cek histori deploy sebelumnya di pool ini — win rate, avg PnL, range efficiency, close reason dominan. Gunakan sebelum deploy untuk hindari pool dengan histori buruk.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        pool_address: { type: 'string' },
+      },
+      required: ['pool_address'],
+    },
   },
   {
     name: 'deploy_position',
@@ -240,6 +262,45 @@ async function executeTool(name, input) {
         maxPositions: cfg.maxPositions,
         canOpen: parseFloat(balance) >= cfg.minSolToOpen && openPos.length < cfg.maxPositions,
       }, null, 2);
+    }
+
+    case 'get_okx_signal': {
+      if (!process.env.OKX_API_KEY) {
+        return JSON.stringify({ available: false, reason: 'OKX_API_KEY not set — skip signal check' }, null, 2);
+      }
+      const okx = await getOKXData(input.token_mint);
+      if (!okx?.available) {
+        return JSON.stringify({ available: false, reason: 'OKX data tidak tersedia untuk token ini' }, null, 2);
+      }
+      const verdict = okx.smartMoneySelling === true
+        ? 'SKIP — smart money sudah jual, potensi dump'
+        : okx.smartMoneyBuying === true
+        ? 'STRONG — smart money masih akumulasi, conviction tinggi'
+        : 'NEUTRAL — tidak ada sinyal smart money yang kuat';
+      return JSON.stringify({
+        available:          true,
+        smartMoneyBuying:   okx.smartMoneyBuying,
+        smartMoneySelling:  okx.smartMoneySelling,
+        smartMoneySignal:   okx.smartMoneySignal,
+        signalStrength:     okx.signalStrength,
+        isHoneypot:         okx.isHoneypot,
+        riskLevel:          okx.riskLevel,
+        dlmmNote:           okx.dlmmNote,
+        verdict,
+      }, null, 2);
+    }
+
+    case 'get_pool_memory': {
+      const stats = getPoolStats(input.pool_address);
+      if (!stats) {
+        return JSON.stringify({ firstTime: true, message: 'Belum pernah deploy ke pool ini.' }, null, 2);
+      }
+      const verdict = stats.winRate < 40
+        ? 'HINDARI — win rate rendah, histori buruk di pool ini'
+        : stats.winRate < 60
+        ? 'HATI-HATI — win rate di bawah rata-rata'
+        : 'OK — histori positif di pool ini';
+      return JSON.stringify({ ...stats, verdict }, null, 2);
     }
 
     case 'deploy_position': {
@@ -387,14 +448,22 @@ ALUR KERJA — JALANKAN SAMPAI SELESAI TANPA HENTI:
 1. screen_pools → ambil kandidat darwinScore tertinggi
 2. get_wallet_status → cek balance & slot (jika penuh/kurang → STOP total)
 3. Untuk SETIAP kandidat (urutkan dari score tertinggi):
-   a. get_pool_detail → baca feeApr, feeVelocity, healthScore, binStep fit
-   b. Keputusan DLMM:
+   a. get_pool_memory → cek histori pool ini
+      • verdict = 'HINDARI' (win rate <40%) → SKIP langsung, jangan buang waktu
+      • verdict = 'HATI-HATI' → lanjut tapi naikkan threshold keputusan
+      • firstTime atau OK → lanjut normal
+   b. get_okx_signal → cek smart money untuk token di pool ini
+      • verdict = 'SKIP' (SM sudah jual) → SKIP kandidat ini
+      • verdict = 'STRONG' (SM masih beli) → prioritaskan kandidat ini
+      • verdict = 'NEUTRAL' atau tidak tersedia → lanjut normal
+   c. get_pool_detail → baca feeApr, feeVelocity, healthScore, binStep fit
+   d. Keputusan DLMM:
       • eligible = false atau feeApr < 30% → SKIP, kandidat berikutnya
       • healthScore < 40 → SKIP
       • binStep tidak sesuai volatilitas → pilih strategi range lebih lebar
-   c. screen_token → jalankan Coin Filter
-   d. action = 'SKIP' → lanjut kandidat berikutnya
-   e. action = 'LANJUT DEPLOY' → LANGSUNG jalankan deploy_position SEKARANG
+   e. screen_token → jalankan Coin Filter
+   f. action = 'SKIP' → lanjut kandidat berikutnya
+   g. action = 'LANJUT DEPLOY' → LANGSUNG jalankan deploy_position SEKARANG
 4. Selesai — laporkan hasil ke user
 
 STRATEGI DEFAULT: "Single-Side SOL" (tokenX=0, semua SOL)
@@ -406,7 +475,7 @@ STRATEGI DEFAULT: "Single-Side SOL" (tokenX=0, semua SOL)
 DARWINIAN WEIGHTS:
   TVL (2.5x) + fee/TVL (2.3x) = sinyal kuat. Volume (0.36x) + holders (0.3x) = abaikan.
 
-FILTER TOKEN (dari Coin Filter — GMGN bisa tidak tersedia, itu OK):
+FILTER TOKEN (dari Coin Filter — DexScreener, BirdEye, OKX):
   AVOID → SKIP pool. CAUTION/PASS → DEPLOY LANGSUNG.
 
 STRATEGY LIBRARY (${libraryStats.totalStrategies} strategi):

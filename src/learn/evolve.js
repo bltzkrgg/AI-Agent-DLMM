@@ -79,12 +79,46 @@ export function percentileEvolveThresholds() {
   if (withEfficiency.length >= 5) {
     const avgEff = withEfficiency.reduce((s, p) => s + (p.range_efficiency_pct || 0), 0) / withEfficiency.length;
     if (avgEff < 40 && cfg.takeProfitFeePct > 2) {
-      // Range terlalu sempit, naikkan TP sedikit untuk kompensasi
       const currentTP = cfg.takeProfitFeePct;
       const newTP = parseFloat(clampShift(currentTP, currentTP * 1.1).toFixed(1));
       if (!changes.takeProfitFeePct && Math.abs(newTP - currentTP) >= 0.2) {
         changes.takeProfitFeePct = newTP;
         rationale.takeProfitFeePct = `Range efficiency rata-rata ${avgEff.toFixed(0)}% — rendah. Naikkan TP untuk kompensasi OOR yang sering.`;
+      }
+    }
+  }
+
+  // 5. minFeeActiveTvlRatio — jika banyak losing positions punya range efficiency rendah,
+  //    artinya pool yang dipilih kurang aktif → perketat threshold fee/TVL
+  const lowEffLosers = losers.filter(p => (p.range_efficiency_pct || 0) < 30 && p.range_efficiency_pct > 0);
+  if (lowEffLosers.length >= 2 && winners.length > 0) {
+    const loserLowEffRate = lowEffLosers.length / losers.length;
+    const winnerAvgEff = winners.filter(p => p.range_efficiency_pct > 0)
+      .reduce((s, p) => s + p.range_efficiency_pct, 0) / (winners.filter(p => p.range_efficiency_pct > 0).length || 1);
+    // Jika loser dominan punya range eff rendah DAN winner avg eff jauh lebih tinggi → pool selection buruk
+    if (loserLowEffRate >= 0.5 && winnerAvgEff > 50) {
+      const currentRatio = cfg.minFeeActiveTvlRatio;
+      const newRatio = parseFloat(clampShift(currentRatio, currentRatio * 1.15).toFixed(4));
+      if (Math.abs(newRatio - currentRatio) >= 0.002) {
+        changes.minFeeActiveTvlRatio = newRatio;
+        rationale.minFeeActiveTvlRatio = `${lowEffLosers.length} posisi rugi punya range efficiency <30% — pool kurang aktif. Naikkan threshold fee/TVL dari ${currentRatio} ke ${newRatio}.`;
+      }
+    }
+  }
+
+  // 6. outOfRangeWaitMinutes — jika winner avg eff sangat tinggi (>70%), pool stabil,
+  //    bisa perpanjang wait time sedikit untuk beri kesempatan rebound
+  if (!changes.outOfRangeWaitMinutes && winners.length >= 3) {
+    const winnerWithEff = winners.filter(p => p.range_efficiency_pct > 0);
+    if (winnerWithEff.length >= 2) {
+      const winnerAvgEff = winnerWithEff.reduce((s, p) => s + p.range_efficiency_pct, 0) / winnerWithEff.length;
+      if (winnerAvgEff > 70 && oorLosers.length === 0) {
+        const currentOOR = cfg.outOfRangeWaitMinutes;
+        const newOOR = Math.round(clampShift(currentOOR, currentOOR * 1.1));
+        if (Math.abs(newOOR - currentOOR) >= 1) {
+          changes.outOfRangeWaitMinutes = newOOR;
+          rationale.outOfRangeWaitMinutes = `Winner avg range efficiency ${winnerAvgEff.toFixed(0)}% tinggi, tidak ada OOR loss — pool stabil, perpanjang wait time sedikit.`;
+        }
       }
     }
   }

@@ -105,8 +105,9 @@ async function getJupiterData(tokenMint) {
 }
 
 async function getHolderData(tokenMint) {
+  if (!process.env.BIRDEYE_API_KEY) return null;
   try {
-    const headers = { 'x-chain': 'solana' };
+    const headers = { 'x-chain': 'solana', 'X-API-KEY': process.env.BIRDEYE_API_KEY };
     const [overviewRes, topHolderRes] = await Promise.allSettled([
       fetchWithTimeout(
         `${BIRDEYE_BASE}/defi/token_overview?address=${tokenMint}`,

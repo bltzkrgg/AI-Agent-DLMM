@@ -27,10 +27,11 @@ const METEORA_DATAPI   = 'https://dlmm.datapi.meteora.ag';
 //   - Support/Resistance → bisa dijadikan batas range atas/bawah
 
 export async function getOHLCV(tokenMint, timeframe = '15m', limit = 50) {
+  if (!process.env.BIRDEYE_API_KEY) return null;
   try {
     const res = await fetchWithTimeout(
       `${BIRDEYE_BASE}/defi/ohlcv?address=${tokenMint}&type=${timeframe}&limit=${limit}`,
-      { headers: { 'x-chain': 'solana' } },
+      { headers: { 'x-chain': 'solana', 'X-API-KEY': process.env.BIRDEYE_API_KEY } },
       8000
     );
     if (!res.ok) return null;
@@ -103,6 +104,9 @@ export async function getOnChainSignals(tokenMint) {
     return { available: false, reason: 'HELIUS_API_KEY not set' };
   }
   const HELIUS_BASE = `https://mainnet.helius-rpc.com/?api-key=${process.env.HELIUS_API_KEY}`;
+  const birdeyeHeaders = process.env.BIRDEYE_API_KEY
+    ? { 'x-chain': 'solana', 'X-API-KEY': process.env.BIRDEYE_API_KEY }
+    : { 'x-chain': 'solana' };
   try {
     const [sigRes, holderRes, topHolderRes] = await Promise.allSettled([
       fetchWithTimeout(HELIUS_BASE, {
@@ -116,12 +120,12 @@ export async function getOnChainSignals(tokenMint) {
       }, 8000),
       fetchWithTimeout(
         `${BIRDEYE_BASE}/defi/token_overview?address=${tokenMint}`,
-        { headers: { 'x-chain': 'solana' } },
+        { headers: birdeyeHeaders },
         8000
       ),
       fetchWithTimeout(
         `${BIRDEYE_BASE}/defi/token_holder?address=${tokenMint}&offset=0&limit=10`,
-        { headers: { 'x-chain': 'solana' } },
+        { headers: birdeyeHeaders },
         8000
       ),
     ]);

@@ -117,10 +117,14 @@ async function executeTool(name, input) {
             outOfRangeTracker.delete(pos.position_address);
           }
 
-          const pnlPct   = match?.pnlPct ?? 0;
+          const pnlPct    = match?.pnlPct ?? 0;
           const feeUsdVal = match?.feeUsd ?? 0;
           const isProfit  = pnlPct > 0;
-          const minClaimUsd = cfg.minFeeClaimUsd ?? cfg.minClaimFeeUsd ?? 1.0;
+          // Claim saat fee >= 3% dari deployed capital, urgent >= 5% (min floor $0.50)
+          const deployedUsd      = pos.deployed_usd || 0;
+          const claimThreshold3  = deployedUsd > 0 ? Math.max(deployedUsd * 0.03, 0.50) : (cfg.minFeeClaimUsd ?? 1.0);
+          const claimThreshold5  = deployedUsd > 0 ? Math.max(deployedUsd * 0.05, 0.50) : (cfg.minFeeClaimUsd ?? 1.0);
+          const minClaimUsd      = claimThreshold3;
 
           // ── Trailing Take Profit tracking ────────────────────
           // Terinspirasi dari Meridian: track peak PnL, aktifkan trailing
@@ -188,7 +192,8 @@ async function executeTool(name, input) {
             ...pos,
             onChain:      match || null,
             outOfRangeMins,
-            shouldClaimFee: feeUsdVal >= minClaimUsd,
+            shouldClaimFee:        feeUsdVal >= claimThreshold3,
+            shouldClaimFeeUrgent:  feeUsdVal >= claimThreshold5,
             shouldClose:    outOfRangeMins !== null && outOfRangeMins >= thresholds.outOfRangeWaitMinutes,
             takeProfitHit:  pnlPct >= thresholds.takeProfitFeePct,
             trailingTpHit,
@@ -493,7 +498,9 @@ ALUR KERJA:
    - pnlPct < -${safety.stopLossPct}% DAN BULLISH confidence > 0.6 → HOLD, tunggu recovery
 
    CLAIM FEES:
-   - shouldClaimFee = true → claim_fees (auto-swap sudah terjadi setelahnya)
+   - shouldClaimFeeUrgent = true (fee >= 5% deployed capital) → claim_fees SEGERA
+   - shouldClaimFee = true (fee >= 3% deployed capital) → claim_fees
+   - Keduanya false → jangan claim, biarkan akumulasi
 
    NORMAL → STAY
 

@@ -100,7 +100,13 @@ let _hunterBusy = false;
 let _healerBusy = false;
 
 // ─── Setup state — konfigurasi awal sebelum agent mulai ──────────
-const setupState = { phase: 'waiting_sol', totalSol: null, poolCount: null };
+// Jika user-config.json sudah punya deployAmountSol & maxPositions, skip wizard
+const _existingCfg = getConfig();
+const setupState = {
+  phase: (_existingCfg.deployAmountSol && _existingCfg.maxPositions) ? 'done' : 'waiting_sol',
+  totalSol: null,
+  poolCount: null,
+};
 
 async function triggerHunter() {
   if (_hunterBusy) return;
@@ -545,7 +551,11 @@ setTimeout(async () => {
       `/start untuk semua commands`
     );
     await runStartupModelCheck(notify);
-    // Minta konfigurasi awal dari user
-    await notify(`❓ *Berapa SOL yang Mau Kamu Entry?*\n\n_Minimal: \`0.1\` SOL | Maksimal: \`50\` SOL\nContoh: \`2.5\` untuk 2.5 SOL total_`);
+    if (setupState.phase === 'done') {
+      const liveCfg = getConfig();
+      await notify(`⚙️ Config aktif: *${liveCfg.deployAmountSol} SOL/pool* × *${liveCfg.maxPositions} pool*\n🦅 Hunter mulai dalam ${liveCfg.screeningIntervalMin} menit.`);
+    } else {
+      await notify(`❓ *Berapa SOL yang Mau Kamu Entry?*\n\n_Minimal: \`0.1\` SOL | Maksimal: \`50\` SOL\nContoh: \`2.5\` untuk 2.5 SOL total_`);
+    }
   } catch (e) { console.error('Startup error:', e.message); }
 }, 2000);
