@@ -105,17 +105,15 @@ const HUNTER_TOOLS = [
   },
   {
     name: 'deploy_position',
-    description: 'Deploy likuiditas ke pool. Hanya boleh dipanggil setelah screen_token verdict PASS atau CAUTION.',
+    description: 'Deploy likuiditas ke pool. Jumlah token dihitung otomatis dari strategi dan config. Hanya boleh dipanggil setelah screen_token verdict PASS atau CAUTION.',
     input_schema: {
       type: 'object',
       properties: {
-        pool_address: { type: 'string' },
+        pool_address:  { type: 'string' },
         strategy_name: { type: 'string', description: 'Nama strategi dari Strategy Library' },
-        token_x_amount: { type: 'number' },
-        token_y_amount: { type: 'number' },
-        reasoning: { type: 'string', description: 'Alasan memilih pool dan strategi ini' },
+        reasoning:     { type: 'string', description: 'Alasan memilih pool dan strategi ini (DLMM-specific: fee APR, range fit, volatilitas)' },
       },
-      required: ['pool_address', 'token_x_amount', 'token_y_amount', 'reasoning'],
+      required: ['pool_address', 'reasoning'],
     },
   },
 ];
@@ -172,19 +170,38 @@ async function executeTool(name, input) {
     case 'get_pool_detail': {
       const info = await getPoolInfo(input.pool_address);
       let strategyMatch = null;
+      let dlmmSnapshot = null;
       try {
-        const snapshot = await getMarketSnapshot(info.tokenX, input.pool_address);
-        strategyMatch = matchStrategyToMarket(snapshot);
+        dlmmSnapshot = await getMarketSnapshot(info.tokenX, input.pool_address);
+        strategyMatch = matchStrategyToMarket(dlmmSnapshot);
       } catch { /* optional */ }
+
+      const pool = dlmmSnapshot?.pool;
+      const price = dlmmSnapshot?.price;
 
       return JSON.stringify({
         poolInfo: info,
+        dlmmEconomics: pool ? {
+          feeApr:         `${pool.feeApr}% (${pool.feeAprCategory})`,
+          feeVelocity:    pool.feeVelocity,
+          feeTvlRatioPct: `${(pool.feeTvlRatio * 100).toFixed(3)}%/hari`,
+          tvl:            pool.tvl,
+          volume24h:      pool.volume24h,
+          healthScore:    dlmmSnapshot?.healthScore,
+          eligible:       pool.feeAprCategory !== 'LOW' && pool.feeTvlRatio > 0.01,
+        } : null,
+        priceContext: price ? {
+          trend:              price.trend,
+          volatility:         `${price.volatility24h}% (${price.volatilityCategory})`,
+          binStepFit:         info.binStep >= price.suggestedBinStepMin ? 'OK' : `⚠️ Butuh bin step ≥${price.suggestedBinStepMin}`,
+          buyPressure:        `${price.buyPressurePct}% (${price.sentiment})`,
+        } : null,
         strategyRecommendation: strategyMatch ? {
-          recommended: strategyMatch.recommended?.name,
-          confidence: strategyMatch.recommended?.matchScore,
+          recommended:     strategyMatch.recommended?.name,
+          confidence:      strategyMatch.recommended?.matchScore,
           entryConditions: strategyMatch.recommended?.entryConditions,
-          alternatives: strategyMatch.alternatives?.map(s => s.name),
-          currentMarketConditions: strategyMatch.currentConditions,
+          exitConditions:  strategyMatch.recommended?.exitConditions,
+          alternatives:    strategyMatch.alternatives?.map(s => s.name),
         } : null,
       }, null, 2);
     }
@@ -235,16 +252,34 @@ async function executeTool(name, input) {
         return JSON.stringify({ blocked: true, reason: drawdown.reason }, null, 2);
       }
 
-      // Resolve strategy
+      // Resolve strategy dari Library — prioritaskan yang ada di /library
       const allStrategies = getAllStrategies();
       const strategy = allStrategies.find(s => s.name === input.strategy_name) || allStrategies[0];
       const stratParams = strategy ? parseStrategyParameters(strategy) : { priceRangePercent: 5 };
       const strategyType = strategy?.strategy_type || 'spot';
 
-      // Validate strategy vs market
+      // ── Auto-calculate position sizing dari strategy weights ──
+      // tokenXWeight/tokenYWeight di stratParams menentukan alokasi
+      // Contoh: spot = 50/50, single_side_y = 0/100, single_side_x = 100/0
+      const tokenXWeight = stratParams.tokenXWeight ?? 50; // % dari total deploy
+      const tokenYWeight = stratParams.tokenYWeight ?? 50;
+      const deployAmountSol = cfg.deployAmountSol || 0.1;
+
+      // Ambil pool info untuk harga dan validasi
+      const poolInfo = await getPoolInfo(input.pool_address);
+      const pricePerToken = poolInfo?.activePrice || 0; // harga tokenX dalam satuan tokenY
+
+      // tokenY (SOL/USDC) — langsung dari deployAmountSol
+      const tokenYAmount = deployAmountSol * (tokenYWeight / 100);
+
+      // tokenX — konversi dari SOL menggunakan harga pool
+      const tokenXAmount = (pricePerToken > 0 && tokenXWeight > 0)
+        ? (deployAmountSol * (tokenXWeight / 100)) / pricePerToken
+        : 0;
+
+      // Validate strategy vs pool conditions (volatilitas vs bin step)
       let validation = { valid: true, warning: null };
       try {
-        const poolInfo = await getPoolInfo(input.pool_address);
         validation = validateStrategyForMarket(strategyType, poolInfo);
         if (!validation.valid && hunterNotifyFn) {
           await hunterNotifyFn(`⚠️ *Strategy Warning*\n\n${validation.warning}`);
@@ -255,7 +290,15 @@ async function executeTool(name, input) {
       if (isDryRun()) {
         return JSON.stringify({
           dryRun: true,
-          message: `[DRY RUN] Akan deploy ke pool ${input.pool_address.slice(0,8)}... dengan strategi "${strategy?.name || 'default'}"`,
+          message: `[DRY RUN] Akan deploy ke pool ${input.pool_address.slice(0,8)}...`,
+          strategy: strategy?.name || 'default',
+          sizing: {
+            deployAmountSol,
+            tokenXWeight: `${tokenXWeight}%`, tokenYWeight: `${tokenYWeight}%`,
+            tokenXAmount: parseFloat(tokenXAmount.toFixed(6)),
+            tokenYAmount: parseFloat(tokenYAmount.toFixed(6)),
+            pricePerToken,
+          },
           strategyValidation: validation,
           reasoning: input.reasoning,
         }, null, 2);
@@ -270,7 +313,8 @@ async function executeTool(name, input) {
           `🚀 *Hunter Alpha ingin deploy:*\n\n` +
           `📍 Pool: \`${input.pool_address.slice(0,8)}...\`\n` +
           `📊 Strategi: ${strategy?.name || 'default'}\n` +
-          `💰 X: ${input.token_x_amount} | Y: ${input.token_y_amount}\n\n` +
+          `💰 Deploy: ${deployAmountSol} SOL (${tokenXWeight}% tokenX / ${tokenYWeight}% tokenY)\n` +
+          `  tokenX: ${tokenXAmount.toFixed(4)} | tokenY: ${tokenYAmount.toFixed(4)} SOL\n\n` +
           `💭 ${input.reasoning}`
         );
         if (!confirmed) {
@@ -281,8 +325,8 @@ async function executeTool(name, input) {
       // Execute
       const result = await openPosition(
         input.pool_address,
-        input.token_x_amount,
-        input.token_y_amount,
+        tokenXAmount,
+        tokenYAmount,
         stratParams.priceRangePercent || 5
       );
 
@@ -348,46 +392,52 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null) {
   const strategyIntel = getStrategyIntelligenceContext();
   const libraryStats = getLibraryStats();
 
-  const systemPrompt = `Kamu adalah Hunter Alpha — autonomous pool screening & deployment agent untuk Meteora DLMM.
+  const systemPrompt = `Kamu adalah Hunter Alpha — autonomous DLMM pool screener & deployer untuk Meteora di Solana.
+
+MINDSET: Kamu adalah LP specialist, bukan trader. Kamu cari pool yang menghasilkan fee tinggi,
+bukan pool yang harganya akan naik. Profit kamu berasal dari fee, bukan dari price appreciation.
 
 ALUR KERJA SETIAP SIKLUS:
-1. screen_pools → dapatkan kandidat pool terbaik
-2. get_wallet_status → cek apakah bisa buka posisi baru (jika sudah penuh atau balance kurang, HENTIKAN siklus tanpa deploy)
-3. Untuk setiap kandidat menarik:
-   a. get_pool_detail → info market + rekomendasi strategi
-   b. screen_token → WAJIB, cek scam/rug
-   c. Kalau verdict AVOID/RISKY → skip, cari kandidat lain
-   d. Kalau verdict CAUTION/PASS → lanjut ke deploy
-4. deploy_position → gunakan strategi yang direkomendasikan
+1. screen_pools → dapatkan kandidat dengan darwinScore tertinggi
+2. get_wallet_status → cek balance & slot posisi (jika penuh/kurang balance → STOP)
+3. Untuk setiap kandidat:
+   a. get_pool_detail → fee APR, kondisi pool, rekomendasi strategi
+   b. Evaluasi DLMM economics:
+      • Fee APR > 50%? Jika tidak, skip
+      • Fee/TVL ratio > 2%? Jika tidak, skip
+      • Bin step sesuai volatilitas harga? Jika tidak, pilih strategi range lebih lebar
+   c. screen_token → WAJIB sebelum deploy
+   d. Kalau AVOID → skip, cari kandidat lain
+4. deploy_position → jumlah token dihitung OTOMATIS dari strategi & config
 
-DARWINIAN SIGNAL WEIGHTING (dari 263 closed positions — gunakan ini untuk ranking kandidat):
-- mcap proxy (TVL): 2.5x — STRONG PREDICTOR. Prioritaskan pool dengan TVL > $50K
-- fee/TVL ratio: 2.3x — STRONG PREDICTOR. Fee tinggi relatif ke TVL = pool aktif = kemungkinan profit tinggi
-- volume 24h: 0.36x — WEAK SIGNAL. Hampir tidak prediktif, jangan terlalu dipertimbangkan
-- holder count: 0.3x — USELESS. Tidak prediktif sama sekali, abaikan sebagai faktor utama
+CARA PILIH STRATEGI (dari /library — pakai yang confidence tertinggi):
+- Harga SIDEWAYS + volatilitas LOW → Spot Balanced atau Curve Concentrated
+- Harga SIDEWAYS + volatilitas MEDIUM/HIGH → Bid-Ask Wide
+- Harga UPTREND kuat → Single-Side Token X (100% tokenX, 0% SOL)
+- Harga DOWNTREND + expect reversal → Single-Side USDC (0% tokenX, 100% SOL)
 
-Kandidat sudah di-sort by darwinScore. Fokus pada score tinggi. Pool dengan TVL besar + fee/TVL ratio tinggi = target utama.
+DARWINIAN WEIGHTS (dari 263 closed positions):
+- TVL (mcap proxy): 2.5x — STRONG. Prioritaskan pool > $50K TVL
+- Fee/TVL ratio: 2.3x — STRONG. Fee/TVL > 5% per hari = pool sangat aktif
+- Volume: 0.36x — LEMAH. Jangan jadikan faktor utama
+- Holder count: 0.3x — USELESS. Abaikan
 
-ATURAN SCREENING TOKEN (wajib diikuti):
-- Coin politik (Trump/Elon/Baron/Melania) → SKIP selalu
-- Coin celebrity → SKIP selalu
-- "Justice for / Save / RIP" coins → SKIP selalu
-- CTO coins → SKIP
-- Vampire coins → SKIP selalu
-- LP tidak locked > 80% → SKIP
+ATURAN FILTER TOKEN (wajib):
+- Coin politik / celebrity / justice narrative → SKIP
+- CTO / Vampire coin → SKIP
+- Dev holding > 5% → SKIP
 - Top 10 holders > 30% → SKIP
-- Dev holding > 1% → hati-hati, > 5% → SKIP
-- Insiders > 0% → hati-hati
+- Fees GMGN < 20 → SKIP
 
-STRATEGY LIBRARY (${libraryStats.totalStrategies} strategi aktif):
-${libraryStats.topStrategies.map(s => `- ${s.name} (${s.type}, ${(s.confidence * 100).toFixed(0)}% confidence)`).join('\n')}
+STRATEGY LIBRARY (${libraryStats.totalStrategies} strategi, utamakan yang confidence tertinggi):
+${libraryStats.topStrategies.map(s => `- ${s.name} (${s.type}, confidence ${(s.confidence * 100).toFixed(0)}%)`).join('\n')}
 
-Mode: ${isDryRun() ? '🧪 DRY RUN (tidak ada transaksi nyata)' : '🔴 LIVE'}
+Mode: ${isDryRun() ? '🧪 DRY RUN' : '🔴 LIVE'} | Deploy: ${cfg.deployAmountSol} SOL per posisi
 ${lessonsCtx}
 ${instincts}
 ${strategyIntel}
 
-Gunakan Bahasa Indonesia. Reasoning out loud untuk setiap keputusan.`;
+Gunakan Bahasa Indonesia. Jelaskan reasoning DLMM-specific untuk setiap keputusan.`;
 
   const messages = [
     { role: 'user', content: 'Jalankan siklus screening sekarang.' }

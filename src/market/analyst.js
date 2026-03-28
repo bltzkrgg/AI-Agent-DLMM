@@ -1,13 +1,17 @@
-import { safeParseAI, fetchWithTimeout } from '../utils/safeJson.js';
 /**
- * Market Analyst Agent
- * 
- * Reasoning layer yang menganalisa semua data market
- * dan menghasilkan "market thesis" per token/posisi.
- * 
- * Output: { signal, confidence, thesis, reasoning, holdRecommendation }
+ * DLMM Position Analyst
+ *
+ * Menganalisa kondisi pool DLMM dan posisi LP untuk memutuskan
+ * HOLD, CLOSE, atau perlu rebalance.
+ *
+ * BUKAN untuk analisa futures/trading. Fokus ke LP economics:
+ * - Apakah fee APR masih worth it?
+ * - Apakah range masih valid?
+ * - Apakah ada IL risk yang melebihi fee income?
+ * - Apakah pool masih sehat (volume, TVL)?
  */
 
+import { safeParseAI, fetchWithTimeout } from '../utils/safeJson.js';
 import { createMessage, resolveModel, extractText } from '../agent/provider.js';
 import { getConfig } from '../config.js';
 import { getMarketSnapshot } from './oracle.js';
@@ -16,167 +20,158 @@ import { loadMemory, saveMemory } from './memory.js';
 export async function analyzeMarket(tokenMint, poolAddress, currentPosition = null) {
   const cfg = getConfig();
 
-  // 1. Kumpulkan data market
   const snapshot = await getMarketSnapshot(tokenMint, poolAddress);
 
-  // 2. Load memory/instinct dari pengalaman sebelumnya
+  // Memory — hanya ambil lesson yang relevan untuk posisi aktif
   const memory = loadMemory();
   const relevantMemory = memory.instincts
     .filter(m => m.tokenMint === tokenMint || m.pattern)
-    .slice(-5);
+    .slice(-3)
+    .map(m => `- ${m.lesson}`)
+    .join('\n');
 
-  // 3. Build context untuk analyst
-  const marketContext = buildMarketContext(snapshot, currentPosition);
-  const memoryContext = relevantMemory.length > 0
-    ? `\n\nPengalaman sebelumnya dengan token/kondisi serupa:\n${relevantMemory.map(m => `- ${m.lesson}`).join('\n')}`
-    : '';
+  const ctx = buildDLMMContext(snapshot, currentPosition);
 
-  const systemPrompt = `Kamu adalah Market Analyst untuk Meteora DLMM liquidity providing di Solana.
+  const systemPrompt = `Kamu adalah spesialis DLMM (Concentrated Liquidity Market Maker) untuk Meteora di Solana.
 
-Tugasmu: analisa data market yang diberikan dan buat keputusan apakah posisi LP harus HOLD atau CLOSE.
+PRINSIP DASAR DLMM LP:
+- Kamu hanya earn fees saat harga aktif berada di DALAM range posisimu
+- Saat harga keluar range: tidak ada fee tapi posisi masih ada (perlu close + redeploy)
+- Impermanent Loss (IL) terjadi saat harga bergerak jauh dari range entry
+- Fee harus > IL agar posisi profitable secara keseluruhan
 
-Pertimbangkan:
-1. Price action & trend — apakah harga berpotensi balik ke range posisi?
-2. Volume & liquidity flow — apakah ada interest dari trader?
-3. On-chain signals — apakah whale accumulate atau distribute?
-4. Sentiment — apakah buy pressure dominan?
-5. Pengalaman sebelumnya — pattern apa yang terbukti profitable?
+FRAMEWORK KEPUTUSAN (khusus DLMM — bukan futures trading):
 
-Respond HANYA dalam JSON format:
+1. FEE APR & VELOCITY
+   - APR > 100% = excellent, HOLD selama masih in range
+   - APR 30-100% = acceptable, tergantung kondisi lain
+   - APR < 30% = pool kurang aktif, pertimbangkan CLOSE
+   - Fee makin turun (DECREASING) = trader pindah ke pool lain → CLOSE
+
+2. STATUS RANGE
+   - In range = posisi aktif menghasilkan fee → cenderung HOLD
+   - Out of range = tidak ada fee, hitung berapa lama keluar
+   - Lama out of range tapi fee/TVL masih tinggi = harga mungkin kembali → wait
+   - Lama out of range + fee/TVL turun = CLOSE, redeploy di range baru
+
+3. BIN STEP vs VOLATILITAS
+   - Volatilitas 24h >> bin step pool → IL terlalu besar → CLOSE atau REBALANCE
+   - Volatilitas 24h sesuai bin step → range masih valid → HOLD
+
+4. TVL & POOL HEALTH
+   - TVL naik = banyak LP masuk = fee diluted → fee per posisi turun
+   - TVL turun drastis = LP lari = pool mati → CLOSE segera
+   - Volume turun tapi TVL stabil = trader sepi → fee turun
+
+5. UNTUK OPEN POSISI (hunter):
+   - Pool eligible kalau feeApr > 50%, feeTvlRatio > 2%, volume aktif
+   - Pilih strategi berdasarkan volatilitas dan arah harga:
+     * Sideways + low vol → Spot Balanced
+     * Sideways + low vol, pool stabil → Curve Concentrated
+     * Volatile/momentum → Bid-Ask Wide
+     * Uptrend kuat → Single-Side Token X
+     * Downtrend + expect reversal → Single-Side USDC
+
+Respond HANYA dalam JSON:
 {
   "signal": "BULLISH" | "BEARISH" | "NEUTRAL",
   "confidence": 0.0-1.0,
   "holdRecommendation": true | false,
-  "priceTarget": number | null,
-  "timeHorizon": "short" | "medium" | "long",
+  "action": "HOLD" | "CLOSE" | "REBALANCE",
+  "dlmmReason": "alasan spesifik berdasarkan fee APR, range status, IL risk — 1-2 kalimat",
   "thesis": "ringkasan 1 kalimat",
-  "reasoning": "penjelasan detail 3-5 kalimat",
   "keyRisks": ["risk 1", "risk 2"],
-  "keyOpportunities": ["opp 1", "opp 2"]
+  "urgency": "immediate" | "next_cycle" | "monitor"
 }`;
 
-  const userPrompt = `Analisa market untuk posisi LP ini:
+  const userPrompt = `Analisa kondisi DLMM pool ini:
 
-${marketContext}
-${memoryContext}
+${ctx}
+${relevantMemory ? `\nPengalaman sebelumnya:\n${relevantMemory}` : ''}
 
 ${currentPosition
-  ? `Status posisi saat ini:
-- In range: ${currentPosition.inRange}
-- PnL: ${currentPosition.pnlPct ?? 'N/A'}%
-- Sudah hold: ${currentPosition.ageMinutes ?? 'N/A'} menit`
-  : 'Ini untuk evaluasi pool baru sebelum deploy.'}
+  ? `Status posisi aktif:
+- In range: ${currentPosition.inRange ?? 'unknown'}
+- PnL saat ini: ${currentPosition.pnlPct != null ? currentPosition.pnlPct.toFixed(2) + '%' : 'N/A'}
+- Out-of-range selama: ${currentPosition.outOfRangeMins ?? 0} menit`
+  : 'Evaluasi untuk entry posisi baru.'}
 
-Buat keputusan: apakah ${currentPosition ? 'posisi ini harus di-HOLD atau di-CLOSE?' : 'pool ini layak untuk di-deploy?'}`;
+Keputusan: apakah ${currentPosition ? 'posisi ini HOLD atau CLOSE?' : 'pool ini layak untuk deploy?'}
+Fokus pada DLMM LP economics — bukan price prediction atau futures logic.`;
 
   try {
     const response = await createMessage({
       model: resolveModel(cfg.generalModel),
-      maxTokens: 1500,
+      maxTokens: 800,
       system: systemPrompt,
       messages: [{ role: 'user', content: userPrompt }],
     });
 
-    
     const analysis = safeParseAI(extractText(response));
 
-    // Simpan snapshot + analysis ke memory untuk evolusi
-    saveMarketEvent({
-      tokenMint,
-      poolAddress,
-      snapshot,
-      analysis,
-      positionContext: currentPosition,
-      timestamp: new Date().toISOString(),
-    });
+    saveMarketEvent({ tokenMint, poolAddress, snapshot, analysis, positionContext: currentPosition });
 
     return { ...analysis, snapshot };
   } catch (e) {
-    // Fallback kalau AI gagal parse
     return {
       signal: 'NEUTRAL',
       confidence: 0.3,
       holdRecommendation: true,
-      thesis: 'Analisa market tidak tersedia',
-      reasoning: `Error: ${e.message}`,
+      action: 'HOLD',
+      dlmmReason: `Analisa tidak tersedia: ${e.message}`,
+      thesis: 'Data analisa tidak tersedia',
       keyRisks: [],
-      keyOpportunities: [],
+      urgency: 'monitor',
       snapshot,
     };
   }
 }
 
-function buildMarketContext(snapshot, position) {
+// ─── Build DLMM-specific context ────────────────────────────────
+
+function buildDLMMContext(snapshot, position) {
   const parts = [];
 
-  if (snapshot.ohlcv) {
-    const o = snapshot.ohlcv;
-    parts.push(`📊 PRICE ACTION (${o.timeframe}):
-- Harga saat ini: $${o.currentPrice}
-- Perubahan: ${o.priceChange}%
-- Trend: ${o.trend}
-- High 24h: $${o.high24h} | Low 24h: $${o.low24h}
-- Support: $${o.support} | Resistance: $${o.resistance}
-- Volume vs rata-rata: ${o.volumeVsAvg}x`);
+  if (snapshot.pool) {
+    const p = snapshot.pool;
+    parts.push(`📊 POOL DLMM:
+- Fee APR: ${p.feeApr}% (${p.feeAprCategory}) — ${p.feeVelocity}
+- Fee/TVL ratio: ${(p.feeTvlRatio * 100).toFixed(3)}% per hari
+- TVL: $${p.tvl >= 1e6 ? (p.tvl / 1e6).toFixed(2) + 'M' : (p.tvl / 1000).toFixed(1) + 'K'}
+- Volume 24h: $${p.volume24h >= 1e6 ? (p.volume24h / 1e6).toFixed(2) + 'M' : (p.volume24h / 1000).toFixed(1) + 'K'}
+- Fees 24h: $${p.fees24h?.toFixed(2) ?? 'N/A'}
+- Bin step: ${p.binStep}`);
+  } else {
+    parts.push('⚠️ Data pool DLMM tidak tersedia');
   }
 
-  if (snapshot.liquidity) {
-    const l = snapshot.liquidity;
-    parts.push(`💧 LIQUIDITY:
-- TVL pool: $${(l.tvl / 1e6).toFixed(2)}M
-- Volume 24h: $${(l.volume24h / 1e6).toFixed(2)}M
-- Fee APR: ${l.feeApr?.toFixed(2)}%
-- Liquidity change 24h: ${l.liquidityChange24h ?? 'N/A'}`);
+  if (snapshot.price) {
+    const pr = snapshot.price;
+    parts.push(`💹 HARGA & VOLATILITAS:
+- Trend: ${pr.trend} | Volatilitas 24h: ${pr.volatility24h}% (${pr.volatilityCategory})
+- Perubahan: 1h ${pr.priceChange1h >= 0 ? '+' : ''}${pr.priceChange1h}% | 6h ${pr.priceChange6h >= 0 ? '+' : ''}${pr.priceChange6h}% | 24h ${pr.priceChange24h >= 0 ? '+' : ''}${pr.priceChange24h}%
+- Buy pressure: ${pr.buyPressurePct}% (${pr.sentiment})
+- Bin step minimum yang cocok: ${pr.suggestedBinStepMin}`);
   }
 
-  if (snapshot.onChain?.available) {
-    const oc = snapshot.onChain;
-    parts.push(`🔗 ON-CHAIN:
-- Holders: ${oc.holders?.toLocaleString() ?? 'N/A'}
-- Market cap: $${oc.marketCap ? (oc.marketCap / 1e6).toFixed(2) + 'M' : 'N/A'}
-- Top 10 holder concentration: ${oc.top10HolderPct}%
-- Whale risk: ${oc.whaleRisk}
-- Recent tx (20 latest): ${oc.recentTxCount}`);
+  if (snapshot.pool && snapshot.price) {
+    const binOk = snapshot.pool.binStep >= snapshot.price.suggestedBinStepMin;
+    parts.push(`🔍 DLMM FIT CHECK:
+- Volatilitas ${snapshot.price.volatilityCategory} vs bin step ${snapshot.pool.binStep}: ${binOk ? '✅ sesuai' : '⚠️ volatilitas terlalu tinggi untuk bin step ini — IL risk meningkat'}
+- Health score pool: ${snapshot.healthScore}/100`);
   }
 
-  if (snapshot.sentiment) {
-    const s = snapshot.sentiment;
-    parts.push(`💬 SENTIMENT:
-- Buy pressure: ${s.buyPressurePct}% (${s.sentiment})
-- Buys 24h: ${s.buys24h} | Sells 24h: ${s.sells24h}
-- Price change 1h: ${s.priceChange1h}% | 6h: ${s.priceChange6h}% | 24h: ${s.priceChange24h}%`);
-  }
-
-  if (snapshot.okx?.available) {
-    const o = snapshot.okx;
-    const riskParts = [];
-    if (o.riskLevel)              riskParts.push(`Risk: ${o.riskLevel}`);
-    if (o.isHoneypot)             riskParts.push('HONEYPOT!');
-    if (o.isMintable)             riskParts.push('Mintable');
-    if (o.ownershipRenounced === false) riskParts.push('Ownership not renounced');
-
-    const smartParts = [];
-    if (o.smartMoneySignal)         smartParts.push(`Signal: ${o.smartMoneySignal}`);
-    if (o.smartMoneyBuying  !== null) smartParts.push(`SM Buying: ${o.smartMoneyBuying}`);
-    if (o.smartMoneySelling !== null) smartParts.push(`SM Selling: ${o.smartMoneySelling}`);
-
-    if (riskParts.length > 0 || smartParts.length > 0) {
-      parts.push(`🔐 OKX ONCHAIN:
-${riskParts.length  > 0 ? '- Token risk: ' + riskParts.join(', ') : ''}
-${smartParts.length > 0 ? '- Smart money: ' + smartParts.join(' | ') : ''}`.trim());
-    }
-  }
-
-  return parts.join('\n\n') || 'Data market tidak tersedia.';
+  return parts.join('\n\n') || 'Data tidak tersedia.';
 }
 
 function saveMarketEvent(event) {
-  const memory = loadMemory();
-  memory.marketEvents = memory.marketEvents || [];
-  memory.marketEvents.push(event);
-  // Keep last 200 events
-  if (memory.marketEvents.length > 200) {
-    memory.marketEvents = memory.marketEvents.slice(-200);
-  }
-  saveMemory(memory);
+  try {
+    const memory = loadMemory();
+    memory.marketEvents = memory.marketEvents || [];
+    memory.marketEvents.push({ ...event, timestamp: new Date().toISOString() });
+    if (memory.marketEvents.length > 200) {
+      memory.marketEvents = memory.marketEvents.slice(-200);
+    }
+    saveMemory(memory);
+  } catch { /* non-critical */ }
 }
