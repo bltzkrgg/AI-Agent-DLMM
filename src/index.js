@@ -99,22 +99,28 @@ async function notify(text) {
 let _hunterBusy = false;
 let _healerBusy = false;
 
-// ─── Cron jobs ───────────────────────────────────────────────────
+// ─── Setup state — konfigurasi awal sebelum agent mulai ──────────
+const setupState = { phase: 'waiting_sol', totalSol: null, poolCount: null };
 
-cron.schedule(`*/${cfg.screeningIntervalMin} * * * *`, async () => {
-  if (_hunterBusy) { console.log('⏭ Hunter skip — masih berjalan'); return; }
-
-  // Pre-flight check: jangan screening kalau sudah max posisi
+async function triggerHunter() {
+  if (_hunterBusy) return;
+  const liveCfg = getConfig();
   const openPos = getOpenPositions();
-  if (openPos.length >= cfg.maxPositions) {
-    console.log(`⏭ Hunter skip — posisi penuh (${openPos.length}/${cfg.maxPositions})`);
+  if (openPos.length >= liveCfg.maxPositions) {
+    console.log(`⏭ Hunter skip — posisi penuh (${openPos.length}/${liveCfg.maxPositions})`);
     return;
   }
-
   _hunterBusy = true;
   try { await runHunterAlpha(notify, bot, ALLOWED_ID); }
   catch (e) { notify(`❌ Hunter error: ${e.message}`).catch(() => {}); }
   finally { _hunterBusy = false; }
+}
+
+// ─── Cron jobs ───────────────────────────────────────────────────
+
+cron.schedule(`*/${cfg.screeningIntervalMin} * * * *`, async () => {
+  if (setupState.phase !== 'done') { console.log('⏭ Hunter skip — menunggu setup awal'); return; }
+  await triggerHunter();
 });
 
 cron.schedule(`*/${cfg.managementIntervalMin} * * * *`, async () => {
@@ -423,6 +429,49 @@ bot.on('message', async (msg) => {
   if (msg.text?.startsWith('/')) return;
   if (!msg.text) return;
 
+  // ── Setup wizard — intercept sampai konfigurasi awal selesai ────
+  if (setupState.phase === 'waiting_sol') {
+    const sol = parseFloat(msg.text.replace(',', '.'));
+    if (isNaN(sol) || sol <= 0) {
+      bot.sendMessage(msg.chat.id, '⚠️ Masukkan angka SOL yang valid. Contoh: `2.5`', { parse_mode: 'Markdown' });
+      return;
+    }
+    setupState.totalSol = sol;
+    setupState.phase = 'waiting_pools';
+    bot.sendMessage(msg.chat.id,
+      `✅ Total: *${sol} SOL*\n\n❓ *Berapa Pool yang Ingin Kamu Isi?*\n\n_Minimal 1. Contoh: \`3\` untuk 3 pool_`,
+      { parse_mode: 'Markdown' }
+    );
+    return;
+  }
+
+  if (setupState.phase === 'waiting_pools') {
+    const pools = parseInt(msg.text);
+    if (isNaN(pools) || pools < 1) {
+      bot.sendMessage(msg.chat.id, '⚠️ Masukkan angka pool minimal 1. Contoh: `3`', { parse_mode: 'Markdown' });
+      return;
+    }
+    setupState.poolCount = pools;
+    setupState.phase = 'done';
+
+    const solPerPool = parseFloat((setupState.totalSol / pools).toFixed(4));
+    updateConfig({ deployAmountSol: solPerPool, maxPositions: pools });
+
+    bot.sendMessage(msg.chat.id,
+      `✅ *Setup Selesai!*\n\n` +
+      `💰 Total SOL: *${setupState.totalSol} SOL*\n` +
+      `🏊 Target pool: *${pools}*\n` +
+      `📊 Deploy per pool: *${solPerPool} SOL*\n\n` +
+      `🦅 Hunter Alpha sedang mencari pool terbaik...`,
+      { parse_mode: 'Markdown' }
+    );
+
+    // Trigger hunter langsung tanpa tunggu cron
+    triggerHunter().catch(e => console.error('Trigger hunter error:', e.message));
+    return;
+  }
+  // ── End setup wizard ─────────────────────────────────────────────
+
   if (handleConfirmationReply(msg.text)) return;
 
   if (researchSessions.has(msg.from.id)) {
@@ -491,11 +540,12 @@ setTimeout(async () => {
     const balance = await getWalletBalance();
     await notify(
       `🚀 *Bot Started!*\n\n` +
-      `💰 ${balance} SOL | Mode: 🔴 LIVE\n` +
+      `💰 Balance: ${balance} SOL | Mode: 🔴 LIVE\n` +
       `🦅 Hunter: ${cfg.screeningIntervalMin}min | 🩺 Healer: ${cfg.managementIntervalMin}min\n\n` +
       `/start untuk semua commands`
     );
-    // Test model aktif — kasih tahu langsung kalau ada masalah
     await runStartupModelCheck(notify);
+    // Minta konfigurasi awal dari user
+    await notify(`❓ *Berapa SOL yang Mau Kamu Entry?*\n\n_Balas dengan angka. Contoh: \`2.5\` untuk 2.5 SOL total_`);
   } catch (e) { console.error('Startup error:', e.message); }
 }, 2000);
