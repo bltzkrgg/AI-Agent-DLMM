@@ -325,7 +325,21 @@ export async function runHealerAlpha(notifyFn) {
     return msg;
   }
 
-  // ── Pre-flight: Stop-Loss + Take Profit + Trailing TP ────────
+  // ── Pre-flight: SL + TP + Trailing TP — dengan chart & narasi ──
+  //
+  // Alur per posisi:
+  //   1. Cek apakah ada trigger (SL/TP/Trailing)
+  //   2. Jika ya → baca market (chart + narasi + on-chain signals)
+  //   3. Baru putuskan: CLOSE atau HOLD berdasarkan kondisi aktual
+  //
+  // Override rules:
+  //   TP hit + BULLISH (conf ≥ 0.70) → jangan close, aktifkan trailing
+  //   TP hit + BEARISH/NEUTRAL       → close, lock profit
+  //   Trailing hit + BULLISH (≥0.75) → tunda 1 siklus
+  //   Trailing hit + BEARISH/NEUTRAL → close
+  //   SL hit + BULLISH (conf ≥ 0.65) → hold, tunggu recovery
+  //   SL hit + BEARISH/NEUTRAL       → close segera
+
   for (const pos of openPositions) {
     try {
       const onChain = await getPositionInfo(pos.pool_address);
@@ -342,53 +356,123 @@ export async function runHealerAlpha(notifyFn) {
       const trailingTpHit = tracker.trailingActive && (tracker.peakPnl - pnlPct) >= TRAILING_TP_DROP_PCT;
       peakPnlTracker.set(addr, tracker);
 
-      const slCheck  = checkStopLoss(match);
-      const tpHit    = pnlPct >= thresholds.takeProfitFeePct;
+      const slCheck = checkStopLoss(match);
+      const tpHit   = pnlPct >= thresholds.takeProfitFeePct;
 
-      let triggerReason = null;
-      let triggerEmoji  = '';
-      let triggerLabel  = '';
+      // Tidak ada trigger → skip ke posisi berikutnya
+      if (!trailingTpHit && !tpHit && !slCheck.triggered) continue;
+
+      // ── Baca kondisi chart & narasi sebelum keputusan ────────
+      let market = null;
+      try {
+        market = await analyzeMarket(pos.token_x, pos.pool_address, {
+          inRange: match.inRange,
+          pnlPct,
+        });
+      } catch { /* tetap lanjut tanpa market data */ }
+
+      const sig  = market?.signal     || 'NEUTRAL';
+      const conf = market?.confidence || 0;
+      const thesis = market?.thesis   || '-';
+      const keyRisks = market?.keyRisks?.join(', ') || '-';
+
+      // ── Putuskan: CLOSE atau HOLD ─────────────────────────────
+      let decision  = 'CLOSE';
+      let holdReason = '';
 
       if (trailingTpHit) {
-        triggerReason = `Trailing TP: PnL turun dari peak ${tracker.peakPnl.toFixed(2)}% ke ${pnlPct.toFixed(2)}%`;
-        triggerEmoji  = '🎯';
-        triggerLabel  = 'Trailing Take Profit';
+        if (sig === 'BULLISH' && conf >= 0.75) {
+          decision   = 'HOLD';
+          holdReason = `Chart masih BULLISH (${(conf * 100).toFixed(0)}% conf) — tunda close 1 siklus`;
+        }
       } else if (tpHit) {
-        triggerReason = `Take Profit: PnL ${pnlPct.toFixed(2)}% ≥ target ${thresholds.takeProfitFeePct}%`;
-        triggerEmoji  = '💰';
-        triggerLabel  = 'Take Profit';
+        if (sig === 'BULLISH' && conf >= 0.70) {
+          decision   = 'HOLD_TRAIL';  // aktifkan trailing, jangan close dulu
+          holdReason = `Chart BULLISH (${(conf * 100).toFixed(0)}% conf) — aktifkan trailing, biarkan profit jalan`;
+        }
       } else if (slCheck.triggered) {
-        triggerReason = slCheck.reason;
-        triggerEmoji  = '🛑';
-        triggerLabel  = 'Stop-Loss';
+        if (sig === 'BULLISH' && conf >= 0.65) {
+          decision   = 'HOLD';
+          holdReason = `Chart masih BULLISH (${(conf * 100).toFixed(0)}% conf) — hold untuk recovery`;
+        }
       }
 
-      if (!triggerReason) continue;
+      // Tentukan label + emoji
+      const triggerLabel = trailingTpHit ? 'Trailing Take Profit'
+        : tpHit                          ? 'Take Profit'
+        : 'Stop-Loss';
+      const triggerEmoji = trailingTpHit ? '🎯' : tpHit ? '💰' : '🛑';
+      const triggerReason = trailingTpHit
+        ? `PnL turun dari peak ${tracker.peakPnl.toFixed(2)}% ke ${pnlPct.toFixed(2)}%`
+        : tpHit
+        ? `PnL ${pnlPct.toFixed(2)}% ≥ target ${thresholds.takeProfitFeePct}%`
+        : slCheck.reason;
 
+      // Sinyal market untuk notif
+      const sigLine = market
+        ? `📡 Chart: *${sig}* (${(conf * 100).toFixed(0)}%)\n💬 _${thesis}_\n⚠️ Risk: ${keyRisks}`
+        : `📡 Chart: data tidak tersedia`;
+
+      // ── DRY RUN ──────────────────────────────────────────────
       if (isDryRun()) {
-        await notifyFn?.(`🧪 [DRY RUN] ${triggerLabel} akan triggered:\n${triggerReason}`);
+        await notifyFn?.(
+          `🧪 [DRY RUN] *${triggerLabel}* — keputusan: ${decision}\n\n` +
+          `📍 \`${addr.slice(0, 8)}...\`\n` +
+          `📊 PnL: ${pnlPct >= 0 ? '+' : ''}${pnlPct.toFixed(2)}%\n` +
+          `${sigLine}\n\n` +
+          (decision !== 'CLOSE' ? `⏳ HOLD: ${holdReason}` : `✅ Akan ditutup`)
+        );
         continue;
       }
 
+      // ── HOLD / HOLD_TRAIL ─────────────────────────────────────
+      if (decision === 'HOLD') {
+        await notifyFn?.(
+          `${triggerEmoji} *${triggerLabel} — DITUNDA*\n\n` +
+          `📍 \`${addr.slice(0, 8)}...\`\n` +
+          `📊 PnL: ${pnlPct >= 0 ? '+' : ''}${pnlPct.toFixed(2)}%\n` +
+          `${sigLine}\n\n` +
+          `⏳ ${holdReason}`
+        );
+        continue;
+      }
+
+      if (decision === 'HOLD_TRAIL') {
+        // Aktifkan trailing, jangan close — notif user
+        tracker.trailingActive = true;
+        peakPnlTracker.set(addr, tracker);
+        await notifyFn?.(
+          `💰 *Take Profit — Trailing Diaktifkan*\n\n` +
+          `📍 \`${addr.slice(0, 8)}...\`\n` +
+          `📊 PnL: +${pnlPct.toFixed(2)}% (peak)\n` +
+          `${sigLine}\n\n` +
+          `⏳ ${holdReason}\n` +
+          `_Akan close jika PnL turun ${TRAILING_TP_DROP_PCT}% dari peak_`
+        );
+        continue;
+      }
+
+      // ── CLOSE ─────────────────────────────────────────────────
       await notifyFn?.(
-        `${triggerEmoji} *${triggerLabel} Triggered*\n\n` +
+        `${triggerEmoji} *${triggerLabel} — CLOSE*\n\n` +
         `📍 \`${addr.slice(0, 8)}...\`\n` +
         `📊 PnL: ${pnlPct >= 0 ? '+' : ''}${pnlPct.toFixed(2)}%\n` +
+        `${sigLine}\n\n` +
         `💭 ${triggerReason}\n\nMenutup posisi...`
       );
 
       try {
         await closePositionDLMM(pos.pool_address, addr, {
-          pnlUsd: match.pnlUsd || 0,
+          pnlUsd:      match.pnlUsd || 0,
           pnlPct,
-          feeUsd: match.feeUsd || 0,
-          closeReason: triggerLabel.toUpperCase().replace(' ', '_'),
+          feeUsd:      match.feeUsd || 0,
+          closeReason: triggerLabel.toUpperCase().replace(/ /g, '_'),
         });
         peakPnlTracker.delete(addr);
         outOfRangeTracker.delete(addr);
         recordPnl(match.pnlUsd || 0);
 
-        // Auto-swap token profit → SOL
+        // Auto-swap token → SOL
         const swapMsgs = [];
         try {
           const poolInfo = await getPoolInfo(pos.pool_address);
@@ -414,8 +498,9 @@ export async function runHealerAlpha(notifyFn) {
 
   const systemPrompt = `Kamu adalah Healer Alpha — autonomous position management agent untuk Meteora DLMM.
 
-CATATAN: Stop-loss, Take Profit, dan Trailing TP sudah dijalankan secara DETERMINISTIK sebelum loop ini.
-Fokus kamu di sini: posisi yang masih berjalan, out-of-range, proactive exit, dan claim fees.
+CATATAN: Stop-loss, Take Profit, dan Trailing TP sudah diproses di pre-flight dengan mempertimbangkan kondisi chart dan narasi.
+Posisi yang sampai di loop ini = belum di-close oleh pre-flight (masih aman atau chart bilang HOLD).
+Fokus kamu: proactive exit saat market bearish, out-of-range, claim fees, dan keputusan edge case.
 
 ALUR KERJA:
 1. get_all_positions → evaluasi semua posisi aktif
