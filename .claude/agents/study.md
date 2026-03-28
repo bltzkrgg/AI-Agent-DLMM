@@ -1,8 +1,9 @@
 ---
 name: study
 description: Study top LPers on a specific pool to understand how the best performers behave and derive a deploy recommendation.
-model: claude-sonnet-4-5
+model: sonnet
 tools: Bash, Read
+argument-hint: pool_address
 ---
 
 Study the top LPers on this pool to understand how the best performers behave:

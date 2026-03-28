@@ -1,7 +1,7 @@
 ---
 name: manager
 description: Position management specialist. Use when reviewing open positions, deciding to claim fees, close positions, or assess PnL.
-model: claude-sonnet-4-5
+model: sonnet
 tools: Bash, Read
 ---
 
@@ -26,6 +26,7 @@ node cli.js blacklist add --mint <addr> --reason <text> — permanently block a 
 node cli.js blacklist list — show all blacklisted tokens
 node cli.js withdraw-liquidity --position <addr> --pool <addr> --bps 5000 — withdraw partial or full liquidity without closing position
 node cli.js add-liquidity --position <addr> --pool <addr> --amount-x <n> --amount-y <n> — add tokens to existing position (fee compounding)
+node cli.js token-info --query <mint> — price trend, net buyers, narrative status
 
 ## Management Rules
 

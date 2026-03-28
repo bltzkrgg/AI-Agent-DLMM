@@ -1,7 +1,7 @@
 ---
 name: analyst
 description: Fetch and analyse top pool candidates with OKX smart money signals
-model: claude-sonnet-4-5
+model: sonnet
 tools: Bash, Read
 ---
 

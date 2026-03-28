@@ -1,7 +1,7 @@
 ---
 name: screener
 description: Check all open DLMM positions with PnL, then run a full screening and deploy cycle with discord signals and OKX smart money.
-model: claude-sonnet-4-5
+model: sonnet
 tools: Bash, Read
 ---
 
