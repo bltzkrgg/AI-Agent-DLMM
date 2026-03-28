@@ -13,6 +13,8 @@ import { fetchWithTimeout } from '../utils/safeJson.js';
 const RUGCHECK_BASE = 'https://api.rugcheck.xyz';
 const GMGN_BASE = 'https://gmgn.ai/defi/quotation/v1';
 const DEXSCREENER_BASE = 'https://api.dexscreener.com';
+const JUPITER_TOKEN_BASE = 'https://tokens.jup.ag';
+const JUPITER_PRICE_BASE = 'https://api.jup.ag';
 
 // ─── Red flag keywords dari artikel ─────────────────────────────
 const SCAM_KEYWORDS = [
@@ -61,22 +63,30 @@ async function getRugCheckReport(tokenMint) {
 // ─── GMGN API ────────────────────────────────────────────────────
 
 async function getGMGNData(tokenMint) {
-  try {
-    const res = await fetchWithTimeout(
-      `${GMGN_BASE}/token/sol/${tokenMint}`,
-      {
-        headers: {
-          'Authorization': `Bearer ${process.env.GMGN_API_KEY || ''}`,
-        },
-      },
-      8000
-    );
-    if (!res.ok) return null;
-    const data = await res.json();
-    return data?.data || null;
-  } catch {
-    return null;
+  const endpoints = [
+    `${GMGN_BASE}/tokens/sol/${tokenMint}`,
+    `${GMGN_BASE}/token/sol/${tokenMint}`,
+  ];
+
+  const headers = {
+    'Accept': 'application/json, text/plain, */*',
+    'Accept-Language': 'en-US,en;q=0.9',
+    'Referer': 'https://gmgn.ai/',
+    'Origin': 'https://gmgn.ai',
+    'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    ...(process.env.GMGN_API_KEY ? { 'Authorization': `Bearer ${process.env.GMGN_API_KEY}` } : {}),
+  };
+
+  for (const url of endpoints) {
+    try {
+      const res = await fetchWithTimeout(url, { headers }, 8000);
+      if (!res.ok) continue;
+      const data = await res.json();
+      const result = data?.data || data;
+      if (result && typeof result === 'object' && !Array.isArray(result)) return result;
+    } catch { /* try next endpoint */ }
   }
+  return null;
 }
 
 // ─── DexScreener check ───────────────────────────────────────────
@@ -107,6 +117,54 @@ async function getDexScreenerInfo(tokenMint) {
   } catch {
     return null;
   }
+}
+
+// ─── Jupiter API ─────────────────────────────────────────────────
+
+async function getJupiterData(tokenMint) {
+  try {
+    const [tokenRes, priceRes] = await Promise.allSettled([
+      fetchWithTimeout(`${JUPITER_TOKEN_BASE}/token/${tokenMint}`, {}, 8000),
+      fetchWithTimeout(`${JUPITER_PRICE_BASE}/price/v2?ids=${tokenMint}`, {}, 8000),
+    ]);
+
+    const tokenData = tokenRes.status === 'fulfilled' && tokenRes.value.ok
+      ? await tokenRes.value.json().catch(() => null)
+      : null;
+    const priceData = priceRes.status === 'fulfilled' && priceRes.value.ok
+      ? await priceRes.value.json().catch(() => null)
+      : null;
+
+    const priceInfo = priceData?.data?.[tokenMint];
+
+    return {
+      found: !!tokenData,
+      name: tokenData?.name,
+      symbol: tokenData?.symbol,
+      tags: tokenData?.tags || [],
+      isStrict: !!(tokenData?.tags?.includes('strict')),
+      isVerified: !!(tokenData?.extensions?.coingeckoId || tokenData?.tags?.includes('verified')),
+      launchpad: tokenData?.extensions?.launchpad || null,
+      priceUsd: priceInfo?.price || null,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function detectJupiterFlags(jupData) {
+  const flags = [];
+
+  if (!jupData || !jupData.found) {
+    flags.push({ rule: 'NOT_ON_JUPITER', severity: 'MEDIUM', msg: 'Token tidak terdaftar di Jupiter — belum listed atau sangat baru' });
+    return flags;
+  }
+
+  if (!jupData.isStrict && !jupData.isVerified) {
+    flags.push({ rule: 'NOT_JUPITER_STRICT', severity: 'MEDIUM', msg: 'Token tidak masuk Jupiter strict list — belum diverifikasi komunitas' });
+  }
+
+  return flags;
 }
 
 // ─── Article-based pattern detection ────────────────────────────
@@ -255,36 +313,49 @@ function detectRugCheckFlags(rugReport) {
 // ─── Main screener function ──────────────────────────────────────
 
 export async function screenToken(tokenMint, tokenName = '', tokenSymbol = '') {
-  // Fetch semua data parallel
-  const [rugReport, gmgnData, dexInfo] = await Promise.allSettled([
+  // Fetch semua data parallel — GMGN + Rugcheck + DexScreener + Jupiter
+  const [rugReport, gmgnData, dexInfo, jupData] = await Promise.allSettled([
     getRugCheckReport(tokenMint),
     getGMGNData(tokenMint),
     getDexScreenerInfo(tokenMint),
+    getJupiterData(tokenMint),
   ]);
 
-  const rug = rugReport.status === 'fulfilled' ? rugReport.value : null;
+  const rug  = rugReport.status === 'fulfilled' ? rugReport.value : null;
   const gmgn = gmgnData.status === 'fulfilled' ? gmgnData.value : null;
-  const dex = dexInfo.status === 'fulfilled' ? dexInfo.value : null;
+  const dex  = dexInfo.status === 'fulfilled' ? dexInfo.value : null;
+  const jup  = jupData.status === 'fulfilled' ? jupData.value : null;
 
-  // Use name from DexScreener if not provided
-  const name = tokenName || dex?.name || tokenSymbol || '';
-  const symbol = tokenSymbol || dex?.symbol || '';
+  // Use name from DexScreener or Jupiter if not provided
+  const name   = tokenName || dex?.name || jup?.name || tokenSymbol || '';
+  const symbol = tokenSymbol || dex?.symbol || jup?.symbol || '';
+
+  // GMGN unavailability warning — screening tidak lengkap tanpa GMGN
+  const gmgnWarningFlags = !gmgn ? [{
+    rule: 'GMGN_UNAVAILABLE',
+    severity: 'MEDIUM',
+    msg: 'GMGN data tidak tersedia — screening holder/insider/bundling tidak lengkap. Jadikan lebih konservatif.',
+  }] : [];
 
   // Collect all flags
   const allFlags = [
     ...detectScamPatterns(name, symbol, dex),
     ...detectGMGNFlags(gmgn),
     ...detectRugCheckFlags(rug),
+    ...detectJupiterFlags(jup),
+    ...gmgnWarningFlags,
   ];
 
-  const highFlags = allFlags.filter(f => f.severity === 'HIGH');
+  const highFlags   = allFlags.filter(f => f.severity === 'HIGH');
   const mediumFlags = allFlags.filter(f => f.severity === 'MEDIUM');
 
-  // Final verdict
+  // Final verdict — lebih ketat jika GMGN tidak tersedia
   let verdict;
   let safe = false;
 
-  if (highFlags.length >= 3) {
+  const highThreshold = !gmgn ? 2 : 3; // lebih ketat jika GMGN absen
+
+  if (highFlags.length >= highThreshold) {
     verdict = 'AVOID';
   } else if (highFlags.length >= 1) {
     verdict = 'RISKY';
@@ -304,12 +375,14 @@ export async function screenToken(tokenMint, tokenName = '', tokenSymbol = '') {
     highFlags,
     mediumFlags,
     allFlags,
-    rugScore: rug?.score_normalised || null,
+    rugScore:   rug?.score_normalised || null,
     lpLockedPct: rug?.lpLockedPct || null,
+    jupiterData: jup,
     sources: {
-      rugcheck: !!rug,
-      gmgn: !!gmgn,
+      rugcheck:   !!rug,
+      gmgn:       !!gmgn,
       dexscreener: !!dex,
+      jupiter:    !!(jup?.found),
     },
   };
 }
@@ -332,6 +405,17 @@ export function formatScreenResult(result) {
   }
   if (result.lpLockedPct !== null) {
     text += `🔒 LP Locked: ${result.lpLockedPct}%\n`;
+  }
+  if (result.jupiterData?.found) {
+    const jupStatus = result.jupiterData.isStrict ? '✅ Strict'
+      : result.jupiterData.isVerified ? '✓ Verified'
+      : '⚠️ Unverified';
+    text += `🪐 Jupiter: ${jupStatus}`;
+    if (result.jupiterData.priceUsd) text += ` | $${parseFloat(result.jupiterData.priceUsd).toFixed(6)}`;
+    text += '\n';
+  }
+  if (!result.sources.gmgn) {
+    text += `⚠️ GMGN: tidak tersedia — screening tidak lengkap\n`;
   }
 
   if (result.highFlags.length > 0) {

@@ -45,6 +45,15 @@ const DEFAULTS = {
   proactiveExitEnabled: true,
   proactiveExitMinProfitPct: 1.0,
   proactiveExitBearishConfidence: 0.7,
+
+  // Darwinian Signal Weighting — dari 263 closed positions
+  // Higher weight = stronger predictor of profitable positions
+  signalWeights: {
+    mcap: 2.5,              // Maxed out — strong predictor
+    feeActiveTvlRatio: 2.3, // Strong predictor
+    volume: 0.36,           // Near floor — useless predictor
+    holderCount: 0.3,       // Floor — useless predictor
+  },
 };
 
 // Bounds for AI-driven config updates — prevent AI from setting dangerous values

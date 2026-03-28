@@ -147,6 +147,26 @@ function buildMarketContext(snapshot, position) {
 - Price change 1h: ${s.priceChange1h}% | 6h: ${s.priceChange6h}% | 24h: ${s.priceChange24h}%`);
   }
 
+  if (snapshot.okx?.available) {
+    const o = snapshot.okx;
+    const riskParts = [];
+    if (o.riskLevel)              riskParts.push(`Risk: ${o.riskLevel}`);
+    if (o.isHoneypot)             riskParts.push('HONEYPOT!');
+    if (o.isMintable)             riskParts.push('Mintable');
+    if (o.ownershipRenounced === false) riskParts.push('Ownership not renounced');
+
+    const smartParts = [];
+    if (o.smartMoneySignal)         smartParts.push(`Signal: ${o.smartMoneySignal}`);
+    if (o.smartMoneyBuying  !== null) smartParts.push(`SM Buying: ${o.smartMoneyBuying}`);
+    if (o.smartMoneySelling !== null) smartParts.push(`SM Selling: ${o.smartMoneySelling}`);
+
+    if (riskParts.length > 0 || smartParts.length > 0) {
+      parts.push(`🔐 OKX ONCHAIN:
+${riskParts.length  > 0 ? '- Token risk: ' + riskParts.join(', ') : ''}
+${smartParts.length > 0 ? '- Smart money: ' + smartParts.join(' | ') : ''}`.trim());
+    }
+  }
+
   return parts.join('\n\n') || 'Data market tidak tersedia.';
 }
 

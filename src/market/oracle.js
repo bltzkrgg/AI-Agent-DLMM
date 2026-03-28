@@ -2,6 +2,7 @@ import { fetchWithTimeout, safeNum } from '../utils/safeJson.js';
 
 const BIRDEYE_BASE = 'https://public-api.birdeye.so';
 const DEXSCREENER_BASE = 'https://api.dexscreener.com';
+const OKX_BASE = 'https://www.okx.com/api/v5';
 
 // ─── OHLCV & Price Action ────────────────────────────────────────
 
@@ -187,23 +188,83 @@ export async function getSentiment(tokenMint) {
   }
 }
 
+// ─── OKX OnchainOS — Smart Money Signals & Token Risk Scoring ────
+
+export async function getOKXData(tokenMint) {
+  if (!process.env.OKX_API_KEY) {
+    return { available: false, reason: 'OKX_API_KEY not set' };
+  }
+
+  // Solana chainId di OKX = 501
+  const chainId = '501';
+  const headers = {
+    'OK-ACCESS-KEY': process.env.OKX_API_KEY,
+    'Content-Type': 'application/json',
+  };
+
+  try {
+    const [secRes, smartRes] = await Promise.allSettled([
+      // Token risk/security check
+      fetchWithTimeout(
+        `${OKX_BASE}/dex/security/token?chainId=${chainId}&tokenContractAddress=${tokenMint}`,
+        { headers },
+        8000
+      ),
+      // Smart money signal untuk token
+      fetchWithTimeout(
+        `${OKX_BASE}/dex/ai-market/token-signal?chainId=${chainId}&tokenAddress=${tokenMint}`,
+        { headers },
+        8000
+      ),
+    ]);
+
+    const secData   = secRes.status === 'fulfilled' && secRes.value.ok
+      ? await secRes.value.json().catch(() => null) : null;
+    const smartData = smartRes.status === 'fulfilled' && smartRes.value.ok
+      ? await smartRes.value.json().catch(() => null) : null;
+
+    const sec   = secData?.data?.[0]   || {};
+    const smart = smartData?.data?.[0] || {};
+
+    return {
+      available: true,
+      // Token risk scoring
+      riskLevel:          sec.riskLevel          ?? null,  // 'low' | 'medium' | 'high'
+      isHoneypot:         sec.isHoneypot          ?? false,
+      isProxy:            sec.isProxy             ?? false,
+      isMintable:         sec.isMintable          ?? false,
+      ownershipRenounced: sec.ownershipRenounced  ?? null,
+      // Smart money signals
+      smartMoneyBuying:   smart.smartMoneyBuying  ?? null,
+      smartMoneySelling:  smart.smartMoneySelling ?? null,
+      smartMoneySignal:   smart.signal            ?? null, // 'bullish'|'bearish'|'neutral'
+      signalStrength:     smart.signalStrength    ?? null,
+      smartMoneyNetFlow:  smart.netFlow           ?? null,
+    };
+  } catch (e) {
+    return { available: false, reason: e.message };
+  }
+}
+
 // ─── Full Market Snapshot ────────────────────────────────────────
 
 export async function getMarketSnapshot(tokenMint, poolAddress) {
-  const [ohlcv, liquidity, onChain, sentiment] = await Promise.allSettled([
+  const [ohlcv, liquidity, onChain, sentiment, okx] = await Promise.allSettled([
     getOHLCV(tokenMint, '15m', 50),
     poolAddress ? getLiquidityFlow(poolAddress) : Promise.resolve(null),
     getOnChainSignals(tokenMint),
     getSentiment(tokenMint),
+    getOKXData(tokenMint),
   ]);
 
   return {
     tokenMint,
     poolAddress,
     timestamp: new Date().toISOString(),
-    ohlcv: ohlcv.status === 'fulfilled' ? ohlcv.value : null,
+    ohlcv:     ohlcv.status     === 'fulfilled' ? ohlcv.value     : null,
     liquidity: liquidity.status === 'fulfilled' ? liquidity.value : null,
-    onChain: onChain.status === 'fulfilled' ? onChain.value : null,
+    onChain:   onChain.status   === 'fulfilled' ? onChain.value   : null,
     sentiment: sentiment.status === 'fulfilled' ? sentiment.value : null,
+    okx:       okx.status       === 'fulfilled' ? okx.value       : null,
   };
 }

@@ -72,12 +72,18 @@ export async function getPositionInfo(poolAddress) {
       const feeY = pd.feeY ? pd.feeY.toString() : '0';
 
       // PnL from API (real profit/loss on principal)
-      const pnlUsd = parseFloat(pnl.total_pnl_usd || 0);
-      const pnlPct = parseFloat(pnl.pnl_pct || 0);
+      const pnlUsd = parseFloat(pnl.total_pnl_usd ?? pnl.pnl ?? pnl.net_pnl_usd ?? 0);
+      const pnlPct = parseFloat(pnl.pnl_pct ?? pnl.pnl_percentage ?? 0);
 
       // Fee USD (separate from pnl)
-      const feeUsd = parseFloat(pnl.total_fee_usd || 0);
-      const feePctOfDeployed = parseFloat(pnl.fee_pct_of_deployed || 0);
+      const feeUsd = parseFloat(pnl.total_fee_usd ?? pnl.fee_usd ?? 0);
+      const feePctOfDeployed = parseFloat(pnl.fee_pct_of_deployed ?? pnl.fee_pct ?? 0);
+
+      // Extended PnL fields — position yield, fee accrual, deposit/current value
+      const positionYield   = parseFloat(pnl.yield_pct ?? pnl.apr ?? feePctOfDeployed);
+      const feeAccrualUsd   = parseFloat(pnl.fee_accrual_usd ?? pnl.accrued_fee_usd ?? feeUsd);
+      const depositedValueUsd = parseFloat(pnl.deposited_value_usd ?? pnl.initial_deposit_usd ?? 0);
+      const currentValueUsd   = parseFloat(pnl.current_value_usd ?? 0);
 
       return {
         address: posAddr,
@@ -87,8 +93,12 @@ export async function getPositionInfo(poolAddress) {
         feeY,
         feeUsd,
         feePctOfDeployed,
-        pnlUsd,       // actual profit/loss on principal
-        pnlPct,       // actual pnl percentage
+        pnlUsd,             // actual profit/loss on principal
+        pnlPct,             // actual pnl percentage
+        positionYield,      // yield/APR percentage
+        feeAccrualUsd,      // accrued fees in USD
+        depositedValueUsd,  // initial deposit value
+        currentValueUsd,    // current position value
         lowerBinId,
         upperBinId,
         activeBinId: activeBin.binId,
@@ -110,6 +120,11 @@ export async function openPosition(poolAddress, tokenXAmount, tokenYAmount, pric
   const activeBin = await dlmmPool.getActiveBin();
   const activeBinPrice = parseFloat(activeBin.pricePerToken) || 0;
   const binStep = dlmmPool.lbPair.binStep;
+
+  // Validasi: bin step maksimum 250
+  if (binStep > 250) {
+    throw new Error(`Pool ditolak: bin step ${binStep} melebihi batas maksimum 250. Gunakan pool dengan bin step ≤ 250.`);
+  }
 
   // Safe bin range calculation — minimum 2 bins each side
   const binsOnEachSide = Math.max(2, Math.floor((priceRangePercent / 100) / (binStep / 10000)));
@@ -294,17 +309,21 @@ export async function getTopPools(limit = 5) {
     const vol24h   = pool.volume?.['24h'] || 0;
 
     return {
-      address:  pool.address,
-      name:     pool.name || 'Unknown',
-      apr:      apr24h.toFixed(2) + '%',
-      feeApr:   apr24h.toFixed(2) + '%',
+      address:      pool.address,
+      name:         pool.name || 'Unknown',
+      apr:          apr24h.toFixed(2) + '%',
+      feeApr:       apr24h.toFixed(2) + '%',
       tvl,
-      tvlStr:   tvl >= 1e6 ? '$' + (tvl / 1e6).toFixed(2) + 'M' : '$' + (tvl / 1e3).toFixed(1) + 'K',
-      fees24h:  fees24h >= 1e3 ? '$' + (fees24h / 1e3).toFixed(2) + 'K' : '$' + fees24h.toFixed(2),
-      volume24h: vol24h >= 1e6 ? '$' + (vol24h / 1e6).toFixed(2) + 'M' : '$' + (vol24h / 1e3).toFixed(1) + 'K',
-      binStep:  pool.pool_config?.bin_step,
-      tokenX:   pool.token_x?.address,
-      tokenY:   pool.token_y?.address,
+      tvlStr:       tvl >= 1e6 ? '$' + (tvl / 1e6).toFixed(2) + 'M' : '$' + (tvl / 1e3).toFixed(1) + 'K',
+      fees24h:      fees24h >= 1e3 ? '$' + (fees24h / 1e3).toFixed(2) + 'K' : '$' + fees24h.toFixed(2),
+      volume24h:    vol24h >= 1e6 ? '$' + (vol24h / 1e6).toFixed(2) + 'M' : '$' + (vol24h / 1e3).toFixed(1) + 'K',
+      binStep:      pool.pool_config?.bin_step,
+      tokenX:       pool.token_x?.address,
+      tokenY:       pool.token_y?.address,
+      // Raw numeric values untuk Darwinian scoring
+      liquidityRaw: tvl,
+      fees24hRaw:   fees24h,
+      volume24hRaw: vol24h,
     };
   });
 }

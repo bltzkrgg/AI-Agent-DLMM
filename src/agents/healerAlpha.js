@@ -256,7 +256,12 @@ async function executeTool(name, input) {
 }
 
 export async function runHealerAlpha(notifyFn) {
-  const cfg        = getConfig();
+  const cfg = getConfig();
+
+  // ── Skip cycle silently jika tidak ada posisi terbuka ────────
+  const openPositions = getOpenPositions();
+  if (openPositions.length === 0) return null;
+
   const lessonsCtx = getLessonsContext();
   const thresholds = getThresholds();
 
@@ -269,7 +274,6 @@ export async function runHealerAlpha(notifyFn) {
   }
 
   // ── Stop-Loss per posisi (pre-flight) ─────────────────────────
-  const openPositions = getOpenPositions();
   for (const pos of openPositions) {
     try {
       const onChain = await getPositionInfo(pos.pool_address);

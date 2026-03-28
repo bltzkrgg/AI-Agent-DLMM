@@ -24,6 +24,42 @@ let hunterAllowedId = null;
 export function getCandidates() { return lastCandidates; }
 export function getLastHunterReport() { return lastReport; }
 
+// ─── Darwinian Scoring ───────────────────────────────────────────
+// Weights dari 263 closed positions:
+//   mcap: 2.5x (strong predictor)  |  fee/TVL: 2.3x (strong)
+//   volume: 0.36x (near floor)     |  holderCount: 0.3x (floor/useless)
+
+function calculateDarwinScore(pool, weights) {
+  const w = weights || { mcap: 2.5, feeActiveTvlRatio: 2.3, volume: 0.36, holderCount: 0.3 };
+  let score = 0;
+
+  // fee/TVL ratio (2.3x) — strong predictor
+  const tvl  = pool.liquidityRaw || pool.tvl || 0;
+  const fees = pool.fees24hRaw   || 0;
+  if (tvl > 0 && fees > 0) {
+    const ratio      = fees / tvl;
+    const ratioScore = Math.min(ratio / 0.05, 2.0) / 2.0; // 5% ratio = max 1.0
+    score += ratioScore * w.feeActiveTvlRatio;
+  }
+
+  // volume (0.36x) — near floor, de-emphasize
+  const vol = pool.volume24hRaw || 0;
+  if (vol > 0) {
+    score += Math.min(vol / 500000, 1.0) * w.volume;
+  }
+
+  // mcap proxy via TVL (2.5x) — strong predictor
+  if (tvl > 0) {
+    const mcapScore = tvl < 10000 ? 0.2 : tvl < 50000 ? 0.5 : tvl < 100000 ? 0.8 : 1.0;
+    score += mcapScore * w.mcap;
+  }
+
+  // holderCount (0.3x) — useless, static contribution
+  score += 0.3 * w.holderCount;
+
+  return parseFloat(score.toFixed(4));
+}
+
 // ─── Tools ───────────────────────────────────────────────────────
 
 const HUNTER_TOOLS = [
@@ -92,14 +128,45 @@ async function executeTool(name, input) {
   switch (name) {
 
     case 'screen_pools': {
-      const pools = await getTopPools(input.limit || 10);
+      const limit = input.limit || 10;
+      const pools = await getTopPools(limit * 3); // fetch lebih banyak, filter setelahnya
       const thresholds = getThresholds();
-      const filtered = pools.filter(p => {
-        const tvl = parseTvl(p.tvlStr || p.tvl || 0);
-        return tvl >= thresholds.minTvl && tvl <= thresholds.maxTvl;
-      });
+      const weights = cfg.signalWeights || { mcap: 2.5, feeActiveTvlRatio: 2.3, volume: 0.36, holderCount: 0.3 };
+
+      const filtered = pools
+        .filter(p => {
+          const tvl = parseTvl(p.tvlStr || p.tvl || 0);
+          const fees = p.fees24hRaw || 0;
+          const feeRatio = tvl > 0 ? fees / tvl : 0;
+          const binStep = p.binStep || 0;
+
+          return (
+            binStep > 0 &&
+            binStep <= 250 &&                                    // Batas bin step
+            tvl >= thresholds.minTvl &&
+            tvl <= thresholds.maxTvl &&
+            feeRatio >= thresholds.minFeeActiveTvlRatio
+          );
+        })
+        .map(p => ({
+          ...p,
+          darwinScore:     calculateDarwinScore(p, weights),
+          feeToTvlRatio:   (() => {
+            const tvl = parseTvl(p.tvlStr || p.tvl || 0);
+            return tvl > 0 ? ((p.fees24hRaw || 0) / tvl).toFixed(4) : '0';
+          })(),
+        }))
+        .sort((a, b) => b.darwinScore - a.darwinScore)
+        .slice(0, limit);
+
       lastCandidates = filtered;
-      return JSON.stringify({ thresholds, candidates: filtered }, null, 2);
+      return JSON.stringify({
+        thresholds,
+        filterCriteria: { maxBinStep: 250, minFeeActiveTvlRatio: thresholds.minFeeActiveTvlRatio },
+        darwinWeights: weights,
+        note: 'Sorted by darwinScore. Prioritaskan mcap proxy (TVL) dan fee/TVL — volume & holders adalah weak signals.',
+        candidates: filtered,
+      }, null, 2);
     }
 
     case 'get_pool_detail': {
@@ -132,15 +199,20 @@ async function executeTool(name, input) {
         await hunterNotifyFn(`🚫 *Token Diblokir Scam Screener*\n\n${formatScreenResult(result)}`);
       }
       return JSON.stringify({
-        verdict: result.verdict,
-        safe: result.safe,
-        rugScore: result.rugScore,
-        lpLockedPct: result.lpLockedPct,
-        highFlags: result.highFlags.map(f => f.msg),
-        mediumFlags: result.mediumFlags.map(f => f.msg),
-        recommendation: result.verdict === 'AVOID' ? 'JANGAN DEPLOY'
-          : result.verdict === 'RISKY' ? 'SEBAIKNYA SKIP'
-          : result.verdict === 'CAUTION' ? 'BOLEH TAPI MONITOR KETAT'
+        verdict:       result.verdict,
+        safe:          result.safe,
+        rugScore:      result.rugScore,
+        lpLockedPct:   result.lpLockedPct,
+        highFlags:     result.highFlags.map(f => f.msg),
+        mediumFlags:   result.mediumFlags.map(f => f.msg),
+        sources:       result.sources,
+        gmgnMissing:   !result.sources.gmgn,
+        jupiterStrict: result.jupiterData?.isStrict  || false,
+        jupiterVerified: result.jupiterData?.isVerified || false,
+        jupiterPrice:  result.jupiterData?.priceUsd  || null,
+        recommendation: result.verdict === 'AVOID'   ? 'JANGAN DEPLOY'
+          : result.verdict === 'RISKY'               ? 'SEBAIKNYA SKIP'
+          : result.verdict === 'CAUTION'             ? 'BOLEH TAPI MONITOR KETAT'
           : 'AMAN — lanjut deploy',
       }, null, 2);
     }
@@ -229,6 +301,18 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null) {
   hunterAllowedId = allowedId;
 
   const cfg = getConfig();
+
+  // ── Skip silently jika slot posisi penuh ─────────────────────
+  const { getOpenPositions } = await import('../db/database.js');
+  const openPos = getOpenPositions();
+  if (openPos.length >= cfg.maxPositions) return null;
+
+  // ── Skip silently jika balance tidak cukup ───────────────────
+  try {
+    const { getWalletBalance } = await import('../solana/wallet.js');
+    const balance = await getWalletBalance();
+    if (parseFloat(balance) < cfg.minSolToOpen) return null;
+  } catch { /* lanjut jika gagal cek balance */ }
   const lessonsCtx = getLessonsContext();
   const instincts = getInstinctsContext();
   const strategyIntel = getStrategyIntelligenceContext();
@@ -238,13 +322,21 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null) {
 
 ALUR KERJA SETIAP SIKLUS:
 1. screen_pools → dapatkan kandidat pool terbaik
-2. get_wallet_status → cek apakah bisa buka posisi baru
+2. get_wallet_status → cek apakah bisa buka posisi baru (jika sudah penuh atau balance kurang, HENTIKAN siklus tanpa deploy)
 3. Untuk setiap kandidat menarik:
    a. get_pool_detail → info market + rekomendasi strategi
    b. screen_token → WAJIB, cek scam/rug
    c. Kalau verdict AVOID/RISKY → skip, cari kandidat lain
    d. Kalau verdict CAUTION/PASS → lanjut ke deploy
 4. deploy_position → gunakan strategi yang direkomendasikan
+
+DARWINIAN SIGNAL WEIGHTING (dari 263 closed positions — gunakan ini untuk ranking kandidat):
+- mcap proxy (TVL): 2.5x — STRONG PREDICTOR. Prioritaskan pool dengan TVL > $50K
+- fee/TVL ratio: 2.3x — STRONG PREDICTOR. Fee tinggi relatif ke TVL = pool aktif = kemungkinan profit tinggi
+- volume 24h: 0.36x — WEAK SIGNAL. Hampir tidak prediktif, jangan terlalu dipertimbangkan
+- holder count: 0.3x — USELESS. Tidak prediktif sama sekali, abaikan sebagai faktor utama
+
+Kandidat sudah di-sort by darwinScore. Fokus pada score tinggi. Pool dengan TVL besar + fee/TVL ratio tinggi = target utama.
 
 ATURAN SCREENING TOKEN (wajib diikuti):
 - Coin politik (Trump/Elon/Baron/Melania) → SKIP selalu
