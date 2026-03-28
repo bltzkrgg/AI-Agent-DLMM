@@ -273,12 +273,13 @@ bot.onText(/\/check(?:\s+(.+))?/, async (msg, match) => {
 bot.onText(/\/library/, (msg) => {
   if (msg.from.id !== ALLOWED_ID) return;
   const stats = getLibraryStats();
+  const esc = (s) => String(s).replace(/[_*`[]/g, '\\$&');
   let text = `📚 *Strategy Library*\n\n`;
   text += `Total: ${stats.totalStrategies} | Built-in: ${stats.builtinCount} | Research: ${stats.researchedCount}\n`;
   text += `Last updated: ${stats.lastUpdated ? new Date(stats.lastUpdated).toLocaleString() : 'Belum ada'}\n\n`;
   text += `*Top Strategi:*\n`;
   stats.topStrategies.forEach((s, i) => {
-    text += `${i + 1}. ${s.name} (${s.type}) — ${(s.confidence * 100).toFixed(0)}%\n`;
+    text += `${i + 1}. ${esc(s.name)} (${esc(s.type)}) — ${(s.confidence * 100).toFixed(0)}%\n`;
   });
   text += `\n_/research untuk tambah strategi dari artikel_`;
   bot.sendMessage(msg.chat.id, text, { parse_mode: 'Markdown' });
@@ -304,19 +305,20 @@ bot.onText(/\/research/, async (msg) => {
 
 async function processResearchArticle(chatId, articleText) {
   bot.sendMessage(chatId, '🔬 Menganalisa artikel...');
+  const esc = (s) => String(s || '').replace(/[_*`[]/g, '\\$&');
   try {
     const summary = await summarizeArticle(articleText);
     const result = await extractStrategiesFromArticle(articleText);
-    let text = `📰 *Ringkasan:*\n${summary}\n\n`;
+    let text = `📰 *Ringkasan:*\n${esc(summary)}\n\n`;
     if (result.extracted.length === 0) {
-      text += `⚠️ ${result.message}`;
+      text += `⚠️ ${esc(result.message)}`;
     } else {
       text += `✅ *${result.extracted.length} Strategi Ditemukan:*\n\n`;
       result.extracted.forEach((s, i) => {
-        text += `*${i + 1}. ${s.name}* (${s.type})\n`;
-        text += `📊 Market: ${s.marketConditions?.trend?.join(', ')}\n`;
-        text += `🎯 Entry: ${s.entryConditions}\n`;
-        text += `🚪 Exit: ${s.exitConditions}\n\n`;
+        text += `*${i + 1}. ${esc(s.name)}* (${esc(s.type)})\n`;
+        text += `📊 Market: ${esc(s.marketConditions?.trend?.join(', '))}\n`;
+        text += `🎯 Entry: ${esc(s.entryConditions)}\n`;
+        text += `🚪 Exit: ${esc(s.exitConditions)}\n\n`;
       });
       text += `_Strategi aktif di Library dan akan dipakai Hunter Alpha._`;
     }
