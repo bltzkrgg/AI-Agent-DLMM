@@ -1,0 +1,135 @@
+/**
+ * Jupiter Swap Integration
+ *
+ * Swap any SPL token → SOL via Jupiter V6 API.
+ * Digunakan setelah claim fees atau close posisi untuk convert profit ke SOL.
+ */
+
+import { VersionedTransaction, PublicKey } from '@solana/web3.js';
+import { getConnection, getWallet } from './wallet.js';
+import { fetchWithTimeout } from '../utils/safeJson.js';
+import { isDryRun } from '../config.js';
+
+export const SOL_MINT  = 'So11111111111111111111111111111111111111112';
+export const USDC_MINT = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
+
+const JUPITER_API = 'https://quote-api.jup.ag/v6';
+
+// ─── Get token balance for a specific mint ────────────────────────
+
+export async function getTokenBalance(walletPublicKey, tokenMint) {
+  if (tokenMint === SOL_MINT) {
+    const connection = getConnection();
+    const balance = await connection.getBalance(walletPublicKey);
+    return balance; // in lamports
+  }
+  try {
+    const connection = getConnection();
+    const mintPubkey = new PublicKey(tokenMint);
+    const accounts = await connection.getParsedTokenAccountsByOwner(walletPublicKey, {
+      mint: mintPubkey,
+    });
+    if (!accounts.value.length) return 0;
+    return accounts.value[0].account.data.parsed.info.tokenAmount.amount; // raw amount string
+  } catch {
+    return 0;
+  }
+}
+
+// ─── Get Jupiter quote ────────────────────────────────────────────
+
+export async function getJupiterQuote(inputMint, outputMint, amountRaw, slippageBps = 100) {
+  const url = `${JUPITER_API}/quote?inputMint=${inputMint}&outputMint=${outputMint}&amount=${amountRaw}&slippageBps=${slippageBps}`;
+  const res = await fetchWithTimeout(url, {}, 10000);
+  if (!res.ok) {
+    const err = await res.text().catch(() => res.status);
+    throw new Error(`Jupiter quote failed: ${err}`);
+  }
+  return await res.json();
+}
+
+// ─── Swap token → SOL ─────────────────────────────────────────────
+
+export async function swapToSOL(inputMint, amountRaw, slippageBps = 100) {
+  if (!inputMint || inputMint === SOL_MINT) {
+    return { skipped: true, reason: 'Already SOL or no mint provided' };
+  }
+  if (!amountRaw || parseInt(amountRaw) <= 0) {
+    return { skipped: true, reason: 'Amount is zero' };
+  }
+
+  if (isDryRun()) {
+    return {
+      dryRun: true,
+      message: `[DRY RUN] Would swap ${amountRaw} of ${inputMint.slice(0, 8)}... → SOL`,
+    };
+  }
+
+  const wallet = getWallet();
+  const connection = getConnection();
+
+  // 1. Get quote
+  const quote = await getJupiterQuote(inputMint, SOL_MINT, amountRaw, slippageBps);
+  const outSol = parseInt(quote.outAmount) / 1e9;
+
+  // 2. Get swap transaction
+  const swapRes = await fetchWithTimeout(`${JUPITER_API}/swap`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      quoteResponse: quote,
+      userPublicKey: wallet.publicKey.toString(),
+      wrapAndUnwrapSol: true,
+      dynamicComputeUnitLimit: true,
+      prioritizationFeeLamports: 'auto',
+    }),
+  }, 15000);
+
+  if (!swapRes.ok) {
+    const err = await swapRes.text().catch(() => swapRes.status);
+    throw new Error(`Jupiter swap TX failed: ${err}`);
+  }
+
+  const { swapTransaction } = await swapRes.json();
+
+  // 3. Deserialize → sign → send
+  const txBuf = Buffer.from(swapTransaction, 'base64');
+  const tx = VersionedTransaction.deserialize(txBuf);
+  tx.sign([wallet]);
+
+  const txHash = await connection.sendRawTransaction(tx.serialize(), {
+    skipPreflight: false,
+    maxRetries: 3,
+  });
+
+  const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash();
+  const confirmation = await Promise.race([
+    connection.confirmTransaction({ signature: txHash, blockhash, lastValidBlockHeight }, 'confirmed'),
+    new Promise((_, reject) => setTimeout(() => reject(new Error('Swap confirm timeout')), 60000)),
+  ]);
+
+  if (confirmation?.value?.err) throw new Error(`Swap TX failed: ${JSON.stringify(confirmation.value.err)}`);
+
+  return {
+    success: true,
+    txHash,
+    inputMint,
+    outputMint: SOL_MINT,
+    inAmount:   amountRaw,
+    outAmountLamports: quote.outAmount,
+    outSol:     parseFloat(outSol.toFixed(6)),
+    priceImpactPct: quote.priceImpactPct || 0,
+  };
+}
+
+// ─── Swap all non-SOL balance of a token to SOL ───────────────────
+
+export async function swapAllToSOL(tokenMint, slippageBps = 100) {
+  const wallet = getWallet();
+  const balance = await getTokenBalance(wallet.publicKey, tokenMint);
+  const amount  = typeof balance === 'string' ? balance : balance.toString();
+  if (!amount || amount === '0') {
+    return { skipped: true, reason: `No balance for ${tokenMint.slice(0, 8)}...` };
+  }
+  return swapToSOL(tokenMint, amount, slippageBps);
+}

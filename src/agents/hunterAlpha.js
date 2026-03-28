@@ -285,6 +285,36 @@ async function executeTool(name, input) {
         input.token_y_amount,
         stratParams.priceRangePercent || 5
       );
+
+      // Notifikasi posisi terbuka dengan detail PnL awal
+      if (hunterNotifyFn && result.success) {
+        const cfg2 = getConfig();
+        const tpTarget  = cfg2.takeProfitFeePct   ?? 5;
+        const slTarget  = cfg2.stopLossPct        ?? 5;
+        const trailAct  = 3.0; // trailing TP activate threshold
+
+        const openMsg =
+          `🚀 *Posisi Dibuka*\n\n` +
+          `📍 \`${result.positionAddress.slice(0, 8)}...\`\n` +
+          `🏊 Pool: \`${input.pool_address.slice(0, 8)}...\`\n` +
+          `📊 Strategi: ${strategy?.name || 'default'}\n\n` +
+          `💰 *Deploy:*\n` +
+          `  ${result.tokenXSymbol}: ${result.tokenXAmount}\n` +
+          `  ${result.tokenYSymbol}: ${result.tokenYAmount}\n\n` +
+          `📈 *Range:*\n` +
+          `  Entry: ${result.entryPrice?.toFixed(8)}\n` +
+          `  Bawah: ${result.lowerPrice?.toFixed(8)} (-${result.priceRangePct}%)\n` +
+          `  Atas:  ${result.upperPrice?.toFixed(8)} (+${result.priceRangePct}%)\n` +
+          `  Fee/bin: ${result.feeRatePct}%\n\n` +
+          `🎯 *Target:*\n` +
+          `  TP: +${tpTarget}% | Trailing: aktif di +${trailAct}%\n` +
+          `  SL: -${slTarget}%\n\n` +
+          `💭 _${input.reasoning}_\n\n` +
+          `🔗 [Tx](https://solscan.io/tx/${result.txHash})`;
+
+        await hunterNotifyFn(openMsg);
+      }
+
       return JSON.stringify({ ...result, strategyUsed: strategy?.name, reasoning: input.reasoning }, null, 2);
     }
 

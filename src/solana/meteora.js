@@ -172,13 +172,22 @@ export async function openPosition(poolAddress, tokenXAmount, tokenYAmount, pric
     txHashes.push(txHash);
   }
 
+  // Price range estimation — binStep per bin in percent
+  const binStepPct = binStep / 10000;
+  const lowerPrice = activeBinPrice * Math.pow(1 + binStepPct, minBinId - activeBin.binId);
+  const upperPrice = activeBinPrice * Math.pow(1 + binStepPct, maxBinId - activeBin.binId);
+  const feeRatePct = (binStep / 10000) * 100;
+
+  const tokenXSymbol = dlmmPool.tokenX.symbol || 'X';
+  const tokenYSymbol = dlmmPool.tokenY.symbol || 'Y';
+
   savePosition({
     pool_address: poolAddress,
     position_address: newPosition.publicKey.toString(),
     token_x: dlmmPool.tokenX.publicKey.toString(),
     token_y: dlmmPool.tokenY.publicKey.toString(),
     entry_price: activeBinPrice,
-    deployed_usd: 0, // will be updated by healer when PnL data available
+    deployed_usd: 0,
   });
 
   return {
@@ -187,7 +196,18 @@ export async function openPosition(poolAddress, tokenXAmount, tokenYAmount, pric
     txHashes,
     positionAddress: newPosition.publicKey.toString(),
     entryPrice: activeBinPrice,
-    binRange: { min: minBinId, max: maxBinId },
+    lowerPrice: parseFloat(lowerPrice.toFixed(8)),
+    upperPrice: parseFloat(upperPrice.toFixed(8)),
+    priceRangePct: priceRangePercent,
+    binRange: { min: minBinId, max: maxBinId, active: activeBin.binId },
+    binStep,
+    feeRatePct: parseFloat(feeRatePct.toFixed(4)),
+    tokenXAmount: tokenXAmount,
+    tokenYAmount: tokenYAmount,
+    tokenXSymbol,
+    tokenYSymbol,
+    tokenXMint: dlmmPool.tokenX.publicKey.toString(),
+    tokenYMint: dlmmPool.tokenY.publicKey.toString(),
   };
 }
 

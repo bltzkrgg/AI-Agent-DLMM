@@ -1,6 +1,6 @@
 import { createMessage, resolveModel } from '../agent/provider.js';
 import { getConfig, isDryRun, getThresholds } from '../config.js';
-import { getPositionInfo, closePositionDLMM, claimFees } from '../solana/meteora.js';
+import { getPositionInfo, closePositionDLMM, claimFees, getPoolInfo } from '../solana/meteora.js';
 import { getWalletBalance } from '../solana/wallet.js';
 import { getOpenPositions, saveNotification } from '../db/database.js';
 import { getLessonsContext } from '../learn/lessons.js';
@@ -8,6 +8,7 @@ import { checkStopLoss, checkMaxDrawdown, recordPnl, getSafetyStatus } from '../
 import { analyzeMarket } from '../market/analyst.js';
 import { getInstinctsContext } from '../market/memory.js';
 import { getStrategyIntelligenceContext } from '../market/strategyPerformance.js';
+import { swapAllToSOL, SOL_MINT } from '../solana/jupiter.js';
 
 // ─── Trailing Take Profit Config ──────────────────────────────────
 // Terinspirasi dari Meridian: aktifkan trailing setelah profit mencapai
@@ -73,6 +74,18 @@ const HEALER_TOOLS = [
         in_range:        { type: 'boolean' },
       },
       required: ['token_mint', 'pool_address'],
+    },
+  },
+  {
+    name: 'swap_to_sol',
+    description: 'Swap token ke SOL via Jupiter. Gunakan setelah close_position atau claim_fees untuk convert profit ke SOL.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        token_mint: { type: 'string', description: 'Mint address token yang akan di-swap ke SOL' },
+        reasoning:  { type: 'string' },
+      },
+      required: ['token_mint', 'reasoning'],
     },
   },
 ];
@@ -208,8 +221,25 @@ async function executeTool(name, input) {
           reasoning: input.reasoning,
         }, null, 2);
       }
-      const result = await claimFees(input.pool_address, input.position_address);
-      return JSON.stringify({ ...result, reasoning: input.reasoning }, null, 2);
+      const claimResult = await claimFees(input.pool_address, input.position_address);
+
+      // Auto-swap fee tokens ke SOL setelah claim
+      const swapResults = [];
+      try {
+        const poolInfo = await getPoolInfo(input.pool_address);
+        for (const mint of [poolInfo.tokenX, poolInfo.tokenY]) {
+          if (mint && mint !== SOL_MINT) {
+            const swapRes = await swapAllToSOL(mint);
+            if (swapRes.success) swapResults.push({ mint: mint.slice(0, 8), outSol: swapRes.outSol });
+          }
+        }
+      } catch { /* swap best-effort */ }
+
+      return JSON.stringify({
+        ...claimResult,
+        autoSwap: swapResults.length > 0 ? swapResults : 'skipped',
+        reasoning: input.reasoning,
+      }, null, 2);
     }
 
     case 'close_position': {
@@ -220,10 +250,27 @@ async function executeTool(name, input) {
           reasoning: input.reasoning,
         }, null, 2);
       }
-      const result = await closePositionDLMM(input.pool_address, input.position_address);
+      const closeResult = await closePositionDLMM(input.pool_address, input.position_address);
       outOfRangeTracker.delete(input.position_address);
       peakPnlTracker.delete(input.position_address);
-      return JSON.stringify({ ...result, reasoning: input.reasoning }, null, 2);
+
+      // Auto-swap returned tokens ke SOL setelah close
+      const swapResults = [];
+      try {
+        const poolInfo = await getPoolInfo(input.pool_address);
+        for (const mint of [poolInfo.tokenX, poolInfo.tokenY]) {
+          if (mint && mint !== SOL_MINT) {
+            const swapRes = await swapAllToSOL(mint);
+            if (swapRes.success) swapResults.push({ mint: mint.slice(0, 8), outSol: swapRes.outSol });
+          }
+        }
+      } catch { /* swap best-effort */ }
+
+      return JSON.stringify({
+        ...closeResult,
+        autoSwap: swapResults.length > 0 ? swapResults : 'skipped',
+        reasoning: input.reasoning,
+      }, null, 2);
     }
 
     case 'get_wallet_balance': {
@@ -250,6 +297,11 @@ async function executeTool(name, input) {
       }, null, 2);
     }
 
+    case 'swap_to_sol': {
+      const swapResult = await swapAllToSOL(input.token_mint);
+      return JSON.stringify({ ...swapResult, reasoning: input.reasoning }, null, 2);
+    }
+
     default:
       return 'Tool tidak dikenali';
   }
@@ -273,27 +325,85 @@ export async function runHealerAlpha(notifyFn) {
     return msg;
   }
 
-  // ── Stop-Loss per posisi (pre-flight) ─────────────────────────
+  // ── Pre-flight: Stop-Loss + Take Profit + Trailing TP ────────
   for (const pos of openPositions) {
     try {
       const onChain = await getPositionInfo(pos.pool_address);
       const match   = onChain?.find(p => p.address === pos.position_address);
       if (!match) continue;
 
-      const slCheck = checkStopLoss(match);
-      if (slCheck.triggered && !isDryRun()) {
-        await notifyFn?.(`🛑 *Stop-Loss Triggered*\n\n📍 Posisi: \`${pos.position_address.slice(0,8)}...\`\n${slCheck.reason}\n\nMenutup posisi...`);
+      const pnlPct = match.pnlPct ?? 0;
+      const addr   = pos.position_address;
+
+      // ── Trailing TP state ────────────────────────────────────
+      let tracker = peakPnlTracker.get(addr) || { peakPnl: pnlPct, trailingActive: false };
+      if (pnlPct > tracker.peakPnl) tracker.peakPnl = pnlPct;
+      if (!tracker.trailingActive && pnlPct >= TRAILING_TP_ACTIVATE_PCT) tracker.trailingActive = true;
+      const trailingTpHit = tracker.trailingActive && (tracker.peakPnl - pnlPct) >= TRAILING_TP_DROP_PCT;
+      peakPnlTracker.set(addr, tracker);
+
+      const slCheck  = checkStopLoss(match);
+      const tpHit    = pnlPct >= thresholds.takeProfitFeePct;
+
+      let triggerReason = null;
+      let triggerEmoji  = '';
+      let triggerLabel  = '';
+
+      if (trailingTpHit) {
+        triggerReason = `Trailing TP: PnL turun dari peak ${tracker.peakPnl.toFixed(2)}% ke ${pnlPct.toFixed(2)}%`;
+        triggerEmoji  = '🎯';
+        triggerLabel  = 'Trailing Take Profit';
+      } else if (tpHit) {
+        triggerReason = `Take Profit: PnL ${pnlPct.toFixed(2)}% ≥ target ${thresholds.takeProfitFeePct}%`;
+        triggerEmoji  = '💰';
+        triggerLabel  = 'Take Profit';
+      } else if (slCheck.triggered) {
+        triggerReason = slCheck.reason;
+        triggerEmoji  = '🛑';
+        triggerLabel  = 'Stop-Loss';
+      }
+
+      if (!triggerReason) continue;
+
+      if (isDryRun()) {
+        await notifyFn?.(`🧪 [DRY RUN] ${triggerLabel} akan triggered:\n${triggerReason}`);
+        continue;
+      }
+
+      await notifyFn?.(
+        `${triggerEmoji} *${triggerLabel} Triggered*\n\n` +
+        `📍 \`${addr.slice(0, 8)}...\`\n` +
+        `📊 PnL: ${pnlPct >= 0 ? '+' : ''}${pnlPct.toFixed(2)}%\n` +
+        `💭 ${triggerReason}\n\nMenutup posisi...`
+      );
+
+      try {
+        await closePositionDLMM(pos.pool_address, addr, {
+          pnlUsd: match.pnlUsd || 0,
+          pnlPct,
+          feeUsd: match.feeUsd || 0,
+          closeReason: triggerLabel.toUpperCase().replace(' ', '_'),
+        });
+        peakPnlTracker.delete(addr);
+        outOfRangeTracker.delete(addr);
+        recordPnl(match.pnlUsd || 0);
+
+        // Auto-swap token profit → SOL
+        const swapMsgs = [];
         try {
-          await closePositionDLMM(pos.pool_address, pos.position_address);
-          peakPnlTracker.delete(pos.position_address);
-          outOfRangeTracker.delete(pos.position_address);
-          recordPnl(match.pnlUsd || 0);
-          await notifyFn?.(`✅ Posisi berhasil ditutup via stop-loss.`);
-        } catch (e) {
-          await notifyFn?.(`❌ Gagal close stop-loss: ${e.message}`);
-        }
-      } else if (slCheck.triggered && isDryRun()) {
-        await notifyFn?.(`🧪 [DRY RUN] Stop-loss akan triggered: ${slCheck.reason}`);
+          const poolInfo = await getPoolInfo(pos.pool_address);
+          for (const mint of [poolInfo.tokenX, poolInfo.tokenY]) {
+            if (mint && mint !== SOL_MINT) {
+              const swapRes = await swapAllToSOL(mint);
+              if (swapRes.success) swapMsgs.push(`+${swapRes.outSol} SOL`);
+            }
+          }
+        } catch { /* swap best-effort */ }
+
+        const swapNote = swapMsgs.length > 0 ? `\n🔄 Auto-swap: ${swapMsgs.join(', ')}` : '';
+        await notifyFn?.(`✅ Posisi ditutup (${triggerLabel}).${swapNote}`);
+      } catch (e) {
+        await notifyFn?.(`❌ Gagal close ${triggerLabel}: ${e.message}`);
       }
     } catch { /* skip jika gagal fetch */ }
   }
@@ -304,34 +414,32 @@ export async function runHealerAlpha(notifyFn) {
 
   const systemPrompt = `Kamu adalah Healer Alpha — autonomous position management agent untuk Meteora DLMM.
 
-Tugasmu setiap siklus:
-1. Ambil semua posisi dengan get_all_positions (sudah include market analysis otomatis)
-2. Untuk setiap posisi, baca field-field ini dan ambil keputusan:
+CATATAN: Stop-loss, Take Profit, dan Trailing TP sudah dijalankan secara DETERMINISTIK sebelum loop ini.
+Fokus kamu di sini: posisi yang masih berjalan, out-of-range, proactive exit, dan claim fees.
 
-   TRAILING TAKE PROFIT (prioritas tertinggi):
-   - trailingTpHit = true → WAJIB CLOSE, profit sudah turun dari peak (lock sekarang!)
-   - trailingActive = true tapi trailingTpHit = false → HOLD, trailing masih aktif dan aman
+ALUR KERJA:
+1. get_all_positions → evaluasi semua posisi aktif
+2. Untuk setiap posisi:
 
-   TAKE PROFIT:
-   - takeProfitHit = true → CLOSE (lock profit)
-
-   PROACTIVE EXIT (profit tapi bearish):
-   - proactiveCloseRecommended = true → WAJIB CLOSE untuk lock profit sebelum turun
-   - proactiveWarning ada tapi proactiveCloseRecommended = false → monitor ketat
-
-   STOP LOSS (posisi rugi):
-   - pnlPct < -${safety.stopLossPct}% DAN marketSignal.signal = BEARISH → CLOSE
-   - pnlPct < -${safety.stopLossPct}% DAN marketSignal.signal = BULLISH confidence > 0.6 → HOLD, tunggu recovery
+   PROACTIVE EXIT (profit tapi market bearish):
+   - proactiveCloseRecommended = true → WAJIB CLOSE, lalu swap_to_sol untuk tokenX dan tokenY
+   - proactiveWarning ada tapi tidak recommended → monitor ketat
 
    OUT OF RANGE:
-   - shouldClose = true DAN marketSignal.signal = BEARISH → CLOSE
-   - shouldClose = true DAN marketSignal.signal = BULLISH → HOLD sebentar lagi
+   - shouldClose = true DAN marketSignal.signal = BEARISH → close_position, lalu swap_to_sol
+   - shouldClose = true DAN marketSignal.signal = BULLISH → HOLD
 
-   NORMAL:
-   - shouldClaimFee = true → CLAIM_FEES
-   - Semua aman → STAY
+   STOP LOSS TAMBAHAN (jika pre-flight gagal):
+   - pnlPct < -${safety.stopLossPct}% DAN BEARISH → close_position, lalu swap_to_sol
+   - pnlPct < -${safety.stopLossPct}% DAN BULLISH confidence > 0.6 → HOLD, tunggu recovery
 
-3. Berikan reasoning lengkap untuk setiap keputusan.
+   CLAIM FEES:
+   - shouldClaimFee = true → claim_fees (auto-swap sudah terjadi setelahnya)
+
+   NORMAL → STAY
+
+3. Setelah setiap close_position, gunakan swap_to_sol untuk tokenX dan tokenY yang bukan SOL.
+4. Berikan reasoning lengkap untuk setiap keputusan.
 
 Safety hari ini: Daily PnL $${safety.dailyPnlUsd} | Drawdown ${safety.drawdownPct}%
 Trailing TP: aktif di ${TRAILING_TP_ACTIVATE_PCT}%, close kalau turun ${TRAILING_TP_DROP_PCT}% dari peak
