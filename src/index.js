@@ -2,22 +2,6 @@ import 'dotenv/config';
 import TelegramBot from 'node-telegram-bot-api';
 import cron from 'node-cron';
 import { writeFileSync, readFileSync, existsSync, unlinkSync } from 'fs';
-
-// ─── PID lock — cegah multiple instance ─────────────────────────
-const PID_FILE = new URL('../../bot.pid', import.meta.url).pathname;
-if (existsSync(PID_FILE)) {
-  const oldPid = parseInt(readFileSync(PID_FILE, 'utf-8').trim());
-  try {
-    process.kill(oldPid, 0); // cek apakah proses masih jalan
-    console.error(`❌ Bot sudah jalan (PID ${oldPid}). Hentikan dulu dengan: kill ${oldPid}`);
-    process.exit(1);
-  } catch {
-    // proses lama sudah mati, hapus PID file lama
-    unlinkSync(PID_FILE);
-  }
-}
-writeFileSync(PID_FILE, String(process.pid));
-process.on('exit', () => { try { unlinkSync(PID_FILE); } catch {} });
 import { initSolana, getWalletBalance } from './solana/wallet.js';
 import { processMessage } from './agent/claude.js';
 import { handleStrategyCommand, isInStrategySession } from './strategies/strategyHandler.js';
@@ -36,6 +20,22 @@ import { initMonitor } from './monitor/positionMonitor.js';
 import { autoEvolveIfReady } from './learn/evolve.js';
 import { getTodayResults, formatDailyReport, savePerformanceSnapshot, backupAllData } from './market/strategyPerformance.js';
 import { runStartupModelCheck, formatModelStatus } from './agent/modelCheck.js';
+
+// ─── PID lock — cegah multiple instance ─────────────────────────
+const PID_FILE = new URL('../../bot.pid', import.meta.url).pathname;
+if (existsSync(PID_FILE)) {
+  const oldPid = parseInt(readFileSync(PID_FILE, 'utf-8').trim());
+  try {
+    process.kill(oldPid, 0); // cek apakah proses masih jalan
+    console.error(`❌ Bot sudah jalan (PID ${oldPid}). Hentikan dulu dengan: kill ${oldPid}`);
+    process.exit(1);
+  } catch {
+    // proses lama sudah mati, hapus PID file lama
+    unlinkSync(PID_FILE);
+  }
+}
+writeFileSync(PID_FILE, String(process.pid));
+process.on('exit', () => { try { unlinkSync(PID_FILE); } catch {} });
 
 // ─── Validate env ────────────────────────────────────────────────
 const required = ['TELEGRAM_BOT_TOKEN', 'ALLOWED_TELEGRAM_ID', 'OPENROUTER_API_KEY', 'SOLANA_RPC_URL', 'WALLET_PRIVATE_KEY'];
@@ -188,7 +188,7 @@ cron.schedule('0 7 * * *', async () => {
 
     let text = `☀️ *Daily Briefing*\n\n`;
     text += `💰 Balance: ${balance} SOL\n`;
-    text += `📍 Posisi: ${openPos.length}/${cfg.maxPositions}\n`;
+    text += `📍 Posisi: ${openPos.length}/${getConfig().maxPositions}\n`;
     text += `📈 Closed total: ${stats.closedPositions} | Win rate: ${stats.winRate}\n`;
     text += `💵 Total PnL: $${stats.totalPnlUsd} | Fees: $${stats.totalFeesUsd}\n`;
     text += `🎯 Avg range efficiency: ${memStats.avgRangeEfficiency}\n`;
@@ -210,7 +210,7 @@ cron.schedule('0 * * * *', async () => {
     await notify(
       `📊 *Hourly Health Check*\n\n` +
       `💰 Balance: ${balance} SOL\n` +
-      `📍 Posisi: ${openPos.length}/${cfg.maxPositions}\n` +
+      `📍 Posisi: ${openPos.length}/${getConfig().maxPositions}\n` +
       `📈 Closed: ${stats.closedPositions} | Win rate: ${stats.winRate}\n` +
       `🧠 Instincts: ${memStats.instinctCount}`
     );
