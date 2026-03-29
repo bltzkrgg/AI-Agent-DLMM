@@ -117,6 +117,19 @@ async function notify(text) {
 let _hunterBusy = false;
 let _healerBusy = false;
 
+// ─── Post-close reopen confirmation ──────────────────────────────
+// Setelah Healer menutup posisi, Hunter diblokir sampai user konfirmasi
+let _waitingReopenConfirmation = false;
+let _reopenConfirmTimeout = null;
+
+function clearReopenConfirmation() {
+  _waitingReopenConfirmation = false;
+  if (_reopenConfirmTimeout) {
+    clearTimeout(_reopenConfirmTimeout);
+    _reopenConfirmTimeout = null;
+  }
+}
+
 // ─── Setup state — dipakai oleh wizard /entry ────────────────────
 const setupState = {
   phase: 'done', // bot langsung jalan; wizard hanya aktif saat /entry
@@ -126,6 +139,10 @@ const setupState = {
 
 async function triggerHunter() {
   if (_hunterBusy) return;
+  if (_waitingReopenConfirmation) {
+    console.log('⏭ Hunter skip — menunggu konfirmasi reopen dari user');
+    return;
+  }
   const liveCfg = getConfig();
   const openPos = getOpenPositions();
   if (openPos.length >= liveCfg.maxPositions) {
@@ -136,6 +153,42 @@ async function triggerHunter() {
   try { await runHunterAlpha(notify, bot, ALLOWED_ID); }
   catch (e) { notify(`❌ Hunter error: ${e.message}`).catch(() => {}); }
   finally { _hunterBusy = false; }
+}
+
+// Jalankan Healer — jika ada posisi ditutup, minta konfirmasi reopen
+async function runHealerWithReopenCheck() {
+  const beforeCount = getOpenPositions().length;
+  await runHealerAlpha(notify);
+  const afterCount = getOpenPositions().length;
+
+  if (afterCount < beforeCount) {
+    // Satu atau lebih posisi ditutup — minta konfirmasi sebelum buka baru
+    _waitingReopenConfirmation = true;
+
+    // Auto-expire setelah 30 menit — bot kembali normal tanpa deploy
+    _reopenConfirmTimeout = setTimeout(() => {
+      if (_waitingReopenConfirmation) {
+        _waitingReopenConfirmation = false;
+        notify('⏱️ Konfirmasi reopen expired. Bot menunggu /hunt manual untuk buka posisi baru.').catch(() => {});
+      }
+    }, 30 * 60 * 1000);
+
+    const closedCount = beforeCount - afterCount;
+    await bot.sendMessage(ALLOWED_ID,
+      `✅ *${closedCount} posisi berhasil ditutup*\n\n` +
+      `💰 Sisa posisi terbuka: ${afterCount}\n\n` +
+      `🤔 *Apakah Anda ingin buka posisi baru?*`,
+      {
+        parse_mode: 'Markdown',
+        reply_markup: {
+          inline_keyboard: [[
+            { text: '✅ Ya, Buka Posisi Baru', callback_data: 'reopen_yes' },
+            { text: '❌ Tidak, Tahan Dulu',    callback_data: 'reopen_no'  },
+          ]],
+        },
+      }
+    ).catch(() => {});
+  }
 }
 
 // ─── Cron jobs ───────────────────────────────────────────────────
@@ -150,7 +203,7 @@ cron.schedule(`*/${cfg.managementIntervalMin} * * * *`, async () => {
 
   _healerBusy = true;
   try {
-    await runHealerAlpha(notify);
+    await runHealerWithReopenCheck();
     // Auto-evolve threshold tiap 5 posisi closed — tanpa perlu manual
     autoEvolveIfReady(notify).catch(e => console.error('Auto-evolve error:', e.message));
     // Auto-save strategy performance snapshot ke file lokal
@@ -331,8 +384,34 @@ bot.onText(/\/hunt/, async (msg) => {
 bot.onText(/\/heal/, async (msg) => {
   if (msg.from.id !== ALLOWED_ID) return;
   bot.sendMessage(msg.chat.id, '🩺 Menjalankan Healer Alpha...');
-  try { await runHealerAlpha(notify); }
+  try { await runHealerWithReopenCheck(); }
   catch (e) { bot.sendMessage(msg.chat.id, `❌ ${e.message}`); }
+});
+
+// ─── Inline keyboard callbacks ────────────────────────────────────
+
+bot.on('callback_query', async (query) => {
+  if (query.from.id !== ALLOWED_ID) return;
+
+  if (query.data === 'reopen_yes') {
+    clearReopenConfirmation();
+    await bot.answerCallbackQuery(query.id, { text: 'Memulai pencarian pool baru...' });
+    await bot.editMessageReplyMarkup({ inline_keyboard: [] }, {
+      chat_id: query.message.chat.id,
+      message_id: query.message.message_id,
+    }).catch(() => {});
+    await notify('🦅 Memulai Hunter Alpha — mencari pool terbaik...');
+    triggerHunter().catch(e => notify(`❌ Hunter error: ${e.message}`));
+
+  } else if (query.data === 'reopen_no') {
+    clearReopenConfirmation();
+    await bot.answerCallbackQuery(query.id, { text: 'Bot menunggu instruksi.' });
+    await bot.editMessageReplyMarkup({ inline_keyboard: [] }, {
+      chat_id: query.message.chat.id,
+      message_id: query.message.message_id,
+    }).catch(() => {});
+    await notify('⏸️ Deploy ditahan. Ketik /hunt saat siap buka posisi baru.');
+  }
 });
 
 bot.onText(/\/check(?:\s+(.+))?/, async (msg, match) => {

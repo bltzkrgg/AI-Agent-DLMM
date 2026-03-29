@@ -48,13 +48,26 @@ const HEALER_TOOLS = [
   },
   {
     name: 'close_position',
-    description: 'Tutup posisi dan tarik semua likuiditas + fees',
+    description: 'Tutup posisi dan tarik semua likuiditas + fees. Token X dan SOL dikembalikan ke wallet — best-effort swap ke SOL setelahnya.',
     input_schema: {
       type: 'object',
       properties: {
         pool_address:     { type: 'string' },
         position_address: { type: 'string' },
         reasoning:        { type: 'string', description: 'Alasan menutup: TAKE_PROFIT, TRAILING_TP, OUT_OF_RANGE, STOP_LOSS, REBALANCE' },
+      },
+      required: ['pool_address', 'position_address', 'reasoning'],
+    },
+  },
+  {
+    name: 'zap_out',
+    description: 'Tutup posisi + langsung swap SEMUA token ke SOL via Jupiter dengan retry otomatis (3 percobaan). Gunakan ini saat: (1) user minta "zap out", (2) exit agresif/darurat, (3) close_position sebelumnya gagal swap. Lebih reliable daripada close_position untuk memastikan semua return ter-convert ke SOL.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        pool_address:     { type: 'string' },
+        position_address: { type: 'string' },
+        reasoning:        { type: 'string', description: 'Alasan zap out' },
       },
       required: ['pool_address', 'position_address', 'reasoning'],
     },
@@ -307,6 +320,49 @@ async function executeTool(name, input) {
       }, null, 2);
     }
 
+    case 'zap_out': {
+      // Zap Out = close position + guaranteed swap semua token ke SOL
+      const closeResult = await closePositionDLMM(input.pool_address, input.position_address);
+      outOfRangeTracker.delete(input.position_address);
+      peakPnlTracker.delete(input.position_address);
+
+      const swapResults = [];
+      const swapErrors  = [];
+      try {
+        const poolInfo = await getPoolInfo(input.pool_address);
+        for (const mint of [poolInfo.tokenX, poolInfo.tokenY]) {
+          if (!mint || mint === SOL_MINT) continue;
+          // Retry 3x dengan backoff
+          for (let attempt = 1; attempt <= 3; attempt++) {
+            try {
+              const swapRes = await swapAllToSOL(mint);
+              if (swapRes.success) {
+                swapResults.push({ mint: mint.slice(0, 8), outSol: swapRes.outSol, txHash: swapRes.txHash });
+              } else {
+                swapResults.push({ mint: mint.slice(0, 8), skipped: swapRes.reason });
+              }
+              break;
+            } catch (e) {
+              if (attempt === 3) swapErrors.push({ mint: mint.slice(0, 8), error: e.message });
+              else await new Promise(r => setTimeout(r, 2000 * attempt));
+            }
+          }
+        }
+      } catch (e) {
+        swapErrors.push({ error: e.message });
+      }
+
+      const totalSwappedSol = swapResults.reduce((s, r) => s + (r.outSol || 0), 0);
+      return JSON.stringify({
+        ...closeResult,
+        zapOut: true,
+        swapResults,
+        swapErrors: swapErrors.length > 0 ? swapErrors : null,
+        totalSwappedSol: parseFloat(totalSwappedSol.toFixed(6)),
+        reasoning: input.reasoning,
+      }, null, 2);
+    }
+
     case 'swap_to_sol': {
       const swapResult = await swapAllToSOL(input.token_mint);
       return JSON.stringify({ ...swapResult, reasoning: input.reasoning }, null, 2);
@@ -523,16 +579,24 @@ CATATAN: Stop-loss, Take Profit, dan Trailing TP sudah diproses di pre-flight de
 Posisi yang sampai di loop ini = belum di-close oleh pre-flight (masih aman atau chart bilang HOLD).
 Fokus kamu: proactive exit saat market bearish, out-of-range, claim fees, dan keputusan edge case.
 
+DUA MODE CLOSE:
+   • close_position — tutup posisi, best-effort swap. Untuk kondisi normal.
+   • zap_out — tutup posisi + guaranteed swap ke SOL (retry 3x). Gunakan untuk:
+     - User minta "zap out" atau "keluar bersih"
+     - Exit darurat (SL agresif, proactive BEARISH tinggi)
+     - Konfirmasi bahwa close_position sebelumnya gagal swap
+   Jangan panggil swap_to_sol secara terpisah setelah close_position atau zap_out — sudah ditangani otomatis.
+
 ALUR KERJA:
 1. get_all_positions → evaluasi semua posisi aktif
 2. Untuk setiap posisi:
 
    PROACTIVE EXIT (profit tapi market bearish):
-   - proactiveCloseRecommended = true → WAJIB CLOSE, lalu swap_to_sol untuk tokenX dan tokenY
+   - proactiveCloseRecommended = true → WAJIB zap_out (exit bersih ke SOL)
    - proactiveWarning ada tapi tidak recommended → monitor ketat
 
    OUT OF RANGE:
-   - shouldClose = true DAN marketSignal.signal = BEARISH → close_position, lalu swap_to_sol
+   - shouldClose = true DAN marketSignal.signal = BEARISH → zap_out
    - shouldClose = true DAN marketSignal.signal = BULLISH → HOLD
 
    STOP LOSS TAMBAHAN (jika pre-flight gagal):

@@ -58,14 +58,16 @@ for (const sql of migrations) {
 
 export function savePosition(data) {
   return db.prepare(`
-    INSERT OR IGNORE INTO positions 
-    (pool_address, position_address, token_x, token_y, entry_price, deployed_usd, strategy_used)
-    VALUES (@pool_address, @position_address, @token_x, @token_y, @entry_price, @deployed_usd, @strategy_used)
+    INSERT OR IGNORE INTO positions
+    (pool_address, position_address, token_x, token_y, token_x_amount, token_y_amount, entry_price, deployed_usd, strategy_used)
+    VALUES (@pool_address, @position_address, @token_x, @token_y, @token_x_amount, @token_y_amount, @entry_price, @deployed_usd, @strategy_used)
   `).run({
     pool_address: data.pool_address,
     position_address: data.position_address,
     token_x: data.token_x,
     token_y: data.token_y,
+    token_x_amount: data.token_x_amount || 0,
+    token_y_amount: data.token_y_amount || 0,
     entry_price: data.entry_price || 0,
     deployed_usd: data.deployed_usd || 0,
     strategy_used: data.strategy_used || null,

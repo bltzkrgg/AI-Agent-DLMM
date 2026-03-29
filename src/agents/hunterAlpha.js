@@ -372,7 +372,8 @@ async function executeTool(name, input) {
         input.pool_address,
         tokenXAmount,
         tokenYAmount,
-        stratParams.priceRangePercent || 5
+        stratParams.priceRangePercent || 5,
+        strategy?.name || null
       );
 
       // Notifikasi posisi terbuka dengan detail PnL awal

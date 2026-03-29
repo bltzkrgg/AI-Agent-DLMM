@@ -108,9 +108,26 @@ export async function getPositionInfo(poolAddress) {
   });
 }
 
+// ─── SOL price helper — untuk deployed_usd yang akurat ──────────
+
+async function getSolPriceUsd() {
+  try {
+    const res = await fetchWithTimeout(
+      'https://api.dexscreener.com/latest/dex/tokens/So11111111111111111111111111111111111111112',
+      {}, 6000
+    );
+    if (!res.ok) return 150;
+    const data = await res.json();
+    const price = data.pairs?.[0]?.priceUsd;
+    return price ? parseFloat(price) : 150;
+  } catch {
+    return 150;
+  }
+}
+
 // ─── Open Position ───────────────────────────────────────────────
 
-export async function openPosition(poolAddress, tokenXAmount, tokenYAmount, priceRangePercent = 5) {
+export async function openPosition(poolAddress, tokenXAmount, tokenYAmount, priceRangePercent = 5, strategyName = null) {
   const connection = getConnection();
   const wallet = getWallet();
   const poolPubkey = new PublicKey(poolAddress);
@@ -180,13 +197,17 @@ export async function openPosition(poolAddress, tokenXAmount, tokenYAmount, pric
   const tokenXSymbol = dlmmPool.tokenX.symbol || 'X';
   const tokenYSymbol = dlmmPool.tokenY.symbol || 'Y';
 
+  const solPriceUsd = await getSolPriceUsd().catch(() => 150);
   savePosition({
     pool_address: poolAddress,
     position_address: newPosition.publicKey.toString(),
     token_x: dlmmPool.tokenX.publicKey.toString(),
     token_y: dlmmPool.tokenY.publicKey.toString(),
+    token_x_amount: tokenXAmount,
+    token_y_amount: tokenYAmount,
     entry_price: activeBinPrice,
-    deployed_usd: 0,
+    deployed_usd: parseFloat((tokenYAmount * solPriceUsd).toFixed(2)),
+    strategy_used: strategyName,
   });
 
   return {
@@ -213,56 +234,73 @@ export async function openPosition(poolAddress, tokenXAmount, tokenYAmount, pric
 // ─── Close Position ──────────────────────────────────────────────
 
 export async function closePositionDLMM(poolAddress, positionAddress, pnlData = {}) {
-  const connection = getConnection();
-  const wallet = getWallet();
-  const poolPubkey = new PublicKey(poolAddress);
-  const dlmmPool = await DLMM.create(connection, poolPubkey);
-  const positionPubkey = new PublicKey(positionAddress);
+  return withRetry(async () => {
+    const connection = getConnection();
+    const wallet = getWallet();
+    const poolPubkey = new PublicKey(poolAddress);
+    const dlmmPool = await DLMM.create(connection, poolPubkey);
+    const positionPubkey = new PublicKey(positionAddress);
 
-  const { userPositions } = await dlmmPool.getPositionsByUserAndLbPair(wallet.publicKey);
-  const position = userPositions.find(p => p.publicKey.toString() === positionAddress);
-  if (!position) throw new Error('Posisi tidak ditemukan di pool ini');
+    const { userPositions } = await dlmmPool.getPositionsByUserAndLbPair(wallet.publicKey);
+    const position = userPositions.find(p => p.publicKey.toString() === positionAddress);
+    if (!position) throw new Error('Posisi tidak ditemukan di pool ini');
 
-  const binIdsToRemove = position.positionData.positionBinData.map(b => b.binId);
-  if (binIdsToRemove.length === 0) throw new Error('Tidak ada bin data pada posisi');
+    const binIdsToRemove = position.positionData.positionBinData.map(b => b.binId);
+    if (binIdsToRemove.length === 0) throw new Error('Tidak ada bin data pada posisi');
 
-  const removeLiqTx = await dlmmPool.removeLiquidity({
-    position: positionPubkey,
-    user: wallet.publicKey,
-    binIds: binIdsToRemove,
-    liquiditiesBpsToRemove: binIdsToRemove.map(() => new BN(10000)),
-    shouldClaimAndClose: true,
-  });
+    // Coba shouldClaimAndClose:true (claim fees + close dalam 1 TX)
+    // Fallback ke false jika gagal (misal: posisi tidak ada unclaimed fee)
+    let removeLiqTx;
+    try {
+      removeLiqTx = await dlmmPool.removeLiquidity({
+        position: positionPubkey,
+        user: wallet.publicKey,
+        binIds: binIdsToRemove,
+        liquiditiesBpsToRemove: binIdsToRemove.map(() => new BN(10000)),
+        shouldClaimAndClose: true,
+      });
+    } catch {
+      removeLiqTx = await dlmmPool.removeLiquidity({
+        position: positionPubkey,
+        user: wallet.publicKey,
+        binIds: binIdsToRemove,
+        liquiditiesBpsToRemove: binIdsToRemove.map(() => new BN(10000)),
+        shouldClaimAndClose: false,
+      });
+    }
 
-  const txs = Array.isArray(removeLiqTx) ? removeLiqTx : [removeLiqTx];
-  const txHashes = [];
+    const txs = Array.isArray(removeLiqTx) ? removeLiqTx : [removeLiqTx];
+    const txHashes = [];
 
-  for (const tx of txs) {
-    const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash();
-    tx.recentBlockhash = blockhash;
-    tx.feePayer = wallet.publicKey;
-    tx.sign(wallet);
+    for (const tx of txs) {
+      const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash();
+      tx.recentBlockhash = blockhash;
+      tx.feePayer = wallet.publicKey;
+      tx.sign(wallet);
 
-    const txHash = await connection.sendRawTransaction(tx.serialize(), { maxRetries: 3 });
+      const txHash = await connection.sendRawTransaction(tx.serialize(), {
+        skipPreflight: false,
+        maxRetries: 3,
+      });
 
-    const confirmation = await Promise.race([
-      connection.confirmTransaction({ signature: txHash, blockhash, lastValidBlockHeight }, 'confirmed'),
-      new Promise((_, reject) => setTimeout(() => reject(new Error('Confirm timeout')), 60000)),
-    ]);
+      const confirmation = await Promise.race([
+        connection.confirmTransaction({ signature: txHash, blockhash, lastValidBlockHeight }, 'confirmed'),
+        new Promise((_, reject) => setTimeout(() => reject(new Error('Confirm timeout')), 60000)),
+      ]);
 
-    if (confirmation?.value?.err) throw new Error(`TX failed: ${JSON.stringify(confirmation.value.err)}`);
-    txHashes.push(txHash);
-  }
+      if (confirmation?.value?.err) throw new Error(`TX failed: ${JSON.stringify(confirmation.value.err)}`);
+      txHashes.push(txHash);
+    }
 
-  // Save with actual PnL data
-  closePositionWithPnl(positionAddress, {
-    pnlUsd: pnlData.pnlUsd || 0,
-    pnlPct: pnlData.pnlPct || 0,
-    feesUsd: pnlData.feeUsd || 0,
-    closeReason: pnlData.closeReason || 'manual',
-  });
+    closePositionWithPnl(positionAddress, {
+      pnlUsd: pnlData.pnlUsd || 0,
+      pnlPct: pnlData.pnlPct || 0,
+      feesUsd: pnlData.feeUsd || 0,
+      closeReason: pnlData.closeReason || 'manual',
+    });
 
-  return { success: true, txHashes };
+    return { success: true, txHashes };
+  }, 2, 3000); // retry 2x dengan jeda 3 detik
 }
 
 // ─── Claim Fees ──────────────────────────────────────────────────
