@@ -120,7 +120,7 @@ let _healerBusy = false;
 // ─── Setup state — dipakai oleh wizard /entry ────────────────────
 const setupState = {
   phase: 'done', // bot langsung jalan; wizard hanya aktif saat /entry
-  totalSol: null,
+  solPerPool: null,
   poolCount: null,
 };
 
@@ -261,7 +261,7 @@ bot.onText(/\/start/, (msg) => {
 bot.onText(/\/entry/, (msg) => {
   if (msg.from.id !== ALLOWED_ID) return;
   setupState.phase = 'waiting_sol';
-  setupState.totalSol = null;
+  setupState.solPerPool = null;
   setupState.poolCount = null;
   bot.sendMessage(msg.chat.id,
     `❓ *Berapa SOL Per Pool?*\n\n_Jumlah SOL yang di-deploy ke SETIAP pool.\nContoh: \`0.1\` = 0.1 SOL per posisi_`,
@@ -525,6 +525,12 @@ bot.on('message', async (msg) => {
     const pools = parseInt(msg.text);
     if (isNaN(pools) || pools < 1) {
       bot.sendMessage(msg.chat.id, '⚠️ Masukkan angka pool minimal 1. Contoh: `3`', { parse_mode: 'Markdown' });
+      return;
+    }
+    if (!setupState.solPerPool) {
+      // State hilang (bot restart mid-wizard) — mulai ulang
+      setupState.phase = 'waiting_sol';
+      bot.sendMessage(msg.chat.id, '⚠️ Session expired. Ketik /entry untuk mulai ulang.', { parse_mode: 'Markdown' });
       return;
     }
     setupState.poolCount = pools;
