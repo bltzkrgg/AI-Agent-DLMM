@@ -12,6 +12,7 @@ import { getInstinctsContext } from '../market/memory.js';
 import { getStrategyIntelligenceContext } from '../market/strategyPerformance.js';
 import { screenToken, formatScreenResult } from '../market/coinfilter.js';
 import { parseTvl } from '../utils/safeJson.js';
+import { kv, hr, codeBlock, shortAddr } from '../utils/table.js';
 
 // ─── State ───────────────────────────────────────────────────────
 
@@ -401,25 +402,27 @@ async function executeTool(name, input) {
       // Notifikasi posisi terbuka dengan detail PnL awal
       if (hunterNotifyFn && result.success) {
         const cfg2 = getConfig();
-        const tpTarget  = cfg2.takeProfitFeePct   ?? 5;
-        const slTarget  = cfg2.stopLossPct        ?? 5;
-        const trailAct  = 3.0; // trailing TP activate threshold
+        const tpTarget = cfg2.takeProfitFeePct ?? 5;
+        const slTarget = cfg2.stopLossPct      ?? 5;
+        const trailAct = 3.0;
+
+        const details = [
+          kv('Posisi',   shortAddr(result.positionAddress, 4, 4), 9),
+          kv('Pool',     shortAddr(input.pool_address, 4, 4), 9),
+          kv('Strategi', strategy?.name || 'default', 9),
+          kv('Deploy',   `${deployAmountSol} SOL (Single-Side)`, 9),
+          hr(40),
+          kv('Entry',    result.entryPrice?.toFixed(8)  ?? '-', 9),
+          kv('Bawah',    `${result.lowerPrice?.toFixed(8) ?? '-'}  (-${result.priceRangePct}%)`, 9),
+          kv('Atas',     `${result.upperPrice?.toFixed(8) ?? '-'}  (entry)`, 9),
+          kv('Fee/bin',  `${result.feeRatePct}%`, 9),
+          hr(40),
+          kv('TP',       `+${tpTarget}%  Trail: +${trailAct}%  SL: -${slTarget}%`, 9),
+        ];
 
         const openMsg =
           `🚀 *Posisi Dibuka*\n\n` +
-          `📍 \`${result.positionAddress.slice(0, 8)}...\`\n` +
-          `🏊 Pool: \`${input.pool_address.slice(0, 8)}...\`\n` +
-          `📊 Strategi: ${strategy?.name || 'default'}\n\n` +
-          `💰 *Deploy:*\n` +
-          `  SOL: ${deployAmountSol} SOL (Single-Side)\n\n` +
-          `📈 *Range:*\n` +
-          `  Entry: ${result.entryPrice?.toFixed(8)}\n` +
-          `  Bawah: ${result.lowerPrice?.toFixed(8)} (-${result.priceRangePct}%)\n` +
-          `  Atas:  ${result.upperPrice?.toFixed(8)} (entry price)\n` +
-          `  Fee/bin: ${result.feeRatePct}%\n\n` +
-          `🎯 *Target:*\n` +
-          `  TP: +${tpTarget}% | Trailing: aktif di +${trailAct}%\n` +
-          `  SL: -${slTarget}%\n\n` +
+          codeBlock(details) + '\n' +
           `💭 _${input.reasoning}_\n\n` +
           `🔗 [Tx](https://solscan.io/tx/${result.txHash})`;
 

@@ -16,6 +16,7 @@ import { getLibraryStats } from './market/strategyLibrary.js';
 import { screenToken, formatScreenResult } from './market/coinfilter.js';
 import { getOpenPositions, getPositionStats } from './db/database.js';
 import { getPositionInfo } from './solana/meteora.js';
+import { padR, hr, kv, codeBlock, formatPnl, shortAddr, shortStrat } from './utils/table.js';
 import { initMonitor } from './monitor/positionMonitor.js';
 import { autoEvolveIfReady } from './learn/evolve.js';
 import { getTodayResults, formatDailyReport, savePerformanceSnapshot, backupAllData } from './market/strategyPerformance.js';
@@ -239,15 +240,22 @@ cron.schedule('0 7 * * *', async () => {
     const memStats = getMemoryStats();
     const instincts = getInstinctsContext();
 
-    let text = `☀️ *Daily Briefing*\n\n`;
-    text += `💰 Balance: ${balance} SOL\n`;
-    text += `📍 Posisi: ${openPos.length}/${getConfig().maxPositions}\n`;
-    text += `📈 Closed total: ${stats.closedPositions} | Win rate: ${stats.winRate}\n`;
-    text += `💵 Total PnL: $${stats.totalPnlUsd} | Fees: $${stats.totalFeesUsd}\n`;
-    text += `🎯 Avg range efficiency: ${memStats.avgRangeEfficiency}\n`;
-    text += `🧠 Instincts: ${memStats.instinctCount} | Evolusi: ${memStats.evolutionCount}x\n`;
-    text += `🔄 Auto-evolusi terakhir: ${memStats.lastAutoEvolution ? new Date(memStats.lastAutoEvolution).toLocaleString('id-ID') : 'Belum pernah'}\n`;
-    text += `🔴 Mode: LIVE`;
+    const briefLines = [
+      kv('Balance', `${parseFloat(balance).toFixed(4)} SOL`, 12),
+      kv('Posisi', `${openPos.length} / ${getConfig().maxPositions} terbuka`, 12),
+      hr(38),
+      kv('Closed', `${stats.closedPositions}  Win: ${stats.winRate}  Avg: ${stats.avgPnl}`, 12),
+      kv('Total PnL', `+$${stats.totalPnlUsd}  Fees: +$${stats.totalFeesUsd}`, 12),
+      kv('Range Eff', `${memStats.avgRangeEfficiency}`, 12),
+      hr(38),
+      kv('Instincts', `${memStats.instinctCount}  Evolusi: ${memStats.evolutionCount}x`, 12),
+      kv('Last Evolve', memStats.lastAutoEvolution
+        ? new Date(memStats.lastAutoEvolution).toLocaleString('id-ID', { timeZone: 'Asia/Jakarta', hour12: false }).replace(',', '')
+        : 'Belum pernah', 12),
+      hr(38),
+      '🔴 Mode: LIVE',
+    ];
+    let text = `☀️ *Daily Briefing*\n\n${codeBlock(briefLines)}`;
     if (instincts) text += `\n${instincts}`;
 
     await notify(text);
@@ -260,13 +268,14 @@ cron.schedule('0 * * * *', async () => {
     const openPos = getOpenPositions();
     const stats = getPositionStats();
     const memStats = getMemoryStats();
-    await notify(
-      `📊 *Hourly Health Check*\n\n` +
-      `💰 Balance: ${balance} SOL\n` +
-      `📍 Posisi: ${openPos.length}/${getConfig().maxPositions}\n` +
-      `📈 Closed: ${stats.closedPositions} | Win rate: ${stats.winRate}\n` +
-      `🧠 Instincts: ${memStats.instinctCount}`
-    );
+    const lines = [
+      kv('Balance', `${parseFloat(balance).toFixed(4)} SOL`, 10),
+      kv('Posisi', `${openPos.length} / ${getConfig().maxPositions}`, 10),
+      kv('Closed', `${stats.closedPositions}  Win: ${stats.winRate}`, 10),
+      kv('PnL', `+$${stats.totalPnlUsd}  Fees: +$${stats.totalFeesUsd}`, 10),
+      kv('Instincts', `${memStats.instinctCount}`, 10),
+    ];
+    await notify(`📊 *Hourly Health Check*\n\n${codeBlock(lines)}`);
   } catch (e) { console.error('Health check error:', e.message); }
 });
 
@@ -332,35 +341,67 @@ bot.onText(/\/status/, async (msg) => {
       Promise.resolve(getPositionStats()),
     ]);
 
-    let text = `📊 *Status Bot*\n\n`;
-    text += `💰 Balance: *${balance} SOL* | Mode: 🔴 LIVE\n`;
-    text += `📍 Posisi terbuka: *${openPos.length}/${getConfig().maxPositions}*\n`;
-    text += `📈 Closed: ${stats.closedPositions} | Win: ${stats.winRate} | Avg PnL: ${stats.avgPnl}\n\n`;
+    // Fetch on-chain range status untuk semua posisi secara paralel
+    const rangeMap = {};
+    await Promise.all(openPos.map(async (pos) => {
+      try {
+        const onChain = await getPositionInfo(pos.pool_address);
+        const match = onChain?.find(p => p.address === pos.position_address);
+        rangeMap[pos.position_address] = match
+          ? (match.inRange ? 'InRange' : 'OutRange')
+          : 'NoData';
+      } catch { rangeMap[pos.position_address] = 'Err'; }
+    }));
 
+    // ── Header ───────────────────────────────────────────────────
+    let text = `📊 *Status Bot* 🔴 LIVE\n\n`;
+
+    const COL = 42;
+    const headerLines = [
+      kv('Balance', `${parseFloat(balance).toFixed(4)} SOL`, 8),
+      kv('Posisi', `${openPos.length} / ${getConfig().maxPositions} terbuka`, 8),
+    ];
+    if (stats.closedPositions > 0) {
+      headerLines.push(
+        kv('Closed', `${stats.closedPositions} pos  Win: ${stats.winRate}  Avg: ${stats.avgPnl}`, 8),
+        kv('PnL', `+$${stats.totalPnlUsd}  Fees: +$${stats.totalFeesUsd}`, 8),
+      );
+    }
+    text += codeBlock(headerLines) + '\n';
+
+    // ── Positions table ──────────────────────────────────────────
     if (openPos.length === 0) {
       text += `_Tidak ada posisi terbuka._`;
     } else {
-      for (const pos of openPos) {
-        // Coba ambil status on-chain (best-effort)
-        let rangeStatus = '⏳ loading...';
-        try {
-          const onChain = await getPositionInfo(pos.pool_address);
-          const match = onChain?.find(p => p.address === pos.position_address);
-          if (match) {
-            rangeStatus = match.inRange ? '✅ In Range' : '⚠️ Out of Range';
-          } else {
-            rangeStatus = '❓ Tidak ditemukan on-chain';
-          }
-        } catch { rangeStatus = '⚠️ Gagal cek on-chain'; }
+      // Col widths: Pool=10, Strategi=12, Deploy=9, Status=8
+      const W = [10, 12, 9, 8];
+      const rows = [
+        [padR('POOL', W[0]), padR('STRATEGI', W[1]), padR('DEPLOY', W[2]), 'STATUS'],
+        [hr(W[0]), hr(W[1]), hr(W[2]), hr(W[3])],
+        ...openPos.map(pos => {
+          const deploy = pos.deployed_sol > 0
+            ? pos.deployed_sol + ' SOL'
+            : '$' + (pos.deployed_usd || 0);
+          return [
+            padR(shortAddr(pos.pool_address), W[0]),
+            padR(shortStrat(pos.strategy_used), W[1]),
+            padR(deploy, W[2]),
+            rangeMap[pos.position_address] || '?',
+          ];
+        }),
+        [hr(W[0]), hr(W[1]), hr(W[2]), hr(W[3])],
+        ...openPos.map(pos => {
+          const openedAt = new Date(pos.created_at)
+            .toLocaleString('id-ID', { timeZone: 'Asia/Jakarta', hour12: false })
+            .replace(',', '');
+          return [`  Dibuka: ${openedAt}  (${shortAddr(pos.position_address, 4, 4)})`, '', '', ''];
+        }),
+      ];
 
-        const openedAt = new Date(pos.created_at).toLocaleString('id-ID', { timeZone: 'Asia/Jakarta' });
-        text += `*Posisi \`${pos.position_address.slice(0, 8)}...\`*\n`;
-        text += `  🏊 Pool: \`${pos.pool_address.slice(0, 8)}...${pos.pool_address.slice(-4)}\`\n`;
-        text += `  📊 Strategi: ${pos.strategy_used || 'default'}\n`;
-        text += `  💰 Deploy: ${pos.deployed_sol > 0 ? pos.deployed_sol + ' SOL' : '$' + (pos.deployed_usd || 0)}\n`;
-        text += `  📡 Status: ${rangeStatus}\n`;
-        text += `  🕐 Dibuka: ${openedAt}\n\n`;
-      }
+      const tableLines = rows.map(cols =>
+        cols.map((c, i) => i < W.length - 1 ? padR(c, W[i] + 2) : c).join('')
+      );
+      text += codeBlock(tableLines);
     }
 
     await sendLong(chatId, text, { parse_mode: 'Markdown' });

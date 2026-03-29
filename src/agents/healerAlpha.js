@@ -11,6 +11,7 @@ import { getStrategyIntelligenceContext } from '../market/strategyPerformance.js
 import { swapAllToSOL, SOL_MINT } from '../solana/jupiter.js';
 import { fetchCandles } from '../market/oracle.js';
 import { detectEvilPandaSignals } from '../market/taIndicators.js';
+import { kv, hr, codeBlock, formatPnl, shortAddr } from '../utils/table.js';
 
 // ─── Trailing Take Profit Config ──────────────────────────────────
 // Terinspirasi dari Meridian: aktifkan trailing setelah profit mencapai
@@ -495,18 +496,26 @@ export async function runHealerAlpha(notifyFn) {
         : slCheck.reason;
 
       // Sinyal market untuk notif
-      const sigLine = market
-        ? `📡 Chart: *${sig}* (${(conf * 100).toFixed(0)}%)\n💬 _${thesis}_\n⚠️ Risk: ${keyRisks}`
-        : `📡 Chart: data tidak tersedia`;
+      const sigDetail = market
+        ? [
+            hr(38),
+            kv('Signal',  `${sig}  (${(conf * 100).toFixed(0)}%)`, 8),
+            kv('Thesis',  thesis?.slice(0, 30) || '-', 8),
+            kv('Risk',    keyRisks?.slice(0, 30) || '-', 8),
+          ]
+        : [hr(38), 'Chart: data tidak tersedia'];
 
       // ── HOLD / HOLD_TRAIL ─────────────────────────────────────
       if (decision === 'HOLD') {
+        const lines = [
+          kv('Posisi', shortAddr(addr), 8),
+          kv('PnL',    formatPnl(match?.pnlUsd || 0, pnlPct), 8),
+          ...sigDetail,
+          hr(38),
+          `Alasan   : ${holdReason?.slice(0, 36) || '-'}`,
+        ];
         await notifyFn?.(
-          `${triggerEmoji} *${triggerLabel} — DITUNDA*\n\n` +
-          `📍 \`${addr.slice(0, 8)}...\`\n` +
-          `📊 PnL: ${pnlPct >= 0 ? '+' : ''}${pnlPct.toFixed(2)}%\n` +
-          `${sigLine}\n\n` +
-          `⏳ ${holdReason}`
+          `${triggerEmoji} *${triggerLabel} — DITUNDA*\n\n${codeBlock(lines)}`
         );
         continue;
       }
@@ -515,24 +524,29 @@ export async function runHealerAlpha(notifyFn) {
         // Aktifkan trailing, jangan close — notif user
         tracker.trailingActive = true;
         peakPnlTracker.set(addr, tracker);
+        const lines = [
+          kv('Posisi',  shortAddr(addr), 8),
+          kv('PnL',     formatPnl(match?.pnlUsd || 0, pnlPct) + ' (peak)', 8),
+          ...sigDetail,
+          hr(38),
+          `Trailing : close jika turun -${TRAILING_TP_DROP_PCT}% dari peak`,
+        ];
         await notifyFn?.(
-          `💰 *Take Profit — Trailing Diaktifkan*\n\n` +
-          `📍 \`${addr.slice(0, 8)}...\`\n` +
-          `📊 PnL: +${pnlPct.toFixed(2)}% (peak)\n` +
-          `${sigLine}\n\n` +
-          `⏳ ${holdReason}\n` +
-          `_Akan close jika PnL turun ${TRAILING_TP_DROP_PCT}% dari peak_`
+          `💰 *Take Profit — Trailing Diaktifkan*\n\n${codeBlock(lines)}`
         );
         continue;
       }
 
       // ── CLOSE ─────────────────────────────────────────────────
+      const preCloseLines = [
+        kv('Posisi', shortAddr(addr), 8),
+        kv('PnL',    formatPnl(match?.pnlUsd || 0, pnlPct), 8),
+        ...sigDetail,
+        hr(38),
+        `Alasan   : ${triggerReason?.slice(0, 36) || '-'}`,
+      ];
       await notifyFn?.(
-        `${triggerEmoji} *${triggerLabel} — CLOSE*\n\n` +
-        `📍 \`${addr.slice(0, 8)}...\`\n` +
-        `📊 PnL: ${pnlPct >= 0 ? '+' : ''}${pnlPct.toFixed(2)}%\n` +
-        `${sigLine}\n\n` +
-        `💭 ${triggerReason}\n\nMenutup posisi...`
+        `${triggerEmoji} *${triggerLabel} — CLOSE*\n\n${codeBlock(preCloseLines)}\n\n_Menutup posisi..._`
       );
 
       try {
@@ -558,8 +572,14 @@ export async function runHealerAlpha(notifyFn) {
           }
         } catch { /* swap best-effort */ }
 
-        const swapNote = swapMsgs.length > 0 ? `\n🔄 Auto-swap: ${swapMsgs.join(', ')}` : '';
-        await notifyFn?.(`✅ Posisi ditutup (${triggerLabel}).${swapNote}`);
+        const closedLines = [
+          kv('Posisi',   shortAddr(addr), 8),
+          kv('Trigger',  triggerLabel, 8),
+          kv('PnL',      formatPnl(match?.pnlUsd || 0, pnlPct), 8),
+          kv('Fees',     `+$${(match?.feeUsd || 0).toFixed(2)}`, 8),
+          ...(swapMsgs.length > 0 ? [hr(38), `Swap: ${swapMsgs.join(', ')}`] : []),
+        ];
+        await notifyFn?.(`✅ *Posisi Ditutup*\n\n${codeBlock(closedLines)}`);
       } catch (e) {
         await notifyFn?.(`❌ Gagal close ${triggerLabel}: ${e.message}`);
       }
