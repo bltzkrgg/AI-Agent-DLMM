@@ -2,6 +2,8 @@ import 'dotenv/config';
 import TelegramBot from 'node-telegram-bot-api';
 import cron from 'node-cron';
 import { writeFileSync, readFileSync, existsSync, unlinkSync } from 'fs';
+import { join } from 'path';
+import { fileURLToPath } from 'url';
 
 // ─── PID lock — cegah multiple instance ─────────────────────────
 const PID_FILE = new URL('../../bot.pid', import.meta.url).pathname;
@@ -119,9 +121,6 @@ let _healerBusy = false;
 // ─── Setup state — konfigurasi awal sebelum agent mulai ──────────
 // Skip wizard hanya jika user-config.json EKSPLISIT menyimpan kedua field
 // (bukan default — default selalu ada, kita butuh cek file user)
-import { existsSync, readFileSync } from 'fs';
-import { join } from 'path';
-import { fileURLToPath } from 'url';
 const _cfgPath = join(fileURLToPath(import.meta.url), '../../user-config.json');
 const _userCfgRaw = existsSync(_cfgPath) ? (() => { try { return JSON.parse(readFileSync(_cfgPath, 'utf-8')); } catch { return {}; } })() : {};
 const setupState = {
