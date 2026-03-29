@@ -260,7 +260,8 @@ async function executeTool(name, input) {
         solBalance: balance,
         openPositions: openPos.length,
         maxPositions: cfg.maxPositions,
-        canOpen: parseFloat(balance) >= cfg.minSolToOpen && openPos.length < cfg.maxPositions,
+        canOpen: parseFloat(balance) >= (cfg.deployAmountSol + (cfg.gasReserve ?? 0.02)) && openPos.length < cfg.maxPositions,
+        requiredSol: parseFloat((cfg.deployAmountSol + (cfg.gasReserve ?? 0.02)).toFixed(4)),
       }, null, 2);
     }
 
@@ -425,7 +426,7 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null) {
   try {
     const { getWalletBalance } = await import('../solana/wallet.js');
     const balance = await getWalletBalance();
-    if (parseFloat(balance) < cfg.minSolToOpen) return null;
+    if (parseFloat(balance) < (cfg.deployAmountSol + (cfg.gasReserve ?? 0.02))) return null;
   } catch { /* lanjut jika gagal cek balance */ }
   const lessonsCtx = getLessonsContext();
   const instincts = getInstinctsContext();

@@ -10,6 +10,7 @@ const DEFAULTS = {
   deployAmountSol: 0.1,
   maxPositions: 10,
   minSolToOpen: 0.07,
+  gasReserve: 0.02, // SOL yang disisakan untuk tx fees + account rent
 
   // Agent intervals (minutes)
   managementIntervalMin: 10,
@@ -59,6 +60,7 @@ const CONFIG_BOUNDS = {
   deployAmountSol:            { min: 0.01,  max: 50 },
   maxPositions:               { min: 1,     max: 20 },
   minSolToOpen:               { min: 0.01,  max: 1 },
+  gasReserve:                 { min: 0.01,  max: 0.5 },
   managementIntervalMin:      { min: 1,     max: 1440 },
   screeningIntervalMin:       { min: 5,     max: 1440 },
   minFeeActiveTvlRatio:       { min: 0.001, max: 1 },
