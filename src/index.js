@@ -2,8 +2,6 @@ import 'dotenv/config';
 import TelegramBot from 'node-telegram-bot-api';
 import cron from 'node-cron';
 import { writeFileSync, readFileSync, existsSync, unlinkSync } from 'fs';
-import { join } from 'path';
-import { fileURLToPath } from 'url';
 
 // ─── PID lock — cegah multiple instance ─────────────────────────
 const PID_FILE = new URL('../../bot.pid', import.meta.url).pathname;
