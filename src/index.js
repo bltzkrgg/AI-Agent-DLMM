@@ -264,7 +264,7 @@ bot.onText(/\/entry/, (msg) => {
   setupState.totalSol = null;
   setupState.poolCount = null;
   bot.sendMessage(msg.chat.id,
-    `❓ *Berapa SOL yang Mau Kamu Entry?*\n\n_Minimal: \`0.1\` SOL | Maksimal: \`50\` SOL\nContoh: \`2.5\` untuk 2.5 SOL total_`,
+    `❓ *Berapa SOL Per Pool?*\n\n_Jumlah SOL yang di-deploy ke SETIAP pool.\nContoh: \`0.1\` = 0.1 SOL per posisi_`,
     { parse_mode: 'Markdown' }
   );
 });
@@ -508,14 +508,14 @@ bot.on('message', async (msg) => {
   // ── Setup wizard — intercept sampai konfigurasi awal selesai ────
   if (setupState.phase === 'waiting_sol') {
     const sol = parseFloat(msg.text.replace(',', '.'));
-    if (isNaN(sol) || sol < 0.1 || sol > 50) {
-      bot.sendMessage(msg.chat.id, '⚠️ SOL harus antara *0.1 – 50*. Contoh: `2.5`', { parse_mode: 'Markdown' });
+    if (isNaN(sol) || sol < 0.01 || sol > 50) {
+      bot.sendMessage(msg.chat.id, '⚠️ SOL harus antara *0.01 – 50*. Contoh: `0.1`', { parse_mode: 'Markdown' });
       return;
     }
-    setupState.totalSol = sol;
+    setupState.solPerPool = sol;
     setupState.phase = 'waiting_pools';
     bot.sendMessage(msg.chat.id,
-      `✅ Total: *${sol} SOL*\n\n❓ *Berapa Pool yang Ingin Kamu Isi?*\n\n_Minimal 1. Contoh: \`3\` untuk 3 pool_`,
+      `✅ *${sol} SOL per pool*\n\n❓ *Berapa Pool Maksimal yang Boleh Dibuka?*\n\n_Minimal 1. Contoh: \`3\` untuk max 3 posisi aktif_`,
       { parse_mode: 'Markdown' }
     );
     return;
@@ -530,14 +530,13 @@ bot.on('message', async (msg) => {
     setupState.poolCount = pools;
     setupState.phase = 'done';
 
-    const solPerPool = parseFloat((setupState.totalSol / pools).toFixed(4));
+    const solPerPool = setupState.solPerPool;
     updateConfig({ deployAmountSol: solPerPool, maxPositions: pools });
 
     bot.sendMessage(msg.chat.id,
       `✅ *Setup Selesai!*\n\n` +
-      `💰 Total SOL: *${setupState.totalSol} SOL*\n` +
-      `🏊 Target pool: *${pools}*\n` +
-      `📊 Deploy per pool: *${solPerPool} SOL*\n\n` +
+      `📊 Deploy per pool: *${solPerPool} SOL*\n` +
+      `🏊 Max posisi aktif: *${pools}*\n\n` +
       `🦅 Hunter Alpha sedang mencari pool terbaik...`,
       { parse_mode: 'Markdown' }
     );
