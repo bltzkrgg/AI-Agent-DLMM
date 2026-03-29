@@ -9,7 +9,7 @@ import { analyzeMarket } from '../market/analyst.js';
 import { getInstinctsContext } from '../market/memory.js';
 import { getStrategyIntelligenceContext } from '../market/strategyPerformance.js';
 import { swapAllToSOL, SOL_MINT } from '../solana/jupiter.js';
-import { fetchCandles } from '../market/oracle.js';
+import { fetchCandles, fetchMultiTFOHLCV } from '../market/oracle.js';
 import { detectEvilPandaSignals } from '../market/taIndicators.js';
 import { kv, hr, codeBlock, formatPnl, shortAddr } from '../utils/table.js';
 
@@ -440,8 +440,28 @@ export async function runHealerAlpha(notifyFn) {
         } catch { /* best-effort */ }
       }
 
+      // ── Multi-TF exit check ───────────────────────────────────
+      // Aktif saat posisi sudah profit ≥ 1% — cek confluence exit 15m + 1h + 4h
+      // Exit jika 2+ TF masing-masing ≥ 2 sinyal, atau total sinyal ≥ 4
+      let multiTFExitHit = false;
+      let multiTFExitMsg = '';
+      if (pnlPct >= 1.0) {
+        try {
+          const multiTF = await fetchMultiTFOHLCV(pos.token_x, pos.pool_address);
+          const tfs = Object.values(multiTF);
+          if (tfs.length >= 2) {
+            const tfsFiring = tfs.filter(tf => tf.exitSignals >= 2);
+            const totalSigs = tfs.reduce((s, tf) => s + tf.exitSignals, 0);
+            if (tfsFiring.length >= 2 || totalSigs >= 4) {
+              multiTFExitHit = true;
+              multiTFExitMsg = `Exit confluence: ${tfsFiring.map(tf => tf.label + '(' + tf.exitSignals + ')').join(' + ')}`;
+            }
+          }
+        } catch { /* best-effort, skip jika gagal */ }
+      }
+
       // Tidak ada trigger → skip ke posisi berikutnya
-      if (!trailingTpHit && !tpHit && !slCheck.triggered && !evilPandaExitHit) continue;
+      if (!trailingTpHit && !tpHit && !slCheck.triggered && !evilPandaExitHit && !multiTFExitHit) continue;
 
       // ── Baca kondisi chart & narasi sebelum keputusan ────────
       let market = null;
@@ -461,8 +481,8 @@ export async function runHealerAlpha(notifyFn) {
       let decision  = 'CLOSE';
       let holdReason = '';
 
-      // Evil Panda exit is unconditional — don't HOLD regardless of chart signal
-      if (evilPandaExitHit) {
+      // Evil Panda + Multi-TF exit are unconditional — don't HOLD
+      if (evilPandaExitHit || multiTFExitHit) {
         decision = 'CLOSE';
       } else if (trailingTpHit) {
         if (sig === 'BULLISH' && conf >= 0.75) {
@@ -483,12 +503,19 @@ export async function runHealerAlpha(notifyFn) {
 
       // Tentukan label + emoji
       const triggerLabel = evilPandaExitHit ? 'Evil Panda Exit'
+        : multiTFExitHit                    ? 'Multi-TF Exit'
         : trailingTpHit                     ? 'Trailing Take Profit'
         : tpHit                             ? 'Take Profit'
         : 'Stop-Loss';
-      const triggerEmoji = evilPandaExitHit ? '🐼' : trailingTpHit ? '🎯' : tpHit ? '💰' : '🛑';
+      const triggerEmoji = evilPandaExitHit ? '🐼'
+        : multiTFExitHit                    ? '📊'
+        : trailingTpHit                     ? '🎯'
+        : tpHit                             ? '💰'
+        : '🛑';
       const triggerReason = evilPandaExitHit
         ? evilPandaExitMsg
+        : multiTFExitHit
+        ? multiTFExitMsg
         : trailingTpHit
         ? `PnL turun dari peak ${tracker.peakPnl.toFixed(2)}% ke ${pnlPct.toFixed(2)}%`
         : tpHit

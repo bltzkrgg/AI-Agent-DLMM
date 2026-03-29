@@ -7,12 +7,13 @@ import { getLessonsContext } from '../learn/lessons.js';
 import { getAllStrategies, parseStrategyParameters } from '../strategies/strategyManager.js';
 import { checkMaxDrawdown, validateStrategyForMarket, requestConfirmation } from '../safety/safetyManager.js';
 import { matchStrategyToMarket, getLibraryStats } from '../market/strategyLibrary.js';
-import { getMarketSnapshot, getOKXData } from '../market/oracle.js';
+import { getMarketSnapshot, getOKXData, getOHLCV } from '../market/oracle.js';
 import { getInstinctsContext } from '../market/memory.js';
 import { getStrategyIntelligenceContext } from '../market/strategyPerformance.js';
 import { screenToken, formatScreenResult } from '../market/coinfilter.js';
 import { parseTvl } from '../utils/safeJson.js';
 import { kv, hr, codeBlock, shortAddr } from '../utils/table.js';
+import { calcDynamicRangePct } from '../market/taIndicators.js';
 
 // ─── State ───────────────────────────────────────────────────────
 
@@ -363,6 +364,24 @@ async function executeTool(name, input) {
       const stratParams = strategy ? parseStrategyParameters(strategy) : { priceRangePercent: 5 };
       const strategyType = strategy?.strategy_type || 'spot';
 
+      // ── Dynamic range — ATR + volatility + trend + BB ────────────
+      // Replaces static priceRangePercent from strategy config
+      let priceRangePct = stratParams.priceRangePercent || 10;
+      try {
+        const ohlcv = await getOHLCV(poolInfo.tokenX, input.pool_address);
+        if (ohlcv) {
+          const epType = (strategy?.type === 'evil_panda' || strategy?.name === 'Evil Panda')
+            ? 'evil_panda' : 'single_side_y';
+          priceRangePct = calcDynamicRangePct({
+            atr14Pct:    ohlcv.atr14?.atrPct     ?? 0,
+            range24hPct: ohlcv.range24hPct        ?? 0,
+            trend:       ohlcv.trend              ?? 'SIDEWAYS',
+            bbBandwidth: ohlcv.ta?.bb?.bandwidth  ?? 0,
+            strategyType: epType,
+          });
+        }
+      } catch { /* fallback to static */ }
+
       // Validate strategy vs pool conditions (volatilitas vs bin step)
       let validation = { valid: true, warning: null };
       try {
@@ -390,12 +409,12 @@ async function executeTool(name, input) {
         }
       }
 
-      // Execute
+      // Execute with dynamic range
       const result = await openPosition(
         input.pool_address,
         tokenXAmount,
         tokenYAmount,
-        stratParams.priceRangePercent || 5,
+        priceRangePct,
         strategy?.name || null
       );
 
@@ -413,9 +432,10 @@ async function executeTool(name, input) {
           kv('Deploy',   `${deployAmountSol} SOL (Single-Side)`, 9),
           hr(40),
           kv('Entry',    result.entryPrice?.toFixed(8)  ?? '-', 9),
-          kv('Bawah',    `${result.lowerPrice?.toFixed(8) ?? '-'}  (-${result.priceRangePct}%)`, 9),
+          kv('Bawah',    `${result.lowerPrice?.toFixed(8) ?? '-'}  (-${priceRangePct}%)`, 9),
           kv('Atas',     `${result.upperPrice?.toFixed(8) ?? '-'}  (entry)`, 9),
           kv('Fee/bin',  `${result.feeRatePct}%`, 9),
+          kv('Range',    `${priceRangePct}% (ATR-dynamic)`, 9),
           hr(40),
           kv('TP',       `+${tpTarget}%  Trail: +${trailAct}%  SL: -${slTarget}%`, 9),
         ];

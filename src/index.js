@@ -21,6 +21,7 @@ import { initMonitor } from './monitor/positionMonitor.js';
 import { autoEvolveIfReady } from './learn/evolve.js';
 import { getTodayResults, formatDailyReport, savePerformanceSnapshot, backupAllData } from './market/strategyPerformance.js';
 import { runStartupModelCheck, formatModelStatus } from './agent/modelCheck.js';
+import { runEvilPandaScanner } from './market/epScanner.js';
 
 // ─── PID lock — cegah multiple instance ─────────────────────────
 const PID_FILE = new URL('../../bot.pid', import.meta.url).pathname;
@@ -229,6 +230,16 @@ cron.schedule('0 21 * * *', async () => {
     const results = getTodayResults();
     await notify(formatDailyReport(results));
   } catch (e) { console.error('Daily results error:', e.message); }
+});
+
+// ─── Evil Panda Scanner — setiap 15 menit ────────────────────────
+// Monitor top pools untuk supertrend breakout 15m
+// Alert ke user jika ditemukan EP entry signal
+
+cron.schedule('*/15 * * * *', async () => {
+  try {
+    await runEvilPandaScanner(notify);
+  } catch (e) { console.error('EP Scanner error:', e.message); }
 });
 
 // ─── Daily Briefing jam 7 pagi ───────────────────────────────────

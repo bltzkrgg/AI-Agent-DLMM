@@ -194,6 +194,76 @@ export function computeSupertrend(highs, lows, closes, atrPeriod = 10, multiplie
   };
 }
 
+// ─── ATR (Average True Range) ────────────────────────────────────
+// Returns ATR as both absolute price and % of current price.
+// Used by calcDynamicRangePct below.
+
+export function calculateATR(candles, period = 14) {
+  if (!candles || candles.length < period + 1) return null;
+  const highs  = candles.map(c => c.h);
+  const lows   = candles.map(c => c.l);
+  const closes = candles.map(c => c.c);
+
+  const tr = [highs[0] - lows[0]];
+  for (let i = 1; i < candles.length; i++) {
+    tr.push(Math.max(
+      highs[i] - lows[i],
+      Math.abs(highs[i] - closes[i - 1]),
+      Math.abs(lows[i] - closes[i - 1]),
+    ));
+  }
+
+  let atr = tr.slice(0, period).reduce((a, b) => a + b, 0) / period;
+  for (let i = period; i < tr.length; i++) {
+    atr = (atr * (period - 1) + tr[i]) / period;
+  }
+
+  const currentPrice = closes[closes.length - 1];
+  const atrPct = currentPrice > 0 ? (atr / currentPrice) * 100 : 0;
+
+  return {
+    atrAbs:      parseFloat(atr.toFixed(10)),
+    atrPct:      parseFloat(atrPct.toFixed(3)),
+    atrCategory: atrPct > 5 ? 'HIGH' : atrPct > 1.5 ? 'MEDIUM' : 'LOW',
+  };
+}
+
+// ─── Dynamic LP Range Calculator ─────────────────────────────────
+// Target: 80-95% probability price stays in range during holding period.
+//
+// Base formula:
+//   ATR × 6  ≈ 95% CI for 4h hold on 15m TF (√16 candles × 2σ × safe buffer)
+//   OR range24h × 0.9  (cover 90% of yesterday's full swing)
+//   whichever is larger → true range floor
+//
+// strategyType: 'evil_panda' | 'single_side_y'
+
+export function calcDynamicRangePct({
+  atr14Pct    = 0,
+  range24hPct = 0,
+  trend       = 'SIDEWAYS',
+  bbBandwidth = 0,
+  strategyType = 'single_side_y',
+} = {}) {
+  const atrBase = atr14Pct * 6.0;
+  let base = Math.max(atrBase, range24hPct * 0.9, 5);
+
+  // Trend adjustments
+  if (trend === 'DOWNTREND') base *= 1.35; // wider — dumps are fast & deep
+  if (trend === 'UPTREND')   base *= 0.90; // tighter — price moving in our favor
+
+  // BB bandwidth regime
+  if (bbBandwidth > 20) base *= 1.20; // expanding = breakout, needs more room
+  if (bbBandwidth < 5)  base *= 0.85; // squeeze = tight consolidation, safer to narrow
+
+  if (strategyType === 'evil_panda') {
+    // EP: momentum strategy — wide range for 80-95% coverage
+    return parseFloat(Math.min(Math.max(base * 1.3, 12), 80).toFixed(1));
+  }
+  // Default Single-Side SOL
+  return parseFloat(Math.min(Math.max(base, 8), 50).toFixed(1));
+}
+
 // ─── Volume vs Average ────────────────────────────────────────────
 // Compare volume of last 96 candles (24h on 15m TF) vs prior 96 candles
 

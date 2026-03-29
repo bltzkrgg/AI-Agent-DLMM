@@ -19,6 +19,7 @@ import {
   computeSupertrend,
   computeVolumeVsAvg,
   detectEvilPandaSignals,
+  calculateATR,
 } from './taIndicators.js';
 
 const DEXSCREENER_BASE = 'https://api.dexscreener.com';
@@ -58,8 +59,12 @@ function mapTimeframe(tf) {
     case '5m':             return { period: 'minute', aggregate: 5 };
     case '15m':            return { period: 'minute', aggregate: 15 };
     case '30m':            return { period: 'minute', aggregate: 30 };
+    case '45m':             return { period: 'minute', aggregate: 45 };
     case '1H': case '1h':  return { period: 'hour',   aggregate: 1 };
     case '4H': case '4h':  return { period: 'hour',   aggregate: 4 };
+    case '8h':             return { period: 'hour',   aggregate: 8 };
+    case '12h':            return { period: 'hour',   aggregate: 12 };
+    case '24h':            return { period: 'hour',   aggregate: 24 };
     case '1D': case '1d':  return { period: 'day',    aggregate: 1 };
     default:               return { period: 'minute', aggregate: 15 };
   }
@@ -156,6 +161,7 @@ async function buildOHLCVFromCandles(tokenMint, candles) {
   const macd  = computeMACD(closes, 12, 26, 9);
   const st    = computeSupertrend(highs, lows, closes, 10, 3);
   const ep    = detectEvilPandaSignals(candles);
+  const atr14 = calculateATR(candles, 14);
 
   return {
     tokenMint,
@@ -188,7 +194,64 @@ async function buildOHLCVFromCandles(tokenMint, candles) {
       supertrend: st ? { value: st.value, isBullish: st.isBullish, justCrossedAbove: st.justCrossedAbove } : null,
       evilPanda: ep,
     },
+    atr14,
     candleCount: candles.length,
+  };
+}
+
+// ─── Multi-Timeframe OHLCV + TA ──────────────────────────────────
+// Fetches 15m, 1h, 4h in parallel.
+// Each TF result includes TA signals + exitSignals count (for Healer).
+// exitSignals scale: 0 = hold, 1 = watch, 2+ = consider exit, 4+ = strong exit
+
+export async function fetchMultiTFOHLCV(tokenMint, poolAddress = null) {
+  const [r15m, r1h, r4h] = await Promise.allSettled([
+    fetchCandles(tokenMint, '15m', 100, poolAddress),
+    fetchCandles(tokenMint, '1h',  60,  poolAddress),
+    fetchCandles(tokenMint, '4h',  30,  poolAddress),
+  ]);
+
+  const result = {};
+  if (r15m.status === 'fulfilled' && r15m.value?.length >= 35)
+    result.tf15m = _buildTFAnalysis(r15m.value, '15m');
+  if (r1h.status === 'fulfilled' && r1h.value?.length >= 20)
+    result.tf1h  = _buildTFAnalysis(r1h.value,  '1h');
+  if (r4h.status === 'fulfilled' && r4h.value?.length >= 14)
+    result.tf4h  = _buildTFAnalysis(r4h.value,  '4h');
+  return result;
+}
+
+function _buildTFAnalysis(candles, label) {
+  const closes = candles.map(c => c.c);
+  const highs  = candles.map(c => c.h);
+  const lows   = candles.map(c => c.l);
+
+  const atr  = calculateATR(candles, 14);
+  const st   = computeSupertrend(highs, lows, closes, 10, 3);
+  const rsi14 = computeRSI(closes, 14);
+  const rsi2  = computeRSI(closes, 2);
+  const bb    = computeBollingerBands(closes, 20, 2);
+  const macd  = computeMACD(closes, 12, 26, 9);
+  const ep    = detectEvilPandaSignals(candles);
+
+  // Count exit signals: 0 = hold, 4+ = strong exit
+  let exitSignals = 0;
+  if (rsi2 !== null && rsi2 > 85)                             exitSignals++;
+  if (bb?.aboveUpper === true)                                exitSignals++;
+  if (macd?.histogram !== null && macd.histogram < 0
+    && macd.prevHistogram !== null && macd.prevHistogram >= 0) exitSignals++; // MACD cross bearish
+  if (st?.isBullish === false)                                exitSignals += 2; // trend flip = strong
+
+  return {
+    label,
+    currentPrice: closes[closes.length - 1],
+    atr,
+    supertrend: st ? { isBullish: st.isBullish, justCrossedAbove: st.justCrossedAbove } : null,
+    rsi14, rsi2,
+    bb:   bb   ? { bandwidth: bb.bandwidth, aboveUpper: bb.aboveUpper, percentB: bb.percentB } : null,
+    macd: macd ? { histogram: macd.histogram, firstGreenAfterRed: macd.firstGreenAfterRed } : null,
+    evilPanda: ep,
+    exitSignals,
   };
 }
 
