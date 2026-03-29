@@ -124,7 +124,7 @@ let _healerBusy = false;
 const _cfgPath = join(fileURLToPath(import.meta.url), '../../user-config.json');
 const _userCfgRaw = existsSync(_cfgPath) ? (() => { try { return JSON.parse(readFileSync(_cfgPath, 'utf-8')); } catch { return {}; } })() : {};
 const setupState = {
-  phase: (_userCfgRaw.deployAmountSol && _userCfgRaw.maxPositions) ? 'done' : 'waiting_sol',
+  phase: 'waiting_sol', // selalu tanya tiap startup
   totalSol: null,
   poolCount: null,
 };
@@ -572,11 +572,6 @@ setTimeout(async () => {
       `/start untuk semua commands`
     );
     await runStartupModelCheck(notify);
-    if (setupState.phase === 'done') {
-      const liveCfg = getConfig();
-      await notify(`⚙️ Config aktif: *${liveCfg.deployAmountSol} SOL/pool* × *${liveCfg.maxPositions} pool*\n🦅 Hunter mulai dalam ${liveCfg.screeningIntervalMin} menit.`);
-    } else {
-      await notify(`❓ *Berapa SOL yang Mau Kamu Entry?*\n\n_Minimal: \`0.1\` SOL | Maksimal: \`50\` SOL\nContoh: \`2.5\` untuk 2.5 SOL total_`);
-    }
+    await notify(`❓ *Berapa SOL yang Mau Kamu Entry?*\n\n_Minimal: \`0.1\` SOL | Maksimal: \`50\` SOL\nContoh: \`2.5\` untuk 2.5 SOL total_`);
   } catch (e) { console.error('Startup error:', e.message); }
 }, 2000);
