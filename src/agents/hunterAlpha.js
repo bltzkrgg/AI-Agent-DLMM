@@ -408,13 +408,11 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null) {
   const cfg = getConfig();
 
   // ── Skip silently jika slot posisi penuh ─────────────────────
-  const { getOpenPositions } = await import('../db/database.js');
   const openPos = getOpenPositions();
   if (openPos.length >= cfg.maxPositions) return null;
 
   // ── Skip silently jika balance tidak cukup ───────────────────
   try {
-    const { getWalletBalance } = await import('../solana/wallet.js');
     const balance = await getWalletBalance();
     if (parseFloat(balance) < (cfg.deployAmountSol + (cfg.gasReserve ?? 0.02))) return null;
   } catch { /* lanjut jika gagal cek balance */ }

@@ -3,6 +3,7 @@ import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { createMessage, resolveModel, extractText } from '../agent/provider.js';
 import { getConfig } from '../config.js';
+import { safeParseAI } from '../utils/safeJson.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const LESSONS_PATH = join(__dirname, '../../lessons.json');
@@ -87,8 +88,8 @@ Jangan ada teks lain selain JSON.`;
   });
 
   const text = extractText(response).trim();
-  const clean = text.replace(/```json|```/g, '').trim();
-  const newLessons = JSON.parse(clean);
+  const newLessons = safeParseAI(text, []);
+  if (!Array.isArray(newLessons) || newLessons.length === 0) return [];
 
   // Merge dengan lessons yang ada
   const existing = loadLessons();
