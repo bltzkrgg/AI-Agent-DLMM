@@ -13,7 +13,6 @@
 
 import { fetchWithTimeout, safeNum } from '../utils/safeJson.js';
 
-const BIRDEYE_BASE     = 'https://public-api.birdeye.so';
 const DEXSCREENER_BASE = 'https://api.dexscreener.com';
 const OKX_BASE         = 'https://www.okx.com/api/v5';
 const METEORA_DATAPI   = 'https://dlmm.datapi.meteora.ag';
@@ -26,44 +25,51 @@ const METEORA_DATAPI   = 'https://dlmm.datapi.meteora.ag';
 //   - Volatilitas tinggi → perlu range lebih lebar (bin step lebih besar)
 //   - Support/Resistance → bisa dijadikan batas range atas/bawah
 
-export async function getOHLCV(tokenMint, timeframe = '15m', limit = 50) {
-  if (!process.env.BIRDEYE_API_KEY) return null;
+// OHLCV dari DexScreener — derive dari multi-timeframe price changes
+// Tidak ada candle series, tapi cukup untuk trend detection & volatilitas DLMM
+export async function getOHLCV(tokenMint) {
   try {
     const res = await fetchWithTimeout(
-      `${BIRDEYE_BASE}/defi/ohlcv?address=${tokenMint}&type=${timeframe}&limit=${limit}`,
-      { headers: { 'x-chain': 'solana', 'X-API-KEY': process.env.BIRDEYE_API_KEY } },
-      8000
+      `${DEXSCREENER_BASE}/latest/dex/tokens/${tokenMint}`, {}, 8000
     );
     if (!res.ok) return null;
     const data = await res.json();
-    const items = data.data?.items || [];
-    if (items.length < 3) return null;
+    const pairs = data.pairs || [];
+    if (!pairs.length) return null;
+    const best = pairs.sort((a, b) => safeNum(b.liquidity?.usd) - safeNum(a.liquidity?.usd))[0];
 
-    const closes  = items.map(i => safeNum(i.c));
-    const volumes = items.map(i => safeNum(i.v));
-    const latest  = items[items.length - 1];
-    const prev    = items[items.length - 2];
-    const avgVol  = volumes.reduce((a, b) => a + b, 0) / volumes.length;
+    const currentPrice   = safeNum(best.priceUsd);
+    const priceChange1h  = safeNum(best.priceChange?.h1);
+    const priceChange6h  = safeNum(best.priceChange?.h6);
+    const priceChange24h = safeNum(best.priceChange?.h24);
+    const volume24h      = safeNum(best.volume?.h24);
 
-    const high24h = safeNum(Math.max(...items.slice(-96).map(i => safeNum(i.h))));
-    const low24h  = safeNum(Math.min(...items.slice(-96).map(i => safeNum(i.l, Infinity)).filter(v => v !== Infinity)));
-    const range24hPct = low24h > 0 ? ((high24h - low24h) / low24h * 100) : 0;
+    // Volatilitas dari absolute 24h price swing
+    const range24hPct = Math.abs(priceChange24h);
+
+    // Approximate high/low dari perubahan harga
+    const high24h = currentPrice / (1 - Math.max(0, priceChange24h) / 100) || currentPrice;
+    const low24h  = currentPrice / (1 + Math.max(0, -priceChange24h) / 100) || currentPrice;
+
+    // Trend detection dari multi-timeframe
+    const trend = (priceChange1h > 1 && priceChange6h > 0)  ? 'UPTREND'
+      : (priceChange1h < -1 && priceChange6h < 0)           ? 'DOWNTREND'
+      : 'SIDEWAYS';
 
     return {
       tokenMint,
-      timeframe,
-      currentPrice:   safeNum(latest.c),
-      priceChange:    prev?.c ? safeNum(((latest.c - prev.c) / prev.c * 100).toFixed(2)) : 0,
+      timeframe:      '1h',
+      currentPrice,
+      priceChange:    priceChange1h,
       high24h,
       low24h,
       range24hPct:    parseFloat(range24hPct.toFixed(2)),
-      avgVolume:      safeNum(avgVol.toFixed(2)),
-      latestVolume:   safeNum(latest.v),
-      volumeVsAvg:    avgVol > 0 ? safeNum((safeNum(latest.v) / avgVol).toFixed(2)) : 1,
-      trend:          detectTrend(closes),
-      support:        safeNum(Math.min(...closes.slice(-20))),
-      resistance:     safeNum(Math.max(...closes.slice(-20))),
-      // DLMM interpretation
+      avgVolume:      parseFloat((volume24h / 24).toFixed(2)),
+      latestVolume:   parseFloat((volume24h / 24).toFixed(2)),
+      volumeVsAvg:    1,
+      trend,
+      support:    low24h,
+      resistance: high24h,
       suggestedBinStepMin: range24hPct > 20 ? 20 : range24hPct > 7 ? 10 : 5,
       volatilityCategory:  range24hPct > 20 ? 'HIGH' : range24hPct > 7 ? 'MEDIUM' : 'LOW',
       dlmmNote: range24hPct > 30
@@ -103,50 +109,38 @@ export async function getOnChainSignals(tokenMint) {
   if (!process.env.HELIUS_API_KEY) {
     return { available: false, reason: 'HELIUS_API_KEY not set' };
   }
-  const HELIUS_BASE = `https://mainnet.helius-rpc.com/?api-key=${process.env.HELIUS_API_KEY}`;
-  const birdeyeHeaders = process.env.BIRDEYE_API_KEY
-    ? { 'x-chain': 'solana', 'X-API-KEY': process.env.BIRDEYE_API_KEY }
-    : { 'x-chain': 'solana' };
+  const HELIUS_RPC = `https://mainnet.helius-rpc.com/?api-key=${process.env.HELIUS_API_KEY}`;
+  const rpcPost = (method, params) => fetchWithTimeout(HELIUS_RPC, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }),
+  }, 8000);
+
   try {
-    const [sigRes, holderRes, topHolderRes] = await Promise.allSettled([
-      fetchWithTimeout(HELIUS_BASE, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          jsonrpc: '2.0', id: 1,
-          method: 'getSignaturesForAddress',
-          params: [tokenMint, { limit: 20 }],
-        }),
-      }, 8000),
-      fetchWithTimeout(
-        `${BIRDEYE_BASE}/defi/token_overview?address=${tokenMint}`,
-        { headers: birdeyeHeaders },
-        8000
-      ),
-      fetchWithTimeout(
-        `${BIRDEYE_BASE}/defi/token_holder?address=${tokenMint}&offset=0&limit=10`,
-        { headers: birdeyeHeaders },
-        8000
-      ),
+    const [sigRes, largestRes, supplyRes] = await Promise.allSettled([
+      rpcPost('getSignaturesForAddress', [tokenMint, { limit: 20 }]),
+      rpcPost('getTokenLargestAccounts', [tokenMint]),
+      rpcPost('getTokenSupply',          [tokenMint]),
     ]);
 
-    const sigs = sigRes.status === 'fulfilled' && sigRes.value.ok
+    const sigs    = sigRes.status    === 'fulfilled' && sigRes.value.ok
       ? (await sigRes.value.json()).result || [] : [];
-    const holderData = holderRes.status === 'fulfilled' && holderRes.value.ok
-      ? (await holderRes.value.json()).data : null;
-    const topHolders = topHolderRes.status === 'fulfilled' && topHolderRes.value.ok
-      ? (await topHolderRes.value.json()).data?.items || [] : [];
+    const largest = largestRes.status === 'fulfilled' && largestRes.value.ok
+      ? (await largestRes.value.json()).result?.value || [] : [];
+    const supply  = supplyRes.status  === 'fulfilled' && supplyRes.value.ok
+      ? (await supplyRes.value.json()).result?.value : null;
 
-    const top10Pct = topHolders.reduce((sum, h) => sum + safeNum(h.percentage), 0);
+    const totalSupply  = safeNum(supply?.uiAmount || 0);
+    const top10Amount  = largest.slice(0, 10).reduce((s, h) => s + safeNum(h.uiAmount || 0), 0);
+    const top10Pct     = totalSupply > 0 ? (top10Amount / totalSupply) * 100 : 0;
 
     return {
-      available:     true,
-      recentTxCount: sigs.length,
-      holders:       holderData?.holder || null,
-      marketCap:     holderData?.mc || null,
-      top10HolderPct: safeNum(top10Pct.toFixed(2)),
-      whaleRisk:     top10Pct > 50 ? 'HIGH' : top10Pct > 30 ? 'MEDIUM' : 'LOW',
-      // DLMM context
+      available:      true,
+      recentTxCount:  sigs.length,
+      holders:        null, // total holder count tidak tersedia via free RPC
+      marketCap:      null,
+      top10HolderPct: parseFloat(top10Pct.toFixed(2)),
+      whaleRisk:      top10Pct > 50 ? 'HIGH' : top10Pct > 30 ? 'MEDIUM' : 'LOW',
       dlmmNote: top10Pct > 50
         ? 'Konsentrasi whale TINGGI — dump risk besar, SOL kamu bisa ter-absorb semua kalau whale jual'
         : top10Pct > 30

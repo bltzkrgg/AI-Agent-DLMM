@@ -22,7 +22,6 @@ import { fetchWithTimeout, safeNum } from '../utils/safeJson.js';
 const DEXSCREENER_BASE   = 'https://api.dexscreener.com';
 const JUPITER_TOKEN_BASE = 'https://tokens.jup.ag';
 const JUPITER_PRICE_BASE = 'https://api.jup.ag';
-const BIRDEYE_BASE       = 'https://public-api.birdeye.so';
 const OKX_BASE           = 'https://www.okx.com/api/v5';
 
 // ─── Narrative patterns ──────────────────────────────────────────
@@ -105,31 +104,36 @@ async function getJupiterData(tokenMint) {
 }
 
 async function getHolderData(tokenMint) {
-  if (!process.env.BIRDEYE_API_KEY) return null;
+  if (!process.env.HELIUS_API_KEY) return null;
+  const HELIUS_RPC = `https://mainnet.helius-rpc.com/?api-key=${process.env.HELIUS_API_KEY}`;
+  const rpcPost = (method, params) => fetchWithTimeout(HELIUS_RPC, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }),
+  }, 8000);
+
   try {
-    const headers = { 'x-chain': 'solana', 'X-API-KEY': process.env.BIRDEYE_API_KEY };
-    const [overviewRes, topHolderRes] = await Promise.allSettled([
-      fetchWithTimeout(
-        `${BIRDEYE_BASE}/defi/token_overview?address=${tokenMint}`,
-        { headers }, 8000
-      ),
-      fetchWithTimeout(
-        `${BIRDEYE_BASE}/defi/token_holder?address=${tokenMint}&offset=0&limit=10`,
-        { headers }, 8000
-      ),
+    const [largestRes, supplyRes] = await Promise.allSettled([
+      rpcPost('getTokenLargestAccounts', [tokenMint]),
+      rpcPost('getTokenSupply',          [tokenMint]),
     ]);
-    const overview   = overviewRes.status  === 'fulfilled' && overviewRes.value.ok
-      ? (await overviewRes.value.json().catch(() => ({}))).data : null;
-    const topHolders = topHolderRes.status === 'fulfilled' && topHolderRes.value.ok
-      ? (await topHolderRes.value.json().catch(() => ({}))).data?.items || [] : [];
 
-    if (!overview && !topHolders.length) return null;
+    const largest = largestRes.status === 'fulfilled' && largestRes.value.ok
+      ? (await largestRes.value.json().catch(() => ({}))).result?.value || [] : [];
+    const supply  = supplyRes.status  === 'fulfilled' && supplyRes.value.ok
+      ? (await supplyRes.value.json().catch(() => ({}))).result?.value : null;
 
-    const top10Pct    = topHolders.reduce((sum, h) => sum + safeNum(h.percentage), 0);
-    const holderCount = safeNum(overview?.holder);
+    if (!largest.length || !supply) return null;
+
+    const totalSupply  = safeNum(supply.uiAmount || 0);
+    if (totalSupply === 0) return null;
+
+    const top10Amount  = largest.slice(0, 10).reduce((s, h) => s + safeNum(h.uiAmount || 0), 0);
+    const top10Pct     = (top10Amount / totalSupply) * 100;
+
     return {
       available:      true,
-      holderCount,
+      holderCount:    null, // tidak tersedia via free RPC — step4 handle gracefully
       top10HolderPct: parseFloat(top10Pct.toFixed(2)),
     };
   } catch { return null; }
@@ -394,7 +398,7 @@ export async function screenToken(tokenMint, tokenName = '', tokenSymbol = '') {
     sources: {
       dexscreener: !!dex,
       jupiter:     !!(jup?.found),
-      birdeye:     !!(holders?.available),
+      helius:      !!(holders?.available),
       okx:         !!(okx?.available),
     },
   };
