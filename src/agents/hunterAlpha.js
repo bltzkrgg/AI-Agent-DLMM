@@ -389,11 +389,11 @@ async function executeTool(name, input) {
           `🏊 Pool: \`${input.pool_address.slice(0, 8)}...\`\n` +
           `📊 Strategi: ${strategy?.name || 'default'}\n\n` +
           `💰 *Deploy:*\n` +
-          `  ${result.tokenYSymbol}: ${deployAmountSol} SOL (Single-Side)\n\n` +
+          `  SOL: ${deployAmountSol} SOL (Single-Side)\n\n` +
           `📈 *Range:*\n` +
           `  Entry: ${result.entryPrice?.toFixed(8)}\n` +
           `  Bawah: ${result.lowerPrice?.toFixed(8)} (-${result.priceRangePct}%)\n` +
-          `  Atas:  ${result.upperPrice?.toFixed(8)} (+${result.priceRangePct}%)\n` +
+          `  Atas:  ${result.upperPrice?.toFixed(8)} (entry price)\n` +
           `  Fee/bin: ${result.feeRatePct}%\n\n` +
           `🎯 *Target:*\n` +
           `  TP: +${tpTarget}% | Trailing: aktif di +${trailAct}%\n` +

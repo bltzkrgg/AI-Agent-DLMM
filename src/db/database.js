@@ -14,6 +14,7 @@ db.exec(`
     token_y TEXT NOT NULL,
     token_x_amount REAL DEFAULT 0,
     token_y_amount REAL DEFAULT 0,
+    deployed_sol REAL DEFAULT 0,
     entry_price REAL,
     deployed_usd REAL DEFAULT 0,
     pnl_usd REAL DEFAULT 0,
@@ -51,6 +52,7 @@ const migrations = [
   'ALTER TABLE positions ADD COLUMN close_reason TEXT',
   'ALTER TABLE positions ADD COLUMN deployed_usd REAL DEFAULT 0',
   'ALTER TABLE positions ADD COLUMN range_efficiency_pct REAL DEFAULT 0',
+  'ALTER TABLE positions ADD COLUMN deployed_sol REAL DEFAULT 0',
 ];
 for (const sql of migrations) {
   try { db.exec(sql); } catch { /* kolom sudah ada, skip */ }
@@ -59,8 +61,8 @@ for (const sql of migrations) {
 export function savePosition(data) {
   return db.prepare(`
     INSERT OR IGNORE INTO positions
-    (pool_address, position_address, token_x, token_y, token_x_amount, token_y_amount, entry_price, deployed_usd, strategy_used)
-    VALUES (@pool_address, @position_address, @token_x, @token_y, @token_x_amount, @token_y_amount, @entry_price, @deployed_usd, @strategy_used)
+    (pool_address, position_address, token_x, token_y, token_x_amount, token_y_amount, deployed_sol, entry_price, deployed_usd, strategy_used)
+    VALUES (@pool_address, @position_address, @token_x, @token_y, @token_x_amount, @token_y_amount, @deployed_sol, @entry_price, @deployed_usd, @strategy_used)
   `).run({
     pool_address: data.pool_address,
     position_address: data.position_address,
@@ -68,6 +70,7 @@ export function savePosition(data) {
     token_y: data.token_y,
     token_x_amount: data.token_x_amount || 0,
     token_y_amount: data.token_y_amount || 0,
+    deployed_sol: data.deployed_sol || 0,
     entry_price: data.entry_price || 0,
     deployed_usd: data.deployed_usd || 0,
     strategy_used: data.strategy_used || null,

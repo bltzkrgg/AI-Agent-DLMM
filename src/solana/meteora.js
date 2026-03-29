@@ -142,13 +142,26 @@ export async function openPosition(poolAddress, tokenXAmount, tokenYAmount, pric
     throw new Error(`Pool ditolak: bin step ${binStep} melebihi batas maksimum 250. Gunakan pool dengan bin step ≤ 250.`);
   }
 
-  // Safe bin range calculation — minimum 2 bins each side
-  const binsOnEachSide = Math.max(2, Math.floor((priceRangePercent / 100) / (binStep / 10000)));
-  const minBinId = activeBin.binId - binsOnEachSide;
-  const maxBinId = activeBin.binId + binsOnEachSide;
-
   const xDecimals = dlmmPool.tokenX.decimal || 9;
-  const yDecimals = dlmmPool.tokenY.decimal || 6;
+  const yDecimals = dlmmPool.tokenY.decimal || 9; // WSOL = 9 decimals
+
+  // ── Bin range calculation ────────────────────────────────────────
+  // Single-Side SOL (tokenX=0): semua bins di BAWAH atau TEPAT di active price
+  // sehingga tidak ada konversi SOL → tokenX saat inisialisasi.
+  // maxBinId = activeBin.binId mencegah bins di atas harga aktif.
+  const isSingleSideSOL = tokenXAmount === 0;
+  const binsBelow = Math.max(2, Math.floor((priceRangePercent / 100) / (binStep / 10000)));
+
+  let minBinId, maxBinId;
+  if (isSingleSideSOL) {
+    // SOL-only: range sepenuhnya di bawah/tepat active bin
+    minBinId = activeBin.binId - binsBelow;
+    maxBinId = activeBin.binId; // tidak lewati active price — no tokenX conversion
+  } else {
+    // Bilateral: simetris di kedua sisi (untuk Spot Balanced)
+    minBinId = activeBin.binId - binsBelow;
+    maxBinId = activeBin.binId + binsBelow;
+  }
 
   // Safe BN conversion
   const totalXAmount = toBN(tokenXAmount, xDecimals);
@@ -205,6 +218,7 @@ export async function openPosition(poolAddress, tokenXAmount, tokenYAmount, pric
     token_y: dlmmPool.tokenY.publicKey.toString(),
     token_x_amount: tokenXAmount,
     token_y_amount: tokenYAmount,
+    deployed_sol: tokenYAmount,                                         // SOL actual yang masuk ke posisi
     entry_price: activeBinPrice,
     deployed_usd: parseFloat((tokenYAmount * solPriceUsd).toFixed(2)),
     strategy_used: strategyName,

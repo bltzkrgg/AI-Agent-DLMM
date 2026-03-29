@@ -357,7 +357,7 @@ bot.onText(/\/status/, async (msg) => {
         text += `*Posisi \`${pos.position_address.slice(0, 8)}...\`*\n`;
         text += `  🏊 Pool: \`${pos.pool_address.slice(0, 8)}...${pos.pool_address.slice(-4)}\`\n`;
         text += `  📊 Strategi: ${pos.strategy_used || 'default'}\n`;
-        text += `  💰 Deploy: $${pos.deployed_usd || 0}\n`;
+        text += `  💰 Deploy: ${pos.deployed_sol > 0 ? pos.deployed_sol + ' SOL' : '$' + (pos.deployed_usd || 0)}\n`;
         text += `  📡 Status: ${rangeStatus}\n`;
         text += `  🕐 Dibuka: ${openedAt}\n\n`;
       }
