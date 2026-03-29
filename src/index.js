@@ -118,13 +118,9 @@ async function notify(text) {
 let _hunterBusy = false;
 let _healerBusy = false;
 
-// ─── Setup state — konfigurasi awal sebelum agent mulai ──────────
-// Skip wizard hanya jika user-config.json EKSPLISIT menyimpan kedua field
-// (bukan default — default selalu ada, kita butuh cek file user)
-const _cfgPath = join(fileURLToPath(import.meta.url), '../../user-config.json');
-const _userCfgRaw = existsSync(_cfgPath) ? (() => { try { return JSON.parse(readFileSync(_cfgPath, 'utf-8')); } catch { return {}; } })() : {};
+// ─── Setup state — dipakai oleh wizard /entry ────────────────────
 const setupState = {
-  phase: 'waiting_sol', // selalu tanya tiap startup
+  phase: 'done', // bot langsung jalan; wizard hanya aktif saat /entry
   totalSol: null,
   poolCount: null,
 };
@@ -248,6 +244,7 @@ bot.onText(/\/start/, (msg) => {
     `🦅 Hunter — screening tiap ${cfg.screeningIntervalMin}min\n` +
     `🩺 Healer — manage posisi tiap ${cfg.managementIntervalMin}min\n\n` +
     `*Commands:*\n` +
+    `/entry — set SOL & jumlah pool, lalu deploy\n` +
     `/status /pools /hunt /heal\n` +
     `/testmodel — cek & ganti model AI\n` +
     `/results — hasil hari ini per strategi\n` +
@@ -258,6 +255,17 @@ bot.onText(/\/start/, (msg) => {
     `/memory /evolve\n` +
     `/thresholds /safety\n\n` +
     `Atau chat bebas langsung!`,
+    { parse_mode: 'Markdown' }
+  );
+});
+
+bot.onText(/\/entry/, (msg) => {
+  if (msg.from.id !== ALLOWED_ID) return;
+  setupState.phase = 'waiting_sol';
+  setupState.totalSol = null;
+  setupState.poolCount = null;
+  bot.sendMessage(msg.chat.id,
+    `❓ *Berapa SOL yang Mau Kamu Entry?*\n\n_Minimal: \`0.1\` SOL | Maksimal: \`50\` SOL\nContoh: \`2.5\` untuk 2.5 SOL total_`,
     { parse_mode: 'Markdown' }
   );
 });
@@ -572,6 +580,7 @@ setTimeout(async () => {
       `/start untuk semua commands`
     );
     await runStartupModelCheck(notify);
-    await notify(`❓ *Berapa SOL yang Mau Kamu Entry?*\n\n_Minimal: \`0.1\` SOL | Maksimal: \`50\` SOL\nContoh: \`2.5\` untuk 2.5 SOL total_`);
+    const liveCfg = getConfig();
+    await notify(`⚙️ Config aktif: *${liveCfg.deployAmountSol} SOL/pool* × *${liveCfg.maxPositions} pool*\n🦅 Hunter mulai dalam ${liveCfg.screeningIntervalMin} menit.\n\n_Ketik /entry untuk mengubah konfigurasi deploy._`);
   } catch (e) { console.error('Startup error:', e.message); }
 }, 2000);
