@@ -1,6 +1,23 @@
 import 'dotenv/config';
 import TelegramBot from 'node-telegram-bot-api';
 import cron from 'node-cron';
+import { writeFileSync, readFileSync, existsSync, unlinkSync } from 'fs';
+
+// ─── PID lock — cegah multiple instance ─────────────────────────
+const PID_FILE = new URL('../../bot.pid', import.meta.url).pathname;
+if (existsSync(PID_FILE)) {
+  const oldPid = parseInt(readFileSync(PID_FILE, 'utf-8').trim());
+  try {
+    process.kill(oldPid, 0); // cek apakah proses masih jalan
+    console.error(`❌ Bot sudah jalan (PID ${oldPid}). Hentikan dulu dengan: kill ${oldPid}`);
+    process.exit(1);
+  } catch {
+    // proses lama sudah mati, hapus PID file lama
+    unlinkSync(PID_FILE);
+  }
+}
+writeFileSync(PID_FILE, String(process.pid));
+process.on('exit', () => { try { unlinkSync(PID_FILE); } catch {} });
 import { initSolana, getWalletBalance } from './solana/wallet.js';
 import { processMessage } from './agent/claude.js';
 import { handleStrategyCommand, isInStrategySession } from './strategies/strategyHandler.js';
