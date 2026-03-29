@@ -100,10 +100,15 @@ let _hunterBusy = false;
 let _healerBusy = false;
 
 // ─── Setup state — konfigurasi awal sebelum agent mulai ──────────
-// Jika user-config.json sudah punya deployAmountSol & maxPositions, skip wizard
-const _existingCfg = getConfig();
+// Skip wizard hanya jika user-config.json EKSPLISIT menyimpan kedua field
+// (bukan default — default selalu ada, kita butuh cek file user)
+import { existsSync, readFileSync } from 'fs';
+import { join } from 'path';
+import { fileURLToPath } from 'url';
+const _cfgPath = join(fileURLToPath(import.meta.url), '../../user-config.json');
+const _userCfgRaw = existsSync(_cfgPath) ? (() => { try { return JSON.parse(readFileSync(_cfgPath, 'utf-8')); } catch { return {}; } })() : {};
 const setupState = {
-  phase: (_existingCfg.deployAmountSol && _existingCfg.maxPositions) ? 'done' : 'waiting_sol',
+  phase: (_userCfgRaw.deployAmountSol && _userCfgRaw.maxPositions) ? 'done' : 'waiting_sol',
   totalSol: null,
   poolCount: null,
 };
