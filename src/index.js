@@ -578,7 +578,5 @@ setTimeout(async () => {
       `/start untuk semua commands`
     );
     await runStartupModelCheck(notify);
-    const liveCfg = getConfig();
-    await notify(`⚙️ Config aktif: *${liveCfg.deployAmountSol} SOL/pool* × *${liveCfg.maxPositions} pool*\n🦅 Hunter mulai dalam ${liveCfg.screeningIntervalMin} menit.\n\n_Ketik /entry untuk mengubah konfigurasi deploy._`);
   } catch (e) { console.error('Startup error:', e.message); }
 }, 2000);
