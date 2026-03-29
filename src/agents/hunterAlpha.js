@@ -237,6 +237,13 @@ async function executeTool(name, input) {
           exitConditions:  strategyMatch.recommended?.exitConditions,
           alternatives:    strategyMatch.alternatives?.map(s => s.name),
         } : null,
+        deployToken: {
+          symbol: 'SOL',
+          mint: 'So11111111111111111111111111111111111111112',
+          isSOL: true,
+          note: 'Bot hanya menyimpan SOL — semua deploy adalah Single-Side SOL (tokenX=0, tokenY=SOL)',
+        },
+        validStrategyNames: ['Single-Side SOL', 'Evil Panda', 'Spot Balanced', 'Bid-Ask Wide', 'Single-Side Token X', 'Curve Concentrated'],
       }, null, 2);
     }
 
@@ -324,21 +331,36 @@ async function executeTool(name, input) {
         return JSON.stringify({ blocked: true, reason: drawdown.reason }, null, 2);
       }
 
-      // Resolve strategy dari Library — prioritaskan yang ada di /library
-      const allStrategies = getAllStrategies();
-      const strategy = allStrategies.find(s => s.name === input.strategy_name) || allStrategies[0];
-      const stratParams = strategy ? parseStrategyParameters(strategy) : { priceRangePercent: 5 };
-      const strategyType = strategy?.strategy_type || 'spot';
-
       // ── Auto-calculate position sizing ───────────────────────
       // Bot hanya punya SOL — selalu Single-Side SOL (tokenX=0, tokenY=full)
-      // Ini mencegah "custom program error: 0x1" karena bot tidak punya tokenX
       const deployAmountSol = cfg.deployAmountSol || 0.1;
       const tokenXAmount    = 0;
       const tokenYAmount    = deployAmountSol;
 
       // Ambil pool info untuk harga dan validasi
       const poolInfo = await getPoolInfo(input.pool_address);
+
+      // ── Guard: hanya deploy ke pool TOKEN/SOL ────────────────
+      const WSOL_MINT = 'So11111111111111111111111111111111111111112';
+      if (poolInfo.tokenY !== WSOL_MINT) {
+        return JSON.stringify({
+          blocked: true,
+          reason: `Pool tokenY bukan WSOL (${poolInfo.tokenYSymbol || poolInfo.tokenY?.slice(0,8)}) — bot hanya deploy ke pool TOKEN/SOL. Skip pool ini.`,
+        }, null, 2);
+      }
+
+      // ── Strategy resolution — name dari LLM bisa salah, resolve by type ──
+      const allStrategies = getAllStrategies();
+      // 1. Cari exact match dulu
+      // 2. Fallback: jika LLM kirim nama invalid (mis. "Single-Side USDC"), cari by type single_side_y
+      // 3. Last resort: strategy pertama yang single_side_y
+      const strategy =
+        allStrategies.find(s => s.name === input.strategy_name) ||
+        allStrategies.find(s => s.name === 'Single-Side SOL') ||
+        allStrategies.find(s => s.type === 'single_side_y') ||
+        allStrategies[0];
+      const stratParams = strategy ? parseStrategyParameters(strategy) : { priceRangePercent: 5 };
+      const strategyType = strategy?.strategy_type || 'spot';
 
       // Validate strategy vs pool conditions (volatilitas vs bin step)
       let validation = { valid: true, warning: null };
@@ -497,6 +519,12 @@ DARWINIAN WEIGHTS:
 FILTER TOKEN (dari Coin Filter — DexScreener, RugCheck, Helius, OKX):
   AVOID → SKIP pool. CAUTION/PASS → DEPLOY LANGSUNG.
   RugCheck score & risks tersedia di screen_token — GMGN sudah digantikan RugCheck.
+
+NAMA STRATEGI — WAJIB PERSIS SALAH SATU DARI LIST INI:
+  "Single-Side SOL" | "Evil Panda" | "Spot Balanced" | "Bid-Ask Wide" | "Single-Side Token X" | "Curve Concentrated"
+  ⚠️ JANGAN pernah tulis "Single-Side USDC", "Single-Side USDT", atau nama lain yang tidak ada di list.
+  DEFAULT untuk bot ini (hanya punya SOL) → "Single-Side SOL".
+  Nama yang salah akan di-fallback otomatis ke "Single-Side SOL" oleh sistem.
 
 STRATEGY LIBRARY (${libraryStats.totalStrategies} strategi):
 ${libraryStats.topStrategies.map(s => `  ${s.name} (${s.type}, ${(s.confidence * 100).toFixed(0)}% conf)`).join('\n')}

@@ -368,7 +368,10 @@ export async function getTopPools(limit = 5) {
   if (!res.ok) throw new Error(`Meteora API error: ${res.status}`);
   const data = await res.json();
 
-  const pools = data.data || [];
+  const WSOL_MINT = 'So11111111111111111111111111111111111111112';
+  const pools = (data.data || [])
+    .filter(pool => pool.token_y?.address === WSOL_MINT); // hanya pool TOKEN/SOL
+
   return pools.slice(0, limit).map(pool => {
     const fees24h  = pool.fees?.['24h'] || 0;
     const apr24h   = (pool.fee_tvl_ratio?.['24h'] || 0) * 100;
