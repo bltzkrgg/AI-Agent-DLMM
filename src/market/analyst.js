@@ -158,7 +158,7 @@ function buildDLMMContext(snapshot, position) {
   if (snapshot.onChain?.available) {
     const oc = snapshot.onChain;
     parts.push(`🐋 ON-CHAIN:
-- Top 10 holders: ${oc.top10HolderPct}% | Whale risk: ${oc.whaleRisk}
+- Total holders: ${oc.holders != null ? oc.holders.toLocaleString() : 'N/A'} | Top 10: ${oc.top10HolderPct}% | Whale risk: ${oc.whaleRisk}
 - Recent tx: ${oc.recentTxCount} | Token aktif: ${oc.tokenActive ? 'Ya' : 'Sepi'}
 - LP Note: ${oc.dlmmNote}`);
   }
@@ -189,7 +189,30 @@ function buildDLMMContext(snapshot, position) {
     parts.push(`🔍 BIN STEP FIT CHECK:
 - Pool bin step: ${snapshot.pool.binStep} vs volatilitas 24h ${snapshot.ohlcv.range24hPct}%
 - Fit: ${binOk ? '✅ Sesuai' : `⚠️ Butuh bin step ≥${snapshot.ohlcv.suggestedBinStepMin} — IL risk meningkat`}
-- Health score: ${snapshot.healthScore}/100`);
+- Health score: ${snapshot.healthScore}/100
+- Data source: ${snapshot.dataSource || 'unknown'} (${snapshot.ohlcv.candleCount || 0} candles)`);
+  }
+
+  // TA indicators — hanya tersedia kalau Birdeye candles berhasil di-fetch
+  if (snapshot.ta) {
+    const ta = snapshot.ta;
+    const stLine = ta.supertrend
+      ? `ST ${ta.supertrend.isBullish ? '🟢 BULLISH' : '🔴 BEARISH'}${ta.supertrend.justCrossedAbove ? ' ← FRESH CROSS' : ''}`
+      : 'N/A';
+    const bbLine = ta.bb
+      ? `BB upper ${ta.bb.aboveUpper ? '✅ HIT' : '❌'} | %B=${ta.bb.percentB}`
+      : 'N/A';
+    const macdLine = ta.macd
+      ? `Histogram ${ta.macd.histogram?.toFixed(6)} | First green ${ta.macd.firstGreenAfterRed ? '✅' : '❌'}`
+      : 'N/A';
+
+    parts.push(`📐 TA INDICATORS (real candles, 15m):
+- RSI(14): ${ta.rsi14 ?? 'N/A'} | RSI(2): ${ta.rsi2 ?? 'N/A'}
+- ${stLine}
+- BB: ${bbLine}
+- MACD: ${macdLine}
+${ta.evilPanda?.exit?.triggered ? `⚠️ Evil Panda EXIT signal: ${ta.evilPanda.exit.reason}` : ''}
+${ta.evilPanda?.entry?.justCrossedAbove ? `🐼 Evil Panda ENTRY signal: ${ta.evilPanda.entry.reason}` : ''}`);
   }
 
   return parts.join('\n\n') || 'Data tidak tersedia.';

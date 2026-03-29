@@ -9,13 +9,14 @@ import { safeParseAI } from '../utils/safeJson.js';
  * - Range efficiency tracking (% waktu in-range)
  * - Instincts disort: AVOID/EXIT duluan supaya AI belajar menghindari kerugian
  * - Performance bucketing per hold-duration & close-reason
+ * - Darwin weight auto-recalibration dari data nyata setiap /evolve
  */
 
 import { readFileSync, writeFileSync, existsSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { createMessage, resolveModel, extractText } from '../agent/provider.js';
-import { getConfig } from '../config.js';
+import { getConfig, updateConfig } from '../config.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const MEMORY_PATH = join(__dirname, '../../memory.json');
@@ -233,12 +234,20 @@ ${JSON.stringify(losers.slice(-10).map(t => ({
   marketAtEntry: t.marketAtEntry, analystSignal: t.analystSignalAtClose,
 })), null, 2)}
 
+DARWIN WEIGHTS SAAT INI (pool screening ranker):
+  mcap=2.5 (TVL proxy), feeActiveTvlRatio=2.3, volume=0.36, holderCount=0.3
+  Formula: score += ratioScore*feeActiveTvlRatio + volScore*volume + mcapScore*mcap + 0.3*holderCount
+  Dari data marketAtEntry: volumeVsAvg tersedia. Korelasikan dengan profitabilitas.
+  Kalau volume tidak prediktif → turunkan weight. Kalau TVL selalu korelasi positif → pertahankan/naikkan.
+  Range: 0.0 – 5.0 per weight.
+
 Tugasmu:
 1. Identifikasi pattern yang konsisten menghasilkan profit
 2. Identifikasi pattern yang harus DIHINDARI (type: "avoid") — ini paling penting!
 3. Rekomendasi kapan harus exit lebih cepat vs hold (type: "exit")
 4. Evaluasi apakah Market Analyst perlu adjustment
 5. Generate 6-10 instincts yang actionable — prioritaskan "avoid" duluan
+6. Sarankan Darwin weights baru berdasarkan data — weights harus antara 0.0 dan 5.0
 
 Respond HANYA dengan JSON:
 {
@@ -251,6 +260,12 @@ Respond HANYA dengan JSON:
       "example": "contoh konkret dari data di atas"
     }
   ],
+  "darwinWeights": {
+    "mcap": 2.5,
+    "feeActiveTvlRatio": 2.3,
+    "volume": 0.36,
+    "holderCount": 0.3
+  },
   "analystAdjustments": "saran untuk improve Market Analyst (atau null)",
   "summary": "ringkasan temuan dalam 2-3 kalimat"
 }`;
@@ -263,11 +278,28 @@ Respond HANYA dengan JSON:
 
   const result = safeParseAI(extractText(response));
 
-  const newInstincts = result.instincts.map(inst => ({
+  const newInstincts = (result.instincts || []).map(inst => ({
     ...inst,
     generatedAt: new Date().toISOString(),
     evolutionRound: (memory.evolutionCount || 0) + 1,
   }));
+
+  // ── Darwin weight recalibration ───────────────────────────────
+  let appliedWeights = null;
+  if (result.darwinWeights && typeof result.darwinWeights === 'object') {
+    const WEIGHT_KEYS = ['mcap', 'feeActiveTvlRatio', 'volume', 'holderCount'];
+    const validated = {};
+    for (const key of WEIGHT_KEYS) {
+      const val = result.darwinWeights[key];
+      if (typeof val === 'number' && val >= 0 && val <= 5) {
+        validated[key] = parseFloat(val.toFixed(3));
+      }
+    }
+    if (Object.keys(validated).length === WEIGHT_KEYS.length) {
+      updateConfig({ signalWeights: validated });
+      appliedWeights = validated;
+    }
+  }
 
   // Sort: avoid duluan, lalu by confidence
   const typePriority = { avoid: 0, exit: 1, enter: 2, hold: 3 };
@@ -286,9 +318,10 @@ Respond HANYA dengan JSON:
   saveMemory(memory);
 
   return {
-    newInstincts: result.instincts,
+    newInstincts: result.instincts || [],
     analystAdjustments: result.analystAdjustments,
     summary: result.summary,
+    appliedWeights,
     stats: { winRate, avgPnl, analystAccuracy, totalTrades: trades.length },
   };
 }

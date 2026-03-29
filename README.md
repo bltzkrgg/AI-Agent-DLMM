@@ -1,32 +1,35 @@
-# 🦞 Meteora DLMM AI Agent Bot
+# Meteora DLMM AI Agent Bot
 
 **Autonomous AI Agent untuk Meteora DLMM liquidity management di Solana, dikontrol via Telegram.**
 
-> Repo: [github.com/bltzkrgg/AI-Agent-DLMM](https://github.com/bltzkrgg/AI-Agent-DLMM)  
 > Inspired by [Meridian](https://github.com/yunus-0x/meridian)
 
 ---
 
-## ✨ Fitur Utama
+## Fitur Utama
 
 | Fitur | Deskripsi |
 |---|---|
-| 🦅 **Hunter Alpha** | Auto screen & deploy ke pool terbaik tiap 30 menit |
-| 🩺 **Healer Alpha** | Monitor & manage semua posisi tiap 10 menit |
-| 🧠 **Market Analyst** | Analisa OHLCV, volume, sentiment, on-chain sebelum keputusan |
-| 📊 **Daily Results** | Laporan harian fees + performa per strategi, auto-inject ke AI |
-| 🧬 **Auto-Evolve** | Tiap 5 posisi ditutup, bot otomatis improve instincts-nya |
-| 📚 **Learn** | Pelajari behavior top LPers, simpan lessons |
-| 🔬 **Research** | Paste artikel → agent extract & simpan strategi otomatis |
-| 🚫 **Scam Screener** | Deteksi rug/scam via RugCheck + GMGN + pattern analysis |
-| 🛡️ **Safety System** | Stop-loss, max drawdown, trailing take profit, konfirmasi deploy |
-| 🤖 **Multi AI Provider** | OpenRouter, Anthropic, OpenAI, atau custom API |
-| 💾 **Auto Backup** | Semua data auto-save ke root folder, siap di-push ke GitHub |
+| **Hunter Alpha** | Auto screen & deploy ke pool terbaik tiap 30 menit |
+| **Healer Alpha** | Monitor & manage semua posisi tiap 10 menit |
+| **Market Analyst** | Analisa OHLCV, volume, sentiment, on-chain sebelum keputusan |
+| **Evil Panda Strategy** | Entry saat Supertrend 15m fresh cross, exit confluence RSI(2)+BB/MACD |
+| **TA Indicators** | RSI(14), RSI(2), Supertrend, Bollinger Bands, MACD — real candles dari GeckoTerminal |
+| **Strategy Library** | 6 built-in strategies, auto-scored per kondisi market |
+| **Darwinian Scoring** | Bot auto-evolve bobot signal dari closed positions — weak signals diabaikan |
+| **Daily Results** | Laporan harian fees + performa per strategi, auto-inject ke AI |
+| **Auto-Evolve** | Tiap 5 posisi ditutup, bot otomatis improve instincts-nya |
+| **Learn** | Pelajari behavior top LPers, simpan lessons |
+| **Research** | Paste artikel → agent extract & simpan strategi otomatis |
+| **Scam Screener** | Deteksi rug/scam via RugCheck + OKX + on-chain analysis |
+| **Safety System** | Stop-loss, max drawdown, trailing take profit |
+| **Multi AI Provider** | OpenRouter, Anthropic, OpenAI, atau custom API |
 
 ---
 
-## 📋 Yang Perlu Disiapkan Sebelum Install
+## Yang Perlu Disiapkan Sebelum Install
 
+**Wajib:**
 1. **Node.js v20** via nvm (v21+ tidak kompatibel)
 2. **Telegram Bot Token** — dari [@BotFather](https://t.me/BotFather)
 3. **Telegram User ID** — dari [@userinfobot](https://t.me/userinfobot)
@@ -34,9 +37,13 @@
 5. **Solana Wallet** — wallet BARU khusus bot, bukan wallet utama
 6. **Solana RPC URL** — public atau Helius gratis di [helius.dev](https://helius.dev)
 
+**Opsional (meningkatkan kualitas signal):**
+- **Helius API Key** — holder count akurat, on-chain data lebih lengkap
+- **OKX API Key** — Smart Money signal, token risk check
+
 ---
 
-## 🚀 Tutorial Install Lengkap
+## Tutorial Install Lengkap
 
 ### Step 1 — Install nvm & Node.js v20
 
@@ -53,7 +60,7 @@ node --version   # harus v20.x.x
 npm --version    # harus 10.x.x
 ```
 
-> ⚠️ Jangan pakai Node dari Homebrew atau system default — harus lewat nvm.
+> Jangan pakai Node dari Homebrew atau system default — harus lewat nvm.
 
 ---
 
@@ -89,7 +96,7 @@ Proses install ±2–5 menit karena ada native addon (`better-sqlite3`).
 
 ### Step 5 — Siapkan Wallet Solana
 
-> ⚠️ **WAJIB gunakan wallet baru khusus bot.** Jangan pakai wallet utama.
+> **WAJIB gunakan wallet baru khusus bot.** Jangan pakai wallet utama.
 
 Buat wallet baru di Phantom/Solflare, export private key (base58), isi dengan SOL secukupnya (mulai 0.5–1 SOL untuk testing).
 
@@ -119,29 +126,34 @@ WALLET_PRIVATE_KEY=your-base58-private-key
 
 # ── Bot ───────────────────────────────────────────────────────────
 ADMIN_PASSWORD=password-kuat-kamu
-DRY_RUN=true                              # SELALU true dulu!
+
+# ── Opsional — meningkatkan kualitas signal ───────────────────────
+HELIUS_API_KEY=your-helius-key            # holder count akurat + on-chain data
+OKX_API_KEY=your-okx-key                 # Smart Money signal + token risk
+OKX_SECRET_KEY=your-okx-secret
+OKX_PASSPHRASE=your-okx-passphrase
 ```
 
 ---
 
-### Step 7 — Jalankan Bot (Dry Run)
+### Step 7 — Jalankan Bot
 
 ```bash
 nvm use 20
-npm run dry
+npm start
 ```
 
 Terminal akan tampil:
 ```
-🤖 AI Provider: openrouter | Model: openai/gpt-4o-mini
-🦞 Meteora DLMM Bot started! Mode: DRY RUN
+AI Provider: openrouter | Model: openai/gpt-4o-mini
+Meteora DLMM Bot started! Mode: LIVE
 ```
 
 Telegram kamu dapat pesan:
 ```
-🚀 Bot Started!
-💰 X.XXXX SOL | Mode: DRY RUN
-🦅 Hunter: 30min | 🩺 Healer: 10min
+Bot Started!
+X.XXXX SOL
+Hunter: 30min | Healer: 10min
 ```
 
 ---
@@ -156,13 +168,13 @@ Di Telegram ketik:
 
 Harusnya muncul:
 ```
-🤖 Model Status
+Model Status
 Provider: openrouter
 Model: openai/gpt-4o-mini
-Status: ✅ OK
+Status: OK
 ```
 
-Kalau ❌ Error → cek API key, ganti model di `.env`, restart bot.
+Kalau Error → cek API key, ganti model di `.env`, restart bot.
 
 ---
 
@@ -178,19 +190,7 @@ Kalau ❌ Error → cek API key, ganti model di `.env`, restart bot.
 
 ---
 
-### Step 10 — Go Live
-
-Setelah DRY RUN berjalan normal minimal 1 hari, ketik di Telegram:
-
-```
-/dryrun off PASSWORD_KAMU
-```
-
-Bot sekarang live — Hunter otomatis cari pool & deploy, Healer monitor posisi tiap 10 menit.
-
----
-
-## 🤖 Pilihan Model AI
+## Pilihan Model AI
 
 Ganti kapanpun di `.env`:
 
@@ -205,13 +205,13 @@ AI_MODEL=nama-model
 | `anthropic/claude-3-haiku` | ⭐⭐⭐⭐⭐ | ~$8 | Terbaik untuk reasoning |
 | `openai/gpt-4o` | ⭐⭐⭐⭐⭐ | ~$30 | Paling pintar |
 
-> ❌ **Hindari free models** (`:free`) — sering rate-limited, tidak reliable untuk bot 24/7.
+> **Hindari free models** (`:free`) — sering rate-limited, tidak reliable untuk bot 24/7.
 
 Setelah ganti model → `/testmodel` untuk konfirmasi.
 
 ---
 
-## 📱 Semua Commands Telegram
+## Semua Commands Telegram
 
 ### Agent & Status
 | Command | Fungsi |
@@ -227,26 +227,25 @@ Setelah ganti model → `/testmodel` untuk konfirmasi.
 ### Token & Scam Check
 | Command | Fungsi |
 |---|---|
-| `/check <mint>` | Screen token scam/rug manual |
+| `/check <mint>` | Screen token manual — RugCheck + OKX + on-chain |
 
 ### Strategy & Learning
 | Command | Fungsi |
 |---|---|
-| `/library` | Lihat Strategy Library |
+| `/library` | Lihat Strategy Library & skor per kondisi market |
 | `/research` | Tambah strategi dari artikel (paste teks) |
 | `/strategies` | Lihat strategi tersimpan |
 | `/addstrategy <pw>` | Tambah strategi baru |
 | `/learn [pool]` | Pelajari behavior top LPers |
 | `/lessons` | Lihat lessons tersimpan |
 | `/memory` | Lihat trading memory & instincts |
-| `/evolve` | Manual trigger evolve instincts |
+| `/evolve` | Manual trigger evolve instincts + recalibrate Darwinian weights |
 
 ### Config & Safety
 | Command | Fungsi |
 |---|---|
 | `/thresholds` | Lihat screening thresholds & performance |
 | `/safety` | Status safety & drawdown harian |
-| `/dryrun <on\|off> <pw>` | Toggle DRY RUN / LIVE mode |
 
 ### Free-form Chat
 Langsung ketik natural language:
@@ -256,31 +255,99 @@ Langsung ketik natural language:
 
 ---
 
-## ⚙️ Konfigurasi Lanjutan (`user-config.json`)
+## Konfigurasi Lanjutan (`user-config.json`)
 
-Auto-dibuat di root folder saat pertama run:
+Auto-dibuat di root folder saat pertama run. Edit langsung atau via Telegram chat:
 
 ```json
 {
-  "dryRun": true,
-  "deployAmountSol": 0.5,
-  "maxPositions": 3,
+  "deployAmountSol": 0.1,
+  "maxPositions": 10,
   "managementIntervalMin": 10,
   "screeningIntervalMin": 30,
   "takeProfitFeePct": 5,
   "stopLossPct": 5,
   "maxDailyDrawdownPct": 10,
-  "requireConfirmation": true,
   "proactiveExitEnabled": true,
   "proactiveExitBearishConfidence": 0.7,
   "minTvl": 10000,
-  "maxTvl": 150000
+  "maxTvl": 150000,
+  "minMcap": 250000,
+  "minVolume24h": 1000000
 }
 ```
 
 ---
 
-## 💾 Data & Backup
+## Strategi
+
+### 6 Built-in Strategies
+
+| Strategi | Kondisi Ideal |
+|---|---|
+| **Single-Side SOL** | Default — market apapun |
+| **Spot Balanced** | Sideways + volatilitas rendah |
+| **Bid-Ask Wide** | Volatilitas tinggi + volume di atas rata-rata |
+| **Single-Side Token X** | Uptrend kuat + SM buying + buy pressure >65% |
+| **Curve Concentrated** | Pool stabil + volatilitas sangat rendah |
+| **Evil Panda** | Uptrend + Supertrend 15m fresh cross — lihat di bawah |
+
+### Evil Panda
+
+Strategi single-side SOL berbasis TA signal, cocok untuk high-volume coins.
+
+**Entry — semua syarat harus terpenuhi:**
+- Pool bin step 80, 100, atau 125
+- MC/FDV >$250k, Volume 24h >$1M
+- Supertrend 15m `justCrossedAbove = true` (fresh cross — bukan sekadar bullish)
+- Trend UPTREND berdasarkan price action
+- Token PASS screening RugCheck (phishing <30%, bundling <60%, insiders <10%)
+
+**Exit — confluence ≥2 sinyal:**
+- RSI(2) > 90 + price tutup di atas Bollinger Band upper
+- RSI(2) > 90 + MACD histogram pertama kali hijau setelah merah
+
+Jika hanya 1 sinyal → HOLD. Dump/koreksi sementara = normal, biarkan fee terakumulasi.
+
+### Darwinian Scoring
+
+Bot auto-recalibrate signal weights dari closed positions via `/evolve`:
+
+| Signal | Weight saat ini | Arti |
+|---|---|---|
+| Market Cap proxy (TVL) | 2.5x | Prediktor kuat |
+| Fee/TVL ratio | 2.3x | Prediktor kuat |
+| Volume 24h | 0.36x | Signal lemah |
+| Holder count | 0.3x | Signal lemah |
+
+---
+
+## Safety System
+
+| Layer | Fungsi |
+|---|---|
+| **Stop-loss** | Auto close kalau rugi > `stopLossPct` (default 5%) |
+| **Trailing Take Profit** | Aktif saat profit ≥ 3%, close kalau turun 1.5% dari peak |
+| **Max drawdown harian** | Freeze semua aktivitas kalau rugi > `maxDailyDrawdownPct` (default 10%) |
+| **Proactive exit** | Close posisi profit kalau market BEARISH confidence >70% |
+
+---
+
+## Data Sources
+
+| Data | Source | API Key |
+|---|---|---|
+| OHLCV candles (15m) | GeckoTerminal | Tidak perlu |
+| Pool metrics (TVL, fee APR) | Meteora API | Tidak perlu |
+| Price & sentiment | DexScreener | Tidak perlu |
+| Holder count | Solscan public API | Tidak perlu |
+| Token security | RugCheck.xyz | Tidak perlu |
+| Top-10 holder % | Helius | Opsional |
+| Smart Money signal | OKX | Opsional |
+
+---
+
+## Data & Backup
 
 Bot auto-save semua data ke root folder. Untuk backup ke GitHub:
 
@@ -297,27 +364,53 @@ git push origin main
 | `strategyPerformance.json` | Performa per strategi | Tiap Healer cycle |
 | `strategy-library.json` | Library strategi | Tiap `/research` |
 
-Backup harian otomatis jam 02:00.
+---
+
+## Arsitektur
+
+```
+src/
+├── index.js                    # Entry point, Telegram bot, cron
+├── config.js                   # Config management + bounds validation
+├── agent/
+│   ├── provider.js             # AI provider (OpenRouter/Anthropic/OpenAI/Custom)
+│   ├── claude.js               # Free-form chat agent
+│   └── modelCheck.js           # Startup model validation
+├── agents/
+│   ├── hunterAlpha.js          # Pool screening & deployment agent
+│   └── healerAlpha.js          # Position management agent
+├── market/
+│   ├── oracle.js               # Data: OHLCV (GeckoTerminal), on-chain, sentiment
+│   ├── analyst.js              # AI market analysis (DLMM LP perspective)
+│   ├── coinfilter.js           # Token screening — RugCheck, OKX, Helius, DexScreener
+│   ├── taIndicators.js         # TA: RSI, Supertrend, Bollinger Bands, MACD
+│   ├── memory.js               # Trading memory & instinct evolution
+│   ├── researcher.js           # Extract strategi dari artikel
+│   ├── strategyLibrary.js      # Strategy Library + scoring engine
+│   ├── strategyPerformance.js  # Daily results & strategy intelligence
+│   └── scamScreener.js         # Scam/rug detection
+├── safety/safetyManager.js     # Stop-loss, drawdown, trailing TP
+├── learn/
+│   ├── lessons.js              # Learn dari top LPers
+│   └── evolve.js               # Threshold & Darwinian weight evolution
+├── db/database.js              # SQLite: positions, history
+├── solana/
+│   ├── meteora.js              # Meteora DLMM SDK
+│   └── wallet.js               # Solana wallet
+├── strategies/
+│   ├── strategyManager.js      # Strategy CRUD
+│   └── strategyHandler.js      # Telegram conversation flow
+└── monitor/positionMonitor.js  # Out-of-range alerts
+```
 
 ---
 
-## 🛡️ Safety System
-
-| Layer | Fungsi |
-|---|---|
-| **Stop-loss** | Auto close kalau rugi > `stopLossPct` (default 5%) |
-| **Trailing Take Profit** | Aktif saat profit ≥ 3%, close kalau turun 1.5% dari peak |
-| **Max drawdown harian** | Freeze semua aktivitas kalau rugi > `maxDailyDrawdownPct` (default 10%) |
-| **Konfirmasi Telegram** | Minta approval sebelum buka posisi baru |
-
----
-
-## 🔧 Troubleshooting
+## Troubleshooting
 
 **`SyntaxError: Unexpected reserved word`**
 ```bash
 nvm install 20 && nvm use 20
-npm run dry
+npm start
 ```
 
 **`Cannot find module 'better-sqlite3'`**
@@ -337,7 +430,7 @@ rm -rf node_modules && npm install
 **`ALLOWED_TELEGRAM_ID` tidak dikenali**
 - Harus angka, bukan `@username` → cek via [@userinfobot](https://t.me/userinfobot)
 
-**`⚠️ Model tidak bisa dipakai` saat startup**
+**`Model tidak bisa dipakai` saat startup**
 ```
 /testmodel   → lihat model yang tersedia
 ```
@@ -356,56 +449,18 @@ xcode-select --install && npm install
 
 ---
 
-## 🌐 Arsitektur
-
-```
-src/
-├── index.js                    # Entry point, Telegram bot, cron
-├── config.js                   # Config management
-├── agent/
-│   ├── provider.js             # AI provider (OpenRouter/Anthropic/OpenAI/Custom)
-│   ├── claude.js               # Free-form chat agent
-│   └── modelCheck.js           # Startup model validation
-├── agents/
-│   ├── hunterAlpha.js          # Pool screening & deployment agent
-│   └── healerAlpha.js          # Position management agent
-├── market/
-│   ├── oracle.js               # Data: OHLCV, on-chain, sentiment
-│   ├── analyst.js              # AI market analysis
-│   ├── memory.js               # Trading memory & instinct evolution
-│   ├── researcher.js           # Extract strategi dari artikel
-│   ├── strategyLibrary.js      # Strategy Library
-│   ├── strategyPerformance.js  # Daily results & strategy intelligence
-│   └── scamScreener.js         # Scam/rug detection
-├── safety/safetyManager.js     # Stop-loss, drawdown, confirmation
-├── learn/
-│   ├── lessons.js              # Learn dari top LPers
-│   └── evolve.js               # Threshold evolution
-├── db/database.js              # SQLite: positions, history
-├── solana/
-│   ├── meteora.js              # Meteora DLMM SDK
-│   └── wallet.js               # Solana wallet
-├── strategies/
-│   ├── strategyManager.js      # Strategy CRUD
-│   └── strategyHandler.js      # Telegram conversation flow
-└── monitor/positionMonitor.js  # Out-of-range alerts
-```
-
----
-
-## 🔒 Security
+## Security
 
 1. **Wallet khusus bot** — isi secukupnya, jangan wallet utama
-2. **`DRY_RUN=true` dulu** — minimal 1 hari sebelum live
-3. **Jangan commit `.env`** — sudah ada di `.gitignore`
-4. **Password admin yang kuat** — dipakai untuk `/dryrun`, `/addstrategy`
-5. **Helius RPC untuk production** — public RPC sering rate-limited
+2. **Jangan commit `.env`** — sudah ada di `.gitignore`
+3. **Password admin yang kuat** — dipakai untuk `/addstrategy`
+4. **Helius RPC untuk production** — public RPC sering rate-limited
 
 ---
 
-## ⚠️ Disclaimer
+## Disclaimer
 
-Software ini disediakan apa adanya tanpa jaminan. Autonomous trading bot membawa risiko finansial nyata — kamu bisa kehilangan sebagian atau seluruh dana. Selalu mulai dengan DRY RUN. Jangan deploy modal yang tidak siap kamu kehilangkan. Ini bukan financial advice.
+Software ini disediakan apa adanya tanpa jaminan. Autonomous trading bot membawa risiko finansial nyata — kamu bisa kehilangan sebagian atau seluruh dana. Jangan deploy modal yang tidak siap kamu kehilangkan. Ini bukan financial advice.
 
 ---
 

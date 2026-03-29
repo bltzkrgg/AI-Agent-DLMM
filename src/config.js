@@ -53,6 +53,16 @@ const DEFAULTS = {
     volume: 0.36,           // Near floor — useless predictor
     holderCount: 0.3,       // Floor — useless predictor
   },
+
+  // Evil Panda — coin selection thresholds
+  minMcap: 250000,           // Min market cap / FDV ($)
+  minVolume24h: 1000000,     // Min 24h volume ($) untuk Evil Panda
+
+  // Security thresholds — RugCheck primary, GMGN fallback
+  gmgnMaxPhishing: 30,       // Max phishing/danger proxy % (<30%)
+  gmgnMaxBundling: 60,       // Max bundling % (<60%)
+  gmgnMaxInsiders: 10,       // Max insider % (<10%)
+  gmgnMaxTop10Holdings: 30,  // Max top-10 holdings % (<30%)
 };
 
 // Bounds for AI-driven config updates — prevent AI from setting dangerous values
@@ -75,6 +85,12 @@ const CONFIG_BOUNDS = {
   maxDailyDrawdownPct:        { min: 0.5,   max: 50 },
   proactiveExitMinProfitPct:  { min: 0.1,   max: 100 },
   proactiveExitBearishConfidence: { min: 0.5, max: 1.0 },
+  minMcap:              { min: 0,   max: 100000000 },
+  minVolume24h:         { min: 0,   max: 1000000000 },
+  gmgnMaxPhishing:      { min: 0,   max: 100 },
+  gmgnMaxBundling:      { min: 0,   max: 100 },
+  gmgnMaxInsiders:      { min: 0,   max: 100 },
+  gmgnMaxTop10Holdings: { min: 0,   max: 100 },
 };
 
 function safeParseJSON(raw) {

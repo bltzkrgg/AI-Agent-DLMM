@@ -42,6 +42,13 @@ db.exec(`
     'bid_ask',
     '{"priceRangePercent": 15, "binStep": 20, "strategyType": 2}',
     'system'
+  ),
+  (
+    'Evil Panda',
+    'Single-side SOL pada high-volume coins. Entry saat price break atas Supertrend 15m. Exit confluence RSI(2)>90 + BB upper ATAU RSI(2)>90 + MACD first green. Pilih pool bin step 80/100/125.',
+    'single_side_y',
+    '{"priceRangePercent": 15, "binStep": 100, "strategyType": 0, "tokenXWeight": 0, "tokenYWeight": 100, "singleSide": "y", "preferredBinSteps": [80, 100, 125], "minMcap": 250000, "minVolume24h": 1000000}',
+    'system'
   );
 `);
 

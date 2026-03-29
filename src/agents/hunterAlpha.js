@@ -218,6 +218,18 @@ async function executeTool(name, input) {
           binStepFit:         info.binStep >= price.suggestedBinStepMin ? 'OK' : `⚠️ Butuh bin step ≥${price.suggestedBinStepMin}`,
           buyPressure:        `${price.buyPressurePct}% (${price.sentiment})`,
         } : null,
+        taSignals: dlmmSnapshot?.ta ? {
+          rsi14:          dlmmSnapshot.ta.rsi14,
+          rsi2:           dlmmSnapshot.ta.rsi2,
+          supertrend:     dlmmSnapshot.ta.supertrend,
+          evilPandaEntry: dlmmSnapshot.ta.evilPanda?.entry ?? null,
+          evilPandaExit:  dlmmSnapshot.ta.evilPanda?.exit  ?? null,
+          bb:             dlmmSnapshot.ta.bb,
+          macd:           dlmmSnapshot.ta.macd
+            ? { histogram: dlmmSnapshot.ta.macd.histogram, firstGreenAfterRed: dlmmSnapshot.ta.macd.firstGreenAfterRed }
+            : null,
+          dataSource:     dlmmSnapshot.dataSource,
+        } : null,
         strategyRecommendation: strategyMatch ? {
           recommended:     strategyMatch.recommended?.name,
           confidence:      strategyMatch.recommended?.matchScore,
@@ -243,6 +255,7 @@ async function executeTool(name, input) {
         highFlags:       result.highFlags.map(f => f.msg),
         mediumFlags:     result.mediumFlags.map(f => f.msg),
         gmgnAvailable:   result.gmgnAvailable,
+        gmgn:            result.gmgnAvailable ? result.gmgnData : null,
         jupiterStrict:   result.jupiterData?.isStrict   || false,
         jupiterVerified: result.jupiterData?.isVerified || false,
         jupiterPrice:    result.jupiterData?.priceUsd   || null,
@@ -455,17 +468,34 @@ ALUR KERJA — JALANKAN SAMPAI SELESAI TANPA HENTI:
    g. action = 'LANJUT DEPLOY' → LANGSUNG jalankan deploy_position SEKARANG
 4. Selesai — laporkan hasil ke user
 
-STRATEGI DEFAULT: "Single-Side SOL" (tokenX=0, semua SOL)
-  Ganti hanya jika ada sinyal kuat:
-  • Volatilitas >20% + volume tinggi → "Bid-Ask Wide"
-  • Sideways stabil + TVL sehat → "Spot Balanced"
+STRATEGI — BACA LIBRARY, JANGAN HARDCODE:
+  get_pool_detail memberikan rekomendasi strategi dari Strategy Library berdasarkan kondisi market saat ini.
+  IKUTI rekomendasinya. Jangan otomatis pakai "Single-Side SOL" kalau library rekomendasikan yang lain.
+
+  Panduan matching strategi berdasarkan kondisi pool:
+  • Sideways + volatilitas rendah → "Spot Balanced" atau "Curve Concentrated"
+  • Volatile + volume tinggi → "Bid-Ask Wide"
   • Uptrend kuat + SM buying + buy pressure >65% → "Single-Side Token X"
+  • DEFAULT (market apapun, bot hanya punya SOL) → "Single-Side SOL"
+
+  🐼 EVIL PANDA STRATEGY — aktifkan jika SEMUA syarat terpenuhi (hard gates):
+  • Pool bin step 80, 100, atau 125
+  • MC/FDV >$250k, Volume24h >$1M
+  • taSignals.supertrend.justCrossedAbove === true ← WAJIB, ini trigger utama
+  • taSignals.evilPandaEntry.justCrossedAbove === true (konfirmasi)
+  • Trend UPTREND berdasarkan price action
+  • RugCheck/screen_token PASS (phishing <30%, bundling <60%, insiders <10%, top10 <30%)
+  • OKX Smart Money masih buying (jika available — bonus, bukan blocker)
+  Jika taSignals.supertrend.justCrossedAbove !== true → JANGAN gunakan Evil Panda, pilih strategi lain.
+  Saat Evil Panda aktif: priceRangePercent=15, Single-Side SOL.
+  EXIT: Confluence ≥2 sinyal → RSI(2)>90 + BB upper ATAU RSI(2)>90 + MACD first green.
 
 DARWINIAN WEIGHTS:
   TVL (2.5x) + fee/TVL (2.3x) = sinyal kuat. Volume (0.36x) + holders (0.3x) = abaikan.
 
-FILTER TOKEN (dari Coin Filter — DexScreener, BirdEye, OKX):
+FILTER TOKEN (dari Coin Filter — DexScreener, RugCheck, Helius, OKX):
   AVOID → SKIP pool. CAUTION/PASS → DEPLOY LANGSUNG.
+  RugCheck score & risks tersedia di screen_token — GMGN sudah digantikan RugCheck.
 
 STRATEGY LIBRARY (${libraryStats.totalStrategies} strategi):
 ${libraryStats.topStrategies.map(s => `  ${s.name} (${s.type}, ${(s.confidence * 100).toFixed(0)}% conf)`).join('\n')}

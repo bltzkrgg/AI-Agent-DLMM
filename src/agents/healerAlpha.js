@@ -9,6 +9,8 @@ import { analyzeMarket } from '../market/analyst.js';
 import { getInstinctsContext } from '../market/memory.js';
 import { getStrategyIntelligenceContext } from '../market/strategyPerformance.js';
 import { swapAllToSOL, SOL_MINT } from '../solana/jupiter.js';
+import { fetchCandles } from '../market/oracle.js';
+import { detectEvilPandaSignals } from '../market/taIndicators.js';
 
 // ─── Trailing Take Profit Config ──────────────────────────────────
 // Terinspirasi dari Meridian: aktifkan trailing setelah profit mencapai
@@ -152,12 +154,27 @@ async function executeTool(name, input) {
           let proactiveCloseRecommended = false;
           let proactiveWarning = null;
 
+          let feeVelocity = null;
+          let poolTaSignals = null;
+
           try {
             const analysis = await analyzeMarket(
               pos.token_x,
               pos.pool_address,
               { inRange: match?.inRange, pnlPct }
             );
+
+            feeVelocity   = analysis.snapshot?.pool?.feeVelocity ?? null;
+            poolTaSignals = analysis.snapshot?.ta ? {
+              rsi14:           analysis.snapshot.ta.rsi14,
+              rsi2:            analysis.snapshot.ta.rsi2,
+              supertrend:      analysis.snapshot.ta.supertrend,
+              evilPandaExit:   analysis.snapshot.ta.evilPanda?.exit ?? null,
+              bb:              analysis.snapshot.ta.bb,
+              macd:            analysis.snapshot.ta.macd
+                ? { histogram: analysis.snapshot.ta.macd.histogram, firstGreenAfterRed: analysis.snapshot.ta.macd.firstGreenAfterRed }
+                : null,
+            } : null;
 
             marketSignal = {
               signal:            analysis.signal,
@@ -201,6 +218,8 @@ async function executeTool(name, input) {
             trailingActive: tracker.trailingActive,
             pnlPct,
             isProfit,
+            feeVelocity,
+            poolTaSignals,
             marketSignal,
             proactiveCloseRecommended,
             proactiveWarning,
@@ -350,8 +369,22 @@ export async function runHealerAlpha(notifyFn) {
       const slCheck = checkStopLoss(match);
       const tpHit   = pnlPct >= thresholds.takeProfitFeePct;
 
+      // ── Evil Panda confluence exit (overrides TP/SL timing) ──
+      let evilPandaExitHit  = false;
+      let evilPandaExitMsg  = '';
+      if (pos.strategy_used === 'Evil Panda') {
+        try {
+          const epCandles = await fetchCandles(pos.token_x, '15m', 200, pos.pool_address);
+          const epSignals = epCandles ? detectEvilPandaSignals(epCandles) : null;
+          if (epSignals?.exit?.triggered) {
+            evilPandaExitHit = true;
+            evilPandaExitMsg = epSignals.exit.reason;
+          }
+        } catch { /* best-effort */ }
+      }
+
       // Tidak ada trigger → skip ke posisi berikutnya
-      if (!trailingTpHit && !tpHit && !slCheck.triggered) continue;
+      if (!trailingTpHit && !tpHit && !slCheck.triggered && !evilPandaExitHit) continue;
 
       // ── Baca kondisi chart & narasi sebelum keputusan ────────
       let market = null;
@@ -371,7 +404,10 @@ export async function runHealerAlpha(notifyFn) {
       let decision  = 'CLOSE';
       let holdReason = '';
 
-      if (trailingTpHit) {
+      // Evil Panda exit is unconditional — don't HOLD regardless of chart signal
+      if (evilPandaExitHit) {
+        decision = 'CLOSE';
+      } else if (trailingTpHit) {
         if (sig === 'BULLISH' && conf >= 0.75) {
           decision   = 'HOLD';
           holdReason = `Chart masih BULLISH (${(conf * 100).toFixed(0)}% conf) — tunda close 1 siklus`;
@@ -389,11 +425,14 @@ export async function runHealerAlpha(notifyFn) {
       }
 
       // Tentukan label + emoji
-      const triggerLabel = trailingTpHit ? 'Trailing Take Profit'
-        : tpHit                          ? 'Take Profit'
+      const triggerLabel = evilPandaExitHit ? 'Evil Panda Exit'
+        : trailingTpHit                     ? 'Trailing Take Profit'
+        : tpHit                             ? 'Take Profit'
         : 'Stop-Loss';
-      const triggerEmoji = trailingTpHit ? '🎯' : tpHit ? '💰' : '🛑';
-      const triggerReason = trailingTpHit
+      const triggerEmoji = evilPandaExitHit ? '🐼' : trailingTpHit ? '🎯' : tpHit ? '💰' : '🛑';
+      const triggerReason = evilPandaExitHit
+        ? evilPandaExitMsg
+        : trailingTpHit
         ? `PnL turun dari peak ${tracker.peakPnl.toFixed(2)}% ke ${pnlPct.toFixed(2)}%`
         : tpHit
         ? `PnL ${pnlPct.toFixed(2)}% ≥ target ${thresholds.takeProfitFeePct}%`
@@ -471,6 +510,9 @@ export async function runHealerAlpha(notifyFn) {
     } catch { /* skip jika gagal fetch */ }
   }
 
+  // Skip LLM jika pre-flight sudah close semua posisi — hemat API call
+  if (getOpenPositions().length === 0) return null;
+
   const safety   = getSafetyStatus();
   const instincts = getInstinctsContext();
   const strategyIntel = getStrategyIntelligenceContext();
@@ -496,6 +538,15 @@ ALUR KERJA:
    STOP LOSS TAMBAHAN (jika pre-flight gagal):
    - pnlPct < -${safety.stopLossPct}% DAN BEARISH → close_position, lalu swap_to_sol
    - pnlPct < -${safety.stopLossPct}% DAN BULLISH confidence > 0.6 → HOLD, tunggu recovery
+
+   EVIL PANDA EXIT — khusus posisi dengan strategi Evil Panda:
+   Data tersedia di poolTaSignals — gunakan ini untuk keputusan exit:
+   • poolTaSignals.evilPandaExit.triggered = true → EXIT SEGERA (pre-built signal)
+   • poolTaSignals.rsi2 > 90 + poolTaSignals.bb.aboveUpper = true → EXIT
+   • poolTaSignals.rsi2 > 90 + poolTaSignals.macd.firstGreenAfterRed = true → EXIT
+   Harus ada CONFLUENCE ≥2 sinyal untuk exit. Jika hanya 1 sinyal → HOLD.
+   feeVelocity dari pool: "increasing" → hold lebih lama, "decreasing" → pertimbangkan exit lebih cepat.
+   Jika poolTaSignals = null → gunakan TP normal (+${safety.stopLossPct}% fee APR).
 
    CLAIM FEES:
    - shouldClaimFeeUrgent = true (fee >= 5% deployed capital) → claim_fees SEGERA

@@ -12,10 +12,91 @@
  */
 
 import { fetchWithTimeout, safeNum } from '../utils/safeJson.js';
+import {
+  computeRSI,
+  computeBollingerBands,
+  computeMACD,
+  computeSupertrend,
+  computeVolumeVsAvg,
+  detectEvilPandaSignals,
+} from './taIndicators.js';
 
 const DEXSCREENER_BASE = 'https://api.dexscreener.com';
 const OKX_BASE         = 'https://www.okx.com/api/v5';
 const METEORA_DATAPI   = 'https://dlmm.datapi.meteora.ag';
+const GECKO_BASE       = 'https://api.geckoterminal.com/api/v2';
+
+// ─── 0. Candle fetcher (GeckoTerminal) ───────────────────────────
+// Returns normalized candles: [{ t, o, h, l, c, v }] oldest → newest
+// timeframe: '1m' | '3m' | '5m' | '15m' | '30m' | '1h' | '4h' | '1d'
+// poolAddressHint: skip token→pool lookup if caller already knows the pool address
+
+export async function fetchCandles(tokenMint, timeframe = '15m', limit = 200, poolAddressHint = null) {
+  try {
+    const { period, aggregate } = mapTimeframe(timeframe);
+
+    // Try pool address hint first (skip extra HTTP request)
+    if (poolAddressHint) {
+      const result = await fetchGeckoOHLCV(poolAddressHint, period, aggregate, limit);
+      if (result) return result;
+    }
+
+    // Discover best pool for this token (by 24h volume)
+    const poolAddress = await getTopPoolForToken(tokenMint);
+    if (!poolAddress) return null;
+
+    return fetchGeckoOHLCV(poolAddress, period, aggregate, limit);
+  } catch {
+    return null;
+  }
+}
+
+function mapTimeframe(tf) {
+  switch (tf) {
+    case '1m':             return { period: 'minute', aggregate: 1 };
+    case '3m':             return { period: 'minute', aggregate: 3 };
+    case '5m':             return { period: 'minute', aggregate: 5 };
+    case '15m':            return { period: 'minute', aggregate: 15 };
+    case '30m':            return { period: 'minute', aggregate: 30 };
+    case '1H': case '1h':  return { period: 'hour',   aggregate: 1 };
+    case '4H': case '4h':  return { period: 'hour',   aggregate: 4 };
+    case '1D': case '1d':  return { period: 'day',    aggregate: 1 };
+    default:               return { period: 'minute', aggregate: 15 };
+  }
+}
+
+async function getTopPoolForToken(tokenMint) {
+  const res = await fetchWithTimeout(
+    `${GECKO_BASE}/networks/solana/tokens/${tokenMint}/pools?page=1&sort=h24_volume_usd_desc`,
+    { headers: { Accept: 'application/json' } },
+    8000
+  );
+  if (!res.ok) return null;
+  const data = await res.json().catch(() => null);
+  const pools = data?.data || [];
+  if (!pools.length) return null;
+  // Use attributes.address (raw) or strip prefix from id
+  const p = pools[0];
+  return p?.attributes?.address
+    || (p?.id ? p.id.replace(/^solana_/i, '') : null)
+    || null;
+}
+
+async function fetchGeckoOHLCV(poolAddress, period, aggregate, limit) {
+  const res = await fetchWithTimeout(
+    `${GECKO_BASE}/networks/solana/pools/${poolAddress}/ohlcv/${period}?aggregate=${aggregate}&limit=${limit}&currency=usd`,
+    { headers: { Accept: 'application/json' } },
+    10000
+  );
+  if (!res.ok) return null;
+  const data = await res.json().catch(() => null);
+  const list = data?.data?.attributes?.ohlcv_list;
+  if (!list || list.length < 5) return null;
+  // GeckoTerminal returns newest-first → reverse to oldest-first
+  return [...list].reverse().map(([t, o, h, l, c, v]) => ({
+    t: +t, o: +o, h: +h, l: +l, c: +c, v: +v,
+  }));
+}
 
 // ─── 1. OHLCV — untuk range positioning & volatilitas ───────────
 // DLMM context:
@@ -25,9 +106,93 @@ const METEORA_DATAPI   = 'https://dlmm.datapi.meteora.ag';
 //   - Volatilitas tinggi → perlu range lebih lebar (bin step lebih besar)
 //   - Support/Resistance → bisa dijadikan batas range atas/bawah
 
-// OHLCV dari DexScreener — derive dari multi-timeframe price changes
-// Tidak ada candle series, tapi cukup untuk trend detection & volatilitas DLMM
-export async function getOHLCV(tokenMint) {
+// GeckoTerminal primary (real 15m candles, free no key) → DexScreener fallback (price changes only, no TA)
+export async function getOHLCV(tokenMint, poolAddress = null) {
+  const candles = await fetchCandles(tokenMint, '15m', 200, poolAddress);
+
+  if (candles && candles.length >= 20) {
+    return buildOHLCVFromCandles(tokenMint, candles);
+  }
+
+  // Fallback: DexScreener price changes (no candles, approximate)
+  return buildOHLCVFromDexScreener(tokenMint);
+}
+
+async function buildOHLCVFromCandles(tokenMint, candles) {
+  const closes = candles.map(c => c.c);
+  const highs  = candles.map(c => c.h);
+  const lows   = candles.map(c => c.l);
+
+  const currentPrice = closes[closes.length - 1];
+
+  // Real high/low from last 96 15m candles = 24h
+  const last96 = candles.slice(-96);
+  const high24h = Math.max(...last96.map(c => c.h));
+  const low24h  = Math.min(...last96.map(c => c.l));
+
+  const range24hPct = low24h > 0
+    ? parseFloat(((high24h - low24h) / low24h * 100).toFixed(2))
+    : 0;
+
+  // Trend from real candle closes (last 20 vs prior 20 candles)
+  const recent20 = closes.slice(-20);
+  const prior20  = closes.slice(-40, -20);
+  let trend = 'SIDEWAYS';
+  if (prior20.length >= 10) {
+    const recentAvg = recent20.reduce((a, b) => a + b, 0) / recent20.length;
+    const priorAvg  = prior20.reduce((a, b) => a + b, 0) / prior20.length;
+    const changePct = priorAvg > 0 ? (recentAvg - priorAvg) / priorAvg * 100 : 0;
+    if (changePct > 2)  trend = 'UPTREND';
+    if (changePct < -2) trend = 'DOWNTREND';
+  }
+
+  // Real volume vs avg
+  const volumeVsAvg = computeVolumeVsAvg(candles);
+
+  // TA indicators
+  const rsi14 = computeRSI(closes, 14);
+  const rsi2  = computeRSI(closes, 2);
+  const bb    = computeBollingerBands(closes, 20, 2);
+  const macd  = computeMACD(closes, 12, 26, 9);
+  const st    = computeSupertrend(highs, lows, closes, 10, 3);
+  const ep    = detectEvilPandaSignals(candles);
+
+  return {
+    tokenMint,
+    timeframe:      '15m',
+    source:         'geckoterminal',
+    currentPrice,
+    priceChange:    closes.length >= 5 ? ((closes[closes.length - 1] - closes[closes.length - 5]) / closes[closes.length - 5] * 100) : 0,
+    high24h,
+    low24h,
+    range24hPct,
+    avgVolume:      last96.reduce((s, c) => s + c.v, 0) / last96.length,
+    latestVolume:   candles[candles.length - 1].v,
+    volumeVsAvg,
+    trend,
+    support:    low24h,
+    resistance: high24h,
+    suggestedBinStepMin: range24hPct > 20 ? 20 : range24hPct > 7 ? 10 : 5,
+    volatilityCategory:  range24hPct > 20 ? 'HIGH' : range24hPct > 7 ? 'MEDIUM' : 'LOW',
+    dlmmNote: range24hPct > 30
+      ? 'Volatilitas ekstrem — gunakan Bid-Ask Wide, hindari Curve Concentrated'
+      : range24hPct > 15
+      ? 'Volatilitas tinggi — single-side SOL cocok, range perlu lebih lebar'
+      : 'Volatilitas normal — single-side SOL atau spot balanced ideal',
+    // TA — real indicators
+    ta: {
+      rsi14,
+      rsi2,
+      bb,
+      macd,
+      supertrend: st ? { value: st.value, isBullish: st.isBullish, justCrossedAbove: st.justCrossedAbove } : null,
+      evilPanda: ep,
+    },
+    candleCount: candles.length,
+  };
+}
+
+async function buildOHLCVFromDexScreener(tokenMint) {
   try {
     const res = await fetchWithTimeout(
       `${DEXSCREENER_BASE}/latest/dex/tokens/${tokenMint}`, {}, 8000
@@ -43,30 +208,24 @@ export async function getOHLCV(tokenMint) {
     const priceChange6h  = safeNum(best.priceChange?.h6);
     const priceChange24h = safeNum(best.priceChange?.h24);
     const volume24h      = safeNum(best.volume?.h24);
-
-    // Volatilitas dari absolute 24h price swing
-    const range24hPct = Math.abs(priceChange24h);
-
-    // Approximate high/low dari perubahan harga
+    const range24hPct    = Math.abs(priceChange24h);
     const high24h = currentPrice / (1 - Math.max(0, priceChange24h) / 100) || currentPrice;
     const low24h  = currentPrice / (1 + Math.max(0, -priceChange24h) / 100) || currentPrice;
-
-    // Trend detection dari multi-timeframe
-    const trend = (priceChange1h > 1 && priceChange6h > 0)  ? 'UPTREND'
-      : (priceChange1h < -1 && priceChange6h < 0)           ? 'DOWNTREND'
+    const trend   = (priceChange1h > 1 && priceChange6h > 0) ? 'UPTREND'
+      : (priceChange1h < -1 && priceChange6h < 0)            ? 'DOWNTREND'
       : 'SIDEWAYS';
 
     return {
       tokenMint,
       timeframe:      '1h',
+      source:         'dexscreener',
       currentPrice,
       priceChange:    priceChange1h,
-      high24h,
-      low24h,
+      high24h, low24h,
       range24hPct:    parseFloat(range24hPct.toFixed(2)),
       avgVolume:      parseFloat((volume24h / 24).toFixed(2)),
       latestVolume:   parseFloat((volume24h / 24).toFixed(2)),
-      volumeVsAvg:    1,
+      volumeVsAvg:    1, // cannot compute accurately without candles
       trend,
       support:    low24h,
       resistance: high24h,
@@ -77,26 +236,12 @@ export async function getOHLCV(tokenMint) {
         : range24hPct > 15
         ? 'Volatilitas tinggi — single-side SOL cocok, range perlu lebih lebar'
         : 'Volatilitas normal — single-side SOL atau spot balanced ideal',
+      ta: null, // no real TA without candles
+      candleCount: 0,
     };
   } catch {
     return null;
   }
-}
-
-function detectTrend(closes) {
-  if (closes.length < 10) return 'SIDEWAYS';
-  const recent5  = closes.slice(-5);
-  const older5   = closes.slice(-10, -5);
-  const recent20 = closes.slice(-20);
-  const recentAvg = recent5.reduce((a, b) => a + b, 0) / recent5.length;
-  const olderAvg  = older5.reduce((a, b) => a + b, 0) / older5.length;
-  if (olderAvg === 0) return 'SIDEWAYS';
-  const changePct = (recentAvg - olderAvg) / olderAvg * 100;
-  const avg20 = recent20.reduce((a, b) => a + b, 0) / recent20.length;
-  const aboveAvg = recent5.filter(c => c > avg20).length;
-  if (changePct > 2 && aboveAvg >= 4) return 'UPTREND';
-  if (changePct < -2 && aboveAvg <= 1) return 'DOWNTREND';
-  return 'SIDEWAYS';
 }
 
 // ─── 2. On-Chain Signals (Helius) — untuk risk assessment ────────
@@ -117,10 +262,14 @@ export async function getOnChainSignals(tokenMint) {
   }, 8000);
 
   try {
-    const [sigRes, largestRes, supplyRes] = await Promise.allSettled([
+    const [sigRes, largestRes, supplyRes, solscanRes] = await Promise.allSettled([
       rpcPost('getSignaturesForAddress', [tokenMint, { limit: 20 }]),
       rpcPost('getTokenLargestAccounts', [tokenMint]),
       rpcPost('getTokenSupply',          [tokenMint]),
+      fetchWithTimeout(
+        `https://public-api.solscan.io/token/holders?tokenAddress=${tokenMint}&limit=1&offset=0`,
+        { headers: { Accept: 'application/json' } }, 8000
+      ),
     ]);
 
     const sigs    = sigRes.status    === 'fulfilled' && sigRes.value.ok
@@ -129,15 +278,18 @@ export async function getOnChainSignals(tokenMint) {
       ? (await largestRes.value.json()).result?.value || [] : [];
     const supply  = supplyRes.status  === 'fulfilled' && supplyRes.value.ok
       ? (await supplyRes.value.json()).result?.value : null;
+    const solscanData = solscanRes.status === 'fulfilled' && solscanRes.value.ok
+      ? (await solscanRes.value.json().catch(() => null)) : null;
 
     const totalSupply  = safeNum(supply?.uiAmount || 0);
     const top10Amount  = largest.slice(0, 10).reduce((s, h) => s + safeNum(h.uiAmount || 0), 0);
     const top10Pct     = totalSupply > 0 ? (top10Amount / totalSupply) * 100 : 0;
+    const holderCount  = typeof solscanData?.total === 'number' ? solscanData.total : null;
 
     return {
       available:      true,
       recentTxCount:  sigs.length,
-      holders:        null, // total holder count tidak tersedia via free RPC
+      holders:        holderCount,
       marketCap:      null,
       top10HolderPct: parseFloat(top10Pct.toFixed(2)),
       whaleRisk:      top10Pct > 50 ? 'HIGH' : top10Pct > 30 ? 'MEDIUM' : 'LOW',
@@ -287,7 +439,7 @@ export async function getSentiment(tokenMint) {
 
 export async function getMarketSnapshot(tokenMint, poolAddress) {
   const [ohlcvR, poolR, onChainR, sentimentR, okxR] = await Promise.allSettled([
-    getOHLCV(tokenMint, '15m', 50),
+    getOHLCV(tokenMint, poolAddress),
     poolAddress ? getDLMMPoolData(poolAddress) : Promise.resolve(null),
     getOnChainSignals(tokenMint),
     getSentiment(tokenMint),
@@ -325,6 +477,9 @@ export async function getMarketSnapshot(tokenMint, poolAddress) {
     timestamp: new Date().toISOString(),
     ohlcv, pool, onChain, sentiment, okx,
     healthScore,
+    // TA signals — surfaced at top level for easy access by agents
+    ta:   ohlcv?.ta   || null,
+    dataSource: ohlcv?.source || 'unknown',
     // Backward-compat
     liquidity: pool ? { tvl: pool.tvl, volume24h: pool.volume24h, feeApr: pool.feeApr } : null,
     price: sentiment ? {

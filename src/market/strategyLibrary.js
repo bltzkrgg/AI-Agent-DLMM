@@ -122,6 +122,34 @@ const BUILTIN_STRATEGIES = [
     performanceHistory: [],
   },
   {
+    id: 'builtin_evil_panda',
+    name: 'Evil Panda',
+    type: 'single_side_y',
+    source: 'builtin',
+    description: 'Evil Panda — single-side SOL pada high-volume coins. Entry saat price break atas Supertrend 15m. Exit confluence RSI(2)>90 + BB upper atau RSI(2)>90 + MACD first green. Pilih pool bin step 80/100/125.',
+    marketConditions: {
+      trend: ['UPTREND'],
+      volatility: ['MEDIUM', 'HIGH'],
+      sentiment: ['BULLISH'],
+      volumeVsAvg: { min: 2.0, max: 999 },
+    },
+    parameters: {
+      priceRangePercent: 15,
+      binStep: 100,
+      strategyType: 0,
+      tokenXWeight: 0,
+      tokenYWeight: 100,
+      singleSide: 'y',
+      preferredBinSteps: [80, 100, 125],
+      minMcap: 250000,
+      minVolume24h: 1000000,
+    },
+    entryConditions: 'MC >$250k, 24h Volume >$1M. Price break above Supertrend on 15m. GMGN: phishing <30%, bundling <60%, insiders <10%, top10 <30%. Pool bin step 80/100/125.',
+    exitConditions: 'Confluence ≥2 sinyal: RSI(2)>90 + price tutup di atas BB upper. ATAU RSI(2)>90 + MACD first green histogram. Jangan exit sebelum sinyal muncul. Dump = bagus, kumpulkan fee.',
+    confidence: 0.82,
+    performanceHistory: [],
+  },
+  {
     id: 'builtin_singleside_y',
     name: 'Single-Side SOL',
     type: 'single_side_y',
@@ -204,6 +232,7 @@ export function matchStrategyToMarket(marketSnapshot) {
   const ohlcv = marketSnapshot.ohlcv;
   const sentiment = marketSnapshot.sentiment;
   const onChain = marketSnapshot.onChain;
+  const ta = marketSnapshot.ta;
 
   const smBuying = marketSnapshot.okx?.smartMoneyBuying ?? null;
   const trend    = ohlcv?.trend || 'SIDEWAYS';
@@ -219,6 +248,9 @@ export function matchStrategyToMarket(marketSnapshot) {
     whaleRisk: marketSnapshot.onChain?.whaleRisk || onChain?.whaleRisk || 'LOW',
     // Sinyal kuat uptrend: trend UP + SM buying + buy pressure tinggi
     strongUptrend: trend === 'UPTREND' && smBuying === true && buyPressure > 65,
+    // Evil Panda TA gate — Supertrend fresh cross
+    supertrendJustCrossedAbove: ta?.supertrend?.justCrossedAbove === true,
+    evilPandaEntrySignal: ta?.evilPanda?.entry?.justCrossedAbove === true,
   };
 
   // Score each strategy against current conditions
@@ -299,6 +331,18 @@ function scoreStrategy(strategy, conditions) {
   // karena SOL range akan habis terlalu cepat
   if (conditions.strongUptrend && strategy.type === 'single_side_y') {
     score -= 0.15;
+  }
+
+  // Evil Panda TA bonus — Supertrend justCrossedAbove adalah hard entry trigger
+  if (strategy.id === 'builtin_evil_panda') {
+    if (conditions.supertrendJustCrossedAbove) {
+      score += 0.35; // strong bonus — fresh cross is the primary signal
+    } else {
+      score -= 0.50; // penalti besar — Evil Panda tanpa fresh cross tidak valid
+    }
+    if (conditions.evilPandaEntrySignal) {
+      score += 0.10; // double confirmation
+    }
   }
 
   return Math.max(0, Math.min(1, score));

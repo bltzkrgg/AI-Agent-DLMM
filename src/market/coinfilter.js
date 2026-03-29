@@ -18,6 +18,7 @@
  */
 
 import { fetchWithTimeout, safeNum } from '../utils/safeJson.js';
+import { getConfig } from '../config.js';
 
 const DEXSCREENER_BASE   = 'https://api.dexscreener.com';
 const JUPITER_TOKEN_BASE = 'https://tokens.jup.ag';
@@ -103,7 +104,23 @@ async function getJupiterData(tokenMint) {
   } catch { return null; }
 }
 
-async function getHolderData(tokenMint) {
+// Solscan public API — free, no key, returns total holder count
+async function getSolscanHolderCount(tokenMint) {
+  try {
+    const res = await fetchWithTimeout(
+      `https://public-api.solscan.io/token/holders?tokenAddress=${tokenMint}&limit=1&offset=0`,
+      { headers: { Accept: 'application/json' } },
+      8000
+    );
+    if (!res.ok) return null;
+    const data = await res.json().catch(() => null);
+    const count = data?.total ?? null;
+    return typeof count === 'number' ? count : null;
+  } catch { return null; }
+}
+
+// Helius RPC — real-time top-10 concentration (requires HELIUS_API_KEY)
+async function getHeliusTop10(tokenMint) {
   if (!process.env.HELIUS_API_KEY) return null;
   const HELIUS_RPC = `https://mainnet.helius-rpc.com/?api-key=${process.env.HELIUS_API_KEY}`;
   const rpcPost = (method, params) => fetchWithTimeout(HELIUS_RPC, {
@@ -124,19 +141,122 @@ async function getHolderData(tokenMint) {
       ? (await supplyRes.value.json().catch(() => ({}))).result?.value : null;
 
     if (!largest.length || !supply) return null;
-
-    const totalSupply  = safeNum(supply.uiAmount || 0);
+    const totalSupply = safeNum(supply.uiAmount || 0);
     if (totalSupply === 0) return null;
 
-    const top10Amount  = largest.slice(0, 10).reduce((s, h) => s + safeNum(h.uiAmount || 0), 0);
-    const top10Pct     = (top10Amount / totalSupply) * 100;
+    const top10Amount = largest.slice(0, 10).reduce((s, h) => s + safeNum(h.uiAmount || 0), 0);
+    return parseFloat(((top10Amount / totalSupply) * 100).toFixed(2));
+  } catch { return null; }
+}
+
+async function getHolderData(tokenMint) {
+  // Run both in parallel — Solscan works without key, Helius adds real-time top10
+  const [heliusR, solscanR] = await Promise.allSettled([
+    getHeliusTop10(tokenMint),
+    getSolscanHolderCount(tokenMint),
+  ]);
+
+  const top10HolderPct = heliusR.status === 'fulfilled' ? heliusR.value : null;
+  const holderCount    = solscanR.status === 'fulfilled' ? solscanR.value : null;
+
+  if (top10HolderPct === null && holderCount === null) return null;
+
+  return {
+    available:      true,
+    holderCount,
+    top10HolderPct,
+  };
+}
+
+// ─── RugCheck.xyz — free public API, no key needed ───────────────
+// Replaces GMGN (whose endpoints are unreliable/undocumented).
+// Maps RugCheck data to same interface so step8 logic stays unchanged.
+
+async function getRugCheckSecurity(tokenMint) {
+  try {
+    // /report (bukan /report/summary) — berisi topHolders, creator, rugged
+    const res = await fetchWithTimeout(
+      `https://api.rugcheck.xyz/v1/tokens/${tokenMint}/report`,
+      { headers: { Accept: 'application/json' } },
+      10000
+    );
+    if (!res.ok) return null;
+    const data = await res.json().catch(() => null);
+    if (!data) return null;
+
+    // Top-10 holder concentration — topHolders[].pct sudah dalam %
+    const holders = Array.isArray(data.topHolders) ? data.topHolders : [];
+    const top10Pct = parseFloat(
+      holders.slice(0, 10).reduce((s, h) => s + safeNum(h.pct || 0), 0).toFixed(2)
+    );
+
+    // Insider % — RugCheck menandai tiap holder dengan insider: true/false
+    const insiderPct = parseFloat(
+      holders.filter(h => h.insider === true)
+             .reduce((s, h) => s + safeNum(h.pct || 0), 0).toFixed(2)
+    );
+
+    // Bundled launch dari risks array
+    const risks = Array.isArray(data.risks) ? data.risks : [];
+    const bundledRisk = risks.find(r =>
+      /bundle/i.test(r.name || '') || /bundle/i.test(r.description || '')
+    );
+    let bundlingPct = 0;
+    if (bundledRisk) {
+      // Coba extract % dari description, atau gunakan score sebagai proxy
+      const pctMatch = /(\d+\.?\d*)%/.exec(bundledRisk.description || '');
+      bundlingPct = pctMatch ? parseFloat(pctMatch[1]) : Math.min(bundledRisk.score / 5, 90);
+    }
+
+    // Danger risks count — proxy untuk phishing/fraud signals
+    const dangerCount = risks.filter(r => r.level === 'danger').length;
+    const phishingPct = data.rugged ? 100 : Math.min(dangerCount * 15, 90);
 
     return {
-      available:      true,
-      holderCount:    null, // tidak tersedia via free RPC — step4 handle gracefully
-      top10HolderPct: parseFloat(top10Pct.toFixed(2)),
+      available:     true,
+      source:        'rugcheck',
+      top10Pct,
+      insidersPct:   insiderPct,
+      bundlingPct,
+      phishingPct,
+      rugged:        data.rugged || false,
+      rugCheckScore: safeNum(data.score || 0),
+      scoreNorm:     safeNum(data.score_normalised || 0), // 0–100, lower = safer
+      dangerRisks:   dangerCount,
+      risks:         risks.filter(r => r.level !== 'info').map(r => r.name),
     };
   } catch { return null; }
+}
+
+// Keep GMGN as optional override — if GMGN_API_KEY is set AND RugCheck fails
+async function getGMGNSecurityFallback(tokenMint) {
+  if (!process.env.GMGN_API_KEY) return null;
+  try {
+    const res = await fetchWithTimeout(
+      `https://gmgn.ai/api/v1/token_security/sol/${tokenMint}`,
+      { headers: { 'Authorization': `Bearer ${process.env.GMGN_API_KEY}` } },
+      8000
+    );
+    if (!res.ok) return null;
+    const data = await res.json().catch(() => null);
+    if (!data) return null;
+    const sec = data.data || data;
+    return {
+      available:    true,
+      source:       'gmgn',
+      phishingPct:  safeNum(sec.phishing_report_percentage ?? null),
+      bundlingPct:  safeNum(sec.bundle_percentage          ?? null),
+      insidersPct:  safeNum(sec.insider_percentage         ?? null),
+      top10Pct:     safeNum(sec.top10_holder_percentage    ?? null),
+    };
+  } catch { return null; }
+}
+
+async function getSecurityData(tokenMint) {
+  const rc = await getRugCheckSecurity(tokenMint);
+  if (rc?.available) return rc;
+  // Fallback to GMGN if RugCheck fails and GMGN_API_KEY is set
+  return getGMGNSecurityFallback(tokenMint);
 }
 
 async function getOKXSafety(tokenMint) {
@@ -191,7 +311,7 @@ function step2_narrativeFilter(name, symbol) {
   return rejects;
 }
 
-function step3_priceHealth(dex) {
+function step3_priceHealth(dex, thresholds = {}) {
   const rejects = [];
   const warnings = [];
   if (!dex) return { rejects, warnings };
@@ -215,29 +335,41 @@ function step3_priceHealth(dex) {
       warnings.push({ rule: 'NEWLY_CREATED', msg: `Pair baru ${ageHours.toFixed(1)}h — monitor ketat` });
   }
 
-  // Low volume
+  // Low volume (general)
   if (dex.volume24h < 10000)
     warnings.push({ rule: 'LOW_VOLUME', msg: `Volume 24h $${dex.volume24h.toFixed(0)} (<$10k) — kurang aktif untuk DLMM` });
+
+  // Evil Panda: min volume threshold (configurable)
+  const minVol = thresholds.minVolume24h || 0;
+  if (minVol > 0 && dex.volume24h < minVol)
+    warnings.push({ rule: 'BELOW_MIN_VOLUME', msg: `Volume 24h $${dex.volume24h.toFixed(0)} < threshold $${minVol.toLocaleString()} — tidak memenuhi kriteria Evil Panda` });
+
+  // Evil Panda: min market cap via FDV proxy (configurable)
+  const minMcap = thresholds.minMcap || 0;
+  if (minMcap > 0 && dex.fdv > 0 && dex.fdv < minMcap)
+    warnings.push({ rule: 'BELOW_MIN_MCAP', msg: `FDV $${dex.fdv.toFixed(0)} < threshold $${minMcap.toLocaleString()} — tidak memenuhi kriteria Evil Panda` });
 
   return { rejects, warnings };
 }
 
-function step4_holderCheck(holders) {
+function step4_holderCheck(holders, thresholds = {}) {
   const rejects = [];
   const warnings = [];
   if (!holders?.available) return { rejects, warnings };
 
-  // Hard reject: top-10 >60% (Meridian criteria)
+  const minHolders = thresholds.minHolders ?? 500;
+
+  // Hard reject: top-10 >60%
   if (holders.top10HolderPct > 60)
     rejects.push({ rule: 'HIGH_CONCENTRATION', msg: `Top-10 holders: ${holders.top10HolderPct}% (>60%) — whale dump risk ekstrem` });
   else if (holders.top10HolderPct > 40)
     warnings.push({ rule: 'MODERATE_CONCENTRATION', msg: `Top-10 holders: ${holders.top10HolderPct}% (>40%) — monitor whale` });
 
-  // Hard reject: holder count <200 (Meridian criteria)
+  // Hard reject: holder count <200 (absolute floor)
   if (holders.holderCount > 0 && holders.holderCount < 200)
     rejects.push({ rule: 'LOW_HOLDER_COUNT', msg: `Hanya ${holders.holderCount} holders (<200) — distribusi buruk` });
-  else if (holders.holderCount > 0 && holders.holderCount < 500)
-    warnings.push({ rule: 'FEW_HOLDERS', msg: `${holders.holderCount} holders (<500) — distribusi terbatas` });
+  else if (holders.holderCount > 0 && holders.holderCount < minHolders)
+    warnings.push({ rule: 'FEW_HOLDERS', msg: `${holders.holderCount} holders (<${minHolders}) — distribusi terbatas` });
 
   return { rejects, warnings };
 }
@@ -288,10 +420,11 @@ function step6_tokenSafety(okx, jup) {
   return { rejects, warnings };
 }
 
-// Step 7: Organic score composite — Meridian: <60 = hard reject
-function step7_organicScore(dex, jup, holders) {
+// Step 7: Organic score composite — reject di bawah threshold (default 60, configurable)
+function step7_organicScore(dex, jup, holders, thresholds = {}) {
   const rejects = [];
   const warnings = [];
+  const minOrganic = thresholds.minOrganic ?? 60;
   let score = 0;
 
   // Presence & verification (max 35)
@@ -328,51 +461,101 @@ function step7_organicScore(dex, jup, holders) {
 
   score = Math.min(100, score);
 
-  if (score < 60)
-    rejects.push({ rule: 'LOW_ORGANIC_SCORE', msg: `Organic score: ${score}/100 (<60) — tidak cukup organik` });
-  else if (score < 70)
+  if (score < minOrganic)
+    rejects.push({ rule: 'LOW_ORGANIC_SCORE', msg: `Organic score: ${score}/100 (<${minOrganic}) — tidak cukup organik` });
+  else if (score < minOrganic + 10)
     warnings.push({ rule: 'BORDERLINE_ORGANIC', msg: `Organic score: ${score}/100 (borderline)` });
 
   return { rejects, warnings, score };
 }
 
+// Step 8: GMGN Security — Evil Panda criteria (optional, only if GMGN_API_KEY set)
+function step8_gmgnFilter(gmgn, thresholds = {}) {
+  const rejects = [];
+  const warnings = [];
+  if (!gmgn?.available) return { rejects, warnings, available: false };
+
+  const maxPhishing = thresholds.gmgnMaxPhishing      ?? 30;
+  const maxBundling = thresholds.gmgnMaxBundling       ?? 60;
+  const maxInsiders = thresholds.gmgnMaxInsiders       ?? 10;
+  const maxTop10    = thresholds.gmgnMaxTop10Holdings  ?? 30;
+
+  if (gmgn.phishingPct !== null && gmgn.phishingPct >= maxPhishing)
+    rejects.push({ rule: 'GMGN_PHISHING', msg: `GMGN phishing report ${gmgn.phishingPct}% (≥${maxPhishing}%) — RED FLAG` });
+
+  if (gmgn.bundlingPct !== null && gmgn.bundlingPct >= maxBundling)
+    rejects.push({ rule: 'GMGN_BUNDLING', msg: `GMGN bundling ${gmgn.bundlingPct}% (≥${maxBundling}%) — koordinasi mencurigakan` });
+
+  if (gmgn.insidersPct !== null && gmgn.insidersPct >= maxInsiders)
+    rejects.push({ rule: 'GMGN_INSIDERS', msg: `GMGN insiders ${gmgn.insidersPct}% (≥${maxInsiders}%) — insider risk tinggi` });
+
+  if (gmgn.top10Pct !== null && gmgn.top10Pct >= maxTop10)
+    warnings.push({ rule: 'GMGN_TOP10', msg: `Top-10 holdings ${gmgn.top10Pct}% (≥${maxTop10}%) — konsentrasi tinggi` });
+
+  // RugCheck-specific signals
+  if (gmgn.source === 'rugcheck') {
+    if (gmgn.rugged)
+      rejects.push({ rule: 'RUGCHECK_RUGGED', msg: 'Token ini sudah RUGGED (RugCheck confirmed)' });
+    // score_normalised: 0=perfect, 100=very risky
+    if (gmgn.scoreNorm >= 60)
+      rejects.push({ rule: 'RUGCHECK_HIGH_RISK', msg: `RugCheck risk score: ${gmgn.scoreNorm}/100 (≥60 = high risk)` });
+    else if (gmgn.scoreNorm >= 35)
+      warnings.push({ rule: 'RUGCHECK_MEDIUM_RISK', msg: `RugCheck risk score: ${gmgn.scoreNorm}/100 (borderline)` });
+  }
+
+  return { rejects, warnings, available: true };
+}
+
 // ─── Main filter function ────────────────────────────────────────
 
 export async function screenToken(tokenMint, tokenName = '', tokenSymbol = '') {
-  const [dexResult, jupResult, holderResult, okxResult] = await Promise.allSettled([
+  const cfg = getConfig();
+  const thresholds = {
+    minMcap:             cfg.minMcap             ?? 0,
+    minVolume24h:        cfg.minVolume24h         ?? 0,
+    gmgnMaxPhishing:     cfg.gmgnMaxPhishing      ?? 30,
+    gmgnMaxBundling:     cfg.gmgnMaxBundling      ?? 60,
+    gmgnMaxInsiders:     cfg.gmgnMaxInsiders      ?? 10,
+    gmgnMaxTop10Holdings: cfg.gmgnMaxTop10Holdings ?? 30,
+  };
+
+  const [dexResult, jupResult, holderResult, okxResult, gmgnResult] = await Promise.allSettled([
     getDexScreenerInfo(tokenMint),
     getJupiterData(tokenMint),
     getHolderData(tokenMint),
     getOKXSafety(tokenMint),
+    getSecurityData(tokenMint),
   ]);
 
   const dex     = dexResult.status    === 'fulfilled' ? dexResult.value    : null;
   const jup     = jupResult.status    === 'fulfilled' ? jupResult.value    : null;
   const holders = holderResult.status === 'fulfilled' ? holderResult.value : null;
   const okx     = okxResult.status    === 'fulfilled' ? okxResult.value    : null;
+  const gmgn    = gmgnResult.status   === 'fulfilled' ? gmgnResult.value   : null;
 
   const name   = tokenName   || dex?.name   || jup?.name   || tokenSymbol || '';
   const symbol = tokenSymbol || dex?.symbol || jup?.symbol || '';
 
   const s1 = step1_basicValidation(dex, jup);
   const s2 = step2_narrativeFilter(name, symbol);
-  const s3 = step3_priceHealth(dex);
-  const s4 = step4_holderCheck(holders);
+  const s3 = step3_priceHealth(dex, thresholds);
+  const s4 = step4_holderCheck(holders, thresholds);
   const s5 = step5_txnAnalysis(dex);
   const s6 = step6_tokenSafety(okx, jup);
-  const s7 = step7_organicScore(dex, jup, holders);
+  const s7 = step7_organicScore(dex, jup, holders, thresholds);
+  const s8 = step8_gmgnFilter(gmgn, thresholds);
 
   const allRejects = [
     ...s1.rejects, ...s2,
     ...s3.rejects, ...s4.rejects,
     ...s5.rejects, ...s6.rejects,
-    ...s7.rejects,
+    ...s7.rejects, ...s8.rejects,
   ];
   const allWarnings = [
     ...s1.warnings,
     ...s3.warnings, ...s4.warnings,
     ...s5.warnings, ...s6.warnings,
-    ...s7.warnings,
+    ...s7.warnings, ...s8.warnings,
   ];
 
   let verdict;
@@ -392,14 +575,17 @@ export async function screenToken(tokenMint, tokenName = '', tokenSymbol = '') {
     mediumFlags:  allWarnings,
     allFlags:     [...allRejects, ...allWarnings],
     organicScore: s7.score,
-    steps:        { s1, s2, s3, s4, s5, s6, s7 },
+    holderCount:  holders?.holderCount ?? null,
+    steps:        { s1, s2, s3, s4, s5, s6, s7, s8 },
     jupiterData:  jup,
-    gmgnAvailable: false,
+    gmgnData:     gmgn,
+    gmgnAvailable: !!(gmgn?.available),
     sources: {
       dexscreener: !!dex,
       jupiter:     !!(jup?.found),
       helius:      !!(holders?.available),
       okx:         !!(okx?.available),
+      gmgn:        !!(gmgn?.available),
     },
   };
 }
@@ -410,9 +596,13 @@ export function formatScreenResult(result) {
   const emoji = { AVOID: '🚫', CAUTION: '👀', PASS: '✅' }[result.verdict] || '❓';
   const label = result.eligible ? result.verdict + ' — ELIGIBLE FOR DLMM' : 'AVOID';
 
+  const holderDisplay = result.holderCount != null
+    ? ` | 👥 ${result.holderCount.toLocaleString()} holders`
+    : '';
+
   let text = `${emoji} *${result.name || result.symbol || result.tokenMint.slice(0, 8)}* — ${label}\n`;
   text += `\`${result.tokenMint.slice(0, 16)}...\`\n`;
-  text += `📊 Organic score: *${result.organicScore ?? 'N/A'}/100*\n\n`;
+  text += `📊 Organic score: *${result.organicScore ?? 'N/A'}/100*${holderDisplay}\n\n`;
 
   if (result.jupiterData?.found) {
     const jupStatus = result.jupiterData.isStrict ? '✅ Strict'
@@ -420,6 +610,19 @@ export function formatScreenResult(result) {
     text += `🪐 Jupiter: ${jupStatus}`;
     if (result.jupiterData.priceUsd) text += ` | $${parseFloat(result.jupiterData.priceUsd).toFixed(6)}`;
     text += '\n';
+  }
+
+  if (result.gmgnAvailable && result.gmgnData) {
+    const g = result.gmgnData;
+    const src = g.source === 'rugcheck' ? '🔍 RugCheck' : '🔐 GMGN';
+    const secLine = [
+      g.phishingPct !== null ? `Phishing: ${g.phishingPct}%` : null,
+      g.bundlingPct !== null ? `Bundle: ${g.bundlingPct}%`   : null,
+      g.insidersPct !== null ? `Insiders: ${g.insidersPct}%` : null,
+      g.top10Pct    !== null ? `Top10: ${g.top10Pct}%`       : null,
+    ].filter(Boolean).join(' | ');
+    if (secLine) text += `${src}: ${secLine}\n`;
+    if (g.rugged) text += `☠️ *RUGGED TOKEN* — AVOID\n`;
   }
 
   if (result.highFlags.length > 0) {

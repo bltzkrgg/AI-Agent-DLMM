@@ -427,6 +427,11 @@ bot.onText(/\/evolve/, async (msg) => {
     let text = `🧬 *Evolution Round ${getMemoryStats().evolutionCount}*\n\n`;
     text += `${result.summary}\n\n`;
     text += `Win rate: ${result.stats.winRate}% | Avg PnL: $${result.stats.avgPnl}\n\n`;
+    if (result.appliedWeights) {
+      const w = result.appliedWeights;
+      text += `⚖️ *Darwin Weights Diperbarui:*\n`;
+      text += `  mcap: ${w.mcap} | fee/TVL: ${w.feeActiveTvlRatio} | volume: ${w.volume} | holders: ${w.holderCount}\n\n`;
+    }
     text += `*${result.newInstincts.length} Instincts Baru:*\n`;
     result.newInstincts.forEach((inst, i) => {
       text += `${i + 1}. [${(inst.confidence * 100).toFixed(0)}%] ${inst.pattern}\n`;
