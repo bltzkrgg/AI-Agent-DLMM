@@ -345,8 +345,8 @@ async function executeTool(name, input) {
           `🚀 *Hunter Alpha ingin deploy:*\n\n` +
           `📍 Pool: \`${input.pool_address.slice(0,8)}...\`\n` +
           `📊 Strategi: ${strategy?.name || 'default'}\n` +
-          `💰 Deploy: ${deployAmountSol} SOL (${tokenXWeight}% tokenX / ${tokenYWeight}% tokenY)\n` +
-          `  tokenX: ${tokenXAmount.toFixed(4)} | tokenY: ${tokenYAmount.toFixed(4)} SOL\n\n` +
+          `💰 Deploy: ${deployAmountSol} SOL (Single-Side SOL)\n` +
+          `  tokenX: 0 | tokenY: ${tokenYAmount.toFixed(4)} SOL\n\n` +
           `💭 ${input.reasoning}`
         );
         if (!confirmed) {

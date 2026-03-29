@@ -97,11 +97,11 @@ export function checkMaxDrawdown() {
   }
 
   // Use starting balance in USD if available, else skip drawdown check
-  if (!pnl.startingBalanceUsd || pnl.startingBalanceUsd <= 0) {
+  if (!pnl.startingBalance || pnl.startingBalance <= 0) {
     return { triggered: false, reason: null, dailyPnlUsd: pnl.totalPnlUsd, drawdownPct: 0 };
   }
 
-  const drawdownPct = (pnl.totalPnlUsd / pnl.startingBalanceUsd) * 100;
+  const drawdownPct = (pnl.totalPnlUsd / pnl.startingBalance) * 100;
 
   if (drawdownPct < -maxDrawdownPct) {
     return {
