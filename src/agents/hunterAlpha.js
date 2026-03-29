@@ -317,24 +317,15 @@ async function executeTool(name, input) {
       const stratParams = strategy ? parseStrategyParameters(strategy) : { priceRangePercent: 5 };
       const strategyType = strategy?.strategy_type || 'spot';
 
-      // ── Auto-calculate position sizing dari strategy weights ──
-      // tokenXWeight/tokenYWeight di stratParams menentukan alokasi
-      // Contoh: spot = 50/50, single_side_y = 0/100, single_side_x = 100/0
-      const tokenXWeight = stratParams.tokenXWeight ?? 50; // % dari total deploy
-      const tokenYWeight = stratParams.tokenYWeight ?? 50;
+      // ── Auto-calculate position sizing ───────────────────────
+      // Bot hanya punya SOL — selalu Single-Side SOL (tokenX=0, tokenY=full)
+      // Ini mencegah "custom program error: 0x1" karena bot tidak punya tokenX
       const deployAmountSol = cfg.deployAmountSol || 0.1;
+      const tokenXAmount    = 0;
+      const tokenYAmount    = deployAmountSol;
 
       // Ambil pool info untuk harga dan validasi
       const poolInfo = await getPoolInfo(input.pool_address);
-      const pricePerToken = poolInfo?.activePrice || 0; // harga tokenX dalam satuan tokenY
-
-      // tokenY (SOL/USDC) — langsung dari deployAmountSol
-      const tokenYAmount = deployAmountSol * (tokenYWeight / 100);
-
-      // tokenX — konversi dari SOL menggunakan harga pool
-      const tokenXAmount = (pricePerToken > 0 && tokenXWeight > 0)
-        ? (deployAmountSol * (tokenXWeight / 100)) / pricePerToken
-        : 0;
 
       // Validate strategy vs pool conditions (volatilitas vs bin step)
       let validation = { valid: true, warning: null };
@@ -384,8 +375,7 @@ async function executeTool(name, input) {
           `🏊 Pool: \`${input.pool_address.slice(0, 8)}...\`\n` +
           `📊 Strategi: ${strategy?.name || 'default'}\n\n` +
           `💰 *Deploy:*\n` +
-          `  ${result.tokenXSymbol}: ${result.tokenXAmount}\n` +
-          `  ${result.tokenYSymbol}: ${result.tokenYAmount}\n\n` +
+          `  ${result.tokenYSymbol}: ${deployAmountSol} SOL (Single-Side)\n\n` +
           `📈 *Range:*\n` +
           `  Entry: ${result.entryPrice?.toFixed(8)}\n` +
           `  Bawah: ${result.lowerPrice?.toFixed(8)} (-${result.priceRangePct}%)\n` +
