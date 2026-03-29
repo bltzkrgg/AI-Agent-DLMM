@@ -31,6 +31,7 @@ import { extractStrategiesFromArticle, summarizeArticle } from './market/researc
 import { getLibraryStats } from './market/strategyLibrary.js';
 import { screenToken, formatScreenResult } from './market/coinfilter.js';
 import { getOpenPositions, getPositionStats } from './db/database.js';
+import { getPositionInfo } from './solana/meteora.js';
 import { initMonitor } from './monitor/positionMonitor.js';
 import { autoEvolveIfReady } from './learn/evolve.js';
 import { getTodayResults, formatDailyReport, savePerformanceSnapshot, backupAllData } from './market/strategyPerformance.js';
@@ -270,7 +271,49 @@ bot.onText(/\/entry/, (msg) => {
 
 bot.onText(/\/status/, async (msg) => {
   if (msg.from.id !== ALLOWED_ID) return;
-  await handleMessage(msg, 'Tampilkan semua posisi terbuka, balance wallet, dan statistik performa sekarang');
+  const chatId = msg.chat.id;
+  try {
+    const [balance, openPos, stats] = await Promise.all([
+      getWalletBalance(),
+      Promise.resolve(getOpenPositions()),
+      Promise.resolve(getPositionStats()),
+    ]);
+
+    let text = `📊 *Status Bot*\n\n`;
+    text += `💰 Balance: *${balance} SOL* | Mode: 🔴 LIVE\n`;
+    text += `📍 Posisi terbuka: *${openPos.length}/${getConfig().maxPositions}*\n`;
+    text += `📈 Closed: ${stats.closedPositions} | Win: ${stats.winRate} | Avg PnL: ${stats.avgPnl}\n\n`;
+
+    if (openPos.length === 0) {
+      text += `_Tidak ada posisi terbuka._`;
+    } else {
+      for (const pos of openPos) {
+        // Coba ambil status on-chain (best-effort)
+        let rangeStatus = '⏳ loading...';
+        try {
+          const onChain = await getPositionInfo(pos.pool_address);
+          const match = onChain?.find(p => p.address === pos.position_address);
+          if (match) {
+            rangeStatus = match.inRange ? '✅ In Range' : '⚠️ Out of Range';
+          } else {
+            rangeStatus = '❓ Tidak ditemukan on-chain';
+          }
+        } catch { rangeStatus = '⚠️ Gagal cek on-chain'; }
+
+        const openedAt = new Date(pos.created_at).toLocaleString('id-ID', { timeZone: 'Asia/Jakarta' });
+        text += `*Posisi \`${pos.position_address.slice(0, 8)}...\`*\n`;
+        text += `  🏊 Pool: \`${pos.pool_address.slice(0, 8)}...${pos.pool_address.slice(-4)}\`\n`;
+        text += `  📊 Strategi: ${pos.strategy_used || 'default'}\n`;
+        text += `  💰 Deploy: $${pos.deployed_usd || 0}\n`;
+        text += `  📡 Status: ${rangeStatus}\n`;
+        text += `  🕐 Dibuka: ${openedAt}\n\n`;
+      }
+    }
+
+    await sendLong(chatId, text, { parse_mode: 'Markdown' });
+  } catch (e) {
+    bot.sendMessage(chatId, `❌ ${e.message}`);
+  }
 });
 
 bot.onText(/\/pools/, async (msg) => {
