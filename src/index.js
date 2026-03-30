@@ -14,7 +14,7 @@ import { evolveFromTrades, getMemoryStats, getInstinctsContext } from './market/
 import { extractStrategiesFromArticle, summarizeArticle } from './market/researcher.js';
 import { getLibraryStats } from './market/strategyLibrary.js';
 import { screenToken, formatScreenResult } from './market/coinfilter.js';
-import { getOpenPositions, getPositionStats } from './db/database.js';
+import { getOpenPositions, getPositionStats, closePositionWithPnl } from './db/database.js';
 import { getPositionInfo } from './solana/meteora.js';
 import { padR, hr, kv, codeBlock, formatPnl, shortAddr, shortStrat } from './utils/table.js';
 import { initMonitor } from './monitor/positionMonitor.js';
@@ -127,16 +127,21 @@ const setupState = {
 };
 
 // triggerHunter — hanya dipanggil dari /entry, TIDAK dari cron atau post-close
-async function triggerHunter() {
+async function triggerHunter(targetCount = null) {
   if (_hunterBusy) return;
   const liveCfg = getConfig();
   const openPos = getOpenPositions();
-  if (openPos.length >= liveCfg.maxPositions) {
+  // Cek kuota: jika targetCount diberikan, cek apakah masih ada slot
+  // Jika tidak ada targetCount, gunakan maxPositions global
+  const effectiveMax = targetCount != null
+    ? openPos.length + targetCount   // buka targetCount posisi baru
+    : liveCfg.maxPositions;
+  if (openPos.length >= effectiveMax && targetCount == null) {
     notify(`⚠️ Posisi sudah penuh (${openPos.length}/${liveCfg.maxPositions}). Tutup posisi dulu sebelum entry baru.`).catch(() => {});
     return;
   }
   _hunterBusy = true;
-  try { await runHunterAlpha(notify, bot, ALLOWED_ID); }
+  try { await runHunterAlpha(notify, bot, ALLOWED_ID, { targetCount }); }
   catch (e) { notify(`❌ Hunter error: ${e.message}`).catch(() => {}); }
   finally { _hunterBusy = false; }
 }
@@ -300,61 +305,103 @@ bot.onText(/\/status/, async (msg) => {
       Promise.resolve(getOpenPositions()),
       Promise.resolve(getPositionStats()),
     ]);
+    const memStats = getMemoryStats();
 
-    // Fetch on-chain range status untuk semua posisi secara paralel
-    const rangeMap = {};
+    // Fetch on-chain data per posisi: range status + PnL live
+    const chainMap = {}; // positionAddress → { status, pnlSol, pnlPct, feeSol, manualClose }
     await Promise.all(openPos.map(async (pos) => {
       try {
         const onChain = await getPositionInfo(pos.pool_address);
         const match = onChain?.find(p => p.address === pos.position_address);
-        rangeMap[pos.position_address] = match
-          ? (match.inRange ? 'InRange' : 'OutRange')
-          : 'NoData';
-      } catch { rangeMap[pos.position_address] = 'Err'; }
+        if (!match && Array.isArray(onChain)) {
+          // On-chain lookup berhasil tapi posisi tidak ada → kemungkinan ditutup manual
+          chainMap[pos.position_address] = { status: 'Manual', manualClose: true };
+        } else if (match) {
+          const deployedSol   = pos.deployed_sol || 0;
+          const currentValSol = match.currentValueSol ?? 0;
+          const pnlSol = parseFloat((currentValSol - deployedSol).toFixed(4));
+          const pnlPct = deployedSol > 0 && currentValSol > 0
+            ? parseFloat(((currentValSol - deployedSol) / deployedSol * 100).toFixed(2))
+            : 0;
+          chainMap[pos.position_address] = {
+            status:  match.inRange ? 'InRange' : 'OutRange',
+            pnlSol,
+            pnlPct,
+            feeSol: match.feeCollectedSol ?? 0,
+            manualClose: false,
+          };
+        } else {
+          chainMap[pos.position_address] = { status: 'NoData' };
+        }
+      } catch {
+        chainMap[pos.position_address] = { status: 'Err' };
+      }
     }));
+
+    // Auto-mark manually closed positions in DB
+    for (const pos of openPos) {
+      const c = chainMap[pos.position_address];
+      if (c?.manualClose) {
+        closePositionWithPnl(pos.position_address, { pnlUsd: 0, pnlPct: 0, feesUsd: 0, closeReason: 'MANUAL_CLOSE' });
+        notify(
+          `⚠️ *Posisi Ditutup Manual*\n\n` +
+          `Pool     : \`${pos.pool_address}\`\n` +
+          `Posisi   : \`${pos.position_address}\`\n` +
+          `Strategi : ${pos.strategy_used || '-'}\n` +
+          `Deploy   : ${(pos.deployed_sol || 0).toFixed(4)} SOL\n\n` +
+          `_Posisi tidak ditemukan on-chain. Telah ditandai CLOSED di database._`
+        ).catch(() => {});
+      }
+    }
+
+    // Filter ulang posisi yang benar-benar masih open (belum di-mark manual)
+    const activePos = openPos.filter(p => !chainMap[p.position_address]?.manualClose);
 
     // ── Header ───────────────────────────────────────────────────
     let text = `📊 *Status Bot* 🔴 LIVE\n\n`;
 
-    const COL = 42;
+    const pnlSign  = (v) => parseFloat(v) >= 0 ? '+' : '';
     const headerLines = [
-      kv('Balance', `${parseFloat(balance).toFixed(4)} SOL`, 8),
-      kv('Posisi', `${openPos.length} / ${getConfig().maxPositions} terbuka`, 8),
+      kv('Balance',   `${parseFloat(balance).toFixed(4)} SOL`, 10),
+      kv('Posisi',    `${activePos.length} / ${getConfig().maxPositions}`, 10),
+      kv('Closed',    `${stats.closedPositions}  Win: ${stats.winRate}`, 10),
+      kv('PnL',       `${pnlSign(stats.totalPnlUsd)}$${parseFloat(stats.totalPnlUsd || 0).toFixed(2)}  Fees: +$${parseFloat(stats.totalFeesUsd || 0).toFixed(2)}`, 10),
+      kv('Instincts', `${memStats.instinctCount}`, 10),
     ];
-    if (stats.closedPositions > 0) {
-      headerLines.push(
-        kv('Closed', `${stats.closedPositions} pos  Win: ${stats.winRate}  Avg: ${stats.avgPnl}`, 8),
-        kv('PnL', `+$${stats.totalPnlUsd}  Fees: +$${stats.totalFeesUsd}`, 8),
-      );
-    }
     text += codeBlock(headerLines) + '\n';
 
     // ── Positions table ──────────────────────────────────────────
-    if (openPos.length === 0) {
+    if (activePos.length === 0) {
       text += `_Tidak ada posisi terbuka._`;
     } else {
-      // Col widths: Pool=10, Strategi=12, Deploy=9, Status=8
-      const W = [10, 12, 9, 8];
+      // Col widths: Pool=10, Strategi=11, PnL=11, Status=8
+      const W = [10, 11, 11, 8];
       const rows = [
-        [padR('POOL', W[0]), padR('STRATEGI', W[1]), padR('DEPLOY', W[2]), 'STATUS'],
+        [padR('POOL', W[0]), padR('STRATEGI', W[1]), padR('PnL◎', W[2]), 'STATUS'],
         [hr(W[0]), hr(W[1]), hr(W[2]), hr(W[3])],
-        ...openPos.map(pos => {
-          const deploy = pos.deployed_sol > 0
-            ? pos.deployed_sol + ' SOL'
-            : '$' + (pos.deployed_usd || 0);
+        ...activePos.map(pos => {
+          const cd = chainMap[pos.position_address];
+          const pnlStr = cd?.pnlSol != null
+            ? `${cd.pnlSol >= 0 ? '+' : ''}${cd.pnlSol.toFixed(4)}`
+            : '?';
+          const pctStr = cd?.pnlPct != null
+            ? ` (${cd.pnlPct >= 0 ? '+' : ''}${cd.pnlPct.toFixed(1)}%)`
+            : '';
           return [
             padR(shortAddr(pos.pool_address), W[0]),
             padR(shortStrat(pos.strategy_used), W[1]),
-            padR(deploy, W[2]),
-            rangeMap[pos.position_address] || '?',
+            padR(pnlStr + pctStr, W[2]),
+            cd?.status || '?',
           ];
         }),
         [hr(W[0]), hr(W[1]), hr(W[2]), hr(W[3])],
-        ...openPos.map(pos => {
+        ...activePos.map(pos => {
+          const cd = chainMap[pos.position_address];
           const openedAt = new Date(pos.created_at)
             .toLocaleString('id-ID', { timeZone: 'Asia/Jakarta', hour12: false })
             .replace(',', '');
-          return [`  Dibuka: ${openedAt}  (${shortAddr(pos.position_address, 4, 4)})`, '', '', ''];
+          const feeStr = cd?.feeSol != null ? `  Fee:+${cd.feeSol.toFixed(4)}◎` : '';
+          return [`  ${openedAt}  ${shortAddr(pos.position_address)}${feeStr}`, '', '', ''];
         }),
       ];
 
@@ -575,7 +622,7 @@ bot.on('message', async (msg) => {
     setupState.solPerPool = sol;
     setupState.phase = 'waiting_pools';
     bot.sendMessage(msg.chat.id,
-      `✅ *${sol} SOL per pool*\n\n❓ *Berapa Pool Maksimal yang Boleh Dibuka?*\n\n_Minimal 1. Contoh: \`3\` untuk max 3 posisi aktif_`,
+      `✅ *${sol} SOL per pool*\n\n❓ *Berapa Pool yang Ingin Di-deploy Sekarang?*\n\n_Contoh: \`3\` untuk deploy ke 3 pool sekarang_`,
       { parse_mode: 'Markdown' }
     );
     return;
@@ -597,18 +644,19 @@ bot.on('message', async (msg) => {
     setupState.phase = 'done';
 
     const solPerPool = setupState.solPerPool;
-    updateConfig({ deployAmountSol: solPerPool, maxPositions: pools });
+    updateConfig({ deployAmountSol: solPerPool });
 
     bot.sendMessage(msg.chat.id,
       `✅ *Setup Selesai!*\n\n` +
       `📊 Deploy per pool: *${solPerPool} SOL*\n` +
-      `🏊 Max posisi aktif: *${pools}*\n\n` +
+      `🏊 Deploy sekarang: *${pools} pool*\n` +
+      `📋 Max posisi aktif: *${getConfig().maxPositions}*\n\n` +
       `🦅 Hunter Alpha sedang mencari pool terbaik...`,
       { parse_mode: 'Markdown' }
     );
 
-    // Trigger hunter langsung tanpa tunggu cron
-    triggerHunter().catch(e => console.error('Trigger hunter error:', e.message));
+    // Trigger hunter langsung tanpa tunggu cron, dengan jumlah pool target
+    triggerHunter(pools).catch(e => console.error('Trigger hunter error:', e.message));
     return;
   }
   // ── End setup wizard ─────────────────────────────────────────────

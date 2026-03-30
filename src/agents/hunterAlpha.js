@@ -23,6 +23,7 @@ let lastReport = null;
 let hunterNotifyFn = null;
 let hunterBotRef = null;
 let hunterAllowedId = null;
+let _hunterTargetCount = null; // jumlah posisi yang ingin dibuka dalam 1 run /entry
 
 export function getCandidates() { return lastCandidates; }
 export function getLastHunterReport() { return lastReport; }
@@ -279,11 +280,16 @@ async function executeTool(name, input) {
     case 'get_wallet_status': {
       const balance = await getWalletBalance();
       const openPos = getOpenPositions();
+      // Jika run dari /entry dengan targetCount, hitung batas berdasarkan posisi yang akan dibuka
+      const effectiveMax = _hunterTargetCount != null
+        ? openPos.length + _hunterTargetCount
+        : cfg.maxPositions;
       return JSON.stringify({
         solBalance: balance,
         openPositions: openPos.length,
-        maxPositions: cfg.maxPositions,
-        canOpen: parseFloat(balance) >= (cfg.deployAmountSol + (cfg.gasReserve ?? 0.02)) && openPos.length < cfg.maxPositions,
+        maxPositions: effectiveMax,
+        targetCount: _hunterTargetCount,
+        canOpen: parseFloat(balance) >= (cfg.deployAmountSol + (cfg.gasReserve ?? 0.02)) && openPos.length < effectiveMax,
         requiredSol: parseFloat((cfg.deployAmountSol + (cfg.gasReserve ?? 0.02)).toFixed(4)),
       }, null, 2);
     }
@@ -473,21 +479,31 @@ async function executeTool(name, input) {
 
 // ─── Main agent loop ─────────────────────────────────────────────
 
-export async function runHunterAlpha(notifyFn, bot = null, allowedId = null) {
+export async function runHunterAlpha(notifyFn, bot = null, allowedId = null, options = {}) {
   hunterNotifyFn = notifyFn;
   hunterBotRef = bot;
   hunterAllowedId = allowedId;
+  _hunterTargetCount = options.targetCount ?? null;
 
   const cfg = getConfig();
 
   // ── Skip silently jika slot posisi penuh ─────────────────────
   const openPos = getOpenPositions();
-  if (openPos.length >= cfg.maxPositions) return null;
+  const effectiveMax = _hunterTargetCount != null
+    ? openPos.length + _hunterTargetCount
+    : cfg.maxPositions;
+  if (openPos.length >= effectiveMax) {
+    _hunterTargetCount = null;
+    return null;
+  }
 
   // ── Skip silently jika balance tidak cukup ───────────────────
   try {
     const balance = await getWalletBalance();
-    if (parseFloat(balance) < (cfg.deployAmountSol + (cfg.gasReserve ?? 0.02))) return null;
+    if (parseFloat(balance) < (cfg.deployAmountSol + (cfg.gasReserve ?? 0.02))) {
+      _hunterTargetCount = null;
+      return null;
+    }
   } catch { /* lanjut jika gagal cek balance */ }
   const lessonsCtx = getLessonsContext();
   const instincts = getInstinctsContext();
@@ -577,17 +593,21 @@ NAMA STRATEGI — WAJIB PERSIS SALAH SATU DARI LIST INI:
 STRATEGY LIBRARY (${libraryStats.totalStrategies} strategi):
 ${libraryStats.topStrategies.map(s => `  ${s.name} (${s.type}, ${(s.confidence * 100).toFixed(0)}% conf)`).join('\n')}
 
-Mode: 🔴 LIVE | Deploy: ${cfg.deployAmountSol} SOL/posisi
+Mode: 🔴 LIVE | Deploy: ${cfg.deployAmountSol} SOL/posisi${_hunterTargetCount != null ? ` | Target: ${_hunterTargetCount} posisi baru` : ''}
 ${lessonsCtx}
 ${instincts}
 ${strategyIntel}
 
 Gunakan Bahasa Indonesia untuk laporan akhir. Reasoning singkat, action langsung.`;
 
+  const targetNote = _hunterTargetCount != null
+    ? ` Tujuan: buka ${_hunterTargetCount} posisi baru.`
+    : '';
+
   const messages = [
     {
       role: 'user',
-      content: `Jalankan siklus screening & deployment sekarang. ` +
+      content: `Jalankan siklus screening & deployment sekarang.${targetNote} ` +
                `Temukan pool terbaik, filter token, dan deploy LANGSUNG tanpa menunggu input apapun. ` +
                `Mode: LIVE — eksekusi nyata. ` +
                `Deploy ${cfg.deployAmountSol} SOL per posisi, strategi dihitung otomatis.`,
@@ -630,6 +650,7 @@ Gunakan Bahasa Indonesia untuk laporan akhir. Reasoning singkat, action langsung
 
   const report = response.content.filter(b => b.type === 'text').map(b => b.text).join('\n');
   lastReport = { report, timestamp: new Date().toISOString() };
+  _hunterTargetCount = null; // reset setelah selesai
 
   if (notifyFn) await notifyFn(`🦅 *Hunter Alpha Report*\n\n${report}`);
   return report;

@@ -2,7 +2,7 @@ import { createMessage, resolveModel } from '../agent/provider.js';
 import { getConfig, getThresholds } from '../config.js';
 import { getPositionInfo, closePositionDLMM, claimFees, getPoolInfo } from '../solana/meteora.js';
 import { getWalletBalance } from '../solana/wallet.js';
-import { getOpenPositions, saveNotification } from '../db/database.js';
+import { getOpenPositions, closePositionWithPnl, saveNotification } from '../db/database.js';
 import { getLessonsContext } from '../learn/lessons.js';
 import { checkStopLoss, checkMaxDrawdown, recordPnl, getSafetyStatus } from '../safety/safetyManager.js';
 import { analyzeMarket } from '../market/analyst.js';
@@ -11,7 +11,7 @@ import { getStrategyIntelligenceContext } from '../market/strategyPerformance.js
 import { swapAllToSOL, SOL_MINT } from '../solana/jupiter.js';
 import { fetchCandles, fetchMultiTFOHLCV } from '../market/oracle.js';
 import { detectEvilPandaSignals, computeSupertrend, computeRSI } from '../market/taIndicators.js';
-import { kv, hr, codeBlock, formatPnl, shortAddr } from '../utils/table.js';
+import { kv, hr, codeBlock, formatPnl, shortAddr, shortStrat } from '../utils/table.js';
 import { formatStrategyAlert } from '../utils/alerts.js';
 
 // ─── Trailing Take Profit Config ──────────────────────────────────
@@ -120,6 +120,16 @@ async function executeTool(name, input) {
         try {
           const onChain = await getPositionInfo(pos.pool_address);
           const match   = onChain?.find(p => p.address === pos.position_address);
+
+          // Deteksi posisi ditutup manual
+          if (!match && Array.isArray(onChain)) {
+            closePositionWithPnl(pos.position_address, {
+              pnlUsd: 0, pnlPct: 0, feesUsd: 0, closeReason: 'MANUAL_CLOSE',
+            });
+            outOfRangeTracker.delete(pos.position_address);
+            peakPnlTracker.delete(pos.position_address);
+            return { ...pos, manualClose: true, status: 'closed', closeReason: 'MANUAL_CLOSE' };
+          }
 
           // ── Out-of-range tracking ────────────────────────────
           let outOfRangeMins = null;
@@ -281,7 +291,22 @@ async function executeTool(name, input) {
     }
 
     case 'close_position': {
-      const closeResult = await closePositionDLMM(input.pool_address, input.position_address);
+      // Ambil PnL on-chain sebelum close untuk akurasi pencatatan
+      let pnlData = { closeReason: (input.reasoning || 'AGENT_CLOSE').toUpperCase().replace(/ /g, '_') };
+      try {
+        const onChain = await getPositionInfo(input.pool_address);
+        const match   = onChain?.find(p => p.address === input.position_address);
+        if (match) {
+          const dbPos      = getOpenPositions().find(p => p.position_address === input.position_address);
+          const deployedSol = dbPos?.deployed_sol || 0;
+          const currentVal  = match.currentValueSol ?? 0;
+          pnlData.pnlUsd  = parseFloat((currentVal - deployedSol).toFixed(6));
+          pnlData.pnlPct  = deployedSol > 0 ? parseFloat(((currentVal - deployedSol) / deployedSol * 100).toFixed(2)) : 0;
+          pnlData.feeUsd  = match.feeCollectedSol ?? 0;
+        }
+      } catch { /* best-effort, tetap close */ }
+
+      const closeResult = await closePositionDLMM(input.pool_address, input.position_address, pnlData);
       outOfRangeTracker.delete(input.position_address);
       peakPnlTracker.delete(input.position_address);
 
@@ -299,6 +324,7 @@ async function executeTool(name, input) {
 
       return JSON.stringify({
         ...closeResult,
+        pnlRecorded: pnlData,
         autoSwap: swapResults.length > 0 ? swapResults : 'skipped',
         reasoning: input.reasoning,
       }, null, 2);
@@ -330,7 +356,22 @@ async function executeTool(name, input) {
 
     case 'zap_out': {
       // Zap Out = close position + guaranteed swap semua token ke SOL
-      const closeResult = await closePositionDLMM(input.pool_address, input.position_address);
+      // Ambil PnL on-chain sebelum close
+      let zapPnlData = { closeReason: 'ZAP_OUT' };
+      try {
+        const onChain = await getPositionInfo(input.pool_address);
+        const match   = onChain?.find(p => p.address === input.position_address);
+        if (match) {
+          const dbPos      = getOpenPositions().find(p => p.position_address === input.position_address);
+          const deployedSol = dbPos?.deployed_sol || 0;
+          const currentVal  = match.currentValueSol ?? 0;
+          zapPnlData.pnlUsd = parseFloat((currentVal - deployedSol).toFixed(6));
+          zapPnlData.pnlPct = deployedSol > 0 ? parseFloat(((currentVal - deployedSol) / deployedSol * 100).toFixed(2)) : 0;
+          zapPnlData.feeUsd = match.feeCollectedSol ?? 0;
+        }
+      } catch { /* best-effort */ }
+
+      const closeResult = await closePositionDLMM(input.pool_address, input.position_address, zapPnlData);
       outOfRangeTracker.delete(input.position_address);
       peakPnlTracker.delete(input.position_address);
 
@@ -418,7 +459,29 @@ export async function runHealerAlpha(notifyFn) {
     try {
       const onChain = await getPositionInfo(pos.pool_address);
       const match   = onChain?.find(p => p.address === pos.position_address);
-      if (!match) continue;
+
+      // Deteksi posisi ditutup manual: on-chain berhasil diambil tapi posisi tidak ada
+      if (!match && Array.isArray(onChain)) {
+        closePositionWithPnl(pos.position_address, {
+          pnlUsd: 0, pnlPct: 0, feesUsd: 0, closeReason: 'MANUAL_CLOSE',
+        });
+        outOfRangeTracker.delete(pos.position_address);
+        peakPnlTracker.delete(pos.position_address);
+        const manualLines = [
+          kv('Posisi',   shortAddr(pos.position_address), 10),
+          kv('Pool',     shortAddr(pos.pool_address), 10),
+          kv('Strategi', shortStrat(pos.strategy_used || '-'), 10),
+          hr(40),
+          kv('Deploy',   `${(pos.deployed_sol || 0).toFixed(4)}◎`, 10),
+          kv('Status',   'Ditutup manual — tidak ada di chain', 10),
+        ];
+        await notifyFn?.(
+          `⚠️ *Posisi Ditutup Manual*\n\n${codeBlock(manualLines)}\n\n_Posisi tidak ditemukan on-chain. Status diperbarui ke CLOSED._`
+        );
+        continue;
+      }
+
+      if (!match) continue; // on-chain error / network issue, skip siklus ini
 
       // PnL on-chain: (currentValueSol - deployed_sol) / deployed_sol * 100
       const _deployedSol   = pos.deployed_sol || 0;
