@@ -10,8 +10,9 @@ import { getInstinctsContext } from '../market/memory.js';
 import { getStrategyIntelligenceContext } from '../market/strategyPerformance.js';
 import { swapAllToSOL, SOL_MINT } from '../solana/jupiter.js';
 import { fetchCandles, fetchMultiTFOHLCV } from '../market/oracle.js';
-import { detectEvilPandaSignals } from '../market/taIndicators.js';
+import { detectEvilPandaSignals, computeSupertrend, computeRSI } from '../market/taIndicators.js';
 import { kv, hr, codeBlock, formatPnl, shortAddr } from '../utils/table.js';
+import { formatStrategyAlert } from '../utils/alerts.js';
 
 // ─── Trailing Take Profit Config ──────────────────────────────────
 // Terinspirasi dari Meridian: aktifkan trailing setelah profit mencapai
@@ -607,6 +608,33 @@ export async function runHealerAlpha(notifyFn) {
           ...(swapMsgs.length > 0 ? [hr(38), `Swap: ${swapMsgs.join(', ')}`] : []),
         ];
         await notifyFn?.(`✅ *Posisi Ditutup*\n\n${codeBlock(closedLines)}`);
+
+        // ── Post-close opportunity scan — apakah pool ini masih layak re-entry? ──
+        try {
+          const epCandles = await fetchCandles(pos.token_x, '15m', 100, pos.pool_address);
+          if (epCandles && epCandles.length >= 35) {
+            const closes   = epCandles.map(c => c.c);
+            const highs    = epCandles.map(c => c.h);
+            const lows     = epCandles.map(c => c.l);
+            const st       = computeSupertrend(highs, lows, closes, 10, 3);
+            const rsi14Val = computeRSI(closes, 14);
+            const last96   = epCandles.slice(-96);
+            const low24h   = Math.min(...last96.map(c => c.l));
+            const curPrice = closes[closes.length - 1];
+            const distPct  = low24h > 0 ? ((curPrice - low24h) / low24h) * 100 : 99;
+
+            // Check re-entry conditions
+            if (st?.isBullish && distPct >= 0 && distPct <= 12 && rsi14Val >= 35 && rsi14Val <= 65) {
+              await notifyFn?.(formatStrategyAlert({
+                strategy:    pos.strategy_used || 'Wave Enjoyer',
+                pool:        null,
+                poolAddress: pos.pool_address,
+                reason:      `Re-entry setelah close — Supertrend masih BULLISH | Price ${distPct.toFixed(1)}% di atas support | RSI14=${rsi14Val?.toFixed(0)}`,
+                priority:    'MEDIUM',
+              }));
+            }
+          }
+        } catch { /* best-effort, jangan crash */ }
       } catch (e) {
         await notifyFn?.(`❌ Gagal close ${triggerLabel}: ${e.message}`);
       }

@@ -14,6 +14,7 @@ import { screenToken, formatScreenResult } from '../market/coinfilter.js';
 import { parseTvl } from '../utils/safeJson.js';
 import { kv, hr, codeBlock, shortAddr } from '../utils/table.js';
 import { calcDynamicRangePct } from '../market/taIndicators.js';
+import { formatStrategyAlert } from '../utils/alerts.js';
 
 // ─── State ───────────────────────────────────────────────────────
 
@@ -245,7 +246,7 @@ async function executeTool(name, input) {
           isSOL: true,
           note: 'Bot hanya menyimpan SOL — semua deploy adalah Single-Side SOL (tokenX=0, tokenY=SOL)',
         },
-        validStrategyNames: ['Single-Side SOL', 'Evil Panda', 'Spot Balanced', 'Bid-Ask Wide', 'Single-Side Token X', 'Curve Concentrated'],
+        validStrategyNames: ['Single-Side SOL', 'Evil Panda', 'Wave Enjoyer', 'NPC', 'Fee Sniper', 'Spot Balanced', 'Bid-Ask Wide', 'Single-Side Token X', 'Curve Concentrated'],
       }, null, 2);
     }
 
@@ -409,6 +410,19 @@ async function executeTool(name, input) {
         }
       }
 
+      // ── Pre-deploy opportunity alert ─────────────────────────
+      if (hunterNotifyFn) {
+        await hunterNotifyFn(formatStrategyAlert({
+          strategy:    strategy?.name || 'Single-Side SOL',
+          pool:        null,
+          poolAddress: input.pool_address,
+          reason:      input.reasoning?.slice(0, 120) || '-',
+          priority:    strategy?.name === 'Evil Panda' ? 'HIGH'
+            : strategy?.name === 'Wave Enjoyer' || strategy?.name === 'Fee Sniper' ? 'MEDIUM'
+            : 'LOW',
+        }));
+      }
+
       // Execute with dynamic range
       const result = await openPosition(
         input.pool_address,
@@ -518,23 +532,33 @@ STRATEGI — BACA LIBRARY, JANGAN HARDCODE:
   get_pool_detail memberikan rekomendasi strategi dari Strategy Library berdasarkan kondisi market saat ini.
   IKUTI rekomendasinya. Jangan otomatis pakai "Single-Side SOL" kalau library rekomendasikan yang lain.
 
-  Panduan matching strategi berdasarkan kondisi pool:
-  • Sideways + volatilitas rendah → "Spot Balanced" atau "Curve Concentrated"
-  • Volatile + volume tinggi → "Bid-Ask Wide"
-  • Uptrend kuat + SM buying + buy pressure >65% → "Single-Side Token X"
-  • DEFAULT (market apapun, bot hanya punya SOL) → "Single-Side SOL"
+  STRATEGI TERSEDIA — PILIH BERDASARKAN KONDISI AKTUAL:
 
-  🐼 EVIL PANDA STRATEGY — aktifkan jika SEMUA syarat terpenuhi (hard gates):
-  • Pool bin step 80, 100, atau 125
-  • MC/FDV >$250k, Volume24h >$1M
-  • taSignals.supertrend.justCrossedAbove === true ← WAJIB, ini trigger utama
-  • taSignals.evilPandaEntry.justCrossedAbove === true (konfirmasi)
-  • Trend UPTREND berdasarkan price action
-  • RugCheck/screen_token PASS (phishing <30%, bundling <60%, insiders <10%, top10 <30%)
-  • OKX Smart Money masih buying (jika available — bonus, bukan blocker)
-  Jika taSignals.supertrend.justCrossedAbove !== true → JANGAN gunakan Evil Panda, pilih strategi lain.
-  Saat Evil Panda aktif: priceRangePercent=15, Single-Side SOL.
-  EXIT: Confluence ≥2 sinyal → RSI(2)>90 + BB upper ATAU RSI(2)>90 + MACD first green.
+  🐼 EVIL PANDA (Priority HIGH)
+  • Bin step 80/100/125 | Volume24h >$1M | MC >$250k
+  • GATE WAJIB: taSignals.supertrend.justCrossedAbove === true
+  • Trend UPTREND | OKX SM buying (bonus)
+  • Range: ATR-dynamic (~12-80%) | Exit: RSI(2)>90 + BB upper ATAU MACD first green
+
+  🌊 WAVE ENJOYER (Priority MEDIUM)
+  • Price dalam 8% di atas support 24h (priceContext.support)
+  • RSI14 antara 35-62 (buyers masuk, belum overbought)
+  • Volume ≥ 70% rata-rata | Trend SIDEWAYS atau mild down
+  • Range: ATR-dynamic | Exit: jika support broken atau rally +8-15%
+
+  🎯 NPC (Priority LOW)
+  • 24h price range >15% (breakout sudah terjadi)
+  • ATR saat ini < 12% dari range24h (price sedang konsolidasi)
+  • Volume masih elevated ≥ avg | Supertrend masih bullish
+  • Range: ATR-dynamic | Hold 4-12 jam
+
+  ⚡ FEE SNIPER (Priority MEDIUM)
+  • BB bandwidth < 8% (squeeze/konsolidasi ketat)
+  • ATR < 2% | Fee APR pool > 200%
+  • Volume sustained ≥ 60% avg | Trend SIDEWAYS
+  • Range: 3-5% ultra-tight | Exit: saat BB expand >10%
+
+  DEFAULT → "Single-Side SOL" (jika kondisi tidak cocok strategi di atas)
 
 DARWINIAN WEIGHTS:
   TVL (2.5x) + fee/TVL (2.3x) = sinyal kuat. Volume (0.36x) + holders (0.3x) = abaikan.
@@ -544,8 +568,9 @@ FILTER TOKEN (dari Coin Filter — DexScreener, RugCheck, Helius, OKX):
   RugCheck score & risks tersedia di screen_token — GMGN sudah digantikan RugCheck.
 
 NAMA STRATEGI — WAJIB PERSIS SALAH SATU DARI LIST INI:
-  "Single-Side SOL" | "Evil Panda" | "Spot Balanced" | "Bid-Ask Wide" | "Single-Side Token X" | "Curve Concentrated"
-  ⚠️ JANGAN pernah tulis "Single-Side USDC", "Single-Side USDT", atau nama lain yang tidak ada di list.
+  "Single-Side SOL" | "Evil Panda" | "Wave Enjoyer" | "NPC" | "Fee Sniper"
+  | "Spot Balanced" | "Bid-Ask Wide" | "Single-Side Token X" | "Curve Concentrated"
+  ⚠️ JANGAN pernah tulis nama yang tidak ada di list di atas.
   DEFAULT untuk bot ini (hanya punya SOL) → "Single-Side SOL".
   Nama yang salah akan di-fallback otomatis ke "Single-Side SOL" oleh sistem.
 
