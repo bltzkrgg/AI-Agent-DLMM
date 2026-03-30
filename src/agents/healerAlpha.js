@@ -134,14 +134,19 @@ async function executeTool(name, input) {
             outOfRangeTracker.delete(pos.position_address);
           }
 
-          const pnlPct    = match?.pnlPct ?? 0;
-          const feeUsdVal = match?.feeUsd ?? 0;
-          const isProfit  = pnlPct > 0;
-          // Claim saat fee >= 3% dari deployed capital, urgent >= 5% (min floor $0.50)
-          const deployedUsd      = pos.deployed_usd || 0;
-          const claimThreshold3  = deployedUsd > 0 ? Math.max(deployedUsd * 0.03, 0.50) : (cfg.minFeeClaimUsd ?? 1.0);
-          const claimThreshold5  = deployedUsd > 0 ? Math.max(deployedUsd * 0.05, 0.50) : (cfg.minFeeClaimUsd ?? 1.0);
-          const minClaimUsd      = claimThreshold3;
+          // PnL on-chain: (currentValueSol - deployed_sol) / deployed_sol * 100
+          const deployedSol   = pos.deployed_sol || 0;
+          const currentValSol = match?.currentValueSol ?? 0;
+          const pnlPct = deployedSol > 0 && currentValSol > 0
+            ? parseFloat(((currentValSol - deployedSol) / deployedSol * 100).toFixed(2))
+            : 0;
+          const feeCollSol = match?.feeCollectedSol ?? 0;
+          const isProfit   = pnlPct > 0;
+          // Claim saat fee >= 3% dari deployed capital (dalam SOL), urgent >= 5%
+          // min floor 0.005 SOL (~$0.50 at $100/SOL) untuk menghindari dust claim
+          const deployedSolFee     = pos.deployed_sol || 0;
+          const claimThreshold3Sol = deployedSolFee > 0 ? Math.max(deployedSolFee * 0.03, 0.005) : 0.01;
+          const claimThreshold5Sol = deployedSolFee > 0 ? Math.max(deployedSolFee * 0.05, 0.005) : 0.02;
 
           // ── Trailing Take Profit tracking ────────────────────
           // Terinspirasi dari Meridian: track peak PnL, aktifkan trailing
@@ -224,8 +229,9 @@ async function executeTool(name, input) {
             ...pos,
             onChain:      match || null,
             outOfRangeMins,
-            shouldClaimFee:        feeUsdVal >= claimThreshold3,
-            shouldClaimFeeUrgent:  feeUsdVal >= claimThreshold5,
+            shouldClaimFee:        feeCollSol >= claimThreshold3Sol,
+            shouldClaimFeeUrgent:  feeCollSol >= claimThreshold5Sol,
+            feeCollectedSol:       feeCollSol,
             shouldClose:    outOfRangeMins !== null && outOfRangeMins >= thresholds.outOfRangeWaitMinutes,
             takeProfitHit:  pnlPct >= thresholds.takeProfitFeePct,
             trailingTpHit,
@@ -414,7 +420,13 @@ export async function runHealerAlpha(notifyFn) {
       const match   = onChain?.find(p => p.address === pos.position_address);
       if (!match) continue;
 
-      const pnlPct = match.pnlPct ?? 0;
+      // PnL on-chain: (currentValueSol - deployed_sol) / deployed_sol * 100
+      const _deployedSol   = pos.deployed_sol || 0;
+      const _currentValSol = match.currentValueSol ?? 0;
+      const pnlPct = _deployedSol > 0 && _currentValSol > 0
+        ? parseFloat(((_currentValSol - _deployedSol) / _deployedSol * 100).toFixed(2))
+        : 0;
+      const pnlSol = parseFloat((_currentValSol - _deployedSol).toFixed(6));
       const addr   = pos.position_address;
 
       // ── Trailing TP state ────────────────────────────────────
@@ -534,10 +546,13 @@ export async function runHealerAlpha(notifyFn) {
         : [hr(38), 'Chart: data tidak tersedia'];
 
       // ── HOLD / HOLD_TRAIL ─────────────────────────────────────
+      // PnL display helper — SOL-based (USD API tidak tersedia)
+      const _pnlDisplay = `${pnlSol >= 0 ? '+' : ''}${pnlSol.toFixed(4)}◎  ${pnlPct >= 0 ? '+' : ''}${pnlPct.toFixed(2)}%`;
+
       if (decision === 'HOLD') {
         const lines = [
           kv('Posisi', shortAddr(addr), 8),
-          kv('PnL',    formatPnl(match?.pnlUsd || 0, pnlPct), 8),
+          kv('PnL',    _pnlDisplay, 8),
           ...sigDetail,
           hr(38),
           `Alasan   : ${holdReason?.slice(0, 36) || '-'}`,
@@ -554,7 +569,7 @@ export async function runHealerAlpha(notifyFn) {
         peakPnlTracker.set(addr, tracker);
         const lines = [
           kv('Posisi',  shortAddr(addr), 8),
-          kv('PnL',     formatPnl(match?.pnlUsd || 0, pnlPct) + ' (peak)', 8),
+          kv('PnL',     _pnlDisplay + ' (peak)', 8),
           ...sigDetail,
           hr(38),
           `Trailing : close jika turun -${TRAILING_TP_DROP_PCT}% dari peak`,
@@ -568,7 +583,7 @@ export async function runHealerAlpha(notifyFn) {
       // ── CLOSE ─────────────────────────────────────────────────
       const preCloseLines = [
         kv('Posisi', shortAddr(addr), 8),
-        kv('PnL',    formatPnl(match?.pnlUsd || 0, pnlPct), 8),
+        kv('PnL',    _pnlDisplay, 8),
         ...sigDetail,
         hr(38),
         `Alasan   : ${triggerReason?.slice(0, 36) || '-'}`,
@@ -579,14 +594,14 @@ export async function runHealerAlpha(notifyFn) {
 
       try {
         await closePositionDLMM(pos.pool_address, addr, {
-          pnlUsd:      match.pnlUsd || 0,
+          pnlUsd:      pnlSol, // SOL proxy — USD API tidak tersedia
           pnlPct,
-          feeUsd:      match.feeUsd || 0,
+          feeUsd:      match.feeCollectedSol || 0,
           closeReason: triggerLabel.toUpperCase().replace(/ /g, '_'),
         });
         peakPnlTracker.delete(addr);
         outOfRangeTracker.delete(addr);
-        recordPnl(match.pnlUsd || 0);
+        recordPnl(pnlSol);
 
         // Auto-swap token → SOL
         const swapMsgs = [];
@@ -603,8 +618,8 @@ export async function runHealerAlpha(notifyFn) {
         const closedLines = [
           kv('Posisi',   shortAddr(addr), 8),
           kv('Trigger',  triggerLabel, 8),
-          kv('PnL',      formatPnl(match?.pnlUsd || 0, pnlPct), 8),
-          kv('Fees',     `+$${(match?.feeUsd || 0).toFixed(2)}`, 8),
+          kv('PnL',      _pnlDisplay, 8),
+          kv('Fees',     `+${match?.feeCollectedSol?.toFixed(4) ?? '0.0000'}◎`, 8),
           ...(swapMsgs.length > 0 ? [hr(38), `Swap: ${swapMsgs.join(', ')}`] : []),
         ];
         await notifyFn?.(`✅ *Posisi Ditutup*\n\n${codeBlock(closedLines)}`);

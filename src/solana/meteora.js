@@ -54,9 +54,12 @@ export async function getPositionInfo(poolAddress) {
 
     const activeBin = await dlmmPool.getActiveBin();
 
-    // Fetch PnL from API (best-effort, with timeout)
-    // API lama dlmm-api.meteora.ag sudah 404 — PnL dihitung dari on-chain data
-    const pnlMap = {};
+    // On-chain PnL calculation — API lama dlmm-api.meteora.ag sudah 404
+    // currentValueSol = totalY + feeY + (totalX + feeX) * pricePerToken
+    // dimana pricePerToken = harga tokenX dalam SOL (dari active bin, sudah decimal-adjusted)
+    const xDecimals    = dlmmPool.tokenX.decimal || 9;
+    const yDecimals    = dlmmPool.tokenY.decimal || 9; // WSOL = 9 decimals
+    const pricePerToken = parseFloat(activeBin.pricePerToken) || 0;
 
     return userPositions.map(pos => {
       const pd = pos.positionData;
@@ -64,45 +67,36 @@ export async function getPositionInfo(poolAddress) {
       const upperBinId = pd.upperBinId;
       const inRange = activeBin.binId >= lowerBinId && activeBin.binId <= upperBinId;
       const posAddr = pos.publicKey.toString();
-      const pnl = pnlMap[posAddr] || {};
 
-      // Fee amounts — these are fees, NOT pnl
-      const feeX = pd.feeX ? pd.feeX.toString() : '0';
-      const feeY = pd.feeY ? pd.feeY.toString() : '0';
+      // Raw token amounts → human-readable units
+      const totalXUi = Number(pd.totalXAmount?.toString() || '0') / Math.pow(10, xDecimals);
+      const totalYUi = Number(pd.totalYAmount?.toString() || '0') / Math.pow(10, yDecimals);
+      const feeXUi   = Number(pd.feeX?.toString() || '0')         / Math.pow(10, xDecimals);
+      const feeYUi   = Number(pd.feeY?.toString() || '0')         / Math.pow(10, yDecimals);
 
-      // PnL from API (real profit/loss on principal)
-      const pnlUsd = parseFloat(pnl.total_pnl_usd ?? pnl.pnl ?? pnl.net_pnl_usd ?? 0);
-      const pnlPct = parseFloat(pnl.pnl_pct ?? pnl.pnl_percentage ?? 0);
-
-      // Fee USD (separate from pnl)
-      const feeUsd = parseFloat(pnl.total_fee_usd ?? pnl.fee_usd ?? 0);
-      const feePctOfDeployed = parseFloat(pnl.fee_pct_of_deployed ?? pnl.fee_pct ?? 0);
-
-      // Extended PnL fields — position yield, fee accrual, deposit/current value
-      const positionYield   = parseFloat(pnl.yield_pct ?? pnl.apr ?? feePctOfDeployed);
-      const feeAccrualUsd   = parseFloat(pnl.fee_accrual_usd ?? pnl.accrued_fee_usd ?? feeUsd);
-      const depositedValueUsd = parseFloat(pnl.deposited_value_usd ?? pnl.initial_deposit_usd ?? 0);
-      const currentValueUsd   = parseFloat(pnl.current_value_usd ?? 0);
+      // Current value in SOL (principal + unclaimed fees)
+      const currentValueSol  = totalYUi + feeYUi + (totalXUi + feeXUi) * pricePerToken;
+      const feeCollectedSol  = feeYUi + feeXUi * pricePerToken;
 
       return {
         address: posAddr,
         tokenX: pd.totalXAmount?.toString() || '0',
         tokenY: pd.totalYAmount?.toString() || '0',
-        feeX,
-        feeY,
-        feeUsd,
-        feePctOfDeployed,
-        pnlUsd,             // actual profit/loss on principal
-        pnlPct,             // actual pnl percentage
-        positionYield,      // yield/APR percentage
-        feeAccrualUsd,      // accrued fees in USD
-        depositedValueUsd,  // initial deposit value
-        currentValueUsd,    // current position value
+        feeX:   pd.feeX?.toString() || '0',
+        feeY:   pd.feeY?.toString() || '0',
+        // On-chain values (SOL units) — gunakan untuk PnL calculation di Healer
+        currentValueSol,      // nilai posisi saat ini dalam SOL (termasuk fees)
+        feeCollectedSol,      // unclaimed fees dalam SOL
+        // pnlPct & pnlUsd = 0 — dihitung di Healer menggunakan pos.deployed_sol
+        pnlPct:         0,
+        pnlUsd:         0,
+        feeUsd:         0,
+        feePctOfDeployed: 0,
         lowerBinId,
         upperBinId,
         activeBinId: activeBin.binId,
         inRange,
-        currentPrice: parseFloat(activeBin.pricePerToken) || 0,
+        currentPrice: pricePerToken,
       };
     });
   });
