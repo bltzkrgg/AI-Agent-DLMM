@@ -535,27 +535,54 @@ export async function runHealerAlpha(notifyFn) {
         ? `PnL ${pnlPct.toFixed(2)}% ≥ target ${thresholds.takeProfitFeePct}%`
         : slCheck.reason;
 
-      // Sinyal market untuk notif
-      const sigDetail = market
-        ? [
-            hr(38),
-            kv('Signal',  `${sig}  (${(conf * 100).toFixed(0)}%)`, 8),
-            kv('Thesis',  thesis?.slice(0, 30) || '-', 8),
-            kv('Risk',    keyRisks?.slice(0, 30) || '-', 8),
-          ]
-        : [hr(38), 'Chart: data tidak tersedia'];
-
-      // ── HOLD / HOLD_TRAIL ─────────────────────────────────────
-      // PnL display helper — SOL-based (USD API tidak tersedia)
+      // ── Terminal-style indicator table ───────────────────────────
+      // PnL display — SOL-based (USD API tidak tersedia)
       const _pnlDisplay = `${pnlSol >= 0 ? '+' : ''}${pnlSol.toFixed(4)}◎  ${pnlPct >= 0 ? '+' : ''}${pnlPct.toFixed(2)}%`;
+      const _rangeTag   = match.inRange ? 'IN RANGE  ✅' : 'OUT RANGE ⚠️';
+      const _trailTag   = tracker.trailingActive
+        ? `ON  peak=${tracker.peakPnl.toFixed(2)}%`
+        : 'OFF';
 
+      // Bangun tabel indikator lengkap
+      const W = 10; // lebar key column
+      const _posLines = [
+        kv('Posisi',   shortAddr(addr), W),
+        kv('Strategi', shortStrat(pos.strategy_used || '-'), W),
+        kv('Range',    _rangeTag, W),
+        hr(40),
+        kv('Deploy',   `${_deployedSol.toFixed(4)}◎`, W),
+        kv('Value',    `${_currentValSol.toFixed(4)}◎`, W),
+        kv('PnL',      _pnlDisplay, W),
+        kv('Peak',     `${tracker.peakPnl >= 0 ? '+' : ''}${tracker.peakPnl.toFixed(2)}%`, W),
+        kv('Trailing', _trailTag, W),
+        kv('Fees',     `+${(match.feeCollectedSol || 0).toFixed(4)}◎`, W),
+      ];
+
+      // Market analysis section
+      const _mktLines = market
+        ? [
+            hr(40),
+            kv('Signal',   `${sig}  (${(conf * 100).toFixed(0)}% conf)`, W),
+            kv('Thesis',   (thesis || '-').slice(0, 32), W),
+            kv('Risk',     (market?.keyRisks?.[0] || '-').slice(0, 32), W),
+          ]
+        : [hr(40), kv('Market', 'data tidak tersedia', W)];
+
+      // Trigger section
+      const _trigLines = [
+        hr(40),
+        kv('Trigger',  triggerLabel, W),
+        kv('Decision', decision, W),
+      ];
+
+      const _fullTable = [..._posLines, ..._mktLines, ..._trigLines];
+
+      // ── HOLD ─────────────────────────────────────────────────────
       if (decision === 'HOLD') {
         const lines = [
-          kv('Posisi', shortAddr(addr), 8),
-          kv('PnL',    _pnlDisplay, 8),
-          ...sigDetail,
-          hr(38),
-          `Alasan   : ${holdReason?.slice(0, 36) || '-'}`,
+          ..._fullTable,
+          hr(40),
+          `Alasan   : ${(holdReason || '-').slice(0, 38)}`,
         ];
         await notifyFn?.(
           `${triggerEmoji} *${triggerLabel} — DITUNDA*\n\n${codeBlock(lines)}`
@@ -563,16 +590,14 @@ export async function runHealerAlpha(notifyFn) {
         continue;
       }
 
+      // ── HOLD_TRAIL ───────────────────────────────────────────────
       if (decision === 'HOLD_TRAIL') {
-        // Aktifkan trailing, jangan close — notif user
         tracker.trailingActive = true;
         peakPnlTracker.set(addr, tracker);
         const lines = [
-          kv('Posisi',  shortAddr(addr), 8),
-          kv('PnL',     _pnlDisplay + ' (peak)', 8),
-          ...sigDetail,
-          hr(38),
-          `Trailing : close jika turun -${TRAILING_TP_DROP_PCT}% dari peak`,
+          ..._fullTable,
+          hr(40),
+          kv('Trail', `close ≤ ${(tracker.peakPnl - TRAILING_TP_DROP_PCT).toFixed(2)}%`, W),
         ];
         await notifyFn?.(
           `💰 *Take Profit — Trailing Diaktifkan*\n\n${codeBlock(lines)}`
@@ -580,13 +605,11 @@ export async function runHealerAlpha(notifyFn) {
         continue;
       }
 
-      // ── CLOSE ─────────────────────────────────────────────────
+      // ── CLOSE ─────────────────────────────────────────────────────
       const preCloseLines = [
-        kv('Posisi', shortAddr(addr), 8),
-        kv('PnL',    _pnlDisplay, 8),
-        ...sigDetail,
-        hr(38),
-        `Alasan   : ${triggerReason?.slice(0, 36) || '-'}`,
+        ..._fullTable,
+        hr(40),
+        kv('Alasan', (triggerReason || '-').slice(0, 38), W),
       ];
       await notifyFn?.(
         `${triggerEmoji} *${triggerLabel} — CLOSE*\n\n${codeBlock(preCloseLines)}\n\n_Menutup posisi..._`
@@ -616,11 +639,16 @@ export async function runHealerAlpha(notifyFn) {
         } catch { /* swap best-effort */ }
 
         const closedLines = [
-          kv('Posisi',   shortAddr(addr), 8),
-          kv('Trigger',  triggerLabel, 8),
-          kv('PnL',      _pnlDisplay, 8),
-          kv('Fees',     `+${match?.feeCollectedSol?.toFixed(4) ?? '0.0000'}◎`, 8),
-          ...(swapMsgs.length > 0 ? [hr(38), `Swap: ${swapMsgs.join(', ')}`] : []),
+          kv('Posisi',   shortAddr(addr), W),
+          kv('Strategi', shortStrat(pos.strategy_used || '-'), W),
+          hr(40),
+          kv('Deploy',   `${_deployedSol.toFixed(4)}◎`, W),
+          kv('Return',   `${_currentValSol.toFixed(4)}◎`, W),
+          kv('PnL',      _pnlDisplay, W),
+          kv('Fees',     `+${(match?.feeCollectedSol || 0).toFixed(4)}◎`, W),
+          hr(40),
+          kv('Trigger',  triggerLabel, W),
+          ...(swapMsgs.length > 0 ? [hr(40), kv('Swap', swapMsgs.join(', '), W)] : []),
         ];
         await notifyFn?.(`✅ *Posisi Ditutup*\n\n${codeBlock(closedLines)}`);
 
@@ -734,11 +762,16 @@ Gunakan Bahasa Indonesia. Selalu explain kenapa HOLD atau CLOSE.`;
     messages,
   });
 
+  // Track action tools — report hanya dikirim jika ada close/claim yang terjadi
+  const ACTION_TOOLS = new Set(['close_position', 'zap_out', 'claim_fees']);
+  const actionsCalled = new Set();
+
   while (response.stop_reason === 'tool_use') {
     const toolUseBlocks = response.content.filter(b => b.type === 'tool_use');
     const toolResults   = [];
 
     for (const toolUse of toolUseBlocks) {
+      if (ACTION_TOOLS.has(toolUse.name)) actionsCalled.add(toolUse.name);
       let result;
       try {
         result = await executeTool(toolUse.name, toolUse.input);
@@ -763,6 +796,11 @@ Gunakan Bahasa Indonesia. Selalu explain kenapa HOLD atau CLOSE.`;
   const report = response.content.filter(b => b.type === 'text').map(b => b.text).join('\n');
   lastReport = { report, timestamp: new Date().toISOString() };
 
-  if (notifyFn) await notifyFn(`🩺 *Healer Alpha Report*\n\n${report}`);
+  // Kirim LLM report HANYA jika ada tindakan nyata (close/zap/claim) yang diambil
+  // Saat semua posisi HOLD — tidak ada notif, healer tetap diam
+  if (actionsCalled.size > 0 && notifyFn) {
+    await notifyFn(`🩺 *Healer Alpha*\n\n${report}`);
+  }
+
   return report;
 }
