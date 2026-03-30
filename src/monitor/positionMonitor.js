@@ -30,13 +30,19 @@ async function checkPositions() {
 
       for (const pos of positions) {
         if (!pos.inRange) {
+          const priceStr  = pos.displayCurrentPrice != null
+            ? `${pos.displayCurrentPrice} ${pos.priceUnit || ''}`
+            : String(pos.currentPrice);
+          const rangeStr  = pos.displayLowerPrice != null
+            ? `${pos.displayLowerPrice} – ${pos.displayUpperPrice} ${pos.priceUnit || ''}`
+            : `Bin ${pos.lowerBinId} – ${pos.upperBinId}`;
           const message = `⚠️ *POSISI OUT OF RANGE!*\n\n` +
             `📍 Pool: \`${poolAddress.slice(0, 8)}...${poolAddress.slice(-8)}\`\n` +
             `📍 Posisi: \`${pos.address.slice(0, 8)}...${pos.address.slice(-8)}\`\n` +
-            `📊 Active Bin: ${pos.activeBinId}\n` +
-            `📊 Range: ${pos.lowerBinId} - ${pos.upperBinId}\n` +
-            `💰 Harga saat ini: ${pos.currentPrice}\n\n` +
-            `_Posisi kamu tidak lagi menghasilkan fee. Pertimbangkan untuk rebalance atau tutup posisi._`;
+            `💱 Pair: ${pos.tokenXSymbol || 'X'}/${pos.tokenYSymbol || 'Y'}\n` +
+            `💰 Harga saat ini: ${priceStr}\n` +
+            `📊 Range posisi: ${rangeStr}\n\n` +
+            `_Posisi tidak menghasilkan fee. Pertimbangkan rebalance atau tutup posisi._`;
 
           await bot.sendMessage(allowedUserId, message, { parse_mode: 'Markdown' });
           saveNotification('out_of_range', message);
