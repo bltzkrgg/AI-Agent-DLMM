@@ -119,19 +119,6 @@ async function notify(text) {
 let _hunterBusy = false;
 let _healerBusy = false;
 
-// ─── Post-close reopen confirmation ──────────────────────────────
-// Setelah Healer menutup posisi, Hunter diblokir sampai user konfirmasi
-let _waitingReopenConfirmation = false;
-let _reopenConfirmTimeout = null;
-
-function clearReopenConfirmation() {
-  _waitingReopenConfirmation = false;
-  if (_reopenConfirmTimeout) {
-    clearTimeout(_reopenConfirmTimeout);
-    _reopenConfirmTimeout = null;
-  }
-}
-
 // ─── Setup state — dipakai oleh wizard /entry ────────────────────
 const setupState = {
   phase: 'done', // bot langsung jalan; wizard hanya aktif saat /entry
@@ -139,16 +126,13 @@ const setupState = {
   poolCount: null,
 };
 
+// triggerHunter — hanya dipanggil dari /entry, TIDAK dari cron atau post-close
 async function triggerHunter() {
   if (_hunterBusy) return;
-  if (_waitingReopenConfirmation) {
-    console.log('⏭ Hunter skip — menunggu konfirmasi reopen dari user');
-    return;
-  }
   const liveCfg = getConfig();
   const openPos = getOpenPositions();
   if (openPos.length >= liveCfg.maxPositions) {
-    console.log(`⏭ Hunter skip — posisi penuh (${openPos.length}/${liveCfg.maxPositions})`);
+    notify(`⚠️ Posisi sudah penuh (${openPos.length}/${liveCfg.maxPositions}). Tutup posisi dulu sebelum entry baru.`).catch(() => {});
     return;
   }
   _hunterBusy = true;
@@ -157,48 +141,14 @@ async function triggerHunter() {
   finally { _hunterBusy = false; }
 }
 
-// Jalankan Healer — jika ada posisi ditutup, minta konfirmasi reopen
+// Healer — hanya manage posisi, tidak ada reopen prompt
 async function runHealerWithReopenCheck() {
-  const beforeCount = getOpenPositions().length;
   await runHealerAlpha(notify);
-  const afterCount = getOpenPositions().length;
-
-  if (afterCount < beforeCount) {
-    // Satu atau lebih posisi ditutup — minta konfirmasi sebelum buka baru
-    _waitingReopenConfirmation = true;
-
-    // Auto-expire setelah 30 menit — bot kembali normal tanpa deploy
-    _reopenConfirmTimeout = setTimeout(() => {
-      if (_waitingReopenConfirmation) {
-        _waitingReopenConfirmation = false;
-        notify('⏱️ Konfirmasi reopen expired. Bot menunggu /hunt manual untuk buka posisi baru.').catch(() => {});
-      }
-    }, 30 * 60 * 1000);
-
-    const closedCount = beforeCount - afterCount;
-    await bot.sendMessage(ALLOWED_ID,
-      `✅ *${closedCount} posisi berhasil ditutup*\n\n` +
-      `💰 Sisa posisi terbuka: ${afterCount}\n\n` +
-      `🤔 *Apakah Anda ingin buka posisi baru?*`,
-      {
-        parse_mode: 'Markdown',
-        reply_markup: {
-          inline_keyboard: [[
-            { text: '✅ Ya, Buka Posisi Baru', callback_data: 'reopen_yes' },
-            { text: '❌ Tidak, Tahan Dulu',    callback_data: 'reopen_no'  },
-          ]],
-        },
-      }
-    ).catch(() => {});
-  }
 }
 
 // ─── Cron jobs ───────────────────────────────────────────────────
-
-cron.schedule(`*/${cfg.screeningIntervalMin} * * * *`, async () => {
-  if (setupState.phase !== 'done') { console.log('⏭ Hunter skip — menunggu setup awal'); return; }
-  await triggerHunter();
-});
+// Hunter TIDAK dijalankan dari cron — deploy hanya via /entry
+// Healer tetap jalan otomatis untuk manage posisi yang sudah terbuka
 
 cron.schedule(`*/${cfg.managementIntervalMin} * * * *`, async () => {
   if (_healerBusy) { console.log('⏭ Healer skip — masih berjalan'); return; }
@@ -313,18 +263,17 @@ bot.onText(/\/start/, (msg) => {
   if (msg.from.id !== ALLOWED_ID) return;
   bot.sendMessage(msg.chat.id,
     `🦞 *Meteora DLMM Bot* \`[LIVE]\`\n\n` +
-    `🦅 Hunter — screening tiap ${cfg.screeningIntervalMin}min\n` +
-    `🩺 Healer — manage posisi tiap ${cfg.managementIntervalMin}min\n\n` +
-    `*Commands:*\n` +
-    `/entry — set SOL & jumlah pool, lalu deploy\n` +
-    `/status /pools /hunt /heal\n` +
-    `/testmodel — cek & ganti model AI\n` +
-    `/results — hasil hari ini per strategi\n` +
+    `🦅 Hunter — *manual only via /entry*\n` +
+    `🩺 Healer — manage posisi tiap ${cfg.managementIntervalMin}min\n` +
+    `📡 Scanner — alert peluang tiap 15min\n\n` +
+    `*Deploy:*\n` +
+    `/entry — set SOL & jumlah pool, lalu deploy\n\n` +
+    `*Monitor:*\n` +
+    `/status /heal /results /pools\n\n` +
+    `*Tools:*\n` +
     `/check <mint> — screen token scam\n` +
-    `/strategies /addstrategy <pw>\n` +
-    `/library /research\n` +
-    `/learn [pool] /lessons\n` +
-    `/memory /evolve\n` +
+    `/testmodel /strategies /library /research\n` +
+    `/learn [pool] /lessons /memory /evolve\n` +
     `/thresholds /safety\n\n` +
     `Atau chat bebas langsung!`,
     { parse_mode: 'Markdown' }
@@ -440,31 +389,6 @@ bot.onText(/\/heal/, async (msg) => {
   catch (e) { bot.sendMessage(msg.chat.id, `❌ ${e.message}`); }
 });
 
-// ─── Inline keyboard callbacks ────────────────────────────────────
-
-bot.on('callback_query', async (query) => {
-  if (query.from.id !== ALLOWED_ID) return;
-
-  if (query.data === 'reopen_yes') {
-    clearReopenConfirmation();
-    await bot.answerCallbackQuery(query.id, { text: 'Memulai pencarian pool baru...' });
-    await bot.editMessageReplyMarkup({ inline_keyboard: [] }, {
-      chat_id: query.message.chat.id,
-      message_id: query.message.message_id,
-    }).catch(() => {});
-    await notify('🦅 Memulai Hunter Alpha — mencari pool terbaik...');
-    triggerHunter().catch(e => notify(`❌ Hunter error: ${e.message}`));
-
-  } else if (query.data === 'reopen_no') {
-    clearReopenConfirmation();
-    await bot.answerCallbackQuery(query.id, { text: 'Bot menunggu instruksi.' });
-    await bot.editMessageReplyMarkup({ inline_keyboard: [] }, {
-      chat_id: query.message.chat.id,
-      message_id: query.message.message_id,
-    }).catch(() => {});
-    await notify('⏸️ Deploy ditahan. Ketik /hunt saat siap buka posisi baru.');
-  }
-});
 
 bot.onText(/\/check(?:\s+(.+))?/, async (msg, match) => {
   if (msg.from.id !== ALLOWED_ID) return;
@@ -758,8 +682,8 @@ setTimeout(async () => {
     await notify(
       `🚀 *Bot Started!*\n\n` +
       `💰 Balance: ${balance} SOL | Mode: 🔴 LIVE\n` +
-      `🦅 Hunter: ${cfg.screeningIntervalMin}min | 🩺 Healer: ${cfg.managementIntervalMin}min\n\n` +
-      `/start untuk semua commands`
+      `🦅 Hunter: *manual /entry* | 🩺 Healer: ${cfg.managementIntervalMin}min | 📡 Scanner: 15min\n\n` +
+      `/entry untuk buka posisi | /start untuk semua commands`
     );
     await runStartupModelCheck(notify);
   } catch (e) { console.error('Startup error:', e.message); }
