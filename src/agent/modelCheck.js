@@ -30,6 +30,22 @@ export async function testCurrentModel() {
   }
 }
 
+// ─── Test model spesifik (untuk /model command) ───────────────────
+
+export async function testModel(modelId) {
+  try {
+    const res = await createMessage({
+      forceModel: modelId,    // bypass resolveModel — test model ini langsung
+      maxTokens: 10,
+      messages: [{ role: 'user', content: 'Hi' }],
+    });
+    if (!res?.content?.length) return { ok: false, model: modelId, error: 'Empty response' };
+    return { ok: true, model: modelId };
+  } catch (e) {
+    return { ok: false, model: modelId, error: e.message };
+  }
+}
+
 // ─── Fetch free models dari OpenRouter ───────────────────────────
 
 export async function fetchFreeModels() {
@@ -87,9 +103,9 @@ export async function runStartupModelCheck(notifyFn) {
       const freeModels = await fetchFreeModels();
       let msg = `⚠️ *Model tidak bisa dipakai!*\n\nModel: \`${result.model}\`\nError: ${result.error}\n`;
       if (freeModels.length > 0) {
-        msg += `\n*Ganti di .env dengan salah satu ini:*\n`;
-        freeModels.slice(0, 5).forEach(m => { msg += `• \`${m}\`\n`; });
-        msg += `\nLalu restart bot.`;
+        msg += `\n*Ganti model tanpa restart:*\n`;
+        freeModels.slice(0, 5).forEach(m => { msg += `• \`/model ${m}\`\n`; });
+        msg += `\nAtau set \`AI_MODEL\` di .env lalu restart.`;
       }
       await notifyFn(msg);
     } else {

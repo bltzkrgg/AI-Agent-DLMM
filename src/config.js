@@ -17,9 +17,11 @@ const DEFAULTS = {
   screeningIntervalMin: 30,
 
   // Models — default ke gpt-4o-mini, bisa override di .env via AI_MODEL
+  // activeModel: diset via /model command — highest priority, override semua
   managementModel: 'openai/gpt-4o-mini',
   screeningModel: 'openai/gpt-4o-mini',
   generalModel: 'openai/gpt-4o-mini',
+  activeModel: null,
 
   // Screening thresholds
   minFeeActiveTvlRatio: 0.05,

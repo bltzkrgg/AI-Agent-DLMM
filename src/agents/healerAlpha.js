@@ -499,7 +499,7 @@ export async function runHealerAlpha(notifyFn) {
       const trailingTpHit = tracker.trailingActive && (tracker.peakPnl - pnlPct) >= TRAILING_TP_DROP_PCT;
       peakPnlTracker.set(addr, tracker);
 
-      const slCheck = checkStopLoss(match);
+      const slCheck = checkStopLoss({ pnlPct });
       const tpHit   = pnlPct >= thresholds.takeProfitFeePct;
 
       // ── Evil Panda confluence exit (overrides TP/SL timing) ──

@@ -54,7 +54,9 @@ function getCustomClient() {
 // ─── Model resolution ────────────────────────────────────────────
 
 export function resolveModel(modelFromConfig) {
-  if (process.env.AI_MODEL) return process.env.AI_MODEL;
+  const cfg = getConfig();
+  if (cfg.activeModel) return cfg.activeModel;          // /model command (highest priority)
+  if (process.env.AI_MODEL) return process.env.AI_MODEL; // .env override
   if (modelFromConfig) return modelFromConfig;
   const defaults = {
     openrouter: 'openai/gpt-4o-mini',
@@ -170,8 +172,8 @@ function cleanError(e) {
 // ─── Core: createMessage ─────────────────────────────────────────
 // Interface tetap sama untuk semua caller — provider-specific logic di sini.
 
-export async function createMessage({ model, maxTokens = 4096, system, tools, messages }) {
-  let resolvedModel = resolveModel(model);
+export async function createMessage({ model, maxTokens = 4096, system, tools, messages, forceModel }) {
+  let resolvedModel = forceModel || resolveModel(model);
   let lastError;
 
   for (let attempt = 0; attempt < 3; attempt++) {

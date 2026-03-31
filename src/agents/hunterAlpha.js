@@ -252,6 +252,10 @@ async function executeTool(name, input) {
     }
 
     case 'screen_token': {
+      if (hunterNotifyFn) {
+        const label = input.token_symbol || input.token_name || input.token_mint.slice(0, 8);
+        await hunterNotifyFn(`🔬 *Coin Filter*: Screening \`${label}\`...`);
+      }
       const result = await screenToken(
         input.token_mint,
         input.token_name || '',
@@ -334,6 +338,14 @@ async function executeTool(name, input) {
     }
 
     case 'deploy_position': {
+      if (hunterNotifyFn) {
+        await hunterNotifyFn(
+          `⚡ *Deploying...*\n` +
+          `Pool: \`${input.pool_address.slice(0, 8)}...\`\n` +
+          `Strategi: ${input.strategy_name || 'Single-Side SOL'}\n` +
+          `_${(input.reasoning || '').slice(0, 100)}_`
+        );
+      }
       // Safety: max drawdown check
       const drawdown = checkMaxDrawdown();
       if (drawdown.triggered) {
@@ -505,6 +517,102 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null, opt
       return null;
     }
   } catch { /* lanjut jika gagal cek balance */ }
+
+  // ── PRE-COMPUTE: parallelkan pool screening sebelum LLM loop ─
+  // Mengurangi LLM round trips dari 40+ menjadi ~6-8.
+  // getTopPools + pool memory + OKX dijalankan sekaligus, bukan satu per satu oleh LLM.
+  if (notifyFn) await notifyFn(`🔍 *Screening kandidat pool...*`);
+
+  let preComputedContext = '';
+  try {
+    const thresholds = getThresholds();
+    const weights    = cfg.signalWeights || { mcap: 2.5, feeActiveTvlRatio: 2.3, volume: 0.36, holderCount: 0.3 };
+    const rawPools   = await getTopPools(25);
+
+    const filtered = rawPools
+      .filter(p => {
+        const tvl      = p.liquidityRaw || 0;
+        const fees     = p.fees24hRaw   || 0;
+        const feeRatio = tvl > 0 ? fees / tvl : 0;
+        const binStep  = p.binStep || 0;
+        return (
+          binStep > 0 && binStep <= 250 &&
+          tvl >= thresholds.minTvl     &&
+          tvl <= thresholds.maxTvl     &&
+          feeRatio >= thresholds.minFeeActiveTvlRatio
+        );
+      })
+      .map(p => ({ ...p, darwinScore: calculateDarwinScore(p, weights) }))
+      .sort((a, b) => b.darwinScore - a.darwinScore)
+      .slice(0, 7);
+
+    lastCandidates = filtered;
+
+    // Fetch pool memory + OKX in parallel for all candidates sekaligus
+    const enriched = await Promise.all(filtered.map(async (p) => {
+      const [memResult, okxResult] = await Promise.allSettled([
+        Promise.resolve(getPoolStats(p.address)),
+        process.env.OKX_API_KEY
+          ? getOKXData(p.tokenX).catch(() => null)
+          : Promise.resolve(null),
+      ]);
+
+      const mem = memResult.status === 'fulfilled' ? memResult.value : null;
+      const okx = okxResult.status === 'fulfilled' ? okxResult.value : null;
+
+      const memVerdict = !mem
+        ? 'firstTime'
+        : mem.winRate < 40 ? 'HINDARI'
+        : mem.winRate < 60 ? 'HATI-HATI'
+        : 'OK';
+      const okxVerdict = !okx?.available
+        ? 'NEUTRAL'
+        : okx.smartMoneySelling ? 'SKIP'
+        : okx.smartMoneyBuying  ? 'STRONG'
+        : 'NEUTRAL';
+
+      const tvl = p.liquidityRaw || 0;
+      return {
+        address:      p.address,
+        name:         p.name,
+        darwinScore:  p.darwinScore,
+        tvl:          tvl.toFixed(0),
+        fees24h:      (p.fees24hRaw || 0).toFixed(2),
+        feeToTvlPct:  tvl > 0 ? ((p.fees24hRaw || 0) / tvl * 100).toFixed(2) + '%' : '0%',
+        binStep:      p.binStep,
+        tokenXMint:   p.tokenX,
+        poolMemory:   mem
+          ? { winRate: mem.winRate, totalTrades: mem.totalTrades, verdict: memVerdict }
+          : { verdict: 'firstTime' },
+        okxSignal:    { verdict: okxVerdict },
+      };
+    }));
+
+    // Filter obvious rejects sebelum dikirim ke LLM
+    const viable  = enriched.filter(p => p.poolMemory.verdict !== 'HINDARI' && p.okxSignal.verdict !== 'SKIP');
+    const skipped = enriched.length - viable.length;
+
+    if (notifyFn) {
+      await notifyFn(
+        `📊 *Pre-screening selesai*\n` +
+        `✅ Viable: ${viable.length} pool  ❌ Difilter: ${skipped}\n` +
+        `_Menjalankan analisis mendalam..._`
+      );
+    }
+
+    const display = viable.length > 0 ? viable : enriched.slice(0, 3);
+    preComputedContext =
+      `\n\n──────────────────────────────────────\n` +
+      `PRE-SCREENING SELESAI — DATA SUDAH TERSEDIA\n` +
+      `Pool Memory dan OKX sudah diambil. JANGAN panggil get_pool_memory atau get_okx_signal lagi.\n` +
+      `Langsung: (1) get_pool_detail top kandidat → (2) screen_token → (3) deploy_position\n\n` +
+      `Kandidat viable (${display.length} pool, urut darwinScore):\n` +
+      JSON.stringify(display, null, 2);
+  } catch (e) {
+    console.error('Hunter pre-compute failed:', e.message);
+    preComputedContext = '\n\nCatatan: Pre-screening gagal. Gunakan screen_pools untuk ambil kandidat.';
+  }
+
   const lessonsCtx = getLessonsContext();
   const instincts = getInstinctsContext();
   const strategyIntel = getStrategyIntelligenceContext();
@@ -522,27 +630,18 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null, opt
 
 MINDSET: Kamu LP specialist. Profit = FEE, bukan price appreciation.
 
-ALUR KERJA — JALANKAN SAMPAI SELESAI TANPA HENTI:
-1. screen_pools → ambil kandidat darwinScore tertinggi
+ALUR KERJA — JALANKAN CEPAT, MAKSIMAL 3 KANDIDAT:
+Data pool memory dan OKX sudah tersedia di pesan user — JANGAN fetch ulang.
+1. Baca kandidat dari data pre-screening yang sudah dikirim
 2. get_wallet_status → cek balance & slot (jika penuh/kurang → STOP total)
-3. Untuk SETIAP kandidat (urutkan dari score tertinggi):
-   a. get_pool_memory → cek histori pool ini
-      • verdict = 'HINDARI' (win rate <40%) → SKIP langsung, jangan buang waktu
-      • verdict = 'HATI-HATI' → lanjut tapi naikkan threshold keputusan
-      • firstTime atau OK → lanjut normal
-   b. get_okx_signal → cek smart money untuk token di pool ini
-      • verdict = 'SKIP' (SM sudah jual) → SKIP kandidat ini
-      • verdict = 'STRONG' (SM masih beli) → prioritaskan kandidat ini
-      • verdict = 'NEUTRAL' atau tidak tersedia → lanjut normal
-   c. get_pool_detail → baca feeApr, feeVelocity, healthScore, binStep fit
-   d. Keputusan DLMM:
-      • eligible = false atau feeApr < 30% → SKIP, kandidat berikutnya
+3. Pilih TOP 2 kandidat (darwinScore tertinggi, bukan HINDARI/SKIP):
+   a. get_pool_detail → baca feeApr, feeVelocity, healthScore, binStep fit
+      • eligible = false atau feeApr < 30% → SKIP
       • healthScore < 40 → SKIP
-      • binStep tidak sesuai volatilitas → pilih strategi range lebih lebar
-   e. screen_token → jalankan Coin Filter
-   f. action = 'SKIP' → lanjut kandidat berikutnya
-   g. action = 'LANJUT DEPLOY' → LANGSUNG jalankan deploy_position SEKARANG
-4. Selesai — laporkan hasil ke user
+   b. screen_token → Coin Filter WAJIB
+      • action = 'SKIP' → kandidat berikutnya
+      • action = 'LANJUT DEPLOY' → LANGSUNG deploy_position SEKARANG
+4. Selesai — laporkan hasil singkat ke user
 
 STRATEGI — BACA LIBRARY, JANGAN HARDCODE:
   get_pool_detail memberikan rekomendasi strategi dari Strategy Library berdasarkan kondisi market saat ini.
@@ -607,10 +706,12 @@ Gunakan Bahasa Indonesia untuk laporan akhir. Reasoning singkat, action langsung
   const messages = [
     {
       role: 'user',
-      content: `Jalankan siklus screening & deployment sekarang.${targetNote} ` +
-               `Temukan pool terbaik, filter token, dan deploy LANGSUNG tanpa menunggu input apapun. ` +
-               `Mode: LIVE — eksekusi nyata. ` +
-               `Deploy ${cfg.deployAmountSol} SOL per posisi, strategi dihitung otomatis.`,
+      content:
+        `Jalankan siklus screening & deployment sekarang.${targetNote} ` +
+        `Temukan pool terbaik, filter token, dan deploy LANGSUNG tanpa menunggu input apapun. ` +
+        `Mode: LIVE — eksekusi nyata. ` +
+        `Deploy ${cfg.deployAmountSol} SOL per posisi, strategi dihitung otomatis.` +
+        preComputedContext,
     }
   ];
 
@@ -622,7 +723,11 @@ Gunakan Bahasa Indonesia untuk laporan akhir. Reasoning singkat, action langsung
     messages,
   });
 
-  while (response.stop_reason === 'tool_use') {
+  const MAX_ROUNDS = 20;
+  let rounds = 0;
+
+  while (response.stop_reason === 'tool_use' && rounds < MAX_ROUNDS) {
+    rounds++;
     const toolUseBlocks = response.content.filter(b => b.type === 'tool_use');
     const toolResults = [];
 
@@ -646,6 +751,10 @@ Gunakan Bahasa Indonesia untuk laporan akhir. Reasoning singkat, action langsung
       tools: HUNTER_TOOLS,
       messages,
     });
+  }
+
+  if (rounds >= MAX_ROUNDS && notifyFn) {
+    await notifyFn(`⚠️ *Hunter Alpha* — batas ${MAX_ROUNDS} putaran tercapai, loop dihentikan paksa.`);
   }
 
   const report = response.content.filter(b => b.type === 'text').map(b => b.text).join('\n');

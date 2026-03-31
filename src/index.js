@@ -20,7 +20,7 @@ import { padR, hr, kv, codeBlock, formatPnl, shortAddr, shortStrat } from './uti
 import { initMonitor } from './monitor/positionMonitor.js';
 import { autoEvolveIfReady } from './learn/evolve.js';
 import { getTodayResults, formatDailyReport, savePerformanceSnapshot, backupAllData } from './market/strategyPerformance.js';
-import { runStartupModelCheck, formatModelStatus } from './agent/modelCheck.js';
+import { runStartupModelCheck, formatModelStatus, testModel } from './agent/modelCheck.js';
 import { runOpportunityScanner } from './market/opportunityScanner.js';
 
 // ─── PID lock — cegah multiple instance ─────────────────────────
@@ -254,6 +254,49 @@ bot.onText(/\/testmodel/, async (msg) => {
     const text = await formatModelStatus();
     await sendLong(msg.chat.id, text, { parse_mode: 'Markdown' });
   } catch (e) { bot.sendMessage(msg.chat.id, `❌ ${e.message}`); }
+});
+
+bot.onText(/\/model(?:\s+(.+))?/, async (msg, match) => {
+  if (msg.from.id !== ALLOWED_ID) return;
+  const chatId  = msg.chat.id;
+  const modelId = match[1]?.trim();
+
+  if (!modelId) {
+    // Tampilkan model aktif + daftar model tersedia
+    try {
+      const text = await formatModelStatus();
+      await sendLong(chatId, text, { parse_mode: 'Markdown' });
+    } catch (e) { bot.sendMessage(chatId, `❌ ${e.message}`); }
+    return;
+  }
+
+  // Reset ke default
+  if (modelId === 'reset') {
+    updateConfig({ activeModel: null });
+    const fallback = process.env.AI_MODEL || getConfig().generalModel || 'openai/gpt-4o-mini';
+    bot.sendMessage(chatId, `✅ *Model di-reset*\n\nKembali ke: \`${fallback}\``, { parse_mode: 'Markdown' });
+    return;
+  }
+
+  bot.sendMessage(chatId, `🔄 Testing \`${modelId}\`...`, { parse_mode: 'Markdown' });
+  const result = await testModel(modelId);
+
+  if (!result.ok) {
+    bot.sendMessage(
+      chatId,
+      `❌ *Model gagal*\n\nModel: \`${modelId}\`\nError: ${result.error}\n\n_Coba model lain: \`/model <model_id>\`_`,
+      { parse_mode: 'Markdown' }
+    );
+    return;
+  }
+
+  // Model valid — simpan ke config, berlaku segera tanpa restart
+  updateConfig({ activeModel: modelId });
+  bot.sendMessage(
+    chatId,
+    `✅ *Model berhasil diganti*\n\nModel: \`${modelId}\`\n\n_Berlaku segera — tidak perlu restart._\nReset ke default: \`/model reset\``,
+    { parse_mode: 'Markdown' }
+  );
 });
 
 bot.onText(/\/results/, async (msg) => {

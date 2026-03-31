@@ -2,9 +2,9 @@ import DLMM from '@meteora-ag/dlmm';
 import { PublicKey, Keypair } from '@solana/web3.js';
 import BN from 'bn.js';
 import { getConnection, getWallet } from './wallet.js';
-import { savePosition, closePosition, closePositionWithPnl } from '../db/database.js';
-import { fetchWithTimeout, withRetry, parseTvl } from '../utils/safeJson.js';
-import { resolveToken, resolveTokens, WSOL_MINT } from '../utils/tokenMeta.js';
+import { savePosition, closePositionWithPnl } from '../db/database.js';
+import { fetchWithTimeout, withRetry } from '../utils/safeJson.js';
+import { resolveTokens, WSOL_MINT } from '../utils/tokenMeta.js';
 
 // ─── Safe BN conversion — avoids floating point errors ──────────
 
@@ -85,7 +85,7 @@ export async function getPoolInfo(poolAddress) {
       priceUnit,
       activeBinId:    activeBin.binId,
       binStep,
-      feeRate:        (binStep / 100).toFixed(4) + '%',  // binStep=1 → 0.01% base fee
+      feeRate:        (binStep / 100).toFixed(2) + '%',  // binStep=1 → 0.01% base fee
       isSOLPair,
     };
   });
