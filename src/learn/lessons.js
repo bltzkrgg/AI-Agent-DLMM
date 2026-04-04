@@ -26,11 +26,88 @@ export function saveLessons(lessons) {
   }
 }
 
-export function getLessonsContext() {
+// ─── Pin / Unpin lesson ───────────────────────────────────────────
+
+export function pinLesson(indexOrId) {
+  const lessons = loadLessons();
+  const idx = typeof indexOrId === 'number' ? indexOrId : lessons.findIndex(l => l.id === indexOrId);
+  if (idx < 0 || idx >= lessons.length) return { ok: false, reason: 'Index tidak valid' };
+  lessons[idx].pinned = true;
+  saveLessons(lessons);
+  return { ok: true, lesson: lessons[idx].lesson };
+}
+
+export function unpinLesson(indexOrId) {
+  const lessons = loadLessons();
+  const idx = typeof indexOrId === 'number' ? indexOrId : lessons.findIndex(l => l.id === indexOrId);
+  if (idx < 0 || idx >= lessons.length) return { ok: false, reason: 'Index tidak valid' };
+  lessons[idx].pinned = false;
+  saveLessons(lessons);
+  return { ok: true };
+}
+
+// ─── Tiered lesson context injection ─────────────────────────────
+// Tier 1: pinned (selalu muncul, max 5)
+// Tier 2: cross-pool (berlaku di banyak pool, max 5)
+// Tier 3: recent high-confidence (max 5)
+// Role filter: jika role diberikan, prioritaskan lesson yang match
+
+export function getLessonsContext(role = null) {
   const lessons = loadLessons();
   if (lessons.length === 0) return '';
-  const recent = lessons.slice(-10);
-  return `\n\n📚 LESSONS FROM TOP LPers:\n${recent.map((l, i) => `${i + 1}. ${l.lesson}`).join('\n')}`;
+
+  // Tier 1 — pinned
+  const pinned = lessons.filter(l => l.pinned).slice(0, 5);
+
+  // Tier 2 — cross-pool (berlaku lintas pool, bukan hanya satu pool)
+  const crossPool = lessons
+    .filter(l => !l.pinned && l.crossPool && (l.confidence || 0) >= 0.6)
+    .sort((a, b) => (b.confidence || 0) - (a.confidence || 0))
+    .slice(0, 5);
+
+  // Tier 3 — recent high-confidence (exclude yang sudah masuk tier 1/2)
+  const usedTexts = new Set([...pinned, ...crossPool].map(l => l.lesson));
+  const recent = lessons
+    .filter(l => !l.pinned && !l.crossPool && !usedTexts.has(l.lesson))
+    .sort((a, b) => (b.confidence || 0) - (a.confidence || 0))
+    .slice(-10)
+    .slice(0, 5);
+
+  const allTiers = [
+    ...pinned.map(l => ({ ...l, tier: 'PINNED' })),
+    ...crossPool.map(l => ({ ...l, tier: 'CROSS-POOL' })),
+    ...recent.map(l => ({ ...l, tier: 'RECENT' })),
+  ];
+
+  if (allTiers.length === 0) return '';
+
+  const lines = allTiers.map((l, i) => `${i + 1}. [${l.tier}] ${l.lesson}`);
+  return `\n\n📚 LESSONS LEARNED (${allTiers.length} aktif):\n${lines.join('\n')}`;
+}
+
+// ─── Format list untuk Telegram ──────────────────────────────────
+
+export function formatLessonsList() {
+  const lessons = loadLessons();
+  if (lessons.length === 0) return 'Belum ada lessons tersimpan.';
+
+  const sorted = [...lessons].sort((a, b) => {
+    if (a.pinned && !b.pinned) return -1;
+    if (!a.pinned && b.pinned) return 1;
+    return (b.confidence || 0) - (a.confidence || 0);
+  });
+
+  const recent = sorted.slice(0, 15);
+  let text = `📚 *Lessons (${lessons.length} total)*\n\n`;
+  for (let i = 0; i < recent.length; i++) {
+    const l = recent[i];
+    const pin = l.pinned ? '📌 ' : '';
+    const cross = l.crossPool ? '🌐 ' : '';
+    const conf = l.confidence ? ` (${(l.confidence * 100).toFixed(0)}%)` : '';
+    text += `${i + 1}. ${pin}${cross}${l.lesson}${conf}\n`;
+  }
+  if (lessons.length > 15) text += `\n_...dan ${lessons.length - 15} lagi_`;
+  return text;
 }
 
 async function fetchTopLpers(poolAddress) {
@@ -98,8 +175,12 @@ Jangan ada teks lain selain JSON.`;
     ...newLessons.map(l => ({ ...l, learnedAt: new Date().toISOString() }))
   ];
 
-  // Keep max 50 lessons, prioritize high confidence
-  const sorted = merged.sort((a, b) => (b.confidence || 0) - (a.confidence || 0));
+  // Keep max 50 lessons, prioritize pinned + high confidence
+  const sorted = merged.sort((a, b) => {
+    if (a.pinned && !b.pinned) return -1;
+    if (!a.pinned && b.pinned) return 1;
+    return (b.confidence || 0) - (a.confidence || 0);
+  });
   const kept = sorted.slice(0, 50);
   saveLessons(kept);
 

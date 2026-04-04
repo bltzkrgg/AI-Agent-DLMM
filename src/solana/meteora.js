@@ -5,6 +5,7 @@ import { getConnection, getWallet } from './wallet.js';
 import { savePosition, closePositionWithPnl } from '../db/database.js';
 import { fetchWithTimeout, withRetry } from '../utils/safeJson.js';
 import { resolveTokens, WSOL_MINT } from '../utils/tokenMeta.js';
+import { isDryRun } from '../config.js';
 
 // ─── Safe BN conversion — avoids floating point errors ──────────
 
@@ -225,6 +226,10 @@ async function getSolPriceUsd() {
 // ─── Open Position ───────────────────────────────────────────────
 
 export async function openPosition(poolAddress, tokenXAmount, tokenYAmount, priceRangePercent = 5, strategyName = null) {
+  if (isDryRun()) {
+    console.log(`[DRY RUN] openPosition skipped: pool=${poolAddress} tokenX=${tokenXAmount} tokenY=${tokenYAmount}`);
+    return { dryRun: true, poolAddress, tokenXAmount, tokenYAmount, priceRangePercent };
+  }
   const connection = getConnection();
   const wallet = getWallet();
   const poolPubkey = new PublicKey(poolAddress);
@@ -353,6 +358,10 @@ export async function openPosition(poolAddress, tokenXAmount, tokenYAmount, pric
 //   7. Baru update DB
 
 export async function closePositionDLMM(poolAddress, positionAddress, pnlData = {}) {
+  if (isDryRun()) {
+    console.log(`[DRY RUN] closePositionDLMM skipped: pool=${poolAddress} pos=${positionAddress}`);
+    return { dryRun: true, poolAddress, positionAddress, pnlData };
+  }
   const connection = getConnection();
   const wallet     = getWallet();
   const poolPubkey = new PublicKey(poolAddress);
@@ -504,6 +513,10 @@ export async function closePositionDLMM(poolAddress, positionAddress, pnlData = 
 // ─── Claim Fees ──────────────────────────────────────────────────
 
 export async function claimFees(poolAddress, positionAddress) {
+  if (isDryRun()) {
+    console.log(`[DRY RUN] claimFees skipped: pool=${poolAddress} pos=${positionAddress}`);
+    return { dryRun: true, poolAddress, positionAddress };
+  }
   const connection = getConnection();
   const wallet     = getWallet();
   const poolPubkey = new PublicKey(poolAddress);

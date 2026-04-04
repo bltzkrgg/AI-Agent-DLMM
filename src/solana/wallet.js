@@ -1,11 +1,30 @@
-import { Connection, Keypair, PublicKey } from '@solana/web3.js';
+import { Connection, Keypair } from '@solana/web3.js';
 import bs58 from 'bs58';
+import { getHeliusRpcUrl } from '../utils/helius.js';
 
 let connection;
 let wallet;
 
 export function initSolana() {
-  connection = new Connection(process.env.SOLANA_RPC_URL, 'confirmed');
+  // Helius RPC sebagai primary — lebih reliable, rate limit lebih tinggi.
+  // Fallback ke SOLANA_RPC_URL jika HELIUS_API_KEY tidak ada.
+  let rpcUrl;
+  try {
+    rpcUrl = getHeliusRpcUrl();
+    console.log('✅ RPC: Helius');
+  } catch {
+    rpcUrl = process.env.SOLANA_RPC_URL;
+    if (!rpcUrl) throw new Error('Neither HELIUS_API_KEY nor SOLANA_RPC_URL is set');
+    console.log('⚠️  RPC: fallback ke SOLANA_RPC_URL (Helius direkomendasikan)');
+  }
+
+  connection = new Connection(rpcUrl, {
+    commitment:            'confirmed',
+    confirmTransactionInitialTimeout: 90000,  // 90 detik timeout konfirmasi
+    wsEndpoint: rpcUrl.startsWith('https://')
+      ? rpcUrl.replace('https://', 'wss://')
+      : undefined,
+  });
 
   const privateKeyBytes = bs58.decode(process.env.WALLET_PRIVATE_KEY);
   wallet = Keypair.fromSecretKey(privateKeyBytes);
@@ -28,6 +47,7 @@ export async function getWalletBalance() {
 }
 
 export async function getTokenBalance(mintAddress) {
+  const { PublicKey } = await import('@solana/web3.js');
   try {
     const mint = new PublicKey(mintAddress);
     const tokenAccounts = await connection.getParsedTokenAccountsByOwner(
@@ -39,7 +59,7 @@ export async function getTokenBalance(mintAddress) {
 
     const amount = tokenAccounts.value[0].account.data.parsed.info.tokenAmount;
     return parseFloat(amount.uiAmount || 0);
-  } catch (e) {
+  } catch {
     return 0;
   }
 }

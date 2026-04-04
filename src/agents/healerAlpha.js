@@ -13,12 +13,17 @@ import { fetchCandles, fetchMultiTFOHLCV } from '../market/oracle.js';
 import { detectEvilPandaSignals, computeSupertrend, computeRSI } from '../market/taIndicators.js';
 import { kv, hr, codeBlock, formatPnl, shortAddr, shortStrat } from '../utils/table.js';
 import { formatStrategyAlert } from '../utils/alerts.js';
+import { recordClose } from '../market/poolMemory.js';
 
-// ─── Trailing Take Profit Config ──────────────────────────────────
-// Terinspirasi dari Meridian: aktifkan trailing setelah profit mencapai
-// threshold, tutup kalau PnL turun X% dari peak.
-const TRAILING_TP_ACTIVATE_PCT = 3.0;  // Aktifkan trailing saat PnL >= 3%
-const TRAILING_TP_DROP_PCT     = 1.5;  // Close kalau turun 1.5% dari peak
+// Trailing TP thresholds — baca dari config (configurable via /setconfig)
+// Fallback ke defaults jika config belum tersedia
+function getTrailingConfig() {
+  const cfg = getConfig();
+  return {
+    activatePct: cfg.trailingTriggerPct ?? 3.0,
+    dropPct:     cfg.trailingDropPct    ?? 1.5,
+  };
+}
 
 let lastReport = null;
 export function getLastHealerReport() { return lastReport; }
@@ -28,6 +33,28 @@ const outOfRangeTracker = new Map(); // positionAddress → timestamp
 
 // Track peak PnL per posisi untuk trailing take profit
 const peakPnlTracker = new Map(); // positionAddress → { peakPnl, trailingActive }
+
+// ─── Post-Close 5-Minute Monitor ─────────────────────────────────
+// Setelah posisi ditutup + swap selesai, kirim update balance setiap
+// menit selama 5 menit untuk konfirmasi SOL sudah masuk & stabil.
+
+export function startPostCloseMonitor(poolAddress, pnlPct, notifyFn) {
+  if (!notifyFn) return;
+  let elapsed = 0;
+  const interval = setInterval(async () => {
+    elapsed++;
+    try {
+      const balance = await getWalletBalance();
+      const balSol  = parseFloat(balance).toFixed(4);
+      const icon    = elapsed < 5 ? '⏱' : '✅';
+      const msg     = elapsed < 5
+        ? `${icon} *Post-Close Monitor* T+${elapsed}m\n\nBalance: \`${balSol} SOL\`\n_Monitoring... (${5 - elapsed}m lagi)_`
+        : `${icon} *Post-Close Monitor Selesai*\n\nBalance final: \`${balSol} SOL\`\nPool: \`${poolAddress?.slice(0, 12)}...\`\nPnL: \`${pnlPct >= 0 ? '+' : ''}${pnlPct?.toFixed(2) || '?'}%\``;
+      await notifyFn(msg);
+    } catch { /* best-effort */ }
+    if (elapsed >= 5) clearInterval(interval);
+  }, 60_000); // setiap 1 menit
+}
 
 const HEALER_TOOLS = [
   {
@@ -133,12 +160,23 @@ async function executeTool(name, input) {
 
           // ── Out-of-range tracking ────────────────────────────
           let outOfRangeMins = null;
+          let outOfRangeBins = null;
           if (match && !match.inRange) {
             const trackedAt = outOfRangeTracker.get(pos.position_address);
             if (!trackedAt) {
               outOfRangeTracker.set(pos.position_address, Date.now());
             } else {
               outOfRangeMins = Math.floor((Date.now() - trackedAt) / 60000);
+            }
+            // Bin-based OOR: estimate distance in bins from active bin
+            if (match.activeBinId != null && (match.lowerBinId != null || match.upperBinId != null)) {
+              const lowerBin = match.lowerBinId ?? match.activeBinId;
+              const upperBin = match.upperBinId ?? match.activeBinId;
+              if (match.activeBinId < lowerBin) {
+                outOfRangeBins = lowerBin - match.activeBinId;
+              } else if (match.activeBinId > upperBin) {
+                outOfRangeBins = match.activeBinId - upperBin;
+              }
             }
           } else {
             outOfRangeTracker.delete(pos.position_address);
@@ -168,14 +206,15 @@ async function executeTool(name, input) {
             tracker.peakPnl = pnlPct;
           }
 
-          // Aktifkan trailing kalau sudah reach threshold
-          if (!tracker.trailingActive && pnlPct >= TRAILING_TP_ACTIVATE_PCT) {
+          // Aktifkan trailing kalau sudah reach threshold (dari config)
+          const trailingCfg = getTrailingConfig();
+          if (!tracker.trailingActive && pnlPct >= trailingCfg.activatePct) {
             tracker.trailingActive = true;
           }
 
           // Cek apakah trailing TP terpicu
           const trailingTpHit = tracker.trailingActive &&
-            (tracker.peakPnl - pnlPct) >= TRAILING_TP_DROP_PCT;
+            (tracker.peakPnl - pnlPct) >= trailingCfg.dropPct;
 
           peakPnlTracker.set(addr, tracker);
 
@@ -242,7 +281,11 @@ async function executeTool(name, input) {
             shouldClaimFee:        feeCollSol >= claimThreshold3Sol,
             shouldClaimFeeUrgent:  feeCollSol >= claimThreshold5Sol,
             feeCollectedSol:       feeCollSol,
-            shouldClose:    outOfRangeMins !== null && outOfRangeMins >= thresholds.outOfRangeWaitMinutes,
+            shouldClose: (
+              (outOfRangeMins !== null && outOfRangeMins >= thresholds.outOfRangeWaitMinutes) ||
+              (outOfRangeBins !== null && cfg.outOfRangeBinsToClose > 0 && outOfRangeBins >= cfg.outOfRangeBinsToClose)
+            ),
+            outOfRangeBins,
             takeProfitHit:  pnlPct >= thresholds.takeProfitFeePct,
             trailingTpHit,
             peakPnl:        tracker.peakPnl,
@@ -310,23 +353,57 @@ async function executeTool(name, input) {
       outOfRangeTracker.delete(input.position_address);
       peakPnlTracker.delete(input.position_address);
 
-      // Auto-swap returned tokens ke SOL setelah close
+      // Record ke pool memory
+      recordClose(input.pool_address, {
+        pnlPct:   pnlData.pnlPct || 0,
+        reason:   pnlData.closeReason || 'AGENT_CLOSE',
+      });
+
+      // Auto-swap returned tokens ke SOL setelah close (retry 2x)
       const swapResults = [];
+      const swapErrors  = [];
       try {
         const poolInfo = await getPoolInfo(input.pool_address);
         for (const mint of [poolInfo.tokenX, poolInfo.tokenY]) {
           if (mint && mint !== SOL_MINT) {
-            const swapRes = await swapAllToSOL(mint);
-            if (swapRes.success) swapResults.push({ mint: mint.slice(0, 8), outSol: swapRes.outSol });
+            for (let attempt = 1; attempt <= 2; attempt++) {
+              try {
+                const swapRes = await swapAllToSOL(mint);
+                if (swapRes.success) {
+                  swapResults.push({ mint: mint.slice(0, 8), outSol: swapRes.outSol });
+                } else {
+                  swapResults.push({ mint: mint.slice(0, 8), skipped: swapRes.reason });
+                }
+                break;
+              } catch (e) {
+                if (attempt === 2) swapErrors.push({ mint: mint.slice(0, 8), error: e.message });
+                else await new Promise(r => setTimeout(r, 2000));
+              }
+            }
           }
         }
       } catch { /* swap best-effort */ }
 
+      // Notifikasi swap real-time ke notify function jika tersedia
+      if (_healerNotifyFn && swapResults.length > 0) {
+        const totalSol = swapResults.reduce((s, r) => s + (r.outSol || 0), 0);
+        const swapLine = swapResults.map(r => r.outSol ? `+${r.outSol.toFixed(4)}◎` : `skip`).join(', ');
+        _healerNotifyFn(
+          `🔄 *Auto-Swap Selesai*\n\n` +
+          `Token → SOL: ${swapLine}\n` +
+          `Total: \`+${totalSol.toFixed(4)} SOL\`\n` +
+          `_5 menit monitoring dimulai..._`
+        ).catch(() => {});
+        // Mulai 5-menit monitor
+        startPostCloseMonitor(input.pool_address, pnlData.pnlPct || 0, _healerNotifyFn);
+      }
+
       return JSON.stringify({
         ...closeResult,
         pnlRecorded: pnlData,
-        autoSwap: swapResults.length > 0 ? swapResults : 'skipped',
-        reasoning: input.reasoning,
+        autoSwap:    swapResults.length > 0 ? swapResults : 'skipped',
+        swapErrors:  swapErrors.length > 0  ? swapErrors  : undefined,
+        reasoning:   input.reasoning,
       }, null, 2);
     }
 
@@ -422,7 +499,11 @@ async function executeTool(name, input) {
   }
 }
 
+// ─── Simpan notify function untuk dipakai di tool executor ───────
+let _healerNotifyFn = null;
+
 export async function runHealerAlpha(notifyFn) {
+  _healerNotifyFn = notifyFn || null;
   const cfg = getConfig();
 
   // ── Skip cycle silently jika tidak ada posisi terbuka ────────
@@ -689,17 +770,42 @@ export async function runHealerAlpha(notifyFn) {
         outOfRangeTracker.delete(addr);
         recordPnl(pnlSol);
 
-        // Auto-swap token → SOL
+        // Record ke pool memory
+        recordClose(pos.pool_address, {
+          pnlPct:   pnlPct,
+          reason:   triggerLabel.toUpperCase().replace(/ /g, '_'),
+        });
+
+        // Auto-swap token → SOL (retry 2x)
         const swapMsgs = [];
+        let totalSwappedSol = 0;
         try {
           const poolInfo = await getPoolInfo(pos.pool_address);
           for (const mint of [poolInfo.tokenX, poolInfo.tokenY]) {
             if (mint && mint !== SOL_MINT) {
-              const swapRes = await swapAllToSOL(mint);
-              if (swapRes.success) swapMsgs.push(`+${swapRes.outSol} SOL`);
+              for (let attempt = 1; attempt <= 2; attempt++) {
+                try {
+                  const swapRes = await swapAllToSOL(mint);
+                  if (swapRes.success) {
+                    swapMsgs.push(`+${swapRes.outSol.toFixed(4)}◎`);
+                    totalSwappedSol += swapRes.outSol;
+                  }
+                  break;
+                } catch {
+                  if (attempt < 2) await new Promise(r => setTimeout(r, 2000));
+                }
+              }
             }
           }
         } catch { /* swap best-effort */ }
+
+        // Notifikasi swap + mulai 5-menit monitor
+        if (swapMsgs.length > 0) {
+          await notifyFn?.(
+            `🔄 *Auto-Swap Selesai*\n\nToken → SOL: ${swapMsgs.join(', ')}\nTotal: \`+${totalSwappedSol.toFixed(4)} SOL\`\n_5 menit monitoring dimulai..._`
+          );
+          startPostCloseMonitor(pos.pool_address, pnlPct, notifyFn);
+        }
 
         const closedLines = [
           kv('Posisi',   shortAddr(addr), W),

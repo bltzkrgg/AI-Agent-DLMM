@@ -7,7 +7,7 @@ import { getLessonsContext } from '../learn/lessons.js';
 import { getAllStrategies, parseStrategyParameters } from '../strategies/strategyManager.js';
 import { checkMaxDrawdown, validateStrategyForMarket, requestConfirmation } from '../safety/safetyManager.js';
 import { matchStrategyToMarket, getLibraryStats } from '../market/strategyLibrary.js';
-import { getMarketSnapshot, getOKXData, getOHLCV } from '../market/oracle.js';
+import { getMarketSnapshot, getOKXData, getOHLCV, getMultiTFScore } from '../market/oracle.js';
 import { getInstinctsContext } from '../market/memory.js';
 import { getStrategyIntelligenceContext } from '../market/strategyPerformance.js';
 import { screenToken, formatScreenResult } from '../market/coinfilter.js';
@@ -15,6 +15,9 @@ import { parseTvl } from '../utils/safeJson.js';
 import { kv, hr, codeBlock, shortAddr } from '../utils/table.js';
 import { calcDynamicRangePct } from '../market/taIndicators.js';
 import { formatStrategyAlert } from '../utils/alerts.js';
+import { getDarwinWeights, captureSignals } from '../market/signalWeights.js';
+import { isOnCooldown, getPoolMemoryContext, recordDeployment } from '../market/poolMemory.js';
+import { checkSmartWalletsOnPool, formatSmartWalletSignal } from '../market/smartWallets.js';
 
 // ─── State ───────────────────────────────────────────────────────
 
@@ -29,37 +32,41 @@ export function getCandidates() { return lastCandidates; }
 export function getLastHunterReport() { return lastReport; }
 
 // ─── Darwinian Scoring ───────────────────────────────────────────
-// Weights dari 263 closed positions:
-//   mcap: 2.5x (strong predictor)  |  fee/TVL: 2.3x (strong)
-//   volume: 0.36x (near floor)     |  holderCount: 0.3x (floor/useless)
+// Weights di-load dari signalWeights.js (auto-recalibrated dari data nyata).
+// Fallback ke defaults jika belum ada data.
 
-function calculateDarwinScore(pool, weights) {
-  const w = weights || { mcap: 2.5, feeActiveTvlRatio: 2.3, volume: 0.36, holderCount: 0.3 };
+function calculateDarwinScore(pool, weightsOverride) {
+  const w = weightsOverride || getDarwinWeights();
   let score = 0;
 
-  // fee/TVL ratio (2.3x) — strong predictor
+  // fee/TVL ratio — strong predictor
   const tvl  = pool.liquidityRaw || pool.tvl || 0;
   const fees = pool.fees24hRaw   || 0;
   if (tvl > 0 && fees > 0) {
     const ratio      = fees / tvl;
     const ratioScore = Math.min(ratio / 0.05, 2.0) / 2.0; // 5% ratio = max 1.0
-    score += ratioScore * w.feeActiveTvlRatio;
+    score += ratioScore * (w.feeActiveTvlRatio || 2.3);
   }
 
-  // volume (0.36x) — near floor, de-emphasize
+  // volume — near floor, de-emphasize
   const vol = pool.volume24hRaw || 0;
   if (vol > 0) {
-    score += Math.min(vol / 500000, 1.0) * w.volume;
+    score += Math.min(vol / 500000, 1.0) * (w.volume || 0.36);
   }
 
-  // mcap proxy via TVL (2.5x) — strong predictor
+  // mcap proxy via TVL
   if (tvl > 0) {
     const mcapScore = tvl < 10000 ? 0.2 : tvl < 50000 ? 0.5 : tvl < 100000 ? 0.8 : 1.0;
-    score += mcapScore * w.mcap;
+    score += mcapScore * (w.mcap || 2.5);
   }
 
-  // holderCount (0.3x) — useless, static contribution
-  score += 0.3 * w.holderCount;
+  // holderCount
+  score += 0.3 * (w.holderCount || 0.3);
+
+  // multiTFScore — bonus jika tersedia (di-set saat enrichment)
+  if (pool.multiTFScore > 0) {
+    score += pool.multiTFScore * (w.multiTFScore || 1.5);
+  }
 
   return parseFloat(score.toFixed(4));
 }
@@ -155,31 +162,58 @@ async function executeTool(name, input) {
       const limit = input.limit || 10;
       const pools = await getTopPools(limit * 3); // fetch lebih banyak, filter setelahnya
       const thresholds = getThresholds();
-      const weights = cfg.signalWeights || { mcap: 2.5, feeActiveTvlRatio: 2.3, volume: 0.36, holderCount: 0.3 };
+      const weights = getDarwinWeights(); // adaptive dari data nyata
 
-      const filtered = pools
-        .filter(p => {
-          const tvl = parseTvl(p.tvlStr || p.tvl || 0);
-          const fees = p.fees24hRaw || 0;
-          const feeRatio = tvl > 0 ? fees / tvl : 0;
-          const binStep = p.binStep || 0;
+      // Filter dasar
+      const minBinStep      = cfg.minBinStep      || 1;
+      const minTokenFeesSol = cfg.minTokenFeesSol || 0;
+      const preFiltered = pools.filter(p => {
+        const tvl = parseTvl(p.tvlStr || p.tvl || 0);
+        const fees = p.fees24hRaw || 0;
+        const feeRatio = tvl > 0 ? fees / tvl : 0;
+        const binStep = p.binStep || 0;
+        return (
+          binStep >= minBinStep &&
+          binStep <= 250 &&
+          tvl >= thresholds.minTvl &&
+          tvl <= thresholds.maxTvl &&
+          feeRatio >= thresholds.minFeeActiveTvlRatio &&
+          (minTokenFeesSol <= 0 || fees >= minTokenFeesSol) &&
+          !isOnCooldown(p.address)  // skip pool yang sedang cooldown
+        );
+      });
 
-          return (
-            binStep > 0 &&
-            binStep <= 250 &&                                    // Batas bin step
-            tvl >= thresholds.minTvl &&
-            tvl <= thresholds.maxTvl &&
-            feeRatio >= thresholds.minFeeActiveTvlRatio
-          );
-        })
-        .map(p => ({
+      // Enrich dengan multi-TF score & smart wallet check (parallel, best-effort)
+      const enriched = await Promise.all(preFiltered.map(async p => {
+        let multiTFScore = 0;
+        let smartWalletSignal = null;
+        let poolMemCtx = '';
+        try {
+          const [mtf, sw] = await Promise.allSettled([
+            getMultiTFScore(p.tokenX, p.address),
+            checkSmartWalletsOnPool(p.address),
+          ]);
+          if (mtf.status === 'fulfilled') multiTFScore = mtf.value.score || 0;
+          if (sw.status === 'fulfilled' && sw.value.found) smartWalletSignal = sw.value;
+          poolMemCtx = getPoolMemoryContext(p.address);
+        } catch { /* best-effort */ }
+
+        return {
           ...p,
-          darwinScore:     calculateDarwinScore(p, weights),
-          feeToTvlRatio:   (() => {
+          multiTFScore,
+          smartWallet: smartWalletSignal
+            ? { found: true, wallets: smartWalletSignal.matches.map(m => m.label), confidence: smartWalletSignal.confidence }
+            : null,
+          poolMemory:   poolMemCtx || undefined,
+          darwinScore:  calculateDarwinScore({ ...p, multiTFScore }, weights),
+          feeToTvlRatio: (() => {
             const tvl = parseTvl(p.tvlStr || p.tvl || 0);
             return tvl > 0 ? ((p.fees24hRaw || 0) / tvl).toFixed(4) : '0';
           })(),
-        }))
+        };
+      }));
+
+      const filtered = enriched
         .sort((a, b) => b.darwinScore - a.darwinScore)
         .slice(0, limit);
 
@@ -188,7 +222,7 @@ async function executeTool(name, input) {
         thresholds,
         filterCriteria: { maxBinStep: 250, minFeeActiveTvlRatio: thresholds.minFeeActiveTvlRatio },
         darwinWeights: weights,
-        note: 'Sorted by darwinScore. Prioritaskan mcap proxy (TVL) dan fee/TVL — volume & holders adalah weak signals.',
+        note: 'Sorted by darwinScore (adaptive). Pool yg cooldown sudah difilter. multiTFScore & smartWallet tersedia di setiap kandidat.',
         candidates: filtered,
       }, null, 2);
     }
@@ -269,12 +303,17 @@ async function executeTool(name, input) {
         eligible:        result.eligible,
         highFlags:       result.highFlags.map(f => f.msg),
         mediumFlags:     result.mediumFlags.map(f => f.msg),
-        gmgnAvailable:   result.gmgnAvailable,
-        gmgn:            result.gmgnAvailable ? result.gmgnData : null,
+        rugcheck:        result.rugCheckData?.available ? {
+          dangerRisks: result.rugCheckData.dangerRisks,
+          warnRisks:   result.rugCheckData.warnRisks,
+          scoreNorm:   result.rugCheckData.scoreNorm,
+          rugged:      result.rugCheckData.rugged,
+        } : null,
+        mcap:            result.mcap ?? null,
+        drawdownPct:     result.drawdownPct ?? null,
         jupiterStrict:   result.jupiterData?.isStrict   || false,
         jupiterVerified: result.jupiterData?.isVerified || false,
         jupiterPrice:    result.jupiterData?.priceUsd   || null,
-        // Instruksi tegas untuk agent
         action: result.verdict === 'AVOID'
           ? 'SKIP — cari kandidat lain'
           : 'LANJUT DEPLOY — jumlah token dihitung otomatis',
@@ -481,12 +520,84 @@ async function executeTool(name, input) {
         await hunterNotifyFn(openMsg);
       }
 
+      // Record deploy ke pool memory + capture signals untuk Darwinian learning
+      if (result.success && result.positionAddress) {
+        recordDeployment(input.pool_address);
+
+        // Cari pool data dari lastCandidates untuk capture sinyal
+        const poolData = lastCandidates.find(c => c.address === input.pool_address);
+        if (poolData) captureSignals(result.positionAddress, poolData);
+      }
+
       return JSON.stringify({ ...result, strategyUsed: strategy?.name, reasoning: input.reasoning }, null, 2);
     }
 
     default:
       return `Tool tidak dikenali: ${name}`;
   }
+}
+
+// ─── Screen-only: get top candidates without running LLM ─────────
+// Used by auto-screening flow for batch Telegram approval
+
+export async function getScreeningCandidates(limit = 5) {
+  const cfg       = getConfig();
+  const thresholds = getThresholds();
+  const weights   = getDarwinWeights();
+  const minBinStep      = cfg.minBinStep      || 1;
+  const minTokenFeesSol = cfg.minTokenFeesSol || 0;
+
+  const rawPools = await getTopPools(limit * 4);
+  const filtered = rawPools
+    .filter(p => {
+      const tvl      = p.liquidityRaw || 0;
+      const fees     = p.fees24hRaw   || 0;
+      const feeRatio = tvl > 0 ? fees / tvl : 0;
+      const binStep  = p.binStep || 0;
+      return (
+        binStep >= minBinStep && binStep <= 250 &&
+        tvl >= thresholds.minTvl &&
+        tvl <= thresholds.maxTvl &&
+        feeRatio >= thresholds.minFeeActiveTvlRatio &&
+        (minTokenFeesSol <= 0 || fees >= minTokenFeesSol) &&
+        !isOnCooldown(p.address)
+      );
+    })
+    .map(p => ({ ...p, darwinScore: calculateDarwinScore(p, weights) }))
+    .sort((a, b) => b.darwinScore - a.darwinScore)
+    .slice(0, limit);
+
+  // Enrich in parallel
+  const enriched = await Promise.all(filtered.map(async (p) => {
+    const [mtfResult, swResult] = await Promise.allSettled([
+      getMultiTFScore(p.tokenX, p.address),
+      checkSmartWalletsOnPool(p.address),
+    ]);
+    const mtf = mtfResult.status === 'fulfilled' ? mtfResult.value : null;
+    const sw  = swResult.status  === 'fulfilled' ? swResult.value  : null;
+
+    if (mtf?.score > 0) {
+      p.multiTFScore = mtf.score;
+      p.darwinScore  = calculateDarwinScore({ ...p, multiTFScore: mtf.score }, weights);
+    }
+
+    return {
+      address:     p.address,
+      name:        p.name,
+      darwinScore: parseFloat(p.darwinScore.toFixed(3)),
+      tvl:         (p.liquidityRaw || 0).toFixed(0),
+      fees24h:     (p.fees24hRaw   || 0).toFixed(2),
+      binStep:     p.binStep,
+      tokenX:      p.tokenX,
+      multiTFScore: mtf?.score ?? 0,
+      multiTFBreakdown: mtf?.breakdown ?? null,
+      smartWallet: sw?.found ? sw.matches.map(m => m.label) : [],
+      scannedAt:   Date.now(),
+    };
+  }));
+
+  lastCandidates = enriched;
+  return enriched.sort((a, b) => b.darwinScore - a.darwinScore);
 }
 
 // ─── Main agent loop ─────────────────────────────────────────────
@@ -496,6 +607,7 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null, opt
   hunterBotRef = bot;
   hunterAllowedId = allowedId;
   _hunterTargetCount = options.targetCount ?? null;
+  const forcedPool = options.forcedPool ?? null; // pre-selected pool dari approval flow
 
   const cfg = getConfig();
 
@@ -526,7 +638,7 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null, opt
   let preComputedContext = '';
   try {
     const thresholds = getThresholds();
-    const weights    = cfg.signalWeights || { mcap: 2.5, feeActiveTvlRatio: 2.3, volume: 0.36, holderCount: 0.3 };
+    const weights    = getDarwinWeights(); // adaptive weights dari data nyata
     const rawPools   = await getTopPools(25);
 
     const filtered = rawPools
@@ -539,7 +651,8 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null, opt
           binStep > 0 && binStep <= 250 &&
           tvl >= thresholds.minTvl     &&
           tvl <= thresholds.maxTvl     &&
-          feeRatio >= thresholds.minFeeActiveTvlRatio
+          feeRatio >= thresholds.minFeeActiveTvlRatio &&
+          !isOnCooldown(p.address) // skip pool sedang cooldown
         );
       })
       .map(p => ({ ...p, darwinScore: calculateDarwinScore(p, weights) }))
@@ -548,17 +661,27 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null, opt
 
     lastCandidates = filtered;
 
-    // Fetch pool memory + OKX in parallel for all candidates sekaligus
+    // Fetch pool memory + OKX + multi-TF + smart wallets in parallel
     const enriched = await Promise.all(filtered.map(async (p) => {
-      const [memResult, okxResult] = await Promise.allSettled([
+      const [memResult, okxResult, mtfResult, swResult] = await Promise.allSettled([
         Promise.resolve(getPoolStats(p.address)),
         process.env.OKX_API_KEY
           ? getOKXData(p.tokenX).catch(() => null)
           : Promise.resolve(null),
+        getMultiTFScore(p.tokenX, p.address),
+        checkSmartWalletsOnPool(p.address),
       ]);
 
       const mem = memResult.status === 'fulfilled' ? memResult.value : null;
       const okx = okxResult.status === 'fulfilled' ? okxResult.value : null;
+      const mtf = mtfResult.status === 'fulfilled' ? mtfResult.value : null;
+      const sw  = swResult.status  === 'fulfilled' ? swResult.value  : null;
+
+      // Update darwinScore dengan multiTFScore
+      if (mtf?.score > 0) {
+        p.multiTFScore = mtf.score;
+        p.darwinScore  = calculateDarwinScore({ ...p, multiTFScore: mtf.score }, weights);
+      }
 
       const memVerdict = !mem
         ? 'firstTime'
@@ -585,6 +708,15 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null, opt
           ? { winRate: mem.winRate, totalTrades: mem.totalTrades, verdict: memVerdict }
           : { verdict: 'firstTime' },
         okxSignal:    { verdict: okxVerdict },
+        multiTF:      mtf ? {
+          score: mtf.score,
+          bullishTFs: `${mtf.bullishCount}/${mtf.validCount}`,
+          breakdown: Object.entries(mtf.breakdown || {})
+            .map(([tf, d]) => `${tf}:${d.bullish ? '✅' : '❌'}`).join(' '),
+        } : null,
+        smartWallet: sw?.found
+          ? { wallets: sw.matches.map(m => m.label), confidence: sw.confidence }
+          : null,
       };
     }));
 
@@ -593,18 +725,29 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null, opt
     const skipped = enriched.length - viable.length;
 
     if (notifyFn) {
+      const smartWalletHits = enriched.filter(p => p.smartWallet?.wallets?.length > 0).length;
+      const highTFAlign     = enriched.filter(p => (p.multiTF?.score || 0) >= 0.67).length;
       await notifyFn(
         `📊 *Pre-screening selesai*\n` +
-        `✅ Viable: ${viable.length} pool  ❌ Difilter: ${skipped}\n` +
+        `✅ Viable: ${viable.length}  ❌ Filtered: ${skipped}\n` +
+        (highTFAlign > 0 ? `📈 Multi-TF kuat (≥4 TF): ${highTFAlign} pool\n` : '') +
+        (smartWalletHits > 0 ? `🎯 Smart wallet detected: ${smartWalletHits} pool\n` : '') +
         `_Menjalankan analisis mendalam..._`
       );
     }
 
     const display = viable.length > 0 ? viable : enriched.slice(0, 3);
+
+    // Jika ada forced pool dari approval flow, prioritaskan dia di atas
+    const forcedPoolNote = forcedPool
+      ? `\n⚡ FORCED POOL (user-approved): ${forcedPool} — DEPLOY KE POOL INI DULUAN.\n`
+      : '';
+
     preComputedContext =
       `\n\n──────────────────────────────────────\n` +
       `PRE-SCREENING SELESAI — DATA SUDAH TERSEDIA\n` +
-      `Pool Memory dan OKX sudah diambil. JANGAN panggil get_pool_memory atau get_okx_signal lagi.\n` +
+      `Pool Memory, OKX, Multi-TF, dan Smart Wallet sudah diambil. JANGAN fetch ulang.\n` +
+      forcedPoolNote +
       `Langsung: (1) get_pool_detail top kandidat → (2) screen_token → (3) deploy_position\n\n` +
       `Kandidat viable (${display.length} pool, urut darwinScore):\n` +
       JSON.stringify(display, null, 2);
@@ -678,9 +821,9 @@ STRATEGI — BACA LIBRARY, JANGAN HARDCODE:
 DARWINIAN WEIGHTS:
   TVL (2.5x) + fee/TVL (2.3x) = sinyal kuat. Volume (0.36x) + holders (0.3x) = abaikan.
 
-FILTER TOKEN (dari Coin Filter — DexScreener, RugCheck, Helius, OKX):
+FILTER TOKEN (dari Coin Filter — DexScreener, RugCheck, Helius, OKX, GeckoTerminal):
   AVOID → SKIP pool. CAUTION/PASS → DEPLOY LANGSUNG.
-  RugCheck score & risks tersedia di screen_token — GMGN sudah digantikan RugCheck.
+  RugCheck: warn+danger risks → REJECT. Mcap + ATH drawdown juga di-check.
 
 NAMA STRATEGI — WAJIB PERSIS SALAH SATU DARI LIST INI:
   "Single-Side SOL" | "Evil Panda" | "Wave Enjoyer" | "NPC" | "Fee Sniper"

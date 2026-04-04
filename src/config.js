@@ -16,6 +16,13 @@ const DEFAULTS = {
   managementIntervalMin: 10,
   screeningIntervalMin: 30,
 
+  // Auto-screening
+  autoScreeningEnabled: false,  // Aktifkan auto-screening Hunter via cron
+  approvalTimeoutMin: 15,       // Menit sebelum kandidat dianggap stale
+
+  // Dry run — tidak eksekusi TX apapun, semua else normal
+  dryRun: false,
+
   // Models — default ke gpt-4o-mini, bisa override di .env via AI_MODEL
   // activeModel: diset via /model command — highest priority, override semua
   managementModel: 'openai/gpt-4o-mini',
@@ -29,13 +36,22 @@ const DEFAULTS = {
   maxTvl: 150000,
   minOrganic: 65,
   minHolders: 500,
+  minBinStep: 1,             // Min bin step pool yang akan dipertimbangkan
+  minTokenFeesSol: 0,        // Min total fees SOL untuk pool (0 = disabled)
   timeframe: '5m',
   category: 'trending',
 
   // Position management
   takeProfitFeePct: 5,
+  trailingTriggerPct: 3.0,   // Aktifkan trailing TP saat PnL >= X%
+  trailingDropPct: 1.5,      // Close kalau PnL turun X% dari peak
   outOfRangeWaitMinutes: 30,
+  outOfRangeBinsToClose: 10, // Tutup posisi jika OOR lebih dari N bins
   minFeeClaimUsd: 1.0,
+
+  // OOR-specific pool cooldown
+  oorCooldownTriggerCount: 3, // Setelah N kali OOR close, aktifkan cooldown
+  oorCooldownHours: 12,       // Durasi cooldown OOR (jam)
 
   // Safety
   stopLossPct: 5,
@@ -49,6 +65,8 @@ const DEFAULTS = {
 
   // Darwinian Signal Weighting — dari 263 closed positions
   // Higher weight = stronger predictor of profitable positions
+  darwinWindowDays: 60,    // Sliding window hari untuk recalibration
+  darwinRecalcEvery: 5,    // Recalibrate setiap N posisi ditutup
   signalWeights: {
     mcap: 2.5,              // Maxed out — strong predictor
     feeActiveTvlRatio: 2.3, // Strong predictor
@@ -56,15 +74,14 @@ const DEFAULTS = {
     holderCount: 0.3,       // Floor — useless predictor
   },
 
-  // Evil Panda — coin selection thresholds
-  minMcap: 250000,           // Min market cap / FDV ($)
+  // Coin selection thresholds (USD, via GeckoTerminal + DexScreener)
+  minMcap: 250000,           // Min market cap ($) — null data → skip
+  maxMcap: 0,                // Max market cap ($, 0 = disabled)
   minVolume24h: 1000000,     // Min 24h volume ($) untuk Evil Panda
 
-  // Security thresholds — RugCheck primary, GMGN fallback
-  gmgnMaxPhishing: 30,       // Max phishing/danger proxy % (<30%)
-  gmgnMaxBundling: 60,       // Max bundling % (<60%)
-  gmgnMaxInsiders: 10,       // Max insider % (<10%)
-  gmgnMaxTop10Holdings: 30,  // Max top-10 holdings % (<30%)
+  // ATH drawdown filter
+  athFilterPct: -75,         // Reject jika harga > X% di bawah 30-day high
+  athLookbackDays: 30,       // Lookback window untuk approx ATH (1D candles)
 };
 
 // Bounds for AI-driven config updates — prevent AI from setting dangerous values
@@ -75,24 +92,33 @@ const CONFIG_BOUNDS = {
   gasReserve:                 { min: 0.01,  max: 0.5 },
   managementIntervalMin:      { min: 1,     max: 1440 },
   screeningIntervalMin:       { min: 5,     max: 1440 },
+  approvalTimeoutMin:         { min: 5,     max: 60 },
   minFeeActiveTvlRatio:       { min: 0.001, max: 1 },
   minTvl:                     { min: 100,   max: 10000000 },
   maxTvl:                     { min: 1000,  max: 100000000 },
   minOrganic:                 { min: 0,     max: 100 },
   minHolders:                 { min: 0,     max: 1000000 },
+  minBinStep:                 { min: 1,     max: 400 },
+  minTokenFeesSol:            { min: 0,     max: 10000 },
   takeProfitFeePct:           { min: 0.1,   max: 100 },
+  trailingTriggerPct:         { min: 0.5,   max: 50 },
+  trailingDropPct:            { min: 0.1,   max: 20 },
   outOfRangeWaitMinutes:      { min: 1,     max: 1440 },
+  outOfRangeBinsToClose:      { min: 1,     max: 200 },
+  oorCooldownTriggerCount:    { min: 1,     max: 20 },
+  oorCooldownHours:           { min: 1,     max: 168 },
   minFeeClaimUsd:             { min: 0.01,  max: 1000 },
   stopLossPct:                { min: 0.1,   max: 50 },
   maxDailyDrawdownPct:        { min: 0.5,   max: 50 },
   proactiveExitMinProfitPct:  { min: 0.1,   max: 100 },
   proactiveExitBearishConfidence: { min: 0.5, max: 1.0 },
-  minMcap:              { min: 0,   max: 100000000 },
-  minVolume24h:         { min: 0,   max: 1000000000 },
-  gmgnMaxPhishing:      { min: 0,   max: 100 },
-  gmgnMaxBundling:      { min: 0,   max: 100 },
-  gmgnMaxInsiders:      { min: 0,   max: 100 },
-  gmgnMaxTop10Holdings: { min: 0,   max: 100 },
+  darwinWindowDays:           { min: 7,     max: 365 },
+  darwinRecalcEvery:          { min: 1,     max: 50 },
+  minMcap:                    { min: 0,     max: 100000000 },
+  maxMcap:                    { min: 0,     max: 10000000000 },
+  minVolume24h:               { min: 0,     max: 1000000000 },
+  athFilterPct:               { min: -99,   max: -10 },
+  athLookbackDays:            { min: 7,     max: 365 },
 };
 
 function safeParseJSON(raw) {
@@ -157,5 +183,5 @@ export function getThresholds() {
 }
 
 export function isDryRun() {
-  return false; // Always live — dry run mode removed
+  return getConfig().dryRun === true;
 }

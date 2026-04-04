@@ -144,7 +144,7 @@ const BUILTIN_STRATEGIES = [
       minMcap: 250000,
       minVolume24h: 1000000,
     },
-    entryConditions: 'MC >$250k, 24h Volume >$1M. Price break above Supertrend on 15m. GMGN: phishing <30%, bundling <60%, insiders <10%, top10 <30%. Pool bin step 80/100/125.',
+    entryConditions: 'MC >$250k, 24h Volume >$1M. Price break above Supertrend on 15m. RugCheck: no warn/danger risks. Pool bin step 80/100/125.',
     exitConditions: 'Confluence ≥2 sinyal: RSI(2)>90 + price tutup di atas BB upper. ATAU RSI(2)>90 + MACD first green histogram. Jangan exit sebelum sinyal muncul. Dump = bagus, kumpulkan fee.',
     confidence: 0.82,
     performanceHistory: [],

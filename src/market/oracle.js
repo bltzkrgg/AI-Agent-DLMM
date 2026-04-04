@@ -12,6 +12,7 @@
  */
 
 import { fetchWithTimeout, safeNum } from '../utils/safeJson.js';
+import { getHeliusOnChainSignals } from '../utils/helius.js';
 import {
   computeRSI,
   computeBollingerBands,
@@ -221,6 +222,70 @@ export async function fetchMultiTFOHLCV(tokenMint, poolAddress = null) {
   return result;
 }
 
+// ─── Multi-TF Screening Score — 6 timeframe alignment ────────────
+// Dipakai oleh hunter & opportunity scanner untuk menilai kekuatan trend
+// lintas timeframe: 15m, 30m, 1h, 4h, 12h, 24h.
+//
+// Score 0.0–1.0:
+//   0.0–0.3 → bearish/conflicted (skip)
+//   0.3–0.6 → neutral (ok)
+//   0.6–0.8 → bullish alignment (good entry)
+//   0.8–1.0 → strong alignment across all TFs (high conviction)
+
+export async function getMultiTFScore(tokenMint, poolAddress = null) {
+  const TFS = [
+    { tf: '15m', limit: 80,  minLen: 30 },
+    { tf: '30m', limit: 60,  minLen: 20 },
+    { tf: '1h',  limit: 48,  minLen: 15 },
+    { tf: '4h',  limit: 30,  minLen: 10 },
+    { tf: '12h', limit: 20,  minLen: 8  },
+    { tf: '24h', limit: 14,  minLen: 5  },
+  ];
+
+  const results = await Promise.allSettled(
+    TFS.map(({ tf, limit }) => fetchCandles(tokenMint, tf, limit, poolAddress))
+  );
+
+  let bullishCount = 0;
+  let validCount   = 0;
+  const breakdown  = {};
+
+  for (let i = 0; i < TFS.length; i++) {
+    const { tf, minLen } = TFS[i];
+    const r = results[i];
+    if (r.status !== 'fulfilled' || !r.value || r.value.length < minLen) continue;
+
+    const candles = r.value;
+    const closes  = candles.map(c => c.c);
+    const highs   = candles.map(c => c.h);
+    const lows    = candles.map(c => c.l);
+
+    const st    = computeSupertrend(highs, lows, closes, 10, 3);
+    const rsi14 = computeRSI(closes, 14);
+    const macd  = computeMACD(closes, 12, 26, 9);
+
+    // Bullish criteria: Supertrend bullish + RSI > 45 + MACD histogram > 0
+    let bullish = 0;
+    if (st?.isBullish === true)               bullish++;
+    if (rsi14 !== null && rsi14 > 45)         bullish++;
+    if (macd?.histogram !== null && macd.histogram > 0) bullish++;
+
+    const isBullish = bullish >= 2; // ≥2/3 criteria = bullish for this TF
+    if (isBullish) bullishCount++;
+    validCount++;
+
+    breakdown[tf] = {
+      bullish: isBullish,
+      supertrend: st?.isBullish ?? null,
+      rsi14: rsi14 !== null ? parseFloat(rsi14.toFixed(1)) : null,
+      macdPositive: macd?.histogram !== null ? macd.histogram > 0 : null,
+    };
+  }
+
+  const score = validCount > 0 ? parseFloat((bullishCount / validCount).toFixed(3)) : 0;
+  return { score, bullishCount, validCount, breakdown };
+}
+
 function _buildTFAnalysis(candles, label) {
   const closes = candles.map(c => c.c);
   const highs  = candles.map(c => c.h);
@@ -314,58 +379,7 @@ async function buildOHLCVFromDexScreener(tokenMint) {
 //   - Banyak transaksi recent → token masih aktif diperdagangkan → bagus untuk fee
 
 export async function getOnChainSignals(tokenMint) {
-  if (!process.env.HELIUS_API_KEY) {
-    return { available: false, reason: 'HELIUS_API_KEY not set' };
-  }
-  const HELIUS_RPC = `https://mainnet.helius-rpc.com/?api-key=${process.env.HELIUS_API_KEY}`;
-  const rpcPost = (method, params) => fetchWithTimeout(HELIUS_RPC, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }),
-  }, 8000);
-
-  try {
-    const [sigRes, largestRes, supplyRes, solscanRes] = await Promise.allSettled([
-      rpcPost('getSignaturesForAddress', [tokenMint, { limit: 20 }]),
-      rpcPost('getTokenLargestAccounts', [tokenMint]),
-      rpcPost('getTokenSupply',          [tokenMint]),
-      fetchWithTimeout(
-        `https://public-api.solscan.io/token/holders?tokenAddress=${tokenMint}&limit=1&offset=0`,
-        { headers: { Accept: 'application/json' } }, 8000
-      ),
-    ]);
-
-    const sigs    = sigRes.status    === 'fulfilled' && sigRes.value.ok
-      ? (await sigRes.value.json()).result || [] : [];
-    const largest = largestRes.status === 'fulfilled' && largestRes.value.ok
-      ? (await largestRes.value.json()).result?.value || [] : [];
-    const supply  = supplyRes.status  === 'fulfilled' && supplyRes.value.ok
-      ? (await supplyRes.value.json()).result?.value : null;
-    const solscanData = solscanRes.status === 'fulfilled' && solscanRes.value.ok
-      ? (await solscanRes.value.json().catch(() => null)) : null;
-
-    const totalSupply  = safeNum(supply?.uiAmount || 0);
-    const top10Amount  = largest.slice(0, 10).reduce((s, h) => s + safeNum(h.uiAmount || 0), 0);
-    const top10Pct     = totalSupply > 0 ? (top10Amount / totalSupply) * 100 : 0;
-    const holderCount  = typeof solscanData?.total === 'number' ? solscanData.total : null;
-
-    return {
-      available:      true,
-      recentTxCount:  sigs.length,
-      holders:        holderCount,
-      marketCap:      null,
-      top10HolderPct: parseFloat(top10Pct.toFixed(2)),
-      whaleRisk:      top10Pct > 50 ? 'HIGH' : top10Pct > 30 ? 'MEDIUM' : 'LOW',
-      dlmmNote: top10Pct > 50
-        ? 'Konsentrasi whale TINGGI — dump risk besar, SOL kamu bisa ter-absorb semua kalau whale jual'
-        : top10Pct > 30
-        ? 'Ada whale — monitor ketat, perlu exit cepat kalau ada dump'
-        : 'Distribusi sehat — dump risk rendah, aman untuk LP',
-      tokenActive: sigs.length >= 5,
-    };
-  } catch (e) {
-    return { available: false, reason: e.message };
-  }
+  return getHeliusOnChainSignals(tokenMint);
 }
 
 // ─── 3. OKX Smart Money — untuk arah entry & strategi ────────────

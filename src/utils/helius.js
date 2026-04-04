@@ -1,0 +1,189 @@
+/**
+ * Helius Client — centralized Helius RPC + API
+ *
+ * Helius dipakai untuk:
+ *   1. RPC endpoint utama (lebih reliable, rate limit lebih tinggi)
+ *   2. getTokenLargestAccounts + getTokenSupply → top-10 holder concentration
+ *   3. getSignaturesForAddress → token activity check
+ *   4. Priority fee API → pastikan TX landing cepat
+ *   5. Token metadata batch → simbol, desimal, nama
+ *
+ * Env vars:
+ *   HELIUS_API_KEY   — dari https://helius.dev (wajib)
+ *   HELIUS_RPC_URL   — opsional override (default: mainnet.helius-rpc.com)
+ */
+
+import { fetchWithTimeout } from './safeJson.js';
+
+// ─── URL helpers ──────────────────────────────────────────────────
+
+export function getHeliusRpcUrl() {
+  if (process.env.HELIUS_RPC_URL) return process.env.HELIUS_RPC_URL;
+  const key = process.env.HELIUS_API_KEY;
+  if (!key) throw new Error('HELIUS_API_KEY is not set');
+  return `https://mainnet.helius-rpc.com/?api-key=${key}`;
+}
+
+export function getHeliusApiBase() {
+  const key = process.env.HELIUS_API_KEY;
+  if (!key) throw new Error('HELIUS_API_KEY is not set');
+  return `https://api.helius.xyz/v0`;
+}
+
+// ─── JSON-RPC helper ──────────────────────────────────────────────
+
+let _rpcCallId = 0;
+
+export async function heliusRpc(method, params = [], timeoutMs = 10000) {
+  const url = getHeliusRpcUrl();
+  const res = await fetchWithTimeout(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      jsonrpc: '2.0',
+      id: ++_rpcCallId,
+      method,
+      params,
+    }),
+  }, timeoutMs);
+
+  if (!res.ok) throw new Error(`Helius RPC ${method} HTTP ${res.status}`);
+  const data = await res.json();
+  if (data.error) throw new Error(`Helius RPC error: ${JSON.stringify(data.error)}`);
+  return data.result;
+}
+
+// ─── Token holder data ────────────────────────────────────────────
+// Top-10 concentration + approximate holder count
+
+export async function getTokenHolderData(tokenMint) {
+  try {
+    const [largestResult, supplyResult] = await Promise.allSettled([
+      heliusRpc('getTokenLargestAccounts', [tokenMint]),
+      heliusRpc('getTokenSupply',          [tokenMint]),
+    ]);
+
+    if (largestResult.status !== 'fulfilled' || supplyResult.status !== 'fulfilled') {
+      return null;
+    }
+
+    const largest = largestResult.value?.value || [];
+    const supply  = supplyResult.value?.value;
+    if (!supply || largest.length === 0) return null;
+
+    const totalSupply = parseFloat(supply.uiAmount || 0);
+    if (totalSupply === 0) return null;
+
+    const top10Amount = largest.slice(0, 10)
+      .reduce((s, h) => s + parseFloat(h.uiAmount || 0), 0);
+    const top10Pct = parseFloat(((top10Amount / totalSupply) * 100).toFixed(2));
+
+    return {
+      available:      true,
+      top10HolderPct: top10Pct,
+      whaleRisk:      top10Pct > 50 ? 'HIGH' : top10Pct > 30 ? 'MEDIUM' : 'LOW',
+      // holderCount via Helius getProgramAccounts is expensive — skip, use DexScreener fallback
+    };
+  } catch {
+    return null;
+  }
+}
+
+// ─── Token activity (recent tx count) ────────────────────────────
+
+export async function getTokenActivity(tokenMint, limit = 20) {
+  try {
+    const sigs = await heliusRpc('getSignaturesForAddress', [tokenMint, { limit }]);
+    return { recentTxCount: Array.isArray(sigs) ? sigs.length : 0 };
+  } catch {
+    return { recentTxCount: 0 };
+  }
+}
+
+// ─── Priority fee ────────────────────────────────────────────────
+// Helius returns per-slot priority fee percentiles from recent blocks.
+// Kita pakai P75 untuk balance antara kecepatan dan cost.
+
+export async function getRecommendedPriorityFee(accountKeys = []) {
+  try {
+    // Helius enhanced getRecentPrioritizationFees — returns [{slot, prioritizationFee}]
+    const fees = await heliusRpc('getRecentPrioritizationFees', [accountKeys]);
+    if (!Array.isArray(fees) || fees.length === 0) return 50000; // 0.00005 SOL default
+
+    const sorted = fees
+      .map(f => f.prioritizationFee || 0)
+      .filter(f => f > 0)
+      .sort((a, b) => a - b);
+
+    if (sorted.length === 0) return 50000;
+
+    // P75 — lebih tinggi dari median untuk prioritas landing
+    const p75idx = Math.floor(sorted.length * 0.75);
+    const p75 = sorted[Math.min(p75idx, sorted.length - 1)];
+
+    // Clamp: min 5000 (0.000005 SOL), max 500000 (0.0005 SOL)
+    return Math.max(5000, Math.min(500000, p75));
+  } catch {
+    return 50000; // fallback default
+  }
+}
+
+// ─── Token metadata batch (Helius Enhanced API) ──────────────────
+// Returns array of { account, onChainMetadata, offChainMetadata }
+
+export async function getTokenMetadataBatch(mintAddresses) {
+  if (!mintAddresses || mintAddresses.length === 0) return [];
+  const key = process.env.HELIUS_API_KEY;
+  if (!key) return [];
+
+  try {
+    const res = await fetchWithTimeout(
+      `${getHeliusApiBase()}/token-metadata?api-key=${key}`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ mintAccounts: mintAddresses }),
+      },
+      12000
+    );
+    if (!res.ok) return [];
+    return await res.json().catch(() => []);
+  } catch {
+    return [];
+  }
+}
+
+// ─── Full on-chain signals (replaces getOnChainSignals in oracle) ─
+
+export async function getHeliusOnChainSignals(tokenMint) {
+  if (!process.env.HELIUS_API_KEY) {
+    return { available: false, reason: 'HELIUS_API_KEY not set' };
+  }
+
+  try {
+    const [holderData, activity] = await Promise.allSettled([
+      getTokenHolderData(tokenMint),
+      getTokenActivity(tokenMint, 20),
+    ]);
+
+    const hd   = holderData.status === 'fulfilled' ? holderData.value : null;
+    const act  = activity.status  === 'fulfilled' ? activity.value  : { recentTxCount: 0 };
+
+    if (!hd) return { available: false, reason: 'Gagal fetch holder data' };
+
+    return {
+      available:      true,
+      recentTxCount:  act.recentTxCount,
+      top10HolderPct: hd.top10HolderPct,
+      whaleRisk:      hd.whaleRisk,
+      tokenActive:    act.recentTxCount >= 5,
+      dlmmNote: hd.whaleRisk === 'HIGH'
+        ? 'Konsentrasi whale TINGGI — dump risk besar, SOL bisa ter-absorb kalau whale jual'
+        : hd.whaleRisk === 'MEDIUM'
+        ? 'Ada whale — monitor ketat, perlu exit cepat kalau ada dump'
+        : 'Distribusi sehat — dump risk rendah, aman untuk LP',
+    };
+  } catch (e) {
+    return { available: false, reason: e.message };
+  }
+}

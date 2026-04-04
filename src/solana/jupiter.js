@@ -8,6 +8,8 @@
 import { VersionedTransaction, PublicKey } from '@solana/web3.js';
 import { getConnection, getWallet } from './wallet.js';
 import { fetchWithTimeout } from '../utils/safeJson.js';
+import { getRecommendedPriorityFee } from '../utils/helius.js';
+import { isDryRun } from '../config.js';
 
 export const SOL_MINT  = 'So11111111111111111111111111111111111111112';
 export const USDC_MINT = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
@@ -56,6 +58,10 @@ export async function swapToSOL(inputMint, amountRaw, slippageBps = 100) {
   if (!amountRaw || parseInt(amountRaw) <= 0) {
     return { skipped: true, reason: 'Amount is zero' };
   }
+  if (isDryRun()) {
+    console.log(`[DRY RUN] swapToSOL skipped: mint=${inputMint} amount=${amountRaw}`);
+    return { dryRun: true, skipped: true, reason: 'Dry run mode — TX not executed' };
+  }
 
   const wallet = getWallet();
   const connection = getConnection();
@@ -64,7 +70,13 @@ export async function swapToSOL(inputMint, amountRaw, slippageBps = 100) {
   const quote = await getJupiterQuote(inputMint, SOL_MINT, amountRaw, slippageBps);
   const outSol = parseInt(quote.outAmount) / 1e9;
 
-  // 2. Get swap transaction
+  // 2. Get Helius priority fee recommendation (best-effort)
+  let priorityFeeLamports = 50000; // default 0.00005 SOL
+  try {
+    priorityFeeLamports = await getRecommendedPriorityFee([inputMint, SOL_MINT]);
+  } catch { /* pakai default */ }
+
+  // 3. Get swap transaction
   const swapRes = await fetchWithTimeout(`${JUPITER_API}/swap`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -73,7 +85,7 @@ export async function swapToSOL(inputMint, amountRaw, slippageBps = 100) {
       userPublicKey: wallet.publicKey.toString(),
       wrapAndUnwrapSol: true,
       dynamicComputeUnitLimit: true,
-      prioritizationFeeLamports: 'auto',
+      prioritizationFeeLamports: priorityFeeLamports,
     }),
   }, 15000);
 

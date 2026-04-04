@@ -12,7 +12,7 @@
  */
 
 import { getTopPools } from '../solana/meteora.js';
-import { fetchCandles, getDLMMPoolData } from './oracle.js';
+import { fetchCandles, getDLMMPoolData, getMultiTFScore } from './oracle.js';
 import {
   computeRSI,
   computeBollingerBands,
@@ -27,6 +27,10 @@ import { formatStrategyAlert } from '../utils/alerts.js';
 const _cooldown   = new Map();
 const COOLDOWN_MS = 3 * 60 * 60 * 1000; // 3 jam
 const EP_BIN_STEPS = new Set([80, 100, 125]);
+
+// Multi-TF minimum score untuk alert (0.0–1.0)
+// Pool dengan multiTFScore < threshold ini di-skip meskipun sinyal 15m bagus
+const MIN_MULTITF_SCORE = 0.4; // minimal 40% TF bullish
 
 // ─── Main scanner ────────────────────────────────────────────────
 
@@ -52,6 +56,15 @@ export async function runOpportunityScanner(notifyFn) {
       // Compute TA dari candles
       const ta = _computeTA(candles);
 
+      // Multi-TF score — filter sinyal 15m dengan konfirmasi dari TF lebih tinggi
+      let multiTFScore = 0;
+      let multiTFBreakdown = {};
+      try {
+        const mtf = await getMultiTFScore(tokenMint, pool.address);
+        multiTFScore     = mtf.score;
+        multiTFBreakdown = mtf.breakdown;
+      } catch { /* optional, jangan block */ }
+
       // Fetch pool fee data untuk Fee Sniper (best-effort)
       let poolData = null;
       try { poolData = await getDLMMPoolData(pool.address); } catch { /* optional */ }
@@ -64,14 +77,26 @@ export async function runOpportunityScanner(notifyFn) {
         const last = _cooldown.get(key);
         if (last && (now - last) < COOLDOWN_MS) continue;
 
+        // Skip jika multi-TF score terlalu rendah (konfirmasi lemah)
+        // Fee Sniper tidak perlu konfirmasi TF — berbasis fee/TVL
+        if (opp.strategy !== 'Fee Sniper' && multiTFScore < MIN_MULTITF_SCORE) continue;
+
         _cooldown.set(key, now);
+
+        // Tambahkan multi-TF info ke reason
+        const tfSummary = Object.entries(multiTFBreakdown)
+          .map(([tf, d]) => `${tf}:${d.bullish ? '✅' : '❌'}`)
+          .join(' ');
+        const enrichedReason = multiTFScore > 0
+          ? `${opp.reason} | TF: ${tfSummary} (${(multiTFScore * 100).toFixed(0)}% bullish)`
+          : opp.reason;
 
         await notifyFn(formatStrategyAlert({
           strategy:    opp.strategy,
           pool:        pool.name || null,
           poolAddress: pool.address,
-          reason:      opp.reason,
-          priority:    opp.priority,
+          reason:      enrichedReason,
+          priority:    multiTFScore >= 0.67 ? 'HIGH' : opp.priority, // upgrade priority jika 4+ TF bullish
         }));
 
         await new Promise(r => setTimeout(r, 1200)); // anti-flood

@@ -104,67 +104,15 @@ async function getJupiterData(tokenMint) {
   } catch { return null; }
 }
 
-// Solscan public API — free, no key, returns total holder count
-async function getSolscanHolderCount(tokenMint) {
-  try {
-    const res = await fetchWithTimeout(
-      `https://public-api.solscan.io/token/holders?tokenAddress=${tokenMint}&limit=1&offset=0`,
-      { headers: { Accept: 'application/json' } },
-      8000
-    );
-    if (!res.ok) return null;
-    const data = await res.json().catch(() => null);
-    const count = data?.total ?? null;
-    return typeof count === 'number' ? count : null;
-  } catch { return null; }
-}
-
-// Helius RPC — real-time top-10 concentration (requires HELIUS_API_KEY)
-async function getHeliusTop10(tokenMint) {
-  if (!process.env.HELIUS_API_KEY) return null;
-  const HELIUS_RPC = `https://mainnet.helius-rpc.com/?api-key=${process.env.HELIUS_API_KEY}`;
-  const rpcPost = (method, params) => fetchWithTimeout(HELIUS_RPC, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }),
-  }, 8000);
-
-  try {
-    const [largestRes, supplyRes] = await Promise.allSettled([
-      rpcPost('getTokenLargestAccounts', [tokenMint]),
-      rpcPost('getTokenSupply',          [tokenMint]),
-    ]);
-
-    const largest = largestRes.status === 'fulfilled' && largestRes.value.ok
-      ? (await largestRes.value.json().catch(() => ({}))).result?.value || [] : [];
-    const supply  = supplyRes.status  === 'fulfilled' && supplyRes.value.ok
-      ? (await supplyRes.value.json().catch(() => ({}))).result?.value : null;
-
-    if (!largest.length || !supply) return null;
-    const totalSupply = safeNum(supply.uiAmount || 0);
-    if (totalSupply === 0) return null;
-
-    const top10Amount = largest.slice(0, 10).reduce((s, h) => s + safeNum(h.uiAmount || 0), 0);
-    return parseFloat(((top10Amount / totalSupply) * 100).toFixed(2));
-  } catch { return null; }
-}
-
+// Helius — real-time top-10 concentration + activity (centralized client)
 async function getHolderData(tokenMint) {
-  // Run both in parallel — Solscan works without key, Helius adds real-time top10
-  const [heliusR, solscanR] = await Promise.allSettled([
-    getHeliusTop10(tokenMint),
-    getSolscanHolderCount(tokenMint),
-  ]);
-
-  const top10HolderPct = heliusR.status === 'fulfilled' ? heliusR.value : null;
-  const holderCount    = solscanR.status === 'fulfilled' ? solscanR.value : null;
-
-  if (top10HolderPct === null && holderCount === null) return null;
-
+  const { getTokenHolderData } = await import('../utils/helius.js');
+  const result = await getTokenHolderData(tokenMint);
+  if (!result) return null;
   return {
     available:      true,
-    holderCount,
-    top10HolderPct,
+    holderCount:    null, // Helius tidak expose total count secara efisien; pakai DexScreener
+    top10HolderPct: result.top10HolderPct,
   };
 }
 
@@ -208,55 +156,31 @@ async function getRugCheckSecurity(tokenMint) {
       bundlingPct = pctMatch ? parseFloat(pctMatch[1]) : Math.min(bundledRisk.score / 5, 90);
     }
 
-    // Danger risks count — proxy untuk phishing/fraud signals
+    // Danger + warn risk counts
     const dangerCount = risks.filter(r => r.level === 'danger').length;
+    const warnCount   = risks.filter(r => r.level === 'warn').length;
     const phishingPct = data.rugged ? 100 : Math.min(dangerCount * 15, 90);
 
     return {
-      available:     true,
-      source:        'rugcheck',
+      available:      true,
+      source:         'rugcheck',
       top10Pct,
-      insidersPct:   insiderPct,
+      insidersPct:    insiderPct,
       bundlingPct,
       phishingPct,
-      rugged:        data.rugged || false,
-      rugCheckScore: safeNum(data.score || 0),
-      scoreNorm:     safeNum(data.score_normalised || 0), // 0–100, lower = safer
-      dangerRisks:   dangerCount,
-      risks:         risks.filter(r => r.level !== 'info').map(r => r.name),
-    };
-  } catch { return null; }
-}
-
-// Keep GMGN as optional override — if GMGN_API_KEY is set AND RugCheck fails
-async function getGMGNSecurityFallback(tokenMint) {
-  if (!process.env.GMGN_API_KEY) return null;
-  try {
-    const res = await fetchWithTimeout(
-      `https://gmgn.ai/api/v1/token_security/sol/${tokenMint}`,
-      { headers: { 'Authorization': `Bearer ${process.env.GMGN_API_KEY}` } },
-      8000
-    );
-    if (!res.ok) return null;
-    const data = await res.json().catch(() => null);
-    if (!data) return null;
-    const sec = data.data || data;
-    return {
-      available:    true,
-      source:       'gmgn',
-      phishingPct:  safeNum(sec.phishing_report_percentage ?? null),
-      bundlingPct:  safeNum(sec.bundle_percentage          ?? null),
-      insidersPct:  safeNum(sec.insider_percentage         ?? null),
-      top10Pct:     safeNum(sec.top10_holder_percentage    ?? null),
+      rugged:         data.rugged || false,
+      rugCheckScore:  safeNum(data.score || 0),
+      scoreNorm:      safeNum(data.score_normalised || 0), // 0–100, lower = safer
+      dangerRisks:    dangerCount,
+      warnRisks:      warnCount,
+      risks:          risks.filter(r => r.level === 'danger').map(r => r.name),
+      warnRiskNames:  risks.filter(r => r.level === 'warn').map(r => r.name),
     };
   } catch { return null; }
 }
 
 async function getSecurityData(tokenMint) {
-  const rc = await getRugCheckSecurity(tokenMint);
-  if (rc?.available) return rc;
-  // Fallback to GMGN if RugCheck fails and GMGN_API_KEY is set
-  return getGMGNSecurityFallback(tokenMint);
+  return getRugCheckSecurity(tokenMint);
 }
 
 async function getOKXSafety(tokenMint) {
@@ -276,6 +200,57 @@ async function getOKXSafety(tokenMint) {
       ownershipRenounced: sec.ownershipRenounced  ?? null,
       riskLevel:          sec.riskLevel           ?? null,
     };
+  } catch { return null; }
+}
+
+// ─── GeckoTerminal — mcap + 30-day ATH approximation ────────────
+
+const GECKO_BASE = 'https://api.geckoterminal.com/api/v2';
+
+async function getGeckoTokenData(tokenMint) {
+  try {
+    // Get top pool for this token (by volume) to find pool address for OHLCV
+    const poolRes = await fetchWithTimeout(
+      `${GECKO_BASE}/networks/solana/tokens/${tokenMint}/pools?page=1&sort=h24_volume_usd_desc`,
+      { headers: { Accept: 'application/json' } },
+      8000
+    );
+    if (!poolRes.ok) return null;
+    const poolData = await poolRes.json().catch(() => null);
+    const pools = poolData?.data || [];
+    if (!pools.length) return null;
+
+    const topPool = pools[0];
+    const poolAddress = topPool.attributes?.address;
+    const marketCapUsd = safeNum(topPool.attributes?.market_cap_usd || 0) ||
+                         safeNum(topPool.attributes?.fdv_usd || 0);
+
+    return { poolAddress, marketCapUsd };
+  } catch { return null; }
+}
+
+async function getTokenATHApprox(tokenMint, lookbackDays = 30) {
+  // Approximates ATH as highest daily candle high over lookback window
+  try {
+    // First get pool address
+    const geckoData = await getGeckoTokenData(tokenMint);
+    if (!geckoData?.poolAddress) return null;
+
+    const res = await fetchWithTimeout(
+      `${GECKO_BASE}/networks/solana/pools/${geckoData.poolAddress}/ohlcv/day?aggregate=1&limit=${lookbackDays}&currency=usd`,
+      { headers: { Accept: 'application/json' } },
+      10000
+    );
+    if (!res.ok) return null;
+    const data = await res.json().catch(() => null);
+    const ohlcv = data?.data?.attributes?.ohlcv_list;
+    if (!Array.isArray(ohlcv) || !ohlcv.length) return null;
+
+    // Each item: [timestamp, open, high, low, close, volume]
+    const athPrice = Math.max(...ohlcv.map(c => safeNum(c[2])));
+    const currentPrice = safeNum(ohlcv[ohlcv.length - 1][4]); // last close
+
+    return { athPrice, currentPrice, lookbackDays };
   } catch { return null; }
 }
 
@@ -469,99 +444,162 @@ function step7_organicScore(dex, jup, holders, thresholds = {}) {
   return { rejects, warnings, score };
 }
 
-// Step 8: GMGN Security — Evil Panda criteria (optional, only if GMGN_API_KEY set)
-function step8_gmgnFilter(gmgn, thresholds = {}) {
+// Step 8: RugCheck Security — warn+danger risks → REJECT
+// Replaces GMGN entirely. Uses RugCheck risks[].level field directly.
+function step8_rugCheckFilter(rc) {
   const rejects = [];
   const warnings = [];
-  if (!gmgn?.available) return { rejects, warnings, available: false };
+  if (!rc?.available) return { rejects, warnings, available: false };
 
-  const maxPhishing = thresholds.gmgnMaxPhishing      ?? 30;
-  const maxBundling = thresholds.gmgnMaxBundling       ?? 60;
-  const maxInsiders = thresholds.gmgnMaxInsiders       ?? 10;
-  const maxTop10    = thresholds.gmgnMaxTop10Holdings  ?? 30;
+  // Immediate reject: token is confirmed rugged
+  if (rc.rugged)
+    rejects.push({ rule: 'RUGCHECK_RUGGED', msg: 'Token ini sudah RUGGED (RugCheck confirmed)' });
 
-  if (gmgn.phishingPct !== null && gmgn.phishingPct >= maxPhishing)
-    rejects.push({ rule: 'GMGN_PHISHING', msg: `GMGN phishing report ${gmgn.phishingPct}% (≥${maxPhishing}%) — RED FLAG` });
+  // Both warn AND danger risks → REJECT (locked decision)
+  const dangerRisks = (rc.risks || []).filter(r =>
+    typeof r === 'string' ? false : false // rc.risks already filtered to names
+  );
+  // Use raw counts from the data
+  if (rc.dangerRisks > 0)
+    rejects.push({ rule: 'RUGCHECK_DANGER', msg: `RugCheck: ${rc.dangerRisks} danger risk(s) — ${(rc.risks || []).slice(0, 3).join(', ')}` });
 
-  if (gmgn.bundlingPct !== null && gmgn.bundlingPct >= maxBundling)
-    rejects.push({ rule: 'GMGN_BUNDLING', msg: `GMGN bundling ${gmgn.bundlingPct}% (≥${maxBundling}%) — koordinasi mencurigakan` });
+  // Warn-level risks also → REJECT (locked: both warn+danger reject)
+  if (rc.warnRisks > 0)
+    rejects.push({ rule: 'RUGCHECK_WARN', msg: `RugCheck: ${rc.warnRisks} warn risk(s) — ${(rc.warnRiskNames || []).slice(0, 3).join(', ')}` });
 
-  if (gmgn.insidersPct !== null && gmgn.insidersPct >= maxInsiders)
-    rejects.push({ rule: 'GMGN_INSIDERS', msg: `GMGN insiders ${gmgn.insidersPct}% (≥${maxInsiders}%) — insider risk tinggi` });
-
-  if (gmgn.top10Pct !== null && gmgn.top10Pct >= maxTop10)
-    warnings.push({ rule: 'GMGN_TOP10', msg: `Top-10 holdings ${gmgn.top10Pct}% (≥${maxTop10}%) — konsentrasi tinggi` });
-
-  // RugCheck-specific signals
-  if (gmgn.source === 'rugcheck') {
-    if (gmgn.rugged)
-      rejects.push({ rule: 'RUGCHECK_RUGGED', msg: 'Token ini sudah RUGGED (RugCheck confirmed)' });
-    // score_normalised: 0=perfect, 100=very risky
-    if (gmgn.scoreNorm >= 60)
-      rejects.push({ rule: 'RUGCHECK_HIGH_RISK', msg: `RugCheck risk score: ${gmgn.scoreNorm}/100 (≥60 = high risk)` });
-    else if (gmgn.scoreNorm >= 35)
-      warnings.push({ rule: 'RUGCHECK_MEDIUM_RISK', msg: `RugCheck risk score: ${gmgn.scoreNorm}/100 (borderline)` });
-  }
+  // High risk score as additional signal
+  if (rc.scoreNorm >= 60 && !rc.rugged)
+    rejects.push({ rule: 'RUGCHECK_HIGH_SCORE', msg: `RugCheck risk score: ${rc.scoreNorm}/100 (≥60 = high risk)` });
+  else if (rc.scoreNorm >= 35 && rc.dangerRisks === 0 && (rc.warnRisks || 0) === 0)
+    warnings.push({ rule: 'RUGCHECK_MEDIUM_SCORE', msg: `RugCheck risk score: ${rc.scoreNorm}/100 (borderline)` });
 
   return { rejects, warnings, available: true };
 }
 
+// Step 9: Mcap filter — GeckoTerminal primary, DexScreener FDV fallback
+// null mcap data → skip (not reject)
+function step9_mcapFilter(geckoMcap, dexFdv, thresholds = {}) {
+  const rejects = [];
+  const warnings = [];
+  const minMcap = thresholds.minMcap || 0;
+  const maxMcap = thresholds.maxMcap || 0;
+
+  // Determine best mcap value
+  const mcap = geckoMcap > 0 ? geckoMcap : (dexFdv > 0 ? dexFdv : null);
+
+  if (mcap === null) {
+    // null → skip (no reject, no warning — data unavailable)
+    return { rejects, warnings, mcap: null, skipped: true };
+  }
+
+  if (minMcap > 0 && mcap < minMcap)
+    rejects.push({ rule: 'BELOW_MIN_MCAP', msg: `Mcap $${mcap.toLocaleString()} < min $${minMcap.toLocaleString()}` });
+
+  if (maxMcap > 0 && mcap > maxMcap)
+    rejects.push({ rule: 'ABOVE_MAX_MCAP', msg: `Mcap $${mcap.toLocaleString()} > max $${maxMcap.toLocaleString()}` });
+
+  return { rejects, warnings, mcap, skipped: false };
+}
+
+// Step 10: ATH drawdown filter
+// Override if smart wallet active OR OKX smart money buying
+function step10_athFilter(athData, thresholds = {}, overrideActive = false) {
+  const rejects = [];
+  const warnings = [];
+  if (!athData || overrideActive) return { rejects, warnings, skipped: overrideActive };
+
+  const filterPct = thresholds.athFilterPct ?? -75; // e.g. -75 means reject if >75% below ATH
+  const { athPrice, currentPrice } = athData;
+
+  if (!athPrice || !currentPrice || athPrice <= 0) return { rejects, warnings, skipped: true };
+
+  const drawdownPct = ((currentPrice - athPrice) / athPrice) * 100;
+
+  if (drawdownPct <= filterPct)
+    rejects.push({
+      rule: 'ATH_DRAWDOWN',
+      msg: `Harga ${drawdownPct.toFixed(1)}% dari ${athData.lookbackDays}d high ($${athPrice.toFixed(6)}) — di bawah threshold ${filterPct}%`,
+    });
+  else if (drawdownPct <= filterPct + 15)
+    warnings.push({
+      rule: 'ATH_DRAWDOWN_WARN',
+      msg: `Harga ${drawdownPct.toFixed(1)}% dari ${athData.lookbackDays}d high — mendekati ATH filter`,
+    });
+
+  return { rejects, warnings, drawdownPct: parseFloat(drawdownPct.toFixed(2)), skipped: false };
+}
+
 // ─── Main filter function ────────────────────────────────────────
 
-export async function screenToken(tokenMint, tokenName = '', tokenSymbol = '') {
+export async function screenToken(tokenMint, tokenName = '', tokenSymbol = '', opts = {}) {
   const cfg = getConfig();
   const thresholds = {
-    minMcap:             cfg.minMcap             ?? 0,
-    minVolume24h:        cfg.minVolume24h         ?? 0,
-    gmgnMaxPhishing:     cfg.gmgnMaxPhishing      ?? 30,
-    gmgnMaxBundling:     cfg.gmgnMaxBundling      ?? 60,
-    gmgnMaxInsiders:     cfg.gmgnMaxInsiders      ?? 10,
-    gmgnMaxTop10Holdings: cfg.gmgnMaxTop10Holdings ?? 30,
+    minMcap:        cfg.minMcap        ?? 0,
+    maxMcap:        cfg.maxMcap        ?? 0,
+    minVolume24h:   cfg.minVolume24h   ?? 0,
+    minOrganic:     cfg.minOrganic     ?? 65,
+    minHolders:     cfg.minHolders     ?? 500,
+    athFilterPct:   cfg.athFilterPct   ?? -75,
+    athLookbackDays: cfg.athLookbackDays ?? 30,
   };
 
-  const [dexResult, jupResult, holderResult, okxResult, gmgnResult] = await Promise.allSettled([
+  // opts.overrideATH = true jika smart wallet aktif di pool atau OKX smart money buying
+  const overrideATH = opts.overrideATH === true;
+
+  const [dexResult, jupResult, holderResult, okxResult, rcResult, geckoResult, athResult] = await Promise.allSettled([
     getDexScreenerInfo(tokenMint),
     getJupiterData(tokenMint),
     getHolderData(tokenMint),
     getOKXSafety(tokenMint),
     getSecurityData(tokenMint),
+    getGeckoTokenData(tokenMint),
+    getTokenATHApprox(tokenMint, thresholds.athLookbackDays),
   ]);
 
-  const dex     = dexResult.status    === 'fulfilled' ? dexResult.value    : null;
-  const jup     = jupResult.status    === 'fulfilled' ? jupResult.value    : null;
+  const dex    = dexResult.status    === 'fulfilled' ? dexResult.value    : null;
+  const jup    = jupResult.status    === 'fulfilled' ? jupResult.value    : null;
   const holders = holderResult.status === 'fulfilled' ? holderResult.value : null;
-  const okx     = okxResult.status    === 'fulfilled' ? okxResult.value    : null;
-  const gmgn    = gmgnResult.status   === 'fulfilled' ? gmgnResult.value   : null;
+  const okx    = okxResult.status    === 'fulfilled' ? okxResult.value    : null;
+  const rc     = rcResult.status     === 'fulfilled' ? rcResult.value     : null;
+  const gecko  = geckoResult.status  === 'fulfilled' ? geckoResult.value  : null;
+  const ath    = athResult.status    === 'fulfilled' ? athResult.value    : null;
 
   const name   = tokenName   || dex?.name   || jup?.name   || tokenSymbol || '';
   const symbol = tokenSymbol || dex?.symbol || jup?.symbol || '';
 
-  const s1 = step1_basicValidation(dex, jup);
-  const s2 = step2_narrativeFilter(name, symbol);
-  const s3 = step3_priceHealth(dex, thresholds);
-  const s4 = step4_holderCheck(holders, thresholds);
-  const s5 = step5_txnAnalysis(dex);
-  const s6 = step6_tokenSafety(okx, jup);
-  const s7 = step7_organicScore(dex, jup, holders, thresholds);
-  const s8 = step8_gmgnFilter(gmgn, thresholds);
+  const geckoMcap = gecko?.marketCapUsd ?? 0;
+  const dexFdv    = dex?.fdv ?? 0;
+
+  const s1  = step1_basicValidation(dex, jup);
+  const s2  = step2_narrativeFilter(name, symbol);
+  const s3  = step3_priceHealth(dex, thresholds);
+  const s4  = step4_holderCheck(holders, thresholds);
+  const s5  = step5_txnAnalysis(dex);
+  const s6  = step6_tokenSafety(okx, jup);
+  const s7  = step7_organicScore(dex, jup, holders, thresholds);
+  const s8  = step8_rugCheckFilter(rc);
+  const s9  = step9_mcapFilter(geckoMcap, dexFdv, thresholds);
+  const s10 = step10_athFilter(ath, thresholds, overrideATH);
 
   const allRejects = [
     ...s1.rejects, ...s2,
     ...s3.rejects, ...s4.rejects,
     ...s5.rejects, ...s6.rejects,
     ...s7.rejects, ...s8.rejects,
+    ...s9.rejects, ...s10.rejects,
   ];
   const allWarnings = [
     ...s1.warnings,
     ...s3.warnings, ...s4.warnings,
     ...s5.warnings, ...s6.warnings,
     ...s7.warnings, ...s8.warnings,
+    ...s9.warnings, ...s10.warnings,
   ];
 
   let verdict;
-  if      (allRejects.length > 0)       verdict = 'AVOID';
-  else if (allWarnings.length >= 1)      verdict = 'CAUTION';
-  else                                   verdict = 'PASS';
+  if      (allRejects.length > 0)  verdict = 'AVOID';
+  else if (allWarnings.length >= 1) verdict = 'CAUTION';
+  else                              verdict = 'PASS';
 
   const eligible = allRejects.length === 0;
 
@@ -576,16 +614,18 @@ export async function screenToken(tokenMint, tokenName = '', tokenSymbol = '') {
     allFlags:     [...allRejects, ...allWarnings],
     organicScore: s7.score,
     holderCount:  holders?.holderCount ?? null,
-    steps:        { s1, s2, s3, s4, s5, s6, s7, s8 },
+    mcap:         s9.mcap ?? null,
+    drawdownPct:  s10.drawdownPct ?? null,
+    rugCheckData: rc,
+    steps:        { s1, s2, s3, s4, s5, s6, s7, s8, s9, s10 },
     jupiterData:  jup,
-    gmgnData:     gmgn,
-    gmgnAvailable: !!(gmgn?.available),
     sources: {
       dexscreener: !!dex,
       jupiter:     !!(jup?.found),
       helius:      !!(holders?.available),
       okx:         !!(okx?.available),
-      gmgn:        !!(gmgn?.available),
+      rugcheck:    !!(rc?.available),
+      gecko:       !!(gecko?.marketCapUsd),
     },
   };
 }
@@ -612,17 +652,21 @@ export function formatScreenResult(result) {
     text += '\n';
   }
 
-  if (result.gmgnAvailable && result.gmgnData) {
-    const g = result.gmgnData;
-    const src = g.source === 'rugcheck' ? '🔍 RugCheck' : '🔐 GMGN';
-    const secLine = [
-      g.phishingPct !== null ? `Phishing: ${g.phishingPct}%` : null,
-      g.bundlingPct !== null ? `Bundle: ${g.bundlingPct}%`   : null,
-      g.insidersPct !== null ? `Insiders: ${g.insidersPct}%` : null,
-      g.top10Pct    !== null ? `Top10: ${g.top10Pct}%`       : null,
-    ].filter(Boolean).join(' | ');
-    if (secLine) text += `${src}: ${secLine}\n`;
-    if (g.rugged) text += `☠️ *RUGGED TOKEN* — AVOID\n`;
+  if (result.mcap != null) {
+    text += `💰 Mcap: $${result.mcap.toLocaleString()}\n`;
+  }
+  if (result.drawdownPct != null) {
+    text += `📉 vs ${result.steps?.s10?.skipped ? '(ATH filter skipped)' : `30d high: ${result.drawdownPct > 0 ? '+' : ''}${result.drawdownPct}%`}\n`;
+  }
+
+  if (result.rugCheckData?.available) {
+    const rc = result.rugCheckData;
+    const parts = [];
+    if (rc.dangerRisks > 0) parts.push(`${rc.dangerRisks} danger`);
+    if (rc.warnRisks   > 0) parts.push(`${rc.warnRisks} warn`);
+    if (rc.scoreNorm   > 0) parts.push(`score: ${rc.scoreNorm}/100`);
+    if (rc.rugged) text += `☠️ *RUGGED TOKEN* — AVOID\n`;
+    else if (parts.length) text += `🔍 RugCheck: ${parts.join(' | ')}\n`;
   }
 
   if (result.highFlags.length > 0) {
@@ -635,7 +679,9 @@ export function formatScreenResult(result) {
   }
   if (result.eligible) text += `\n✅ Lolos filter — Eligible for DLMM.`;
 
-  const srcList = Object.entries(result.sources).filter(([, v]) => v).map(([k]) => k).join(', ');
-  text += `\n\n_Sources: ${srcList}_`;
+  if (result.sources) {
+    const srcList = Object.entries(result.sources).filter(([, v]) => v).map(([k]) => k).join(', ');
+    text += `\n\n_Sources: ${srcList}_`;
+  }
   return text;
 }

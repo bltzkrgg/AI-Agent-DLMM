@@ -5,9 +5,9 @@ import { writeFileSync, readFileSync, existsSync, unlinkSync } from 'fs';
 import { initSolana, getWalletBalance } from './solana/wallet.js';
 import { processMessage } from './agent/claude.js';
 import { handleStrategyCommand, isInStrategySession } from './strategies/strategyHandler.js';
-import { runHunterAlpha, getCandidates } from './agents/hunterAlpha.js';
+import { runHunterAlpha, getCandidates, getScreeningCandidates } from './agents/hunterAlpha.js';
 import { runHealerAlpha } from './agents/healerAlpha.js';
-import { learnFromPool, learnFromMultiplePools, loadLessons } from './learn/lessons.js';
+import { learnFromPool, learnFromMultiplePools, loadLessons, pinLesson, unpinLesson, formatLessonsList } from './learn/lessons.js';
 import { getConfig, getThresholds, updateConfig } from './config.js';
 import { handleConfirmationReply, getSafetyStatus } from './safety/safetyManager.js';
 import { evolveFromTrades, getMemoryStats, getInstinctsContext } from './market/memory.js';
@@ -22,6 +22,9 @@ import { autoEvolveIfReady } from './learn/evolve.js';
 import { getTodayResults, formatDailyReport, savePerformanceSnapshot, backupAllData } from './market/strategyPerformance.js';
 import { runStartupModelCheck, formatModelStatus, testModel } from './agent/modelCheck.js';
 import { runOpportunityScanner } from './market/opportunityScanner.js';
+import { addSmartWallet, removeSmartWallet, formatWalletList } from './market/smartWallets.js';
+import { formatPoolMemoryReport } from './market/poolMemory.js';
+import { recalibrateWeights, formatWeightsReport } from './market/signalWeights.js';
 
 // ─── PID lock — cegah multiple instance ─────────────────────────
 const PID_FILE = new URL('../../bot.pid', import.meta.url).pathname;
@@ -40,11 +43,15 @@ writeFileSync(PID_FILE, String(process.pid));
 process.on('exit', () => { try { unlinkSync(PID_FILE); } catch {} });
 
 // ─── Validate env ────────────────────────────────────────────────
-const required = ['TELEGRAM_BOT_TOKEN', 'ALLOWED_TELEGRAM_ID', 'OPENROUTER_API_KEY', 'SOLANA_RPC_URL', 'WALLET_PRIVATE_KEY'];
+const required = ['TELEGRAM_BOT_TOKEN', 'ALLOWED_TELEGRAM_ID', 'OPENROUTER_API_KEY', 'HELIUS_API_KEY', 'WALLET_PRIVATE_KEY'];
 const missing = required.filter(k => !process.env[k]);
 if (missing.length > 0) {
   console.error(`❌ Missing env vars: ${missing.join(', ')}`);
   console.error('Copy .env.example to .env and fill in all values.');
+  // Warn kalau SOLANA_RPC_URL juga tidak ada (double safety)
+  if (!process.env.SOLANA_RPC_URL && !process.env.HELIUS_API_KEY) {
+    console.error('❌ Butuh HELIUS_API_KEY atau SOLANA_RPC_URL untuk koneksi Solana.');
+  }
   process.exit(1);
 }
 
@@ -67,7 +74,8 @@ const bot = new TelegramBot(process.env.TELEGRAM_BOT_TOKEN, { polling: true });
 const cfg = getConfig();
 initMonitor(bot, ALLOWED_ID);
 
-console.log(`🦞 Meteora DLMM Bot started! Mode: LIVE`);
+const _dryRun = getConfig().dryRun;
+console.log(`🦞 Meteora DLMM Bot started! Mode: ${_dryRun ? 'DRY RUN' : 'LIVE'}`);
 
 const TG_MAX = 4000; // Telegram limit 4096, sisakan buffer untuk formatting
 
@@ -118,6 +126,11 @@ async function notify(text) {
 // ─── Busy flags — cegah 2 cycle jalan bersamaan ──────────────────
 let _hunterBusy = false;
 let _healerBusy = false;
+let _screeningBusy = false;
+
+// ─── Pending approval state (auto-screening) ─────────────────────
+// Map: approvalKey → { candidates, chatId, expiresAt, messageId }
+const pendingApprovals = new Map();
 
 // ─── Setup state — dipakai oleh wizard /entry ────────────────────
 const setupState = {
@@ -163,11 +176,200 @@ cron.schedule(`*/${cfg.managementIntervalMin} * * * *`, async () => {
     await runHealerWithReopenCheck();
     // Auto-evolve threshold tiap 5 posisi closed — tanpa perlu manual
     autoEvolveIfReady(notify).catch(e => console.error('Auto-evolve error:', e.message));
+    // Recalibrate Darwinian signal weights (best-effort, silent)
+    try { recalibrateWeights(); } catch { /* data belum cukup, skip */ }
     // Auto-save strategy performance snapshot ke file lokal
     savePerformanceSnapshot();
   }
   catch (e) { notify(`❌ Healer error: ${e.message}`).catch(() => {}); }
   finally { _healerBusy = false; }
+});
+
+// ─── Auto-screening Hunter — cron tiap screeningIntervalMin ─────
+// Aktif hanya jika autoScreeningEnabled = true di config.
+// Screen pool terbaik, kirim ke Telegram untuk batch approval.
+// Timeout 15 menit (configurable), kandidat dianggap stale setelahnya.
+
+async function runAutoScreening() {
+  if (_screeningBusy || _hunterBusy) return;
+  const liveCfg = getConfig();
+  if (!liveCfg.autoScreeningEnabled) return;
+
+  const openPos = getOpenPositions();
+  if (openPos.length >= liveCfg.maxPositions) return; // slot penuh
+
+  const balance = await getWalletBalance().catch(() => '0');
+  if (parseFloat(balance) < (liveCfg.deployAmountSol + (liveCfg.gasReserve ?? 0.02))) return;
+
+  _screeningBusy = true;
+  try {
+    await notify(`🔍 *Auto-Screening* — mencari kandidat pool...`);
+    const candidates = await getScreeningCandidates(5);
+    if (!candidates || candidates.length === 0) {
+      await notify('📭 Auto-screening: tidak ada kandidat yang lolos filter.');
+      return;
+    }
+
+    const approvalKey = `as_${Date.now()}`;
+    const timeoutMin  = liveCfg.approvalTimeoutMin ?? 15;
+    const expiresAt   = Date.now() + timeoutMin * 60 * 1000;
+
+    // Build inline keyboard — 1 button per candidate + Skip All
+    const candidateButtons = candidates.map((c, i) => [{
+      text: `✅ Deploy #${i + 1}: ${(c.name || c.address.slice(0, 8))} (score: ${c.darwinScore})`,
+      callback_data: `${approvalKey}:deploy:${i}`,
+    }]);
+    candidateButtons.push([{
+      text: '❌ Skip Semua',
+      callback_data: `${approvalKey}:skip`,
+    }]);
+
+    // Compose summary text
+    let text = `🦅 *Auto-Screening Selesai* — ${candidates.length} Kandidat\n\n`;
+    candidates.forEach((c, i) => {
+      const swHit  = c.smartWallet?.length > 0 ? ` 🎯` : '';
+      const tfInfo = c.multiTFScore > 0 ? ` | TF: ${(c.multiTFScore * 100).toFixed(0)}%` : '';
+      text += `*#${i + 1}* \`${c.address.slice(0, 8)}...\`${swHit}\n`;
+      text += `  Fee: $${c.fees24h}/d | TVL: $${parseInt(c.tvl).toLocaleString()} | Bin: ${c.binStep}${tfInfo}\n`;
+      text += `  Darwin: ${c.darwinScore}\n\n`;
+    });
+    text += `_Timeout: ${timeoutMin} menit — setelah itu kandidat dianggap stale._`;
+
+    const sentMsg = await bot.sendMessage(ALLOWED_ID, text, {
+      parse_mode: 'Markdown',
+      reply_markup: { inline_keyboard: candidateButtons },
+    });
+
+    pendingApprovals.set(approvalKey, {
+      candidates,
+      chatId:    ALLOWED_ID,
+      messageId: sentMsg.message_id,
+      expiresAt,
+    });
+
+    // Auto-expire: hapus setelah timeout
+    setTimeout(() => {
+      if (pendingApprovals.has(approvalKey)) {
+        pendingApprovals.delete(approvalKey);
+        bot.editMessageText(`_Auto-screening expired — tidak ada respons dalam ${timeoutMin} menit._`, {
+          chat_id: ALLOWED_ID, message_id: sentMsg.message_id,
+          parse_mode: 'Markdown',
+        }).catch(() => {});
+      }
+    }, timeoutMin * 60 * 1000 + 5000);
+
+  } catch (e) {
+    console.error('Auto-screening error:', e.message);
+    notify(`❌ Auto-screening error: ${e.message}`).catch(() => {});
+  } finally {
+    _screeningBusy = false;
+  }
+}
+
+cron.schedule(`*/${cfg.screeningIntervalMin} * * * *`, async () => {
+  try { await runAutoScreening(); }
+  catch (e) { console.error('Auto-screening cron error:', e.message); }
+});
+
+// ─── Inline keyboard callback — approval handler ──────────────────
+bot.on('callback_query', async (query) => {
+  if (query.from.id !== ALLOWED_ID) return;
+  const data    = query.data || '';
+  const chatId  = query.message?.chat?.id;
+  const msgId   = query.message?.message_id;
+
+  // Acknowledge immediately
+  bot.answerCallbackQuery(query.id).catch(() => {});
+
+  // Parse format: "<approvalKey>:deploy:<index>" | "<approvalKey>:skip"
+  const parts = data.split(':');
+  if (parts.length < 2) return;
+
+  const [approvalKey, action, idxStr] = parts;
+  const approval = pendingApprovals.get(approvalKey);
+
+  if (!approval) {
+    bot.editMessageText('_Kandidat sudah expired atau tidak ditemukan._', {
+      chat_id: chatId, message_id: msgId, parse_mode: 'Markdown',
+    }).catch(() => {});
+    return;
+  }
+
+  // Check staleness
+  const liveCfg   = getConfig();
+  const timeoutMin = liveCfg.approvalTimeoutMin ?? 15;
+  const staleMs   = timeoutMin * 60 * 1000;
+  if (Date.now() > approval.expiresAt) {
+    pendingApprovals.delete(approvalKey);
+    bot.editMessageText(`_Kandidat sudah expired (>${timeoutMin} menit). Jalankan /entry untuk screening ulang._`, {
+      chat_id: chatId, message_id: msgId, parse_mode: 'Markdown',
+    }).catch(() => {});
+    return;
+  }
+
+  if (action === 'skip') {
+    pendingApprovals.delete(approvalKey);
+    bot.editMessageText('❌ *Semua kandidat di-skip.*', {
+      chat_id: chatId, message_id: msgId, parse_mode: 'Markdown',
+    }).catch(() => {});
+    return;
+  }
+
+  if (action === 'deploy') {
+    const idx       = parseInt(idxStr);
+    const candidate = approval.candidates[idx];
+    if (!candidate) return;
+
+    // Validate staleness of candidate data (>15 min since screened)
+    if (Date.now() - candidate.scannedAt > staleMs) {
+      bot.editMessageText(`_Kandidat #${idx + 1} sudah stale — data sudah lebih dari ${timeoutMin} menit. Re-validating..._`, {
+        chat_id: chatId, message_id: msgId, parse_mode: 'Markdown',
+      }).catch(() => {});
+      // Re-validate by fetching fresh data
+      try {
+        const freshCandidates = await getScreeningCandidates(5);
+        const fresh = freshCandidates.find(c => c.address === candidate.address);
+        if (!fresh) {
+          bot.editMessageText(`❌ Pool \`${candidate.address.slice(0,8)}...\` tidak lagi di top candidates. Screening ulang disarankan.`, {
+            chat_id: chatId, message_id: msgId, parse_mode: 'Markdown',
+          }).catch(() => {});
+          pendingApprovals.delete(approvalKey);
+          return;
+        }
+        candidate.scannedAt = Date.now();
+      } catch {
+        bot.editMessageText(`❌ Re-validasi gagal. Gunakan /entry untuk deploy manual.`, {
+          chat_id: chatId, message_id: msgId, parse_mode: 'Markdown',
+        }).catch(() => {});
+        pendingApprovals.delete(approvalKey);
+        return;
+      }
+    }
+
+    // Remove approval (prevent double-deploy)
+    pendingApprovals.delete(approvalKey);
+    bot.editMessageText(
+      `✅ *Deploying ke pool #${idx + 1}*\n\`${candidate.address.slice(0, 8)}...\`\n\n_Hunter Alpha sedang bekerja..._`,
+      { chat_id: chatId, message_id: msgId, parse_mode: 'Markdown' }
+    ).catch(() => {});
+
+    // Trigger Hunter with forced pool
+    if (_hunterBusy) {
+      notify('⚠️ Hunter sedang sibuk. Coba lagi sebentar.').catch(() => {});
+      return;
+    }
+    _hunterBusy = true;
+    try {
+      await runHunterAlpha(notify, bot, ALLOWED_ID, {
+        targetCount: 1,
+        forcedPool:  candidate.address,
+      });
+    } catch (e) {
+      notify(`❌ Hunter error: ${e.message}`).catch(() => {});
+    } finally {
+      _hunterBusy = false;
+    }
+  }
 });
 
 // ─── Daily Backup jam 2 pagi ─────────────────────────────────────
@@ -219,7 +421,8 @@ cron.schedule('0 7 * * *', async () => {
         ? new Date(memStats.lastAutoEvolution).toLocaleString('id-ID', { timeZone: 'Asia/Jakarta', hour12: false }).replace(',', '')
         : 'Belum pernah', 12),
       hr(38),
-      '🔴 Mode: LIVE',
+      getConfig().dryRun ? '🟡 Mode: DRY RUN' : '🔴 Mode: LIVE',
+      getConfig().autoScreeningEnabled ? `🤖 Auto-Screen: ON (${getConfig().screeningIntervalMin}min)` : '🤖 Auto-Screen: OFF',
     ];
     let text = `☀️ *Daily Briefing*\n\n${codeBlock(briefLines)}`;
     if (instincts) text += `\n${instincts}`;
@@ -311,18 +514,25 @@ bot.onText(/\/start/, (msg) => {
   if (msg.from.id !== ALLOWED_ID) return;
   bot.sendMessage(msg.chat.id,
     `🦞 *Meteora DLMM Bot* \`[LIVE]\`\n\n` +
-    `🦅 Hunter — *manual only via /entry*\n` +
+    `🦅 Hunter — *manual /entry* ${getConfig().autoScreeningEnabled ? '| 🤖 *auto-screening ON*' : ''}\n` +
     `🩺 Healer — manage posisi tiap ${cfg.managementIntervalMin}min\n` +
-    `📡 Scanner — alert peluang tiap 15min\n\n` +
+    `📡 Scanner — alert peluang tiap 15min (multi-TF)\n\n` +
     `*Deploy:*\n` +
-    `/entry — set SOL & jumlah pool, lalu deploy\n\n` +
+    `/entry — set SOL & jumlah pool, lalu deploy\n` +
+    `/autoscreen on|off — aktifkan/matikan auto-screening\n\n` +
     `*Monitor:*\n` +
     `/status /heal /results /pools\n\n` +
     `*Tools:*\n` +
-    `/check <mint> — screen token scam\n` +
+    `/check <mint> — screen token (RugCheck + mcap + ATH)\n` +
     `/testmodel /strategies /library /research\n` +
     `/learn [pool] /lessons /memory /evolve\n` +
     `/thresholds /safety\n\n` +
+    `*Intelligence:*\n` +
+    `/weights — lihat/recalibrate Darwinian signal weights\n` +
+    `/poolmemory — riwayat & performa per pool\n` +
+    `/pinlesson <n> — pin lesson ke tier 1 prompt\n\n` +
+    `*Smart Wallets:*\n` +
+    `/addwallet <addr> <label> | /removewallet | /listwallet\n\n` +
     `Atau chat bebas langsung!`,
     { parse_mode: 'Markdown' }
   );
@@ -611,11 +821,35 @@ bot.onText(/\/learn(?:\s+(.+))?/, async (msg, match) => {
 
 bot.onText(/\/lessons/, (msg) => {
   if (msg.from.id !== ALLOWED_ID) return;
-  const lessons = loadLessons();
-  if (!lessons.length) { bot.sendMessage(msg.chat.id, '📭 Belum ada lessons. Jalankan /learn dulu.'); return; }
-  let text = `📚 *${lessons.length} Lessons (8 terbaru):*\n\n`;
-  lessons.slice(-8).forEach((l, i) => { text += `${l.crossPool ? '🌐' : '📍'} ${i + 1}. ${l.lesson}\n\n`; });
-  bot.sendMessage(msg.chat.id, text, { parse_mode: 'Markdown' });
+  sendLong(msg.chat.id, formatLessonsList(), { parse_mode: 'Markdown' }).catch(() => {});
+});
+
+// /pinlesson <index> — pin lesson ke tier 1 (selalu masuk prompt)
+bot.onText(/\/pinlesson(?:\s+(\d+))?/, (msg, match) => {
+  if (msg.from.id !== ALLOWED_ID) return;
+  const idx = match[1] ? parseInt(match[1]) - 1 : null; // 1-based dari user
+  if (idx === null || isNaN(idx)) {
+    bot.sendMessage(msg.chat.id, '❓ Gunakan: `/pinlesson <nomor>` (lihat nomor di /lessons)', { parse_mode: 'Markdown' });
+    return;
+  }
+  const result = pinLesson(idx);
+  if (!result.ok) {
+    bot.sendMessage(msg.chat.id, `❌ ${result.reason}`);
+  } else {
+    bot.sendMessage(msg.chat.id, `📌 *Lesson di-pin!*\n\n_"${result.lesson}"_\n\nLesson ini akan selalu masuk ke prompt agent.`, { parse_mode: 'Markdown' });
+  }
+});
+
+// /unpinlesson <index>
+bot.onText(/\/unpinlesson(?:\s+(\d+))?/, (msg, match) => {
+  if (msg.from.id !== ALLOWED_ID) return;
+  const idx = match[1] ? parseInt(match[1]) - 1 : null;
+  if (idx === null || isNaN(idx)) {
+    bot.sendMessage(msg.chat.id, '❓ Gunakan: `/unpinlesson <nomor>`', { parse_mode: 'Markdown' });
+    return;
+  }
+  const result = unpinLesson(idx);
+  bot.sendMessage(msg.chat.id, result.ok ? '✅ Lesson di-unpin.' : `❌ ${result.reason}`);
 });
 
 bot.onText(/\/thresholds/, (msg) => {
@@ -644,6 +878,108 @@ bot.onText(/\/safety/, (msg) => {
 bot.onText(/\/(strategies|addstrategy|deletestrategy)(.*)/, (msg) => {
   if (msg.from.id !== ALLOWED_ID) return;
   handleStrategyCommand(bot, msg, ALLOWED_ID);
+});
+
+// ─── Smart Wallet commands ────────────────────────────────────────
+
+// /addwallet <address> <label>
+bot.onText(/\/addwallet(?:\s+(\S+))?(?:\s+(.+))?/, (msg, match) => {
+  if (msg.from.id !== ALLOWED_ID) return;
+  const address = match[1]?.trim();
+  const label   = match[2]?.trim() || 'unknown';
+  if (!address) {
+    bot.sendMessage(msg.chat.id, '❓ Gunakan: `/addwallet <address> <label>`\nContoh: `/addwallet 7xKd...1bAz alpha_lp_1`', { parse_mode: 'Markdown' });
+    return;
+  }
+  const { ok, reason } = addSmartWallet(address, label);
+  bot.sendMessage(msg.chat.id,
+    ok ? `✅ *Smart wallet ditambahkan!*\n\`${address.slice(0, 12)}...\` — ${label}` : `❌ ${reason}`,
+    { parse_mode: 'Markdown' }
+  );
+});
+
+// /removewallet <address>
+bot.onText(/\/removewallet(?:\s+(\S+))?/, (msg, match) => {
+  if (msg.from.id !== ALLOWED_ID) return;
+  const address = match[1]?.trim();
+  if (!address) {
+    bot.sendMessage(msg.chat.id, '❓ Gunakan: `/removewallet <address>`', { parse_mode: 'Markdown' });
+    return;
+  }
+  const { ok, reason } = removeSmartWallet(address);
+  bot.sendMessage(msg.chat.id, ok ? '✅ Wallet dihapus dari list.' : `❌ ${reason}`);
+});
+
+// /listwallet
+bot.onText(/\/listwallet/, (msg) => {
+  if (msg.from.id !== ALLOWED_ID) return;
+  sendLong(msg.chat.id, formatWalletList(), { parse_mode: 'Markdown' }).catch(() => {});
+});
+
+// ─── Pool Memory command ──────────────────────────────────────────
+
+// /poolmemory — tampilkan top/worst pools berdasarkan riwayat deploy
+bot.onText(/\/poolmemory/, (msg) => {
+  if (msg.from.id !== ALLOWED_ID) return;
+  sendLong(msg.chat.id, formatPoolMemoryReport(), { parse_mode: 'Markdown' }).catch(() => {});
+});
+
+// /dryrun on|off — toggle dry run mode
+bot.onText(/\/dryrun(?:\s+(on|off))?/, (msg, match) => {
+  if (msg.from.id !== ALLOWED_ID) return;
+  const chatId = msg.chat.id;
+  const toggle = match[1]?.toLowerCase();
+  if (!toggle) {
+    const current = getConfig().dryRun;
+    bot.sendMessage(chatId,
+      `🟡 *Dry Run Mode*: ${current ? 'ON' : 'OFF'}\n\nGunakan \`/dryrun on\` atau \`/dryrun off\`.`,
+      { parse_mode: 'Markdown' }
+    );
+    return;
+  }
+  const enable = toggle === 'on';
+  updateConfig({ dryRun: enable });
+  bot.sendMessage(chatId,
+    `${enable ? '🟡' : '🔴'} *Dry Run*: ${enable ? 'ON — TX tidak akan dieksekusi' : 'OFF — Mode LIVE aktif'}\n\n` +
+    (enable ? '_Semua open/close/claim/swap akan disimulasikan saja._' : '_Trading berjalan normal._'),
+    { parse_mode: 'Markdown' }
+  );
+});
+
+// /autoscreen on|off — toggle auto-screening
+bot.onText(/\/autoscreen(?:\s+(on|off))?/, async (msg, match) => {
+  if (msg.from.id !== ALLOWED_ID) return;
+  const chatId = msg.chat.id;
+  const toggle = match[1]?.toLowerCase();
+  if (!toggle) {
+    const current = getConfig().autoScreeningEnabled;
+    bot.sendMessage(chatId,
+      `🤖 *Auto-Screening*: ${current ? '✅ ON' : '❌ OFF'}\n\n` +
+      `Gunakan \`/autoscreen on\` atau \`/autoscreen off\` untuk toggle.\n` +
+      `Interval: ${getConfig().screeningIntervalMin} menit | Timeout: ${getConfig().approvalTimeoutMin} menit`,
+      { parse_mode: 'Markdown' }
+    );
+    return;
+  }
+  const enable = toggle === 'on';
+  updateConfig({ autoScreeningEnabled: enable });
+  bot.sendMessage(chatId,
+    `🤖 *Auto-Screening*: ${enable ? '✅ Diaktifkan' : '❌ Dimatikan'}\n\n` +
+    (enable
+      ? `Hunter akan auto-screen setiap ${getConfig().screeningIntervalMin} menit dan kirim kandidat untuk approval.`
+      : `Hunter hanya jalan via /entry.`),
+    { parse_mode: 'Markdown' }
+  );
+});
+
+// ─── Signal Weights command ───────────────────────────────────────
+
+// /weights — tampilkan/recalibrate bobot Darwinian
+bot.onText(/\/weights/, async (msg) => {
+  if (msg.from.id !== ALLOWED_ID) return;
+  bot.sendMessage(msg.chat.id, '⚙️ Recalibrating signal weights...');
+  const result = recalibrateWeights();
+  sendLong(msg.chat.id, formatWeightsReport(result), { parse_mode: 'Markdown' }).catch(() => {});
 });
 
 // ─── Message handler ─────────────────────────────────────────────
@@ -772,8 +1108,8 @@ setTimeout(async () => {
     const balance = await getWalletBalance();
     await notify(
       `🚀 *Bot Started!*\n\n` +
-      `💰 Balance: ${balance} SOL | Mode: 🔴 LIVE\n` +
-      `🦅 Hunter: *manual /entry* | 🩺 Healer: ${cfg.managementIntervalMin}min | 📡 Scanner: 15min\n\n` +
+      `💰 Balance: ${balance} SOL | Mode: ${getConfig().dryRun ? '🟡 DRY RUN' : '🔴 LIVE'}\n` +
+      `🦅 Hunter: *manual /entry*${getConfig().autoScreeningEnabled ? ' | 🤖 auto-screen ON' : ''} | 🩺 Healer: ${cfg.managementIntervalMin}min | 📡 Scanner: 15min\n\n` +
       `/entry untuk buka posisi | /start untuk semua commands`
     );
     await runStartupModelCheck(notify);
