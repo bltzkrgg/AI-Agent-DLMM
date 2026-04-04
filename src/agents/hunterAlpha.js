@@ -409,17 +409,24 @@ async function executeTool(name, input) {
         }, null, 2);
       }
 
-      // ── Strategy resolution — name dari LLM bisa salah, resolve by type ──
+      // ── Strategy resolution — wajib pakai salah satu strategi aktif ────
       const allStrategies = getAllStrategies();
-      // 1. Cari exact match dulu
-      // 2. Fallback: jika LLM kirim nama invalid (mis. "Single-Side USDC"), cari by type single_side_y
-      // 3. Last resort: strategy pertama yang single_side_y
-      const strategy =
-        allStrategies.find(s => s.name === input.strategy_name) ||
-        allStrategies.find(s => s.name === 'Single-Side SOL') ||
-        allStrategies.find(s => s.type === 'single_side_y') ||
-        allStrategies[0];
-      const stratParams = strategy ? parseStrategyParameters(strategy) : { priceRangePercent: 5 };
+      const BLOCKED_STRATEGIES = ['Single-Side SOL'];
+      const strategy = allStrategies.find(
+        s => s.name === input.strategy_name && !BLOCKED_STRATEGIES.includes(s.name)
+      );
+
+      if (!strategy) {
+        const isBlocked = BLOCKED_STRATEGIES.includes(input.strategy_name);
+        return JSON.stringify({
+          blocked: true,
+          reason: isBlocked
+            ? `Strategy "Single-Side SOL" tidak diizinkan. Wajib pilih dari: Evil Panda, Wave Enjoyer, NPC, Fee Sniper.`
+            : `Strategy "${input.strategy_name}" tidak ditemukan di library. Pool DISKIP — wajib pilih dari: Evil Panda, Wave Enjoyer, NPC, Fee Sniper.`,
+        }, null, 2);
+      }
+
+      const stratParams = parseStrategyParameters(strategy);
       const strategyType = strategy?.strategy_type || 'spot';
 
       // ── Dynamic range — ATR + volatility + trend + BB ────────────
@@ -816,7 +823,7 @@ STRATEGI — BACA LIBRARY, JANGAN HARDCODE:
   • Volume sustained ≥ 60% avg | Trend SIDEWAYS
   • Range: 3-5% ultra-tight | Exit: saat BB expand >10%
 
-  DEFAULT → "Single-Side SOL" (jika kondisi tidak cocok strategi di atas)
+  ⛔ JIKA TIDAK ADA STRATEGI YANG COCOK → SKIP POOL. Jangan deploy.
 
 DARWINIAN WEIGHTS:
   TVL (2.5x) + fee/TVL (2.3x) = sinyal kuat. Volume (0.36x) + holders (0.3x) = abaikan.
@@ -825,12 +832,10 @@ FILTER TOKEN (dari Coin Filter — DexScreener, RugCheck, Helius, OKX, GeckoTerm
   AVOID → SKIP pool. CAUTION/PASS → DEPLOY LANGSUNG.
   RugCheck: warn+danger risks → REJECT. Mcap + ATH drawdown juga di-check.
 
-NAMA STRATEGI — WAJIB PERSIS SALAH SATU DARI LIST INI:
-  "Single-Side SOL" | "Evil Panda" | "Wave Enjoyer" | "NPC" | "Fee Sniper"
-  | "Spot Balanced" | "Bid-Ask Wide" | "Single-Side Token X" | "Curve Concentrated"
-  ⚠️ JANGAN pernah tulis nama yang tidak ada di list di atas.
-  DEFAULT untuk bot ini (hanya punya SOL) → "Single-Side SOL".
-  Nama yang salah akan di-fallback otomatis ke "Single-Side SOL" oleh sistem.
+NAMA STRATEGI — WAJIB PERSIS SALAH SATU DARI 4 INI:
+  "Evil Panda" | "Wave Enjoyer" | "NPC" | "Fee Sniper"
+  ⚠️ "Single-Side SOL" dan nama lain DIBLOKIR — sistem akan SKIP pool jika dikirim.
+  Tidak ada fallback. Jika kondisi pool tidak cocok keempat strategi di atas → SKIP pool.
 
 STRATEGY LIBRARY (${libraryStats.totalStrategies} strategi):
 ${libraryStats.topStrategies.map(s => `  ${s.name} (${s.type}, ${(s.confidence * 100).toFixed(0)}% conf)`).join('\n')}

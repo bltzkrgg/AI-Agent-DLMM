@@ -10,7 +10,7 @@ import { getInstinctsContext } from '../market/memory.js';
 import { getStrategyIntelligenceContext } from '../market/strategyPerformance.js';
 import { swapAllToSOL, SOL_MINT } from '../solana/jupiter.js';
 import { fetchCandles, fetchMultiTFOHLCV } from '../market/oracle.js';
-import { detectEvilPandaSignals, computeSupertrend, computeRSI } from '../market/taIndicators.js';
+import { detectEvilPandaSignals, computeSupertrend, computeRSI, computeFibLevels, detectGreenCandleAtResistance, detectExitContext } from '../market/taIndicators.js';
 import { kv, hr, codeBlock, formatPnl, shortAddr, shortStrat } from '../utils/table.js';
 import { formatStrategyAlert } from '../utils/alerts.js';
 import { recordClose } from '../market/poolMemory.js';
@@ -574,10 +574,11 @@ export async function runHealerAlpha(notifyFn) {
       const addr   = pos.position_address;
 
       // ── Trailing TP state ────────────────────────────────────
+      const trailCfg = getTrailingConfig();
       let tracker = peakPnlTracker.get(addr) || { peakPnl: pnlPct, trailingActive: false };
       if (pnlPct > tracker.peakPnl) tracker.peakPnl = pnlPct;
-      if (!tracker.trailingActive && pnlPct >= TRAILING_TP_ACTIVATE_PCT) tracker.trailingActive = true;
-      const trailingTpHit = tracker.trailingActive && (tracker.peakPnl - pnlPct) >= TRAILING_TP_DROP_PCT;
+      if (!tracker.trailingActive && pnlPct >= trailCfg.activatePct) tracker.trailingActive = true;
+      const trailingTpHit = tracker.trailingActive && (tracker.peakPnl - pnlPct) >= trailCfg.dropPct;
       peakPnlTracker.set(addr, tracker);
 
       const slCheck = checkStopLoss({ pnlPct });
@@ -617,8 +618,25 @@ export async function runHealerAlpha(notifyFn) {
         } catch { /* best-effort, skip jika gagal */ }
       }
 
+      // ── Exit Strategy: Fibonacci + Green Candle Rule ─────────
+      let fibExitHit  = false;
+      let fibExitMsg  = '';
+      let exitContext = null;
+      try {
+        const fibCandles = await fetchCandles(pos.token_x, '15m', 100, pos.pool_address);
+        if (fibCandles && fibCandles.length >= 20) {
+          exitContext = detectExitContext(fibCandles, pnlPct);
+          const fibLevels   = computeFibLevels(fibCandles, 50);
+          const greenCandle = detectGreenCandleAtResistance(fibCandles, fibLevels);
+          if (greenCandle?.triggered) {
+            fibExitHit = true;
+            fibExitMsg = `[${exitContext || 'NORMAL'}] ${greenCandle.reason}`;
+          }
+        }
+      } catch { /* best-effort */ }
+
       // Tidak ada trigger → skip ke posisi berikutnya
-      if (!trailingTpHit && !tpHit && !slCheck.triggered && !evilPandaExitHit && !multiTFExitHit) continue;
+      if (!trailingTpHit && !tpHit && !slCheck.triggered && !evilPandaExitHit && !multiTFExitHit && !fibExitHit) continue;
 
       // ── Baca kondisi chart & narasi sebelum keputusan ────────
       let market = null;
@@ -638,8 +656,8 @@ export async function runHealerAlpha(notifyFn) {
       let decision  = 'CLOSE';
       let holdReason = '';
 
-      // Evil Panda + Multi-TF exit are unconditional — don't HOLD
-      if (evilPandaExitHit || multiTFExitHit) {
+      // Evil Panda + Multi-TF + Fib exit are unconditional — don't HOLD
+      if (evilPandaExitHit || multiTFExitHit || fibExitHit) {
         decision = 'CLOSE';
       } else if (trailingTpHit) {
         if (sig === 'BULLISH' && conf >= 0.75) {
@@ -661,11 +679,13 @@ export async function runHealerAlpha(notifyFn) {
       // Tentukan label + emoji
       const triggerLabel = evilPandaExitHit ? 'Evil Panda Exit'
         : multiTFExitHit                    ? 'Multi-TF Exit'
+        : fibExitHit                        ? 'Fib Resistance Exit'
         : trailingTpHit                     ? 'Trailing Take Profit'
         : tpHit                             ? 'Take Profit'
         : 'Stop-Loss';
       const triggerEmoji = evilPandaExitHit ? '🐼'
         : multiTFExitHit                    ? '📊'
+        : fibExitHit                        ? '📐'
         : trailingTpHit                     ? '🎯'
         : tpHit                             ? '💰'
         : '🛑';
@@ -673,6 +693,8 @@ export async function runHealerAlpha(notifyFn) {
         ? evilPandaExitMsg
         : multiTFExitHit
         ? multiTFExitMsg
+        : fibExitHit
+        ? fibExitMsg
         : trailingTpHit
         ? `PnL turun dari peak ${tracker.peakPnl.toFixed(2)}% ke ${pnlPct.toFixed(2)}%`
         : tpHit
@@ -741,7 +763,7 @@ export async function runHealerAlpha(notifyFn) {
         const lines = [
           ..._fullTable,
           hr(40),
-          kv('Trail', `close ≤ ${(tracker.peakPnl - TRAILING_TP_DROP_PCT).toFixed(2)}%`, W),
+          kv('Trail', `close ≤ ${(tracker.peakPnl - trailCfg.dropPct).toFixed(2)}%`, W),
         ];
         await notifyFn?.(
           `💰 *Take Profit — Trailing Diaktifkan*\n\n${codeBlock(lines)}`
@@ -860,9 +882,11 @@ export async function runHealerAlpha(notifyFn) {
   const instincts = getInstinctsContext();
   const strategyIntel = getStrategyIntelligenceContext();
 
+  const trailCfgForPrompt = getTrailingConfig();
   const systemPrompt = `Kamu adalah Healer Alpha — autonomous position management agent untuk Meteora DLMM.
 
-CATATAN: Stop-loss, Take Profit, dan Trailing TP sudah diproses di pre-flight dengan mempertimbangkan kondisi chart dan narasi.
+CATATAN: Stop-loss, Take Profit, Trailing TP, Evil Panda Exit, Multi-TF Exit, dan Fib Resistance Exit
+sudah diproses di pre-flight dengan mempertimbangkan kondisi chart dan narasi.
 Posisi yang sampai di loop ini = belum di-close oleh pre-flight (masih aman atau chart bilang HOLD).
 Fokus kamu: proactive exit saat market bearish, out-of-range, claim fees, dan keputusan edge case.
 
@@ -873,6 +897,34 @@ DUA MODE CLOSE:
      - Exit darurat (SL agresif, proactive BEARISH tinggi)
      - Konfirmasi bahwa close_position sebelumnya gagal swap
    Jangan panggil swap_to_sol secara terpisah setelah close_position atau zap_out — sudah ditangani otomatis.
+
+DLMM EXIT STRATEGY FRAMEWORK:
+Setiap posisi memiliki exitContext (dari pre-flight) — gunakan ini untuk menentukan agresivitas exit:
+
+  TOP_ENTRY: Entered dekat recent high — position sangat sensitif terhadap reversal.
+    → Exit lebih agresif. Jika harga stagnant >2 siklus atau market BEARISH → close segera.
+    → Target profit kecil (1-3%), jangan tunggu TP normal.
+
+  LATE_ENTRY: Entered setelah rally, harga masih tinggi tapi momentum melemah.
+    → Exit saat first sign of weakness. Trailing TP lebih ketat dari biasanya.
+    → Jika RSI > 70 + volume turun → close, jangan tunggu konfirmasi penuh.
+
+  POST_DUMP_SIDEWAYS: Harga sudah dump dari entry, sekarang konsolidasi.
+    → Tunggu bounce ke Fibonacci resistance terdekat untuk exit dengan PnL less-bad.
+    → Jika sideways >4 siklus tanpa bounce → OVER_DUMP territory, close untuk stop bleeding.
+
+  OVER_DUMP: PnL ≤ -20%, harga jauh di bawah entry.
+    → EXIT DARURAT. Jangan tunggu recovery. zap_out segera.
+    → Override semua HOLD logic kecuali jika ada news catalyst + volume spike.
+
+GREEN CANDLE RULE (pre-flight sudah handle ini):
+  Jika posisi sudah di-close karena "Fib Resistance Exit" → jangan re-evaluate, sudah benar.
+  Jika data exitContext tersedia di posisi → pertimbangkan dalam keputusan exit.
+
+RUG EMERGENCY BYPASS:
+  Jika marketSignal.signal = BEARISH DAN confidence > 0.85 DAN pnlPct < -5%
+  → Bypass semua exit logic — zap_out SEGERA tanpa menunggu sinyal lain.
+  Ini adalah emergency exit, prioritas tertinggi.
 
 ALUR KERJA:
 1. get_all_positions → evaluasi semua posisi aktif
@@ -910,7 +962,7 @@ ALUR KERJA:
 4. Berikan reasoning lengkap untuk setiap keputusan.
 
 Safety hari ini: Daily PnL $${safety.dailyPnlUsd} | Drawdown ${safety.drawdownPct}%
-Trailing TP: aktif di ${TRAILING_TP_ACTIVATE_PCT}%, close kalau turun ${TRAILING_TP_DROP_PCT}% dari peak
+Trailing TP: aktif di ${trailCfgForPrompt.activatePct}%, close kalau turun ${trailCfgForPrompt.dropPct}% dari peak
 Mode: 🔴 LIVE
 
 ${lessonsCtx}

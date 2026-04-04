@@ -110,7 +110,7 @@ export function computeMACD(closes, fast = 12, slow = 26, signal = 9) {
 // justCrossedAbove: true on the candle where it flipped from bearish to bullish
 //   → this is the Evil Panda entry signal
 
-export function computeSupertrend(highs, lows, closes, atrPeriod = 10, multiplier = 3) {
+export function computeSupertrend(highs, lows, closes, atrPeriod = 10, multiplier = 3, volumes = null) {
   const n = closes.length;
   if (n < atrPeriod + 2) return null;
 
@@ -185,11 +185,25 @@ export function computeSupertrend(highs, lows, closes, atrPeriod = 10, multiplie
   const last = n - 1;
   const prev = last - 1;
 
+  const justCrossedAbove = dir[prev] === -1 && dir[last] === 1;
+
+  // Volume confirmation: crossover candle volume ≥ 1.5x avg of prior 10 candles
+  let volumeConfirmed = true; // default true when no volume data
+  if (volumes && volumes.length === n && justCrossedAbove) {
+    const crossoverVol = volumes[last];
+    const priorSlice   = volumes.slice(Math.max(0, last - 11), last - 1);
+    if (priorSlice.length >= 3) {
+      const priorAvg = priorSlice.reduce((a, b) => a + b, 0) / priorSlice.length;
+      volumeConfirmed = priorAvg > 0 ? crossoverVol >= priorAvg * 1.5 : true;
+    }
+  }
+
   return {
     value:            parseFloat(st[last].toFixed(10)),
     direction:        dir[last],            // 1 = bullish, -1 = bearish
     isBullish:        dir[last] === 1,
-    justCrossedAbove: dir[prev] === -1 && dir[last] === 1,  // ← Evil Panda entry
+    justCrossedAbove,                       // ← Evil Panda entry (raw)
+    volumeConfirmed,                        // ← volume ≥ 1.5x avg on crossover candle
     lastClose:        closes[last],
   };
 }
@@ -290,24 +304,32 @@ export function detectEvilPandaSignals(candles) {
     return { entry: null, exit: null, raw: null };
   }
 
-  const closes = candles.map(c => c.c);
-  const highs  = candles.map(c => c.h);
-  const lows   = candles.map(c => c.l);
+  const closes  = candles.map(c => c.c);
+  const highs   = candles.map(c => c.h);
+  const lows    = candles.map(c => c.l);
+  const volumes = candles.map(c => c.v || 0);
 
   const rsi2 = computeRSI(closes, 2);
   const bb   = computeBollingerBands(closes, 20, 2);
   const macd = computeMACD(closes, 12, 26, 9);
-  const st   = computeSupertrend(highs, lows, closes, 10, 3);
+  const st   = computeSupertrend(highs, lows, closes, 10, 3, volumes); // volume-aware
 
   // ── Entry ────────────────────────────────────────────────────
+  const freshCross     = st?.justCrossedAbove === true;
+  const volConfirmed   = st?.volumeConfirmed !== false; // treat missing as true
+  const entryTriggered = freshCross && volConfirmed;
+
   const entry = st ? {
-    triggered:        st.justCrossedAbove,
+    triggered:        entryTriggered,
     isBullishTrend:   st.isBullish,
-    reason: st.justCrossedAbove
-      ? `Price baru cross di atas Supertrend 15m (close ${st.lastClose?.toFixed(6)} > ST ${st.value?.toFixed(6)})`
-      : st.isBullish
-        ? `Sudah di atas Supertrend — bisa entry jika fresh (tapi bukan fresh cross)`
-        : `Price masih di BAWAH Supertrend — WAIT, belum saatnya entry`,
+    volumeConfirmed:  volConfirmed,
+    reason: entryTriggered
+      ? `Price baru cross di atas Supertrend 15m (close ${st.lastClose?.toFixed(6)} > ST ${st.value?.toFixed(6)}) + volume ≥1.5x avg ✅`
+      : freshCross && !volConfirmed
+        ? `Cross terjadi tapi volume TIDAK cukup (< 1.5x avg) — sinyal LEMAH, skip`
+        : st.isBullish
+          ? `Sudah di atas Supertrend — bisa entry jika fresh (tapi bukan fresh cross)`
+          : `Price masih di BAWAH Supertrend — WAIT, belum saatnya entry`,
   } : null;
 
   // ── Exit ─────────────────────────────────────────────────────
@@ -338,4 +360,105 @@ export function detectEvilPandaSignals(candles) {
     exit,
     raw: { rsi2, bb, macd, supertrend: st },
   };
+}
+
+// ─── Fibonacci Retracement Levels ────────────────────────────────
+// Compute classic Fib levels from the high/low of last `lookback` candles.
+// Returns resistance levels (price dropped from high → levels act as resistance on bounce).
+
+export function computeFibLevels(candles, lookback = 50) {
+  if (!candles || candles.length < 10) return null;
+  const recent = candles.slice(-Math.min(lookback, candles.length));
+  const high   = Math.max(...recent.map(c => c.h));
+  const low    = Math.min(...recent.map(c => c.l));
+  const range  = high - low;
+  if (range === 0) return null;
+
+  return {
+    high,
+    low,
+    fib236: high - 0.236 * range,
+    fib382: high - 0.382 * range,
+    fib500: high - 0.500 * range,
+    fib618: high - 0.618 * range,
+    fib786: high - 0.786 * range,
+  };
+}
+
+// ─── Green Candle at Fibonacci Resistance ────────────────────────
+// GREEN CANDLE RULE: if last candle is bullish (close > open) AND
+// closes within `tolerancePct`% of a Fibonacci resistance level → exit signal.
+// Rationale: green candle at resistance is a high-probability reversal point.
+
+export function detectGreenCandleAtResistance(candles, fibLevels, tolerancePct = 2.0) {
+  if (!candles || !fibLevels || candles.length < 3) {
+    return { triggered: false, reason: 'Not enough data' };
+  }
+
+  const last    = candles[candles.length - 1];
+  const isGreen = last.c > last.o;
+  if (!isGreen) {
+    return { triggered: false, reason: 'Last candle is not green (close ≤ open)' };
+  }
+
+  const price  = last.c;
+  const levels = [fibLevels.fib236, fibLevels.fib382, fibLevels.fib500, fibLevels.fib618, fibLevels.fib786];
+  const names  = ['23.6%', '38.2%', '50%', '61.8%', '78.6%'];
+
+  for (let i = 0; i < levels.length; i++) {
+    const level = levels[i];
+    if (!level || level <= 0) continue;
+    const distPct = Math.abs(price - level) / level * 100;
+    if (distPct <= tolerancePct) {
+      return {
+        triggered:    true,
+        level:        names[i],
+        fibPrice:     parseFloat(level.toFixed(10)),
+        currentPrice: price,
+        distPct:      parseFloat(distPct.toFixed(2)),
+        reason:       `Green candle close (${price.toFixed(8)}) at Fib ${names[i]} resistance — ${distPct.toFixed(2)}% from level`,
+      };
+    }
+  }
+
+  return { triggered: false, reason: 'Green candle but not near any Fibonacci level' };
+}
+
+// ─── Exit Context Classifier ──────────────────────────────────────
+// Detects which of the 4 exit contexts applies to the current position.
+//
+// Contexts:
+//   TOP_ENTRY        — entered near recent high, barely profitable / at risk
+//   LATE_ENTRY       — entered after a run, price still elevated but stalling
+//   POST_DUMP_SIDEWAYS — price dumped then went sideways (accumulation or dead)
+//   OVER_DUMP        — price severely below entry, stop-loss territory
+//
+// pnlPct: current position PnL as percentage (pass from Healer pre-flight).
+
+export function detectExitContext(candles, pnlPct = 0) {
+  if (!candles || candles.length < 20) return null;
+
+  const recent50     = candles.slice(-Math.min(50, candles.length));
+  const high50       = Math.max(...recent50.map(c => c.h));
+  const low50        = Math.min(...recent50.map(c => c.l));
+  const range        = high50 - low50;
+  const currentPrice = candles[candles.length - 1].c;
+
+  if (range === 0) return null;
+
+  const pricePosition = (currentPrice - low50) / range; // 0 = bottom, 1 = top
+
+  // Recent vs prior volatility (candle body size as proxy)
+  const last10 = candles.slice(-10);
+  const prev10 = candles.slice(-20, -10);
+  const avgRange10  = last10.reduce((s, c) => s + (c.h - c.l), 0) / 10;
+  const avgRangePrev = prev10.reduce((s, c) => s + (c.h - c.l), 0) / Math.max(prev10.length, 1);
+  const volRatio    = avgRangePrev > 0 ? avgRange10 / avgRangePrev : 1;
+
+  if (pnlPct <= -20)                                          return 'OVER_DUMP';
+  if (pricePosition >= 0.82 && pnlPct <= 3)                  return 'TOP_ENTRY';
+  if (pricePosition <= 0.30 && pnlPct < 0 && volRatio < 0.7) return 'POST_DUMP_SIDEWAYS';
+  if (pricePosition >= 0.65 && pnlPct < 5)                   return 'LATE_ENTRY';
+
+  return null; // normal context — no special exit bias
 }
