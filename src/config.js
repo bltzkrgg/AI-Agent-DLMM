@@ -34,7 +34,7 @@ const DEFAULTS = {
   minFeeActiveTvlRatio: 0.05,
   minTvl: 10000,
   maxTvl: 150000,
-  minOrganic: 65,
+  minOrganic: 55,
   minHolders: 500,
   minBinStep: 1,             // Min bin step pool yang akan dipertimbangkan
   minTokenFeesSol: 0,        // Min total fees SOL untuk pool (0 = disabled)
