@@ -67,29 +67,35 @@ export async function fetchFreeModels() {
   }
 }
 
-// ─── Format pesan status model untuk Telegram ────────────────────
+// ─── Format pesan status model — INSTANT, tanpa API call ─────────
+// Tidak lagi test model di sini agar /model (no args) tidak delay.
+// Gunakan /testmodel untuk test API call secara eksplisit.
 
-export async function formatModelStatus() {
-  const result = await testCurrentModel();
-  const freeModels = await fetchFreeModels();
+export function formatModelStatus() {
+  const cfg = getConfig();
+  const activeModel  = resolveModel(cfg.generalModel);
+  const envModel     = process.env.AI_MODEL;
+  const sessionModel = cfg.activeModel;
 
   let text = `🤖 *Model Status*\n\n`;
-  text += `Provider: \`${PROVIDER}\`\n`;
-  text += `Model: \`${result.model}\`\n`;
-  text += result.ok
-    ? `Status: ✅ OK\n`
-    : `Status: ❌ Error — ${result.error}\n`;
+  text += `Provider : \`${PROVIDER}\`\n`;
+  text += `Aktif    : \`${activeModel}\`\n\n`;
 
-  if (!result.ok && freeModels.length > 0) {
-    text += `\n💡 *Free models yang tersedia sekarang:*\n`;
-    freeModels.slice(0, 8).forEach(m => { text += `• \`${m}\`\n`; });
-    text += `\nGanti di \`.env\`:\n\`AI_MODEL=<nama model>\`\nlalu restart bot.`;
+  if (envModel) {
+    text += `📌 \`AI_MODEL\` env: \`${envModel}\` _(tertinggi)_\n`;
+  }
+  if (sessionModel) {
+    text += `🎮 Session \`/model\`: \`${sessionModel}\`${envModel ? ' _(diabaikan karena AI\\_MODEL di env)_' : ''}\n`;
   }
 
-  if (result.ok && freeModels.length > 0) {
-    text += `\n\n📋 *Semua free models tersedia (${freeModels.length}):*\n`;
-    freeModels.slice(0, 10).forEach(m => { text += `• \`${m}\`\n`; });
-  }
+  text += `\n*Slot model:*\n`;
+  text += `• General  : \`${cfg.generalModel}\`\n`;
+  text += `• Screening: \`${cfg.screeningModel}\`\n`;
+  text += `• Mgmt     : \`${cfg.managementModel}\`\n`;
+
+  text += `\n_Gunakan \`/testmodel\` untuk test koneksi API._\n`;
+  text += `_Ganti model: \`/model <model\\_id>\` atau set \`AI\\_MODEL\` di .env_\n`;
+  text += `_Reset session: \`/model reset\`_`;
 
   return text;
 }

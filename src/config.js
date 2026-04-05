@@ -14,7 +14,7 @@ const DEFAULTS = {
 
   // Agent intervals (minutes)
   managementIntervalMin: 15,
-  screeningIntervalMin: 60,
+  screeningIntervalMin: 15,
 
   // Auto-screening
   autoScreeningEnabled: false,  // Aktifkan auto-screening Hunter via cron

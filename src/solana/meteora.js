@@ -22,7 +22,7 @@ function toBN(amount, decimals) {
 // Lebih reliable dari confirmTransaction (websocket-based) yang sering
 // timeout meski TX sudah landing di chain.
 
-async function pollTxConfirm(connection, txHash, maxWaitMs = 90000) {
+async function pollTxConfirm(connection, txHash, maxWaitMs = 60000) {
   const start = Date.now();
   while (Date.now() - start < maxWaitMs) {
     try {
@@ -360,7 +360,7 @@ export async function openPosition(poolAddress, tokenXAmount, tokenYAmount, pric
         maxRetries: 2,
       });
 
-      await pollTxConfirm(connection, txHash, 90000);
+      await pollTxConfirm(connection, txHash, 60000);
       allTxHashes.push(txHash);
     }
 
@@ -577,7 +577,7 @@ export async function closePositionDLMM(poolAddress, positionAddress, pnlData = 
           maxRetries:    2,
         });
 
-        await pollTxConfirm(connection, txHash, 90000);
+        await pollTxConfirm(connection, txHash, 60000);
         txHashes.push(txHash);
       }
 
@@ -660,7 +660,7 @@ export async function claimFees(poolAddress, positionAddress) {
       maxRetries: 2,
     });
 
-    await pollTxConfirm(connection, txHash, 90000);
+    await pollTxConfirm(connection, txHash, 60000);
     txHashes.push(txHash);
   }
 

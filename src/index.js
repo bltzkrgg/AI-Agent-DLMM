@@ -20,7 +20,7 @@ import { padR, hr, kv, codeBlock, formatPnl, shortAddr, shortStrat } from './uti
 import { initMonitor } from './monitor/positionMonitor.js';
 import { autoEvolveIfReady } from './learn/evolve.js';
 import { getTodayResults, formatDailyReport, savePerformanceSnapshot, backupAllData } from './market/strategyPerformance.js';
-import { runStartupModelCheck, formatModelStatus, testModel } from './agent/modelCheck.js';
+import { runStartupModelCheck, formatModelStatus, testModel, testCurrentModel, fetchFreeModels } from './agent/modelCheck.js';
 import { runOpportunityScanner } from './market/opportunityScanner.js';
 import { addSmartWallet, removeSmartWallet, formatWalletList } from './market/smartWallets.js';
 import { formatPoolMemoryReport } from './market/poolMemory.js';
@@ -165,30 +165,34 @@ async function runHealerWithReopenCheck() {
 }
 
 // ─── Cron jobs ───────────────────────────────────────────────────
-// Hunter TIDAK dijalankan dari cron — deploy hanya via /entry
-// Healer tetap jalan otomatis untuk manage posisi yang sudah terbuka
+// Semua cron jalan setiap menit dan cek interval live dari config.
+// Ini memungkinkan perubahan interval via /setconfig TANPA restart bot.
 
-cron.schedule(`*/${cfg.managementIntervalMin} * * * *`, async () => {
+let _lastHealerRun    = Date.now(); // delay run pertama sampai interval berlalu
+let _lastScreeningRun = Date.now();
+
+cron.schedule('* * * * *', async () => {
+  const liveCfg = getConfig();
+  const now     = Date.now();
+  if (now - _lastHealerRun < liveCfg.managementIntervalMin * 60 * 1000) return;
+  _lastHealerRun = now;
+
   if (_healerBusy) { console.log('⏭ Healer skip — masih berjalan'); return; }
-
   _healerBusy = true;
   try {
     await runHealerWithReopenCheck();
-    // Auto-evolve threshold tiap 5 posisi closed — tanpa perlu manual
     autoEvolveIfReady(notify).catch(e => console.error('Auto-evolve error:', e.message));
-    // Recalibrate Darwinian signal weights (best-effort, silent)
     try { recalibrateWeights(); } catch { /* data belum cukup, skip */ }
-    // Auto-save strategy performance snapshot ke file lokal
     savePerformanceSnapshot();
   }
   catch (e) { notify(`❌ Healer error: ${e.message}`).catch(() => {}); }
   finally { _healerBusy = false; }
 });
 
-// ─── Auto-screening Hunter — cron tiap screeningIntervalMin ─────
+// ─── Auto-screening Hunter — interval dibaca live dari config ────
 // Aktif hanya jika autoScreeningEnabled = true di config.
 // Screen pool terbaik, kirim ke Telegram untuk batch approval.
-// Timeout 15 menit (configurable), kandidat dianggap stale setelahnya.
+// Timeout configurable, kandidat dianggap stale setelahnya.
 
 async function runAutoScreening() {
   if (_screeningBusy || _hunterBusy) return;
@@ -266,7 +270,11 @@ async function runAutoScreening() {
   }
 }
 
-cron.schedule(`*/${cfg.screeningIntervalMin} * * * *`, async () => {
+cron.schedule('* * * * *', async () => {
+  const liveCfg = getConfig();
+  const now     = Date.now();
+  if (now - _lastScreeningRun < liveCfg.screeningIntervalMin * 60 * 1000) return;
+  _lastScreeningRun = now;
   try { await runAutoScreening(); }
   catch (e) { console.error('Auto-screening cron error:', e.message); }
 });
@@ -452,11 +460,22 @@ cron.schedule('0 * * * *', async () => {
 
 bot.onText(/\/testmodel/, async (msg) => {
   if (msg.from.id !== ALLOWED_ID) return;
-  bot.sendMessage(msg.chat.id, '🔍 Testing model...');
+  const chatId = msg.chat.id;
+  bot.sendMessage(chatId, '🔍 Testing model connection...');
   try {
-    const text = await formatModelStatus();
-    await sendLong(msg.chat.id, text, { parse_mode: 'Markdown' });
-  } catch (e) { bot.sendMessage(msg.chat.id, `❌ ${e.message}`); }
+    // Test API + fetch free models (operasi lambat, tapi ini memang tujuannya)
+    const [testResult, freeModels] = await Promise.all([
+      testCurrentModel(),
+      fetchFreeModels(),
+    ]);
+    let text = formatModelStatus();
+    text += `\n\n*Test Result:* ${testResult.ok ? '✅ OK' : `❌ ${testResult.error}`}\n`;
+    if (freeModels.length > 0) {
+      text += `\n📋 *Free models tersedia (${freeModels.length}):*\n`;
+      freeModels.slice(0, 10).forEach(m => { text += `• \`${m}\`\n`; });
+    }
+    await sendLong(chatId, text, { parse_mode: 'Markdown' });
+  } catch (e) { bot.sendMessage(chatId, `❌ ${e.message}`); }
 });
 
 bot.onText(/\/model(?:\s+(.+))?/, async (msg, match) => {
@@ -465,9 +484,9 @@ bot.onText(/\/model(?:\s+(.+))?/, async (msg, match) => {
   const modelId = match[1]?.trim();
 
   if (!modelId) {
-    // Tampilkan model aktif + daftar model tersedia
+    // Tampilkan status instan — TANPA API call (gunakan /testmodel untuk test)
     try {
-      const text = await formatModelStatus();
+      const text = formatModelStatus();
       await sendLong(chatId, text, { parse_mode: 'Markdown' });
     } catch (e) { bot.sendMessage(chatId, `❌ ${e.message}`); }
     return;
@@ -946,8 +965,8 @@ bot.onText(/\/dryrun(?:\s+(on|off))?/, (msg, match) => {
   );
 });
 
-// /autoscreen on|off — toggle auto-screening
-bot.onText(/\/autoscreen(?:\s+(on|off))?/, async (msg, match) => {
+// /autoscreen on|off — toggle auto-screening (alias: /autohunter)
+bot.onText(/\/(?:autoscreen|autohunter)(?:\s+(on|off))?/, async (msg, match) => {
   if (msg.from.id !== ALLOWED_ID) return;
   const chatId = msg.chat.id;
   const toggle = match[1]?.toLowerCase();

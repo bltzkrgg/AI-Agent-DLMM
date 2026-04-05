@@ -52,12 +52,21 @@ function getCustomClient() {
 }
 
 // ─── Model resolution ────────────────────────────────────────────
+// Priority (highest → lowest):
+//   1. AI_MODEL env var — set di .env, absolute override
+//   2. cfg.activeModel  — diset via /model command (runtime override)
+//   3. modelFromConfig  — per-component config (managementModel / screeningModel / generalModel)
+//   4. provider default fallback
 
 export function resolveModel(modelFromConfig) {
+  // 1. Env var selalu menang — user set di .env = "saya mau model ini"
+  if (process.env.AI_MODEL) return process.env.AI_MODEL;
   const cfg = getConfig();
-  if (cfg.activeModel) return cfg.activeModel;          // /model command (highest priority)
-  if (process.env.AI_MODEL) return process.env.AI_MODEL; // .env override
+  // 2. /model command override (session-level, hanya berlaku jika AI_MODEL tidak di-set)
+  if (cfg.activeModel) return cfg.activeModel;
+  // 3. Per-component config
   if (modelFromConfig) return modelFromConfig;
+  // 4. Provider default
   const defaults = {
     openrouter: 'openai/gpt-4o-mini',
     anthropic:  'claude-haiku-4-5',
@@ -217,10 +226,11 @@ export async function createMessage({ model, maxTokens = 4096, system, tools, me
       lastError = e;
       const status = e?.status || e?.statusCode;
 
-      // Rate limit
+      // Rate limit — 10s backoff (bukan 30s) agar tidak terasa stuck
       if (status === 429) {
-        console.warn(`⚠️ Rate limited, waiting 30s... (attempt ${attempt + 1}/3)`);
-        await new Promise(r => setTimeout(r, 30000));
+        const wait = (attempt + 1) * 10000; // 10s, 20s, 30s
+        console.warn(`⚠️ Rate limited, waiting ${wait / 1000}s... (attempt ${attempt + 1}/3)`);
+        await new Promise(r => setTimeout(r, wait));
         continue;
       }
 
