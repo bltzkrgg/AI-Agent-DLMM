@@ -15,6 +15,7 @@ const DEFAULTS = {
   // Agent intervals (minutes)
   managementIntervalMin: 15,
   screeningIntervalMin: 15,
+  positionUpdateIntervalMin: 5,  // Interval notif status posisi (PnL, fees, range)
 
   // Auto-screening
   autoScreeningEnabled: false,  // Aktifkan auto-screening Hunter via cron
@@ -90,8 +91,9 @@ const CONFIG_BOUNDS = {
   maxPositions:               { min: 1,     max: 20 },
   minSolToOpen:               { min: 0.01,  max: 1 },
   gasReserve:                 { min: 0.01,  max: 0.5 },
-  managementIntervalMin:      { min: 1,     max: 1440 },
-  screeningIntervalMin:       { min: 5,     max: 1440 },
+  managementIntervalMin:       { min: 1,     max: 1440 },
+  screeningIntervalMin:        { min: 5,     max: 1440 },
+  positionUpdateIntervalMin:   { min: 1,     max: 1440 },
   approvalTimeoutMin:         { min: 5,     max: 60 },
   minFeeActiveTvlRatio:       { min: 0.001, max: 1 },
   minTvl:                     { min: 100,   max: 10000000 },
