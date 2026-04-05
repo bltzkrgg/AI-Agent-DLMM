@@ -18,6 +18,7 @@ import { formatStrategyAlert } from '../utils/alerts.js';
 import { getDarwinWeights, captureSignals } from '../market/signalWeights.js';
 import { isOnCooldown, getPoolMemoryContext, recordDeployment } from '../market/poolMemory.js';
 import { checkSmartWalletsOnPool, formatSmartWalletSignal } from '../market/smartWallets.js';
+import { discoverPools as lpAgentDiscoverPools, enrichPools as lpAgentEnrichPools, isLPAgentEnabled } from '../market/lpAgent.js';
 
 // ─── State ───────────────────────────────────────────────────────
 
@@ -160,18 +161,58 @@ async function executeTool(name, input) {
 
     case 'screen_pools': {
       const limit = input.limit || 10;
-      const pools = await getTopPools(limit * 3); // fetch lebih banyak, filter setelahnya
       const thresholds = getThresholds();
-      const weights = getDarwinWeights(); // adaptive dari data nyata
+      const weights    = getDarwinWeights();
+
+      // ── LP Agent: discover top pools (1 API call, cached 10 menit) ──
+      // Berjalan paralel dengan getTopPools untuk hemat waktu
+      const [dexPools, lpAgentPools] = await Promise.allSettled([
+        getTopPools(limit * 3),
+        isLPAgentEnabled()
+          ? lpAgentDiscoverPools({
+              pageSize:        50,
+              vol24hMin:       cfg.minVolume24h || 100000,
+              organicScoreMin: cfg.minOrganic   || 50,
+              binStepMin:      cfg.minBinStep   || 1,
+              binStepMax:      250,
+              feeTVLInterval:  '1h',
+            })
+          : Promise.resolve([]),
+      ]);
+
+      const rawDex = dexPools.status === 'fulfilled' ? (dexPools.value || []) : [];
+      const rawLP  = lpAgentPools.status === 'fulfilled' ? (lpAgentPools.value || []) : [];
+
+      // Merge: LP Agent pools tidak ada di DexScreener → tambahkan sebagai kandidat baru
+      // Pool yang sudah ada di DexScreener → tidak di-double
+      const dexAddresses  = new Set(rawDex.map(p => p.address));
+      const lpAgentOnly   = rawLP.filter(p => p.address && !dexAddresses.has(p.address)).map(p => ({
+        address:      p.address,
+        name:         p.name || p.tokenXSymbol ? `${p.tokenXSymbol}-SOL` : '',
+        tokenX:       p.tokenX,
+        tokenY:       p.tokenY,
+        tvl:          p.tvl,
+        fees24hRaw:   p.vol24h * (p.feeTVLRatio || 0),
+        binStep:      p.binStep,
+        _fromLPAgent: true,
+      }));
+      const combined = [...rawDex, ...lpAgentOnly];
+
+      // ── Satu call enrichment LP Agent untuk semua kandidat ──
+      // enrich pools SETELAH merge, zero extra API calls (pakai cache)
+      const allAddresses = combined.map(p => p.address).filter(Boolean);
+      const lpEnrichMap  = isLPAgentEnabled()
+        ? await lpAgentEnrichPools(allAddresses).catch(() => ({}))
+        : {};
 
       // Filter dasar
       const minBinStep      = cfg.minBinStep      || 1;
       const minTokenFeesSol = cfg.minTokenFeesSol || 0;
-      const preFiltered = pools.filter(p => {
-        const tvl = parseTvl(p.tvlStr || p.tvl || 0);
-        const fees = p.fees24hRaw || 0;
+      const preFiltered = combined.filter(p => {
+        const tvl      = parseTvl(p.tvlStr || p.tvl || 0);
+        const fees     = p.fees24hRaw || 0;
         const feeRatio = tvl > 0 ? fees / tvl : 0;
-        const binStep = p.binStep || 0;
+        const binStep  = p.binStep || 0;
         return (
           binStep >= minBinStep &&
           binStep <= 250 &&
@@ -179,11 +220,11 @@ async function executeTool(name, input) {
           tvl <= thresholds.maxTvl &&
           feeRatio >= thresholds.minFeeActiveTvlRatio &&
           (minTokenFeesSol <= 0 || fees >= minTokenFeesSol) &&
-          !isOnCooldown(p.address)  // skip pool yang sedang cooldown
+          !isOnCooldown(p.address)
         );
       });
 
-      // Enrich dengan multi-TF score & smart wallet check (parallel, best-effort)
+      // Enrich: multi-TF + smart wallet + LP Agent data (parallel, best-effort)
       const enriched = await Promise.all(preFiltered.map(async p => {
         let multiTFScore = 0;
         let smartWalletSignal = null;
@@ -198,6 +239,8 @@ async function executeTool(name, input) {
           poolMemCtx = getPoolMemoryContext(p.address);
         } catch { /* best-effort */ }
 
+        const lpData = lpEnrichMap[p.address] || { inLPAgentList: false };
+
         return {
           ...p,
           multiTFScore,
@@ -205,6 +248,7 @@ async function executeTool(name, input) {
             ? { found: true, wallets: smartWalletSignal.matches.map(m => m.label), confidence: smartWalletSignal.confidence }
             : null,
           poolMemory:   poolMemCtx || undefined,
+          lpAgent:      lpData,   // { inLPAgentList, organicScore, feeTVLRatioLP, vol24hLP }
           darwinScore:  calculateDarwinScore({ ...p, multiTFScore }, weights),
           feeToTvlRatio: (() => {
             const tvl = parseTvl(p.tvlStr || p.tvl || 0);
@@ -218,11 +262,16 @@ async function executeTool(name, input) {
         .slice(0, limit);
 
       lastCandidates = filtered;
+
+      const lpNote = isLPAgentEnabled()
+        ? `LP Agent: ${rawLP.length} pools discovered, ${lpAgentOnly.length} tambahan baru, enrich ${allAddresses.length} pool.`
+        : 'LP Agent: disabled (LP_AGENT_API_KEY tidak diset).';
+
       return JSON.stringify({
         thresholds,
         filterCriteria: { maxBinStep: 250, minFeeActiveTvlRatio: thresholds.minFeeActiveTvlRatio },
-        darwinWeights: weights,
-        note: 'Sorted by darwinScore (adaptive). Pool yg cooldown sudah difilter. multiTFScore & smartWallet tersedia di setiap kandidat.',
+        darwinWeights:  weights,
+        note: `Sorted by darwinScore (adaptive). Pool cooldown sudah difilter. multiTFScore, smartWallet, lpAgent tersedia. ${lpNote}`,
         candidates: filtered,
       }, null, 2);
     }
@@ -834,6 +883,12 @@ STRATEGI — BACA LIBRARY, JANGAN HARDCODE:
   • Range: 3-5% ultra-tight | Exit: saat BB expand >10%
 
   ⛔ JIKA TIDAK ADA STRATEGI YANG COCOK → SKIP POOL. Jangan deploy.
+
+LP AGENT SIGNAL (di setiap kandidat pool):
+  lpAgent.inLPAgentList = true → pool diakui LP Agent sebagai top performer
+  lpAgent.organicScore → organic score menurut LP Agent (0-100, >70 = bagus)
+  lpAgent.feeTVLRatioLP → fee/TVL ratio versi LP Agent (cross-check vs DexScreener)
+  Pool dari LP Agent dengan inLPAgentList=true = sinyal SMART LP interest — bobot setara smartWallet.
 
 DARWINIAN WEIGHTS:
   TVL (2.5x) + fee/TVL (2.3x) = sinyal kuat. Volume (0.36x) + holders (0.3x) = abaikan.

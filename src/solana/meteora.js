@@ -6,6 +6,7 @@ import { savePosition, closePositionWithPnl } from '../db/database.js';
 import { fetchWithTimeout, withRetry } from '../utils/safeJson.js';
 import { resolveTokens, WSOL_MINT } from '../utils/tokenMeta.js';
 import { isDryRun } from '../config.js';
+import { getWalletPositions as getLPAgentPositions, isLPAgentEnabled } from '../market/lpAgent.js';
 
 const METEORA_DLMM_API = 'https://dlmm-api.meteora.ag';
 
@@ -249,10 +250,19 @@ export async function getPositionInfo(poolAddress) {
       });
     }, 3, 2000);
   } catch {
-    // SDK failed (RPC/network) — try Meteora REST API as fallback
-    console.warn(`[meteora] SDK getPositionInfo failed for ${poolAddress?.slice(0,8)}, trying API fallback`);
-    return await getPositionInfoFromMeteoraAPI(poolAddress);
-    // If API also fails, returns null — callers treat null as network error (no manual-close detection)
+    // Tier 2: Meteora REST API fallback
+    console.warn(`[meteora] SDK failed for ${poolAddress?.slice(0,8)}, trying Meteora API`);
+    const meteoraResult = await getPositionInfoFromMeteoraAPI(poolAddress);
+    if (meteoraResult !== null) return meteoraResult;
+
+    // Tier 3: LP Agent fallback (if configured)
+    if (isLPAgentEnabled()) {
+      console.warn(`[meteora] Meteora API also failed, trying LP Agent fallback`);
+      const wallet = getWallet();
+      return await getLPAgentPositions(wallet.publicKey.toString());
+    }
+
+    return null;
   }
 }
 
