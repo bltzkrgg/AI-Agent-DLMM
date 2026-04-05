@@ -251,6 +251,8 @@ export async function openPosition(poolAddress, tokenXAmount, tokenYAmount, pric
   const isSOLPair = yMint === WSOL_MINT;
 
   // ── Bin range calculation ────────────────────────────────────────
+  // binsBelow = priceRangePercent * 100 / binStep
+  // Evil Panda targets 80–250 bins at binStep 80–125 — no hard cap here.
   const isSingleSideSOL = tokenXAmount === 0;
   const binsBelow = Math.max(2, Math.floor((priceRangePercent / 100) / (binStep / 10000)));
 

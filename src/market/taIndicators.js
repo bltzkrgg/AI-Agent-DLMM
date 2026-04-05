@@ -271,10 +271,11 @@ export function calcDynamicRangePct({
   if (bbBandwidth < 5)  base *= 0.85; // squeeze = tight consolidation, safer to narrow
 
   if (strategyType === 'evil_panda') {
-    // EP: momentum strategy — wide range for 80-95% coverage
-    return parseFloat(Math.min(Math.max(base * 1.3, 12), 80).toFixed(1));
+    // EP: momentum strategy — wide range, floor 70%, no upper cap (0 = unlimited)
+    // Produces 80–250 bins at binStep 80–125 depending on market volatility
+    return parseFloat(Math.max(base * 1.3, 70).toFixed(1));
   }
-  // Default Single-Side SOL
+  // Default (Wave Enjoyer, NPC, Fee Sniper)
   return parseFloat(Math.min(Math.max(base, 8), 50).toFixed(1));
 }
 
