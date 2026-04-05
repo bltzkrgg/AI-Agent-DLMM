@@ -1,5 +1,5 @@
 import DLMM, { chunkBinRange } from '@meteora-ag/dlmm';
-import { PublicKey, Keypair } from '@solana/web3.js';
+import { PublicKey, Keypair, Transaction, ComputeBudgetProgram, VersionedTransaction } from '@solana/web3.js';
 import BN from 'bn.js';
 import { getConnection, getWallet } from './wallet.js';
 import { savePosition, closePositionWithPnl } from '../db/database.js';
@@ -568,13 +568,21 @@ export async function closePositionDLMM(poolAddress, positionAddress, pnlData = 
         const { blockhash } = await connection.getLatestBlockhash('confirmed');
         tx.recentBlockhash = blockhash;
         tx.feePayer = wallet.publicKey;
+
+        // Priority fee — pastikan TX diprioritaskan validator, tidak di-drop
+        // close position compute-heavy (400k CU), 200k micro-lamports ≈ ~0.00005 SOL
+        if (!(tx instanceof VersionedTransaction)) {
+          tx.instructions.unshift(
+            ComputeBudgetProgram.setComputeUnitLimit({ units: 400_000 }),
+            ComputeBudgetProgram.setComputeUnitPrice({ microLamports: 200_000 }),
+          );
+        }
+
         tx.sign(wallet);
 
-        // skipPreflight:true — simulation sering reject TX valid karena state stale.
-        // Kita sudah verify posisi exist baris di atas, jadi TX ini valid.
         const txHash = await connection.sendRawTransaction(tx.serialize(), {
           skipPreflight: true,
-          maxRetries:    2,
+          maxRetries:    3,
         });
 
         await pollTxConfirm(connection, txHash, 60000);
@@ -582,25 +590,35 @@ export async function closePositionDLMM(poolAddress, positionAddress, pnlData = 
       }
 
       // ── 6. Verifikasi on-chain: posisi benar-benar hilang ───
-      await new Promise(r => setTimeout(r, 2500)); // beri waktu state propagate
+      // Tunggu 5 detik — state propagation di Solana bisa >2.5s
+      await new Promise(r => setTimeout(r, 5000));
       const dlmmPool2 = await DLMM.create(connection, poolPubkey);
       const { userPositions: verifyPos } = await dlmmPool2.getPositionsByUserAndLbPair(wallet.publicKey);
       const stillExists = verifyPos?.find(p => p.publicKey.toString() === positionAddress);
 
-      // Cek apakah masih ada likuiditas tersisa
-      const stillHasLiquidity = stillExists
-        ? (Number(stillExists.positionData.totalXAmount?.toString() || '0') +
-           Number(stillExists.positionData.totalYAmount?.toString() || '0')) > 0
-        : false;
+      // Cek via positionBinData — lebih reliable dari totalXAmount yang bisa include fees
+      // Jika 0 bin aktif tersisa → semua likuiditas sudah dicabut
+      const activeBins = stillExists?.positionData?.positionBinData?.filter(b =>
+        Number(b.positionLiquidityX?.toString() || '0') +
+        Number(b.positionLiquidityY?.toString() || '0') > 0
+      ) ?? [];
+      const stillHasLiquidity = stillExists ? activeBins.length > 0 : false;
 
       if (stillHasLiquidity) {
         if (attempt < MAX_ATTEMPTS) {
-          await new Promise(r => setTimeout(r, 4000 * attempt));
+          await new Promise(r => setTimeout(r, 5000 * attempt));
           continue; // retry dengan state terbaru
         }
+        // Semua retry habis — purge DB supaya bot tidak stuck loop selamanya
+        closePositionWithPnl(positionAddress, {
+          pnlUsd: pnlData.pnlUsd || 0,
+          pnlPct: pnlData.pnlPct || 0,
+          feesUsd: pnlData.feeUsd || 0,
+          closeReason: 'CLOSE_FAILED_PURGED',
+        });
         throw new Error(
-          'Posisi masih memiliki likuiditas setelah close — ' +
-          'close manual via Meteora UI diperlukan.'
+          'Posisi masih memiliki likuiditas setelah 3 percobaan — ' +
+          'DB sudah di-clear. Verifikasi manual di Meteora UI diperlukan.'
         );
       }
 

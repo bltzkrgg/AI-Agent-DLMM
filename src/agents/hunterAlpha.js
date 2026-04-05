@@ -440,6 +440,26 @@ async function executeTool(name, input) {
     }
 
     case 'deploy_position': {
+      // ── Guard: cegah deploy duplikat ke pool yang sama ──────────
+      const existingPositions = getOpenPositions();
+      if (existingPositions.some(p => p.pool_address === input.pool_address)) {
+        return JSON.stringify({
+          blocked: true,
+          reason: `Pool ${input.pool_address.slice(0, 8)}... sudah ada posisi terbuka — skip duplikat. Pilih pool lain.`,
+        }, null, 2);
+      }
+
+      // ── Guard: slot posisi penuh ─────────────────────────────────
+      const effectiveMaxPos = _hunterTargetCount != null
+        ? existingPositions.length + _hunterTargetCount
+        : cfg.maxPositions;
+      if (existingPositions.length >= effectiveMaxPos) {
+        return JSON.stringify({
+          blocked: true,
+          reason: `Slot penuh (${existingPositions.length}/${effectiveMaxPos}) — tidak bisa deploy lagi.`,
+        }, null, 2);
+      }
+
       if (hunterNotifyFn) {
         await hunterNotifyFn(
           `⚡ *Deploying...*\n` +
