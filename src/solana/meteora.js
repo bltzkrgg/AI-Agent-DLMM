@@ -313,14 +313,15 @@ export async function openPosition(poolAddress, tokenXAmount, tokenYAmount, pric
   // ── Bin range calculation ────────────────────────────────────────
   // binsBelow = priceRangePercent * 100 / binStep
   // Meteora on-chain limit = 70 bins per position account.
-  // For wide ranges (Evil Panda 80–250 bins), we chunk into multiple 70-bin positions.
+  // Cap rawBins ke 69 agar selalu 1 position account per deploy (tidak chunking).
+  // Ini memastikan 1 deploy_position = 1 position address di on-chain.
   const isSingleSideSOL = tokenXAmount === 0;
-  const rawBins  = Math.max(2, Math.floor((priceRangePercent / 100) / (binStep / 10000)));
+  const rawBins  = Math.min(69, Math.max(2, Math.floor((priceRangePercent / 100) / (binStep / 10000))));
   const rangeMin = activeBin.binId - rawBins;
   const rangeMax = activeBin.binId; // single-side SOL: active bin is the ceiling
   const totalBins = rawBins + 1;
 
-  // SDK chunkBinRange splits into ≤70-bin chunks, ordered low → high
+  // chunkBinRange — dengan rawBins ≤ 69, selalu menghasilkan tepat 1 chunk
   const binChunks = chunkBinRange(rangeMin, rangeMax);
 
   const allPositionKps  = binChunks.map(() => Keypair.generate());
@@ -516,7 +517,11 @@ export async function closePositionDLMM(poolAddress, positionAddress, pnlData = 
           });
         }
       } else {
-        // ── 4b. Position tanpa bin (kosong) → coba close account
+        // ── 4b. Position tanpa bin (kosong) → coba beberapa pendekatan ───
+        // Bisa terjadi jika: (a) liquidity add TX gagal, (b) posisi sudah partial-close.
+        let emptyCloseOk = false;
+
+        // Coba 1: removeLiquidity + shouldClaimAndClose=true (SDK standard)
         try {
           removeLiqTx = await dlmmPool.removeLiquidity({
             position:               positionPubkey,
@@ -525,11 +530,32 @@ export async function closePositionDLMM(poolAddress, positionAddress, pnlData = 
             liquiditiesBpsToRemove: [],
             shouldClaimAndClose:    true,
           });
-        } catch {
-          throw new Error(
-            'Posisi kosong tanpa bin aktif — tidak bisa close otomatis. ' +
-            'Silakan close manual via Meteora UI.'
-          );
+          emptyCloseOk = true;
+        } catch { /* lanjut ke coba 2 */ }
+
+        if (!emptyCloseOk) {
+          // Coba 2: closePosition SDK (jika tersedia)
+          try {
+            if (typeof dlmmPool.closePosition === 'function') {
+              removeLiqTx = await dlmmPool.closePosition({
+                owner:    wallet.publicKey,
+                position: positionPubkey,
+              });
+              emptyCloseOk = true;
+            }
+          } catch { /* lanjut ke fallback */ }
+        }
+
+        if (!emptyCloseOk) {
+          // Posisi tidak bisa ditutup via SDK — tandai DB sebagai closed supaya tidak retry terus
+          closePositionWithPnl(positionAddress, {
+            pnlUsd: pnlData.pnlUsd || 0,
+            pnlPct: pnlData.pnlPct || 0,
+            feesUsd: pnlData.feeUsd || 0,
+            closeReason: 'EMPTY_POSITION_PURGED',
+          });
+          return { success: true, txHashes: [], emptyPositionPurged: true,
+            note: 'Posisi kosong (0 bin aktif) — dihapus dari DB. Jika ada dana tersisa, close manual via Meteora UI.' };
         }
       }
 

@@ -4,6 +4,7 @@ import { getPoolInfo, getPositionInfo, openPosition, closePositionDLMM, getTopPo
 import { getOpenPositions, getConversationHistory, addToHistory, getPositionStats } from '../db/database.js';
 import { getAllStrategies, getStrategyByName, parseStrategyParameters } from '../strategies/strategyManager.js';
 import { getConfig } from '../config.js';
+import { swapAllToSOL, SOL_MINT } from '../solana/jupiter.js';
 
 const tools = [
   {
@@ -140,7 +141,36 @@ async function executeTool(toolName, toolInput) {
     }
     case 'close_position': {
       const result = await closePositionDLMM(toolInput.pool_address, toolInput.position_address);
-      return JSON.stringify(result, null, 2);
+
+      // Auto-swap token X → SOL setelah close (retry 2x), sama seperti healerAlpha
+      const swapResults = [];
+      const swapErrors  = [];
+      try {
+        const poolInfo = await getPoolInfo(toolInput.pool_address);
+        for (const mint of [poolInfo.tokenX, poolInfo.tokenY]) {
+          if (!mint || mint === SOL_MINT) continue;
+          for (let attempt = 1; attempt <= 2; attempt++) {
+            try {
+              const swapRes = await swapAllToSOL(mint);
+              if (swapRes.success) {
+                swapResults.push({ mint: mint.slice(0, 8), outSol: swapRes.outSol });
+              } else {
+                swapResults.push({ mint: mint.slice(0, 8), skipped: swapRes.reason });
+              }
+              break;
+            } catch (e) {
+              if (attempt === 2) swapErrors.push({ mint: mint.slice(0, 8), error: e.message });
+              else await new Promise(r => setTimeout(r, 2000));
+            }
+          }
+        }
+      } catch { /* swap best-effort, close tetap dianggap sukses */ }
+
+      return JSON.stringify({
+        ...result,
+        autoSwap:   swapResults.length > 0 ? swapResults : 'skipped',
+        swapErrors: swapErrors.length  > 0 ? swapErrors  : undefined,
+      }, null, 2);
     }
     case 'claim_fees': {
       const result = await claimFees(toolInput.pool_address, toolInput.position_address);

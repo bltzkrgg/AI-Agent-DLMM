@@ -271,9 +271,11 @@ export function calcDynamicRangePct({
   if (bbBandwidth < 5)  base *= 0.85; // squeeze = tight consolidation, safer to narrow
 
   if (strategyType === 'evil_panda') {
-    // EP: momentum strategy — wide range, floor 70%, no upper cap (0 = unlimited)
-    // Produces 80–250 bins at binStep 80–125 depending on market volatility
-    return parseFloat(Math.max(base * 1.3, 70).toFixed(1));
+    // EP: momentum strategy — wide range, floor 70%.
+    // Cap 250% agar tidak melebihi 69 bins di pool binStep ≥ 40 (69 × 40 / 100 = 27.6% → ok).
+    // Untuk pool binStep 80-125 (EP yang valid): 250% → rawBins = 250/0.008 = ... jauh,
+    // tapi openPosition() akan enforce cap 69-bin sehingga 1 position per deploy.
+    return parseFloat(Math.min(Math.max(base * 1.3, 70), 250).toFixed(1));
   }
   // Default (Wave Enjoyer, NPC, Fee Sniper)
   return parseFloat(Math.min(Math.max(base, 8), 50).toFixed(1));
