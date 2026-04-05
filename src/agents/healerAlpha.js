@@ -536,6 +536,10 @@ export async function runHealerAlpha(notifyFn) {
   //   SL hit + BULLISH (conf ≥ 0.65) → hold, tunggu recovery
   //   SL hit + BEARISH/NEUTRAL       → close segera
 
+  // Smart skip: track apakah ada posisi yang butuh LLM evaluation.
+  // Jika semua posisi healthy (in-range, fees rendah, PnL normal) → skip LLM call.
+  let _healerNeedsLLM = false;
+
   for (const pos of openPositions) {
     try {
       const onChain = await getPositionInfo(pos.pool_address);
@@ -635,8 +639,15 @@ export async function runHealerAlpha(notifyFn) {
         }
       } catch { /* best-effort */ }
 
-      // Tidak ada trigger → skip ke posisi berikutnya
-      if (!trailingTpHit && !tpHit && !slCheck.triggered && !evilPandaExitHit && !multiTFExitHit && !fibExitHit) continue;
+      // Tidak ada trigger → flag apakah posisi ini butuh LLM, lalu skip
+      if (!trailingTpHit && !tpHit && !slCheck.triggered && !evilPandaExitHit && !multiTFExitHit && !fibExitHit) {
+        // Posisi butuh LLM jika: out of range, fees tinggi, atau mendekati SL
+        if (!match?.inRange) _healerNeedsLLM = true;
+        const feePct = (match?.feeCollectedSol || 0) / (pos.deployed_sol || 0.001);
+        if (feePct >= 0.03) _healerNeedsLLM = true;
+        if (pnlPct <= -(thresholds.stopLossPct * 0.6)) _healerNeedsLLM = true;
+        continue;
+      }
 
       // ── Baca kondisi chart & narasi sebelum keputusan ────────
       let market = null;
@@ -877,6 +888,9 @@ export async function runHealerAlpha(notifyFn) {
 
   // Skip LLM jika pre-flight sudah close semua posisi — hemat API call
   if (getOpenPositions().length === 0) return null;
+
+  // Smart skip: semua posisi healthy (in-range, fees rendah, PnL normal) — skip LLM
+  if (!_healerNeedsLLM) return null;
 
   const safety   = getSafetyStatus();
   const instincts = getInstinctsContext();

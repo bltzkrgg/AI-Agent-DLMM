@@ -13,8 +13,8 @@ const DEFAULTS = {
   gasReserve: 0.02, // SOL yang disisakan untuk tx fees + account rent
 
   // Agent intervals (minutes)
-  managementIntervalMin: 10,
-  screeningIntervalMin: 30,
+  managementIntervalMin: 15,
+  screeningIntervalMin: 60,
 
   // Auto-screening
   autoScreeningEnabled: false,  // Aktifkan auto-screening Hunter via cron
@@ -23,11 +23,11 @@ const DEFAULTS = {
   // Dry run — tidak eksekusi TX apapun, semua else normal
   dryRun: false,
 
-  // Models — default ke gpt-4o-mini, bisa override di .env via AI_MODEL
+  // Models — default ke qwen3.6-plus:free, bisa override di .env via AI_MODEL
   // activeModel: diset via /model command — highest priority, override semua
-  managementModel: 'openai/gpt-4o-mini',
-  screeningModel: 'openai/gpt-4o-mini',
-  generalModel: 'openai/gpt-4o-mini',
+  managementModel: 'qwen/qwen3.6-plus:free',
+  screeningModel: 'qwen/qwen3.6-plus:free',
+  generalModel: 'qwen/qwen3.6-plus:free',
   activeModel: null,
 
   // Screening thresholds

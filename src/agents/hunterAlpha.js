@@ -267,12 +267,26 @@ async function executeTool(name, input) {
         ? `LP Agent: ${rawLP.length} pools discovered, ${lpAgentOnly.length} tambahan baru, enrich ${allAddresses.length} pool.`
         : 'LP Agent: disabled (LP_AGENT_API_KEY tidak diset).';
 
+      // Trim kandidat — hapus field verbose yang tidak dibutuhkan LLM untuk keputusan
+      const trimmedCandidates = filtered.map(p => ({
+        address:        p.address,
+        name:           p.name || '',
+        binStep:        p.binStep,
+        tvl:            typeof p.tvl === 'number' ? Math.round(p.tvl) : p.tvlStr,
+        fees24h:        p.fees24hRaw ? parseFloat(p.fees24hRaw.toFixed(2)) : undefined,
+        feeToTvlRatio:  p.feeToTvlRatio,
+        darwinScore:    p.darwinScore ? parseFloat(p.darwinScore.toFixed(3)) : undefined,
+        multiTFScore:   p.multiTFScore || undefined,
+        smartWallet:    p.smartWallet || undefined,
+        poolMemory:     p.poolMemory  || undefined,
+        lpAgent:        p.lpAgent?.inLPAgentList
+          ? { organicScore: p.lpAgent.organicScore, feeTVLRatioLP: p.lpAgent.feeTVLRatioLP }
+          : undefined,
+      }));
+
       return JSON.stringify({
-        thresholds,
-        filterCriteria: { maxBinStep: 250, minFeeActiveTvlRatio: thresholds.minFeeActiveTvlRatio },
-        darwinWeights:  weights,
-        note: `Sorted by darwinScore (adaptive). Pool cooldown sudah difilter. multiTFScore, smartWallet, lpAgent tersedia. ${lpNote}`,
-        candidates: filtered,
+        note: `Sorted by darwinScore. Pool cooldown difilter. ${lpNote}`,
+        candidates: trimmedCandidates,
       }, null, 2);
     }
 
