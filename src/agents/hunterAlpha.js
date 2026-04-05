@@ -498,31 +498,41 @@ async function executeTool(name, input) {
 
       // Notifikasi posisi terbuka dengan detail PnL awal
       if (hunterNotifyFn && result.success) {
-        const cfg2 = getConfig();
+        const cfg2    = getConfig();
         const tpTarget = cfg2.takeProfitFeePct ?? 5;
         const slTarget = cfg2.stopLossPct      ?? 5;
-        const trailAct = 3.0;
+        const trailAct = cfg2.trailingTriggerPct ?? 3.0;
+        const nPos     = result.positionCount ?? 1;
 
         const details = [
-          kv('Posisi',   shortAddr(result.positionAddress, 4, 4), 9),
+          kv('Posisi',   nPos > 1
+            ? `${nPos}x chunks (${result.positions.map(p => shortAddr(p.address, 4, 4)).join(', ')})`
+            : shortAddr(result.positionAddress, 4, 4), 9),
           kv('Pool',     shortAddr(input.pool_address, 4, 4), 9),
           kv('Strategi', strategy?.name || 'default', 9),
-          kv('Deploy',   `${deployAmountSol} SOL (Single-Side)`, 9),
+          kv('Deploy',   `${deployAmountSol} SOL (${nPos > 1 ? `${nPos} positions` : 'Single-Side'})`, 9),
+          ...(nPos > 1 ? result.positions.map((p, i) =>
+            kv(`Chunk${i+1}`, `${p.yAmountSol.toFixed(4)}◎ @ ${p.binCount} bins`, 9)
+          ) : []),
           hr(40),
           kv('Entry',    result.entryPrice?.toFixed(8)  ?? '-', 9),
           kv('Bawah',    `${result.lowerPrice?.toFixed(8) ?? '-'}  (-${priceRangePct}%)`, 9),
           kv('Atas',     `${result.upperPrice?.toFixed(8) ?? '-'}  (entry)`, 9),
           kv('Fee/bin',  `${result.feeRatePct}%`, 9),
-          kv('Range',    `${priceRangePct}% (ATR-dynamic)`, 9),
+          kv('Range',    `${priceRangePct}% | ${result.positions.reduce((s, p) => s + p.binCount, 0)} bins total`, 9),
           hr(40),
           kv('TP',       `+${tpTarget}%  Trail: +${trailAct}%  SL: -${slTarget}%`, 9),
         ];
 
+        const txLinks = result.txHashes.slice(0, 3)
+          .map((h, i) => `[Tx${result.txHashes.length > 1 ? i + 1 : ''}](https://solscan.io/tx/${h})`)
+          .join(' · ');
+
         const openMsg =
-          `🚀 *Posisi Dibuka*\n\n` +
+          `🚀 *Posisi Dibuka${nPos > 1 ? ` (${nPos} Chunks)` : ''}*\n\n` +
           codeBlock(details) + '\n' +
           `💭 _${input.reasoning}_\n\n` +
-          `🔗 [Tx](https://solscan.io/tx/${result.txHash})`;
+          `🔗 ${txLinks}`;
 
         await hunterNotifyFn(openMsg);
       }
@@ -531,7 +541,7 @@ async function executeTool(name, input) {
       if (result.success && result.positionAddress) {
         recordDeployment(input.pool_address);
 
-        // Cari pool data dari lastCandidates untuk capture sinyal
+        // Capture signals for all positions (use first address for primary signal)
         const poolData = lastCandidates.find(c => c.address === input.pool_address);
         if (poolData) captureSignals(result.positionAddress, poolData);
       }

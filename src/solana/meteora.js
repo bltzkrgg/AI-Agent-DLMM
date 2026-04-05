@@ -1,4 +1,4 @@
-import DLMM from '@meteora-ag/dlmm';
+import DLMM, { chunkBinRange } from '@meteora-ag/dlmm';
 import { PublicKey, Keypair } from '@solana/web3.js';
 import BN from 'bn.js';
 import { getConnection, getWallet } from './wallet.js';
@@ -6,6 +6,8 @@ import { savePosition, closePositionWithPnl } from '../db/database.js';
 import { fetchWithTimeout, withRetry } from '../utils/safeJson.js';
 import { resolveTokens, WSOL_MINT } from '../utils/tokenMeta.js';
 import { isDryRun } from '../config.js';
+
+const METEORA_DLMM_API = 'https://dlmm-api.meteora.ag';
 
 // ─── Safe BN conversion — avoids floating point errors ──────────
 
@@ -90,6 +92,52 @@ export async function getPoolInfo(poolAddress) {
       isSOLPair,
     };
   });
+}
+
+// ─── Meteora API fallback for position info ──────────────────────
+// Called when the on-chain SDK call fails (RPC timeout, node issue).
+// Returns same shape as getPositionInfo() — subset of fields.
+// Field mapping from Meteora REST API response.
+
+async function getPositionInfoFromMeteoraAPI(poolAddress) {
+  try {
+    const wallet  = getWallet();
+    const owner   = wallet.publicKey.toString();
+
+    // Primary: user+pair filter
+    const url = `${METEORA_DLMM_API}/position/list_by_user_and_pair?user=${owner}&pair=${poolAddress}`;
+    const res = await fetchWithTimeout(url, {}, 8000);
+    if (!res.ok) return null;
+
+    const raw  = await res.json();
+    const rows = Array.isArray(raw) ? raw : (raw.userPositions ?? raw.positions ?? raw.data ?? []);
+    if (!rows.length) return [];
+
+    return rows.map(p => {
+      const xAmt      = parseFloat(p.totalXAmount   ?? p.total_x_amount   ?? 0);
+      const yAmt      = parseFloat(p.totalYAmount   ?? p.total_y_amount   ?? 0);
+      const feeX      = parseFloat(p.feeX           ?? p.fee_x            ?? p.unclaimed_fee_x ?? 0);
+      const feeY      = parseFloat(p.feeY           ?? p.fee_y            ?? p.unclaimed_fee_y ?? 0);
+      const price     = parseFloat(p.currentPrice   ?? p.active_bin_price ?? 0);
+      const valSol    = yAmt + feeY + (xAmt + feeX) * price;
+      const feeSol    = feeY + feeX * price;
+
+      return {
+        address:          p.address ?? p.pubkey ?? p.positionAddress ?? '',
+        currentValueSol:  parseFloat(valSol.toFixed(9)),
+        feeCollectedSol:  parseFloat(feeSol.toFixed(9)),
+        inRange:          p.inRange          ?? p.is_in_range   ?? true,
+        lowerBinId:       p.lowerBinId       ?? p.lower_bin_id  ?? 0,
+        upperBinId:       p.upperBinId       ?? p.upper_bin_id  ?? 0,
+        activeBinId:      p.activeBinId      ?? p.active_bin_id ?? 0,
+        binStep:          p.binStep          ?? p.bin_step      ?? 0,
+        currentPrice:     price,
+        fromAPI:          true,  // signals this is from REST API, not on-chain
+      };
+    });
+  } catch {
+    return null;
+  }
 }
 
 // ─── Position Info ───────────────────────────────────────────────
@@ -201,8 +249,10 @@ export async function getPositionInfo(poolAddress) {
       });
     }, 3, 2000);
   } catch {
-    // Network/SDK error — return null to signal fetch failure (not manual close)
-    return null;
+    // SDK failed (RPC/network) — try Meteora REST API as fallback
+    console.warn(`[meteora] SDK getPositionInfo failed for ${poolAddress?.slice(0,8)}, trying API fallback`);
+    return await getPositionInfoFromMeteoraAPI(poolAddress);
+    // If API also fails, returns null — callers treat null as network error (no manual-close detection)
   }
 }
 
@@ -252,50 +302,68 @@ export async function openPosition(poolAddress, tokenXAmount, tokenYAmount, pric
 
   // ── Bin range calculation ────────────────────────────────────────
   // binsBelow = priceRangePercent * 100 / binStep
-  // Evil Panda targets 80–250 bins at binStep 80–125 — no hard cap here.
+  // Meteora on-chain limit = 70 bins per position account.
+  // For wide ranges (Evil Panda 80–250 bins), we chunk into multiple 70-bin positions.
   const isSingleSideSOL = tokenXAmount === 0;
-  const binsBelow = Math.max(2, Math.floor((priceRangePercent / 100) / (binStep / 10000)));
+  const rawBins  = Math.max(2, Math.floor((priceRangePercent / 100) / (binStep / 10000)));
+  const rangeMin = activeBin.binId - rawBins;
+  const rangeMax = activeBin.binId; // single-side SOL: active bin is the ceiling
+  const totalBins = rawBins + 1;
 
-  let minBinId, maxBinId;
-  if (isSingleSideSOL) {
-    minBinId = activeBin.binId - binsBelow;
-    maxBinId = activeBin.binId;
-  } else {
-    minBinId = activeBin.binId - binsBelow;
-    maxBinId = activeBin.binId + binsBelow;
-  }
+  // SDK chunkBinRange splits into ≤70-bin chunks, ordered low → high
+  const binChunks = chunkBinRange(rangeMin, rangeMax);
 
-  const totalXAmount = toBN(tokenXAmount, xDecimals);
-  const totalYAmount = toBN(tokenYAmount, yDecimals);
+  const allPositionKps  = binChunks.map(() => Keypair.generate());
+  const allTxHashes     = [];
+  const deployedPositions = [];
 
-  const newPosition = Keypair.generate();
+  for (let ci = 0; ci < binChunks.length; ci++) {
+    const chunk     = binChunks[ci];
+    const chunkBins = chunk.upperBinId - chunk.lowerBinId + 1;
 
-  const txs = await dlmmPool.initializePositionAndAddLiquidityByStrategy({
-    positionPubKey: newPosition.publicKey,
-    user:           wallet.publicKey,
-    totalXAmount,
-    totalYAmount,
-    strategy:       { maxBinId, minBinId, strategyType: 0 },
-  });
+    // Proportional SOL allocation — more bins → more liquidity
+    const chunkYSol  = tokenYAmount * (chunkBins / totalBins);
+    const chunkTotalX = new BN(0);
+    const chunkTotalY = toBN(chunkYSol, yDecimals);
 
-  const txList = Array.isArray(txs) ? txs : [txs];
-  const txHashes = [];
+    const posKp = allPositionKps[ci];
 
-  for (const tx of txList) {
-    const { blockhash } = await connection.getLatestBlockhash('confirmed');
-    tx.recentBlockhash = blockhash;
-    tx.feePayer = wallet.publicKey;
-    tx.sign(wallet, newPosition);
-
-    const txHash = await connection.sendRawTransaction(tx.serialize(), {
-      skipPreflight: false,
-      preflightCommitment: 'confirmed',
-      maxRetries: 2,
+    const txs = await dlmmPool.initializePositionAndAddLiquidityByStrategy({
+      positionPubKey: posKp.publicKey,
+      user:           wallet.publicKey,
+      totalXAmount:   chunkTotalX,
+      totalYAmount:   chunkTotalY,
+      strategy:       { maxBinId: chunk.upperBinId, minBinId: chunk.lowerBinId, strategyType: 0 },
     });
 
-    await pollTxConfirm(connection, txHash, 90000);
-    txHashes.push(txHash);
+    const txList = Array.isArray(txs) ? txs : [txs];
+    for (const tx of txList) {
+      const { blockhash } = await connection.getLatestBlockhash('confirmed');
+      tx.recentBlockhash = blockhash;
+      tx.feePayer = wallet.publicKey;
+      tx.sign(wallet, posKp);
+
+      const txHash = await connection.sendRawTransaction(tx.serialize(), {
+        skipPreflight: false,
+        preflightCommitment: 'confirmed',
+        maxRetries: 2,
+      });
+
+      await pollTxConfirm(connection, txHash, 90000);
+      allTxHashes.push(txHash);
+    }
+
+    deployedPositions.push({
+      address:   posKp.publicKey.toString(),
+      minBinId:  chunk.lowerBinId,
+      maxBinId:  chunk.upperBinId,
+      binCount:  chunkBins,
+      yAmountSol: parseFloat(chunkYSol.toFixed(6)),
+    });
   }
+
+  const minBinId = rangeMin;
+  const maxBinId = rangeMax;
 
   // ── Price range display ──────────────────────────────────────────
   const lowerRaw = binPrice(rawActivePrice, binStep, minBinId - activeBin.binId);
@@ -313,24 +381,30 @@ export async function openPosition(poolAddress, tokenXAmount, tokenYAmount, pric
 
   const solPriceUsd = await getSolPriceUsd().catch(() => 150);
 
-  savePosition({
-    pool_address:     poolAddress,
-    position_address: newPosition.publicKey.toString(),
-    token_x:          xMint,
-    token_y:          yMint,
-    token_x_amount:   tokenXAmount,
-    token_y_amount:   tokenYAmount,
-    deployed_sol:     tokenYAmount,
-    entry_price:      rawActivePrice,
-    deployed_usd:     parseFloat((tokenYAmount * solPriceUsd).toFixed(2)),
-    strategy_used:    strategyName,
-  });
+  // Save each position chunk to DB independently — Healer tracks them separately
+  for (const pos of deployedPositions) {
+    savePosition({
+      pool_address:     poolAddress,
+      position_address: pos.address,
+      token_x:          xMint,
+      token_y:          yMint,
+      token_x_amount:   tokenXAmount,
+      token_y_amount:   pos.yAmountSol,
+      deployed_sol:     pos.yAmountSol,
+      entry_price:      rawActivePrice,
+      deployed_usd:     parseFloat((pos.yAmountSol * solPriceUsd).toFixed(2)),
+      strategy_used:    strategyName,
+    });
+  }
 
   return {
     success:            true,
-    txHash:             txHashes[0],
-    txHashes,
-    positionAddress:    newPosition.publicKey.toString(),
+    txHash:             allTxHashes[0],
+    txHashes:           allTxHashes,
+    positionAddress:    deployedPositions[0].address,     // backward compat
+    positionAddresses:  deployedPositions.map(p => p.address),
+    positionCount:      deployedPositions.length,
+    positions:          deployedPositions,
     // Human-readable prices
     entryPrice:         displayCurrentPrice,
     lowerPrice:         displayLowerPrice,
