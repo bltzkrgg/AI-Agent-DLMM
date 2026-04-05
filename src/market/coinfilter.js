@@ -389,10 +389,10 @@ function step8_rugCheckFilter(rc) {
   if (rc.warnRisks > 0)
     warnings.push({ rule: 'RUGCHECK_WARN', msg: `RugCheck: ${rc.warnRisks} warn risk(s) — ${(rc.warnRiskNames || []).slice(0, 3).join(', ')}` });
 
-  // Very high risk score → REJECT (threshold raised to 75)
-  if (rc.scoreNorm >= 75 && !rc.rugged)
-    rejects.push({ rule: 'RUGCHECK_HIGH_SCORE', msg: `RugCheck risk score: ${rc.scoreNorm}/100 (≥75 = high risk)` });
-  else if (rc.scoreNorm >= 50 && rc.dangerRisks === 0)
+  // Very high risk score → REJECT (threshold 85 — "Good" tokens di website ≤80)
+  if (rc.scoreNorm >= 85 && !rc.rugged)
+    rejects.push({ rule: 'RUGCHECK_HIGH_SCORE', msg: `RugCheck risk score: ${rc.scoreNorm}/100 (≥85 = high risk)` });
+  else if (rc.scoreNorm >= 60 && rc.dangerRisks === 0)
     warnings.push({ rule: 'RUGCHECK_MEDIUM_SCORE', msg: `RugCheck risk score: ${rc.scoreNorm}/100 (borderline)` });
 
   return { rejects, warnings, available: true };

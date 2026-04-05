@@ -99,6 +99,7 @@ export async function getPoolInfo(poolAddress) {
 // Called when the on-chain SDK call fails (RPC timeout, node issue).
 // Returns same shape as getPositionInfo() — subset of fields.
 // Field mapping from Meteora REST API response.
+// Exported as getPositionInfoLight for lightweight use (monitor, status updates).
 
 async function getPositionInfoFromMeteoraAPI(poolAddress) {
   try {
@@ -139,6 +140,13 @@ async function getPositionInfoFromMeteoraAPI(poolAddress) {
   } catch {
     return null;
   }
+}
+
+// Lightweight export — tries Meteora REST API only (no on-chain RPC).
+// Ideal for periodic monitor updates where RPC cost matters.
+// Returns null on failure (caller should fall back gracefully).
+export async function getPositionInfoLight(poolAddress) {
+  return getPositionInfoFromMeteoraAPI(poolAddress);
 }
 
 // ─── Position Info ───────────────────────────────────────────────
@@ -352,12 +360,21 @@ export async function openPosition(poolAddress, tokenXAmount, tokenYAmount, pric
       const { blockhash } = await connection.getLatestBlockhash('confirmed');
       tx.recentBlockhash = blockhash;
       tx.feePayer = wallet.publicKey;
+
+      // Priority fee — initializePosition + addLiquidity butuh compute unit tinggi
+      if (!(tx instanceof VersionedTransaction)) {
+        tx.instructions.unshift(
+          ComputeBudgetProgram.setComputeUnitLimit({ units: 400_000 }),
+          ComputeBudgetProgram.setComputeUnitPrice({ microLamports: 200_000 }),
+        );
+      }
+
       tx.sign(wallet, posKp);
 
       const txHash = await connection.sendRawTransaction(tx.serialize(), {
         skipPreflight: false,
         preflightCommitment: 'confirmed',
-        maxRetries: 2,
+        maxRetries: 3,
       });
 
       await pollTxConfirm(connection, txHash, 60000);
@@ -392,9 +409,10 @@ export async function openPosition(poolAddress, tokenXAmount, tokenYAmount, pric
 
   const solPriceUsd = await getSolPriceUsd().catch(() => 150);
 
-  // Save each position chunk to DB independently — Healer tracks them separately
+  // Save each position chunk to DB — retry once on failure to guard against
+  // transient DB write errors after TX has already landed on-chain.
   for (const pos of deployedPositions) {
-    savePosition({
+    const record = {
       pool_address:     poolAddress,
       position_address: pos.address,
       token_x:          xMint,
@@ -405,7 +423,16 @@ export async function openPosition(poolAddress, tokenXAmount, tokenYAmount, pric
       entry_price:      rawActivePrice,
       deployed_usd:     parseFloat((pos.yAmountSol * solPriceUsd).toFixed(2)),
       strategy_used:    strategyName,
-    });
+      token_x_symbol:   xMeta.symbol,
+    };
+    try {
+      savePosition(record);
+    } catch (dbErr) {
+      console.warn(`[openPosition] DB write failed (${dbErr.message}), retrying in 1s…`);
+      await new Promise(r => setTimeout(r, 1000));
+      try { savePosition(record); }
+      catch (e2) { console.error(`[openPosition] DB write retry failed: ${e2.message}`); }
+    }
   }
 
   return {

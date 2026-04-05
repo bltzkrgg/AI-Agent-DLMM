@@ -15,7 +15,7 @@ import { extractStrategiesFromArticle, summarizeArticle } from './market/researc
 import { getLibraryStats } from './market/strategyLibrary.js';
 import { screenToken, formatScreenResult } from './market/coinfilter.js';
 import { getOpenPositions, getPositionStats, closePositionWithPnl } from './db/database.js';
-import { getPositionInfo } from './solana/meteora.js';
+import { getPositionInfo, getPositionInfoLight } from './solana/meteora.js';
 import { padR, hr, kv, codeBlock, formatPnl, shortAddr, shortStrat } from './utils/table.js';
 import { initMonitor } from './monitor/positionMonitor.js';
 import { autoEvolveIfReady } from './learn/evolve.js';
@@ -698,6 +698,58 @@ bot.onText(/\/status/, async (msg) => {
       text += codeBlock(tableLines);
     }
 
+    await sendLong(chatId, text, { parse_mode: 'Markdown' });
+  } catch (e) {
+    bot.sendMessage(chatId, `❌ ${e.message}`);
+  }
+});
+
+// /pos — snapshot posisi cepat via REST API (tanpa LLM, tanpa on-chain RPC)
+bot.onText(/\/pos$/, async (msg) => {
+  if (msg.from.id !== ALLOWED_ID) return;
+  const chatId = msg.chat.id;
+  try {
+    const openPos = getOpenPositions();
+    if (!openPos.length) {
+      return bot.sendMessage(chatId, '_Tidak ada posisi terbuka._', { parse_mode: 'Markdown' });
+    }
+
+    const poolsToCheck = [...new Set(openPos.map(p => p.pool_address))];
+    const results = await Promise.allSettled(
+      poolsToCheck.map(addr => getPositionInfoLight(addr))
+    );
+
+    // Build chainMap: positionAddress → pos data
+    const chainMap = {};
+    for (let i = 0; i < poolsToCheck.length; i++) {
+      const r = results[i];
+      if (r.status !== 'fulfilled' || !r.value?.length) continue;
+      for (const pos of r.value) chainMap[pos.address] = pos;
+    }
+
+    const time = new Date().toLocaleTimeString('id-ID', {
+      hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Jakarta',
+    });
+    let text = `📊 *Posisi Terbuka — ${time} WIB*\n\n`;
+
+    for (const pos of openPos) {
+      const cd        = chainMap[pos.position_address];
+      const deploySol = parseFloat(pos.deployed_sol ?? 0);
+      const pnlPct    = cd && deploySol > 0
+        ? ((cd.currentValueSol - deploySol) / deploySol * 100).toFixed(2)
+        : '?';
+      const pnlSign   = parseFloat(pnlPct) >= 0 ? '+' : '';
+      const rangeIcon = cd ? (cd.inRange ? '🟢' : '🔴') : '⚪';
+      const oorLabel  = cd && !cd.inRange ? ' OOR' : '';
+      const feesStr   = cd ? `${(cd.feeCollectedSol || 0).toFixed(4)} SOL` : '?';
+      const strat     = pos.strategy_used ? ` · ${pos.strategy_used}` : '';
+
+      text +=
+        `${rangeIcon} \`${pos.pool_address.slice(0, 8)}...\`${strat}${oorLabel}\n` +
+        `  PnL: \`${pnlSign}${pnlPct}%\`  Fees: \`${feesStr}\`  Deploy: \`${deploySol.toFixed(4)} SOL\`\n`;
+    }
+
+    text += `\n_Data via Meteora API — gunakan /status untuk data on-chain penuh._`;
     await sendLong(chatId, text, { parse_mode: 'Markdown' });
   } catch (e) {
     bot.sendMessage(chatId, `❌ ${e.message}`);
