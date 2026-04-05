@@ -175,9 +175,9 @@ cron.schedule('* * * * *', async () => {
   const liveCfg = getConfig();
   const now     = Date.now();
   if (now - _lastHealerRun < liveCfg.managementIntervalMin * 60 * 1000) return;
-  _lastHealerRun = now;
-
+  // Update SETELAH cek busy — supaya timer tidak mundur saat healer masih jalan
   if (_healerBusy) { console.log('⏭ Healer skip — masih berjalan'); return; }
+  _lastHealerRun = now;
   _healerBusy = true;
   try {
     await runHealerWithReopenCheck();
@@ -496,7 +496,22 @@ bot.onText(/\/model(?:\s+(.+))?/, async (msg, match) => {
   if (modelId === 'reset') {
     updateConfig({ activeModel: null });
     const fallback = process.env.AI_MODEL || getConfig().generalModel || 'openai/gpt-4o-mini';
-    bot.sendMessage(chatId, `✅ *Model di-reset*\n\nKembali ke: \`${fallback}\``, { parse_mode: 'Markdown' });
+    const envNote  = process.env.AI_MODEL
+      ? `\n\n⚠️ \`AI_MODEL\` env aktif: \`${process.env.AI_MODEL}\`\n_/model command tidak bisa override env. Hapus \`AI_MODEL\` dari .env untuk pakai /model._`
+      : '';
+    bot.sendMessage(chatId, `✅ *Model di-reset*\n\nKembali ke: \`${fallback}\`${envNote}`, { parse_mode: 'Markdown' });
+    return;
+  }
+
+  // Warn jika AI_MODEL env aktif — /model command tidak akan efektif
+  if (process.env.AI_MODEL) {
+    bot.sendMessage(
+      chatId,
+      `⚠️ *AI\\_MODEL env aktif*\n\nEnv: \`${process.env.AI_MODEL}\`\n\n` +
+      `\`/model\` command tidak bisa override env var.\n` +
+      `Hapus atau ubah \`AI_MODEL\` di file \`.env\` lalu restart bot untuk ganti model.`,
+      { parse_mode: 'Markdown' }
+    );
     return;
   }
 
