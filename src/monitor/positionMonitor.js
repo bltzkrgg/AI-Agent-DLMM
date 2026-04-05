@@ -137,14 +137,20 @@ async function sendPositionStatus() {
         oorDur = min < 60 ? ` (${min}m)` : ` (${Math.floor(min/60)}j${min%60}m)`;
       }
 
-      // Symbol — dari SDK result jika ada, fallback ke DB token_x short
+      // Symbol — SDK result > DB token_x_symbol > short mint
       const symbol = pos.tokenXSymbol
+        || dbPos?.token_x_symbol
         || (dbPos?.token_x ? dbPos.token_x.slice(0, 6) : poolAddress.slice(0, 6));
 
-      // Price — pakai display price kalau ada (SDK), raw kalau REST API
+      // Price — SDK result punya displayCurrentPrice (sudah di-invert)
+      // REST API hanya punya currentPrice (raw SOL/tokenX) → invert kalau SOL pair
+      const WSOL = 'So11111111111111111111111111111111111111112';
+      const isSOLPair = dbPos?.token_y === WSOL;
       const priceStr = pos.displayCurrentPrice != null
         ? `${pos.displayCurrentPrice} ${pos.priceUnit || ''}`
-        : pos.currentPrice > 0 ? pos.currentPrice.toFixed(8) : '-';
+        : pos.currentPrice > 0
+          ? `${isSOLPair ? (1 / pos.currentPrice).toFixed(4) : pos.currentPrice.toFixed(8)} ${isSOLPair ? `${symbol}/SOL` : ''}`
+          : '-';
 
       const rangeStr = pos.displayLowerPrice != null
         ? `${pos.displayLowerPrice} – ${pos.displayUpperPrice}`

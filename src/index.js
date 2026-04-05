@@ -555,16 +555,18 @@ bot.onText(/\/start/, (msg) => {
     `/entry — set SOL & jumlah pool, lalu deploy\n` +
     `/autoscreen on|off — aktifkan/matikan auto-screening\n\n` +
     `*Monitor:*\n` +
-    `/status /heal /results /pools\n\n` +
+    `/pos — snapshot posisi cepat (REST API, instan)\n` +
+    `/status — posisi lengkap + balance + stats (on-chain)\n` +
+    `/heal /results /pools\n\n` +
+    `*Config:*\n` +
+    `/setconfig — lihat semua config\n` +
+    `/setconfig key value — ubah config tanpa restart\n` +
+    `/dryrun on|off — toggle dry run mode\n\n` +
     `*Tools:*\n` +
-    `/check <mint> — screen token (RugCheck + mcap + ATH)\n` +
-    `/testmodel /strategies /library /research\n` +
+    `/check <mint> — screen token (RugCheck + mcap)\n` +
+    `/testmodel /model /strategies /library /research\n` +
     `/learn [pool] /lessons /memory /evolve\n` +
-    `/thresholds /safety\n\n` +
-    `*Intelligence:*\n` +
-    `/weights — lihat/recalibrate Darwinian signal weights\n` +
-    `/poolmemory — riwayat & performa per pool\n` +
-    `/pinlesson <n> — pin lesson ke tier 1 prompt\n\n` +
+    `/thresholds /safety /weights /poolmemory\n\n` +
     `*Smart Wallets:*\n` +
     `/addwallet <addr> <label> | /removewallet | /listwallet\n\n` +
     `Atau chat bebas langsung!`,
@@ -743,10 +745,22 @@ bot.onText(/\/pos$/, async (msg) => {
       const oorLabel  = cd && !cd.inRange ? ' OOR' : '';
       const feesStr   = cd ? `${(cd.feeCollectedSol || 0).toFixed(4)} SOL` : '?';
       const strat     = pos.strategy_used ? ` · ${pos.strategy_used}` : '';
+      const symbol    = pos.token_x_symbol || pos.token_x?.slice(0, 6) || '?';
+
+      // Invert harga kalau SOL pair dan data dari REST API (tidak ada displayCurrentPrice)
+      const WSOL_M = 'So11111111111111111111111111111111111111112';
+      const isSOLP = pos.token_y === WSOL_M;
+      const rawPrice = cd?.currentPrice;
+      const priceDisp = cd?.displayCurrentPrice != null
+        ? `${cd.displayCurrentPrice} ${cd.priceUnit || ''}`
+        : rawPrice > 0
+          ? `${isSOLP ? (1/rawPrice).toFixed(4) : rawPrice.toFixed(8)} ${isSOLP ? `${symbol}/SOL` : ''}`
+          : '';
 
       text +=
-        `${rangeIcon} \`${pos.pool_address.slice(0, 8)}...\`${strat}${oorLabel}\n` +
-        `  PnL: \`${pnlSign}${pnlPct}%\`  Fees: \`${feesStr}\`  Deploy: \`${deploySol.toFixed(4)} SOL\`\n`;
+        `${rangeIcon} \`${pos.pool_address.slice(0, 8)}...\` *${symbol}/SOL*${strat}${oorLabel}\n` +
+        `  PnL: \`${pnlSign}${pnlPct}%\`  Fees: \`${feesStr}\`  Deploy: \`${deploySol.toFixed(4)} SOL\`\n` +
+        (priceDisp ? `  Harga: \`${priceDisp}\`\n` : '');
     }
 
     text += `\n_Data via Meteora API — gunakan /status untuk data on-chain penuh._`;
@@ -1059,6 +1073,65 @@ bot.onText(/\/(?:autoscreen|autohunter)(?:\s+(on|off))?/, async (msg, match) => 
 });
 
 // ─── Signal Weights command ───────────────────────────────────────
+
+// /setconfig [key] [value] — baca atau ubah config tanpa restart
+bot.onText(/\/setconfig(?:\s+(\S+))?(?:\s+(.+))?/, (msg, match) => {
+  if (msg.from.id !== ALLOWED_ID) return;
+  const chatId = msg.chat.id;
+  const key    = match[1]?.trim();
+  const rawVal = match[2]?.trim();
+
+  const cfg = getConfig();
+
+  // Tanpa argumen → tampilkan config yang bisa diubah
+  if (!key) {
+    const lines = [
+      `deployAmountSol          = ${cfg.deployAmountSol}`,
+      `maxPositions             = ${cfg.maxPositions}`,
+      `managementIntervalMin    = ${cfg.managementIntervalMin}`,
+      `screeningIntervalMin     = ${cfg.screeningIntervalMin}`,
+      `positionUpdateIntervalMin= ${cfg.positionUpdateIntervalMin}`,
+      `takeProfitFeePct         = ${cfg.takeProfitFeePct}`,
+      `trailingTriggerPct       = ${cfg.trailingTriggerPct}`,
+      `trailingDropPct          = ${cfg.trailingDropPct}`,
+      `stopLossPct              = ${cfg.stopLossPct}`,
+      `outOfRangeWaitMinutes    = ${cfg.outOfRangeWaitMinutes}`,
+      `minOrganic               = ${cfg.minOrganic}`,
+      `minMcap                  = ${cfg.minMcap}`,
+      `minVolume24h             = ${cfg.minVolume24h}`,
+      `minTvl                   = ${cfg.minTvl}`,
+      `maxTvl                   = ${cfg.maxTvl}`,
+      `dryRun                   = ${cfg.dryRun}`,
+    ];
+    return bot.sendMessage(chatId,
+      `⚙️ *Config Saat Ini*\n\n\`\`\`\n${lines.join('\n')}\`\`\`\n\n_Ubah: \`/setconfig key value\`_`,
+      { parse_mode: 'Markdown' }
+    );
+  }
+
+  // Parse nilai
+  let parsed;
+  if (rawVal === 'true')        parsed = true;
+  else if (rawVal === 'false')  parsed = false;
+  else if (!isNaN(rawVal))      parsed = parseFloat(rawVal);
+  else                          parsed = rawVal;
+
+  const result = updateConfig({ [key]: parsed });
+
+  // Cek apakah key di-reject (tidak ada di result atau value tidak berubah)
+  const saved = result[key];
+  if (saved === undefined) {
+    return bot.sendMessage(chatId,
+      `❌ Key \`${key}\` tidak dikenal atau di luar batas yang diizinkan.`,
+      { parse_mode: 'Markdown' }
+    );
+  }
+
+  bot.sendMessage(chatId,
+    `✅ *Config diperbarui*\n\n\`${key}\` → \`${saved}\`\n\n_Berlaku segera, tidak perlu restart._`,
+    { parse_mode: 'Markdown' }
+  );
+});
 
 // /weights — tampilkan/recalibrate bobot Darwinian
 bot.onText(/\/weights/, async (msg) => {

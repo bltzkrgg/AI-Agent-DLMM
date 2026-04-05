@@ -53,6 +53,7 @@ const migrations = [
   'ALTER TABLE positions ADD COLUMN deployed_usd REAL DEFAULT 0',
   'ALTER TABLE positions ADD COLUMN range_efficiency_pct REAL DEFAULT 0',
   'ALTER TABLE positions ADD COLUMN deployed_sol REAL DEFAULT 0',
+  'ALTER TABLE positions ADD COLUMN token_x_symbol TEXT',
 ];
 for (const sql of migrations) {
   try { db.exec(sql); } catch { /* kolom sudah ada, skip */ }
@@ -61,19 +62,20 @@ for (const sql of migrations) {
 export function savePosition(data) {
   return db.prepare(`
     INSERT OR IGNORE INTO positions
-    (pool_address, position_address, token_x, token_y, token_x_amount, token_y_amount, deployed_sol, entry_price, deployed_usd, strategy_used)
-    VALUES (@pool_address, @position_address, @token_x, @token_y, @token_x_amount, @token_y_amount, @deployed_sol, @entry_price, @deployed_usd, @strategy_used)
+    (pool_address, position_address, token_x, token_y, token_x_amount, token_y_amount, deployed_sol, entry_price, deployed_usd, strategy_used, token_x_symbol)
+    VALUES (@pool_address, @position_address, @token_x, @token_y, @token_x_amount, @token_y_amount, @deployed_sol, @entry_price, @deployed_usd, @strategy_used, @token_x_symbol)
   `).run({
-    pool_address: data.pool_address,
+    pool_address:     data.pool_address,
     position_address: data.position_address,
-    token_x: data.token_x,
-    token_y: data.token_y,
-    token_x_amount: data.token_x_amount || 0,
-    token_y_amount: data.token_y_amount || 0,
-    deployed_sol: data.deployed_sol || 0,
-    entry_price: data.entry_price || 0,
-    deployed_usd: data.deployed_usd || 0,
-    strategy_used: data.strategy_used || null,
+    token_x:          data.token_x,
+    token_y:          data.token_y,
+    token_x_amount:   data.token_x_amount  || 0,
+    token_y_amount:   data.token_y_amount  || 0,
+    deployed_sol:     data.deployed_sol    || 0,
+    entry_price:      data.entry_price     || 0,
+    deployed_usd:     data.deployed_usd    || 0,
+    strategy_used:    data.strategy_used   || null,
+    token_x_symbol:   data.token_x_symbol  || null,
   });
 }
 

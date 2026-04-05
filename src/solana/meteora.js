@@ -697,12 +697,20 @@ export async function claimFees(poolAddress, positionAddress) {
     const { blockhash } = await connection.getLatestBlockhash('confirmed');
     tx.recentBlockhash = blockhash;
     tx.feePayer = wallet.publicKey;
+
+    if (!(tx instanceof VersionedTransaction)) {
+      tx.instructions.unshift(
+        ComputeBudgetProgram.setComputeUnitLimit({ units: 200_000 }),
+        ComputeBudgetProgram.setComputeUnitPrice({ microLamports: 200_000 }),
+      );
+    }
+
     tx.sign(wallet);
 
     const txHash = await connection.sendRawTransaction(tx.serialize(), {
       skipPreflight: false,
       preflightCommitment: 'confirmed',
-      maxRetries: 2,
+      maxRetries: 3,
     });
 
     await pollTxConfirm(connection, txHash, 60000);
