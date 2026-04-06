@@ -553,10 +553,8 @@ export async function closePositionDLMM(poolAddress, positionAddress, pnlData = 
 
       if (binIdsToRemove.length > 0) {
         // ── 4a. Position dengan bin aktif ────────────────────────
-        // Selalu coba shouldClaimAndClose:true dulu — ini satu-satunya cara yang
-        // benar-benar menghapus account posisi dari chain (bukan hanya menarik likuiditas).
-        // shouldClaimAndClose:false hanya tarik likuiditas, account TETAP ADA di chain
-        // → Meteora UI masih menampilkan posisi sebagai open!
+        // Selalu coba shouldClaimAndClose:true dulu — removes liq + claim fees + hapus account.
+        // shouldClaimAndClose:false hanya tarik likuiditas, account TETAP ADA → Meteora UI open!
         try {
           removeLiqTx = await dlmmPool.removeLiquidity({
             position:               positionPubkey,
@@ -566,8 +564,8 @@ export async function closePositionDLMM(poolAddress, positionAddress, pnlData = 
             shouldClaimAndClose:    true,
           });
         } catch {
-          // Fallback: tarik likuiditas saja — account akan tetap ada, step 6 akan
-          // memanggil closePosition() secara eksplisit untuk hapus account-nya.
+          // Fallback: tarik likuiditas saja — account akan tetap ada.
+          // Step 6 akan panggil closePosition() dengan LbPosition object yang benar.
           removeLiqTx = await dlmmPool.removeLiquidity({
             position:               positionPubkey,
             user:                   wallet.publicKey,
@@ -578,31 +576,46 @@ export async function closePositionDLMM(poolAddress, positionAddress, pnlData = 
         }
       } else {
         // ── 4b. Position tanpa bin (kosong) ──────────────────────
+        // PENTING: closePositionIfEmpty & closePosition minta LbPosition object (bukan PublicKey).
+        // `position` di sini adalah LbPosition dari getPositionsByUserAndLbPair (step 1).
         let emptyCloseOk = false;
 
-        // Coba 1: removeLiquidity + shouldClaimAndClose=true
+        // Coba 1: closePositionIfEmpty — designed khusus untuk empty position
         try {
-          removeLiqTx = await dlmmPool.removeLiquidity({
-            position:               positionPubkey,
-            user:                   wallet.publicKey,
-            binIds:                 [],
-            liquiditiesBpsToRemove: [],
-            shouldClaimAndClose:    true,
-          });
-          emptyCloseOk = true;
+          if (typeof dlmmPool.closePositionIfEmpty === 'function') {
+            removeLiqTx = await dlmmPool.closePositionIfEmpty({
+              owner:    wallet.publicKey,
+              position: position, // LbPosition object dari step 1
+            });
+            emptyCloseOk = true;
+          }
         } catch { /* lanjut ke coba 2 */ }
 
+        // Coba 2: closePosition — hapus account posisi langsung
         if (!emptyCloseOk) {
-          // Coba 2: closePosition SDK langsung
           try {
             if (typeof dlmmPool.closePosition === 'function') {
               removeLiqTx = await dlmmPool.closePosition({
                 owner:    wallet.publicKey,
-                position: positionPubkey,
+                position: position, // LbPosition object dari step 1
               });
               emptyCloseOk = true;
             }
-          } catch { /* lanjut ke fallback */ }
+          } catch { /* lanjut ke coba 3 */ }
+        }
+
+        // Coba 3: removeLiquidity shouldClaimAndClose=true dengan binIds kosong
+        if (!emptyCloseOk) {
+          try {
+            removeLiqTx = await dlmmPool.removeLiquidity({
+              position:               positionPubkey,
+              user:                   wallet.publicKey,
+              binIds:                 [],
+              liquiditiesBpsToRemove: [],
+              shouldClaimAndClose:    true,
+            });
+            emptyCloseOk = true;
+          } catch { /* lanjut ke purge */ }
         }
 
         if (!emptyCloseOk) {
@@ -613,7 +626,7 @@ export async function closePositionDLMM(poolAddress, positionAddress, pnlData = 
             closeReason: 'EMPTY_POSITION_PURGED',
           });
           return { success: true, txHashes: [], emptyPositionPurged: true,
-            note: 'Posisi kosong (0 bin aktif) — dihapus dari DB. Jika ada dana tersisa, close manual via Meteora UI.' };
+            note: 'Posisi kosong — semua metode close gagal. Dana mungkin sudah kembali ke wallet. Verifikasi manual.' };
         }
       }
 
@@ -627,82 +640,60 @@ export async function closePositionDLMM(poolAddress, positionAddress, pnlData = 
 
       // ── 6. Verifikasi + cleanup: pastikan account BENAR-BENAR dihapus ──
       //
-      // Meteora menentukan posisi "open/closed" berdasarkan eksistensi account,
-      // BUKAN berdasarkan isi likuiditas. Jadi meski likuiditas 0, kalau account
-      // masih ada di chain → Meteora UI masih menampilkan posisi sebagai open.
+      // Meteora menentukan "open/closed" berdasarkan eksistensi account, BUKAN likuiditas.
+      // shouldClaimAndClose:false hanya tarik likuiditas — account masih ada → Meteora open.
       //
-      // shouldClaimAndClose:false (fallback path) hanya menarik likuiditas tanpa
-      // menghapus account. Kita perlu panggil closePosition() secara eksplisit.
-      //
-      // Alur:
-      //   getAccountInfo === null → ✅ benar-benar closed (shouldClaimAndClose:true berhasil)
-      //   getAccountInfo !== null → panggil closePosition() → hapus account
-      //     → re-verify: getAccountInfo === null → ✅ closed
-      //     → masih ada → retry attempt berikutnya
+      // PENTING: closePosition/closePositionIfEmpty minta LbPosition object (bukan PublicKey!).
+      // → Fetch fresh position via getPositionsByUserAndLbPair untuk dapat LbPosition object.
+      // → Jika SDK tidak ketemu tapi account masih ada = RPC glitch → retry.
+      // → Tidak ada fallback "sukses" berdasarkan bin count — itu path false-success.
 
       await new Promise(r => setTimeout(r, 5000)); // state propagation Solana ~2-5s
 
-      let stillHasLiquidity = true; // safe default
+      let stillHasLiquidity = true; // safe default: anggap masih ada sampai terbukti sebaliknya
       try {
         const accountInfo = await connection.getAccountInfo(positionPubkey);
         if (accountInfo === null) {
-          // Account sudah hilang → posisi benar-benar closed ✅
+          // Account sudah hilang dari chain → posisi benar-benar closed ✅
           stillHasLiquidity = false;
         } else {
-          // Account masih ada (kemungkinan shouldClaimAndClose:false dipakai).
-          // Panggil closePosition() untuk hapus account dari chain.
-          console.log('[closePositionDLMM] Account masih ada, panggil closePosition() untuk hapus...');
-          let closedViaExplicit = false;
+          // Account masih ada → fetch fresh LbPosition object lalu panggil closePosition()
+          console.log('[closePositionDLMM] Account masih ada, fetch position dan panggil closePosition()...');
           try {
             const dlmmPool2 = await DLMM.create(connection, poolPubkey);
-            if (typeof dlmmPool2.closePosition === 'function') {
+            const { userPositions: vPos } = await dlmmPool2.getPositionsByUserAndLbPair(wallet.publicKey);
+            const livePosition = vPos?.find(p => p.publicKey.toString() === positionAddress);
+
+            if (livePosition) {
+              // closePosition dengan LbPosition object yang benar (bukan PublicKey!)
               const closeTxRaw = await dlmmPool2.closePosition({
                 owner:    wallet.publicKey,
-                position: positionPubkey,
+                position: livePosition, // ← full LbPosition object: { publicKey, positionData }
               });
               const closeTxList = Array.isArray(closeTxRaw) ? closeTxRaw : [closeTxRaw];
-              for (const ctx of closeTxList) {
-                await sendAndConfirmTx(ctx, txHashes);
-              }
-              // Re-verify setelah closePosition
+              for (const ctx of closeTxList) await sendAndConfirmTx(ctx, txHashes);
+
+              // Re-verify: account harus sudah hilang setelah closePosition
               await new Promise(r => setTimeout(r, 3000));
               const accountInfo2 = await connection.getAccountInfo(positionPubkey);
               if (accountInfo2 === null) {
-                stillHasLiquidity = false;
-                closedViaExplicit = true;
+                stillHasLiquidity = false; // ✅ benar-benar closed
               }
+              // Jika masih ada → stillHasLiquidity = true → retry attempt berikutnya
+            } else if (vPos != null) {
+              // SDK mengembalikan results tapi posisi tidak ditemukan, padahal account masih ada.
+              // Ini RPC inconsistency — keep stillHasLiquidity = true, retry akan fresh-fetch.
+              console.warn('[closePositionDLMM] Account exists tapi SDK tidak ketemu posisi — RPC inconsistency, retry');
             }
+            // vPos === null → getPositionsByUserAndLbPair gagal → keep stillHasLiquidity = true → retry
           } catch (closeErr) {
-            console.warn('[closePositionDLMM] closePosition() gagal:', closeErr.message);
-          }
-
-          // Fallback: kalau closePosition gagal atau account masih ada,
-          // cek via SDK apakah masih ada likuiditas aktif. Ini hanya fallback
-          // untuk kasus edge (misal closePosition tidak tersedia di versi SDK ini).
-          if (!closedViaExplicit) {
-            try {
-              const dlmmPool3  = await DLMM.create(connection, poolPubkey);
-              const { userPositions: verifyPos } = await dlmmPool3.getPositionsByUserAndLbPair(wallet.publicKey);
-              const stillExists = verifyPos?.find(p => p.publicKey.toString() === positionAddress);
-
-              if (verifyPos != null && !stillExists) {
-                // SDK confirm: posisi tidak ada → closed
-                stillHasLiquidity = false;
-              } else if (stillExists) {
-                const activeBins = stillExists.positionData?.positionBinData?.filter(b =>
-                  Number(b.positionLiquidityX?.toString() || '0') +
-                  Number(b.positionLiquidityY?.toString() || '0') > 0
-                ) ?? [];
-                stillHasLiquidity = activeBins.length > 0;
-                // activeBins.length === 0 tapi account masih ada = kosong tapi belum closed
-                // Ini akan trigger retry di bawah, yang akan coba closePosition lagi
-              }
-              // verifyPos === null → SDK gagal, keep stillHasLiquidity = true → retry
-            } catch { /* SDK error → keep stillHasLiquidity = true → retry */ }
+            // closePosition() atau getPositionsByUserAndLbPair gagal → retry
+            console.warn('[closePositionDLMM] closePosition() cleanup gagal:', closeErr.message);
           }
         }
       } catch (e) {
         console.warn('[closePositionDLMM] getAccountInfo verify failed:', e.message);
+        // getAccountInfo gagal → keep stillHasLiquidity = true → retry
       }
 
       if (stillHasLiquidity) {
