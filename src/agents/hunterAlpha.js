@@ -499,87 +499,90 @@ async function executeTool(name, input) {
         }, null, 2);
       }
 
-      // ── Lock pool SEBELUM notifikasi — cegah race condition ──────
+      // ── Semua validasi di sini — SEBELUM lock + "Deploying..." ──────
+      // "Deploying..." hanya dikirim kalau semua cek lulus dan TX benar-benar
+      // akan dieksekusi. Kalau ada yang block, user tidak dapat notif palsu.
+
+      // Safety: max drawdown (sinkron — cek dulu sebelum fetch API)
+      const drawdown = checkMaxDrawdown();
+      if (drawdown.triggered) {
+        return JSON.stringify({ blocked: true, reason: drawdown.reason }, null, 2);
+      }
+
+      // ── Auto-calculate position sizing ──────────────────────────
+      const deployAmountSol = cfg.deployAmountSol || 0.1;
+      const tokenXAmount    = 0;
+      const tokenYAmount    = deployAmountSol;
+
+      // Ambil pool info + validasi sebelum lock
+      const poolInfo = await getPoolInfo(input.pool_address);
+
+      // Guard: hanya deploy ke pool TOKEN/SOL
+      const WSOL_MINT = 'So11111111111111111111111111111111111111112';
+      if (poolInfo.tokenY !== WSOL_MINT) {
+        return JSON.stringify({
+          blocked: true,
+          reason: `Pool tokenY bukan WSOL (${poolInfo.tokenYSymbol || poolInfo.tokenY?.slice(0,8)}) — bot hanya deploy ke pool TOKEN/SOL. Skip pool ini.`,
+        }, null, 2);
+      }
+
+      // Strategy validation sebelum lock
+      const allStrategies = getAllStrategies();
+      const ALLOWED_STRATEGIES = ['Evil Panda', 'Wave Enjoyer', 'NPC'];
+      const strategy = allStrategies.find(
+        s => s.name === input.strategy_name && ALLOWED_STRATEGIES.includes(s.name)
+      );
+
+      if (!strategy) {
+        return JSON.stringify({
+          blocked: true,
+          reason: `Strategy "${input.strategy_name}" tidak valid. Gunakan salah satu dari: Evil Panda (utama), Wave Enjoyer (cadangan 1), NPC (cadangan 2). Pool DISKIP — jangan retry dengan nama lain.`,
+        }, null, 2);
+      }
+
+      const stratParams = parseStrategyParameters(strategy);
+      const strategyType = strategy?.strategy_type || 'spot';
+
+      // Dynamic range — ATR + volatility + trend + BB
+      let priceRangePct = stratParams.priceRangePercent || 10;
+      try {
+        const ohlcv = await getOHLCV(poolInfo.tokenX, input.pool_address);
+        if (ohlcv) {
+          const epType = strategy?.name === 'Evil Panda' ? 'evil_panda' : 'single_side_y';
+          priceRangePct = calcDynamicRangePct({
+            atr14Pct:    ohlcv.atr14?.atrPct     ?? 0,
+            range24hPct: ohlcv.range24hPct        ?? 0,
+            trend:       ohlcv.trend              ?? 'SIDEWAYS',
+            bbBandwidth: ohlcv.ta?.bb?.bandwidth  ?? 0,
+            strategyType: epType,
+          });
+        }
+      } catch { /* fallback to static */ }
+
+      // Strategy vs pool warning (non-blocking)
+      try {
+        const validation = validateStrategyForMarket(strategyType, poolInfo);
+        if (!validation.valid && hunterNotifyFn) {
+          await hunterNotifyFn(`⚠️ *Strategy Warning*\n\n${validation.warning}`);
+        }
+      } catch { /* skip */ }
+
+      // ── Semua validasi lulus — sekarang lock dan kirim "Deploying..." ──
       _deployingPools.add(input.pool_address);
 
       if (hunterNotifyFn) {
         await hunterNotifyFn(
           `⚡ *Deploying...*\n` +
           `Pool: \`${input.pool_address.slice(0, 8)}...\`\n` +
-          `Strategi: ${input.strategy_name || 'Single-Side SOL'}\n` +
+          `Strategi: ${strategy.name}\n` +
           `_${(input.reasoning || '').slice(0, 100)}_`
         );
       }
+
       // Semua kode setelah lock dibungkus try/finally agar lock SELALU dilepas
       let result;
       try {
-        // Safety: max drawdown check
-        const drawdown = checkMaxDrawdown();
-        if (drawdown.triggered) {
-          return JSON.stringify({ blocked: true, reason: drawdown.reason }, null, 2);
-        }
-
-        // ── Auto-calculate position sizing ──────────────────────
-        // Bot hanya punya SOL — selalu Single-Side SOL (tokenX=0, tokenY=full)
-        const deployAmountSol = cfg.deployAmountSol || 0.1;
-        const tokenXAmount    = 0;
-        const tokenYAmount    = deployAmountSol;
-
-        // Ambil pool info untuk harga dan validasi
-        const poolInfo = await getPoolInfo(input.pool_address);
-
-        // ── Guard: hanya deploy ke pool TOKEN/SOL ───────────────
-        const WSOL_MINT = 'So11111111111111111111111111111111111111112';
-        if (poolInfo.tokenY !== WSOL_MINT) {
-          return JSON.stringify({
-            blocked: true,
-            reason: `Pool tokenY bukan WSOL (${poolInfo.tokenYSymbol || poolInfo.tokenY?.slice(0,8)}) — bot hanya deploy ke pool TOKEN/SOL. Skip pool ini.`,
-          }, null, 2);
-        }
-
-        // ── Strategy resolution — hanya Evil Panda, Wave Enjoyer, NPC ──
-        const allStrategies = getAllStrategies();
-        const BLOCKED_STRATEGIES = ['Single-Side SOL', 'Fee Sniper', 'Spot Balanced', 'Curve Concentrated', 'Bid-Ask Wide'];
-        const ALLOWED_STRATEGIES = ['Evil Panda', 'Wave Enjoyer', 'NPC'];
-        const strategy = allStrategies.find(
-          s => s.name === input.strategy_name && ALLOWED_STRATEGIES.includes(s.name)
-        );
-
-        if (!strategy) {
-          return JSON.stringify({
-            blocked: true,
-            reason: `Strategy "${input.strategy_name}" tidak valid. Gunakan salah satu dari: Evil Panda (utama), Wave Enjoyer (cadangan 1), NPC (cadangan 2). Pool DISKIP — jangan retry dengan nama lain.`,
-          }, null, 2);
-        }
-
-        const stratParams = parseStrategyParameters(strategy);
-        const strategyType = strategy?.strategy_type || 'spot';
-
-        // ── Dynamic range — ATR + volatility + trend + BB ───────
-        let priceRangePct = stratParams.priceRangePercent || 10;
-        try {
-          const ohlcv = await getOHLCV(poolInfo.tokenX, input.pool_address);
-          if (ohlcv) {
-            const epType = strategy?.name === 'Evil Panda' ? 'evil_panda' : 'single_side_y';
-            priceRangePct = calcDynamicRangePct({
-              atr14Pct:    ohlcv.atr14?.atrPct     ?? 0,
-              range24hPct: ohlcv.range24hPct        ?? 0,
-              trend:       ohlcv.trend              ?? 'SIDEWAYS',
-              bbBandwidth: ohlcv.ta?.bb?.bandwidth  ?? 0,
-              strategyType: epType,
-            });
-          }
-        } catch { /* fallback to static */ }
-
-        // Validate strategy vs pool conditions
-        try {
-          const validation = validateStrategyForMarket(strategyType, poolInfo);
-          if (!validation.valid && hunterNotifyFn) {
-            await hunterNotifyFn(`⚠️ *Strategy Warning*\n\n${validation.warning}`);
-          }
-        } catch { /* skip */ }
-
-        // Konfirmasi Telegram
+        // Konfirmasi Telegram (di sini karena butuh lock untuk cegah race)
         if (cfg.requireConfirmation && hunterNotifyFn && hunterBotRef && hunterAllowedId) {
           const confirmed = await requestConfirmation(
             hunterNotifyFn,
@@ -587,24 +590,41 @@ async function executeTool(name, input) {
             hunterAllowedId,
             `🚀 *Hunter Alpha ingin deploy:*\n\n` +
             `📍 Pool: \`${input.pool_address.slice(0,8)}...\`\n` +
-            `📊 Strategi: ${strategy?.name || 'default'}\n` +
+            `📊 Strategi: ${strategy.name}\n` +
             `💰 Deploy: ${deployAmountSol} SOL (Single-Side SOL)\n` +
             `  tokenX: 0 | tokenY: ${tokenYAmount.toFixed(4)} SOL\n\n` +
             `💭 ${input.reasoning}`
           );
           if (!confirmed) {
+            // Kirim notif batal agar user tidak bingung kenapa "Deploying..." tanpa follow-up
+            if (hunterNotifyFn) {
+              await hunterNotifyFn(`❌ *Deploy Dibatalkan*\n\nUser tidak menyetujui deploy ke pool \`${input.pool_address.slice(0,8)}...\``).catch(() => {});
+            }
             return JSON.stringify({ blocked: true, reason: 'Ditolak oleh user.' }, null, 2);
           }
         }
 
-        // Execute with dynamic range
-        result = await openPosition(
-          input.pool_address,
-          tokenXAmount,
-          tokenYAmount,
-          priceRangePct,
-          strategy?.name || null
-        );
+        // Execute TX — jika gagal, notifikasi user sebelum re-throw
+        try {
+          result = await openPosition(
+            input.pool_address,
+            tokenXAmount,
+            tokenYAmount,
+            priceRangePct,
+            strategy.name
+          );
+        } catch (deployErr) {
+          // Kirim notif gagal supaya user tidak stuck di "Deploying..." tanpa follow-up
+          if (hunterNotifyFn) {
+            hunterNotifyFn(
+              `❌ *Deploy Gagal*\n\n` +
+              `Pool: \`${input.pool_address.slice(0,8)}...\`\n` +
+              `Error: ${deployErr.message}\n` +
+              `_Cek wallet balance dan Meteora UI untuk memastikan posisi tidak terbuat._`
+            ).catch(() => {});
+          }
+          throw deployErr; // re-throw agar AI tahu dan bisa report
+        }
       } finally {
         _deployingPools.delete(input.pool_address);
       }

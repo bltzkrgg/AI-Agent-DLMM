@@ -385,7 +385,20 @@ export async function openPosition(poolAddress, tokenXAmount, tokenYAmount, pric
         maxRetries: 3,
       });
 
-      await pollTxConfirm(connection, txHash, 60000);
+      // Jika polling timeout, TX mungkin sudah landing tapi RPC lambat index.
+      // Verifikasi via getAccountInfo(posKp) sebagai ground truth sebelum throw.
+      try {
+        await pollTxConfirm(connection, txHash, 60000);
+      } catch (confirmErr) {
+        await new Promise(r => setTimeout(r, 4000)); // tunggu finalisasi
+        const acct = await connection.getAccountInfo(posKp.publicKey).catch(() => null);
+        if (acct === null) {
+          // Benar-benar gagal — tidak ada account terbuat
+          throw new Error(`TX deploy gagal dan posisi tidak ada on-chain: ${confirmErr.message}`);
+        }
+        // Account sudah ada — TX landed meski polling timeout
+        console.warn(`[openPosition] pollTxConfirm timeout tapi posisi sudah ada on-chain — lanjut sebagai sukses`);
+      }
       allTxHashes.push(txHash);
     }
 
