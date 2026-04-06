@@ -152,7 +152,7 @@ export function formatDailyReport(results) {
   const netEmoji = totalNet >= 0 ? '🟢' : '🔴';
 
   let text = `📊 *Hasil Hari Ini — ${results.date}*\n\n`;
-  text += `${netEmoji} Net: $${totalNet.toFixed(2)} (Fees: $${results.totalFeesUsd.toFixed(2)} | PnL: $${results.totalPnlUsd.toFixed(2)})\n`;
+  text += `${netEmoji} Net: ◎${totalNet.toFixed(4)} (Fees: ◎${results.totalFeesUsd.toFixed(4)} | PnL: ◎${results.totalPnlUsd.toFixed(4)})\n`;
   text += `📍 Posisi ditutup: ${results.count} | ✅ Win: ${results.wins} | ❌ Loss: ${results.losses} | Win rate: ${results.winRate}%\n\n`;
 
   // Per strategi
@@ -164,7 +164,7 @@ export function formatDailyReport(results) {
       const net = s.feesUsd + s.pnlUsd;
       const emoji = net >= 0 ? '✅' : '❌';
       text += `\n${emoji} *${name}* (${s.count}x)\n`;
-      text += `   Fees: $${s.feesUsd.toFixed(2)} | PnL: $${s.pnlUsd.toFixed(2)}\n`;
+      text += `   Fees: ◎${s.feesUsd.toFixed(4)} | PnL: ◎${s.pnlUsd.toFixed(4)}\n`;
       text += `   Win: ${s.wins} Loss: ${s.losses}\n`;
     }
   }
@@ -195,10 +195,10 @@ function generateRecommendations(byStrategy) {
   const losers  = best.filter(s => s.net < 0);
 
   if (winners.length > 0) {
-    recs.push(`Prioritaskan *${winners[0].name}* — net $${winners[0].net.toFixed(2)} hari ini`);
+    recs.push(`Prioritaskan *${winners[0].name}* — net ◎${winners[0].net.toFixed(4)} hari ini`);
   }
   if (losers.length > 0) {
-    recs.push(`Hindari *${losers[losers.length - 1].name}* dulu — net $${losers[losers.length - 1].net.toFixed(2)} hari ini`);
+    recs.push(`Hindari *${losers[losers.length - 1].name}* dulu — net ◎${losers[losers.length - 1].net.toFixed(4)} hari ini`);
   }
 
   return recs;
@@ -224,21 +224,21 @@ export function getStrategyIntelligenceContext() {
   if (winners.length > 0) {
     ctx += '\n✅ Strategi yang TERBUKTI PROFIT:';
     for (const s of winners.slice(0, 3)) {
-      ctx += `\n  • ${s.name}: ${s.wins}W/${s.losses}L | Fees $${s.totalFeesUsd.toFixed(2)} | Avg PnL $${s.avgPnlUsd.toFixed(2)}`;
+      ctx += `\n  • ${s.name}: ${s.wins}W/${s.losses}L | Fees ◎${s.totalFeesUsd.toFixed(4)} | Avg PnL ◎${s.avgPnlUsd.toFixed(4)}`;
     }
   }
 
   if (losers.length > 0) {
     ctx += '\n❌ Strategi yang SERING RUGI (hindari):';
     for (const s of losers.slice(0, 3)) {
-      ctx += `\n  • ${s.name}: ${s.wins}W/${s.losses}L | Total loss $${s.totalPnlUsd.toFixed(2)}`;
+      ctx += `\n  • ${s.name}: ${s.wins}W/${s.losses}L | Total loss ◎${s.totalPnlUsd.toFixed(4)}`;
     }
   }
 
   // Today snapshot
   const today = getTodayResults();
   if (today.count > 0) {
-    ctx += `\n\n📅 Hari ini: ${today.count} posisi closed | Net $${(today.totalFeesUsd + today.totalPnlUsd).toFixed(2)} | Win rate ${today.winRate}%`;
+    ctx += `\n\n📅 Hari ini: ${today.count} posisi closed | Net ◎${(today.totalFeesUsd + today.totalPnlUsd).toFixed(4)} | Win rate ${today.winRate}%`;
   }
 
   return ctx;

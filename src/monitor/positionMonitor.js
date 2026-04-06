@@ -47,10 +47,24 @@ async function checkOutOfRange() {
 
   const poolsToCheck = [...new Set(openPositions.map(p => p.pool_address))];
 
+  // Kumpulkan semua address posisi yang masih ada di DB
+  const dbPositionAddresses = new Set(openPositions.map(p => p.position_address));
+
   for (const poolAddress of poolsToCheck) {
     try {
       const positions = await getPositionInfo(poolAddress);
       if (!positions) continue;
+
+      // Address yang ditemukan on-chain untuk pool ini
+      const foundOnChain = new Set(positions.map(p => p.address));
+
+      // Cleanup tracker untuk posisi yang sudah tidak ada on-chain (manual close, etc.)
+      for (const trackedAddr of _oorStartTracker.keys()) {
+        if (dbPositionAddresses.has(trackedAddr) && !foundOnChain.has(trackedAddr)) {
+          // Posisi masih di DB tapi tidak ditemukan on-chain — sudah ditutup manual
+          _oorStartTracker.delete(trackedAddr);
+        }
+      }
 
       for (const pos of positions) {
         if (!pos.inRange) {

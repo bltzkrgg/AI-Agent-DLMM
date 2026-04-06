@@ -28,6 +28,7 @@ let hunterNotifyFn = null;
 let hunterBotRef = null;
 let hunterAllowedId = null;
 let _hunterTargetCount = null; // jumlah posisi yang ingin dibuka dalam 1 run /entry
+const _deployingPools  = new Set(); // lock sementara selama TX in-flight
 
 export function getCandidates() { return lastCandidates; }
 export function getLastHunterReport() { return lastReport; }
@@ -449,6 +450,14 @@ async function executeTool(name, input) {
         }, null, 2);
       }
 
+      // ── Guard: TX in-flight (deploy sedang berjalan untuk pool ini) ──
+      if (_deployingPools.has(input.pool_address)) {
+        return JSON.stringify({
+          blocked: true,
+          reason: `Pool ${input.pool_address.slice(0, 8)}... sedang dalam proses deploy — tunggu TX selesai. Jangan retry.`,
+        }, null, 2);
+      }
+
       // ── Guard: slot posisi penuh ─────────────────────────────────
       const effectiveMaxPos = _hunterTargetCount != null
         ? existingPositions.length + _hunterTargetCount
@@ -570,14 +579,20 @@ async function executeTool(name, input) {
         }));
       }
 
-      // Execute with dynamic range
-      const result = await openPosition(
-        input.pool_address,
-        tokenXAmount,
-        tokenYAmount,
-        priceRangePct,
-        strategy?.name || null
-      );
+      // Execute with dynamic range — lock pool selama TX in-flight
+      _deployingPools.add(input.pool_address);
+      let result;
+      try {
+        result = await openPosition(
+          input.pool_address,
+          tokenXAmount,
+          tokenYAmount,
+          priceRangePct,
+          strategy?.name || null
+        );
+      } finally {
+        _deployingPools.delete(input.pool_address);
+      }
 
       // Notifikasi posisi terbuka dengan detail PnL awal
       if (hunterNotifyFn && result.success) {

@@ -10,6 +10,18 @@ import { getWalletPositions as getLPAgentPositions, isLPAgentEnabled } from '../
 
 const METEORA_DLMM_API = 'https://dlmm-api.meteora.ag';
 
+// Strip existing ComputeBudget instructions then inject fresh ones.
+// Prevents "duplicate instruction" error when SDK already includes ComputeBudget.
+function injectPriorityFee(tx, { units = 400_000, microLamports = 200_000 } = {}) {
+  if (tx instanceof VersionedTransaction) return;
+  const CB = ComputeBudgetProgram.programId.toString();
+  tx.instructions = tx.instructions.filter(ix => ix.programId.toString() !== CB);
+  tx.instructions.unshift(
+    ComputeBudgetProgram.setComputeUnitLimit({ units }),
+    ComputeBudgetProgram.setComputeUnitPrice({ microLamports }),
+  );
+}
+
 // ─── Safe BN conversion — avoids floating point errors ──────────
 
 function toBN(amount, decimals) {
@@ -137,7 +149,8 @@ async function getPositionInfoFromMeteoraAPI(poolAddress) {
         fromAPI:          true,  // signals this is from REST API, not on-chain
       };
     });
-  } catch {
+  } catch (e) {
+    console.warn('[meteora API]:', e.message);
     return null;
   }
 }
@@ -361,13 +374,8 @@ export async function openPosition(poolAddress, tokenXAmount, tokenYAmount, pric
       tx.recentBlockhash = blockhash;
       tx.feePayer = wallet.publicKey;
 
-      // Priority fee — initializePosition + addLiquidity butuh compute unit tinggi
-      if (!(tx instanceof VersionedTransaction)) {
-        tx.instructions.unshift(
-          ComputeBudgetProgram.setComputeUnitLimit({ units: 400_000 }),
-          ComputeBudgetProgram.setComputeUnitPrice({ microLamports: 200_000 }),
-        );
-      }
+      // Priority fee — strip existing ComputeBudget lalu inject ulang (cegah duplicate)
+      injectPriorityFee(tx, { units: 400_000, microLamports: 200_000 });
 
       tx.sign(wallet, posKp);
 
@@ -596,14 +604,8 @@ export async function closePositionDLMM(poolAddress, positionAddress, pnlData = 
         tx.recentBlockhash = blockhash;
         tx.feePayer = wallet.publicKey;
 
-        // Priority fee — pastikan TX diprioritaskan validator, tidak di-drop
-        // close position compute-heavy (400k CU), 200k micro-lamports ≈ ~0.00005 SOL
-        if (!(tx instanceof VersionedTransaction)) {
-          tx.instructions.unshift(
-            ComputeBudgetProgram.setComputeUnitLimit({ units: 400_000 }),
-            ComputeBudgetProgram.setComputeUnitPrice({ microLamports: 200_000 }),
-          );
-        }
+        // Priority fee — strip existing ComputeBudget lalu inject ulang (cegah duplicate)
+        injectPriorityFee(tx, { units: 400_000, microLamports: 200_000 });
 
         tx.sign(wallet);
 
@@ -698,12 +700,8 @@ export async function claimFees(poolAddress, positionAddress) {
     tx.recentBlockhash = blockhash;
     tx.feePayer = wallet.publicKey;
 
-    if (!(tx instanceof VersionedTransaction)) {
-      tx.instructions.unshift(
-        ComputeBudgetProgram.setComputeUnitLimit({ units: 200_000 }),
-        ComputeBudgetProgram.setComputeUnitPrice({ microLamports: 200_000 }),
-      );
-    }
+    // Priority fee — strip existing ComputeBudget lalu inject ulang (cegah duplicate)
+    injectPriorityFee(tx, { units: 200_000, microLamports: 200_000 });
 
     tx.sign(wallet);
 

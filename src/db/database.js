@@ -90,17 +90,26 @@ export function closePosition(positionAddress) {
   `).run(positionAddress);
 }
 
-export function closePositionWithPnl(positionAddress, { pnlUsd, pnlPct, feesUsd, closeReason }) {
+export function closePositionWithPnl(positionAddress, { pnlUsd, pnlPct, feesUsd, closeReason, rangeEfficiencyPct }) {
+  const effPct = rangeEfficiencyPct ?? (
+    closeReason === 'TAKE_PROFIT'             ? 90 :
+    closeReason?.startsWith('TRAILING')       ? 85 :
+    closeReason === 'OUT_OF_RANGE'            ? 20 :
+    closeReason === 'STOP_LOSS'               ? 15 :
+    closeReason === 'CLOSE_FAILED_PURGED'     ?  0 :
+    closeReason === 'EMPTY_POSITION_PURGED'   ?  0 : 50
+  );
   return db.prepare(`
-    UPDATE positions SET 
-      status = 'closed', 
+    UPDATE positions SET
+      status = 'closed',
       closed_at = CURRENT_TIMESTAMP,
       pnl_usd = ?,
       pnl_pct = ?,
       fees_collected_usd = ?,
-      close_reason = ?
+      close_reason = ?,
+      range_efficiency_pct = ?
     WHERE position_address = ?
-  `).run(pnlUsd || 0, pnlPct || 0, feesUsd || 0, closeReason || 'unknown', positionAddress);
+  `).run(pnlUsd || 0, pnlPct || 0, feesUsd || 0, closeReason || 'unknown', effPct, positionAddress);
 }
 
 export function updatePositionStatus(positionAddress, status) {
