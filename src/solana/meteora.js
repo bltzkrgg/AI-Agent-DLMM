@@ -727,7 +727,15 @@ export async function claimFees(poolAddress, positionAddress) {
 
   const { userPositions } = await dlmmPool.getPositionsByUserAndLbPair(wallet.publicKey);
   const position = userPositions?.find(p => p.publicKey.toString() === positionAddress);
-  if (!position) throw new Error('Posisi tidak ditemukan saat claim fees');
+  if (!position) {
+    // Verify via getAccountInfo — getPositionsByUserAndLbPair bisa return empty karena RPC glitch
+    const positionPubkey2 = new PublicKey(positionAddress);
+    const acct = await connection.getAccountInfo(positionPubkey2).catch(() => null);
+    if (acct === null) {
+      throw new Error('Posisi tidak ditemukan — sudah ditutup atau tidak valid');
+    }
+    throw new Error('Posisi ada on-chain tapi tidak ditemukan via SDK (RPC glitch) — coba lagi');
+  }
 
   let claimTx;
   try {

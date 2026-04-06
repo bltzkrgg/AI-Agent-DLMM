@@ -1,7 +1,8 @@
 import { createMessage, resolveModel } from '../agent/provider.js';
 import { getConfig, getThresholds } from '../config.js';
 import { getPositionInfo, closePositionDLMM, claimFees, getPoolInfo } from '../solana/meteora.js';
-import { getWalletBalance } from '../solana/wallet.js';
+import { getConnection, getWallet, getWalletBalance } from '../solana/wallet.js';
+import { PublicKey } from '@solana/web3.js';
 import { getOpenPositions, closePositionWithPnl, saveNotification } from '../db/database.js';
 import { getLessonsContext } from '../learn/lessons.js';
 import { checkStopLoss, checkMaxDrawdown, recordPnl, getSafetyStatus } from '../safety/safetyManager.js';
@@ -14,6 +15,17 @@ import { detectEvilPandaSignals, computeSupertrend, computeRSI, computeFibLevels
 import { kv, hr, codeBlock, formatPnl, shortAddr, shortStrat } from '../utils/table.js';
 import { formatStrategyAlert } from '../utils/alerts.js';
 import { recordClose } from '../market/poolMemory.js';
+
+// Verifikasi apakah position account benar-benar tidak ada on-chain.
+// Dipakai sebelum mark MANUAL_CLOSE — cegah false positive dari RPC glitch.
+async function positionAccountExists(positionAddress) {
+  try {
+    const info = await getConnection().getAccountInfo(new PublicKey(positionAddress));
+    return info !== null;
+  } catch {
+    return true; // gagal cek → asumsikan masih ada (safe default)
+  }
+}
 
 // Trailing TP thresholds — baca dari config (configurable via /setconfig)
 // Fallback ke defaults jika config belum tersedia
@@ -149,7 +161,14 @@ async function executeTool(name, input) {
           const match   = onChain?.find(p => p.address === pos.position_address);
 
           // Deteksi posisi ditutup manual
+          // Hanya mark MANUAL_CLOSE jika account benar-benar tidak ada on-chain.
+          // onChain = [] bisa terjadi karena RPC glitch (false positive) — verifikasi dulu.
           if (!match && Array.isArray(onChain)) {
+            const stillExists = await positionAccountExists(pos.position_address);
+            if (stillExists) {
+              // Account masih ada — getPositionInfo gagal karena RPC, bukan manual close
+              return { ...pos, status: 'open', rpcError: true };
+            }
             closePositionWithPnl(pos.position_address, {
               pnlUsd: 0, pnlPct: 0, feesUsd: 0, closeReason: 'MANUAL_CLOSE',
             });
@@ -593,7 +612,13 @@ export async function runHealerAlpha(notifyFn) {
       const match   = onChain?.find(p => p.address === pos.position_address);
 
       // Deteksi posisi ditutup manual: on-chain berhasil diambil tapi posisi tidak ada
+      // Verifikasi via getAccountInfo dulu — onChain=[] bisa dari RPC glitch
       if (!match && Array.isArray(onChain)) {
+        const stillExists = await positionAccountExists(pos.position_address);
+        if (stillExists) {
+          // Account masih ada — RPC glitch, bukan manual close → skip siklus ini
+          continue;
+        }
         closePositionWithPnl(pos.position_address, {
           pnlUsd: 0, pnlPct: 0, feesUsd: 0, closeReason: 'MANUAL_CLOSE',
         });
@@ -856,14 +881,18 @@ export async function runHealerAlpha(notifyFn) {
           reason:   triggerLabel.toUpperCase().replace(/ /g, '_'),
         });
 
-        // Auto-swap token → SOL (retry 2x)
-        const swapMsgs = [];
+        // Tunggu 3 detik — token perlu waktu untuk muncul di wallet setelah close
+        await new Promise(r => setTimeout(r, 3000));
+
+        // Auto-swap token → SOL (retry 3x dengan backoff)
+        const swapMsgs  = [];
+        const swapFails = [];
         let totalSwappedSol = 0;
         try {
           const poolInfo = await getPoolInfo(pos.pool_address);
           for (const mint of [poolInfo.tokenX, poolInfo.tokenY]) {
             if (mint && mint !== SOL_MINT) {
-              for (let attempt = 1; attempt <= 2; attempt++) {
+              for (let swapAttempt = 1; swapAttempt <= 3; swapAttempt++) {
                 try {
                   const swapRes = await swapAllToSOL(mint);
                   if (swapRes.success) {
@@ -871,21 +900,26 @@ export async function runHealerAlpha(notifyFn) {
                     totalSwappedSol += swapRes.outSol;
                   }
                   break;
-                } catch {
-                  if (attempt < 2) await new Promise(r => setTimeout(r, 2000));
+                } catch (e) {
+                  if (swapAttempt === 3) swapFails.push(e.message);
+                  else await new Promise(r => setTimeout(r, 2000 * swapAttempt));
                 }
               }
             }
           }
         } catch { /* swap best-effort */ }
 
-        // Notifikasi swap + mulai 5-menit monitor
+        // Notifikasi swap + selalu mulai 5-menit monitor
         if (swapMsgs.length > 0) {
           await notifyFn?.(
             `🔄 *Auto-Swap Selesai*\n\nToken → SOL: ${swapMsgs.join(', ')}\nTotal: \`+${totalSwappedSol.toFixed(4)} SOL\`\n_5 menit monitoring dimulai..._`
           );
-          startPostCloseMonitor(pos.pool_address, pnlPct, notifyFn);
+        } else if (swapFails.length > 0) {
+          await notifyFn?.(
+            `⚠️ *Auto-Swap Gagal*\n\nPosisi ditutup, tapi token belum dikonversi ke SOL.\nError: ${swapFails.join(', ')}\n_Swap manual di Jupiter/Meteora._`
+          );
         }
+        startPostCloseMonitor(pos.pool_address, pnlPct, notifyFn);
 
         const closedLines = [
           kv('Posisi',   shortAddr(addr), W),
