@@ -60,10 +60,15 @@ async function checkOutOfRange() {
       // Address yang ditemukan on-chain untuk pool ini
       const foundOnChain = new Set(positions.map(p => p.address));
 
-      // Cleanup tracker untuk posisi yang sudah tidak ada on-chain (manual close, etc.)
+      // Cleanup tracker — hanya untuk posisi yang belong ke pool INI.
+      // Jangan compare dengan foundOnChain pool lain (multi-pool bug: posisi pool B
+      // akan dianggap "tidak ada" saat processing pool A, tracker-nya terhapus,
+      // durasi OOR reset ke 0 setiap siklus).
+      const thisPoolPositionAddresses = new Set(
+        openPositions.filter(p => p.pool_address === poolAddress).map(p => p.position_address)
+      );
       for (const trackedAddr of _oorStartTracker.keys()) {
-        if (dbPositionAddresses.has(trackedAddr) && !foundOnChain.has(trackedAddr)) {
-          // Posisi masih di DB tapi tidak ditemukan on-chain — sudah ditutup manual
+        if (thisPoolPositionAddresses.has(trackedAddr) && !foundOnChain.has(trackedAddr)) {
           _oorStartTracker.delete(trackedAddr);
         }
       }

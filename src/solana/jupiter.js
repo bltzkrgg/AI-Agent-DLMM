@@ -106,13 +106,21 @@ export async function swapToSOL(inputMint, amountRaw, slippageBps = 100) {
     maxRetries: 3,
   });
 
-  const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash();
-  const confirmation = await Promise.race([
-    connection.confirmTransaction({ signature: txHash, blockhash, lastValidBlockHeight }, 'confirmed'),
-    new Promise((_, reject) => setTimeout(() => reject(new Error('Swap confirm timeout')), 60000)),
-  ]);
-
-  if (confirmation?.value?.err) throw new Error(`Swap TX failed: ${JSON.stringify(confirmation.value.err)}`);
+  // Pakai polling confirm (sama dengan meteora.js) — lebih reliable dari websocket confirmTransaction
+  // yang sering timeout di public RPC tanpa berarti TX gagal.
+  const start = Date.now();
+  const maxWaitMs = 60000;
+  while (Date.now() - start < maxWaitMs) {
+    try {
+      const status = await connection.getSignatureStatus(txHash, { searchTransactionHistory: false });
+      const val = status?.value;
+      if (val?.err) throw new Error(`Swap TX gagal on-chain: ${JSON.stringify(val.err)}`);
+      if (val?.confirmationStatus === 'confirmed' || val?.confirmationStatus === 'finalized') break;
+    } catch (e) {
+      if (e.message?.startsWith('Swap TX gagal')) throw e;
+    }
+    await new Promise(r => setTimeout(r, 2500));
+  }
 
   return {
     success: true,

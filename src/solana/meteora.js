@@ -760,7 +760,9 @@ export async function claimFees(poolAddress, positionAddress) {
   try {
     claimTx = await dlmmPool.claimAllRewards({ owner: wallet.publicKey, positions: [position] });
   } catch {
-    claimTx = await dlmmPool.claimFee({ owner: wallet.publicKey, position: position.publicKey });
+    // claimAllRewards gagal → fallback ke claimAllRewardsByPosition (single position)
+    // JANGAN gunakan claimFee — method itu tidak ada di SDK ini
+    claimTx = await dlmmPool.claimAllRewardsByPosition({ owner: wallet.publicKey, position });
   }
 
   const txList = Array.isArray(claimTx) ? claimTx : [claimTx];
