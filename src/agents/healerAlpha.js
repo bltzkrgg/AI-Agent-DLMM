@@ -333,22 +333,49 @@ async function executeTool(name, input) {
     case 'claim_fees': {
       const claimResult = await claimFees(input.pool_address, input.position_address);
 
-      // Auto-swap fee tokens ke SOL setelah claim
+      // Tunggu 3 detik — token perlu waktu untuk muncul di wallet setelah claim
+      await new Promise(r => setTimeout(r, 3000));
+
+      // Auto-swap fee tokens ke SOL setelah claim (retry 3x dengan backoff)
       const swapResults = [];
+      const swapErrors  = [];
       try {
         const poolInfo = await getPoolInfo(input.pool_address);
         for (const mint of [poolInfo.tokenX, poolInfo.tokenY]) {
           if (mint && mint !== SOL_MINT) {
-            const swapRes = await swapAllToSOL(mint);
-            if (swapRes.success) swapResults.push({ mint: mint.slice(0, 8), outSol: swapRes.outSol });
+            for (let attempt = 1; attempt <= 3; attempt++) {
+              try {
+                const swapRes = await swapAllToSOL(mint);
+                if (swapRes.success) {
+                  swapResults.push({ mint: mint.slice(0, 8), outSol: swapRes.outSol });
+                } else {
+                  swapResults.push({ mint: mint.slice(0, 8), skipped: swapRes.reason });
+                }
+                break;
+              } catch (e) {
+                if (attempt === 3) swapErrors.push({ mint: mint.slice(0, 8), error: e.message });
+                else await new Promise(r => setTimeout(r, 2000 * attempt));
+              }
+            }
           }
         }
       } catch { /* swap best-effort */ }
 
+      // Notifikasi jika swap gagal
+      if (swapErrors.length > 0 && _healerNotifyFn) {
+        _healerNotifyFn(
+          `⚠️ *Auto-Swap Gagal (Claim Fees)*\n\n` +
+          `Fee sudah di-claim, tapi token belum dikonversi ke SOL.\n` +
+          `Error: ${swapErrors.map(e => e.error || e.mint).join(', ')}\n` +
+          `_Lakukan swap manual di Jupiter/Meteora._`
+        ).catch(() => {});
+      }
+
       return JSON.stringify({
         ...claimResult,
-        autoSwap: swapResults.length > 0 ? swapResults : 'skipped',
-        reasoning: input.reasoning,
+        autoSwap:   swapResults.length > 0 ? swapResults : 'skipped',
+        swapErrors: swapErrors.length  > 0 ? swapErrors  : undefined,
+        reasoning:  input.reasoning,
       }, null, 2);
     }
 
@@ -372,11 +399,13 @@ async function executeTool(name, input) {
       outOfRangeTracker.delete(input.position_address);
       peakPnlTracker.delete(input.position_address);
 
-      // Record ke pool memory
-      recordClose(input.pool_address, {
-        pnlPct: pnlData.pnlPct || 0,
-        reason:  pnlData.closeReason || 'AGENT_CLOSE',
-      });
+      // Record ke pool memory — best-effort, jangan gagalkan response jika throw
+      try {
+        recordClose(input.pool_address, {
+          pnlPct: pnlData.pnlPct || 0,
+          reason:  pnlData.closeReason || 'AGENT_CLOSE',
+        });
+      } catch { /* best-effort */ }
 
       // Tunggu 3 detik — token perlu waktu untuk muncul di wallet setelah close
       await new Promise(r => setTimeout(r, 3000));
@@ -482,11 +511,13 @@ async function executeTool(name, input) {
       outOfRangeTracker.delete(input.position_address);
       peakPnlTracker.delete(input.position_address);
 
-      // Record ke pool memory
-      recordClose(input.pool_address, {
-        pnlPct: zapPnlData.pnlPct || 0,
-        reason:  zapPnlData.closeReason || 'ZAP_OUT',
-      });
+      // Record ke pool memory — best-effort, jangan gagalkan response jika throw
+      try {
+        recordClose(input.pool_address, {
+          pnlPct: zapPnlData.pnlPct || 0,
+          reason:  zapPnlData.closeReason || 'ZAP_OUT',
+        });
+      } catch { /* best-effort */ }
 
       // Tunggu 3 detik — token perlu waktu untuk muncul di wallet setelah close
       await new Promise(r => setTimeout(r, 3000));
@@ -873,13 +904,15 @@ export async function runHealerAlpha(notifyFn) {
         });
         peakPnlTracker.delete(addr);
         outOfRangeTracker.delete(addr);
-        recordPnl(pnlSol);
 
-        // Record ke pool memory
-        recordClose(pos.pool_address, {
-          pnlPct:   pnlPct,
-          reason:   triggerLabel.toUpperCase().replace(/ /g, '_'),
-        });
+        // DB updates — best-effort: jangan kirim "❌ Gagal close" kalau ini yang throw
+        try { recordPnl(pnlSol); } catch { /* best-effort */ }
+        try {
+          recordClose(pos.pool_address, {
+            pnlPct: pnlPct,
+            reason: triggerLabel.toUpperCase().replace(/ /g, '_'),
+          });
+        } catch { /* best-effort */ }
 
         // Tunggu 3 detik — token perlu waktu untuk muncul di wallet setelah close
         await new Promise(r => setTimeout(r, 3000));
