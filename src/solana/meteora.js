@@ -289,7 +289,7 @@ export async function getPositionInfo(poolAddress) {
 
 // ─── SOL price helper ────────────────────────────────────────────
 
-async function getSolPriceUsd() {
+export async function getSolPriceUsd() {
   try {
     const res = await fetchWithTimeout(
       'https://api.dexscreener.com/latest/dex/tokens/So11111111111111111111111111111111111111112',

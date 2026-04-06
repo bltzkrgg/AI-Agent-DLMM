@@ -8,14 +8,14 @@ import { handleStrategyCommand, isInStrategySession } from './strategies/strateg
 import { runHunterAlpha, getCandidates, getScreeningCandidates } from './agents/hunterAlpha.js';
 import { runHealerAlpha } from './agents/healerAlpha.js';
 import { learnFromPool, learnFromMultiplePools, loadLessons, pinLesson, unpinLesson, formatLessonsList } from './learn/lessons.js';
-import { getConfig, getThresholds, updateConfig } from './config.js';
-import { handleConfirmationReply, getSafetyStatus } from './safety/safetyManager.js';
+import { getConfig, getThresholds, updateConfig, isConfigKeySupported } from './config.js';
+import { handleConfirmationReply, getSafetyStatus, setStartingBalanceUsd } from './safety/safetyManager.js';
 import { evolveFromTrades, getMemoryStats, getInstinctsContext } from './market/memory.js';
 import { extractStrategiesFromArticle, summarizeArticle } from './market/researcher.js';
 import { getLibraryStats } from './market/strategyLibrary.js';
 import { screenToken, formatScreenResult } from './market/coinfilter.js';
 import { getOpenPositions, getPositionStats, closePositionWithPnl } from './db/database.js';
-import { getPositionInfo, getPositionInfoLight } from './solana/meteora.js';
+import { getPositionInfo, getPositionInfoLight, getSolPriceUsd } from './solana/meteora.js';
 import { padR, hr, kv, codeBlock, formatPnl, shortAddr, shortStrat } from './utils/table.js';
 import { initMonitor } from './monitor/positionMonitor.js';
 import { autoEvolveIfReady } from './learn/evolve.js';
@@ -25,6 +25,7 @@ import { runOpportunityScanner } from './market/opportunityScanner.js';
 import { addSmartWallet, removeSmartWallet, formatWalletList } from './market/smartWallets.js';
 import { formatPoolMemoryReport } from './market/poolMemory.js';
 import { recalibrateWeights, formatWeightsReport } from './market/signalWeights.js';
+import { validateRuntimeEnv } from './runtime/env.js';
 
 // ─── PID lock — cegah multiple instance ─────────────────────────
 const PID_FILE = new URL('../../bot.pid', import.meta.url).pathname;
@@ -43,15 +44,10 @@ writeFileSync(PID_FILE, String(process.pid));
 process.on('exit', () => { try { unlinkSync(PID_FILE); } catch {} });
 
 // ─── Validate env ────────────────────────────────────────────────
-const required = ['TELEGRAM_BOT_TOKEN', 'ALLOWED_TELEGRAM_ID', 'OPENROUTER_API_KEY', 'HELIUS_API_KEY', 'WALLET_PRIVATE_KEY'];
-const missing = required.filter(k => !process.env[k]);
+const { missing } = validateRuntimeEnv({ requireTrading: true });
 if (missing.length > 0) {
   console.error(`❌ Missing env vars: ${missing.join(', ')}`);
   console.error('Copy .env.example to .env and fill in all values.');
-  // Warn kalau SOLANA_RPC_URL juga tidak ada (double safety)
-  if (!process.env.SOLANA_RPC_URL && !process.env.HELIUS_API_KEY) {
-    console.error('❌ Butuh HELIUS_API_KEY atau SOLANA_RPC_URL untuk koneksi Solana.');
-  }
   process.exit(1);
 }
 
@@ -76,6 +72,22 @@ initMonitor(bot, ALLOWED_ID);
 
 const _dryRun = getConfig().dryRun;
 console.log(`🦞 Meteora DLMM Bot started! Mode: ${_dryRun ? 'DRY RUN' : 'LIVE'}`);
+
+async function syncStartingBalanceBaseline() {
+  if (!solanaReady) return;
+  try {
+    const [balance, solPriceUsd] = await Promise.all([
+      getWalletBalance(),
+      getSolPriceUsd().catch(() => 150),
+    ]);
+    const balanceUsd = parseFloat(balance) * solPriceUsd;
+    setStartingBalanceUsd(parseFloat(balanceUsd.toFixed(2)));
+  } catch (e) {
+    console.warn(`⚠️ Failed to sync starting balance baseline: ${e.message}`);
+  }
+}
+
+await syncStartingBalanceBaseline();
 
 const TG_MAX = 4000; // Telegram limit 4096, sisakan buffer untuk formatting
 
@@ -141,6 +153,10 @@ const setupState = {
 
 // triggerHunter — hanya dipanggil dari /entry, TIDAK dari cron atau post-close
 async function triggerHunter(targetCount = null) {
+  if (!solanaReady) {
+    notify('⚠️ Wallet/RPC belum siap. Perbaiki koneksi Solana sebelum menjalankan Hunter.').catch(() => {});
+    return;
+  }
   if (_hunterBusy) return;
   const liveCfg = getConfig();
   const openPos = getOpenPositions();
@@ -161,6 +177,7 @@ async function triggerHunter(targetCount = null) {
 
 // Healer — hanya manage posisi, tidak ada reopen prompt
 async function runHealerWithReopenCheck() {
+  if (!solanaReady) return;
   await runHealerAlpha(notify);
 }
 
@@ -195,6 +212,7 @@ cron.schedule('* * * * *', async () => {
 // Timeout configurable, kandidat dianggap stale setelahnya.
 
 async function runAutoScreening() {
+  if (!solanaReady) return;
   if (_screeningBusy || _hunterBusy) return;
   const liveCfg = getConfig();
   if (!liveCfg.autoScreeningEnabled) return;
@@ -410,6 +428,7 @@ cron.schedule('*/15 * * * *', async () => {
 // ─── Daily Briefing jam 7 pagi ───────────────────────────────────
 cron.schedule('0 7 * * *', async () => {
   try {
+    await syncStartingBalanceBaseline();
     const balance  = await getWalletBalance();
     const openPos  = getOpenPositions();
     const stats    = getPositionStats();
@@ -441,6 +460,7 @@ cron.schedule('0 7 * * *', async () => {
 
 cron.schedule('0 * * * *', async () => {
   try {
+    await syncStartingBalanceBaseline();
     const balance = await getWalletBalance();
     const openPos = getOpenPositions();
     const stats = getPositionStats();
@@ -1110,6 +1130,13 @@ bot.onText(/\/setconfig(?:\s+(\S+))?(?:\s+(.+))?/, (msg, match) => {
   }
 
   // Parse nilai
+  if (!isConfigKeySupported(key)) {
+    return bot.sendMessage(chatId,
+      `❌ Key \`${key}\` tidak dikenal atau tidak bisa diubah.`,
+      { parse_mode: 'Markdown' }
+    );
+  }
+
   let parsed;
   if (rawVal === 'true')        parsed = true;
   else if (rawVal === 'false')  parsed = false;

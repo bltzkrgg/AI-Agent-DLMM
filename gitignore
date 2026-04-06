@@ -1,7 +1,0 @@
-node_modules/
-.env
-*.db
-*.db-journal
-logs/
-bot.pid
-user-config.json

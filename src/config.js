@@ -3,7 +3,7 @@ import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const CONFIG_PATH = join(__dirname, '../user-config.json');
+const CONFIG_PATH = process.env.BOT_CONFIG_PATH || join(__dirname, '../user-config.json');
 
 const DEFAULTS = {
   // Position sizing
@@ -85,6 +85,8 @@ const DEFAULTS = {
   athLookbackDays: 30,       // Lookback window untuk approx ATH (1D candles)
 };
 
+const KNOWN_CONFIG_KEYS = new Set(Object.keys(DEFAULTS));
+
 // Bounds for AI-driven config updates — prevent AI from setting dangerous values
 const CONFIG_BOUNDS = {
   deployAmountSol:            { min: 0.01,  max: 50 },
@@ -138,7 +140,18 @@ function loadUserConfig() {
 
 export function getConfig() {
   const user = loadUserConfig();
-  return { ...DEFAULTS, ...user };
+  return {
+    ...DEFAULTS,
+    ...user,
+    signalWeights: {
+      ...DEFAULTS.signalWeights,
+      ...(user.signalWeights || {}),
+    },
+  };
+}
+
+export function isConfigKeySupported(key) {
+  return KNOWN_CONFIG_KEYS.has(key);
 }
 
 export function updateConfig(updates) {
@@ -147,7 +160,24 @@ export function updateConfig(updates) {
   const rejected = [];
 
   for (const [key, value] of Object.entries(updates)) {
+    if (!isConfigKeySupported(key)) {
+      rejected.push(`${key}: unsupported key`);
+      continue;
+    }
+
     const bounds = CONFIG_BOUNDS[key];
+    if (key === 'signalWeights') {
+      if (!value || typeof value !== 'object' || Array.isArray(value)) {
+        rejected.push(`${key}: must be an object`);
+        continue;
+      }
+      validated[key] = {
+        ...getConfig().signalWeights,
+        ...value,
+      };
+      continue;
+    }
+
     if (bounds && typeof value === 'number') {
       if (value < bounds.min || value > bounds.max) {
         rejected.push(`${key}: ${value} (allowed: ${bounds.min}-${bounds.max})`);
@@ -165,9 +195,16 @@ export function updateConfig(updates) {
 
   const current = loadUserConfig();
   const merged = { ...current, ...validated };
+  if (validated.signalWeights) {
+    merged.signalWeights = {
+      ...DEFAULTS.signalWeights,
+      ...(current.signalWeights || {}),
+      ...validated.signalWeights,
+    };
+  }
   writeFileSync(CONFIG_PATH, JSON.stringify(merged, null, 2));
   console.log('✅ Config updated:', Object.keys(validated).join(', '));
-  return merged;
+  return getConfig();
 }
 
 export function getThresholds() {

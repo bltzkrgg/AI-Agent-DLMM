@@ -173,6 +173,14 @@ Meteora DLMM Bot started! Mode: LIVE
 
 Telegram kamu dapat pesan startup dengan balance + status.
 
+Untuk verifikasi dasar workflow engineering:
+
+```bash
+npm test
+```
+
+CI GitHub sekarang juga menjalankan test otomatis pada push dan pull request.
+
 ---
 
 ### Step 9 — Verifikasi
