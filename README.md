@@ -44,6 +44,7 @@
 
 **Opsional (meningkatkan kualitas signal):**
 - **OKX API Key** — Smart Money signal, token risk scoring (okx.com/web3)
+- **Jupiter API Key** — meningkatkan reliabilitas auto-swap dengan endpoint authenticated
 
 > GMGN sudah **dihapus sepenuhnya** — digantikan RugCheck.xyz (gratis, tanpa key) untuk token security.
 

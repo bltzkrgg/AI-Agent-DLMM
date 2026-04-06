@@ -39,7 +39,8 @@ export async function fetchWithTimeout(url, options = {}, timeoutMs = 10000) {
   } catch (e) {
     clearTimeout(timer);
     if (e.name === 'AbortError') throw new Error(`Timeout (${timeoutMs}ms): ${url}`);
-    throw e;
+    const cause = e?.cause?.code || e?.cause?.message || e?.message || 'unknown fetch error';
+    throw new Error(`Fetch failed for ${url}: ${cause}`);
   }
 }
 
