@@ -551,27 +551,34 @@ export async function closePositionDLMM(poolAddress, positionAddress, pnlData = 
         hashes.push(hash);
       };
 
+      // SDK removeLiquidity minta fromBinId/toBinId/bps (BN) — BUKAN binIds/liquiditiesBpsToRemove.
+      // bps = 10000 = 100% removal. Range dari positionData.lowerBinId/upperBinId.
+      const fromBinId = pd.lowerBinId;
+      const toBinId   = pd.upperBinId;
+
       if (binIdsToRemove.length > 0) {
         // ── 4a. Position dengan bin aktif ────────────────────────
         // Selalu coba shouldClaimAndClose:true dulu — removes liq + claim fees + hapus account.
         // shouldClaimAndClose:false hanya tarik likuiditas, account TETAP ADA → Meteora UI open!
         try {
           removeLiqTx = await dlmmPool.removeLiquidity({
-            position:               positionPubkey,
-            user:                   wallet.publicKey,
-            binIds:                 binIdsToRemove,
-            liquiditiesBpsToRemove: binIdsToRemove.map(() => new BN(10000)),
-            shouldClaimAndClose:    true,
+            position:            positionPubkey,
+            user:                wallet.publicKey,
+            fromBinId,
+            toBinId,
+            bps:                 new BN(10000), // 100% removal
+            shouldClaimAndClose: true,
           });
         } catch {
           // Fallback: tarik likuiditas saja — account akan tetap ada.
           // Step 6 akan panggil closePosition() dengan LbPosition object yang benar.
           removeLiqTx = await dlmmPool.removeLiquidity({
-            position:               positionPubkey,
-            user:                   wallet.publicKey,
-            binIds:                 binIdsToRemove,
-            liquiditiesBpsToRemove: binIdsToRemove.map(() => new BN(10000)),
-            shouldClaimAndClose:    false,
+            position:            positionPubkey,
+            user:                wallet.publicKey,
+            fromBinId,
+            toBinId,
+            bps:                 new BN(10000),
+            shouldClaimAndClose: false,
           });
         }
       } else {
@@ -604,15 +611,16 @@ export async function closePositionDLMM(poolAddress, positionAddress, pnlData = 
           } catch { /* lanjut ke coba 3 */ }
         }
 
-        // Coba 3: removeLiquidity shouldClaimAndClose=true dengan binIds kosong
+        // Coba 3: removeLiquidity shouldClaimAndClose=true dengan range penuh
         if (!emptyCloseOk) {
           try {
             removeLiqTx = await dlmmPool.removeLiquidity({
-              position:               positionPubkey,
-              user:                   wallet.publicKey,
-              binIds:                 [],
-              liquiditiesBpsToRemove: [],
-              shouldClaimAndClose:    true,
+              position:            positionPubkey,
+              user:                wallet.publicKey,
+              fromBinId,
+              toBinId,
+              bps:                 new BN(10000),
+              shouldClaimAndClose: true,
             });
             emptyCloseOk = true;
           } catch { /* lanjut ke purge */ }
