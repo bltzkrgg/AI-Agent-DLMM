@@ -443,10 +443,17 @@ async function executeTool(name, input) {
     case 'deploy_position': {
       // ── Guard: cegah deploy duplikat ke pool yang sama ──────────
       const existingPositions = getOpenPositions();
-      if (existingPositions.some(p => p.pool_address === input.pool_address)) {
+      const existingForPool   = existingPositions.find(p => p.pool_address === input.pool_address);
+      if (existingForPool) {
+        // Posisi sudah ada di DB → deploy sebelumnya BERHASIL (mungkin notifikasi yang gagal).
+        // Return success agar AI tidak melaporkan ini sebagai kegagalan.
         return JSON.stringify({
-          blocked: true,
-          reason: `Pool ${input.pool_address.slice(0, 8)}... sudah ada posisi terbuka — skip duplikat. Pilih pool lain.`,
+          success:         true,
+          alreadyDeployed: true,
+          positionAddress: existingForPool.position_address,
+          pool_address:    input.pool_address,
+          strategyUsed:    existingForPool.strategy_used,
+          note:            'Posisi sudah terbuka di pool ini — deploy sebelumnya berhasil. Tidak ada aksi duplikat.',
         }, null, 2);
       }
 
@@ -579,54 +586,59 @@ async function executeTool(name, input) {
         _deployingPools.delete(input.pool_address);
       }
 
-      // Notifikasi posisi terbuka dengan detail PnL awal
-      if (hunterNotifyFn && result.success) {
-        const cfg2    = getConfig();
-        const tpTarget = cfg2.takeProfitFeePct ?? 5;
-        const slTarget = cfg2.stopLossPct      ?? 5;
-        const trailAct = cfg2.trailingTriggerPct ?? 3.0;
-        const nPos     = result.positionCount ?? 1;
+      // Notifikasi & recording — dikurung try/catch agar error Telegram
+      // tidak membuat tool return Error dan memicu AI retry ke pool yang sama
+      try {
+        if (hunterNotifyFn && result.success) {
+          const cfg2    = getConfig();
+          const tpTarget = cfg2.takeProfitFeePct ?? 5;
+          const slTarget = cfg2.stopLossPct      ?? 5;
+          const trailAct = cfg2.trailingTriggerPct ?? 3.0;
+          const nPos     = result.positionCount ?? 1;
 
-        const details = [
-          kv('Posisi',   nPos > 1
-            ? `${nPos}x chunks (${result.positions.map(p => shortAddr(p.address, 4, 4)).join(', ')})`
-            : shortAddr(result.positionAddress, 4, 4), 9),
-          kv('Pool',     shortAddr(input.pool_address, 4, 4), 9),
-          kv('Strategi', strategy?.name || 'default', 9),
-          kv('Deploy',   `${deployAmountSol} SOL (${nPos > 1 ? `${nPos} positions` : 'Single-Side'})`, 9),
-          ...(nPos > 1 ? result.positions.map((p, i) =>
-            kv(`Chunk${i+1}`, `${p.yAmountSol.toFixed(4)}◎ @ ${p.binCount} bins`, 9)
-          ) : []),
-          hr(40),
-          kv('Entry',    result.entryPrice?.toFixed(8)  ?? '-', 9),
-          kv('Bawah',    `${result.lowerPrice?.toFixed(8) ?? '-'}  (-${priceRangePct}%)`, 9),
-          kv('Atas',     `${result.upperPrice?.toFixed(8) ?? '-'}  (entry)`, 9),
-          kv('Fee/bin',  `${result.feeRatePct}%`, 9),
-          kv('Range',    `${priceRangePct}% | ${result.positions.reduce((s, p) => s + p.binCount, 0)} bins total`, 9),
-          hr(40),
-          kv('TP',       `+${tpTarget}%  Trail: +${trailAct}%  SL: -${slTarget}%`, 9),
-        ];
+          const details = [
+            kv('Posisi',   nPos > 1
+              ? `${nPos}x chunks (${result.positions.map(p => shortAddr(p.address, 4, 4)).join(', ')})`
+              : shortAddr(result.positionAddress, 4, 4), 9),
+            kv('Pool',     shortAddr(input.pool_address, 4, 4), 9),
+            kv('Strategi', strategy?.name || 'default', 9),
+            kv('Deploy',   `${deployAmountSol} SOL (${nPos > 1 ? `${nPos} positions` : 'Single-Side'})`, 9),
+            ...(nPos > 1 ? result.positions.map((p, i) =>
+              kv(`Chunk${i+1}`, `${p.yAmountSol.toFixed(4)}◎ @ ${p.binCount} bins`, 9)
+            ) : []),
+            hr(40),
+            kv('Entry',    result.entryPrice?.toFixed(8)  ?? '-', 9),
+            kv('Bawah',    `${result.lowerPrice?.toFixed(8) ?? '-'}  (-${priceRangePct}%)`, 9),
+            kv('Atas',     `${result.upperPrice?.toFixed(8) ?? '-'}  (entry)`, 9),
+            kv('Fee/bin',  `${result.feeRatePct}%`, 9),
+            kv('Range',    `${priceRangePct}% | ${result.positions.reduce((s, p) => s + p.binCount, 0)} bins total`, 9),
+            hr(40),
+            kv('TP',       `+${tpTarget}%  Trail: +${trailAct}%  SL: -${slTarget}%`, 9),
+          ];
 
-        const txLinks = result.txHashes.slice(0, 3)
-          .map((h, i) => `[Tx${result.txHashes.length > 1 ? i + 1 : ''}](https://solscan.io/tx/${h})`)
-          .join(' · ');
+          const txLinks = result.txHashes.slice(0, 3)
+            .map((h, i) => `[Tx${result.txHashes.length > 1 ? i + 1 : ''}](https://solscan.io/tx/${h})`)
+            .join(' · ');
 
-        const openMsg =
-          `🚀 *Posisi Dibuka${nPos > 1 ? ` (${nPos} Chunks)` : ''}*\n\n` +
-          codeBlock(details) + '\n' +
-          `💭 _${input.reasoning}_\n\n` +
-          `🔗 ${txLinks}`;
+          const openMsg =
+            `🚀 *Posisi Dibuka${nPos > 1 ? ` (${nPos} Chunks)` : ''}*\n\n` +
+            codeBlock(details) + '\n' +
+            `💭 _${input.reasoning}_\n\n` +
+            `🔗 ${txLinks}`;
 
-        await hunterNotifyFn(openMsg);
-      }
+          await hunterNotifyFn(openMsg);
+        }
 
-      // Record deploy ke pool memory + capture signals untuk Darwinian learning
-      if (result.success && result.positionAddress) {
-        recordDeployment(input.pool_address);
-
-        // Capture signals for all positions (use first address for primary signal)
-        const poolData = lastCandidates.find(c => c.address === input.pool_address);
-        if (poolData) captureSignals(result.positionAddress, poolData);
+        // Record deploy ke pool memory + capture signals untuk Darwinian learning
+        if (result.success && result.positionAddress) {
+          recordDeployment(input.pool_address);
+          const poolData = lastCandidates.find(c => c.address === input.pool_address);
+          if (poolData) captureSignals(result.positionAddress, poolData);
+        }
+      } catch (notifErr) {
+        // Notifikasi/recording gagal — JANGAN propagate error ini.
+        // Posisi sudah berhasil di-deploy & tersimpan di DB.
+        console.warn('[hunter] Post-deploy notification failed:', notifErr.message);
       }
 
       return JSON.stringify({ ...result, strategyUsed: strategy?.name, reasoning: input.reasoning }, null, 2);
