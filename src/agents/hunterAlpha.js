@@ -695,65 +695,6 @@ async function executeTool(name, input) {
 // ─── Screen-only: get top candidates without running LLM ─────────
 // Used by auto-screening flow for batch Telegram approval
 
-export async function getScreeningCandidates(limit = 5) {
-  const cfg       = getConfig();
-  const thresholds = getThresholds();
-  const weights   = getDarwinWeights();
-  const minBinStep      = cfg.minBinStep      || 1;
-  const minTokenFeesSol = cfg.minTokenFeesSol || 0;
-
-  const rawPools = await getTopPools(limit * 4);
-  const filtered = rawPools
-    .filter(p => {
-      const tvl      = p.liquidityRaw || 0;
-      const fees     = p.fees24hRaw   || 0;
-      const feeRatio = tvl > 0 ? fees / tvl : 0;
-      const binStep  = p.binStep || 0;
-      return (
-        binStep >= minBinStep && binStep <= 250 &&
-        tvl >= thresholds.minTvl &&
-        tvl <= thresholds.maxTvl &&
-        feeRatio >= thresholds.minFeeActiveTvlRatio &&
-        (minTokenFeesSol <= 0 || fees >= minTokenFeesSol) &&
-        !isOnCooldown(p.address)
-      );
-    })
-    .map(p => ({ ...p, darwinScore: calculateDarwinScore(p, weights) }))
-    .sort((a, b) => b.darwinScore - a.darwinScore)
-    .slice(0, limit);
-
-  // Enrich in parallel
-  const enriched = await Promise.all(filtered.map(async (p) => {
-    const [mtfResult, swResult] = await Promise.allSettled([
-      getMultiTFScore(p.tokenX, p.address),
-      checkSmartWalletsOnPool(p.address),
-    ]);
-    const mtf = mtfResult.status === 'fulfilled' ? mtfResult.value : null;
-    const sw  = swResult.status  === 'fulfilled' ? swResult.value  : null;
-
-    if (mtf?.score > 0) {
-      p.multiTFScore = mtf.score;
-      p.darwinScore  = calculateDarwinScore({ ...p, multiTFScore: mtf.score }, weights);
-    }
-
-    return {
-      address:     p.address,
-      name:        p.name,
-      darwinScore: parseFloat(p.darwinScore.toFixed(3)),
-      tvl:         (p.liquidityRaw || 0).toFixed(0),
-      fees24h:     (p.fees24hRaw   || 0).toFixed(2),
-      binStep:     p.binStep,
-      tokenX:      p.tokenX,
-      multiTFScore: mtf?.score ?? 0,
-      multiTFBreakdown: mtf?.breakdown ?? null,
-      smartWallet: sw?.found ? sw.matches.map(m => m.label) : [],
-      scannedAt:   Date.now(),
-    };
-  }));
-
-  lastCandidates = enriched;
-  return enriched.sort((a, b) => b.darwinScore - a.darwinScore);
-}
 
 // ─── Main agent loop ─────────────────────────────────────────────
 
@@ -762,7 +703,6 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null, opt
   hunterBotRef = bot;
   hunterAllowedId = allowedId;
   _hunterTargetCount = options.targetCount ?? null;
-  const forcedPool = options.forcedPool ?? null; // pre-selected pool dari approval flow
 
   const cfg = getConfig();
 
@@ -893,16 +833,10 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null, opt
 
     const display = viable.length > 0 ? viable : enriched.slice(0, 3);
 
-    // Jika ada forced pool dari approval flow, prioritaskan dia di atas
-    const forcedPoolNote = forcedPool
-      ? `\n⚡ FORCED POOL (user-approved): ${forcedPool} — DEPLOY KE POOL INI DULUAN.\n`
-      : '';
-
     preComputedContext =
       `\n\n──────────────────────────────────────\n` +
       `PRE-SCREENING SELESAI — DATA SUDAH TERSEDIA\n` +
       `Pool Memory, OKX, Multi-TF, dan Smart Wallet sudah diambil. JANGAN fetch ulang.\n` +
-      forcedPoolNote +
       `Langsung: (1) get_pool_detail top kandidat → (2) screen_token → (3) deploy_position\n\n` +
       `Kandidat viable (${display.length} pool, urut darwinScore):\n` +
       JSON.stringify(display, null, 2);

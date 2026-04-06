@@ -5,7 +5,7 @@ import { writeFileSync, readFileSync, existsSync, unlinkSync } from 'fs';
 import { initSolana, getWalletBalance } from './solana/wallet.js';
 import { processMessage } from './agent/claude.js';
 import { handleStrategyCommand, isInStrategySession } from './strategies/strategyHandler.js';
-import { runHunterAlpha, getCandidates, getScreeningCandidates } from './agents/hunterAlpha.js';
+import { runHunterAlpha, getCandidates } from './agents/hunterAlpha.js';
 import { runHealerAlpha } from './agents/healerAlpha.js';
 import { learnFromPool, learnFromMultiplePools, loadLessons, pinLesson, unpinLesson, formatLessonsList } from './learn/lessons.js';
 import { getConfig, getThresholds, updateConfig } from './config.js';
@@ -847,7 +847,7 @@ bot.onText(/\/(?:autoscreen|autohunter)(?:\s+(on|off))?/, async (msg, match) => 
     bot.sendMessage(chatId,
       `🤖 *Auto-Screening*: ${current ? '✅ ON' : '❌ OFF'}\n\n` +
       `Gunakan \`/autoscreen on\` atau \`/autoscreen off\` untuk toggle.\n` +
-      `Interval: ${getConfig().screeningIntervalMin} menit | Timeout: ${getConfig().approvalTimeoutMin} menit`,
+      `Interval screening: ${getConfig().screeningIntervalMin} menit`,
       { parse_mode: 'Markdown' }
     );
     return;
