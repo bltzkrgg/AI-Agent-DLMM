@@ -355,18 +355,21 @@ async function executeTool(name, input) {
 
       // Record ke pool memory
       recordClose(input.pool_address, {
-        pnlPct:   pnlData.pnlPct || 0,
-        reason:   pnlData.closeReason || 'AGENT_CLOSE',
+        pnlPct: pnlData.pnlPct || 0,
+        reason:  pnlData.closeReason || 'AGENT_CLOSE',
       });
 
-      // Auto-swap returned tokens ke SOL setelah close (retry 2x)
+      // Tunggu 3 detik — token perlu waktu untuk muncul di wallet setelah close
+      await new Promise(r => setTimeout(r, 3000));
+
+      // Auto-swap returned tokens ke SOL setelah close (retry 3x)
       const swapResults = [];
       const swapErrors  = [];
       try {
         const poolInfo = await getPoolInfo(input.pool_address);
         for (const mint of [poolInfo.tokenX, poolInfo.tokenY]) {
           if (mint && mint !== SOL_MINT) {
-            for (let attempt = 1; attempt <= 2; attempt++) {
+            for (let attempt = 1; attempt <= 3; attempt++) {
               try {
                 const swapRes = await swapAllToSOL(mint);
                 if (swapRes.success) {
@@ -376,25 +379,33 @@ async function executeTool(name, input) {
                 }
                 break;
               } catch (e) {
-                if (attempt === 2) swapErrors.push({ mint: mint.slice(0, 8), error: e.message });
-                else await new Promise(r => setTimeout(r, 2000));
+                if (attempt === 3) swapErrors.push({ mint: mint.slice(0, 8), error: e.message });
+                else await new Promise(r => setTimeout(r, 2000 * attempt));
               }
             }
           }
         }
       } catch { /* swap best-effort */ }
 
-      // Notifikasi swap real-time ke notify function jika tersedia
-      if (_healerNotifyFn && swapResults.length > 0) {
+      // Notifikasi swap + mulai post-close monitor
+      if (_healerNotifyFn) {
         const totalSol = swapResults.reduce((s, r) => s + (r.outSol || 0), 0);
-        const swapLine = swapResults.map(r => r.outSol ? `+${r.outSol.toFixed(4)}◎` : `skip`).join(', ');
-        _healerNotifyFn(
-          `🔄 *Auto-Swap Selesai*\n\n` +
-          `Token → SOL: ${swapLine}\n` +
-          `Total: \`+${totalSol.toFixed(4)} SOL\`\n` +
-          `_5 menit monitoring dimulai..._`
-        ).catch(() => {});
-        // Mulai 5-menit monitor
+        if (swapResults.some(r => r.outSol)) {
+          const swapLine = swapResults.map(r => r.outSol ? `+${r.outSol.toFixed(4)}◎` : 'skip').join(', ');
+          _healerNotifyFn(
+            `🔄 *Auto-Swap Selesai*\n\n` +
+            `Token → SOL: ${swapLine}\n` +
+            `Total: \`+${totalSol.toFixed(4)} SOL\`\n` +
+            `_5 menit monitoring dimulai..._`
+          ).catch(() => {});
+        } else if (swapErrors.length > 0) {
+          _healerNotifyFn(
+            `⚠️ *Auto-Swap Gagal*\n\n` +
+            `Posisi sudah ditutup, tapi token belum dikonversi ke SOL.\n` +
+            `Error: ${swapErrors.map(e => e.error || e.mint).join(', ')}\n` +
+            `_Lakukan swap manual di Jupiter/Meteora._`
+          ).catch(() => {});
+        }
         startPostCloseMonitor(input.pool_address, pnlData.pnlPct || 0, _healerNotifyFn);
       }
 
@@ -452,6 +463,15 @@ async function executeTool(name, input) {
       outOfRangeTracker.delete(input.position_address);
       peakPnlTracker.delete(input.position_address);
 
+      // Record ke pool memory
+      recordClose(input.pool_address, {
+        pnlPct: zapPnlData.pnlPct || 0,
+        reason:  zapPnlData.closeReason || 'ZAP_OUT',
+      });
+
+      // Tunggu 3 detik — token perlu waktu untuk muncul di wallet setelah close
+      await new Promise(r => setTimeout(r, 3000));
+
       const swapResults = [];
       const swapErrors  = [];
       try {
@@ -479,6 +499,33 @@ async function executeTool(name, input) {
       }
 
       const totalSwappedSol = swapResults.reduce((s, r) => s + (r.outSol || 0), 0);
+
+      // Notifikasi hasil + mulai post-close monitor
+      if (_healerNotifyFn) {
+        if (swapResults.some(r => r.outSol)) {
+          const swapLine = swapResults.map(r => r.outSol ? `+${r.outSol.toFixed(4)}◎` : 'skip').join(', ');
+          _healerNotifyFn(
+            `⚡ *Zap Out Selesai*\n\n` +
+            `Token → SOL: ${swapLine}\n` +
+            `Total: \`+${totalSwappedSol.toFixed(4)} SOL\`\n` +
+            `_5 menit monitoring dimulai..._`
+          ).catch(() => {});
+        } else if (swapErrors.length > 0) {
+          _healerNotifyFn(
+            `⚠️ *Zap Out — Swap Gagal*\n\n` +
+            `Posisi sudah ditutup, tapi token belum dikonversi ke SOL.\n` +
+            `Error: ${swapErrors.map(e => e.error || e.mint).join(', ')}\n` +
+            `_Lakukan swap manual di Jupiter/Meteora._`
+          ).catch(() => {});
+        } else {
+          // Semua di-skip (balance 0 — kemungkinan single-side SOL yang belum OOR)
+          _healerNotifyFn(
+            `✅ *Zap Out Selesai*\n\nPosisi ditutup. Semua dana sudah dalam bentuk SOL.\n_5 menit monitoring dimulai..._`
+          ).catch(() => {});
+        }
+        startPostCloseMonitor(input.pool_address, zapPnlData.pnlPct || 0, _healerNotifyFn);
+      }
+
       return JSON.stringify({
         ...closeResult,
         zapOut: true,
