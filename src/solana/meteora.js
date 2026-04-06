@@ -385,7 +385,20 @@ export async function openPosition(poolAddress, tokenXAmount, tokenYAmount, pric
         maxRetries: 3,
       });
 
-      await pollTxConfirm(connection, txHash, 60000);
+      // Jika polling timeout, TX mungkin sudah landing tapi RPC lambat index.
+      // Verifikasi via getAccountInfo(posKp) sebagai ground truth sebelum throw.
+      try {
+        await pollTxConfirm(connection, txHash, 60000);
+      } catch (confirmErr) {
+        await new Promise(r => setTimeout(r, 4000)); // tunggu finalisasi
+        const acct = await connection.getAccountInfo(posKp.publicKey).catch(() => null);
+        if (acct === null) {
+          // Benar-benar gagal — tidak ada account terbuat
+          throw new Error(`TX deploy gagal dan posisi tidak ada on-chain: ${confirmErr.message}`);
+        }
+        // Account sudah ada — TX landed meski polling timeout
+        console.warn(`[openPosition] pollTxConfirm timeout tapi posisi sudah ada on-chain — lanjut sebagai sukses`);
+      }
       allTxHashes.push(txHash);
     }
 
@@ -541,7 +554,7 @@ export async function closePositionDLMM(poolAddress, positionAddress, pnlData = 
         const { blockhash } = await connection.getLatestBlockhash('confirmed');
         tx.recentBlockhash = blockhash;
         tx.feePayer = wallet.publicKey;
-        injectPriorityFee(tx, { units: 400_000, microLamports: 200_000 });
+        injectPriorityFee(tx, { units: 600_000, microLamports: 200_000 });
         tx.sign(wallet);
         const hash = await connection.sendRawTransaction(tx.serialize(), {
           skipPreflight: true,
@@ -646,62 +659,107 @@ export async function closePositionDLMM(poolAddress, positionAddress, pnlData = 
         await sendAndConfirmTx(tx, txHashes);
       }
 
-      // ── 6. Verifikasi + cleanup: pastikan account BENAR-BENAR dihapus ──
+      // ── 6. Verifikasi + cleanup ───────────────────────────────
       //
-      // Meteora menentukan "open/closed" berdasarkan eksistensi account, BUKAN likuiditas.
-      // shouldClaimAndClose:false hanya tarik likuiditas — account masih ada → Meteora open.
+      // removeLiquidity(shouldClaimAndClose:true) menyertakan closePositionIfEmpty per-chunk.
+      // closePositionIfEmpty = NO-OP jika posisi masih ada pending fee/reward → account tetap ada.
       //
-      // PENTING: closePosition/closePositionIfEmpty minta LbPosition object (bukan PublicKey!).
-      // → Fetch fresh position via getPositionsByUserAndLbPair untuk dapat LbPosition object.
-      // → Jika SDK tidak ketemu tapi account masih ada = RPC glitch → retry.
-      // → Tidak ada fallback "sukses" berdasarkan bin count — itu path false-success.
+      // Strategy cleanup bertingkat:
+      //   6a. Tunggu 10s (propagasi Solana bisa 2-8s)
+      //   6b. getAccountInfo → null = sudah closed ✓
+      //   6c. Account masih ada → re-run removeLiquidity(shouldClaimAndClose:true) dgn state fresh.
+      //       SDK membaca on-chain state fresh: jika ada sisa fee/reward → diklaim + closePositionIfEmpty.
+      //       Jika SDK throw (activeBins kosong = posisi sudah 0 liq/fee/reward) → step 6d.
+      //   6d. Posisi sudah kosong tapi account masih ada → panggil closePositionIfEmpty langsung.
+      //   6e. Fallback: closePosition (closePosition2) sebagai last resort.
+      //   6f. Re-verify → jika null = done ✓, jika masih ada = retry outer loop.
 
-      await new Promise(r => setTimeout(r, 5000)); // state propagation Solana ~2-5s
+      await new Promise(r => setTimeout(r, 10000)); // tunggu state propagation
 
-      let stillHasLiquidity = true; // safe default: anggap masih ada sampai terbukti sebaliknya
+      let stillHasLiquidity = true;
       try {
         const accountInfo = await connection.getAccountInfo(positionPubkey);
         if (accountInfo === null) {
-          // Account sudah hilang dari chain → posisi benar-benar closed ✅
-          stillHasLiquidity = false;
+          stillHasLiquidity = false; // ✅ closed
         } else {
-          // Account masih ada → fetch fresh LbPosition object lalu panggil closePosition()
-          console.log('[closePositionDLMM] Account masih ada, fetch position dan panggil closePosition()...');
+          console.log('[closePositionDLMM] Account masih ada setelah removeLiquidity — jalankan cleanup cycle...');
           try {
-            const dlmmPool2 = await DLMM.create(connection, poolPubkey);
+            const dlmmPool2  = await DLMM.create(connection, poolPubkey);
             const { userPositions: vPos } = await dlmmPool2.getPositionsByUserAndLbPair(wallet.publicKey);
-            const livePosition = vPos?.find(p => p.publicKey.toString() === positionAddress);
+            const livePos    = vPos?.find(p => p.publicKey.toString() === positionAddress);
 
-            if (livePosition) {
-              // closePosition dengan LbPosition object yang benar (bukan PublicKey!)
-              const closeTxRaw = await dlmmPool2.closePosition({
-                owner:    wallet.publicKey,
-                position: livePosition, // ← full LbPosition object: { publicKey, positionData }
-              });
-              const closeTxList = Array.isArray(closeTxRaw) ? closeTxRaw : [closeTxRaw];
-              for (const ctx of closeTxList) await sendAndConfirmTx(ctx, txHashes);
+            if (livePos) {
+              const pd2 = livePos.positionData;
+              let cleanupDone = false;
 
-              // Re-verify: account harus sudah hilang setelah closePosition
-              await new Promise(r => setTimeout(r, 3000));
-              const accountInfo2 = await connection.getAccountInfo(positionPubkey);
-              if (accountInfo2 === null) {
-                stillHasLiquidity = false; // ✅ benar-benar closed
+              // 6c. Re-run removeLiquidity(shouldClaimAndClose:true) — klaim sisa fee/reward + close
+              try {
+                const cleanupTxs = await dlmmPool2.removeLiquidity({
+                  position:            positionPubkey,
+                  user:                wallet.publicKey,
+                  fromBinId:           pd2.lowerBinId,
+                  toBinId:             pd2.upperBinId,
+                  bps:                 new BN(10000),
+                  shouldClaimAndClose: true,
+                });
+                const list = Array.isArray(cleanupTxs) ? cleanupTxs : [cleanupTxs];
+                for (const ctx of list) await sendAndConfirmTx(ctx, txHashes);
+                cleanupDone = true;
+                console.log('[closePositionDLMM] 6c: removeLiquidity cleanup OK');
+              } catch (e6c) {
+                // SDK melempar error jika activeBins kosong (posisi sudah 0 liq+fee+reward)
+                // → lanjut ke 6d: closePositionIfEmpty langsung
+                console.log('[closePositionDLMM] 6c removeLiquidity gagal:', e6c.message, '— coba closePositionIfEmpty');
               }
-              // Jika masih ada → stillHasLiquidity = true → retry attempt berikutnya
+
+              // 6d. Posisi kosong tapi account masih ada → closePositionIfEmpty langsung
+              if (!cleanupDone && typeof dlmmPool2.closePositionIfEmpty === 'function') {
+                try {
+                  const cipeTx = await dlmmPool2.closePositionIfEmpty({
+                    owner:    wallet.publicKey,
+                    position: livePos,
+                  });
+                  const list = Array.isArray(cipeTx) ? cipeTx : [cipeTx];
+                  for (const ctx of list) await sendAndConfirmTx(ctx, txHashes);
+                  cleanupDone = true;
+                  console.log('[closePositionDLMM] 6d: closePositionIfEmpty OK');
+                } catch (e6d) {
+                  console.log('[closePositionDLMM] 6d closePositionIfEmpty gagal:', e6d.message, '— coba closePosition');
+                }
+              }
+
+              // 6e. Last resort: closePosition (closePosition2)
+              if (!cleanupDone) {
+                try {
+                  const closeTx = await dlmmPool2.closePosition({
+                    owner:    wallet.publicKey,
+                    position: livePos,
+                  });
+                  const list = Array.isArray(closeTx) ? closeTx : [closeTx];
+                  for (const ctx of list) await sendAndConfirmTx(ctx, txHashes);
+                  console.log('[closePositionDLMM] 6e: closePosition OK');
+                } catch (e6e) {
+                  console.warn('[closePositionDLMM] 6e closePosition gagal:', e6e.message);
+                }
+              }
+
+              // 6f. Re-verify
+              await new Promise(r => setTimeout(r, 4000));
+              const acctInfo2 = await connection.getAccountInfo(positionPubkey);
+              if (acctInfo2 === null) {
+                stillHasLiquidity = false; // ✅
+              }
+
             } else if (vPos != null) {
-              // SDK mengembalikan results tapi posisi tidak ditemukan, padahal account masih ada.
-              // Ini RPC inconsistency — keep stillHasLiquidity = true, retry akan fresh-fetch.
+              // SDK tidak ketemu posisi tapi account masih ada → RPC inconsistency → retry
               console.warn('[closePositionDLMM] Account exists tapi SDK tidak ketemu posisi — RPC inconsistency, retry');
             }
-            // vPos === null → getPositionsByUserAndLbPair gagal → keep stillHasLiquidity = true → retry
-          } catch (closeErr) {
-            // closePosition() atau getPositionsByUserAndLbPair gagal → retry
-            console.warn('[closePositionDLMM] closePosition() cleanup gagal:', closeErr.message);
+          } catch (e6) {
+            console.warn('[closePositionDLMM] Cleanup cycle error:', e6.message);
           }
         }
       } catch (e) {
         console.warn('[closePositionDLMM] getAccountInfo verify failed:', e.message);
-        // getAccountInfo gagal → keep stillHasLiquidity = true → retry
       }
 
       if (stillHasLiquidity) {

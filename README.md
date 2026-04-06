@@ -10,9 +10,9 @@
 
 | Fitur | Deskripsi |
 |---|---|
-| **Hunter Alpha** | Screen & deploy ke pool terbaik — manual via `/entry` atau auto-screening dengan Telegram batch approval |
+| **Hunter Alpha** | Screen & deploy ke pool terbaik secara otomatis — autonomous dari screen hingga deploy, tanpa persetujuan manual |
 | **Healer Alpha** | Monitor & manage semua posisi tiap 10 menit — trailing TP, OOR detection, proactive exit |
-| **Auto-Screening** | Hunter jalan otomatis tiap N menit, kirim kandidat ke Telegram, user approve/skip per pool dengan timeout staleness |
+| **Auto-Screening** | Hunter jalan otomatis tiap N menit — screen, score, dan deploy kandidat terbaik sendiri tanpa interaksi user |
 | **Market Analyst** | Analisa OHLCV, volume, sentiment, on-chain sebelum keputusan — DLMM-LP perspective |
 | **Multi-Timeframe** | Alignment score 6 TF (15m/30m/1H/4H/12H/24H) via Supertrend + RSI14 + MACD per TF |
 | **Coin Filter (10-step)** | RugCheck (warn+danger → REJECT), mcap via GeckoTerminal, ATH drawdown filter, narrative, OKX honeypot, organic score |
@@ -22,7 +22,7 @@
 | **Pool Memory** | Histori deploy per pool — win rate, streak loss, cooldown otomatis (win: 1h, loss: 6h, streak: 24h, OOR: 12h) |
 | **Smart Wallets** | Curated alpha wallet list — deteksi kehadiran mereka di pool via Meteora top LPers |
 | **Tiered Lessons** | 3 tier injection ke prompt: PINNED (manual) > CROSS-POOL (conf≥0.6) > RECENT |
-| **Auto Swap to SOL** | Token hasil close/claim otomatis di-swap ke SOL via Jupiter, dengan real-time 5-menit monitoring |
+| **Auto Swap to SOL** | Token hasil close/claim otomatis di-swap ke SOL via Jupiter |
 | **Trailing Take Profit** | Aktif saat profit ≥ threshold (configurable), close kalau turun X% dari peak |
 | **OOR Bin Detection** | Tutup posisi kalau out-of-range melebihi N bins (paralel dengan time-based) |
 | **Dry Run Mode** | Semua keputusan AI jalan normal, TX tidak dieksekusi — cocok untuk testing |
@@ -221,8 +221,7 @@ Reset ke default: `/model reset`
 |---|---|
 | `/start` | Lihat semua commands & status bot |
 | `/status` | Balance wallet, posisi terbuka, PnL live |
-| `/entry` | Deploy posisi baru — set SOL & jumlah pool, Hunter mulai |
-| `/hunt` | Jalankan Hunter Alpha manual (tanpa deploy wizard) |
+| `/hunt` | Jalankan Hunter Alpha manual — screen & deploy kandidat terbaik |
 | `/heal` | Jalankan Healer Alpha manual |
 | `/pools` | Tampilkan kandidat pool terbaik saat ini |
 | `/results` | Laporan hasil hari ini per strategi |
@@ -231,7 +230,7 @@ Reset ke default: `/model reset`
 ### Deploy & Screening
 | Command | Fungsi |
 |---|---|
-| `/autoscreen on\|off` | Aktifkan/matikan auto-screening Hunter dengan batch Telegram approval |
+| `/autoscreen on\|off` | Aktifkan/matikan auto-screening — Hunter autonomous screen & deploy tanpa persetujuan manual |
 | `/dryrun on\|off` | Toggle dry run — semua TX disimulasikan, tidak dieksekusi |
 | `/check <mint>` | Screen token manual — RugCheck + mcap + ATH drawdown + OKX |
 
@@ -291,7 +290,6 @@ Auto-dibuat di root folder. Edit via Telegram chat atau langsung:
   "managementIntervalMin": 10,
   "screeningIntervalMin": 30,
   "autoScreeningEnabled": false,
-  "approvalTimeoutMin": 15,
 
   "dryRun": false,
 
@@ -400,18 +398,14 @@ Setiap token wajib lolos 10 filter sebelum deploy:
 Ketika `autoScreeningEnabled = true`:
 
 1. Cron berjalan tiap `screeningIntervalMin` menit
-2. Hunter screen top pool tanpa LLM (lightweight) — filter threshold + darwin score + multi-TF + smart wallet
-3. Bot kirim Telegram dengan inline keyboard:
-   ```
-   [✅ Deploy #1: ABCD... (score: 3.2)]
-   [✅ Deploy #2: EFGH... (score: 2.8)]
-   [❌ Skip Semua]
-   ```
-4. User klik approve → re-validasi staleness (>15 menit → fetch ulang)
-5. Hunter Alpha dijalankan untuk deploy ke pool yang dipilih
-6. Timeout `approvalTimeoutMin` menit — kandidat expired otomatis
+2. Cek balance cukup (≥ `deployAmountSol` + `gasReserve`) dan slot posisi tersedia (< `maxPositions`)
+3. Hunter Alpha dijalankan — screen pool, score kandidat, pilih terbaik, **deploy otomatis**
+4. Bot kirim notifikasi hasil deploy ke Telegram
+5. Jika tidak ada kandidat yang layak → skip, cron jalan lagi di siklus berikutnya
 
 Aktifkan via `/autoscreen on` atau set `autoScreeningEnabled: true` di config.
+
+> Tidak ada approval dari user — Hunter bekerja sepenuhnya autonomous. Gunakan `/autoscreen off` untuk menghentikan.
 
 ---
 
@@ -502,15 +496,15 @@ git push origin main
 
 ```
 src/
-├── index.js                    # Entry point, Telegram bot, cron, auto-screening
+├── index.js                    # Entry point, Telegram bot, cron, auto-screening autonomous
 ├── config.js                   # Config management + bounds validation + isDryRun()
 ├── agent/
 │   ├── provider.js             # AI provider (OpenRouter/Anthropic/OpenAI/Custom)
 │   ├── claude.js               # Free-form chat agent
 │   └── modelCheck.js           # Startup model validation
 ├── agents/
-│   ├── hunterAlpha.js          # Pool screening & deployment agent + getScreeningCandidates()
-│   └── healerAlpha.js          # Position management agent (trailing TP, OOR bins, post-close monitor)
+│   ├── hunterAlpha.js          # Pool screening & autonomous deployment agent
+│   └── healerAlpha.js          # Position management agent (trailing TP, OOR bins, auto-swap)
 ├── market/
 │   ├── oracle.js               # OHLCV (GeckoTerminal), on-chain (Helius), multi-TF score
 │   ├── analyst.js              # AI market analysis (DLMM LP perspective)
@@ -542,7 +536,7 @@ src/
 ├── strategies/
 │   ├── strategyManager.js      # Strategy CRUD
 │   └── strategyHandler.js      # Telegram conversation flow
-└── monitor/positionMonitor.js  # Out-of-range alerts
+└── monitor/positionMonitor.js  # Out-of-range alerts + periodic position status
 ```
 
 ---
@@ -585,9 +579,6 @@ Daftar gratis di [helius.dev](https://helius.dev).
 ```bash
 xcode-select --install && npm install
 ```
-
-**Bot deploy ke pool yang salah / tidak sesuai approval**
-- Pastikan `forcedPool` logic jalan — cek log terminal saat Hunter Alpha dijalankan setelah approval
 
 ---
 

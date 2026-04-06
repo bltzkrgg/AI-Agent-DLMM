@@ -5,7 +5,7 @@ import { writeFileSync, readFileSync, existsSync, unlinkSync } from 'fs';
 import { initSolana, getWalletBalance } from './solana/wallet.js';
 import { processMessage } from './agent/claude.js';
 import { handleStrategyCommand, isInStrategySession } from './strategies/strategyHandler.js';
-import { runHunterAlpha, getCandidates, getScreeningCandidates } from './agents/hunterAlpha.js';
+import { runHunterAlpha, getCandidates } from './agents/hunterAlpha.js';
 import { runHealerAlpha } from './agents/healerAlpha.js';
 import { learnFromPool, learnFromMultiplePools, loadLessons, pinLesson, unpinLesson, formatLessonsList } from './learn/lessons.js';
 import { getConfig, getThresholds, updateConfig, isConfigKeySupported } from './config.js';
@@ -208,8 +208,7 @@ cron.schedule('* * * * *', async () => {
 
 // ─── Auto-screening Hunter — interval dibaca live dari config ────
 // Aktif hanya jika autoScreeningEnabled = true di config.
-// Screen pool terbaik, kirim ke Telegram untuk batch approval.
-// Timeout configurable, kandidat dianggap stale setelahnya.
+// Screen pool terbaik, langsung deploy kandidat teratas (tanpa approval).
 
 async function runAutoScreening() {
   if (!solanaReady) return;
@@ -224,67 +223,15 @@ async function runAutoScreening() {
   if (parseFloat(balance) < (liveCfg.deployAmountSol + (liveCfg.gasReserve ?? 0.02))) return;
 
   _screeningBusy = true;
+  _hunterBusy    = true;
   try {
-    await notify(`🔍 *Auto-Screening* — mencari kandidat pool...`);
-    const candidates = await getScreeningCandidates(5);
-    if (!candidates || candidates.length === 0) {
-      await notify('📭 Auto-screening: tidak ada kandidat yang lolos filter.');
-      return;
-    }
-
-    const approvalKey = `as_${Date.now()}`;
-    const timeoutMin  = liveCfg.approvalTimeoutMin ?? 15;
-    const expiresAt   = Date.now() + timeoutMin * 60 * 1000;
-
-    // Build inline keyboard — 1 button per candidate + Skip All
-    const candidateButtons = candidates.map((c, i) => [{
-      text: `✅ Deploy #${i + 1}: ${(c.name || c.address.slice(0, 8))} (score: ${c.darwinScore})`,
-      callback_data: `${approvalKey}:deploy:${i}`,
-    }]);
-    candidateButtons.push([{
-      text: '❌ Skip Semua',
-      callback_data: `${approvalKey}:skip`,
-    }]);
-
-    // Compose summary text
-    let text = `🦅 *Auto-Screening Selesai* — ${candidates.length} Kandidat\n\n`;
-    candidates.forEach((c, i) => {
-      const swHit  = c.smartWallet?.length > 0 ? ` 🎯` : '';
-      const tfInfo = c.multiTFScore > 0 ? ` | TF: ${(c.multiTFScore * 100).toFixed(0)}%` : '';
-      text += `*#${i + 1}* \`${c.address.slice(0, 8)}...\`${swHit}\n`;
-      text += `  Fee: $${c.fees24h}/d | TVL: $${parseInt(c.tvl).toLocaleString()} | Bin: ${c.binStep}${tfInfo}\n`;
-      text += `  Darwin: ${c.darwinScore}\n\n`;
-    });
-    text += `_Timeout: ${timeoutMin} menit — setelah itu kandidat dianggap stale._`;
-
-    const sentMsg = await bot.sendMessage(ALLOWED_ID, text, {
-      parse_mode: 'Markdown',
-      reply_markup: { inline_keyboard: candidateButtons },
-    });
-
-    pendingApprovals.set(approvalKey, {
-      candidates,
-      chatId:    ALLOWED_ID,
-      messageId: sentMsg.message_id,
-      expiresAt,
-    });
-
-    // Auto-expire: hapus setelah timeout
-    setTimeout(() => {
-      if (pendingApprovals.has(approvalKey)) {
-        pendingApprovals.delete(approvalKey);
-        bot.editMessageText(`_Auto-screening expired — tidak ada respons dalam ${timeoutMin} menit._`, {
-          chat_id: ALLOWED_ID, message_id: sentMsg.message_id,
-          parse_mode: 'Markdown',
-        }).catch(() => {});
-      }
-    }, timeoutMin * 60 * 1000 + 5000);
-
+    await runHunterAlpha(notify, bot, ALLOWED_ID);
   } catch (e) {
     console.error('Auto-screening error:', e.message);
     notify(`❌ Auto-screening error: ${e.message}`).catch(() => {});
   } finally {
     _screeningBusy = false;
+    _hunterBusy    = false;
   }
 }
 
@@ -297,106 +244,6 @@ cron.schedule('* * * * *', async () => {
   catch (e) { console.error('Auto-screening cron error:', e.message); }
 });
 
-// ─── Inline keyboard callback — approval handler ──────────────────
-bot.on('callback_query', async (query) => {
-  if (query.from.id !== ALLOWED_ID) return;
-  const data    = query.data || '';
-  const chatId  = query.message?.chat?.id;
-  const msgId   = query.message?.message_id;
-
-  // Acknowledge immediately
-  bot.answerCallbackQuery(query.id).catch(() => {});
-
-  // Parse format: "<approvalKey>:deploy:<index>" | "<approvalKey>:skip"
-  const parts = data.split(':');
-  if (parts.length < 2) return;
-
-  const [approvalKey, action, idxStr] = parts;
-  const approval = pendingApprovals.get(approvalKey);
-
-  if (!approval) {
-    bot.editMessageText('_Kandidat sudah expired atau tidak ditemukan._', {
-      chat_id: chatId, message_id: msgId, parse_mode: 'Markdown',
-    }).catch(() => {});
-    return;
-  }
-
-  // Check staleness
-  const liveCfg   = getConfig();
-  const timeoutMin = liveCfg.approvalTimeoutMin ?? 15;
-  const staleMs   = timeoutMin * 60 * 1000;
-  if (Date.now() > approval.expiresAt) {
-    pendingApprovals.delete(approvalKey);
-    bot.editMessageText(`_Kandidat sudah expired (>${timeoutMin} menit). Jalankan /entry untuk screening ulang._`, {
-      chat_id: chatId, message_id: msgId, parse_mode: 'Markdown',
-    }).catch(() => {});
-    return;
-  }
-
-  if (action === 'skip') {
-    pendingApprovals.delete(approvalKey);
-    bot.editMessageText('❌ *Semua kandidat di-skip.*', {
-      chat_id: chatId, message_id: msgId, parse_mode: 'Markdown',
-    }).catch(() => {});
-    return;
-  }
-
-  if (action === 'deploy') {
-    const idx       = parseInt(idxStr);
-    const candidate = approval.candidates[idx];
-    if (!candidate) return;
-
-    // Validate staleness of candidate data (>15 min since screened)
-    if (Date.now() - candidate.scannedAt > staleMs) {
-      bot.editMessageText(`_Kandidat #${idx + 1} sudah stale — data sudah lebih dari ${timeoutMin} menit. Re-validating..._`, {
-        chat_id: chatId, message_id: msgId, parse_mode: 'Markdown',
-      }).catch(() => {});
-      // Re-validate by fetching fresh data
-      try {
-        const freshCandidates = await getScreeningCandidates(5);
-        const fresh = freshCandidates.find(c => c.address === candidate.address);
-        if (!fresh) {
-          bot.editMessageText(`❌ Pool \`${candidate.address.slice(0,8)}...\` tidak lagi di top candidates. Screening ulang disarankan.`, {
-            chat_id: chatId, message_id: msgId, parse_mode: 'Markdown',
-          }).catch(() => {});
-          pendingApprovals.delete(approvalKey);
-          return;
-        }
-        candidate.scannedAt = Date.now();
-      } catch {
-        bot.editMessageText(`❌ Re-validasi gagal. Gunakan /entry untuk deploy manual.`, {
-          chat_id: chatId, message_id: msgId, parse_mode: 'Markdown',
-        }).catch(() => {});
-        pendingApprovals.delete(approvalKey);
-        return;
-      }
-    }
-
-    // Remove approval (prevent double-deploy)
-    pendingApprovals.delete(approvalKey);
-    bot.editMessageText(
-      `✅ *Deploying ke pool #${idx + 1}*\n\`${candidate.address.slice(0, 8)}...\`\n\n_Hunter Alpha sedang bekerja..._`,
-      { chat_id: chatId, message_id: msgId, parse_mode: 'Markdown' }
-    ).catch(() => {});
-
-    // Trigger Hunter with forced pool
-    if (_hunterBusy) {
-      notify('⚠️ Hunter sedang sibuk. Coba lagi sebentar.').catch(() => {});
-      return;
-    }
-    _hunterBusy = true;
-    try {
-      await runHunterAlpha(notify, bot, ALLOWED_ID, {
-        targetCount: 1,
-        forcedPool:  candidate.address,
-      });
-    } catch (e) {
-      notify(`❌ Hunter error: ${e.message}`).catch(() => {});
-    } finally {
-      _hunterBusy = false;
-    }
-  }
-});
 
 // ─── Daily Backup jam 2 pagi ─────────────────────────────────────
 cron.schedule('0 2 * * *', () => {
@@ -568,12 +415,11 @@ bot.onText(/\/start/, (msg) => {
   if (msg.from.id !== ALLOWED_ID) return;
   bot.sendMessage(msg.chat.id,
     `🦞 *Meteora DLMM Bot* \`[LIVE]\`\n\n` +
-    `🦅 Hunter — *manual /entry* ${getConfig().autoScreeningEnabled ? '| 🤖 *auto-screening ON*' : ''}\n` +
+    `🦅 Hunter — ${getConfig().autoScreeningEnabled ? '🤖 *auto-screening ON*' : '⏸ auto-screening OFF'}\n` +
     `🩺 Healer — manage posisi tiap ${cfg.managementIntervalMin}min\n` +
     `📡 Scanner — alert peluang tiap 15min (multi-TF)\n\n` +
     `*Deploy:*\n` +
-    `/entry — set SOL & jumlah pool, lalu deploy\n` +
-    `/autoscreen on|off — aktifkan/matikan auto-screening\n\n` +
+    `/autoscreen on|off — aktifkan/matikan auto-deploy\n\n` +
     `*Monitor:*\n` +
     `/pos — snapshot posisi cepat (REST API, instan)\n` +
     `/status — posisi lengkap + balance + stats (on-chain)\n` +
@@ -594,16 +440,6 @@ bot.onText(/\/start/, (msg) => {
   );
 });
 
-bot.onText(/\/entry/, (msg) => {
-  if (msg.from.id !== ALLOWED_ID) return;
-  setupState.phase = 'waiting_sol';
-  setupState.solPerPool = null;
-  setupState.poolCount = null;
-  bot.sendMessage(msg.chat.id,
-    `❓ *Berapa SOL Per Pool?*\n\n_Jumlah SOL yang di-deploy ke SETIAP pool.\nContoh: \`0.1\` = 0.1 SOL per posisi_`,
-    { parse_mode: 'Markdown' }
-  );
-});
 
 bot.onText(/\/status/, async (msg) => {
   if (msg.from.id !== ALLOWED_ID) return;
@@ -1076,7 +912,7 @@ bot.onText(/\/(?:autoscreen|autohunter)(?:\s+(on|off))?/, async (msg, match) => 
     bot.sendMessage(chatId,
       `🤖 *Auto-Screening*: ${current ? '✅ ON' : '❌ OFF'}\n\n` +
       `Gunakan \`/autoscreen on\` atau \`/autoscreen off\` untuk toggle.\n` +
-      `Interval: ${getConfig().screeningIntervalMin} menit | Timeout: ${getConfig().approvalTimeoutMin} menit`,
+      `Interval screening: ${getConfig().screeningIntervalMin} menit`,
       { parse_mode: 'Markdown' }
     );
     return;
@@ -1086,8 +922,8 @@ bot.onText(/\/(?:autoscreen|autohunter)(?:\s+(on|off))?/, async (msg, match) => 
   bot.sendMessage(chatId,
     `🤖 *Auto-Screening*: ${enable ? '✅ Diaktifkan' : '❌ Dimatikan'}\n\n` +
     (enable
-      ? `Hunter akan auto-screen setiap ${getConfig().screeningIntervalMin} menit dan kirim kandidat untuk approval.`
-      : `Hunter hanya jalan via /entry.`),
+      ? `Hunter akan auto-screen setiap ${getConfig().screeningIntervalMin} menit dan deploy kandidat terbaik otomatis.`
+      : `Hunter tidak akan auto-deploy. Gunakan /autoscreen on untuk mengaktifkan kembali.`),
     { parse_mode: 'Markdown' }
   );
 });
@@ -1177,54 +1013,6 @@ bot.on('message', async (msg) => {
   if (msg.text?.startsWith('/')) return;
   if (!msg.text) return;
 
-  // ── Setup wizard — intercept sampai konfigurasi awal selesai ────
-  if (setupState.phase === 'waiting_sol') {
-    const sol = parseFloat(msg.text.replace(',', '.'));
-    if (isNaN(sol) || sol < 0.01 || sol > 50) {
-      bot.sendMessage(msg.chat.id, '⚠️ SOL harus antara *0.01 – 50*. Contoh: `0.1`', { parse_mode: 'Markdown' });
-      return;
-    }
-    setupState.solPerPool = sol;
-    setupState.phase = 'waiting_pools';
-    bot.sendMessage(msg.chat.id,
-      `✅ *${sol} SOL per pool*\n\n❓ *Berapa Pool yang Ingin Di-deploy Sekarang?*\n\n_Contoh: \`3\` untuk deploy ke 3 pool sekarang_`,
-      { parse_mode: 'Markdown' }
-    );
-    return;
-  }
-
-  if (setupState.phase === 'waiting_pools') {
-    const pools = parseInt(msg.text);
-    if (isNaN(pools) || pools < 1) {
-      bot.sendMessage(msg.chat.id, '⚠️ Masukkan angka pool minimal 1. Contoh: `3`', { parse_mode: 'Markdown' });
-      return;
-    }
-    if (!setupState.solPerPool) {
-      // State hilang (bot restart mid-wizard) — mulai ulang
-      setupState.phase = 'waiting_sol';
-      bot.sendMessage(msg.chat.id, '⚠️ Session expired. Ketik /entry untuk mulai ulang.', { parse_mode: 'Markdown' });
-      return;
-    }
-    setupState.poolCount = pools;
-    setupState.phase = 'done';
-
-    const solPerPool = setupState.solPerPool;
-    updateConfig({ deployAmountSol: solPerPool });
-
-    bot.sendMessage(msg.chat.id,
-      `✅ *Setup Selesai!*\n\n` +
-      `📊 Deploy per pool: *${solPerPool} SOL*\n` +
-      `🏊 Deploy sekarang: *${pools} pool*\n` +
-      `📋 Max posisi aktif: *${getConfig().maxPositions}*\n\n` +
-      `🦅 Hunter Alpha sedang mencari pool terbaik...`,
-      { parse_mode: 'Markdown' }
-    );
-
-    // Trigger hunter langsung tanpa tunggu cron, dengan jumlah pool target
-    triggerHunter(pools).catch(e => console.error('Trigger hunter error:', e.message));
-    return;
-  }
-  // ── End setup wizard ─────────────────────────────────────────────
 
   if (handleConfirmationReply(msg.text)) return;
 
@@ -1295,8 +1083,8 @@ setTimeout(async () => {
     await notify(
       `🚀 *Bot Started!*\n\n` +
       `💰 Balance: ${balance} SOL | Mode: ${getConfig().dryRun ? '🟡 DRY RUN' : '🔴 LIVE'}\n` +
-      `🦅 Hunter: *manual /entry*${getConfig().autoScreeningEnabled ? ' | 🤖 auto-screen ON' : ''} | 🩺 Healer: ${cfg.managementIntervalMin}min | 📡 Scanner: 15min\n\n` +
-      `/entry untuk buka posisi | /start untuk semua commands`
+      `🦅 Hunter: ${getConfig().autoScreeningEnabled ? '🤖 auto-screen ON' : '⏸ auto-screen OFF'} | 🩺 Healer: ${cfg.managementIntervalMin}min | 📡 Scanner: 15min\n\n` +
+      `/autoscreen on untuk mulai auto-deploy | /start untuk semua commands`
     );
     await runStartupModelCheck(notify);
   } catch (e) { console.error('Startup error:', e.message); }

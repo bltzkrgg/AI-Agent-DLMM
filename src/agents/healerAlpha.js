@@ -46,27 +46,7 @@ const outOfRangeTracker = new Map(); // positionAddress → timestamp
 // Track peak PnL per posisi untuk trailing take profit
 const peakPnlTracker = new Map(); // positionAddress → { peakPnl, trailingActive }
 
-// ─── Post-Close 5-Minute Monitor ─────────────────────────────────
-// Setelah posisi ditutup + swap selesai, kirim update balance setiap
-// menit selama 5 menit untuk konfirmasi SOL sudah masuk & stabil.
 
-export function startPostCloseMonitor(poolAddress, pnlPct, notifyFn) {
-  if (!notifyFn) return;
-  let elapsed = 0;
-  const interval = setInterval(async () => {
-    elapsed++;
-    try {
-      const balance = await getWalletBalance();
-      const balSol  = parseFloat(balance).toFixed(4);
-      const icon    = elapsed < 5 ? '⏱' : '✅';
-      const msg     = elapsed < 5
-        ? `${icon} *Post-Close Monitor* T+${elapsed}m\n\nBalance: \`${balSol} SOL\`\n_Monitoring... (${5 - elapsed}m lagi)_`
-        : `${icon} *Post-Close Monitor Selesai*\n\nBalance final: \`${balSol} SOL\`\nPool: \`${poolAddress?.slice(0, 12)}...\`\nPnL: \`${pnlPct >= 0 ? '+' : ''}${pnlPct?.toFixed(2) || '?'}%\``;
-      await notifyFn(msg);
-    } catch { /* best-effort */ }
-    if (elapsed >= 5) clearInterval(interval);
-  }, 60_000); // setiap 1 menit
-}
 
 const HEALER_TOOLS = [
   {
@@ -443,8 +423,7 @@ async function executeTool(name, input) {
           _healerNotifyFn(
             `🔄 *Auto-Swap Selesai*\n\n` +
             `Token → SOL: ${swapLine}\n` +
-            `Total: \`+${totalSol.toFixed(4)} SOL\`\n` +
-            `_5 menit monitoring dimulai..._`
+            `Total: \`+${totalSol.toFixed(4)} SOL\``
           ).catch(() => {});
         } else if (swapErrors.length > 0) {
           _healerNotifyFn(
@@ -454,7 +433,6 @@ async function executeTool(name, input) {
             `_Lakukan swap manual di Jupiter/Meteora._`
           ).catch(() => {});
         }
-        startPostCloseMonitor(input.pool_address, pnlData.pnlPct || 0, _healerNotifyFn);
       }
 
       return JSON.stringify({
@@ -557,8 +535,7 @@ async function executeTool(name, input) {
           _healerNotifyFn(
             `⚡ *Zap Out Selesai*\n\n` +
             `Token → SOL: ${swapLine}\n` +
-            `Total: \`+${totalSwappedSol.toFixed(4)} SOL\`\n` +
-            `_5 menit monitoring dimulai..._`
+            `Total: \`+${totalSwappedSol.toFixed(4)} SOL\``
           ).catch(() => {});
         } else if (swapErrors.length > 0) {
           _healerNotifyFn(
@@ -570,10 +547,9 @@ async function executeTool(name, input) {
         } else {
           // Semua di-skip (balance 0 — kemungkinan single-side SOL yang belum OOR)
           _healerNotifyFn(
-            `✅ *Zap Out Selesai*\n\nPosisi ditutup. Semua dana sudah dalam bentuk SOL.\n_5 menit monitoring dimulai..._`
+            `✅ *Zap Out Selesai*\n\nPosisi ditutup. Semua dana sudah dalam bentuk SOL.`
           ).catch(() => {});
         }
-        startPostCloseMonitor(input.pool_address, zapPnlData.pnlPct || 0, _healerNotifyFn);
       }
 
       return JSON.stringify({
@@ -948,15 +924,13 @@ export async function runHealerAlpha(notifyFn) {
         // Notifikasi swap + selalu mulai 5-menit monitor
         if (swapMsgs.length > 0) {
           await notifyFn?.(
-            `🔄 *Auto-Swap Selesai*\n\nToken → SOL: ${swapMsgs.join(', ')}\nTotal: \`+${totalSwappedSol.toFixed(4)} SOL\`\n_5 menit monitoring dimulai..._`
+            `🔄 *Auto-Swap Selesai*\n\nToken → SOL: ${swapMsgs.join(', ')}\nTotal: \`+${totalSwappedSol.toFixed(4)} SOL\``
           );
         } else if (swapFails.length > 0) {
           await notifyFn?.(
             `⚠️ *Auto-Swap Gagal*\n\nPosisi ditutup, tapi token belum dikonversi ke SOL.\nError: ${swapFails.join(', ')}\n_Swap manual di Jupiter/Meteora._`
           );
         }
-        startPostCloseMonitor(pos.pool_address, pnlPct, notifyFn);
-
         const closedLines = [
           kv('Posisi',   shortAddr(addr), W),
           kv('Strategi', shortStrat(pos.strategy_used || '-'), W),
