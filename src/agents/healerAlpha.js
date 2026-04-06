@@ -1086,8 +1086,8 @@ ALUR KERJA:
 
    NORMAL → STAY
 
-3. Setelah setiap close_position, gunakan swap_to_sol untuk tokenX dan tokenY yang bukan SOL.
-4. Berikan reasoning lengkap untuk setiap keputusan.
+3. Berikan reasoning lengkap untuk setiap keputusan.
+   ⚠️ JANGAN panggil swap_to_sol setelah close_position atau zap_out — sudah ditangani otomatis di dalam tool.
 
 Safety hari ini: Daily PnL $${safety.dailyPnlUsd} | Drawdown ${safety.drawdownPct}%
 Trailing TP: aktif di ${trailCfgForPrompt.activatePct}%, close kalau turun ${trailCfgForPrompt.dropPct}% dari peak
@@ -1114,8 +1114,11 @@ Gunakan Bahasa Indonesia. Selalu explain kenapa HOLD atau CLOSE.`;
   // Track action tools — report hanya dikirim jika ada close/claim yang terjadi
   const ACTION_TOOLS = new Set(['close_position', 'zap_out', 'claim_fees']);
   const actionsCalled = new Set();
+  const MAX_ROUNDS = 20;
+  let rounds = 0;
 
-  while (response.stop_reason === 'tool_use') {
+  while (response.stop_reason === 'tool_use' && rounds < MAX_ROUNDS) {
+    rounds++;
     const toolUseBlocks = response.content.filter(b => b.type === 'tool_use');
     const toolResults   = [];
 
@@ -1140,6 +1143,10 @@ Gunakan Bahasa Indonesia. Selalu explain kenapa HOLD atau CLOSE.`;
       tools: HEALER_TOOLS,
       messages,
     });
+  }
+
+  if (rounds >= MAX_ROUNDS && notifyFn) {
+    await notifyFn(`⚠️ *Healer Alpha* — batas ${MAX_ROUNDS} putaran tercapai, loop dihentikan paksa.`);
   }
 
   const report = response.content.filter(b => b.type === 'text').map(b => b.text).join('\n');

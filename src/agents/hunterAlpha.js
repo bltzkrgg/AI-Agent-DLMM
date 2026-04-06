@@ -443,7 +443,7 @@ async function executeTool(name, input) {
 
     case 'deploy_position': {
       // ── Guard: cegah deploy duplikat ke pool yang sama ──────────
-      const existingPositions = getOpenPositions();
+      let existingPositions = getOpenPositions();
       const existingForPool   = existingPositions.find(p => p.pool_address === input.pool_address);
       if (existingForPool) {
         // Ada di DB — verifikasi on-chain dulu. DB bisa stale jika position ditutup
@@ -464,6 +464,8 @@ async function executeTool(name, input) {
               pnlUsd: 0, pnlPct: 0, feesUsd: 0, closeReason: 'MANUAL_CLOSE',
             });
           } catch { /* best-effort */ }
+          // Re-fetch setelah cleanup agar slot count akurat
+          existingPositions = getOpenPositions();
           // Tidak return di sini — lanjut ke deploy baru di bawah
         } else {
           // Posisi benar-benar masih ada on-chain → tolak duplikat
