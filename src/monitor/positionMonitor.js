@@ -1,6 +1,8 @@
 import cron from 'node-cron';
 import { getOpenPositions, saveNotification } from '../db/database.js';
 import { getPositionInfo, getPositionInfoLight } from '../solana/meteora.js';
+import { getWalletPositions, isLPAgentEnabled } from '../market/lpAgent.js';
+import { getWallet } from '../solana/wallet.js';
 import { getConfig } from '../config.js';
 
 let bot;
@@ -108,8 +110,8 @@ async function checkOutOfRange() {
 }
 
 // ─── Periodic status update ──────────────────────────────────────
-// Pakai Meteora REST API (getPositionInfoLight) — lebih ringan dari on-chain RPC.
-// Fallback ke getPositionInfo (SDK) hanya kalau REST API gagal.
+// PnL dari LP Agent (akurat) — fallback ke kalkulasi manual jika tidak ada API key.
+// Range/harga/inRange dari Meteora REST API atau SDK.
 
 async function sendPositionStatus() {
   const openPositions = getOpenPositions();
@@ -117,6 +119,24 @@ async function sendPositionStatus() {
 
   const poolsToCheck = [...new Set(openPositions.map(p => p.pool_address))];
 
+  // ── Ambil PnL dari LP Agent (1 call untuk semua posisi) ──────────
+  // LP Agent lebih akurat dari kalkulasi manual currentValueSol - deploySol
+  const lpPnlMap = new Map(); // positionAddress → pnlPct
+  if (isLPAgentEnabled()) {
+    try {
+      const owner = getWallet().publicKey.toString();
+      const lpPositions = await getWalletPositions(owner);
+      if (Array.isArray(lpPositions)) {
+        for (const p of lpPositions) {
+          if (p.address) lpPnlMap.set(p.address, p.pnlPct ?? 0);
+        }
+      }
+    } catch (e) {
+      console.warn('[monitor] LP Agent PnL fetch failed:', e.message);
+    }
+  }
+
+  // ── Ambil price/range/inRange dari Meteora REST API ──────────────
   // Parallel fetch — REST API first (fast), SDK fallback per pool if needed
   const results = await Promise.allSettled(
     poolsToCheck.map(async addr => {
@@ -137,9 +157,13 @@ async function sendPositionStatus() {
     for (const pos of positions) {
       const dbPos     = openPositions.find(p => p.position_address === pos.address);
       const deploySol = parseFloat(dbPos?.deployed_sol ?? 0);
-      const pnlPct    = deploySol > 0
-        ? (pos.currentValueSol - deploySol) / deploySol * 100
-        : 0;
+
+      // PnL: LP Agent primary → kalkulasi manual fallback
+      const pnlPct = lpPnlMap.has(pos.address)
+        ? lpPnlMap.get(pos.address)
+        : deploySol > 0
+          ? (pos.currentValueSol - deploySol) / deploySol * 100
+          : 0;
 
       const rangeIcon = pos.inRange ? '🟢' : '🔴';
       const oorLabel  = pos.inRange ? '' : ' ⚠️ OOR';

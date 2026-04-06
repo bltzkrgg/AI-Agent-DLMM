@@ -469,6 +469,9 @@ async function executeTool(name, input) {
         }, null, 2);
       }
 
+      // ── Lock pool SEBELUM notifikasi — cegah race condition ──────
+      _deployingPools.add(input.pool_address);
+
       if (hunterNotifyFn) {
         await hunterNotifyFn(
           `⚡ *Deploying...*\n` +
@@ -477,112 +480,94 @@ async function executeTool(name, input) {
           `_${(input.reasoning || '').slice(0, 100)}_`
         );
       }
-      // Safety: max drawdown check
-      const drawdown = checkMaxDrawdown();
-      if (drawdown.triggered) {
-        return JSON.stringify({ blocked: true, reason: drawdown.reason }, null, 2);
-      }
-
-      // ── Auto-calculate position sizing ───────────────────────
-      // Bot hanya punya SOL — selalu Single-Side SOL (tokenX=0, tokenY=full)
-      const deployAmountSol = cfg.deployAmountSol || 0.1;
-      const tokenXAmount    = 0;
-      const tokenYAmount    = deployAmountSol;
-
-      // Ambil pool info untuk harga dan validasi
-      const poolInfo = await getPoolInfo(input.pool_address);
-
-      // ── Guard: hanya deploy ke pool TOKEN/SOL ────────────────
-      const WSOL_MINT = 'So11111111111111111111111111111111111111112';
-      if (poolInfo.tokenY !== WSOL_MINT) {
-        return JSON.stringify({
-          blocked: true,
-          reason: `Pool tokenY bukan WSOL (${poolInfo.tokenYSymbol || poolInfo.tokenY?.slice(0,8)}) — bot hanya deploy ke pool TOKEN/SOL. Skip pool ini.`,
-        }, null, 2);
-      }
-
-      // ── Strategy resolution — wajib pakai salah satu strategi aktif ────
-      const allStrategies = getAllStrategies();
-      const BLOCKED_STRATEGIES = ['Single-Side SOL'];
-      const strategy = allStrategies.find(
-        s => s.name === input.strategy_name && !BLOCKED_STRATEGIES.includes(s.name)
-      );
-
-      if (!strategy) {
-        const isBlocked = BLOCKED_STRATEGIES.includes(input.strategy_name);
-        return JSON.stringify({
-          blocked: true,
-          reason: isBlocked
-            ? `Strategy "Single-Side SOL" tidak diizinkan. Wajib pilih dari: Evil Panda, Wave Enjoyer, NPC, Fee Sniper.`
-            : `Strategy "${input.strategy_name}" tidak ditemukan di library. Pool DISKIP — wajib pilih dari: Evil Panda, Wave Enjoyer, NPC, Fee Sniper.`,
-        }, null, 2);
-      }
-
-      const stratParams = parseStrategyParameters(strategy);
-      const strategyType = strategy?.strategy_type || 'spot';
-
-      // ── Dynamic range — ATR + volatility + trend + BB ────────────
-      // Replaces static priceRangePercent from strategy config
-      let priceRangePct = stratParams.priceRangePercent || 10;
-      try {
-        const ohlcv = await getOHLCV(poolInfo.tokenX, input.pool_address);
-        if (ohlcv) {
-          const epType = (strategy?.type === 'evil_panda' || strategy?.name === 'Evil Panda')
-            ? 'evil_panda' : 'single_side_y';
-          priceRangePct = calcDynamicRangePct({
-            atr14Pct:    ohlcv.atr14?.atrPct     ?? 0,
-            range24hPct: ohlcv.range24hPct        ?? 0,
-            trend:       ohlcv.trend              ?? 'SIDEWAYS',
-            bbBandwidth: ohlcv.ta?.bb?.bandwidth  ?? 0,
-            strategyType: epType,
-          });
-        }
-      } catch { /* fallback to static */ }
-
-      // Validate strategy vs pool conditions (volatilitas vs bin step)
-      let validation = { valid: true, warning: null };
-      try {
-        validation = validateStrategyForMarket(strategyType, poolInfo);
-        if (!validation.valid && hunterNotifyFn) {
-          await hunterNotifyFn(`⚠️ *Strategy Warning*\n\n${validation.warning}`);
-        }
-      } catch { /* skip */ }
-
-      // Konfirmasi Telegram
-      if (cfg.requireConfirmation && hunterNotifyFn && hunterBotRef && hunterAllowedId) {
-        const confirmed = await requestConfirmation(
-          hunterNotifyFn,
-          hunterBotRef,
-          hunterAllowedId,
-          `🚀 *Hunter Alpha ingin deploy:*\n\n` +
-          `📍 Pool: \`${input.pool_address.slice(0,8)}...\`\n` +
-          `📊 Strategi: ${strategy?.name || 'default'}\n` +
-          `💰 Deploy: ${deployAmountSol} SOL (Single-Side SOL)\n` +
-          `  tokenX: 0 | tokenY: ${tokenYAmount.toFixed(4)} SOL\n\n` +
-          `💭 ${input.reasoning}`
-        );
-        if (!confirmed) {
-          return JSON.stringify({ blocked: true, reason: 'Ditolak oleh user.' }, null, 2);
-        }
-      }
-
-      // ── Pre-deploy opportunity alert ─────────────────────────
-      if (hunterNotifyFn) {
-        await hunterNotifyFn(formatStrategyAlert({
-          strategy:    strategy?.name || 'Single-Side SOL',
-          pool:        null,
-          poolAddress: input.pool_address,
-          reason:      input.reasoning?.slice(0, 120) || '-',
-          priority:    strategy?.name === 'Evil Panda' ? 'HIGH'
-            : strategy?.name === 'Wave Enjoyer' || strategy?.name === 'Fee Sniper' ? 'MEDIUM'
-            : 'LOW',
-        }));
-      }
-
-      // Execute with dynamic range — lock pool selama TX in-flight
-      _deployingPools.add(input.pool_address);
+      // Semua kode setelah lock dibungkus try/finally agar lock SELALU dilepas
       let result;
       try {
+        // Safety: max drawdown check
+        const drawdown = checkMaxDrawdown();
+        if (drawdown.triggered) {
+          return JSON.stringify({ blocked: true, reason: drawdown.reason }, null, 2);
+        }
+
+        // ── Auto-calculate position sizing ──────────────────────
+        // Bot hanya punya SOL — selalu Single-Side SOL (tokenX=0, tokenY=full)
+        const deployAmountSol = cfg.deployAmountSol || 0.1;
+        const tokenXAmount    = 0;
+        const tokenYAmount    = deployAmountSol;
+
+        // Ambil pool info untuk harga dan validasi
+        const poolInfo = await getPoolInfo(input.pool_address);
+
+        // ── Guard: hanya deploy ke pool TOKEN/SOL ───────────────
+        const WSOL_MINT = 'So11111111111111111111111111111111111111112';
+        if (poolInfo.tokenY !== WSOL_MINT) {
+          return JSON.stringify({
+            blocked: true,
+            reason: `Pool tokenY bukan WSOL (${poolInfo.tokenYSymbol || poolInfo.tokenY?.slice(0,8)}) — bot hanya deploy ke pool TOKEN/SOL. Skip pool ini.`,
+          }, null, 2);
+        }
+
+        // ── Strategy resolution — hanya Evil Panda, Wave Enjoyer, NPC ──
+        const allStrategies = getAllStrategies();
+        const BLOCKED_STRATEGIES = ['Single-Side SOL', 'Fee Sniper', 'Spot Balanced', 'Curve Concentrated', 'Bid-Ask Wide'];
+        const ALLOWED_STRATEGIES = ['Evil Panda', 'Wave Enjoyer', 'NPC'];
+        const strategy = allStrategies.find(
+          s => s.name === input.strategy_name && ALLOWED_STRATEGIES.includes(s.name)
+        );
+
+        if (!strategy) {
+          return JSON.stringify({
+            blocked: true,
+            reason: `Strategy "${input.strategy_name}" tidak valid. Gunakan salah satu dari: Evil Panda (utama), Wave Enjoyer (cadangan 1), NPC (cadangan 2). Pool DISKIP — jangan retry dengan nama lain.`,
+          }, null, 2);
+        }
+
+        const stratParams = parseStrategyParameters(strategy);
+        const strategyType = strategy?.strategy_type || 'spot';
+
+        // ── Dynamic range — ATR + volatility + trend + BB ───────
+        let priceRangePct = stratParams.priceRangePercent || 10;
+        try {
+          const ohlcv = await getOHLCV(poolInfo.tokenX, input.pool_address);
+          if (ohlcv) {
+            const epType = strategy?.name === 'Evil Panda' ? 'evil_panda' : 'single_side_y';
+            priceRangePct = calcDynamicRangePct({
+              atr14Pct:    ohlcv.atr14?.atrPct     ?? 0,
+              range24hPct: ohlcv.range24hPct        ?? 0,
+              trend:       ohlcv.trend              ?? 'SIDEWAYS',
+              bbBandwidth: ohlcv.ta?.bb?.bandwidth  ?? 0,
+              strategyType: epType,
+            });
+          }
+        } catch { /* fallback to static */ }
+
+        // Validate strategy vs pool conditions
+        try {
+          const validation = validateStrategyForMarket(strategyType, poolInfo);
+          if (!validation.valid && hunterNotifyFn) {
+            await hunterNotifyFn(`⚠️ *Strategy Warning*\n\n${validation.warning}`);
+          }
+        } catch { /* skip */ }
+
+        // Konfirmasi Telegram
+        if (cfg.requireConfirmation && hunterNotifyFn && hunterBotRef && hunterAllowedId) {
+          const confirmed = await requestConfirmation(
+            hunterNotifyFn,
+            hunterBotRef,
+            hunterAllowedId,
+            `🚀 *Hunter Alpha ingin deploy:*\n\n` +
+            `📍 Pool: \`${input.pool_address.slice(0,8)}...\`\n` +
+            `📊 Strategi: ${strategy?.name || 'default'}\n` +
+            `💰 Deploy: ${deployAmountSol} SOL (Single-Side SOL)\n` +
+            `  tokenX: 0 | tokenY: ${tokenYAmount.toFixed(4)} SOL\n\n` +
+            `💭 ${input.reasoning}`
+          );
+          if (!confirmed) {
+            return JSON.stringify({ blocked: true, reason: 'Ditolak oleh user.' }, null, 2);
+          }
+        }
+
+        // Execute with dynamic range
         result = await openPosition(
           input.pool_address,
           tokenXAmount,
@@ -901,37 +886,29 @@ Data pool memory dan OKX sudah tersedia di pesan user — JANGAN fetch ulang.
       • action = 'LANJUT DEPLOY' → LANGSUNG deploy_position SEKARANG
 4. Selesai — laporkan hasil singkat ke user
 
-STRATEGI — BACA LIBRARY, JANGAN HARDCODE:
-  get_pool_detail memberikan rekomendasi strategi dari Strategy Library berdasarkan kondisi market saat ini.
-  IKUTI rekomendasinya. Jangan otomatis pakai "Single-Side SOL" kalau library rekomendasikan yang lain.
+STRATEGI — URUTAN PRIORITAS TETAP, JANGAN GANTI-GANTI:
+  Coba dalam urutan ini. Begitu satu cocok → DEPLOY, jangan coba yang lain.
+  Jika tidak ada yang cocok → SKIP pool (jangan deploy sama sekali).
 
-  STRATEGI TERSEDIA — PILIH BERDASARKAN KONDISI AKTUAL:
-
-  🐼 EVIL PANDA (Priority HIGH)
+  🐼 EVIL PANDA — STRATEGI UTAMA (coba pertama selalu)
   • Bin step 80/100/125 | Volume24h >$1M | MC >$250k
   • GATE WAJIB: taSignals.supertrend.justCrossedAbove === true
   • Trend UPTREND | OKX SM buying (bonus)
-  • Range: ATR-dynamic (~12-80%) | Exit: RSI(2)>90 + BB upper ATAU MACD first green
+  • Range: ATR-dynamic (~12-80%)
 
-  🌊 WAVE ENJOYER (Priority MEDIUM)
+  🌊 WAVE ENJOYER — CADANGAN 1 (jika Evil Panda tidak fit)
   • Price dalam 8% di atas support 24h (priceContext.support)
-  • RSI14 antara 35-62 (buyers masuk, belum overbought)
-  • Volume ≥ 70% rata-rata | Trend SIDEWAYS atau mild down
-  • Range: ATR-dynamic | Exit: jika support broken atau rally +8-15%
+  • RSI14 antara 35-62 | Volume ≥ 70% rata-rata | Trend SIDEWAYS/mild down
 
-  🎯 NPC (Priority LOW)
-  • 24h price range >15% (breakout sudah terjadi)
-  • ATR saat ini < 12% dari range24h (price sedang konsolidasi)
-  • Volume masih elevated ≥ avg | Supertrend masih bullish
-  • Range: ATR-dynamic | Hold 4-12 jam
+  🎯 NPC — CADANGAN 2 (jika Wave Enjoyer tidak fit)
+  • 24h price range >15% | ATR < 12% dari range24h
+  • Volume elevated ≥ avg | Supertrend masih bullish
 
-  ⚡ FEE SNIPER (Priority MEDIUM)
-  • BB bandwidth < 8% (squeeze/konsolidasi ketat)
-  • ATR < 2% | Fee APR pool > 200%
-  • Volume sustained ≥ 60% avg | Trend SIDEWAYS
-  • Range: 3-5% ultra-tight | Exit: saat BB expand >10%
+  ⛔ JIKA TIDAK ADA YANG COCOK → SKIP POOL. Jangan coba nama strategi lain.
 
-  ⛔ JIKA TIDAK ADA STRATEGI YANG COCOK → SKIP POOL. Jangan deploy.
+  ⚠️ NAMA STRATEGI — WAJIB PERSIS: "Evil Panda" | "Wave Enjoyer" | "NPC"
+  Nama lain (Fee Sniper, Single-Side SOL, dll) akan DIBLOKIR sistem.
+  Satu pool = satu percobaan deploy. Jangan retry dengan nama berbeda.
 
 LP AGENT SIGNAL (di setiap kandidat pool):
   lpAgent.inLPAgentList = true → pool diakui LP Agent sebagai top performer
@@ -946,10 +923,9 @@ FILTER TOKEN (dari Coin Filter — DexScreener, RugCheck, Helius, OKX, GeckoTerm
   AVOID → SKIP pool. CAUTION/PASS → DEPLOY LANGSUNG.
   RugCheck: warn+danger risks → REJECT. Mcap + ATH drawdown juga di-check.
 
-NAMA STRATEGI — WAJIB PERSIS SALAH SATU DARI 4 INI:
-  "Evil Panda" | "Wave Enjoyer" | "NPC" | "Fee Sniper"
-  ⚠️ "Single-Side SOL" dan nama lain DIBLOKIR — sistem akan SKIP pool jika dikirim.
-  Tidak ada fallback. Jika kondisi pool tidak cocok keempat strategi di atas → SKIP pool.
+NAMA STRATEGI — WAJIB PERSIS SALAH SATU DARI 3 INI:
+  "Evil Panda" (utama) | "Wave Enjoyer" (cadangan 1) | "NPC" (cadangan 2)
+  ⚠️ Nama lain DIBLOKIR. Satu pool = satu deploy attempt. Jangan retry nama berbeda.
 
 STRATEGY LIBRARY (${libraryStats.totalStrategies} strategi):
 ${libraryStats.topStrategies.map(s => `  ${s.name} (${s.type}, ${(s.confidence * 100).toFixed(0)}% conf)`).join('\n')}

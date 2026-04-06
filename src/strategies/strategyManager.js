@@ -45,9 +45,23 @@ db.exec(`
   ),
   (
     'Evil Panda',
-    'Single-side SOL pada high-volume coins. Entry saat price break atas Supertrend 15m. Exit confluence RSI(2)>90 + BB upper ATAU RSI(2)>90 + MACD first green. Pilih pool bin step 80/100/125.',
+    'STRATEGI UTAMA. Single-side SOL pada high-volume coins. Entry saat price break atas Supertrend 15m. Exit confluence RSI(2)>90 + BB upper ATAU RSI(2)>90 + MACD first green. Pilih pool bin step 80/100/125.',
     'single_side_y',
     '{"priceRangePercent": 15, "binStep": 100, "strategyType": 0, "tokenXWeight": 0, "tokenYWeight": 100, "singleSide": "y", "preferredBinSteps": [80, 100, 125], "minMcap": 250000, "minVolume24h": 1000000}',
+    'system'
+  ),
+  (
+    'Wave Enjoyer',
+    'STRATEGI CADANGAN 1. Single-side SOL saat price dekat support 24h (dalam 8%). RSI14 35-62, trend SIDEWAYS/mild down, volume >= 70% avg. Exit jika support broken atau rally +8-15%.',
+    'single_side_y',
+    '{"priceRangePercent": 12, "binStep": 80, "strategyType": 0, "tokenXWeight": 0, "tokenYWeight": 100, "singleSide": "y"}',
+    'system'
+  ),
+  (
+    'NPC',
+    'STRATEGI CADANGAN 2. Single-side SOL setelah breakout. 24h price range >15%, ATR konsolidasi <12% dari range, volume elevated. Hold 4-12 jam.',
+    'single_side_y',
+    '{"priceRangePercent": 10, "binStep": 80, "strategyType": 0, "tokenXWeight": 0, "tokenYWeight": 100, "singleSide": "y"}',
     'system'
   );
 `);
