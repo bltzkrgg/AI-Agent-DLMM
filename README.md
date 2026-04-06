@@ -44,6 +44,7 @@
 
 **Opsional (meningkatkan kualitas signal):**
 - **OKX API Key** — Smart Money signal, token risk scoring (okx.com/web3)
+- **Jupiter API Key** — meningkatkan reliabilitas auto-swap dengan endpoint authenticated
 
 > GMGN sudah **dihapus sepenuhnya** — digantikan RugCheck.xyz (gratis, tanpa key) untuk token security.
 
@@ -172,6 +173,14 @@ Meteora DLMM Bot started! Mode: LIVE
 ```
 
 Telegram kamu dapat pesan startup dengan balance + status.
+
+Untuk verifikasi dasar workflow engineering:
+
+```bash
+npm test
+```
+
+CI GitHub sekarang juga menjalankan test otomatis pada push dan pull request.
 
 ---
 

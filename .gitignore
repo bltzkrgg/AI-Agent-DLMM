@@ -3,3 +3,9 @@ node_modules/
 *.db
 *.db-journal
 logs/
+coverage/
+backups/
+bot.pid
+user-config.json
+runtime-state.json
+tmp/

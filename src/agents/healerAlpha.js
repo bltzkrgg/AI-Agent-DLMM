@@ -1,11 +1,11 @@
 import { createMessage, resolveModel } from '../agent/provider.js';
 import { getConfig, getThresholds } from '../config.js';
-import { getPositionInfo, closePositionDLMM, claimFees, getPoolInfo } from '../solana/meteora.js';
+import { getPositionInfo, closePositionDLMM, claimFees, getPoolInfo, getSolPriceUsd } from '../solana/meteora.js';
 import { getConnection, getWallet, getWalletBalance } from '../solana/wallet.js';
 import { PublicKey } from '@solana/web3.js';
 import { getOpenPositions, closePositionWithPnl, saveNotification } from '../db/database.js';
 import { getLessonsContext } from '../learn/lessons.js';
-import { checkStopLoss, checkMaxDrawdown, recordPnl, getSafetyStatus } from '../safety/safetyManager.js';
+import { checkStopLoss, checkMaxDrawdown, recordPnlUsd, getSafetyStatus } from '../safety/safetyManager.js';
 import { analyzeMarket } from '../market/analyst.js';
 import { getInstinctsContext } from '../market/memory.js';
 import { getStrategyIntelligenceContext } from '../market/strategyPerformance.js';
@@ -872,17 +872,20 @@ export async function runHealerAlpha(notifyFn) {
       );
 
       try {
+        const solPriceUsd = await getSolPriceUsd().catch(() => 150);
+        const realizedPnlUsd = parseFloat((pnlSol * solPriceUsd).toFixed(2));
+        const realizedFeesUsd = parseFloat((((match.feeCollectedSol || 0) * solPriceUsd)).toFixed(2));
         await closePositionDLMM(pos.pool_address, addr, {
-          pnlUsd:      pnlSol, // SOL proxy — USD API tidak tersedia
+          pnlUsd:      realizedPnlUsd,
           pnlPct,
-          feeUsd:      match.feeCollectedSol || 0,
+          feeUsd:      realizedFeesUsd,
           closeReason: triggerLabel.toUpperCase().replace(/ /g, '_'),
         });
         peakPnlTracker.delete(addr);
         outOfRangeTracker.delete(addr);
 
         // DB updates — best-effort: jangan kirim "❌ Gagal close" kalau ini yang throw
-        try { recordPnl(pnlSol); } catch { /* best-effort */ }
+        try { recordPnlUsd(realizedPnlUsd); } catch { /* best-effort */ }
         try {
           recordClose(pos.pool_address, {
             pnlPct: pnlPct,

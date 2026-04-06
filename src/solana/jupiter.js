@@ -7,14 +7,52 @@
 
 import { VersionedTransaction, PublicKey } from '@solana/web3.js';
 import { getConnection, getWallet } from './wallet.js';
-import { fetchWithTimeout } from '../utils/safeJson.js';
+import { fetchWithTimeout, withRetry } from '../utils/safeJson.js';
 import { getRecommendedPriorityFee } from '../utils/helius.js';
 import { isDryRun } from '../config.js';
 
 export const SOL_MINT  = 'So11111111111111111111111111111111111111112';
 export const USDC_MINT = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
 
-const JUPITER_API = 'https://quote-api.jup.ag/v6';
+const JUPITER_API_KEY = process.env.JUPITER_API_KEY || process.env.JUP_API_KEY || '';
+
+export function getJupiterBaseUrls() {
+  if (JUPITER_API_KEY) return ['https://api.jup.ag'];
+  return ['https://lite-api.jup.ag', 'https://api.jup.ag'];
+}
+
+function getJupiterHeaders(extra = {}) {
+  const headers = { ...extra };
+  if (JUPITER_API_KEY) headers['x-api-key'] = JUPITER_API_KEY;
+  return headers;
+}
+
+async function fetchJupiter(path, options = {}, timeoutMs = 10000) {
+  let lastError;
+
+  for (const baseUrl of getJupiterBaseUrls()) {
+    const url = `${baseUrl}${path}`;
+    try {
+      return await withRetry(
+        () => fetchWithTimeout(url, {
+          ...options,
+          headers: getJupiterHeaders(options.headers || {}),
+        }, timeoutMs),
+        2,
+        1200,
+      );
+    } catch (e) {
+      lastError = e;
+      const msg = e?.message || '';
+      const isUnauthorized = msg.includes('401') || msg.includes('Unauthorized');
+      if (baseUrl === 'https://api.jup.ag' && isUnauthorized && !JUPITER_API_KEY) {
+        continue;
+      }
+    }
+  }
+
+  throw lastError || new Error(`Jupiter request failed for ${path}`);
+}
 
 // ─── Get token balance for a specific mint ────────────────────────
 
@@ -40,8 +78,14 @@ export async function getTokenBalance(walletPublicKey, tokenMint) {
 // ─── Get Jupiter quote ────────────────────────────────────────────
 
 export async function getJupiterQuote(inputMint, outputMint, amountRaw, slippageBps = 100) {
-  const url = `${JUPITER_API}/quote?inputMint=${inputMint}&outputMint=${outputMint}&amount=${amountRaw}&slippageBps=${slippageBps}`;
-  const res = await fetchWithTimeout(url, {}, 10000);
+  const quoteParams = new URLSearchParams({
+    inputMint,
+    outputMint,
+    amount: String(amountRaw),
+    slippageBps: String(slippageBps),
+    restrictIntermediateTokens: 'true',
+  });
+  const res = await fetchJupiter(`/swap/v1/quote?${quoteParams.toString()}`, {}, 10000);
   if (!res.ok) {
     const err = await res.text().catch(() => res.status);
     throw new Error(`Jupiter quote failed: ${err}`);
@@ -77,7 +121,7 @@ export async function swapToSOL(inputMint, amountRaw, slippageBps = 100) {
   } catch { /* pakai default */ }
 
   // 3. Get swap transaction
-  const swapRes = await fetchWithTimeout(`${JUPITER_API}/swap`, {
+  const swapRes = await fetchJupiter('/swap/v1/swap', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({

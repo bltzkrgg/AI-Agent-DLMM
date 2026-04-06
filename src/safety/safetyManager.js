@@ -8,12 +8,12 @@
  * 4. Konfirmasi Telegram sebelum deploy
  */
 
-import { getConfig, updateConfig } from '../config.js';
+import { getConfig } from '../config.js';
+import { getRuntimeState, setRuntimeState } from '../runtime/state.js';
 
 // ─── State ───────────────────────────────────────────────────────
 
-// Track PnL harian — reset tiap tengah malam
-let dailyPnl = { date: getTodayStr(), totalPnlUsd: 0, startingBalance: null };
+const DAILY_RISK_STATE_KEY = 'daily-risk-state';
 
 // Pending confirmations — key: confirmationId, value: { resolve, reject, timeout }
 const pendingConfirmations = new Map();
@@ -23,31 +23,45 @@ function getTodayStr() {
   return new Date().toISOString().slice(0, 10);
 }
 
+function getDefaultDailyRiskState(date = getTodayStr()) {
+  return { date, totalPnlUsd: 0, startingBalanceUsd: null };
+}
+
+function loadDailyRiskState() {
+  const today = getTodayStr();
+  const stored = getRuntimeState(DAILY_RISK_STATE_KEY, null);
+  if (!stored || stored.date !== today) {
+    const reset = getDefaultDailyRiskState(today);
+    setRuntimeState(DAILY_RISK_STATE_KEY, reset);
+    return reset;
+  }
+  return {
+    ...getDefaultDailyRiskState(today),
+    ...stored,
+  };
+}
+
+function saveDailyRiskState(state) {
+  setRuntimeState(DAILY_RISK_STATE_KEY, state);
+}
+
 // ─── Daily PnL Tracking ──────────────────────────────────────────
 
-export function recordPnl(pnlUsd) {
-  const today = getTodayStr();
-  if (dailyPnl.date !== today) {
-    // Reset tiap hari baru
-    dailyPnl = { date: today, totalPnlUsd: 0, startingBalance: null };
-  }
-  dailyPnl.totalPnlUsd += pnlUsd;
+export function recordPnlUsd(pnlUsd) {
+  const dailyPnl = loadDailyRiskState();
+  dailyPnl.totalPnlUsd += Number(pnlUsd || 0);
+  saveDailyRiskState(dailyPnl);
 }
 
 export function getDailyPnl() {
-  const today = getTodayStr();
-  if (dailyPnl.date !== today) {
-    dailyPnl = { date: today, totalPnlUsd: 0, startingBalance: null };
-  }
-  return dailyPnl;
+  return loadDailyRiskState();
 }
 
-export function setStartingBalance(balanceSol) {
-  const today = getTodayStr();
-  if (dailyPnl.date !== today) {
-    dailyPnl = { date: today, totalPnlUsd: 0, startingBalance: balanceSol };
-  } else if (!dailyPnl.startingBalance) {
-    dailyPnl.startingBalance = balanceSol;
+export function setStartingBalanceUsd(balanceUsd) {
+  const dailyPnl = loadDailyRiskState();
+  if (!dailyPnl.startingBalanceUsd && Number.isFinite(balanceUsd) && balanceUsd > 0) {
+    dailyPnl.startingBalanceUsd = balanceUsd;
+    saveDailyRiskState(dailyPnl);
   }
 }
 
@@ -97,11 +111,11 @@ export function checkMaxDrawdown() {
   }
 
   // Use starting balance in USD if available, else skip drawdown check
-  if (!pnl.startingBalance || pnl.startingBalance <= 0) {
+  if (!pnl.startingBalanceUsd || pnl.startingBalanceUsd <= 0) {
     return { triggered: false, reason: null, dailyPnlUsd: pnl.totalPnlUsd, drawdownPct: 0 };
   }
 
-  const drawdownPct = (pnl.totalPnlUsd / pnl.startingBalance) * 100;
+  const drawdownPct = (pnl.totalPnlUsd / pnl.startingBalanceUsd) * 100;
 
   if (drawdownPct < -maxDrawdownPct) {
     return {
@@ -253,6 +267,7 @@ export function getSafetyStatus() {
     frozen: drawdown.triggered,
     dailyPnlUsd: pnl.totalPnlUsd.toFixed(2),
     drawdownPct: drawdown.drawdownPct?.toFixed(2) ?? '0.00',
+    startingBalanceUsd: pnl.startingBalanceUsd?.toFixed?.(2) ?? null,
     stopLossPct: cfg.stopLossPct ?? 5,
     maxDailyDrawdownPct: cfg.maxDailyDrawdownPct ?? 10,
     requireConfirmation: cfg.requireConfirmation ?? true,
