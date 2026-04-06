@@ -498,12 +498,33 @@ export async function closePositionDLMM(poolAddress, positionAddress, pnlData = 
       const { userPositions } = await dlmmPool.getPositionsByUserAndLbPair(wallet.publicKey);
       const position = userPositions?.find(p => p.publicKey.toString() === positionAddress);
 
-      // ── 2. Sudah tidak ada di chain → mark closed, done ─────
+      // ── 2. Posisi tidak ditemukan via SDK ────────────────────
+      // JANGAN langsung anggap closed — SDK bisa return empty karena RPC glitch.
+      // Verifikasi dulu via getAccountInfo: kalau account masih ada = posisi masih terbuka.
       if (!position) {
+        let accountStillExists = false;
+        try {
+          const accountInfo = await connection.getAccountInfo(positionPubkey);
+          accountStillExists = accountInfo !== null;
+        } catch { /* best-effort */ }
+
+        if (accountStillExists) {
+          // Account masih ada → SDK gagal fetch, bukan posisi sudah closed
+          if (attempt < MAX_ATTEMPTS) {
+            await new Promise(r => setTimeout(r, 3000 * attempt));
+            continue; // retry dengan state terbaru
+          }
+          throw new Error(
+            `Posisi tidak ditemukan via SDK tapi account masih ada on-chain. ` +
+            `Kemungkinan RPC inconsistency. Coba close manual di Meteora UI.`
+          );
+        }
+
+        // Account benar-benar tidak ada → posisi sudah tertutup
         closePositionWithPnl(positionAddress, {
-          pnlUsd:    pnlData.pnlUsd   || 0,
-          pnlPct:    pnlData.pnlPct   || 0,
-          feesUsd:   pnlData.feeUsd   || 0,
+          pnlUsd:      pnlData.pnlUsd   || 0,
+          pnlPct:      pnlData.pnlPct   || 0,
+          feesUsd:     pnlData.feeUsd   || 0,
           closeReason: pnlData.closeReason || 'closed',
         });
         return { success: true, txHashes: [], alreadyClosed: true };
