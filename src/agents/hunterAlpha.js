@@ -1,8 +1,9 @@
 import { createMessage, resolveModel } from '../agent/provider.js';
 import { getConfig, getThresholds } from '../config.js';
 import { getTopPools, getPoolInfo, openPosition } from '../solana/meteora.js';
-import { getWalletBalance } from '../solana/wallet.js';
-import { getOpenPositions, getPoolStats } from '../db/database.js';
+import { getWalletBalance, getConnection } from '../solana/wallet.js';
+import { PublicKey } from '@solana/web3.js';
+import { getOpenPositions, getPoolStats, closePositionWithPnl } from '../db/database.js';
 import { getLessonsContext } from '../learn/lessons.js';
 import { getAllStrategies, parseStrategyParameters } from '../strategies/strategyManager.js';
 import { checkMaxDrawdown, validateStrategyForMarket, requestConfirmation } from '../safety/safetyManager.js';
@@ -445,16 +446,36 @@ async function executeTool(name, input) {
       const existingPositions = getOpenPositions();
       const existingForPool   = existingPositions.find(p => p.pool_address === input.pool_address);
       if (existingForPool) {
-        // Posisi sudah ada di DB → deploy sebelumnya BERHASIL (mungkin notifikasi yang gagal).
-        // Return success agar AI tidak melaporkan ini sebagai kegagalan.
-        return JSON.stringify({
-          success:         true,
-          alreadyDeployed: true,
-          positionAddress: existingForPool.position_address,
-          pool_address:    input.pool_address,
-          strategyUsed:    existingForPool.strategy_used,
-          note:            'Posisi sudah terbuka di pool ini — deploy sebelumnya berhasil. Tidak ada aksi duplikat.',
-        }, null, 2);
+        // Ada di DB — verifikasi on-chain dulu. DB bisa stale jika position ditutup
+        // di luar bot (manual close, expired, dll) tanpa DB di-update.
+        let accountExists = true;
+        try {
+          const conn    = getConnection();
+          const pubkey  = new PublicKey(existingForPool.position_address);
+          const info    = await conn.getAccountInfo(pubkey);
+          accountExists = info !== null;
+        } catch { /* best-effort — kalau gagal, anggap masih ada (safe default) */ }
+
+        if (!accountExists) {
+          // Account sudah tidak ada on-chain → DB stale → bersihkan dan izinkan deploy baru
+          console.log(`[hunter] DB stale: posisi ${existingForPool.position_address} tidak ada on-chain, bersihkan dan izinkan re-deploy`);
+          try {
+            closePositionWithPnl(existingForPool.position_address, {
+              pnlUsd: 0, pnlPct: 0, feesUsd: 0, closeReason: 'MANUAL_CLOSE',
+            });
+          } catch { /* best-effort */ }
+          // Tidak return di sini — lanjut ke deploy baru di bawah
+        } else {
+          // Posisi benar-benar masih ada on-chain → tolak duplikat
+          return JSON.stringify({
+            success:         true,
+            alreadyDeployed: true,
+            positionAddress: existingForPool.position_address,
+            pool_address:    input.pool_address,
+            strategyUsed:    existingForPool.strategy_used,
+            note:            'SUDAH_ADA — skip diam-diam, lanjut kandidat berikutnya.',
+          }, null, 2);
+        }
       }
 
       // ── Guard: TX in-flight (deploy sedang berjalan untuk pool ini) ──
@@ -898,6 +919,11 @@ Data pool memory dan OKX sudah tersedia di pesan user — JANGAN fetch ulang.
       • action = 'LANJUT DEPLOY' → LANGSUNG deploy_position SEKARANG
 4. Selesai — laporkan hasil singkat ke user
 
+⚠️ ATURAN WAJIB — deploy_position returns alreadyDeployed:true:
+   → DIAM-DIAM lanjut ke kandidat berikutnya. JANGAN tulis apapun tentang ini di laporan.
+   → JANGAN sebut "skip", "sudah ada", "posisi aktif", atau sejenisnya.
+   → Posisi sudah dikelola Healer Alpha — tidak perlu dilaporkan.
+
 STRATEGI — URUTAN PRIORITAS TETAP, JANGAN GANTI-GANTI:
   Coba dalam urutan ini. Begitu satu cocok → DEPLOY, jangan coba yang lain.
   Jika tidak ada yang cocok → SKIP pool (jangan deploy sama sekali).
@@ -975,6 +1001,8 @@ Gunakan Bahasa Indonesia untuk laporan akhir. Reasoning singkat, action langsung
 
   const MAX_ROUNDS = 20;
   let rounds = 0;
+  // Track apakah ada deploy nyata (bukan alreadyDeployed) — untuk suppress noise report
+  let anyRealDeploy = false;
 
   while (response.stop_reason === 'tool_use' && rounds < MAX_ROUNDS) {
     rounds++;
@@ -988,6 +1016,15 @@ Gunakan Bahasa Indonesia untuk laporan akhir. Reasoning singkat, action langsung
       } catch (e) {
         result = `Error: ${e.message}`;
       }
+
+      // Deteksi apakah ini deploy nyata (bukan alreadyDeployed)
+      if (toolUse.name === 'deploy_position') {
+        try {
+          const parsed = JSON.parse(result);
+          if (parsed.success && !parsed.alreadyDeployed) anyRealDeploy = true;
+        } catch { /* ignore parse error */ }
+      }
+
       toolResults.push({ type: 'tool_result', tool_use_id: toolUse.id, content: result });
     }
 
@@ -1011,6 +1048,18 @@ Gunakan Bahasa Indonesia untuk laporan akhir. Reasoning singkat, action langsung
   lastReport = { report, timestamp: new Date().toISOString() };
   _hunterTargetCount = null; // reset setelah selesai
 
-  if (notifyFn) await notifyFn(`🦅 *Hunter Alpha Report*\n\n${report}`);
+  // Hanya kirim report jika ada deploy nyata ATAU report mengandung informasi penting
+  // (bukan sekadar "posisi sudah ada / skip"). Cegah notifikasi spam yang confusing.
+  const reportIsNoise = !anyRealDeploy && (
+    report.toLowerCase().includes('sudah ada') ||
+    report.toLowerCase().includes('already') ||
+    report.toLowerCase().includes('sudah aktif') ||
+    report.toLowerCase().includes('skip') ||
+    report.trim().length < 30
+  );
+
+  if (notifyFn && !reportIsNoise) {
+    await notifyFn(`🦅 *Hunter Alpha Report*\n\n${report}`);
+  }
   return report;
 }
