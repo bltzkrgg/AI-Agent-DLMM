@@ -642,17 +642,40 @@ export async function closePositionDLMM(poolAddress, positionAddress, pnlData = 
       // ── 6. Verifikasi on-chain: posisi benar-benar hilang ───
       // Tunggu 5 detik — state propagation di Solana bisa >2.5s
       await new Promise(r => setTimeout(r, 5000));
-      const dlmmPool2 = await DLMM.create(connection, poolPubkey);
-      const { userPositions: verifyPos } = await dlmmPool2.getPositionsByUserAndLbPair(wallet.publicKey);
-      const stillExists = verifyPos?.find(p => p.publicKey.toString() === positionAddress);
 
-      // Cek via positionBinData — lebih reliable dari totalXAmount yang bisa include fees
-      // Jika 0 bin aktif tersisa → semua likuiditas sudah dicabut
-      const activeBins = stillExists?.positionData?.positionBinData?.filter(b =>
-        Number(b.positionLiquidityX?.toString() || '0') +
-        Number(b.positionLiquidityY?.toString() || '0') > 0
-      ) ?? [];
-      const stillHasLiquidity = stillExists ? activeBins.length > 0 : false;
+      // Pakai getAccountInfo sebagai primary check — lebih reliable dari SDK.
+      // getPositionsByUserAndLbPair bisa return empty karena RPC glitch,
+      // menyebabkan false-positive "posisi sudah closed" padahal masih terbuka.
+      let stillHasLiquidity = true; // default safe: anggap masih ada sampai terbukti sebaliknya
+      try {
+        const accountInfo = await connection.getAccountInfo(positionPubkey);
+        if (accountInfo === null) {
+          // Account benar-benar tidak ada di chain → posisi sudah closed
+          stillHasLiquidity = false;
+        } else {
+          // Account masih ada → cek via SDK apakah masih ada likuiditas aktif
+          try {
+            const dlmmPool2 = await DLMM.create(connection, poolPubkey);
+            const { userPositions: verifyPos } = await dlmmPool2.getPositionsByUserAndLbPair(wallet.publicKey);
+            const stillExists = verifyPos?.find(p => p.publicKey.toString() === positionAddress);
+
+            if (verifyPos != null && !stillExists) {
+              // SDK returned result, posisi tidak ada → dianggap closed (0 bin)
+              stillHasLiquidity = false;
+            } else if (stillExists) {
+              const activeBins = stillExists.positionData?.positionBinData?.filter(b =>
+                Number(b.positionLiquidityX?.toString() || '0') +
+                Number(b.positionLiquidityY?.toString() || '0') > 0
+              ) ?? [];
+              stillHasLiquidity = activeBins.length > 0;
+            }
+            // verifyPos == null → SDK call failed, keep stillHasLiquidity = true (retry)
+          } catch { /* SDK error — account masih ada, anggap masih ada likuiditas → retry */ }
+        }
+      } catch (e) {
+        // getAccountInfo gagal → jangan anggap closed, retry
+        console.warn('[closePositionDLMM] getAccountInfo verify failed:', e.message);
+      }
 
       if (stillHasLiquidity) {
         if (attempt < MAX_ATTEMPTS) {
