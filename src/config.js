@@ -83,6 +83,13 @@ const DEFAULTS = {
   // ATH drawdown filter
   athFilterPct: -75,         // Reject jika harga > X% di bawah 30-day high
   athLookbackDays: 30,       // Lookback window untuk approx ATH (1D candles)
+
+  // Strategy-specific tuning. Core identity stays in code; these are safe overrides.
+  strategyOverrides: {
+    'Evil Panda': {},
+    'Wave Enjoyer': {},
+    'NPC': {},
+  },
 };
 
 const KNOWN_CONFIG_KEYS = new Set(Object.keys(DEFAULTS));
@@ -178,6 +185,18 @@ export function updateConfig(updates) {
       continue;
     }
 
+    if (key === 'strategyOverrides') {
+      if (!value || typeof value !== 'object' || Array.isArray(value)) {
+        rejected.push(`${key}: must be an object`);
+        continue;
+      }
+      validated[key] = {
+        ...getConfig().strategyOverrides,
+        ...value,
+      };
+      continue;
+    }
+
     if (bounds && typeof value === 'number') {
       if (value < bounds.min || value > bounds.max) {
         rejected.push(`${key}: ${value} (allowed: ${bounds.min}-${bounds.max})`);
@@ -200,6 +219,13 @@ export function updateConfig(updates) {
       ...DEFAULTS.signalWeights,
       ...(current.signalWeights || {}),
       ...validated.signalWeights,
+    };
+  }
+  if (validated.strategyOverrides) {
+    merged.strategyOverrides = {
+      ...DEFAULTS.strategyOverrides,
+      ...(current.strategyOverrides || {}),
+      ...validated.strategyOverrides,
     };
   }
   writeFileSync(CONFIG_PATH, JSON.stringify(merged, null, 2));

@@ -34,3 +34,25 @@ test('config rejects unknown keys and merges nested signal weights safely', asyn
   });
   assert.equal('totallyUnknownKey' in saved, false);
 });
+
+test('strategy overrides merge safely without replacing core config', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'dlmm-strategy-config-'));
+  const configPath = join(root, 'user-config.json');
+
+  process.env.BOT_CONFIG_PATH = configPath;
+  const configModule = await importFresh('/Users/mkhtramn/Documents/New project/repo/src/config.js');
+  const profileModule = await importFresh('/Users/mkhtramn/Documents/New project/repo/src/strategies/profiles.js');
+
+  configModule.updateConfig({
+    strategyOverrides: {
+      'Wave Enjoyer': {
+        exit: { holdMaxMinutes: 25 },
+      },
+    },
+  });
+
+  const profile = profileModule.getStrategyProfile('Wave Enjoyer');
+  assert.equal(profile.exit.holdMaxMinutes, 25);
+  assert.equal(profile.exit.holdMinMinutes, 10);
+  assert.equal(profile.deploy.fixedBinsBelow, 24);
+});

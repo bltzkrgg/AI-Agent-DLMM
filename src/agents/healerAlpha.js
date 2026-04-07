@@ -20,6 +20,7 @@ import { getWalletPositions, isLPAgentEnabled } from '../market/lpAgent.js';
 import { resolvePnlSnapshot } from '../app/pnl.js';
 import { clearPositionRuntimeState, getPositionRuntimeState, updatePositionRuntimeState } from '../app/positionRuntimeState.js';
 import { resolvePositionSnapshot } from '../app/positionSnapshot.js';
+import { getStrategyProfile } from '../strategies/profiles.js';
 
 // Verifikasi apakah position account benar-benar tidak ada on-chain.
 // Dipakai sebelum mark MANUAL_CLOSE — cegah false positive dari RPC glitch.
@@ -66,6 +67,12 @@ async function getLpPnlMap() {
 
 function clearPositionState(positionAddress) {
   clearPositionRuntimeState(positionAddress);
+}
+
+function getPositionAgeMinutes(position) {
+  const createdAt = new Date(position.created_at).getTime();
+  if (!Number.isFinite(createdAt) || createdAt <= 0) return 0;
+  return Math.max(0, Math.floor((Date.now() - createdAt) / 60000));
 }
 
 
@@ -765,23 +772,34 @@ export async function runHealerAlpha(notifyFn) {
       const pnlSol = snapshot.pnlSol;
       const addr   = pos.position_address;
       const runtimeState = getPositionRuntimeState(addr);
+      const strategyProfile = getStrategyProfile(pos.strategy_used || '');
+      const positionAgeMin = getPositionAgeMinutes(pos);
+      const exitMode = strategyProfile?.exit?.mode || 'default';
+      const trailCfg = getTrailingConfig();
+      const strategyTakeProfitPct = strategyProfile?.exit?.takeProfitPct ?? thresholds.takeProfitFeePct;
+      const strategyTriggerPct = strategyProfile?.exit?.trailingTriggerPct ?? trailCfg.activatePct;
+      const strategyDropPct = strategyProfile?.exit?.trailingDropPct ?? trailCfg.dropPct;
+      const emergencyStopLossPct = strategyProfile?.exit?.emergencyStopLossPct ?? thresholds.stopLossPct;
 
       // ── Trailing TP state ────────────────────────────────────
-      const trailCfg = getTrailingConfig();
       let tracker = {
         peakPnl: runtimeState.peakPnlPct ?? pnlPct,
         trailingActive: runtimeState.trailingActive === true,
       };
       if (pnlPct > tracker.peakPnl) tracker.peakPnl = pnlPct;
-      if (!tracker.trailingActive && pnlPct >= trailCfg.activatePct) tracker.trailingActive = true;
-      const trailingTpHit = tracker.trailingActive && (tracker.peakPnl - pnlPct) >= trailCfg.dropPct;
+      if (!tracker.trailingActive && pnlPct >= strategyTriggerPct) tracker.trailingActive = true;
+      const trailingTpHit = tracker.trailingActive && (tracker.peakPnl - pnlPct) >= strategyDropPct;
       updatePositionRuntimeState(addr, {
         peakPnlPct: tracker.peakPnl,
         trailingActive: tracker.trailingActive,
       });
 
-      const slCheck = checkStopLoss({ pnlPct });
-      const tpHit   = pnlPct >= thresholds.takeProfitFeePct;
+      const slTriggered = pnlPct <= -Math.abs(emergencyStopLossPct);
+      const slCheck = {
+        triggered: slTriggered,
+        reason: `PnL ${pnlPct.toFixed(2)}% <= emergency stop loss -${Math.abs(emergencyStopLossPct).toFixed(2)}%`,
+      };
+      const tpHit   = pnlPct >= strategyTakeProfitPct;
 
       // ── Evil Panda confluence exit (overrides TP/SL timing) ──
       let evilPandaExitHit  = false;
@@ -834,13 +852,25 @@ export async function runHealerAlpha(notifyFn) {
         }
       } catch { /* best-effort */ }
 
+      const supportBreakForWave = pos.strategy_used === 'Wave Enjoyer' && !match.inRange;
+      const npcTooOld = pos.strategy_used === 'NPC'
+        && strategyProfile?.exit?.holdMaxMinutes
+        && positionAgeMin >= strategyProfile.exit.holdMaxMinutes;
+      const waveReadyForReview = pos.strategy_used === 'Wave Enjoyer'
+        && positionAgeMin >= (strategyProfile?.exit?.holdMinMinutes || 10);
+      const npcReadyForReview = pos.strategy_used === 'NPC'
+        && positionAgeMin >= (strategyProfile?.exit?.holdMinMinutes || 30);
+
+      const strategyTriggerHit = supportBreakForWave || npcTooOld;
+
       // Tidak ada trigger → flag apakah posisi ini butuh LLM, lalu skip
-      if (!trailingTpHit && !tpHit && !slCheck.triggered && !evilPandaExitHit && !multiTFExitHit && !fibExitHit) {
+      if (!trailingTpHit && !tpHit && !slCheck.triggered && !evilPandaExitHit && !multiTFExitHit && !fibExitHit && !strategyTriggerHit) {
         // Posisi butuh LLM jika: out of range, fees tinggi, atau mendekati SL
         if (!match?.inRange) _healerNeedsLLM = true;
         const feePct = (match?.feeCollectedSol || 0) / (pos.deployed_sol || 0.001);
         if (feePct >= 0.03) _healerNeedsLLM = true;
         if (pnlPct <= -(thresholds.stopLossPct * 0.6)) _healerNeedsLLM = true;
+        if (waveReadyForReview || npcReadyForReview) _healerNeedsLLM = true;
         continue;
       }
 
@@ -861,6 +891,21 @@ export async function runHealerAlpha(notifyFn) {
       // ── Putuskan: CLOSE atau HOLD ─────────────────────────────
       let decision  = 'CLOSE';
       let holdReason = '';
+
+      if (exitMode === 'evil_panda_confluence') {
+        if (!evilPandaExitHit && pnlPct > -emergencyStopLossPct) {
+          decision = 'HOLD';
+          holdReason = 'Evil Panda menunggu confluence exit; TP/trailing global diabaikan.';
+        }
+      }
+
+      if (exitMode === 'retracement_scalp' && supportBreakForWave) {
+        decision = 'CLOSE';
+      }
+
+      if (exitMode === 'post_spike_consolidation' && npcTooOld) {
+        decision = 'CLOSE';
+      }
 
       // Evil Panda + Multi-TF + Fib exit are unconditional — don't HOLD
       if (evilPandaExitHit || multiTFExitHit || fibExitHit) {
@@ -886,12 +931,16 @@ export async function runHealerAlpha(notifyFn) {
       const triggerLabel = evilPandaExitHit ? 'Evil Panda Exit'
         : multiTFExitHit                    ? 'Multi-TF Exit'
         : fibExitHit                        ? 'Fib Resistance Exit'
+        : supportBreakForWave               ? 'Wave Support Break'
+        : npcTooOld                         ? 'NPC Time Exit'
         : trailingTpHit                     ? 'Trailing Take Profit'
         : tpHit                             ? 'Take Profit'
         : 'Stop-Loss';
       const triggerEmoji = evilPandaExitHit ? '🐼'
         : multiTFExitHit                    ? '📊'
         : fibExitHit                        ? '📐'
+        : supportBreakForWave               ? '🌊'
+        : npcTooOld                         ? '🧠'
         : trailingTpHit                     ? '🎯'
         : tpHit                             ? '💰'
         : '🛑';
@@ -901,10 +950,14 @@ export async function runHealerAlpha(notifyFn) {
         ? multiTFExitMsg
         : fibExitHit
         ? fibExitMsg
+        : supportBreakForWave
+        ? `Wave Enjoyer support invalidated setelah ${positionAgeMin}m`
+        : npcTooOld
+        ? `NPC telah melewati hold window ${strategyProfile?.exit?.holdMaxMinutes}m`
         : trailingTpHit
         ? `PnL turun dari peak ${tracker.peakPnl.toFixed(2)}% ke ${pnlPct.toFixed(2)}%`
         : tpHit
-        ? `PnL ${pnlPct.toFixed(2)}% ≥ target ${thresholds.takeProfitFeePct}%`
+        ? `PnL ${pnlPct.toFixed(2)}% ≥ target ${strategyTakeProfitPct}%`
         : slCheck.reason;
 
       // ── Terminal-style indicator table ───────────────────────────
@@ -923,6 +976,7 @@ export async function runHealerAlpha(notifyFn) {
         kv('Range',    _rangeTag, W),
         hr(40),
         kv('Deploy',   `${_deployedSol.toFixed(4)}◎`, W),
+        kv('Umur',     `${positionAgeMin}m`, W),
         kv('Value',    `${_currentValSol.toFixed(4)}◎`, W),
         kv('PnL',      _pnlDisplay, W),
         kv('Peak',     `${tracker.peakPnl >= 0 ? '+' : ''}${tracker.peakPnl.toFixed(2)}%`, W),
