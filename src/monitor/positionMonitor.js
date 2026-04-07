@@ -4,16 +4,14 @@ import { getPositionInfo, getPositionInfoLight } from '../solana/meteora.js';
 import { getWalletPositions, isLPAgentEnabled } from '../market/lpAgent.js';
 import { getWallet } from '../solana/wallet.js';
 import { getConfig } from '../config.js';
+import { getPositionRuntimeState, updatePositionRuntimeState } from '../app/positionRuntimeState.js';
+import { resolvePositionSnapshot } from '../app/positionSnapshot.js';
 
 let bot;
 let allowedUserId;
 
 let _lastOorCheckRun = Date.now();
 let _lastStatusRun   = 0; // 0 = trigger update di menit pertama setelah start
-
-// Track kapan tiap posisi pertama kali OOR — untuk tampilkan durasi
-// positionAddress → timestamp (ms)
-const _oorStartTracker = new Map();
 
 export function initMonitor(telegramBot, userId) {
   bot = telegramBot;
@@ -57,33 +55,23 @@ async function checkOutOfRange() {
       const positions = await getPositionInfo(poolAddress);
       if (!positions) continue;
 
-      // Address yang ditemukan on-chain untuk pool ini
-      const foundOnChain = new Set(positions.map(p => p.address));
-
-      // Cleanup tracker — hanya untuk posisi yang belong ke pool INI.
-      // Jangan compare dengan foundOnChain pool lain (multi-pool bug: posisi pool B
-      // akan dianggap "tidak ada" saat processing pool A, tracker-nya terhapus,
-      // durasi OOR reset ke 0 setiap siklus).
-      const thisPoolPositionAddresses = new Set(
-        openPositions.filter(p => p.pool_address === poolAddress).map(p => p.position_address)
-      );
-      for (const trackedAddr of _oorStartTracker.keys()) {
-        if (thisPoolPositionAddresses.has(trackedAddr) && !foundOnChain.has(trackedAddr)) {
-          _oorStartTracker.delete(trackedAddr);
-        }
-      }
-
       for (const pos of positions) {
+        const runtimeState = getPositionRuntimeState(pos.address);
         if (!pos.inRange) {
-          // Track durasi OOR
-          if (!_oorStartTracker.has(pos.address)) {
-            _oorStartTracker.set(pos.address, Date.now());
+          const oorSince = runtimeState.oorSince || Date.now();
+          if (!runtimeState.oorSince) {
+            updatePositionRuntimeState(pos.address, { oorSince });
           }
-          const oorMs  = Date.now() - _oorStartTracker.get(pos.address);
+          const oorMs  = Date.now() - oorSince;
           const oorMin = Math.round(oorMs / 60000);
           const durStr = oorMin < 60
             ? `${oorMin} menit`
             : `${Math.floor(oorMin / 60)}j ${oorMin % 60}m`;
+
+          const lastAlertAt = runtimeState.lastOorAlertAt || 0;
+          if (Date.now() - lastAlertAt < 30 * 60 * 1000) {
+            continue;
+          }
 
           const priceStr = pos.displayCurrentPrice != null
             ? `${pos.displayCurrentPrice} ${pos.priceUnit || ''}`
@@ -103,9 +91,9 @@ async function checkOutOfRange() {
 
           await bot.sendMessage(allowedUserId, message, { parse_mode: 'Markdown' });
           saveNotification('out_of_range', message);
+          updatePositionRuntimeState(pos.address, { oorSince, lastOorAlertAt: Date.now() });
         } else {
-          // Kembali in-range — hapus tracker
-          _oorStartTracker.delete(pos.address);
+          updatePositionRuntimeState(pos.address, { oorSince: null, lastOorAlertAt: null });
         }
       }
     } catch (e) {
@@ -161,22 +149,23 @@ async function sendPositionStatus() {
 
     for (const pos of positions) {
       const dbPos     = openPositions.find(p => p.position_address === pos.address);
+      if (!dbPos) continue;
       const deploySol = parseFloat(dbPos?.deployed_sol ?? 0);
-
-      // PnL: LP Agent primary → kalkulasi manual fallback
-      const pnlPct = lpPnlMap.has(pos.address)
-        ? lpPnlMap.get(pos.address)
-        : deploySol > 0
-          ? (pos.currentValueSol - deploySol) / deploySol * 100
-          : 0;
+      const snapshot = resolvePositionSnapshot({
+        dbPosition: dbPos,
+        livePosition: pos,
+        providerPnlPct: lpPnlMap.has(pos.address) ? lpPnlMap.get(pos.address) : null,
+        directPnlPct: Number.isFinite(pos?.pnlPct) ? pos.pnlPct : null,
+      });
 
       const rangeIcon = pos.inRange ? '🟢' : '🔴';
       const oorLabel  = pos.inRange ? '' : ' ⚠️ OOR';
 
       // Durasi OOR jika sedang OOR
       let oorDur = '';
-      if (!pos.inRange && _oorStartTracker.has(pos.address)) {
-        const min = Math.round((Date.now() - _oorStartTracker.get(pos.address)) / 60000);
+      const runtimeState = getPositionRuntimeState(pos.address);
+      if (!pos.inRange && runtimeState.oorSince) {
+        const min = Math.round((Date.now() - runtimeState.oorSince) / 60000);
         oorDur = min < 60 ? ` (${min}m)` : ` (${Math.floor(min/60)}j${min%60}m)`;
       }
 
@@ -203,7 +192,7 @@ async function sendPositionStatus() {
 
       lines.push(
         `${rangeIcon} *${symbol}/SOL*${oorLabel}${oorDur}\n` +
-        `  PnL: \`${pnlPct >= 0 ? '+' : ''}${pnlPct.toFixed(2)}%\`  Fees: \`${(pos.feeCollectedSol || 0).toFixed(4)} SOL\`\n` +
+        `  PnL: \`${snapshot.pnlPct >= 0 ? '+' : ''}${snapshot.pnlPct.toFixed(2)}%\`  Fees: \`${(pos.feeCollectedSol || 0).toFixed(4)} SOL\`\n` +
         `  Harga: \`${priceStr}\`  Range: \`${rangeStr}\``
       );
     }

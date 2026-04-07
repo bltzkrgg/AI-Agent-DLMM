@@ -24,6 +24,7 @@ db.exec(`
     range_efficiency_pct REAL DEFAULT 0,
     strategy_used TEXT,
     close_reason TEXT,
+    lifecycle_state TEXT DEFAULT 'open',
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     closed_at DATETIME,
     status TEXT DEFAULT 'open'
@@ -69,6 +70,7 @@ const migrations = [
   'ALTER TABLE positions ADD COLUMN range_efficiency_pct REAL DEFAULT 0',
   'ALTER TABLE positions ADD COLUMN deployed_sol REAL DEFAULT 0',
   'ALTER TABLE positions ADD COLUMN token_x_symbol TEXT',
+  "ALTER TABLE positions ADD COLUMN lifecycle_state TEXT DEFAULT 'open'",
 ];
 for (const sql of migrations) {
   try { db.exec(sql); } catch { /* kolom sudah ada, skip */ }
@@ -77,8 +79,8 @@ for (const sql of migrations) {
 export function savePosition(data) {
   return db.prepare(`
     INSERT OR IGNORE INTO positions
-    (pool_address, position_address, token_x, token_y, token_x_amount, token_y_amount, deployed_sol, entry_price, deployed_usd, strategy_used, token_x_symbol)
-    VALUES (@pool_address, @position_address, @token_x, @token_y, @token_x_amount, @token_y_amount, @deployed_sol, @entry_price, @deployed_usd, @strategy_used, @token_x_symbol)
+    (pool_address, position_address, token_x, token_y, token_x_amount, token_y_amount, deployed_sol, entry_price, deployed_usd, strategy_used, token_x_symbol, lifecycle_state)
+    VALUES (@pool_address, @position_address, @token_x, @token_y, @token_x_amount, @token_y_amount, @deployed_sol, @entry_price, @deployed_usd, @strategy_used, @token_x_symbol, @lifecycle_state)
   `).run({
     pool_address:     data.pool_address,
     position_address: data.position_address,
@@ -91,6 +93,7 @@ export function savePosition(data) {
     deployed_usd:     data.deployed_usd    || 0,
     strategy_used:    data.strategy_used   || null,
     token_x_symbol:   data.token_x_symbol  || null,
+    lifecycle_state:  data.lifecycle_state || 'open',
   });
 }
 
@@ -100,12 +103,12 @@ export function getOpenPositions() {
 
 export function closePosition(positionAddress) {
   return db.prepare(`
-    UPDATE positions SET status = 'closed', closed_at = CURRENT_TIMESTAMP
+    UPDATE positions SET status = 'closed', lifecycle_state = 'closed_reconciled', closed_at = CURRENT_TIMESTAMP
     WHERE position_address = ?
   `).run(positionAddress);
 }
 
-export function closePositionWithPnl(positionAddress, { pnlUsd, pnlPct, feesUsd, closeReason, rangeEfficiencyPct }) {
+export function closePositionWithPnl(positionAddress, { pnlUsd, pnlPct, feesUsd, closeReason, rangeEfficiencyPct, lifecycleState }) {
   const effPct = rangeEfficiencyPct ?? (
     closeReason === 'TAKE_PROFIT'             ? 90 :
     closeReason?.startsWith('TRAILING')       ? 85 :
@@ -122,13 +125,30 @@ export function closePositionWithPnl(positionAddress, { pnlUsd, pnlPct, feesUsd,
       pnl_pct = ?,
       fees_collected_usd = ?,
       close_reason = ?,
-      range_efficiency_pct = ?
+      range_efficiency_pct = ?,
+      lifecycle_state = ?
     WHERE position_address = ?
-  `).run(pnlUsd || 0, pnlPct || 0, feesUsd || 0, closeReason || 'unknown', effPct, positionAddress);
+  `).run(
+    pnlUsd || 0,
+    pnlPct || 0,
+    feesUsd || 0,
+    closeReason || 'unknown',
+    effPct,
+    lifecycleState || 'closed_reconciled',
+    positionAddress,
+  );
 }
 
 export function updatePositionStatus(positionAddress, status) {
   return db.prepare(`UPDATE positions SET status = ? WHERE position_address = ?`).run(status, positionAddress);
+}
+
+export function updatePositionLifecycle(positionAddress, lifecycleState) {
+  return db.prepare(`
+    UPDATE positions
+    SET lifecycle_state = ?
+    WHERE position_address = ?
+  `).run(lifecycleState, positionAddress);
 }
 
 export function getClosedPositions() {
