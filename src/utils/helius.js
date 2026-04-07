@@ -40,21 +40,22 @@ export function getHeliusApiBase() {
 
 let _rpcManager = null;
 
-export function initializeRpcManager() {
+export function initializeRpcManager(circuitBreaker = null) {
   if (_rpcManager) return _rpcManager;
 
   const config = {
     helius: process.env.HELIUS_API_KEY,
     alchemy: process.env.ALCHEMY_API_KEY,
     quicknode: process.env.QUICKNODE_API_KEY,
+    circuitBreaker: circuitBreaker,
   };
 
-  // Filter out undefined keys
+  // Filter out undefined keys (but keep circuitBreaker even if null)
   const activeConfig = Object.fromEntries(
-    Object.entries(config).filter(([, v]) => v !== undefined)
+    Object.entries(config).filter(([k, v]) => k === 'circuitBreaker' || v !== undefined)
   );
 
-  if (Object.keys(activeConfig).length === 0) {
+  if (!activeConfig.helius && !activeConfig.alchemy && !activeConfig.quicknode) {
     console.warn('⚠️ No RPC providers configured. Using direct Helius RPC calls.');
     return null;
   }

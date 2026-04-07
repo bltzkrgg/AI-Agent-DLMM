@@ -10,16 +10,18 @@ const logger = console; // Use console for logging
 // ──── RPC Provider Base Class ────────────────────────────────────
 
 class RpcProvider {
-  constructor(name, url) {
+  constructor(name, url, circuitBreaker = null) {
     this.name = name;
     this.url = url;
     this.healthy = true;
     this.lastError = null;
     this.errorCount = 0;
     this.successCount = 0;
+    this.circuitBreaker = circuitBreaker;
   }
 
   async call(method, params = [], timeoutMs = 10000) {
+    const startTime = Date.now();
     try {
       const res = await fetchWithTimeout(this.url, {
         method: 'POST',
@@ -41,10 +43,23 @@ class RpcProvider {
         throw new Error(`RPC error: ${JSON.stringify(data.error)}`);
       }
 
+      const latencyMs = Date.now() - startTime;
       this.recordSuccess();
+
+      // Report latency to circuit breaker if available
+      if (this.circuitBreaker) {
+        this.circuitBreaker.recordLatency(this.name, latencyMs);
+      }
+
       return data.result;
     } catch (e) {
       this.recordError(e);
+
+      // Report error to circuit breaker if available
+      if (this.circuitBreaker) {
+        this.circuitBreaker.recordError(this.name, e);
+      }
+
       throw e;
     }
   }
@@ -85,25 +100,25 @@ class RpcProvider {
 // ──── RPC Providers ──────────────────────────────────────────────
 
 class HeliusProvider extends RpcProvider {
-  constructor(apiKey) {
+  constructor(apiKey, circuitBreaker = null) {
     const url = `https://mainnet.helius-rpc.com/?api-key=${apiKey}`;
-    super('Helius', url);
+    super('Helius', url, circuitBreaker);
     this.apiKey = apiKey;
   }
 }
 
 class AlchemyProvider extends RpcProvider {
-  constructor(apiKey) {
+  constructor(apiKey, circuitBreaker = null) {
     const url = `https://solana-mainnet.g.alchemy.com/v2/${apiKey}`;
-    super('Alchemy', url);
+    super('Alchemy', url, circuitBreaker);
     this.apiKey = apiKey;
   }
 }
 
 class QuickNodeProvider extends RpcProvider {
-  constructor(apiKey) {
+  constructor(apiKey, circuitBreaker = null) {
     const url = `https://solana-mainnet.quiknode.pro/${apiKey}/`;
-    super('QuickNode', url);
+    super('QuickNode', url, circuitBreaker);
     this.apiKey = apiKey;
   }
 }
@@ -116,16 +131,17 @@ export class RpcManager {
     this.cache = new Map(); // Simple cache: {method:params} → result
     this.cacheExpiry = 5 * 60 * 1000; // 5 minutes
     this.lastProviderIndex = 0;
+    this.circuitBreaker = config.circuitBreaker || null;
 
     // Initialize providers in order: try primary first, then fallbacks
     if (config.helius) {
-      this.providers.push(new HeliusProvider(config.helius));
+      this.providers.push(new HeliusProvider(config.helius, this.circuitBreaker));
     }
     if (config.alchemy) {
-      this.providers.push(new AlchemyProvider(config.alchemy));
+      this.providers.push(new AlchemyProvider(config.alchemy, this.circuitBreaker));
     }
     if (config.quicknode) {
-      this.providers.push(new QuickNodeProvider(config.quicknode));
+      this.providers.push(new QuickNodeProvider(config.quicknode, this.circuitBreaker));
     }
 
     if (this.providers.length === 0) {

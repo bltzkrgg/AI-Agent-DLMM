@@ -10,12 +10,13 @@ const logger = console;
 // ──── Candle Provider Base Class ─────────────────────────────────
 
 class CandleProvider {
-  constructor(name) {
+  constructor(name, circuitBreaker = null) {
     this.name = name;
     this.healthy = true;
     this.lastError = null;
     this.errorCount = 0;
     this.successCount = 0;
+    this.circuitBreaker = circuitBreaker;
   }
 
   async fetchCandles(poolAddress, timeframe, limit) {
@@ -52,8 +53,8 @@ class CandleProvider {
 // ──── GeckoTerminal Provider ─────────────────────────────────────
 
 class GeckoTerminalProvider extends CandleProvider {
-  constructor() {
-    super('GeckoTerminal');
+  constructor(circuitBreaker = null) {
+    super('GeckoTerminal', circuitBreaker);
     this.baseUrl = 'https://api.geckoterminal.com/api/v2';
   }
 
@@ -72,6 +73,7 @@ class GeckoTerminalProvider extends CandleProvider {
   }
 
   async fetchCandles(poolAddress, timeframe = '15m', limit = 200) {
+    const startTime = Date.now();
     try {
       const { period, aggregate } = this.mapTimeframe(timeframe);
       const before_timestamp = Math.floor(Date.now() / 1000);
@@ -93,10 +95,23 @@ class GeckoTerminalProvider extends CandleProvider {
         v: parseFloat(c[5]),
       }));
 
+      const latencyMs = Date.now() - startTime;
       this.recordSuccess();
+
+      // Report latency to circuit breaker if available
+      if (this.circuitBreaker) {
+        this.circuitBreaker.recordLatency(this.name, latencyMs);
+      }
+
       return candles;
     } catch (e) {
       this.recordError(e);
+
+      // Report error to circuit breaker if available
+      if (this.circuitBreaker) {
+        this.circuitBreaker.recordError(this.name, e);
+      }
+
       throw e;
     }
   }
@@ -105,8 +120,8 @@ class GeckoTerminalProvider extends CandleProvider {
 // ──── CoinGecko Provider ─────────────────────────────────────────
 
 class CoinGeckoProvider extends CandleProvider {
-  constructor() {
-    super('CoinGecko');
+  constructor(circuitBreaker = null) {
+    super('CoinGecko', circuitBreaker);
     this.baseUrl = 'https://api.coingecko.com/api/v3';
   }
 
@@ -125,6 +140,7 @@ class CoinGeckoProvider extends CandleProvider {
   }
 
   async fetchCandles(poolAddress, timeframe = '1d', limit = 90) {
+    const startTime = Date.now();
     try {
       // Note: CoinGecko doesn't have pool-level OHLCV, only token prices
       // This is a fallback that returns approximate daily candles
@@ -147,10 +163,23 @@ class CoinGeckoProvider extends CandleProvider {
         v: 0, // CoinGecko doesn't provide volume in this endpoint
       })).slice(-limit);
 
+      const latencyMs = Date.now() - startTime;
       this.recordSuccess();
+
+      // Report latency to circuit breaker if available
+      if (this.circuitBreaker) {
+        this.circuitBreaker.recordLatency(this.name, latencyMs);
+      }
+
       return candles;
     } catch (e) {
       this.recordError(e);
+
+      // Report error to circuit breaker if available
+      if (this.circuitBreaker) {
+        this.circuitBreaker.recordError(this.name, e);
+      }
+
       throw e;
     }
   }
@@ -159,13 +188,14 @@ class CoinGeckoProvider extends CandleProvider {
 // ──── Birdeye Provider ───────────────────────────────────────────
 
 class BirdeyeProvider extends CandleProvider {
-  constructor(apiKey) {
-    super('Birdeye');
+  constructor(apiKey, circuitBreaker = null) {
+    super('Birdeye', circuitBreaker);
     this.apiKey = apiKey;
     this.baseUrl = 'https://api.birdeye.so/v1';
   }
 
   async fetchCandles(poolAddress, timeframe = '15m', limit = 200) {
+    const startTime = Date.now();
     try {
       if (!this.apiKey) {
         throw new Error('Birdeye API key not configured');
@@ -191,10 +221,23 @@ class BirdeyeProvider extends CandleProvider {
         v: parseFloat(c.v),
       }));
 
+      const latencyMs = Date.now() - startTime;
       this.recordSuccess();
+
+      // Report latency to circuit breaker if available
+      if (this.circuitBreaker) {
+        this.circuitBreaker.recordLatency(this.name, latencyMs);
+      }
+
       return candles;
     } catch (e) {
       this.recordError(e);
+
+      // Report error to circuit breaker if available
+      if (this.circuitBreaker) {
+        this.circuitBreaker.recordError(this.name, e);
+      }
+
       throw e;
     }
   }
@@ -218,21 +261,22 @@ class BirdeyeProvider extends CandleProvider {
 export class CandleManager {
   constructor(config = {}) {
     this.providers = [];
+    this.circuitBreaker = config.circuitBreaker || null;
 
     // Initialize providers in order
     if (config.gecko !== false) {
       // GeckoTerminal is free, always include as primary
-      this.providers.push(new GeckoTerminalProvider());
+      this.providers.push(new GeckoTerminalProvider(this.circuitBreaker));
     }
 
     if (config.coingecko !== false) {
       // CoinGecko is free but limited to token OHLCV (not pool-specific)
-      this.providers.push(new CoinGeckoProvider());
+      this.providers.push(new CoinGeckoProvider(this.circuitBreaker));
     }
 
     if (config.birdeye) {
       // Birdeye requires API key
-      this.providers.push(new BirdeyeProvider(config.birdeye));
+      this.providers.push(new BirdeyeProvider(config.birdeye, this.circuitBreaker));
     }
 
     if (this.providers.length === 0) {

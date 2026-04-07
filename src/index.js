@@ -33,6 +33,7 @@ import { getWalletPositions, isLPAgentEnabled } from './market/lpAgent.js';
 import { DbBackup } from './db/backup.js';
 import { initializeRpcManager, getRpcMetrics } from './utils/helius.js';
 import { CandleManager } from './providers/candleProvider.js';
+import { CircuitBreaker } from './safety/circuitBreaker.js';
 
 // ─── PID lock — cegah multiple instance ─────────────────────────
 const PID_FILE = new URL('../../bot.pid', import.meta.url).pathname;
@@ -82,12 +83,38 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const dbPath = process.env.BOT_DB_PATH || join(__dirname, '../data.db');
 const dbBackup = new DbBackup(dbPath, './backups');
 
-// Initialize API fallback providers
-const rpcManager = initializeRpcManager();
+// Initialize Circuit Breaker untuk system safety (harus sebelum RPC Manager)
+const circuitBreaker = new CircuitBreaker({
+  errorThreshold: 3,
+  errorWindow: 5 * 60 * 1000,
+  latencyThreshold: 5000,
+  latencyWindow: 5 * 60 * 1000,
+  healthCheckInterval: 30000,
+  recoverySuccessThreshold: 3,
+  autoStart: true,
+  onTrip: async (info) => {
+    const msg = `🚨 *CIRCUIT BREAKER TRIPPED*\n\nReason: ${info.reason}\nTime: ${new Date(info.tripTime).toISOString()}\n\n⛔ Trading paused (Hunter/Healer offline)`;
+    await bot.sendMessage(ALLOWED_ID, msg, { parse_mode: 'Markdown' }).catch(() => {});
+  },
+  onRecover: async (info) => {
+    const timeOpen = (info.timeOpenMs / 1000 / 60).toFixed(2);
+    const msg = `✅ *CIRCUIT BREAKER RECOVERED*\n\nRecovery time: ${new Date(info.recoveryTime).toISOString()}\nDowntime: ${timeOpen} minutes\n\n🚀 Trading resumed (Hunter/Healer online)`;
+    await bot.sendMessage(ALLOWED_ID, msg, { parse_mode: 'Markdown' }).catch(() => {});
+  },
+  onHealthCheck: async (info) => {
+    if (info.state !== 'CLOSED') {
+      console.log(`CB health check (${info.state}):`, info.metrics);
+    }
+  },
+});
+
+// Initialize API fallback providers (dengan circuit breaker)
+const rpcManager = initializeRpcManager(circuitBreaker);
 const candleManager = new CandleManager({
   gecko: true, // GeckoTerminal always enabled (free)
   coingecko: true, // CoinGecko as fallback (free but limited)
   birdeye: process.env.BIRDEYE_API_KEY, // Birdeye optional (requires API key)
+  circuitBreaker: circuitBreaker, // Pass circuit breaker to candle providers
 });
 
 const _dryRun = getConfig().dryRun;
@@ -195,6 +222,10 @@ async function triggerHunter(targetCount = null) {
     notify('⚠️ Wallet/RPC belum siap. Perbaiki koneksi Solana sebelum menjalankan Hunter.').catch(() => {});
     return;
   }
+  if (!circuitBreaker.isHealthy()) {
+    notify(`⚠️ Circuit Breaker AKTIF (state: ${circuitBreaker.getState().state}). Trading sedang dipause karena sistem degraded.`).catch(() => {});
+    return;
+  }
   if (_hunterBusy) return;
   const liveCfg = getConfig();
   const openPos = getOpenPositions();
@@ -216,6 +247,10 @@ async function triggerHunter(targetCount = null) {
 // Healer — hanya manage posisi, tidak ada reopen prompt
 async function runHealerWithReopenCheck() {
   if (!solanaReady) return;
+  if (!circuitBreaker.isHealthy()) {
+    console.log(`⏭ Healer skip — Circuit Breaker ${circuitBreaker.getState().state}`);
+    return;
+  }
   await runHealerAlpha(notify);
 }
 
@@ -250,6 +285,10 @@ cron.schedule('* * * * *', async () => {
 
 async function runAutoScreening() {
   if (!solanaReady) return;
+  if (!circuitBreaker.isHealthy()) {
+    console.log(`⏭ Auto-screening skip — Circuit Breaker ${circuitBreaker.getState().state}`);
+    return;
+  }
   if (_screeningBusy || _hunterBusy) return;
   const liveCfg = getConfig();
   if (!liveCfg.autoScreeningEnabled) return;
@@ -675,6 +714,10 @@ bot.onText(/\/pools/, async (msg) => {
 
 bot.onText(/\/hunt/, async (msg) => {
   if (msg.from.id !== ALLOWED_ID) return;
+  if (!circuitBreaker.isHealthy()) {
+    bot.sendMessage(msg.chat.id, `⚠️ Circuit Breaker AKTIF (${circuitBreaker.getState().state}). Trading sedang dipause.`);
+    return;
+  }
   bot.sendMessage(msg.chat.id, '🦅 Menjalankan Hunter Alpha...');
   try { await runHunterAlpha(notify, bot, ALLOWED_ID); }
   catch (e) { bot.sendMessage(msg.chat.id, `❌ ${e.message}`); }
@@ -1046,14 +1089,24 @@ bot.onText(/\/weights/, async (msg) => {
   sendLong(msg.chat.id, formatWeightsReport(result), { parse_mode: 'Markdown' }).catch(() => {});
 });
 
-// /providers — tampilkan status RPC dan candle providers
+// /providers — tampilkan status RPC, candle providers, dan circuit breaker
 bot.onText(/\/providers/, async (msg) => {
   if (msg.from.id !== ALLOWED_ID) return;
   try {
     const rpcMetrics = getRpcMetrics();
     const candleMetrics = candleManager?.getMetrics() || { error: 'Candle manager not initialized' };
+    const cbState = circuitBreaker.getState();
 
-    let report = '📡 *API Provider Status*\n\n';
+    let report = '📡 *API Provider & Safety Status*\n\n';
+
+    // Circuit Breaker status
+    const cbStatusIcon = cbState.state === 'CLOSED' ? '✅' : '⛔';
+    const cbTimeOpen = cbState.timeOpenMs > 0 ? ` (open ${(cbState.timeOpenMs / 1000 / 60).toFixed(1)}m)` : '';
+    report += `🔌 *Circuit Breaker*\n${cbStatusIcon} ${cbState.state}${cbTimeOpen}\n`;
+    if (cbState.tripReason) {
+      report += `Reason: ${cbState.tripReason}\n`;
+    }
+    report += `Errors: ${cbState.errorCount}, Latencies: ${cbState.latencyCount}\n\n`;
 
     if (rpcMetrics.providers) {
       report += '🔗 *RPC Providers*\n';
