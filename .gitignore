@@ -1,5 +1,6 @@
 node_modules/
 .env
+.env.save
 *.db
 *.db-journal
 logs/
@@ -9,3 +10,7 @@ bot.pid
 user-config.json
 runtime-state.json
 tmp/
+.DS_Store
+src/.DS_Store
+memory.json
+strategyPerformance.json
