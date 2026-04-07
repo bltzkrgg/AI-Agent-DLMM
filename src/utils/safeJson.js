@@ -2,6 +2,8 @@
  * Safe utilities — used across all modules
  */
 
+import { globalRateLimiter } from './rateLimiter.js';
+
 /**
  * Safe JSON parse for AI output — handles markdown blocks, extracts JSON from text
  */
@@ -28,13 +30,31 @@ export function safeParseAI(text, fallback = null) {
 
 /**
  * Fetch with timeout — prevents hanging on slow APIs
+ * Includes rate limiting per domain + HTTP 429 backoff
  */
 export async function fetchWithTimeout(url, options = {}, timeoutMs = 10000) {
+  // Apply rate limiting per domain
+  try {
+    const hostname = new URL(url).hostname;
+    await globalRateLimiter.acquire(hostname);
+  } catch (e) {
+    throw new Error(`Rate limiter error: ${e.message}`);
+  }
+
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
     const res = await fetch(url, { ...options, signal: controller.signal });
     clearTimeout(timer);
+
+    // Handle HTTP 429 (Rate Limited)
+    if (res.status === 429) {
+      const retryAfter = parseInt(res.headers.get('retry-after') || '10', 10);
+      const retryMs = retryAfter * 1000;
+      await new Promise(r => setTimeout(r, retryMs));
+      throw new Error(`Rate limited (HTTP 429) — retried after ${retryAfter}s`);
+    }
+
     return res;
   } catch (e) {
     clearTimeout(timer);
