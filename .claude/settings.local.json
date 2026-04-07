@@ -57,7 +57,8 @@
       "WebFetch(domain:api.lpagent.io)",
       "Bash(git checkout:*)",
       "Bash(git rebase:*)",
-      "Bash(git pull:*)"
+      "Bash(git pull:*)",
+      "Bash(chmod +x:*)"
     ]
   }
 }

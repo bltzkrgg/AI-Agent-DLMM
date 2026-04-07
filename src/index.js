@@ -2,6 +2,8 @@ import 'dotenv/config';
 import TelegramBot from 'node-telegram-bot-api';
 import cron from 'node-cron';
 import { writeFileSync, readFileSync, existsSync, unlinkSync } from 'fs';
+import { join, dirname } from 'path';
+import { fileURLToPath } from 'url';
 import { initSolana, getWallet, getWalletBalance } from './solana/wallet.js';
 import { processMessage } from './agent/claude.js';
 import { handleStrategyCommand, isInStrategySession } from './strategies/strategyHandler.js';
@@ -28,6 +30,7 @@ import { recalibrateWeights, formatWeightsReport } from './market/signalWeights.
 import { validateRuntimeEnv } from './runtime/env.js';
 import { resolvePositionSnapshot } from './app/positionSnapshot.js';
 import { getWalletPositions, isLPAgentEnabled } from './market/lpAgent.js';
+import { DbBackup } from './db/backup.js';
 
 // ─── PID lock — cegah multiple instance ─────────────────────────
 const PID_FILE = new URL('../../bot.pid', import.meta.url).pathname;
@@ -71,6 +74,11 @@ try {
 const bot = new TelegramBot(process.env.TELEGRAM_BOT_TOKEN, { polling: true });
 const cfg = getConfig();
 initMonitor(bot, ALLOWED_ID);
+
+// Initialize DB backup system
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const dbPath = process.env.BOT_DB_PATH || join(__dirname, '../data.db');
+const dbBackup = new DbBackup(dbPath, './backups');
 
 const _dryRun = getConfig().dryRun;
 console.log(`🦞 Meteora DLMM Bot started! Mode: ${_dryRun ? 'DRY RUN' : 'LIVE'}`);
@@ -266,11 +274,17 @@ cron.schedule('* * * * *', async () => {
 
 
 // ─── Daily Backup jam 2 pagi ─────────────────────────────────────
-cron.schedule('0 2 * * *', () => {
+cron.schedule('0 2 * * *', async () => {
   try {
     savePerformanceSnapshot();
     const count = backupAllData();
     console.log(`💾 Daily backup selesai: ${count} file disimpan ke backups/`);
+
+    // Backup database
+    const dbBackupPath = await dbBackup.createBackup();
+    if (dbBackupPath) {
+      console.log(`💾 Database backup created: ${dbBackupPath}`);
+    }
   } catch (e) { console.error('Daily backup error:', e.message); }
 });
 

@@ -1,10 +1,71 @@
 import Database from 'better-sqlite3';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
+import { DbBackup } from './backup.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const DB_PATH = process.env.BOT_DB_PATH || join(__dirname, '../../data.db');
-const db = new Database(DB_PATH);
+let db;
+
+// Initialize database with integrity check and recovery
+function initializeDatabase() {
+  try {
+    db = new Database(DB_PATH);
+
+    // Quick integrity check
+    db.prepare("PRAGMA integrity_check").all();
+    console.log('✅ Database integrity check passed');
+
+    return db;
+  } catch (e) {
+    console.error('❌ Database corrupted or unreadable:', e.message);
+
+    // Attempt recovery from backup
+    const backup = new DbBackup(DB_PATH);
+    const recovered = backup.attemptRecoverySync?.();
+
+    if (recovered) {
+      // Try to open recovered DB
+      try {
+        db = new Database(DB_PATH);
+        db.prepare("PRAGMA integrity_check").all();
+        console.log('✅ Database recovered and integrity check passed');
+        return db;
+      } catch (e2) {
+        console.error('❌ Recovered database still invalid:', e2.message);
+        throw e2;
+      }
+    } else {
+      throw new Error('Database corrupted and no valid backup available. Manual intervention required.');
+    }
+  }
+}
+
+// Synchronous recovery attempt (called during startup)
+DbBackup.prototype.attemptRecoverySync = function() {
+  console.warn('⚠️ Database corrupted, attempting recovery...');
+
+  const backups = this.listBackups();
+  if (backups.length === 0) {
+    console.error('❌ No backups available for recovery');
+    return false;
+  }
+
+  for (const backup of backups) {
+    try {
+      console.log(`Trying backup: ${backup.name}`);
+      this.restore(backup.path);
+      return true;
+    } catch (e) {
+      console.warn(`⚠️ Failed to recover from ${backup.name}:`, e.message);
+      continue;
+    }
+  }
+
+  return false;
+};
+
+db = initializeDatabase();
 
 db.exec(`
   CREATE TABLE IF NOT EXISTS positions (
