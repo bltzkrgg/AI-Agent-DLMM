@@ -1,5 +1,5 @@
 /**
- * Helius Client — centralized Helius RPC + API
+ * Helius Client — centralized Helius RPC + API with fallback support
  *
  * Helius dipakai untuk:
  *   1. RPC endpoint utama (lebih reliable, rate limit lebih tinggi)
@@ -8,12 +8,18 @@
  *   4. Priority fee API → pastikan TX landing cepat
  *   5. Token metadata batch → simbol, desimal, nama
  *
+ * Fallback chain (optional):
+ *   Helius → Alchemy → QuickNode (if API keys configured)
+ *
  * Env vars:
  *   HELIUS_API_KEY   — dari https://helius.dev (wajib)
  *   HELIUS_RPC_URL   — opsional override (default: mainnet.helius-rpc.com)
+ *   ALCHEMY_API_KEY  — opsional fallback
+ *   QUICKNODE_API_KEY — opsional fallback
  */
 
 import { fetchWithTimeout } from './safeJson.js';
+import { RpcManager } from '../providers/rpcProvider.js';
 
 // ─── URL helpers ──────────────────────────────────────────────────
 
@@ -30,11 +36,55 @@ export function getHeliusApiBase() {
   return `https://api.helius.xyz/v0`;
 }
 
+// ─── RPC Manager (Fallback Chain) ─────────────────────────────────
+
+let _rpcManager = null;
+
+export function initializeRpcManager() {
+  if (_rpcManager) return _rpcManager;
+
+  const config = {
+    helius: process.env.HELIUS_API_KEY,
+    alchemy: process.env.ALCHEMY_API_KEY,
+    quicknode: process.env.QUICKNODE_API_KEY,
+  };
+
+  // Filter out undefined keys
+  const activeConfig = Object.fromEntries(
+    Object.entries(config).filter(([, v]) => v !== undefined)
+  );
+
+  if (Object.keys(activeConfig).length === 0) {
+    console.warn('⚠️ No RPC providers configured. Using direct Helius RPC calls.');
+    return null;
+  }
+
+  try {
+    _rpcManager = new RpcManager(activeConfig);
+    _rpcManager.startHealthChecks(30000); // Health check every 30s
+    return _rpcManager;
+  } catch (e) {
+    console.warn('⚠️ Failed to initialize RPC manager:', e.message);
+    return null;
+  }
+}
+
 // ─── JSON-RPC helper ──────────────────────────────────────────────
 
 let _rpcCallId = 0;
 
 export async function heliusRpc(method, params = [], timeoutMs = 10000) {
+  // Try RPC manager first (if initialized)
+  const manager = _rpcManager || initializeRpcManager();
+  if (manager) {
+    try {
+      return await manager.call(method, params, timeoutMs);
+    } catch (e) {
+      console.warn('RPC manager call failed, falling back to direct Helius call:', e.message);
+    }
+  }
+
+  // Fallback: Direct Helius RPC call
   const url = getHeliusRpcUrl();
   const res = await fetchWithTimeout(url, {
     method: 'POST',
@@ -186,4 +236,15 @@ export async function getHeliusOnChainSignals(tokenMint) {
   } catch (e) {
     return { available: false, reason: e.message };
   }
+}
+
+// ─── Export RPC manager utilities ────────────────────────────────
+
+export function getRpcManager() {
+  return _rpcManager || initializeRpcManager();
+}
+
+export function getRpcMetrics() {
+  const manager = getRpcManager();
+  return manager?.getMetrics() || { error: 'RPC manager not initialized' };
 }

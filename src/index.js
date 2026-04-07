@@ -31,6 +31,8 @@ import { validateRuntimeEnv } from './runtime/env.js';
 import { resolvePositionSnapshot } from './app/positionSnapshot.js';
 import { getWalletPositions, isLPAgentEnabled } from './market/lpAgent.js';
 import { DbBackup } from './db/backup.js';
+import { initializeRpcManager, getRpcMetrics } from './utils/helius.js';
+import { CandleManager } from './providers/candleProvider.js';
 
 // ─── PID lock — cegah multiple instance ─────────────────────────
 const PID_FILE = new URL('../../bot.pid', import.meta.url).pathname;
@@ -79,6 +81,14 @@ initMonitor(bot, ALLOWED_ID);
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const dbPath = process.env.BOT_DB_PATH || join(__dirname, '../data.db');
 const dbBackup = new DbBackup(dbPath, './backups');
+
+// Initialize API fallback providers
+const rpcManager = initializeRpcManager();
+const candleManager = new CandleManager({
+  gecko: true, // GeckoTerminal always enabled (free)
+  coingecko: true, // CoinGecko as fallback (free but limited)
+  birdeye: process.env.BIRDEYE_API_KEY, // Birdeye optional (requires API key)
+});
 
 const _dryRun = getConfig().dryRun;
 console.log(`🦞 Meteora DLMM Bot started! Mode: ${_dryRun ? 'DRY RUN' : 'LIVE'}`);
@@ -1034,6 +1044,40 @@ bot.onText(/\/weights/, async (msg) => {
   bot.sendMessage(msg.chat.id, '⚙️ Recalibrating signal weights...');
   const result = recalibrateWeights();
   sendLong(msg.chat.id, formatWeightsReport(result), { parse_mode: 'Markdown' }).catch(() => {});
+});
+
+// /providers — tampilkan status RPC dan candle providers
+bot.onText(/\/providers/, async (msg) => {
+  if (msg.from.id !== ALLOWED_ID) return;
+  try {
+    const rpcMetrics = getRpcMetrics();
+    const candleMetrics = candleManager?.getMetrics() || { error: 'Candle manager not initialized' };
+
+    let report = '📡 *API Provider Status*\n\n';
+
+    if (rpcMetrics.providers) {
+      report += '🔗 *RPC Providers*\n';
+      rpcMetrics.providers.forEach(p => {
+        const status = p.healthy ? '✅' : '❌';
+        report += `${status} ${p.name}: errors=${p.errors}, last="${p.lastError || 'OK'}"\n`;
+      });
+      report += `Cache size: ${rpcMetrics.cacheSize} entries\n\n`;
+    } else if (rpcMetrics.error) {
+      report += `⚠️ RPC: ${rpcMetrics.error}\n\n`;
+    }
+
+    if (candleMetrics.providers) {
+      report += '📊 *Candle Providers*\n';
+      candleMetrics.providers.forEach(p => {
+        const status = p.healthy ? '✅' : '❌';
+        report += `${status} ${p.name}: errors=${p.errors}, last="${p.lastError || 'OK'}"\n`;
+      });
+    }
+
+    sendLong(msg.chat.id, report, { parse_mode: 'Markdown' }).catch(() => {});
+  } catch (e) {
+    bot.sendMessage(msg.chat.id, `❌ Error: ${e.message}`).catch(() => {});
+  }
 });
 
 // ─── Message handler ─────────────────────────────────────────────
