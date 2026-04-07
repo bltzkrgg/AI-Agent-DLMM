@@ -2,7 +2,7 @@ import 'dotenv/config';
 import TelegramBot from 'node-telegram-bot-api';
 import cron from 'node-cron';
 import { writeFileSync, readFileSync, existsSync, unlinkSync } from 'fs';
-import { initSolana, getWalletBalance } from './solana/wallet.js';
+import { initSolana, getWallet, getWalletBalance } from './solana/wallet.js';
 import { processMessage } from './agent/claude.js';
 import { handleStrategyCommand, isInStrategySession } from './strategies/strategyHandler.js';
 import { runHunterAlpha, getCandidates } from './agents/hunterAlpha.js';
@@ -26,6 +26,8 @@ import { addSmartWallet, removeSmartWallet, formatWalletList } from './market/sm
 import { formatPoolMemoryReport } from './market/poolMemory.js';
 import { recalibrateWeights, formatWeightsReport } from './market/signalWeights.js';
 import { validateRuntimeEnv } from './runtime/env.js';
+import { resolvePositionSnapshot } from './app/positionSnapshot.js';
+import { getWalletPositions, isLPAgentEnabled } from './market/lpAgent.js';
 
 // ─── PID lock — cegah multiple instance ─────────────────────────
 const PID_FILE = new URL('../../bot.pid', import.meta.url).pathname;
@@ -133,6 +135,24 @@ async function sendLong(chatId, text, opts = {}) {
 async function notify(text) {
   sendLong(ALLOWED_ID, String(text), { parse_mode: 'Markdown', disable_web_page_preview: true })
     .catch(e => console.error('Notify error:', e.message));
+}
+
+async function getLpPnlMap() {
+  const pnlMap = new Map();
+  if (!isLPAgentEnabled() || !solanaReady) return pnlMap;
+
+  try {
+    const owner = getWallet()?.publicKey?.toString?.();
+    const positions = await getWalletPositions(owner);
+    if (!Array.isArray(positions)) return pnlMap;
+    for (const position of positions) {
+      if (position?.address && Number.isFinite(position.pnlPct)) {
+        pnlMap.set(position.address, position.pnlPct);
+      }
+    }
+  } catch { /* best-effort */ }
+
+  return pnlMap;
 }
 
 // ─── Busy flags — cegah 2 cycle jalan bersamaan ──────────────────
@@ -305,24 +325,6 @@ cron.schedule('0 7 * * *', async () => {
   } catch (e) { console.error('Daily briefing error:', e.message); }
 });
 
-cron.schedule('0 * * * *', async () => {
-  try {
-    await syncStartingBalanceBaseline();
-    const balance = await getWalletBalance();
-    const openPos = getOpenPositions();
-    const stats = getPositionStats();
-    const memStats = getMemoryStats();
-    const lines = [
-      kv('Balance', `${parseFloat(balance).toFixed(4)} SOL`, 10),
-      kv('Posisi', `${openPos.length} / ${getConfig().maxPositions}`, 10),
-      kv('Closed', `${stats.closedPositions}  Win: ${stats.winRate}`, 10),
-      kv('PnL', `+$${stats.totalPnlUsd}  Fees: +$${stats.totalFeesUsd}`, 10),
-      kv('Instincts', `${memStats.instinctCount}`, 10),
-    ];
-    await notify(`📊 *Hourly Health Check*\n\n${codeBlock(lines)}`);
-  } catch (e) { console.error('Health check error:', e.message); }
-});
-
 // ─── Commands ────────────────────────────────────────────────────
 
 bot.onText(/\/testmodel/, async (msg) => {
@@ -445,10 +447,11 @@ bot.onText(/\/status/, async (msg) => {
   if (msg.from.id !== ALLOWED_ID) return;
   const chatId = msg.chat.id;
   try {
-    const [balance, openPos, stats] = await Promise.all([
+    const [balance, openPos, stats, lpPnlMap] = await Promise.all([
       getWalletBalance(),
       Promise.resolve(getOpenPositions()),
       Promise.resolve(getPositionStats()),
+      getLpPnlMap(),
     ]);
     const memStats = getMemoryStats();
 
@@ -462,17 +465,19 @@ bot.onText(/\/status/, async (msg) => {
           // On-chain lookup berhasil tapi posisi tidak ada → kemungkinan ditutup manual
           chainMap[pos.position_address] = { status: 'Manual', manualClose: true };
         } else if (match) {
-          const deployedSol   = pos.deployed_sol || 0;
-          const currentValSol = match.currentValueSol ?? 0;
-          const pnlSol = parseFloat((currentValSol - deployedSol).toFixed(4));
-          const pnlPct = deployedSol > 0 && currentValSol > 0
-            ? parseFloat(((currentValSol - deployedSol) / deployedSol * 100).toFixed(2))
-            : 0;
+          const snapshot = resolvePositionSnapshot({
+            dbPosition: pos,
+            livePosition: match,
+            providerPnlPct: lpPnlMap.get(pos.position_address),
+            directPnlPct: Number.isFinite(match?.pnlPct) ? match.pnlPct : null,
+          });
           chainMap[pos.position_address] = {
-            status:  match.inRange ? 'InRange' : 'OutRange',
-            pnlSol,
-            pnlPct,
-            feeSol: match.feeCollectedSol ?? 0,
+            status:  snapshot.status,
+            pnlSol: snapshot.pnlSol,
+            pnlPct: snapshot.pnlPct,
+            feeSol: snapshot.feeSol,
+            pnlSource: snapshot.pnlSource,
+            lifecycleState: snapshot.lifecycleState,
             manualClose: false,
           };
         } else {
@@ -487,7 +492,13 @@ bot.onText(/\/status/, async (msg) => {
     for (const pos of openPos) {
       const c = chainMap[pos.position_address];
       if (c?.manualClose) {
-        closePositionWithPnl(pos.position_address, { pnlUsd: 0, pnlPct: 0, feesUsd: 0, closeReason: 'MANUAL_CLOSE' });
+        closePositionWithPnl(pos.position_address, {
+          pnlUsd: 0,
+          pnlPct: 0,
+          feesUsd: 0,
+          closeReason: 'MANUAL_CLOSE',
+          lifecycleState: 'closed_reconciled',
+        });
         notify(
           `⚠️ *Posisi Ditutup Manual*\n\n` +
           `Pool     : \`${pos.pool_address}\`\n` +
@@ -546,7 +557,8 @@ bot.onText(/\/status/, async (msg) => {
             .toLocaleString('id-ID', { timeZone: 'Asia/Jakarta', hour12: false })
             .replace(',', '');
           const feeStr = cd?.feeSol != null ? `  Fee:+${cd.feeSol.toFixed(4)}◎` : '';
-          return [`  ${openedAt}  ${shortAddr(pos.position_address)}${feeStr}`, '', '', ''];
+          const lifecycleStr = cd?.lifecycleState ? `  ${cd.lifecycleState}` : '';
+          return [`  ${openedAt}  ${shortAddr(pos.position_address)}${feeStr}${lifecycleStr}`, '', '', ''];
         }),
       ];
 
@@ -573,9 +585,10 @@ bot.onText(/\/pos$/, async (msg) => {
     }
 
     const poolsToCheck = [...new Set(openPos.map(p => p.pool_address))];
-    const results = await Promise.allSettled(
-      poolsToCheck.map(addr => getPositionInfoLight(addr))
-    );
+    const [results, lpPnlMap] = await Promise.all([
+      Promise.allSettled(poolsToCheck.map(addr => getPositionInfoLight(addr))),
+      getLpPnlMap(),
+    ]);
 
     // Build chainMap: positionAddress → pos data
     const chainMap = {};
@@ -593,9 +606,13 @@ bot.onText(/\/pos$/, async (msg) => {
     for (const pos of openPos) {
       const cd        = chainMap[pos.position_address];
       const deploySol = parseFloat(pos.deployed_sol ?? 0);
-      const pnlPct    = cd && deploySol > 0
-        ? ((cd.currentValueSol - deploySol) / deploySol * 100).toFixed(2)
-        : '?';
+      const snapshot = cd ? resolvePositionSnapshot({
+        dbPosition: pos,
+        livePosition: cd,
+        providerPnlPct: lpPnlMap.get(pos.position_address),
+        directPnlPct: Number.isFinite(cd?.pnlPct) ? cd.pnlPct : null,
+      }) : null;
+      const pnlPct    = snapshot ? snapshot.pnlPct.toFixed(2) : '?';
       const pnlSign   = parseFloat(pnlPct) >= 0 ? '+' : '';
       const rangeIcon = cd ? (cd.inRange ? '🟢' : '🔴') : '⚪';
       const oorLabel  = cd && !cd.inRange ? ' OOR' : '';
@@ -616,6 +633,7 @@ bot.onText(/\/pos$/, async (msg) => {
       text +=
         `${rangeIcon} \`${pos.pool_address.slice(0, 8)}...\` *${symbol}/SOL*${strat}${oorLabel}\n` +
         `  PnL: \`${pnlSign}${pnlPct}%\`  Fees: \`${feesStr}\`  Deploy: \`${deploySol.toFixed(4)} SOL\`\n` +
+        (snapshot?.lifecycleState ? `  State: \`${snapshot.lifecycleState}\`\n` : '') +
         (priceDisp ? `  Harga: \`${priceDisp}\`\n` : '');
     }
 

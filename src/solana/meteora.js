@@ -539,6 +539,7 @@ export async function closePositionDLMM(poolAddress, positionAddress, pnlData = 
           pnlPct:      pnlData.pnlPct   || 0,
           feesUsd:     pnlData.feeUsd   || 0,
           closeReason: pnlData.closeReason || 'closed',
+          lifecycleState: pnlData.lifecycleState || 'closed_pending_swap',
         });
         return { success: true, txHashes: [], alreadyClosed: true };
       }
@@ -645,6 +646,7 @@ export async function closePositionDLMM(poolAddress, positionAddress, pnlData = 
             pnlPct: pnlData.pnlPct || 0,
             feesUsd: pnlData.feeUsd || 0,
             closeReason: 'EMPTY_POSITION_PURGED',
+            lifecycleState: 'manual_review',
           });
           return { success: true, txHashes: [], emptyPositionPurged: true,
             note: 'Posisi kosong — semua metode close gagal. Dana mungkin sudah kembali ke wallet. Verifikasi manual.' };
@@ -773,6 +775,7 @@ export async function closePositionDLMM(poolAddress, positionAddress, pnlData = 
           pnlPct: pnlData.pnlPct || 0,
           feesUsd: pnlData.feeUsd || 0,
           closeReason: 'CLOSE_FAILED_PURGED',
+          lifecycleState: 'manual_review',
         });
         throw new Error(
           'Posisi masih memiliki likuiditas setelah 3 percobaan — ' +
@@ -786,6 +789,7 @@ export async function closePositionDLMM(poolAddress, positionAddress, pnlData = 
         pnlPct:      pnlData.pnlPct   || 0,
         feesUsd:     pnlData.feeUsd   || 0,
         closeReason: pnlData.closeReason || 'closed',
+        lifecycleState: pnlData.lifecycleState || 'closed_pending_swap',
       });
 
       return { success: true, txHashes };

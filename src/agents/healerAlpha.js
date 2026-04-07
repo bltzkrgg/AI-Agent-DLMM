@@ -3,7 +3,7 @@ import { getConfig, getThresholds } from '../config.js';
 import { getPositionInfo, closePositionDLMM, claimFees, getPoolInfo, getSolPriceUsd } from '../solana/meteora.js';
 import { getConnection, getWallet, getWalletBalance } from '../solana/wallet.js';
 import { PublicKey } from '@solana/web3.js';
-import { getOpenPositions, closePositionWithPnl, saveNotification } from '../db/database.js';
+import { getOpenPositions, closePositionWithPnl, saveNotification, updatePositionLifecycle } from '../db/database.js';
 import { getLessonsContext } from '../learn/lessons.js';
 import { checkStopLoss, checkMaxDrawdown, recordPnlUsd, getSafetyStatus } from '../safety/safetyManager.js';
 import { analyzeMarket } from '../market/analyst.js';
@@ -18,6 +18,8 @@ import { recordClose } from '../market/poolMemory.js';
 import { executeControlledOperation } from '../app/executionService.js';
 import { getWalletPositions, isLPAgentEnabled } from '../market/lpAgent.js';
 import { resolvePnlSnapshot } from '../app/pnl.js';
+import { clearPositionRuntimeState, getPositionRuntimeState, updatePositionRuntimeState } from '../app/positionRuntimeState.js';
+import { resolvePositionSnapshot } from '../app/positionSnapshot.js';
 
 // Verifikasi apakah position account benar-benar tidak ada on-chain.
 // Dipakai sebelum mark MANUAL_CLOSE — cegah false positive dari RPC glitch.
@@ -43,12 +45,6 @@ function getTrailingConfig() {
 let lastReport = null;
 export function getLastHealerReport() { return lastReport; }
 
-// Track saat posisi keluar dari range
-const outOfRangeTracker = new Map(); // positionAddress → timestamp
-
-// Track peak PnL per posisi untuk trailing take profit
-const peakPnlTracker = new Map(); // positionAddress → { peakPnl, trailingActive }
-
 async function getLpPnlMap() {
   const pnlMap = new Map();
   if (!isLPAgentEnabled()) return pnlMap;
@@ -66,6 +62,10 @@ async function getLpPnlMap() {
   } catch { /* best-effort */ }
 
   return pnlMap;
+}
+
+function clearPositionState(positionAddress) {
+  clearPositionRuntimeState(positionAddress);
 }
 
 
@@ -173,20 +173,20 @@ async function executeTool(name, input) {
               return { ...pos, status: 'open', rpcError: true };
             }
             closePositionWithPnl(pos.position_address, {
-              pnlUsd: 0, pnlPct: 0, feesUsd: 0, closeReason: 'MANUAL_CLOSE',
+              pnlUsd: 0, pnlPct: 0, feesUsd: 0, closeReason: 'MANUAL_CLOSE', lifecycleState: 'closed_reconciled',
             });
-            outOfRangeTracker.delete(pos.position_address);
-            peakPnlTracker.delete(pos.position_address);
+            clearPositionState(pos.position_address);
             return { ...pos, manualClose: true, status: 'closed', closeReason: 'MANUAL_CLOSE' };
           }
 
           // ── Out-of-range tracking ────────────────────────────
           let outOfRangeMins = null;
           let outOfRangeBins = null;
+          const runtimeState = getPositionRuntimeState(pos.position_address);
           if (match && !match.inRange) {
-            const trackedAt = outOfRangeTracker.get(pos.position_address);
+            const trackedAt = runtimeState.oorSince;
             if (!trackedAt) {
-              outOfRangeTracker.set(pos.position_address, Date.now());
+              updatePositionRuntimeState(pos.position_address, { oorSince: Date.now() });
             } else {
               outOfRangeMins = Math.floor((Date.now() - trackedAt) / 60000);
             }
@@ -201,19 +201,16 @@ async function executeTool(name, input) {
               }
             }
           } else {
-            outOfRangeTracker.delete(pos.position_address);
+            updatePositionRuntimeState(pos.position_address, { oorSince: null });
           }
 
-          // PnL on-chain: (currentValueSol - deployed_sol) / deployed_sol * 100
-          const deployedSol   = pos.deployed_sol || 0;
-          const currentValSol = match?.currentValueSol ?? 0;
-          const pnl = resolvePnlSnapshot({
-            deployedSol,
-            currentValueSol,
+          const snapshot = resolvePositionSnapshot({
+            dbPosition: pos,
+            livePosition: match,
             providerPnlPct: lpPnlMap.get(pos.position_address),
             directPnlPct: Number.isFinite(match?.pnlPct) ? match.pnlPct : null,
           });
-          const pnlPct = pnl.pnlPct;
+          const pnlPct = snapshot.pnlPct;
           const feeCollSol = match?.feeCollectedSol ?? 0;
           const isProfit   = pnlPct > 0;
           // Claim saat fee >= 3% dari deployed capital (dalam SOL), urgent >= 5%
@@ -225,7 +222,10 @@ async function executeTool(name, input) {
           // ── Trailing Take Profit tracking ────────────────────
           // Terinspirasi dari Meridian: track peak PnL, aktifkan trailing
           const addr = pos.position_address;
-          let tracker = peakPnlTracker.get(addr) || { peakPnl: pnlPct, trailingActive: false };
+          let tracker = {
+            peakPnl: runtimeState.peakPnlPct ?? pnlPct,
+            trailingActive: runtimeState.trailingActive === true,
+          };
 
           // Update peak
           if (pnlPct > tracker.peakPnl) {
@@ -242,7 +242,10 @@ async function executeTool(name, input) {
           const trailingTpHit = tracker.trailingActive &&
             (tracker.peakPnl - pnlPct) >= trailingCfg.dropPct;
 
-          peakPnlTracker.set(addr, tracker);
+          updatePositionRuntimeState(addr, {
+            peakPnlPct: tracker.peakPnl,
+            trailingActive: tracker.trailingActive,
+          });
 
           // ── Market Analysis ──────────────────────────────────
           let marketSignal = null;
@@ -317,6 +320,9 @@ async function executeTool(name, input) {
             peakPnl:        tracker.peakPnl,
             trailingActive: tracker.trailingActive,
             pnlPct,
+            pnlSol: snapshot.pnlSol,
+            pnlSource: snapshot.pnlSource,
+            lifecycleState: snapshot.lifecycleState,
             isProfit,
             feeVelocity,
             poolTaSignals,
@@ -409,21 +415,34 @@ async function executeTool(name, input) {
             providerPnlPct: lpPnlMap.get(input.position_address),
             directPnlPct: Number.isFinite(match?.pnlPct) ? match.pnlPct : null,
           });
-          pnlData.pnlUsd  = pnl.pnlSol;
+          const solPriceUsd = await getSolPriceUsd().catch(() => 150);
+          pnlData.pnlUsd  = parseFloat((pnl.pnlSol * solPriceUsd).toFixed(2));
           pnlData.pnlPct  = pnl.pnlPct;
-          pnlData.feeUsd  = match.feeCollectedSol ?? 0;
+          pnlData.feeUsd  = parseFloat(((match.feeCollectedSol ?? 0) * solPriceUsd).toFixed(2));
         }
       } catch { /* best-effort, tetap close */ }
 
-      const { result: closeResult } = await executeControlledOperation({
-        operationType: 'CLOSE_POSITION',
-        entityId: input.position_address,
-        payload: { ...input, pnlData },
-        metadata: { source: 'healer_tool', poolAddress: input.pool_address },
-        execute: () => closePositionDLMM(input.pool_address, input.position_address, pnlData),
-      });
-      outOfRangeTracker.delete(input.position_address);
-      peakPnlTracker.delete(input.position_address);
+      updatePositionLifecycle(input.position_address, 'closing');
+
+      let closeResult;
+      try {
+        ({ result: closeResult } = await executeControlledOperation({
+          operationType: 'CLOSE_POSITION',
+          entityId: input.position_address,
+          payload: { ...input, pnlData },
+          metadata: { source: 'healer_tool', poolAddress: input.pool_address },
+          execute: () => closePositionDLMM(input.pool_address, input.position_address, {
+            ...pnlData,
+            lifecycleState: 'closed_pending_swap',
+          }),
+        }));
+      } catch (error) {
+        if (getOpenPositions().some(p => p.position_address === input.position_address)) {
+          updatePositionLifecycle(input.position_address, 'open');
+        }
+        throw error;
+      }
+      clearPositionState(input.position_address);
 
       // Record ke pool memory — best-effort, jangan gagalkan response jika throw
       try {
@@ -439,6 +458,7 @@ async function executeTool(name, input) {
       // Auto-swap returned tokens ke SOL setelah close (retry 3x)
       const swapResults = [];
       const swapErrors  = [];
+      let lifecycleState = 'closed_reconciled';
       try {
         const poolInfo = await getPoolInfo(input.pool_address);
         for (const mint of [poolInfo.tokenX, poolInfo.tokenY]) {
@@ -460,6 +480,9 @@ async function executeTool(name, input) {
           }
         }
       } catch { /* swap best-effort */ }
+
+      if (swapErrors.length > 0) lifecycleState = 'manual_review';
+      updatePositionLifecycle(input.position_address, lifecycleState);
 
       // Notifikasi swap + mulai post-close monitor
       if (_healerNotifyFn) {
@@ -483,6 +506,7 @@ async function executeTool(name, input) {
 
       return JSON.stringify({
         ...closeResult,
+        lifecycleState,
         pnlRecorded: pnlData,
         autoSwap:    swapResults.length > 0 ? swapResults : 'skipped',
         swapErrors:  swapErrors.length > 0  ? swapErrors  : undefined,
@@ -532,21 +556,34 @@ async function executeTool(name, input) {
             providerPnlPct: lpPnlMap.get(input.position_address),
             directPnlPct: Number.isFinite(match?.pnlPct) ? match.pnlPct : null,
           });
-          zapPnlData.pnlUsd = pnl.pnlSol;
+          const solPriceUsd = await getSolPriceUsd().catch(() => 150);
+          zapPnlData.pnlUsd = parseFloat((pnl.pnlSol * solPriceUsd).toFixed(2));
           zapPnlData.pnlPct = pnl.pnlPct;
-          zapPnlData.feeUsd = match.feeCollectedSol ?? 0;
+          zapPnlData.feeUsd = parseFloat(((match.feeCollectedSol ?? 0) * solPriceUsd).toFixed(2));
         }
       } catch { /* best-effort */ }
 
-      const { result: closeResult } = await executeControlledOperation({
-        operationType: 'ZAP_OUT',
-        entityId: input.position_address,
-        payload: { ...input, pnlData: zapPnlData },
-        metadata: { source: 'healer_tool', poolAddress: input.pool_address },
-        execute: () => closePositionDLMM(input.pool_address, input.position_address, zapPnlData),
-      });
-      outOfRangeTracker.delete(input.position_address);
-      peakPnlTracker.delete(input.position_address);
+      updatePositionLifecycle(input.position_address, 'closing');
+
+      let closeResult;
+      try {
+        ({ result: closeResult } = await executeControlledOperation({
+          operationType: 'ZAP_OUT',
+          entityId: input.position_address,
+          payload: { ...input, pnlData: zapPnlData },
+          metadata: { source: 'healer_tool', poolAddress: input.pool_address },
+          execute: () => closePositionDLMM(input.pool_address, input.position_address, {
+            ...zapPnlData,
+            lifecycleState: 'closed_pending_swap',
+          }),
+        }));
+      } catch (error) {
+        if (getOpenPositions().some(p => p.position_address === input.position_address)) {
+          updatePositionLifecycle(input.position_address, 'open');
+        }
+        throw error;
+      }
+      clearPositionState(input.position_address);
 
       // Record ke pool memory — best-effort, jangan gagalkan response jika throw
       try {
@@ -561,6 +598,7 @@ async function executeTool(name, input) {
 
       const swapResults = [];
       const swapErrors  = [];
+      let lifecycleState = 'closed_reconciled';
       try {
         const poolInfo = await getPoolInfo(input.pool_address);
         for (const mint of [poolInfo.tokenX, poolInfo.tokenY]) {
@@ -586,6 +624,8 @@ async function executeTool(name, input) {
       }
 
       const totalSwappedSol = swapResults.reduce((s, r) => s + (r.outSol || 0), 0);
+      if (swapErrors.length > 0) lifecycleState = 'manual_review';
+      updatePositionLifecycle(input.position_address, lifecycleState);
 
       // Notifikasi hasil + mulai post-close monitor
       if (_healerNotifyFn) {
@@ -614,6 +654,7 @@ async function executeTool(name, input) {
       return JSON.stringify({
         ...closeResult,
         zapOut: true,
+        lifecycleState,
         swapResults,
         swapErrors: swapErrors.length > 0 ? swapErrors : null,
         totalSwappedSol: parseFloat(totalSwappedSol.toFixed(6)),
@@ -693,10 +734,9 @@ export async function runHealerAlpha(notifyFn) {
           continue;
         }
         closePositionWithPnl(pos.position_address, {
-          pnlUsd: 0, pnlPct: 0, feesUsd: 0, closeReason: 'MANUAL_CLOSE',
+          pnlUsd: 0, pnlPct: 0, feesUsd: 0, closeReason: 'MANUAL_CLOSE', lifecycleState: 'closed_reconciled',
         });
-        outOfRangeTracker.delete(pos.position_address);
-        peakPnlTracker.delete(pos.position_address);
+        clearPositionState(pos.position_address);
         const manualLines = [
           kv('Posisi',   shortAddr(pos.position_address), 10),
           kv('Pool',     shortAddr(pos.pool_address), 10),
@@ -713,26 +753,32 @@ export async function runHealerAlpha(notifyFn) {
 
       if (!match) continue; // on-chain error / network issue, skip siklus ini
 
-      // PnL on-chain: (currentValueSol - deployed_sol) / deployed_sol * 100
       const _deployedSol   = pos.deployed_sol || 0;
       const _currentValSol = match.currentValueSol ?? 0;
-      const pnl = resolvePnlSnapshot({
-        deployedSol: _deployedSol,
-        currentValueSol: _currentValSol,
+      const snapshot = resolvePositionSnapshot({
+        dbPosition: pos,
+        livePosition: match,
         providerPnlPct: lpPnlMap.get(pos.position_address),
         directPnlPct: Number.isFinite(match?.pnlPct) ? match.pnlPct : null,
       });
-      const pnlPct = pnl.pnlPct;
-      const pnlSol = pnl.pnlSol;
+      const pnlPct = snapshot.pnlPct;
+      const pnlSol = snapshot.pnlSol;
       const addr   = pos.position_address;
+      const runtimeState = getPositionRuntimeState(addr);
 
       // ── Trailing TP state ────────────────────────────────────
       const trailCfg = getTrailingConfig();
-      let tracker = peakPnlTracker.get(addr) || { peakPnl: pnlPct, trailingActive: false };
+      let tracker = {
+        peakPnl: runtimeState.peakPnlPct ?? pnlPct,
+        trailingActive: runtimeState.trailingActive === true,
+      };
       if (pnlPct > tracker.peakPnl) tracker.peakPnl = pnlPct;
       if (!tracker.trailingActive && pnlPct >= trailCfg.activatePct) tracker.trailingActive = true;
       const trailingTpHit = tracker.trailingActive && (tracker.peakPnl - pnlPct) >= trailCfg.dropPct;
-      peakPnlTracker.set(addr, tracker);
+      updatePositionRuntimeState(addr, {
+        peakPnlPct: tracker.peakPnl,
+        trailingActive: tracker.trailingActive,
+      });
 
       const slCheck = checkStopLoss({ pnlPct });
       const tpHit   = pnlPct >= thresholds.takeProfitFeePct;
@@ -919,7 +965,10 @@ export async function runHealerAlpha(notifyFn) {
       // ── HOLD_TRAIL ───────────────────────────────────────────────
       if (decision === 'HOLD_TRAIL') {
         tracker.trailingActive = true;
-        peakPnlTracker.set(addr, tracker);
+        updatePositionRuntimeState(addr, {
+          peakPnlPct: tracker.peakPnl,
+          trailingActive: tracker.trailingActive,
+        });
         const lines = [
           ..._fullTable,
           hr(40),
@@ -945,14 +994,15 @@ export async function runHealerAlpha(notifyFn) {
         const solPriceUsd = await getSolPriceUsd().catch(() => 150);
         const realizedPnlUsd = parseFloat((pnlSol * solPriceUsd).toFixed(2));
         const realizedFeesUsd = parseFloat((((match.feeCollectedSol || 0) * solPriceUsd)).toFixed(2));
+        updatePositionLifecycle(addr, 'closing');
         await closePositionDLMM(pos.pool_address, addr, {
           pnlUsd:      realizedPnlUsd,
           pnlPct,
           feeUsd:      realizedFeesUsd,
           closeReason: triggerLabel.toUpperCase().replace(/ /g, '_'),
+          lifecycleState: 'closed_pending_swap',
         });
-        peakPnlTracker.delete(addr);
-        outOfRangeTracker.delete(addr);
+        clearPositionState(addr);
 
         // DB updates — best-effort: jangan kirim "❌ Gagal close" kalau ini yang throw
         try { recordPnlUsd(realizedPnlUsd); } catch { /* best-effort */ }
@@ -970,6 +1020,7 @@ export async function runHealerAlpha(notifyFn) {
         const swapMsgs  = [];
         const swapFails = [];
         let totalSwappedSol = 0;
+        let lifecycleState = 'closed_reconciled';
         try {
           const poolInfo = await getPoolInfo(pos.pool_address);
           for (const mint of [poolInfo.tokenX, poolInfo.tokenY]) {
@@ -990,6 +1041,8 @@ export async function runHealerAlpha(notifyFn) {
             }
           }
         } catch { /* swap best-effort */ }
+        if (swapFails.length > 0) lifecycleState = 'manual_review';
+        updatePositionLifecycle(addr, lifecycleState);
 
         // Notifikasi swap + selalu mulai 5-menit monitor
         if (swapMsgs.length > 0) {
@@ -1042,6 +1095,9 @@ export async function runHealerAlpha(notifyFn) {
           }
         } catch { /* best-effort, jangan crash */ }
       } catch (e) {
+        if (getOpenPositions().some(p => p.position_address === addr)) {
+          updatePositionLifecycle(addr, 'open');
+        }
         await notifyFn?.(`❌ Gagal close ${triggerLabel}: ${e.message}`);
       }
     } catch { /* skip jika gagal fetch */ }

@@ -35,3 +35,39 @@ export function deleteRuntimeState(key) {
   delete state[key];
   writeStateFile(state);
 }
+
+export function getRuntimeCollection(key) {
+  const value = getRuntimeState(key, {});
+  return value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+}
+
+export function setRuntimeCollection(key, value) {
+  const safeValue = value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+  return setRuntimeState(key, safeValue);
+}
+
+export function getRuntimeCollectionItem(key, itemKey, fallback = null) {
+  const collection = getRuntimeCollection(key);
+  return itemKey in collection ? collection[itemKey] : fallback;
+}
+
+export function updateRuntimeCollectionItem(key, itemKey, updater) {
+  const collection = getRuntimeCollection(key);
+  const currentValue = itemKey in collection ? collection[itemKey] : null;
+  const nextValue = typeof updater === 'function' ? updater(currentValue) : updater;
+
+  if (nextValue == null) {
+    delete collection[itemKey];
+  } else {
+    collection[itemKey] = nextValue;
+  }
+
+  setRuntimeCollection(key, collection);
+  return nextValue;
+}
+
+export function deleteRuntimeCollectionItem(key, itemKey) {
+  const collection = getRuntimeCollection(key);
+  delete collection[itemKey];
+  setRuntimeCollection(key, collection);
+}
