@@ -65,6 +65,8 @@ try {
   pkg.exports['.'] = pkg.exports['.'] || {};
   pkg.exports['.'].import = './anchor-esm.mjs';
   pkg.exports['.'].require = pkg.exports['.'].require || './dist/cjs/index.js';
+  pkg.exports['./anchor-esm.mjs'] = './anchor-esm.mjs';
+  pkg.exports['./*'] = pkg.exports['./*'] || './*';
   writeFileSync(anchorPkgPath, JSON.stringify(pkg, null, 2) + '\n');
   console.log('[postinstall] ensured @coral-xyz/anchor package exports');
 } catch (error) {
