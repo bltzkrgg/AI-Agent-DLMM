@@ -10,7 +10,7 @@
     "dry": "DRY_RUN=true node src/index.js",
     "test": "node --test tests/*.test.js",
     "check": "npm test",
-    "postinstall": "patch-package"
+    "postinstall": "patch-package && node scripts/ensure-anchor-esm.js"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.39.0",
