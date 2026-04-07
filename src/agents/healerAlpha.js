@@ -15,6 +15,9 @@ import { detectEvilPandaSignals, computeSupertrend, computeRSI, computeFibLevels
 import { kv, hr, codeBlock, formatPnl, shortAddr, shortStrat } from '../utils/table.js';
 import { formatStrategyAlert } from '../utils/alerts.js';
 import { recordClose } from '../market/poolMemory.js';
+import { executeControlledOperation } from '../app/executionService.js';
+import { getWalletPositions, isLPAgentEnabled } from '../market/lpAgent.js';
+import { resolvePnlSnapshot } from '../app/pnl.js';
 
 // Verifikasi apakah position account benar-benar tidak ada on-chain.
 // Dipakai sebelum mark MANUAL_CLOSE — cegah false positive dari RPC glitch.
@@ -45,6 +48,25 @@ const outOfRangeTracker = new Map(); // positionAddress → timestamp
 
 // Track peak PnL per posisi untuk trailing take profit
 const peakPnlTracker = new Map(); // positionAddress → { peakPnl, trailingActive }
+
+async function getLpPnlMap() {
+  const pnlMap = new Map();
+  if (!isLPAgentEnabled()) return pnlMap;
+
+  try {
+    const owner = getWallet()?.publicKey?.toString?.();
+    if (!owner) return pnlMap;
+    const lpPositions = await getWalletPositions(owner);
+    if (!Array.isArray(lpPositions)) return pnlMap;
+    for (const position of lpPositions) {
+      if (position?.address && Number.isFinite(position.pnlPct)) {
+        pnlMap.set(position.address, position.pnlPct);
+      }
+    }
+  } catch { /* best-effort */ }
+
+  return pnlMap;
+}
 
 
 
@@ -134,6 +156,7 @@ async function executeTool(name, input) {
     case 'get_all_positions': {
       const dbPositions = getOpenPositions();
       if (dbPositions.length === 0) return 'Tidak ada posisi terbuka saat ini.';
+      const lpPnlMap = await getLpPnlMap();
 
       const enriched = await Promise.all(dbPositions.map(async (pos) => {
         try {
@@ -184,9 +207,13 @@ async function executeTool(name, input) {
           // PnL on-chain: (currentValueSol - deployed_sol) / deployed_sol * 100
           const deployedSol   = pos.deployed_sol || 0;
           const currentValSol = match?.currentValueSol ?? 0;
-          const pnlPct = deployedSol > 0 && currentValSol > 0
-            ? parseFloat(((currentValSol - deployedSol) / deployedSol * 100).toFixed(2))
-            : 0;
+          const pnl = resolvePnlSnapshot({
+            deployedSol,
+            currentValueSol,
+            providerPnlPct: lpPnlMap.get(pos.position_address),
+            directPnlPct: Number.isFinite(match?.pnlPct) ? match.pnlPct : null,
+          });
+          const pnlPct = pnl.pnlPct;
           const feeCollSol = match?.feeCollectedSol ?? 0;
           const isProfit   = pnlPct > 0;
           // Claim saat fee >= 3% dari deployed capital (dalam SOL), urgent >= 5%
@@ -311,7 +338,13 @@ async function executeTool(name, input) {
     }
 
     case 'claim_fees': {
-      const claimResult = await claimFees(input.pool_address, input.position_address);
+      const { result: claimResult } = await executeControlledOperation({
+        operationType: 'CLAIM_FEES',
+        entityId: input.position_address,
+        payload: input,
+        metadata: { source: 'healer_tool', poolAddress: input.pool_address },
+        execute: () => claimFees(input.pool_address, input.position_address),
+      });
 
       // Tunggu 3 detik — token perlu waktu untuk muncul di wallet setelah claim
       await new Promise(r => setTimeout(r, 3000));
@@ -363,19 +396,32 @@ async function executeTool(name, input) {
       // Ambil PnL on-chain sebelum close untuk akurasi pencatatan
       let pnlData = { closeReason: (input.reasoning || 'AGENT_CLOSE').toUpperCase().replace(/ /g, '_') };
       try {
+        const lpPnlMap = await getLpPnlMap();
         const onChain = await getPositionInfo(input.pool_address);
         const match   = onChain?.find(p => p.address === input.position_address);
         if (match) {
           const dbPos      = getOpenPositions().find(p => p.position_address === input.position_address);
           const deployedSol = dbPos?.deployed_sol || 0;
           const currentVal  = match.currentValueSol ?? 0;
-          pnlData.pnlUsd  = parseFloat((currentVal - deployedSol).toFixed(6));
-          pnlData.pnlPct  = deployedSol > 0 ? parseFloat(((currentVal - deployedSol) / deployedSol * 100).toFixed(2)) : 0;
+          const pnl = resolvePnlSnapshot({
+            deployedSol,
+            currentValueSol: currentVal,
+            providerPnlPct: lpPnlMap.get(input.position_address),
+            directPnlPct: Number.isFinite(match?.pnlPct) ? match.pnlPct : null,
+          });
+          pnlData.pnlUsd  = pnl.pnlSol;
+          pnlData.pnlPct  = pnl.pnlPct;
           pnlData.feeUsd  = match.feeCollectedSol ?? 0;
         }
       } catch { /* best-effort, tetap close */ }
 
-      const closeResult = await closePositionDLMM(input.pool_address, input.position_address, pnlData);
+      const { result: closeResult } = await executeControlledOperation({
+        operationType: 'CLOSE_POSITION',
+        entityId: input.position_address,
+        payload: { ...input, pnlData },
+        metadata: { source: 'healer_tool', poolAddress: input.pool_address },
+        execute: () => closePositionDLMM(input.pool_address, input.position_address, pnlData),
+      });
       outOfRangeTracker.delete(input.position_address);
       peakPnlTracker.delete(input.position_address);
 
@@ -473,19 +519,32 @@ async function executeTool(name, input) {
       // Ambil PnL on-chain sebelum close
       let zapPnlData = { closeReason: 'ZAP_OUT' };
       try {
+        const lpPnlMap = await getLpPnlMap();
         const onChain = await getPositionInfo(input.pool_address);
         const match   = onChain?.find(p => p.address === input.position_address);
         if (match) {
           const dbPos      = getOpenPositions().find(p => p.position_address === input.position_address);
           const deployedSol = dbPos?.deployed_sol || 0;
           const currentVal  = match.currentValueSol ?? 0;
-          zapPnlData.pnlUsd = parseFloat((currentVal - deployedSol).toFixed(6));
-          zapPnlData.pnlPct = deployedSol > 0 ? parseFloat(((currentVal - deployedSol) / deployedSol * 100).toFixed(2)) : 0;
+          const pnl = resolvePnlSnapshot({
+            deployedSol,
+            currentValueSol: currentVal,
+            providerPnlPct: lpPnlMap.get(input.position_address),
+            directPnlPct: Number.isFinite(match?.pnlPct) ? match.pnlPct : null,
+          });
+          zapPnlData.pnlUsd = pnl.pnlSol;
+          zapPnlData.pnlPct = pnl.pnlPct;
           zapPnlData.feeUsd = match.feeCollectedSol ?? 0;
         }
       } catch { /* best-effort */ }
 
-      const closeResult = await closePositionDLMM(input.pool_address, input.position_address, zapPnlData);
+      const { result: closeResult } = await executeControlledOperation({
+        operationType: 'ZAP_OUT',
+        entityId: input.position_address,
+        payload: { ...input, pnlData: zapPnlData },
+        metadata: { source: 'healer_tool', poolAddress: input.pool_address },
+        execute: () => closePositionDLMM(input.pool_address, input.position_address, zapPnlData),
+      });
       outOfRangeTracker.delete(input.position_address);
       peakPnlTracker.delete(input.position_address);
 
@@ -563,7 +622,13 @@ async function executeTool(name, input) {
     }
 
     case 'swap_to_sol': {
-      const swapResult = await swapAllToSOL(input.token_mint);
+      const { result: swapResult } = await executeControlledOperation({
+        operationType: 'SWAP_TO_SOL',
+        entityId: input.token_mint,
+        payload: input,
+        metadata: { source: 'healer_tool' },
+        execute: () => swapAllToSOL(input.token_mint),
+      });
       return JSON.stringify({ ...swapResult, reasoning: input.reasoning }, null, 2);
     }
 
@@ -585,6 +650,7 @@ export async function runHealerAlpha(notifyFn) {
 
   const lessonsCtx = getLessonsContext();
   const thresholds = getThresholds();
+  const lpPnlMap = await getLpPnlMap();
 
   // ── Safety Check: Max Drawdown ────────────────────────────────
   const drawdown = checkMaxDrawdown();
@@ -650,10 +716,14 @@ export async function runHealerAlpha(notifyFn) {
       // PnL on-chain: (currentValueSol - deployed_sol) / deployed_sol * 100
       const _deployedSol   = pos.deployed_sol || 0;
       const _currentValSol = match.currentValueSol ?? 0;
-      const pnlPct = _deployedSol > 0 && _currentValSol > 0
-        ? parseFloat(((_currentValSol - _deployedSol) / _deployedSol * 100).toFixed(2))
-        : 0;
-      const pnlSol = parseFloat((_currentValSol - _deployedSol).toFixed(6));
+      const pnl = resolvePnlSnapshot({
+        deployedSol: _deployedSol,
+        currentValueSol: _currentValSol,
+        providerPnlPct: lpPnlMap.get(pos.position_address),
+        directPnlPct: Number.isFinite(match?.pnlPct) ? match.pnlPct : null,
+      });
+      const pnlPct = pnl.pnlPct;
+      const pnlSol = pnl.pnlSol;
       const addr   = pos.position_address;
 
       // ── Trailing TP state ────────────────────────────────────

@@ -1,10 +1,11 @@
 import { createMessage, resolveModel } from './provider.js';
 import { getWalletBalance } from '../solana/wallet.js';
 import { getPoolInfo, getPositionInfo, openPosition, closePositionDLMM, getTopPools, claimFees } from '../solana/meteora.js';
-import { getOpenPositions, getConversationHistory, addToHistory, getPositionStats } from '../db/database.js';
+import { getOpenPositions, getConversationHistory, addToHistory, getPositionStats, listRecentOperations } from '../db/database.js';
 import { getAllStrategies, getStrategyByName, parseStrategyParameters } from '../strategies/strategyManager.js';
 import { getConfig } from '../config.js';
 import { swapAllToSOL, SOL_MINT } from '../solana/jupiter.js';
+import { executeControlledOperation } from '../app/executionService.js';
 
 const tools = [
   {
@@ -40,8 +41,19 @@ const tools = [
     input_schema: { type: 'object', properties: {}, required: [] },
   },
   {
-    name: 'open_position',
-    description: 'Buka posisi DLMM baru di pool Meteora',
+    name: 'list_recent_operations',
+    description: 'Lihat operasi write terbaru beserta statusnya untuk audit dan debugging',
+    input_schema: {
+      type: 'object',
+      properties: {
+        limit: { type: 'number', description: 'Jumlah operasi (default 10)' },
+      },
+      required: [],
+    },
+  },
+  {
+    name: 'recommend_open_position',
+    description: 'Siapkan preview sebelum buka posisi DLMM baru. Gunakan ini sebelum execute_open_position.',
     input_schema: {
       type: 'object',
       properties: {
@@ -54,8 +66,34 @@ const tools = [
     },
   },
   {
-    name: 'close_position',
-    description: 'Tutup posisi DLMM dan tarik semua likuiditas + fee',
+    name: 'execute_open_position',
+    description: 'Eksekusi buka posisi DLMM baru setelah user jelas meminta tindakan.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        pool_address: { type: 'string', description: 'Alamat pool Meteora' },
+        token_x_amount: { type: 'number', description: 'Jumlah Token X yang mau dimasukkan' },
+        token_y_amount: { type: 'number', description: 'Jumlah Token Y yang mau dimasukkan' },
+        price_range_percent: { type: 'number', description: 'Range harga dalam persen (default: 5)' },
+      },
+      required: ['pool_address', 'token_x_amount', 'token_y_amount'],
+    },
+  },
+  {
+    name: 'recommend_close_position',
+    description: 'Siapkan preview sebelum tutup posisi DLMM. Gunakan ini sebelum execute_close_position.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        pool_address: { type: 'string' },
+        position_address: { type: 'string' },
+      },
+      required: ['pool_address', 'position_address'],
+    },
+  },
+  {
+    name: 'execute_close_position',
+    description: 'Eksekusi tutup posisi DLMM dan tarik semua likuiditas + fee.',
     input_schema: {
       type: 'object',
       properties: {
@@ -66,8 +104,20 @@ const tools = [
     },
   },
   {
-    name: 'claim_fees',
-    description: 'Klaim unclaimed fees dari posisi tertentu',
+    name: 'recommend_claim_fees',
+    description: 'Siapkan preview sebelum claim fees posisi tertentu.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        pool_address: { type: 'string' },
+        position_address: { type: 'string' },
+      },
+      required: ['pool_address', 'position_address'],
+    },
+  },
+  {
+    name: 'execute_claim_fees',
+    description: 'Eksekusi claim unclaimed fees dari posisi tertentu.',
     input_schema: {
       type: 'object',
       properties: {
@@ -95,7 +145,7 @@ const tools = [
   },
   {
     name: 'open_position_with_strategy',
-    description: 'Buka posisi DLMM menggunakan strategi yang sudah tersimpan',
+    description: 'Eksekusi buka posisi DLMM menggunakan strategi yang sudah tersimpan',
     input_schema: {
       type: 'object',
       properties: {
@@ -130,17 +180,62 @@ async function executeTool(toolName, toolInput) {
       if (openPos.length === 0) return 'Tidak ada posisi terbuka saat ini.';
       return JSON.stringify({ positions: openPos, stats }, null, 2);
     }
-    case 'open_position': {
-      const result = await openPosition(
-        toolInput.pool_address,
-        toolInput.token_x_amount,
-        toolInput.token_y_amount,
-        toolInput.price_range_percent || 5
-      );
-      return JSON.stringify(result, null, 2);
+    case 'list_recent_operations': {
+      return JSON.stringify(listRecentOperations(toolInput.limit || 10), null, 2);
     }
-    case 'close_position': {
-      const result = await closePositionDLMM(toolInput.pool_address, toolInput.position_address);
+    case 'recommend_open_position': {
+      const poolInfo = await getPoolInfo(toolInput.pool_address);
+      return JSON.stringify({
+        action: 'execute_open_position',
+        pool: toolInput.pool_address,
+        tokenXAmount: toolInput.token_x_amount,
+        tokenYAmount: toolInput.token_y_amount,
+        priceRangePercent: toolInput.price_range_percent || 5,
+        preview: {
+          tokenXSymbol: poolInfo.tokenXSymbol,
+          tokenYSymbol: poolInfo.tokenYSymbol,
+          binStep: poolInfo.binStep,
+          feeRate: poolInfo.feeRate,
+          displayPrice: poolInfo.displayPrice,
+          priceUnit: poolInfo.priceUnit,
+        },
+        note: 'Gunakan execute_open_position hanya jika user benar-benar ingin eksekusi.',
+      }, null, 2);
+    }
+    case 'execute_open_position': {
+      const { result, operationId } = await executeControlledOperation({
+        operationType: 'OPEN_POSITION',
+        entityId: toolInput.pool_address,
+        payload: toolInput,
+        metadata: { source: 'claude_tool' },
+        policy: { isEntryOperation: true },
+        execute: () => openPosition(
+          toolInput.pool_address,
+          toolInput.token_x_amount,
+          toolInput.token_y_amount,
+          toolInput.price_range_percent || 5
+        ),
+      });
+      return JSON.stringify({ operationId, ...result }, null, 2);
+    }
+    case 'recommend_close_position': {
+      const positions = await getPositionInfo(toolInput.pool_address);
+      const match = positions?.find(p => p.address === toolInput.position_address);
+      return JSON.stringify({
+        action: 'execute_close_position',
+        pool: toolInput.pool_address,
+        positionAddress: toolInput.position_address,
+        preview: match || 'Posisi tidak ditemukan on-chain, verifikasi manual disarankan.',
+      }, null, 2);
+    }
+    case 'execute_close_position': {
+      const { result, operationId } = await executeControlledOperation({
+        operationType: 'CLOSE_POSITION',
+        entityId: toolInput.position_address,
+        payload: toolInput,
+        metadata: { source: 'claude_tool', poolAddress: toolInput.pool_address },
+        execute: () => closePositionDLMM(toolInput.pool_address, toolInput.position_address),
+      });
 
       // Auto-swap token X → SOL setelah close (retry 2x), sama seperti healerAlpha
       const swapResults = [];
@@ -168,13 +263,28 @@ async function executeTool(toolName, toolInput) {
 
       return JSON.stringify({
         ...result,
+        operationId,
         autoSwap:   swapResults.length > 0 ? swapResults : 'skipped',
         swapErrors: swapErrors.length  > 0 ? swapErrors  : undefined,
       }, null, 2);
     }
-    case 'claim_fees': {
-      const result = await claimFees(toolInput.pool_address, toolInput.position_address);
-      return JSON.stringify(result, null, 2);
+    case 'recommend_claim_fees': {
+      return JSON.stringify({
+        action: 'execute_claim_fees',
+        pool: toolInput.pool_address,
+        positionAddress: toolInput.position_address,
+        note: 'Claim fees akan mengeksekusi transaksi on-chain.',
+      }, null, 2);
+    }
+    case 'execute_claim_fees': {
+      const { result, operationId } = await executeControlledOperation({
+        operationType: 'CLAIM_FEES',
+        entityId: toolInput.position_address,
+        payload: toolInput,
+        metadata: { source: 'claude_tool', poolAddress: toolInput.pool_address },
+        execute: () => claimFees(toolInput.pool_address, toolInput.position_address),
+      });
+      return JSON.stringify({ operationId, ...result }, null, 2);
     }
     case 'get_top_pools': {
       const pools = await getTopPools(toolInput.limit || 5);
@@ -196,13 +306,20 @@ async function executeTool(toolName, toolInput) {
       const strategy = getStrategyByName(toolInput.strategy_name);
       if (!strategy) throw new Error(`Strategi "${toolInput.strategy_name}" tidak ditemukan.`);
       const params = parseStrategyParameters(strategy);
-      const result = await openPosition(
-        toolInput.pool_address,
-        toolInput.token_x_amount,
-        toolInput.token_y_amount,
-        params.priceRangePercent || 5
-      );
-      return JSON.stringify({ ...result, strategyUsed: strategy.name, strategyParams: params }, null, 2);
+      const { result, operationId } = await executeControlledOperation({
+        operationType: 'OPEN_POSITION',
+        entityId: toolInput.pool_address,
+        payload: toolInput,
+        metadata: { source: 'claude_tool', strategy: strategy.name },
+        policy: { isEntryOperation: true },
+        execute: () => openPosition(
+          toolInput.pool_address,
+          toolInput.token_x_amount,
+          toolInput.token_y_amount,
+          params.priceRangePercent || 5
+        ),
+      });
+      return JSON.stringify({ operationId, ...result, strategyUsed: strategy.name, strategyParams: params }, null, 2);
     }
     default:
       return `Tool tidak dikenali: ${toolName}`;
@@ -231,6 +348,8 @@ ATURAN WAJIB:
 - Saat user minta tutup/close posisi: LANGSUNG panggil get_open_positions terlebih dahulu untuk dapat pool_address dan position_address. JANGAN pernah tanya user soal alamat — cari sendiri dari data yang ada.
 - Saat user minta klaim fee: LANGSUNG panggil get_open_positions terlebih dahulu.
 - Jangan tanya user informasi yang bisa kamu cari sendiri dengan tool.
+- Untuk aksi write, selalu mulai dari tool \`recommend_*\` agar preview dan konteksnya jelas.
+- Gunakan tool \`execute_*\` hanya jika user memang meminta eksekusi, bukan sekadar bertanya atau minta analisis.
 
 Selalu gunakan bahasa Indonesia. Jelaskan setiap aksi yang kamu lakukan dengan jelas.
 Kalau ada error, jelaskan dengan bahasa yang mudah dipahami.

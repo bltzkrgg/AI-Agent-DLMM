@@ -20,6 +20,7 @@ import { getDarwinWeights, captureSignals } from '../market/signalWeights.js';
 import { isOnCooldown, getPoolMemoryContext, recordDeployment } from '../market/poolMemory.js';
 import { checkSmartWalletsOnPool, formatSmartWalletSignal } from '../market/smartWallets.js';
 import { discoverPools as lpAgentDiscoverPools, enrichPools as lpAgentEnrichPools, isLPAgentEnabled } from '../market/lpAgent.js';
+import { executeControlledOperation } from '../app/executionService.js';
 
 // ─── State ───────────────────────────────────────────────────────
 
@@ -606,13 +607,26 @@ async function executeTool(name, input) {
 
         // Execute TX — jika gagal, notifikasi user sebelum re-throw
         try {
-          result = await openPosition(
-            input.pool_address,
-            tokenXAmount,
-            tokenYAmount,
-            priceRangePct,
-            strategy.name
-          );
+          ({ result } = await executeControlledOperation({
+            operationType: 'OPEN_POSITION',
+            entityId: input.pool_address,
+            payload: {
+              poolAddress: input.pool_address,
+              tokenXAmount,
+              tokenYAmount,
+              priceRangePct,
+              strategy: strategy.name,
+            },
+            metadata: { source: 'hunter_alpha', strategy: strategy.name },
+            policy: { isEntryOperation: true },
+            execute: () => openPosition(
+              input.pool_address,
+              tokenXAmount,
+              tokenYAmount,
+              priceRangePct,
+              strategy.name
+            ),
+          }));
         } catch (deployErr) {
           // Kirim notif gagal supaya user tidak stuck di "Deploying..." tanpa follow-up
           if (hunterNotifyFn) {

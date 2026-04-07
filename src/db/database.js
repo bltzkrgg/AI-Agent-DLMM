@@ -42,6 +42,20 @@ db.exec(`
     content TEXT NOT NULL,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP
   );
+
+  CREATE TABLE IF NOT EXISTS operation_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    operation_type TEXT NOT NULL,
+    entity_id TEXT,
+    status TEXT NOT NULL,
+    payload TEXT,
+    result TEXT,
+    metadata TEXT,
+    error_message TEXT,
+    tx_hashes TEXT,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+  );
 `);
 
 // Migrasi kolom — setiap ALTER dijalankan sendiri supaya error satu tidak block yang lain
@@ -203,6 +217,68 @@ export function addToHistory(role, content) {
       SELECT id FROM conversation_history ORDER BY created_at DESC LIMIT 50
     )
   `).run();
+}
+
+export function getActiveOperation(operationType, entityId = null) {
+  if (entityId) {
+    return db.prepare(`
+      SELECT * FROM operation_log
+      WHERE operation_type = ?
+        AND entity_id = ?
+        AND status IN ('pending', 'in_progress')
+      ORDER BY created_at DESC
+      LIMIT 1
+    `).get(operationType, entityId);
+  }
+  return db.prepare(`
+    SELECT * FROM operation_log
+    WHERE operation_type = ?
+      AND status IN ('pending', 'in_progress')
+    ORDER BY created_at DESC
+    LIMIT 1
+  `).get(operationType);
+}
+
+export function createOperationLog({ operationType, entityId = null, payload = null, metadata = null, status = 'pending' }) {
+  return db.prepare(`
+    INSERT INTO operation_log (operation_type, entity_id, status, payload, metadata)
+    VALUES (?, ?, ?, ?, ?)
+  `).run(
+    operationType,
+    entityId,
+    status,
+    payload ? JSON.stringify(payload) : null,
+    metadata ? JSON.stringify(metadata) : null,
+  );
+}
+
+export function updateOperationLog(id, { status, result, metadata, errorMessage, txHashes }) {
+  return db.prepare(`
+    UPDATE operation_log
+    SET
+      status = COALESCE(?, status),
+      result = COALESCE(?, result),
+      metadata = COALESCE(?, metadata),
+      error_message = COALESCE(?, error_message),
+      tx_hashes = COALESCE(?, tx_hashes),
+      updated_at = CURRENT_TIMESTAMP
+    WHERE id = ?
+  `).run(
+    status ?? null,
+    result !== undefined ? JSON.stringify(result) : null,
+    metadata !== undefined ? JSON.stringify(metadata) : null,
+    errorMessage ?? null,
+    txHashes !== undefined ? JSON.stringify(txHashes) : null,
+    id,
+  );
+}
+
+export function listRecentOperations(limit = 20) {
+  return db.prepare(`
+    SELECT * FROM operation_log
+    ORDER BY updated_at DESC, created_at DESC
+    LIMIT ?
+  `).all(limit);
 }
 
 export default db;
