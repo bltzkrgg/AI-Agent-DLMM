@@ -15,6 +15,7 @@ import { detectEvilPandaSignals, computeSupertrend, computeRSI, computeFibLevels
 import { kv, hr, codeBlock, formatPnl, shortAddr, shortStrat } from '../utils/table.js';
 import { formatStrategyAlert } from '../utils/alerts.js';
 import { recordClose } from '../market/poolMemory.js';
+import { executeControlledOperation } from '../app/executionService.js';
 
 // Verifikasi apakah position account benar-benar tidak ada on-chain.
 // Dipakai sebelum mark MANUAL_CLOSE — cegah false positive dari RPC glitch.
@@ -311,7 +312,13 @@ async function executeTool(name, input) {
     }
 
     case 'claim_fees': {
-      const claimResult = await claimFees(input.pool_address, input.position_address);
+      const { result: claimResult } = await executeControlledOperation({
+        operationType: 'CLAIM_FEES',
+        entityId: input.position_address,
+        payload: input,
+        metadata: { source: 'healer_tool', poolAddress: input.pool_address },
+        execute: () => claimFees(input.pool_address, input.position_address),
+      });
 
       // Tunggu 3 detik — token perlu waktu untuk muncul di wallet setelah claim
       await new Promise(r => setTimeout(r, 3000));
@@ -375,7 +382,13 @@ async function executeTool(name, input) {
         }
       } catch { /* best-effort, tetap close */ }
 
-      const closeResult = await closePositionDLMM(input.pool_address, input.position_address, pnlData);
+      const { result: closeResult } = await executeControlledOperation({
+        operationType: 'CLOSE_POSITION',
+        entityId: input.position_address,
+        payload: { ...input, pnlData },
+        metadata: { source: 'healer_tool', poolAddress: input.pool_address },
+        execute: () => closePositionDLMM(input.pool_address, input.position_address, pnlData),
+      });
       outOfRangeTracker.delete(input.position_address);
       peakPnlTracker.delete(input.position_address);
 
@@ -485,7 +498,13 @@ async function executeTool(name, input) {
         }
       } catch { /* best-effort */ }
 
-      const closeResult = await closePositionDLMM(input.pool_address, input.position_address, zapPnlData);
+      const { result: closeResult } = await executeControlledOperation({
+        operationType: 'ZAP_OUT',
+        entityId: input.position_address,
+        payload: { ...input, pnlData: zapPnlData },
+        metadata: { source: 'healer_tool', poolAddress: input.pool_address },
+        execute: () => closePositionDLMM(input.pool_address, input.position_address, zapPnlData),
+      });
       outOfRangeTracker.delete(input.position_address);
       peakPnlTracker.delete(input.position_address);
 
@@ -563,7 +582,13 @@ async function executeTool(name, input) {
     }
 
     case 'swap_to_sol': {
-      const swapResult = await swapAllToSOL(input.token_mint);
+      const { result: swapResult } = await executeControlledOperation({
+        operationType: 'SWAP_TO_SOL',
+        entityId: input.token_mint,
+        payload: input,
+        metadata: { source: 'healer_tool' },
+        execute: () => swapAllToSOL(input.token_mint),
+      });
       return JSON.stringify({ ...swapResult, reasoning: input.reasoning }, null, 2);
     }
 
