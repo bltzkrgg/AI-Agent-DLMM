@@ -6,9 +6,10 @@ import { PublicKey } from '@solana/web3.js';
 import { getOpenPositions, getPoolStats, closePositionWithPnl } from '../db/database.js';
 import { getLessonsContext } from '../learn/lessons.js';
 import { getAllStrategies, parseStrategyParameters } from '../strategies/strategyManager.js';
+import { getStrategyProfile } from '../strategies/profiles.js';
 import { checkMaxDrawdown, validateStrategyForMarket, requestConfirmation } from '../safety/safetyManager.js';
 import { matchStrategyToMarket, getLibraryStats } from '../market/strategyLibrary.js';
-import { getMarketSnapshot, getOKXData, getOHLCV, getMultiTFScore } from '../market/oracle.js';
+import { fetchCandles, getMarketSnapshot, getOKXData, getOHLCV, getMultiTFScore } from '../market/oracle.js';
 import { getInstinctsContext } from '../market/memory.js';
 import { getStrategyIntelligenceContext } from '../market/strategyPerformance.js';
 import { screenToken, formatScreenResult } from '../market/coinfilter.js';
@@ -34,6 +35,103 @@ const _deployingPools  = new Set(); // lock sementara selama TX in-flight
 
 export function getCandidates() { return lastCandidates; }
 export function getLastHunterReport() { return lastReport; }
+
+function getLatestSupport(candles = []) {
+  const recent = candles.slice(-24);
+  if (!recent.length) return null;
+  return Math.min(...recent.map((c) => c.l));
+}
+
+function getLatest5mVolumeUsd(candles = []) {
+  const last = candles[candles.length - 1];
+  return last?.v ? Number(last.v) : 0;
+}
+
+function detectVolumeSpike(candles = []) {
+  if (candles.length < 12) return { triggered: false, ratio: 0 };
+  const lastVol = getLatest5mVolumeUsd(candles);
+  const prior = candles.slice(-13, -1);
+  const avg = prior.reduce((sum, candle) => sum + (candle.v || 0), 0) / Math.max(prior.length, 1);
+  const ratio = avg > 0 ? lastVol / avg : 0;
+  return {
+    triggered: ratio >= 2.0,
+    ratio: parseFloat(ratio.toFixed(2)),
+  };
+}
+
+function isNearAth(candles = [], tolerancePct = 2.5) {
+  if (!candles.length) return false;
+  const recent = candles.slice(-72);
+  const high = Math.max(...recent.map((c) => c.h));
+  const current = recent[recent.length - 1]?.c || 0;
+  if (!high || !current) return false;
+  return ((high - current) / high) * 100 <= tolerancePct;
+}
+
+async function evaluateStrategyReadiness({ strategyName, poolInfo, poolAddress }) {
+  const profile = getStrategyProfile(strategyName);
+  if (!profile) {
+    return { ok: true, profile: null, priceRangePct: null, deployOptions: {} };
+  }
+
+  const [ohlcv15m, candles5m] = await Promise.all([
+    getOHLCV(poolInfo.tokenX, poolAddress).catch(() => null),
+    fetchCandles(poolInfo.tokenX, '5m', 36, poolAddress).catch(() => null),
+  ]);
+
+  const blockers = [];
+  const notes = [];
+
+  if (strategyName === 'Evil Panda') {
+    if (!profile.allowedBinSteps?.includes(poolInfo.binStep)) {
+      blockers.push(`bin step ${poolInfo.binStep} tidak termasuk EP-eligible (${profile.allowedBinSteps.join('/')})`);
+    }
+    if (ohlcv15m?.ta?.evilPanda?.entry?.triggered !== true) {
+      blockers.push('belum ada fresh Supertrend 15m break di atas');
+    }
+  }
+
+  if (strategyName === 'Wave Enjoyer') {
+    const support = getLatestSupport(candles5m || []);
+    const currentPrice = ohlcv15m?.currentPrice || candles5m?.[candles5m.length - 1]?.c || 0;
+    const distPct = support && currentPrice > 0 ? ((currentPrice - support) / support) * 100 : null;
+    const vol5m = getLatest5mVolumeUsd(candles5m || []);
+    if (!(distPct >= 0 && distPct <= profile.entry.supportDistancePctMax)) {
+      blockers.push(`harga tidak cukup dekat latest support (${distPct == null ? '-' : distPct.toFixed(1)}%)`);
+    }
+    if (vol5m < profile.entry.minVolume5mUsd) {
+      blockers.push(`volume 5m ${Math.round(vol5m).toLocaleString()} < min ${profile.entry.minVolume5mUsd.toLocaleString()}`);
+    }
+    notes.push(`latest support dist ${distPct == null ? '-' : distPct.toFixed(1)}%`);
+  }
+
+  if (strategyName === 'NPC') {
+    const vol5m = getLatest5mVolumeUsd(candles5m || []);
+    const spike = detectVolumeSpike(candles5m || []);
+    const nearAth = isNearAth(candles5m || []);
+    if (vol5m < profile.entry.minVolume5mUsd) {
+      blockers.push(`volume 5m ${Math.round(vol5m).toLocaleString()} < min ${profile.entry.minVolume5mUsd.toLocaleString()}`);
+    }
+    if (!(spike.triggered || nearAth)) {
+      blockers.push('belum ada volume spike / ATH event yang valid');
+    }
+    notes.push(`spike ratio ${spike.ratio || 0}x${nearAth ? ' | near ATH' : ''}`);
+  }
+
+  return {
+    ok: blockers.length === 0,
+    blockers,
+    notes,
+    profile,
+    ohlcv15m,
+    candles5m,
+    priceRangePct: profile.deploy?.lowerRangeGuidePct || null,
+    deployOptions: {
+      fixedBinsBelow: profile.deploy?.fixedBinsBelow,
+      rangeLabel: profile.deploy?.label,
+    },
+  };
+}
 
 // ─── Darwinian Scoring ───────────────────────────────────────────
 // Weights di-load dari signalWeights.js (auto-recalibrated dari data nyata).
@@ -543,22 +641,43 @@ async function executeTool(name, input) {
 
       const stratParams = parseStrategyParameters(strategy);
       const strategyType = strategy?.strategy_type || 'spot';
+      const strategyProfile = getStrategyProfile(strategy.name);
 
-      // Dynamic range — ATR + volatility + trend + BB
-      let priceRangePct = stratParams.priceRangePercent || 10;
+      let strategyEval = null;
       try {
-        const ohlcv = await getOHLCV(poolInfo.tokenX, input.pool_address);
-        if (ohlcv) {
-          const epType = strategy?.name === 'Evil Panda' ? 'evil_panda' : 'single_side_y';
-          priceRangePct = calcDynamicRangePct({
-            atr14Pct:    ohlcv.atr14?.atrPct     ?? 0,
-            range24hPct: ohlcv.range24hPct        ?? 0,
-            trend:       ohlcv.trend              ?? 'SIDEWAYS',
-            bbBandwidth: ohlcv.ta?.bb?.bandwidth  ?? 0,
-            strategyType: epType,
-          });
-        }
-      } catch { /* fallback to static */ }
+        strategyEval = await evaluateStrategyReadiness({
+          strategyName: strategy.name,
+          poolInfo,
+          poolAddress: input.pool_address,
+        });
+      } catch { /* best-effort */ }
+
+      if (strategyEval && !strategyEval.ok) {
+        return JSON.stringify({
+          blocked: true,
+          reason: `Strategy ${strategy.name} tidak valid untuk kondisi saat ini: ${strategyEval.blockers.join(' | ')}`,
+          strategyNotes: strategyEval.notes,
+        }, null, 2);
+      }
+
+      // Dynamic range — gunakan profile strategy lebih dulu, baru fallback generic.
+      let priceRangePct = strategyEval?.priceRangePct ?? stratParams.priceRangePercent ?? 10;
+      const deployOptions = strategyEval?.deployOptions || {};
+      if (!deployOptions.fixedBinsBelow) {
+        try {
+          const ohlcv = strategyEval?.ohlcv15m || await getOHLCV(poolInfo.tokenX, input.pool_address);
+          if (ohlcv) {
+            const strategyMode = strategy?.name === 'Evil Panda' ? 'evil_panda' : 'single_side_y';
+            priceRangePct = calcDynamicRangePct({
+              atr14Pct:    ohlcv.atr14?.atrPct     ?? 0,
+              range24hPct: ohlcv.range24hPct        ?? 0,
+              trend:       ohlcv.trend              ?? 'SIDEWAYS',
+              bbBandwidth: ohlcv.ta?.bb?.bandwidth  ?? 0,
+              strategyType: strategyMode,
+            });
+          }
+        } catch { /* fallback to static */ }
+      }
 
       // Strategy vs pool warning (non-blocking)
       try {
@@ -616,6 +735,7 @@ async function executeTool(name, input) {
               tokenYAmount,
               priceRangePct,
               strategy: strategy.name,
+              deployOptions,
             },
             metadata: { source: 'hunter_alpha', strategy: strategy.name },
             policy: { isEntryOperation: true },
@@ -624,7 +744,8 @@ async function executeTool(name, input) {
               tokenXAmount,
               tokenYAmount,
               priceRangePct,
-              strategy.name
+              strategy.name,
+              deployOptions,
             ),
           }));
         } catch (deployErr) {
@@ -648,9 +769,9 @@ async function executeTool(name, input) {
       try {
         if (hunterNotifyFn && result.success) {
           const cfg2    = getConfig();
-          const tpTarget = cfg2.takeProfitFeePct ?? 5;
-          const slTarget = cfg2.stopLossPct      ?? 5;
-          const trailAct = cfg2.trailingTriggerPct ?? 3.0;
+          const tpTarget = strategyProfile?.exit?.takeProfitPct ?? cfg2.takeProfitFeePct ?? 5;
+          const slTarget = strategyProfile?.exit?.emergencyStopLossPct ?? cfg2.stopLossPct ?? 5;
+          const trailAct = strategyProfile?.exit?.trailingTriggerPct ?? cfg2.trailingTriggerPct ?? 3.0;
           const nPos     = result.positionCount ?? 1;
 
           const details = [
@@ -668,9 +789,10 @@ async function executeTool(name, input) {
             kv('Bawah',    `${result.lowerPrice?.toFixed(8) ?? '-'}  (-${priceRangePct}%)`, 9),
             kv('Atas',     `${result.upperPrice?.toFixed(8) ?? '-'}  (entry)`, 9),
             kv('Fee/bin',  `${result.feeRatePct}%`, 9),
-            kv('Range',    `${priceRangePct}% | ${result.positions.reduce((s, p) => s + p.binCount, 0)} bins total`, 9),
+            kv('Range',    `${deployOptions.fixedBinsBelow ? `${result.binsBelow + 1} bins` : `${priceRangePct}%`} | ${result.positions.reduce((s, p) => s + p.binCount, 0)} bins total`, 9),
             hr(40),
             kv('TP',       `+${tpTarget}%  Trail: +${trailAct}%  SL: -${slTarget}%`, 9),
+            ...(strategyEval?.notes?.length ? [kv('Setup', strategyEval.notes.join(' | ').slice(0, 40), 9)] : []),
           ];
 
           const txLinks = result.txHashes.slice(0, 3)

@@ -306,7 +306,7 @@ export async function getSolPriceUsd() {
 
 // ─── Open Position ───────────────────────────────────────────────
 
-export async function openPosition(poolAddress, tokenXAmount, tokenYAmount, priceRangePercent = 5, strategyName = null) {
+export async function openPosition(poolAddress, tokenXAmount, tokenYAmount, priceRangePercent = 5, strategyName = null, deployOptions = {}) {
   if (isDryRun()) {
     console.log(`[DRY RUN] openPosition skipped: pool=${poolAddress} tokenX=${tokenXAmount} tokenY=${tokenYAmount}`);
     return { dryRun: true, poolAddress, tokenXAmount, tokenYAmount, priceRangePercent };
@@ -336,8 +336,10 @@ export async function openPosition(poolAddress, tokenXAmount, tokenYAmount, pric
   // Meteora on-chain limit = 70 bins per position account.
   // Cap rawBins ke 69 agar selalu 1 position account per deploy (tidak chunking).
   // Ini memastikan 1 deploy_position = 1 position address di on-chain.
-  const isSingleSideSOL = tokenXAmount === 0;
-  const rawBins  = Math.min(69, Math.max(2, Math.floor((priceRangePercent / 100) / (binStep / 10000))));
+  const fixedBinsBelow = Number.isFinite(deployOptions?.fixedBinsBelow)
+    ? Math.min(69, Math.max(2, Math.floor(deployOptions.fixedBinsBelow)))
+    : null;
+  const rawBins  = fixedBinsBelow ?? Math.min(69, Math.max(2, Math.floor((priceRangePercent / 100) / (binStep / 10000))));
   const rangeMin = activeBin.binId - rawBins;
   const rangeMax = activeBin.binId; // single-side SOL: active bin is the ceiling
   const totalBins = rawBins + 1;
@@ -471,6 +473,7 @@ export async function openPosition(poolAddress, tokenXAmount, tokenYAmount, pric
     priceUnit,
     priceRangePct:      priceRangePercent,
     binRange:           { min: minBinId, max: maxBinId, active: activeBin.binId },
+    binsBelow:          rawBins,
     binStep,
     feeRatePct:         parseFloat((binStep / 100).toFixed(4)),
     tokenXAmount,
