@@ -54,6 +54,56 @@ async function fetchJupiter(path, options = {}, timeoutMs = 10000) {
   throw lastError || new Error(`Jupiter request failed for ${path}`);
 }
 
+function toBigIntAmount(value) {
+  try {
+    return BigInt(String(value || 0));
+  } catch {
+    return 0n;
+  }
+}
+
+async function detectLikelySwapSuccess({ connection, wallet, inputMint, amountRaw, txHash, quotedOutSol = 0 }) {
+  await new Promise(r => setTimeout(r, 4000));
+
+  let finalStatus = null;
+  if (txHash) {
+    try {
+      finalStatus = await connection.getSignatureStatus(txHash, { searchTransactionHistory: true });
+      const err = finalStatus?.value?.err;
+      if (err) throw new Error(`Swap TX gagal on-chain: ${JSON.stringify(err)}`);
+      const confirmation = finalStatus?.value?.confirmationStatus;
+      if (confirmation === 'confirmed' || confirmation === 'finalized') {
+        return {
+          success: true,
+          txHash,
+          assumedSuccess: false,
+          confirmedLate: true,
+          outSol: parseFloat(Number(quotedOutSol || 0).toFixed(6)),
+        };
+      }
+    } catch (e) {
+      if (e.message?.startsWith('Swap TX gagal')) throw e;
+    }
+  }
+
+  const remaining = await getTokenBalance(wallet.publicKey, inputMint).catch(() => amountRaw);
+  const remainingRaw = toBigIntAmount(remaining);
+  const originalRaw = toBigIntAmount(amountRaw);
+  const mostlyDrained = originalRaw > 0n && (remainingRaw === 0n || remainingRaw * 100n <= originalRaw * 5n);
+
+  if (mostlyDrained) {
+    return {
+      success: true,
+      txHash,
+      assumedSuccess: true,
+      confirmationStatus: finalStatus?.value?.confirmationStatus || 'unknown',
+      outSol: parseFloat(Number(quotedOutSol || 0).toFixed(6)),
+    };
+  }
+
+  return null;
+}
+
 // ─── Get token balance for a specific mint ────────────────────────
 
 export async function getTokenBalance(walletPublicKey, tokenMint) {
@@ -144,38 +194,60 @@ export async function swapToSOL(inputMint, amountRaw, slippageBps = 100) {
   const txBuf = Buffer.from(swapTransaction, 'base64');
   const tx = VersionedTransaction.deserialize(txBuf);
   tx.sign([wallet]);
+  let txHash = null;
+  try {
+    txHash = await connection.sendRawTransaction(tx.serialize(), {
+      skipPreflight: false,
+      maxRetries: 3,
+    });
 
-  const txHash = await connection.sendRawTransaction(tx.serialize(), {
-    skipPreflight: false,
-    maxRetries: 3,
-  });
-
-  // Pakai polling confirm (sama dengan meteora.js) — lebih reliable dari websocket confirmTransaction
-  // yang sering timeout di public RPC tanpa berarti TX gagal.
-  const start = Date.now();
-  const maxWaitMs = 60000;
-  while (Date.now() - start < maxWaitMs) {
-    try {
-      const status = await connection.getSignatureStatus(txHash, { searchTransactionHistory: false });
-      const val = status?.value;
-      if (val?.err) throw new Error(`Swap TX gagal on-chain: ${JSON.stringify(val.err)}`);
-      if (val?.confirmationStatus === 'confirmed' || val?.confirmationStatus === 'finalized') break;
-    } catch (e) {
-      if (e.message?.startsWith('Swap TX gagal')) throw e;
+    // Pakai polling confirm (sama dengan meteora.js) — lebih reliable dari websocket confirmTransaction
+    // yang sering timeout di public RPC tanpa berarti TX gagal.
+    const start = Date.now();
+    const maxWaitMs = 60000;
+    while (Date.now() - start < maxWaitMs) {
+      try {
+        const status = await connection.getSignatureStatus(txHash, { searchTransactionHistory: true });
+        const val = status?.value;
+        if (val?.err) throw new Error(`Swap TX gagal on-chain: ${JSON.stringify(val.err)}`);
+        if (val?.confirmationStatus === 'confirmed' || val?.confirmationStatus === 'finalized') break;
+      } catch (e) {
+        if (e.message?.startsWith('Swap TX gagal')) throw e;
+      }
+      await new Promise(r => setTimeout(r, 2500));
     }
-    await new Promise(r => setTimeout(r, 2500));
-  }
 
-  return {
-    success: true,
-    txHash,
-    inputMint,
-    outputMint: SOL_MINT,
-    inAmount:   amountRaw,
-    outAmountLamports: quote.outAmount,
-    outSol:     parseFloat(outSol.toFixed(6)),
-    priceImpactPct: quote.priceImpactPct || 0,
-  };
+    return {
+      success: true,
+      txHash,
+      inputMint,
+      outputMint: SOL_MINT,
+      inAmount:   amountRaw,
+      outAmountLamports: quote.outAmount,
+      outSol:     parseFloat(outSol.toFixed(6)),
+      priceImpactPct: quote.priceImpactPct || 0,
+    };
+  } catch (error) {
+    const likelySuccess = await detectLikelySwapSuccess({
+      connection,
+      wallet,
+      inputMint,
+      amountRaw,
+      txHash,
+      quotedOutSol: outSol,
+    });
+    if (likelySuccess) {
+      return {
+        ...likelySuccess,
+        inputMint,
+        outputMint: SOL_MINT,
+        inAmount: amountRaw,
+        outAmountLamports: quote.outAmount,
+        priceImpactPct: quote.priceImpactPct || 0,
+      };
+    }
+    throw error;
+  }
 }
 
 // ─── Swap all non-SOL balance of a token to SOL ───────────────────

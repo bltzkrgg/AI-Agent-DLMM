@@ -150,6 +150,7 @@ export async function getWalletPositions(ownerAddress) {
       lowerBinId:      p.lowerTick   ?? p.lower_bin_id ?? 0,
       upperBinId:      p.upperTick   ?? p.upper_bin_id ?? 0,
       fromLPAgent:     true,
+      pnlSource:       'lp_agent',
       // NOTE: unit currentValueSol mungkin USD bukan SOL — Healer harus
       // gunakan pnlPct langsung jika fromLPAgent=true daripada recalc dari value
     };
