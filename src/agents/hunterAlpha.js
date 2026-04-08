@@ -9,13 +9,12 @@ import { getAllStrategies, parseStrategyParameters } from '../strategies/strateg
 import { getStrategyProfile } from '../strategies/profiles.js';
 import { checkMaxDrawdown, validateStrategyForMarket, requestConfirmation } from '../safety/safetyManager.js';
 import { matchStrategyToMarket, getLibraryStats } from '../market/strategyLibrary.js';
-import { fetchCandles, getMarketSnapshot, getOKXData, getOHLCV, getMultiTFScore } from '../market/oracle.js';
+import { fetchCandles, getMarketSnapshot, getOHLCV, getMultiTFScore } from '../market/oracle.js';
 import { getInstinctsContext } from '../market/memory.js';
 import { getStrategyIntelligenceContext } from '../market/strategyPerformance.js';
 import { screenToken, formatScreenResult } from '../market/coinfilter.js';
 import { parseTvl } from '../utils/safeJson.js';
 import { kv, hr, codeBlock, shortAddr } from '../utils/table.js';
-import { calcDynamicRangePct } from '../market/taIndicators.js';
 import { formatStrategyAlert } from '../utils/alerts.js';
 import { getDarwinWeights, captureSignals } from '../market/signalWeights.js';
 import { isOnCooldown, getPoolMemoryContext, recordDeployment } from '../market/poolMemory.js';
@@ -36,86 +35,53 @@ const _deployingPools  = new Set(); // lock sementara selama TX in-flight
 export function getCandidates() { return lastCandidates; }
 export function getLastHunterReport() { return lastReport; }
 
-function getLatestSupport(candles = []) {
-  const recent = candles.slice(-24);
-  if (!recent.length) return null;
-  return Math.min(...recent.map((c) => c.l));
-}
-
-function getLatest5mVolumeUsd(candles = []) {
-  const last = candles[candles.length - 1];
-  return last?.v ? Number(last.v) : 0;
-}
-
-function detectVolumeSpike(candles = []) {
-  if (candles.length < 12) return { triggered: false, ratio: 0 };
-  const lastVol = getLatest5mVolumeUsd(candles);
-  const prior = candles.slice(-13, -1);
-  const avg = prior.reduce((sum, candle) => sum + (candle.v || 0), 0) / Math.max(prior.length, 1);
-  const ratio = avg > 0 ? lastVol / avg : 0;
-  return {
-    triggered: ratio >= 2.0,
-    ratio: parseFloat(ratio.toFixed(2)),
-  };
-}
-
-function isNearAth(candles = [], tolerancePct = 2.5) {
-  if (!candles.length) return false;
-  const recent = candles.slice(-72);
-  const high = Math.max(...recent.map((c) => c.h));
-  const current = recent[recent.length - 1]?.c || 0;
-  if (!high || !current) return false;
-  return ((high - current) / high) * 100 <= tolerancePct;
-}
-
 async function evaluateStrategyReadiness({ strategyName, poolInfo, poolAddress }) {
   const profile = getStrategyProfile(strategyName);
   if (!profile) {
     return { ok: true, profile: null, priceRangePct: null, deployOptions: {} };
   }
 
-  const [ohlcv15m, candles5m] = await Promise.all([
-    getOHLCV(poolInfo.tokenX, poolAddress).catch(() => null),
-    fetchCandles(poolInfo.tokenX, '5m', 36, poolAddress).catch(() => null),
-  ]);
+  // Snapshot-only market data (consolidated API)
+  const ohlcv = await getOHLCV(poolInfo.tokenX, poolAddress).catch(() => null);
 
   const blockers = [];
   const notes = [];
 
-  if (strategyName === 'Evil Panda') {
-    if (!profile.allowedBinSteps?.includes(poolInfo.binStep)) {
-      blockers.push(`bin step ${poolInfo.binStep} tidak termasuk EP-eligible (${profile.allowedBinSteps.join('/')})`);
+  if (!ohlcv) {
+    blockers.push('Market snapshot tidak tersedia');
+  } else {
+    if (strategyName === 'Evil Panda') {
+      if (!profile.allowedBinSteps?.includes(poolInfo.binStep)) {
+        blockers.push(`bin step ${poolInfo.binStep} tidak termasuk EP-eligible (${profile.allowedBinSteps.join('/')})`);
+      }
+      // Momentum proxy: Uptrend confirmed + >3% gain in latest snapshot
+      const isBullishMomentum = ohlcv.trend === 'UPTREND' && ohlcv.priceChange > 3;
+      if (!isBullishMomentum) {
+        blockers.push('momentum belum cukup kuat (trend bukan UPTREND atau pump spike <3%)');
+      }
     }
-    if (ohlcv15m?.ta?.evilPanda?.entry?.triggered !== true) {
-      blockers.push('belum ada fresh Supertrend 15m break di atas');
-    }
-  }
 
-  if (strategyName === 'Wave Enjoyer') {
-    const support = getLatestSupport(candles5m || []);
-    const currentPrice = ohlcv15m?.currentPrice || candles5m?.[candles5m.length - 1]?.c || 0;
-    const distPct = support && currentPrice > 0 ? ((currentPrice - support) / support) * 100 : null;
-    const vol5m = getLatest5mVolumeUsd(candles5m || []);
-    if (!(distPct >= 0 && distPct <= profile.entry.supportDistancePctMax)) {
-      blockers.push(`harga tidak cukup dekat latest support (${distPct == null ? '-' : distPct.toFixed(1)}%)`);
+    if (strategyName === 'Wave Enjoyer') {
+      const support = ohlcv.low24h;
+      const currentPrice = ohlcv.currentPrice;
+      const distPct = support && currentPrice > 0 ? ((currentPrice - support) / support) * 100 : null;
+      
+      // Check if price is within range of 24h support
+      if (!(distPct >= 0 && distPct <= (profile.entry.supportDistancePctMax || 5))) {
+        blockers.push(`harga tidak cukup dekat 24h support (${distPct == null ? '-' : distPct.toFixed(1)}%)`);
+      }
+      notes.push(`24h support dist ${distPct == null ? '-' : distPct.toFixed(1)}%`);
     }
-    if (vol5m < profile.entry.minVolume5mUsd) {
-      blockers.push(`volume 5m ${Math.round(vol5m).toLocaleString()} < min ${profile.entry.minVolume5mUsd.toLocaleString()}`);
-    }
-    notes.push(`latest support dist ${distPct == null ? '-' : distPct.toFixed(1)}%`);
-  }
 
-  if (strategyName === 'NPC') {
-    const vol5m = getLatest5mVolumeUsd(candles5m || []);
-    const spike = detectVolumeSpike(candles5m || []);
-    const nearAth = isNearAth(candles5m || []);
-    if (vol5m < profile.entry.minVolume5mUsd) {
-      blockers.push(`volume 5m ${Math.round(vol5m).toLocaleString()} < min ${profile.entry.minVolume5mUsd.toLocaleString()}`);
+    if (strategyName === 'NPC') {
+      const spikeRatio = ohlcv.avgVolume > 0 ? ohlcv.latestVolume / ohlcv.avgVolume : 1;
+      const nearAth = ohlcv.high24h > 0 && ((ohlcv.high24h - ohlcv.currentPrice) / ohlcv.high24h) * 100 <= 3;
+      
+      if (spikeRatio < 1.5 && !nearAth) {
+        blockers.push('belum ada volume spike (min 1.5x avg) atau ATH event (3% dist)');
+      }
+      notes.push(`spike ratio ${spikeRatio.toFixed(1)}x${nearAth ? ' | near ATH' : ''}`);
     }
-    if (!(spike.triggered || nearAth)) {
-      blockers.push('belum ada volume spike / ATH event yang valid');
-    }
-    notes.push(`spike ratio ${spike.ratio || 0}x${nearAth ? ' | near ATH' : ''}`);
   }
 
   return {
@@ -123,8 +89,7 @@ async function evaluateStrategyReadiness({ strategyName, poolInfo, poolAddress }
     blockers,
     notes,
     profile,
-    ohlcv15m,
-    candles5m,
+    ohlcv15m: ohlcv, // preserved field name for compatibility
     priceRangePct: profile.deploy?.lowerRangeGuidePct || null,
     deployOptions: {
       fixedBinsBelow: profile.deploy?.fixedBinsBelow,
@@ -215,17 +180,6 @@ const HUNTER_TOOLS = [
     name: 'get_wallet_status',
     description: 'Cek balance wallet dan jumlah posisi terbuka saat ini',
     input_schema: { type: 'object', properties: {}, required: [] },
-  },
-  {
-    name: 'get_okx_signal',
-    description: 'Cek OKX smart money signal untuk token tertentu. Gunakan untuk cross-reference kandidat — SM masih holding = conviction tinggi, SM sudah jual = skip.',
-    input_schema: {
-      type: 'object',
-      properties: {
-        token_mint: { type: 'string' },
-      },
-      required: ['token_mint'],
-    },
   },
   {
     name: 'get_pool_memory',
@@ -501,32 +455,6 @@ async function executeTool(name, input) {
       }, null, 2);
     }
 
-    case 'get_okx_signal': {
-      if (!process.env.OKX_API_KEY) {
-        return JSON.stringify({ available: false, reason: 'OKX_API_KEY not set — skip signal check' }, null, 2);
-      }
-      const okx = await getOKXData(input.token_mint);
-      if (!okx?.available) {
-        return JSON.stringify({ available: false, reason: 'OKX data tidak tersedia untuk token ini' }, null, 2);
-      }
-      const verdict = okx.smartMoneySelling === true
-        ? 'SKIP — smart money sudah jual, potensi dump'
-        : okx.smartMoneyBuying === true
-        ? 'STRONG — smart money masih akumulasi, conviction tinggi'
-        : 'NEUTRAL — tidak ada sinyal smart money yang kuat';
-      return JSON.stringify({
-        available:          true,
-        smartMoneyBuying:   okx.smartMoneyBuying,
-        smartMoneySelling:  okx.smartMoneySelling,
-        smartMoneySignal:   okx.smartMoneySignal,
-        signalStrength:     okx.signalStrength,
-        isHoneypot:         okx.isHoneypot,
-        riskLevel:          okx.riskLevel,
-        dlmmNote:           okx.dlmmNote,
-        verdict,
-      }, null, 2);
-    }
-
     case 'get_pool_memory': {
       const stats = getPoolStats(input.pool_address);
       if (!stats) {
@@ -663,21 +591,8 @@ async function executeTool(name, input) {
       // Dynamic range — gunakan profile strategy lebih dulu, baru fallback generic.
       let priceRangePct = strategyEval?.priceRangePct ?? stratParams.priceRangePercent ?? 10;
       const deployOptions = strategyEval?.deployOptions || {};
-      if (!deployOptions.fixedBinsBelow) {
-        try {
-          const ohlcv = strategyEval?.ohlcv15m || await getOHLCV(poolInfo.tokenX, input.pool_address);
-          if (ohlcv) {
-            const strategyMode = strategy?.name === 'Evil Panda' ? 'evil_panda' : 'single_side_y';
-            priceRangePct = calcDynamicRangePct({
-              atr14Pct:    ohlcv.atr14?.atrPct     ?? 0,
-              range24hPct: ohlcv.range24hPct        ?? 0,
-              trend:       ohlcv.trend              ?? 'SIDEWAYS',
-              bbBandwidth: ohlcv.ta?.bb?.bandwidth  ?? 0,
-              strategyType: strategyMode,
-            });
-          }
-        } catch { /* fallback to static */ }
-      }
+      // Range — use strategy profile or default
+      let priceRangePct = strategyEval?.priceRangePct ?? stratParams.priceRangePercent ?? 10;
 
       // Strategy vs pool warning (non-blocking)
       try {
@@ -892,19 +807,15 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null, opt
 
     lastCandidates = filtered;
 
-    // Fetch pool memory + OKX + multi-TF + smart wallets in parallel
+    // Fetch pool memory + multi-TF + smart wallets in parallel
     const enriched = await Promise.all(filtered.map(async (p) => {
-      const [memResult, okxResult, mtfResult, swResult] = await Promise.allSettled([
+      const [memResult, mtfResult, swResult] = await Promise.allSettled([
         Promise.resolve(getPoolStats(p.address)),
-        process.env.OKX_API_KEY
-          ? getOKXData(p.tokenX).catch(() => null)
-          : Promise.resolve(null),
         getMultiTFScore(p.tokenX, p.address),
         checkSmartWalletsOnPool(p.address),
       ]);
 
       const mem = memResult.status === 'fulfilled' ? memResult.value : null;
-      const okx = okxResult.status === 'fulfilled' ? okxResult.value : null;
       const mtf = mtfResult.status === 'fulfilled' ? mtfResult.value : null;
       const sw  = swResult.status  === 'fulfilled' ? swResult.value  : null;
 
@@ -919,11 +830,6 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null, opt
         : mem.winRate < 40 ? 'HINDARI'
         : mem.winRate < 60 ? 'HATI-HATI'
         : 'OK';
-      const okxVerdict = !okx?.available
-        ? 'NEUTRAL'
-        : okx.smartMoneySelling ? 'SKIP'
-        : okx.smartMoneyBuying  ? 'STRONG'
-        : 'NEUTRAL';
 
       const tvl = p.liquidityRaw || 0;
       return {
@@ -938,7 +844,6 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null, opt
         poolMemory:   mem
           ? { winRate: mem.winRate, totalTrades: mem.totalTrades, verdict: memVerdict }
           : { verdict: 'firstTime' },
-        okxSignal:    { verdict: okxVerdict },
         multiTF:      mtf ? {
           score: mtf.score,
           bullishTFs: `${mtf.bullishCount}/${mtf.validCount}`,
@@ -952,7 +857,7 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null, opt
     }));
 
     // Filter obvious rejects sebelum dikirim ke LLM
-    const viable  = enriched.filter(p => p.poolMemory.verdict !== 'HINDARI' && p.okxSignal.verdict !== 'SKIP');
+    const viable  = enriched.filter(p => p.poolMemory.verdict !== 'HINDARI');
     const skipped = enriched.length - viable.length;
 
     if (notifyFn) {

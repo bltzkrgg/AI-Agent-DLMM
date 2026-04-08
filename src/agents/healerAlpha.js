@@ -10,8 +10,8 @@ import { analyzeMarket } from '../market/analyst.js';
 import { getInstinctsContext } from '../market/memory.js';
 import { getStrategyIntelligenceContext } from '../market/strategyPerformance.js';
 import { swapAllToSOL, SOL_MINT } from '../solana/jupiter.js';
-import { fetchCandles, fetchMultiTFOHLCV } from '../market/oracle.js';
-import { detectEvilPandaSignals, computeSupertrend, computeRSI, computeFibLevels, detectGreenCandleAtResistance, detectExitContext } from '../market/taIndicators.js';
+import { getMarketSnapshot, getOHLCV } from '../market/oracle.js';
+import { fetchWithTimeout, withRetry, withExponentialBackoff } from '../utils/safeJson.js';
 import { kv, hr, codeBlock, formatPnl, shortAddr, shortStrat } from '../utils/table.js';
 import { formatStrategyAlert } from '../utils/alerts.js';
 import { recordClose } from '../market/poolMemory.js';
@@ -254,13 +254,9 @@ async function executeTool(name, input) {
             trailingActive: tracker.trailingActive,
           });
 
-          // ── Market Analysis ──────────────────────────────────
           let marketSignal = null;
           let proactiveCloseRecommended = false;
           let proactiveWarning = null;
-
-          let feeVelocity = null;
-          let poolTaSignals = null;
 
           try {
             const analysis = await analyzeMarket(
@@ -268,18 +264,6 @@ async function executeTool(name, input) {
               pos.pool_address,
               { inRange: match?.inRange, pnlPct }
             );
-
-            feeVelocity   = analysis.snapshot?.pool?.feeVelocity ?? null;
-            poolTaSignals = analysis.snapshot?.ta ? {
-              rsi14:           analysis.snapshot.ta.rsi14,
-              rsi2:            analysis.snapshot.ta.rsi2,
-              supertrend:      analysis.snapshot.ta.supertrend,
-              evilPandaExit:   analysis.snapshot.ta.evilPanda?.exit ?? null,
-              bb:              analysis.snapshot.ta.bb,
-              macd:            analysis.snapshot.ta.macd
-                ? { histogram: analysis.snapshot.ta.macd.histogram, firstGreenAfterRed: analysis.snapshot.ta.macd.firstGreenAfterRed }
-                : null,
-            } : null;
 
             marketSignal = {
               signal:            analysis.signal,
@@ -313,6 +297,9 @@ async function executeTool(name, input) {
           return {
             ...pos,
             onChain:      match || null,
+          return {
+            ...pos,
+            onChain:      match || null,
             outOfRangeMins,
             shouldClaimFee:        feeCollSol >= claimThreshold3Sol,
             shouldClaimFeeUrgent:  feeCollSol >= claimThreshold5Sol,
@@ -331,8 +318,6 @@ async function executeTool(name, input) {
             pnlSource: snapshot.pnlSource,
             lifecycleState: snapshot.lifecycleState,
             isProfit,
-            feeVelocity,
-            poolTaSignals,
             marketSignal,
             proactiveCloseRecommended,
             proactiveWarning,
@@ -369,19 +354,18 @@ async function executeTool(name, input) {
         const poolInfo = await getPoolInfo(input.pool_address);
         for (const mint of [poolInfo.tokenX, poolInfo.tokenY]) {
           if (mint && mint !== SOL_MINT) {
-            for (let attempt = 1; attempt <= 3; attempt++) {
-              try {
-                const swapRes = await swapAllToSOL(mint);
-                if (swapRes.success) {
-                  swapResults.push({ mint: mint.slice(0, 8), outSol: swapRes.outSol });
-                } else {
-                  swapResults.push({ mint: mint.slice(0, 8), skipped: swapRes.reason });
-                }
-                break;
-              } catch (e) {
-                if (attempt === 3) swapErrors.push({ mint: mint.slice(0, 8), error: e.message });
-                else await new Promise(r => setTimeout(r, 2000 * attempt));
+            try {
+              const swapRes = await withExponentialBackoff(
+                () => swapAllToSOL(mint),
+                { maxRetries: 3, baseDelay: 2000 }
+              );
+              if (swapRes.success) {
+                swapResults.push({ mint: mint.slice(0, 8), outSol: swapRes.outSol });
+              } else {
+                swapResults.push({ mint: mint.slice(0, 8), skipped: swapRes.reason });
               }
+            } catch (e) {
+              swapErrors.push({ mint: mint.slice(0, 8), error: e.message });
             }
           }
         }
@@ -470,19 +454,18 @@ async function executeTool(name, input) {
         const poolInfo = await getPoolInfo(input.pool_address);
         for (const mint of [poolInfo.tokenX, poolInfo.tokenY]) {
           if (mint && mint !== SOL_MINT) {
-            for (let attempt = 1; attempt <= 3; attempt++) {
-              try {
-                const swapRes = await swapAllToSOL(mint);
-                if (swapRes.success) {
-                  swapResults.push({ mint: mint.slice(0, 8), outSol: swapRes.outSol });
-                } else {
-                  swapResults.push({ mint: mint.slice(0, 8), skipped: swapRes.reason });
-                }
-                break;
-              } catch (e) {
-                if (attempt === 3) swapErrors.push({ mint: mint.slice(0, 8), error: e.message });
-                else await new Promise(r => setTimeout(r, 2000 * attempt));
+            try {
+              const swapRes = await withExponentialBackoff(
+                () => swapAllToSOL(mint),
+                { maxRetries: 3, baseDelay: 2000 }
+              );
+              if (swapRes.success) {
+                swapResults.push({ mint: mint.slice(0, 8), outSol: swapRes.outSol });
+              } else {
+                swapResults.push({ mint: mint.slice(0, 8), skipped: swapRes.reason });
               }
+            } catch (e) {
+              swapErrors.push({ mint: mint.slice(0, 8), error: e.message });
             }
           }
         }
@@ -610,20 +593,18 @@ async function executeTool(name, input) {
         const poolInfo = await getPoolInfo(input.pool_address);
         for (const mint of [poolInfo.tokenX, poolInfo.tokenY]) {
           if (!mint || mint === SOL_MINT) continue;
-          // Retry 3x dengan backoff
-          for (let attempt = 1; attempt <= 3; attempt++) {
-            try {
-              const swapRes = await swapAllToSOL(mint);
-              if (swapRes.success) {
-                swapResults.push({ mint: mint.slice(0, 8), outSol: swapRes.outSol, txHash: swapRes.txHash });
-              } else {
-                swapResults.push({ mint: mint.slice(0, 8), skipped: swapRes.reason });
-              }
-              break;
-            } catch (e) {
-              if (attempt === 3) swapErrors.push({ mint: mint.slice(0, 8), error: e.message });
-              else await new Promise(r => setTimeout(r, 2000 * attempt));
+          try {
+            const swapRes = await withExponentialBackoff(
+              () => swapAllToSOL(mint),
+              { maxRetries: 3, baseDelay: 2000 }
+            );
+            if (swapRes.success) {
+              swapResults.push({ mint: mint.slice(0, 8), outSol: swapRes.outSol, txHash: swapRes.txHash });
+            } else {
+              swapResults.push({ mint: mint.slice(0, 8), skipped: swapRes.reason });
             }
+          } catch (e) {
+            swapErrors.push({ mint: mint.slice(0, 8), error: e.message });
           }
         }
       } catch (e) {
@@ -801,56 +782,12 @@ export async function runHealerAlpha(notifyFn) {
       };
       const tpHit   = pnlPct >= strategyTakeProfitPct;
 
-      // ── Evil Panda confluence exit (overrides TP/SL timing) ──
-      let evilPandaExitHit  = false;
-      let evilPandaExitMsg  = '';
-      if (pos.strategy_used === 'Evil Panda') {
-        try {
-          const epCandles = await fetchCandles(pos.token_x, '15m', 200, pos.pool_address);
-          const epSignals = epCandles ? detectEvilPandaSignals(epCandles) : null;
-          if (epSignals?.exit?.triggered) {
-            evilPandaExitHit = true;
-            evilPandaExitMsg = epSignals.exit.reason;
-          }
-        } catch { /* best-effort */ }
-      }
-
-      // ── Multi-TF exit check ───────────────────────────────────
-      // Aktif saat posisi sudah profit ≥ 1% — cek confluence exit 15m + 1h + 4h
-      // Exit jika 2+ TF masing-masing ≥ 2 sinyal, atau total sinyal ≥ 4
-      let multiTFExitHit = false;
-      let multiTFExitMsg = '';
-      if (pnlPct >= 1.0) {
-        try {
-          const multiTF = await fetchMultiTFOHLCV(pos.token_x, pos.pool_address);
-          const tfs = Object.values(multiTF);
-          if (tfs.length >= 2) {
-            const tfsFiring = tfs.filter(tf => tf.exitSignals >= 2);
-            const totalSigs = tfs.reduce((s, tf) => s + tf.exitSignals, 0);
-            if (tfsFiring.length >= 2 || totalSigs >= 4) {
-              multiTFExitHit = true;
-              multiTFExitMsg = `Exit confluence: ${tfsFiring.map(tf => tf.label + '(' + tf.exitSignals + ')').join(' + ')}`;
-            }
-          }
-        } catch { /* best-effort, skip jika gagal */ }
-      }
-
-      // ── Exit Strategy: Fibonacci + Green Candle Rule ─────────
-      let fibExitHit  = false;
-      let fibExitMsg  = '';
-      let exitContext = null;
-      try {
-        const fibCandles = await fetchCandles(pos.token_x, '15m', 100, pos.pool_address);
-        if (fibCandles && fibCandles.length >= 20) {
-          exitContext = detectExitContext(fibCandles, pnlPct);
-          const fibLevels   = computeFibLevels(fibCandles, 50);
-          const greenCandle = detectGreenCandleAtResistance(fibCandles, fibLevels);
-          if (greenCandle?.triggered) {
-            fibExitHit = true;
-            fibExitMsg = `[${exitContext || 'NORMAL'}] ${greenCandle.reason}`;
-          }
-        }
-      } catch { /* best-effort */ }
+      const slTriggered = pnlPct <= -Math.abs(emergencyStopLossPct);
+      const slCheck = {
+        triggered: slTriggered,
+        reason: `PnL ${pnlPct.toFixed(2)}% <= emergency stop loss -${Math.abs(emergencyStopLossPct).toFixed(2)}%`,
+      };
+      const tpHit   = pnlPct >= strategyTakeProfitPct;
 
       const supportBreakForWave = pos.strategy_used === 'Wave Enjoyer' && !match.inRange;
       const npcTooOld = pos.strategy_used === 'NPC'
@@ -864,7 +801,7 @@ export async function runHealerAlpha(notifyFn) {
       const strategyTriggerHit = supportBreakForWave || npcTooOld;
 
       // Tidak ada trigger → flag apakah posisi ini butuh LLM, lalu skip
-      if (!trailingTpHit && !tpHit && !slCheck.triggered && !evilPandaExitHit && !multiTFExitHit && !fibExitHit && !strategyTriggerHit) {
+      if (!trailingTpHit && !tpHit && !slCheck.triggered && !strategyTriggerHit) {
         // Posisi butuh LLM jika: out of range, fees tinggi, atau mendekati SL
         if (!match?.inRange) _healerNeedsLLM = true;
         const feePct = (match?.feeCollectedSol || 0) / (pos.deployed_sol || 0.001);
@@ -892,11 +829,9 @@ export async function runHealerAlpha(notifyFn) {
       let decision  = 'CLOSE';
       let holdReason = '';
 
-      if (exitMode === 'evil_panda_confluence') {
-        if (!evilPandaExitHit && pnlPct > -emergencyStopLossPct) {
-          decision = 'HOLD';
-          holdReason = 'Evil Panda menunggu confluence exit; TP/trailing global diabaikan.';
-        }
+      if (exitMode === 'evil_panda_confluence' && sig === 'BULLISH' && conf >= 0.5) {
+        decision = 'HOLD';
+        holdReason = 'Evil Panda menunggu konfirmasi bearish sebelum exit.';
       }
 
       if (exitMode === 'retracement_scalp' && supportBreakForWave) {
@@ -907,10 +842,7 @@ export async function runHealerAlpha(notifyFn) {
         decision = 'CLOSE';
       }
 
-      // Evil Panda + Multi-TF + Fib exit are unconditional — don't HOLD
-      if (evilPandaExitHit || multiTFExitHit || fibExitHit) {
-        decision = 'CLOSE';
-      } else if (trailingTpHit) {
+      if (trailingTpHit) {
         if (sig === 'BULLISH' && conf >= 0.75) {
           decision   = 'HOLD';
           holdReason = `Chart masih BULLISH (${(conf * 100).toFixed(0)}% conf) — tunda close 1 siklus`;
@@ -928,29 +860,17 @@ export async function runHealerAlpha(notifyFn) {
       }
 
       // Tentukan label + emoji
-      const triggerLabel = evilPandaExitHit ? 'Evil Panda Exit'
-        : multiTFExitHit                    ? 'Multi-TF Exit'
-        : fibExitHit                        ? 'Fib Resistance Exit'
-        : supportBreakForWave               ? 'Wave Support Break'
+      const triggerLabel = supportBreakForWave               ? 'Wave Support Break'
         : npcTooOld                         ? 'NPC Time Exit'
         : trailingTpHit                     ? 'Trailing Take Profit'
         : tpHit                             ? 'Take Profit'
         : 'Stop-Loss';
-      const triggerEmoji = evilPandaExitHit ? '🐼'
-        : multiTFExitHit                    ? '📊'
-        : fibExitHit                        ? '📐'
-        : supportBreakForWave               ? '🌊'
+      const triggerEmoji = supportBreakForWave               ? '🌊'
         : npcTooOld                         ? '🧠'
         : trailingTpHit                     ? '🎯'
         : tpHit                             ? '💰'
         : '🛑';
-      const triggerReason = evilPandaExitHit
-        ? evilPandaExitMsg
-        : multiTFExitHit
-        ? multiTFExitMsg
-        : fibExitHit
-        ? fibExitMsg
-        : supportBreakForWave
+      const triggerReason = supportBreakForWave
         ? `Wave Enjoyer support invalidated setelah ${positionAgeMin}m`
         : npcTooOld
         ? `NPC telah melewati hold window ${strategyProfile?.exit?.holdMaxMinutes}m`
