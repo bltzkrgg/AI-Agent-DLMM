@@ -47,21 +47,21 @@ db.exec(`
     'Evil Panda',
     'STRATEGI UTAMA. Single-side SOL pada high-volume coins. Entry saat price break atas Supertrend 15m. Exit confluence RSI(2)>90 + BB upper ATAU RSI(2)>90 + MACD first green. Pilih pool bin step 80/100/125.',
     'single_side_y',
-    '{"fixedBinsBelow": 69, "binStep": 100, "strategyType": 0, "tokenXWeight": 0, "tokenYWeight": 100, "singleSide": "y", "preferredBinSteps": [80, 100, 125], "minMcap": 250000, "minVolume24h": 1000000}',
+    '{"fixedBinsBelow": 69, "binStep": 100, "strategyType": 0, "tokenXWeight": 0, "tokenYWeight": 100, "singleSide": "y", "preferredBinSteps": [80, 100, 125], "minMcap": 250000, "minVolume24h": 1000000, "binPadding": 1}',
     'system'
   ),
   (
     'Wave Enjoyer',
     'STRATEGI CADANGAN 1. Single-side SOL untuk tangkap 1-2 wave retracement. Entry dekat latest support, volume 5m minimal $100k, hold 10-20 menit.',
     'single_side_y',
-    '{"fixedBinsBelow": 24, "binStep": 80, "strategyType": 0, "tokenXWeight": 0, "tokenYWeight": 100, "singleSide": "y", "minVolume5mUsd": 100000, "holdMinMinutes": 10, "holdMaxMinutes": 20}',
+    '{"fixedBinsBelow": 24, "binStep": 80, "strategyType": 0, "tokenXWeight": 0, "tokenYWeight": 100, "singleSide": "y", "minVolume5mUsd": 100000, "holdMinMinutes": 10, "holdMaxMinutes": 20, "binPadding": 1}',
     'system'
   ),
   (
     'NPC',
     'STRATEGI CADANGAN 2. Single-side SOL setelah volume spike / ATH. Default 70 bin, volume 5m minimal $50k, hold 30 menit sampai 6 jam.',
     'single_side_y',
-    '{"fixedBinsBelow": 69, "binStep": 80, "strategyType": 0, "tokenXWeight": 0, "tokenYWeight": 100, "singleSide": "y", "minVolume5mUsd": 50000, "holdMinMinutes": 30, "holdMaxMinutes": 360}',
+    '{"fixedBinsBelow": 69, "binStep": 80, "strategyType": 0, "tokenXWeight": 0, "tokenYWeight": 100, "singleSide": "y", "minVolume5mUsd": 50000, "holdMinMinutes": 30, "holdMaxMinutes": 360, "binPadding": 1}',
     'system'
   );
 `);

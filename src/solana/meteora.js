@@ -107,6 +107,23 @@ export async function getPoolInfo(poolAddress) {
     const displayPrice = toDisplayPrice(rawPrice, isSOLPair);
     const priceUnit = isSOLPair ? `${xMeta.symbol}/SOL` : `${yMeta.symbol}/${xMeta.symbol}`;
 
+    // Fetch extra metadata (fees, APR) from Datapi best-effort
+    let extra = {};
+    try {
+      const resp = await fetchWithTimeout(`${METEORA_DLMM_API}/pools/${poolAddress}`, { headers: { Accept: 'application/json' } }, 5000);
+      if (resp.ok) {
+        const p = await resp.json();
+        const fees24h = p.fees?.['24h'] || 0;
+        const apr24h  = (p.fee_tvl_ratio?.['24h'] || 0) * 100 * 365;
+        extra = {
+          feeApr:  parseFloat(apr24h.toFixed(2)),
+          tvl:     p.tvl,
+          fees24h: fees24h,
+          volume24h: p.volume?.['24h'],
+        };
+      }
+    } catch { /* proceed with basic on-chain data */ }
+
     return {
       address:        poolAddress,
       tokenX:         xMint,
@@ -115,13 +132,14 @@ export async function getPoolInfo(poolAddress) {
       tokenYSymbol:   yMeta.symbol,
       tokenXDecimals: xMeta.decimals,
       tokenYDecimals: yMeta.decimals,
-      activePrice:    rawPrice,           // SDK raw (SOL/token for SOL pairs)
+      activePrice:    rawPrice,
       displayPrice:   parseFloat(displayPrice.toFixed(6)),
       priceUnit,
       activeBinId:    activeBin.binId,
       binStep,
-      feeRate:        (binStep / 100).toFixed(2) + '%',  // binStep=1 → 0.01% base fee
+      feeRate:        (binStep / 100).toFixed(2) + '%',
       isSOLPair,
+      ...extra,
     };
   });
 }
@@ -335,8 +353,6 @@ export async function openPosition(poolAddress, tokenXAmount, tokenYAmount, pric
   const poolPubkey = new PublicKey(poolAddress);
   const dlmmPool = await DLMM.create(connection, poolPubkey);
 
-  const activeBin = await dlmmPool.getActiveBin();
-  const rawActivePrice = parseFloat(activeBin.pricePerToken) || 0;
   const binStep = dlmmPool.lbPair.binStep;
 
   if (binStep > 250) {
@@ -350,6 +366,11 @@ export async function openPosition(poolAddress, tokenXAmount, tokenYAmount, pric
   const yDecimals = yMeta.decimals;
   const isSOLPair = yMint === WSOL_MINT;
 
+  // ── JIT: Re-fetch active bin directly before range calc ─────────
+  // This reduces the 'stale price' window between pool creation and deployment.
+  const activeBin = await dlmmPool.getActiveBin();
+  const rawActivePrice = parseFloat(activeBin.pricePerToken) || 0;
+
   // ── Bin range calculation ────────────────────────────────────────
   // binsBelow = priceRangePercent * 100 / binStep
   // Meteora on-chain limit = 70 bins per position account.
@@ -358,10 +379,13 @@ export async function openPosition(poolAddress, tokenXAmount, tokenYAmount, pric
   const fixedBinsBelow = Number.isFinite(deployOptions?.fixedBinsBelow)
     ? Math.min(69, Math.max(2, Math.floor(deployOptions.fixedBinsBelow)))
     : null;
-  const rawBins  = fixedBinsBelow ?? Math.min(69, Math.max(2, Math.floor((priceRangePercent / 100) / (binStep / 10000))));
+  const binPadding = Number.isFinite(deployOptions?.binPadding) ? deployOptions.binPadding : 1; 
+
+  const rawBins  = fixedBinsBelow ?? Math.min(68 - binPadding, Math.max(2, Math.floor((priceRangePercent / 100) / (binStep / 10000))));
+  
   const rangeMin = activeBin.binId - rawBins;
-  const rangeMax = activeBin.binId; // single-side SOL: active bin is the ceiling
-  const totalBins = rawBins + 1;
+  const rangeMax = activeBin.binId + binPadding; 
+  const totalBins = (rangeMax - rangeMin) + 1;
 
   // chunkBinRange — dengan rawBins ≤ 69, selalu menghasilkan tepat 1 chunk
   const binChunks = chunkBinRange(rangeMin, rangeMax);
@@ -955,6 +979,7 @@ export async function getTopPools(limit = 5) {
       liquidityRaw: tvl,
       fees24hRaw:   fees24h,
       volume24hRaw: vol24h,
+      feeApr:       parseFloat(apr24h.toFixed(2)),
     };
   });
 }

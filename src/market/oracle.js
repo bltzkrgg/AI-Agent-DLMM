@@ -97,6 +97,7 @@ async function buildOHLCVFromDexScreener(tokenMint) {
     const best = pairs.sort((a, b) => safeNum(b.liquidity?.usd) - safeNum(a.liquidity?.usd))[0];
 
     const currentPrice   = safeNum(best.priceUsd);
+    const priceChangeM5  = safeNum(best.priceChange?.m5);
     const priceChange1h  = safeNum(best.priceChange?.h1);
     const priceChange6h  = safeNum(best.priceChange?.h6);
     const priceChange24h = safeNum(best.priceChange?.h24);
@@ -106,9 +107,11 @@ async function buildOHLCVFromDexScreener(tokenMint) {
     const high24h = currentPrice / (1 - Math.max(0, priceChange24h) / 100) || currentPrice;
     const low24h  = currentPrice / (1 + Math.max(0, -priceChange24h) / 100) || currentPrice;
 
-    // Trend derived from short-term vs mid-term price changes
-    const trend = (priceChange1h > 1 && priceChange6h > 0) ? 'UPTREND'
-      : (priceChange1h < -1 && priceChange6h < 0) ? 'DOWNTREND'
+    // Adaptive Trend derived from m5 (short) vs h1 (medium) price changes
+    // Bulllish if m5 is pumping (>1.5%) AND h1 is at least stable or uptrend
+    const trend = (priceChangeM5 > 1.5 && priceChange1h > 0) ? 'UPTREND'
+      : (priceChangeM5 < -1.5 && priceChange1h < 0) ? 'DOWNTREND'
+      : (priceChangeM5 > 3) ? 'PUMPING' // Extreme short term momentum
       : 'SIDEWAYS';
 
     return {
@@ -116,7 +119,8 @@ async function buildOHLCVFromDexScreener(tokenMint) {
       timeframe:      'snapshot',
       source:         'dexscreener',
       currentPrice,
-      priceChange:    priceChange1h,
+      priceChangeM5,
+      priceChangeH1:  priceChange1h,
       high24h, low24h,
       range24hPct:    parseFloat(range24hPct.toFixed(2)),
       avgVolume:      parseFloat((volume24h / 24).toFixed(2)),
@@ -124,7 +128,7 @@ async function buildOHLCVFromDexScreener(tokenMint) {
       trend,
       suggestedBinStepMin: range24hPct > 20 ? 20 : range24hPct > 7 ? 10 : 5,
       volatilityCategory:  range24hPct > 20 ? 'HIGH' : range24hPct > 7 ? 'MEDIUM' : 'LOW',
-      ta: null, // TA candles removed per API consolidation
+      ta: null,
       candleCount: 0,
     };
   } catch { return null; }

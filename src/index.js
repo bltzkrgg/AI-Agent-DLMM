@@ -21,7 +21,7 @@ import { getOpenPositions, getPositionStats } from './db/database.js';
 import { getPositionInfo, getPositionInfoLight, getSolPriceUsd } from './solana/meteora.js';
 import { padR, hr, kv, codeBlock, formatPnl, shortAddr, shortStrat } from './utils/table.js';
 import { initMonitor } from './monitor/positionMonitor.js';
-import { autoEvolveIfReady } from './learn/evolve.js';
+import { autoEvolveIfReady, runEvolutionCycle } from './learn/evolve.js';
 import { getTodayResults, formatDailyReport, savePerformanceSnapshot, backupAllData } from './market/strategyPerformance.js';
 import { runStartupModelCheck, formatModelStatus, testModel, testCurrentModel, fetchFreeModels } from './agent/modelCheck.js';
 import { discoverAllModels, formatModelList, listAvailableModels, getModelInfo, initializeModelDiscovery } from './agent/modelDiscovery.js';
@@ -154,6 +154,19 @@ async function getLpPnlMap() {
   } catch { /* best-effort */ }
 
   return pnlMap;
+}
+
+/**
+ * Convenience wrapper for the main loop to call periodically.
+ * Only sends a notification if an evolution actually occurred.
+ */
+export async function autoEvolveIfReady(notifyFn) {
+  const updates = await runEvolutionCycle();
+  if (updates && notifyFn) {
+    const keys = Object.keys(updates).join(', ');
+    await notifyFn(`🧬 *Autonomous Evolution Occurred*\n\nRecalibrated parameters: \`${keys}\`\nCheck history for detailed reasoning.`);
+  }
+  return updates;
 }
 
 // ─── Busy flags — cegah 2 cycle jalan bersamaan ──────────────────
@@ -456,8 +469,8 @@ bot.onText(/\/start/, (msg) => {
   if (msg.from.id !== ALLOWED_ID) return;
   bot.sendMessage(msg.chat.id,
     `🦞 *Meteora DLMM Bot* \`[LIVE]\`\n\n` +
-    `🦅 Hunter — ${getConfig().autoScreeningEnabled ? '🤖 *auto-screening ON*' : '⏸ auto-screening OFF'}\n` +
-    `🩺 Healer — manage posisi tiap ${cfg.managementIntervalMin}min\n` +
+    `🐼 Panda — Adaptive & Elastic (m5 momentum + H1 fallback)\n` +
+    `🩺 Healer — Post-Mortem enabled (auto-learn from losses)\n` +
     `📡 Scanner — alert peluang tiap 15min (multi-TF)\n\n` +
     `*Deploy:*\n` +
     `/autoscreen on|off — aktifkan/matikan auto-deploy\n\n` +
@@ -569,7 +582,7 @@ bot.onText(/\/status/, async (msg) => {
     const activePos = openPos;
 
     // ── Header ───────────────────────────────────────────────────
-    let text = `📊 *Status Bot* 🔴 LIVE\n\n`;
+    let text = `📊 *Status Bot* — 🐼 *ADAPTIVE PANDA*\n\n`;
 
     const pnlSign  = (v) => parseFloat(v) >= 0 ? '+' : '';
     const headerLines = [
@@ -627,6 +640,20 @@ bot.onText(/\/status/, async (msg) => {
   } catch (e) {
     bot.sendMessage(chatId, `❌ ${e.message}`);
   }
+});
+
+bot.onText(/\/evolve/, async (msg) => {
+  if (msg.from.id !== ALLOWED_ID) return;
+  const chatId = msg.chat.id;
+  bot.sendMessage(chatId, '🧬 Menjalankan Evolution Cycle...');
+  try {
+    const updates = await runEvolutionCycle();
+    if (updates) {
+      bot.sendMessage(chatId, `✅ *Evolusi Berhasil*\n\nThresholds diperbarui: \`${Object.keys(updates).join(', ')}\``, { parse_mode: 'Markdown' });
+    } else {
+      bot.sendMessage(chatId, 'ℹ️ Tidak ada update yang diperlukan. Thresholds saat ini masih optimal berdasarkan data trade terakhir.');
+    }
+  } catch (e) { bot.sendMessage(chatId, `❌ ${e.message}`); }
 });
 
 // /pos — snapshot posisi cepat via REST API (tanpa LLM, tanpa on-chain RPC)

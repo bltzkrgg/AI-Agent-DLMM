@@ -21,6 +21,8 @@ import { resolvePnlSnapshot } from '../app/pnl.js';
 import { clearPositionRuntimeState, getPositionRuntimeState, updatePositionRuntimeState } from '../app/positionRuntimeState.js';
 import { resolvePositionSnapshot } from '../app/positionSnapshot.js';
 import { getStrategyProfile } from '../strategies/profiles.js';
+import { getPoolSmartMoney } from '../market/lpAgent.js';
+import { analyzeTradeResult } from '../learn/failureAnalysis.js';
 
 // Verifikasi apakah position account benar-benar tidak ada on-chain.
 // Dipakai sebelum mark MANUAL_CLOSE — cegah false positive dari RPC glitch.
@@ -182,6 +184,8 @@ async function executeTool(name, input) {
             closePositionWithPnl(pos.position_address, {
               pnlUsd: 0, pnlPct: 0, feesUsd: 0, closeReason: 'MANUAL_CLOSE', lifecycleState: 'closed_reconciled',
             });
+            // Trigger post-mortem silently for manual close (optional)
+            analyzeTradeResult({ ...pos, pnl_pct: 0, close_reason: 'MANUAL_CLOSE' }).catch(() => {});
             clearPositionState(pos.position_address);
             return { ...pos, manualClose: true, status: 'closed', closeReason: 'MANUAL_CLOSE' };
           }
@@ -254,6 +258,12 @@ async function executeTool(name, input) {
             trailingActive: tracker.trailingActive,
           });
 
+          // ── Smart Money Tracking (Meridian-style) ────────────
+          let smartMoney = null;
+          if (cfg.useSmartWalletRanges && isLPAgentEnabled()) {
+            smartMoney = await getPoolSmartMoney(pos.pool_address).catch(() => null);
+          }
+
           let marketSignal = null;
           let proactiveCloseRecommended = false;
           let proactiveWarning = null;
@@ -297,30 +307,27 @@ async function executeTool(name, input) {
           return {
             ...pos,
             onChain:      match || null,
-          return {
-            ...pos,
-            onChain:      match || null,
             outOfRangeMins,
             shouldClaimFee:        feeCollSol >= claimThreshold3Sol,
             shouldClaimFeeUrgent:  feeCollSol >= claimThreshold5Sol,
             feeCollectedSol:       feeCollSol,
-            shouldClose: (
+            oorThresholdExceeded: (
               (outOfRangeMins !== null && outOfRangeMins >= thresholds.outOfRangeWaitMinutes) ||
               (outOfRangeBins !== null && cfg.outOfRangeBinsToClose > 0 && outOfRangeBins >= cfg.outOfRangeBinsToClose)
             ),
             outOfRangeBins,
-            takeProfitHit:  pnlPct >= thresholds.takeProfitFeePct,
-            trailingTpHit,
-            peakPnl:        tracker.peakPnl,
-            trailingActive: tracker.trailingActive,
             pnlPct,
             pnlSol: snapshot.pnlSol,
             pnlSource: snapshot.pnlSource,
             lifecycleState: snapshot.lifecycleState,
             isProfit,
+            trailingTpHit,
+            peakPnl: tracker.peakPnl,
+            trailingActive: tracker.trailingActive,
             marketSignal,
             proactiveCloseRecommended,
             proactiveWarning,
+            smartMoney, // { smartLpCount, avgSmartEfficiency, isTrending, consensusRange }
           };
         } catch (e) {
           return { ...pos, error: e.message };
@@ -434,6 +441,17 @@ async function executeTool(name, input) {
         throw error;
       }
       clearPositionState(input.position_address);
+
+      // Trigger Auto-Post-Mortem
+      analyzeTradeResult({
+        pool_address: input.pool_address,
+        position_address: input.position_address,
+        pnl_pct: pnlData.pnlPct || 0,
+        pnl_usd: pnlData.pnlUsd || 0,
+        strategy_used: pnlData.strategyUsed || 'EVIL_PANDA',
+        close_reason: pnlData.closeReason || 'AGENT_CLOSE',
+        range_efficiency_pct: 50, // default
+      }, _healerNotifyFn).catch(e => console.error('Post-Mortem error:', e.message));
 
       // Record ke pool memory — best-effort, jangan gagalkan response jika throw
       try {
@@ -574,6 +592,17 @@ async function executeTool(name, input) {
         throw error;
       }
       clearPositionState(input.position_address);
+
+      // Trigger Auto-Post-Mortem
+      analyzeTradeResult({
+        pool_address: input.pool_address,
+        position_address: input.position_address,
+        pnl_pct: zapPnlData.pnlPct || 0,
+        pnl_usd: zapPnlData.pnlUsd || 0,
+        strategy_used: zapPnlData.strategyUsed || 'EVIL_PANDA',
+        close_reason: 'ZAP_OUT',
+        range_efficiency_pct: 50,
+      }, _healerNotifyFn).catch(e => console.error('Zap Out Post-Mortem error:', e.message));
 
       // Record ke pool memory — best-effort, jangan gagalkan response jika throw
       try {
@@ -782,13 +811,6 @@ export async function runHealerAlpha(notifyFn) {
       };
       const tpHit   = pnlPct >= strategyTakeProfitPct;
 
-      const slTriggered = pnlPct <= -Math.abs(emergencyStopLossPct);
-      const slCheck = {
-        triggered: slTriggered,
-        reason: `PnL ${pnlPct.toFixed(2)}% <= emergency stop loss -${Math.abs(emergencyStopLossPct).toFixed(2)}%`,
-      };
-      const tpHit   = pnlPct >= strategyTakeProfitPct;
-
       const supportBreakForWave = pos.strategy_used === 'Wave Enjoyer' && !match.inRange;
       const npcTooOld = pos.strategy_used === 'NPC'
         && strategyProfile?.exit?.holdMaxMinutes
@@ -856,6 +878,20 @@ export async function runHealerAlpha(notifyFn) {
         if (sig === 'BULLISH' && conf >= 0.65) {
           decision   = 'HOLD';
           holdReason = `Chart masih BULLISH (${(conf * 100).toFixed(0)}% conf) — hold untuk recovery`;
+        }
+      } else if (!match?.inRange) {
+        // Logika Adaptive OOR
+        if (market?.oorDecision === 'EXTEND' && (outOfRangeMins || 0) < 60) {
+          decision   = 'HOLD';
+          holdReason = `Adaptive OOR: Chart BULLISH, nunggu re-entry (${outOfRangeMins}/60m max)`;
+        } else if (market?.oorDecision === 'PANIC_EXIT') {
+          decision   = 'CLOSE';
+          _healerNotifyFn?.(`🚨 *PANIC EXIT* @ ${pos.pool_address.slice(0, 8)}\nOOR + Bearish Breakdown detected (conf ${(market.confidence * 100).toFixed(0)}%).`).catch(() => {});
+        } else if (outOfRangeMins >= thresholds.outOfRangeWaitMinutes) {
+          decision   = 'CLOSE';
+        } else {
+          decision   = 'HOLD';
+          holdReason = `Menunggu timer OOR standard (${outOfRangeMins}/${thresholds.outOfRangeWaitMinutes}m)`;
         }
       }
 
@@ -1139,9 +1175,11 @@ ALUR KERJA:
    - proactiveCloseRecommended = true → WAJIB zap_out (exit bersih ke SOL)
    - proactiveWarning ada tapi tidak recommended → monitor ketat
 
-   OUT OF RANGE:
-   - shouldClose = true DAN marketSignal.signal = BEARISH → zap_out
-   - shouldClose = true DAN marketSignal.signal = BULLISH → HOLD
+   OUT OF RANGE (Adaptive):
+   - marketSignal.oorDecision = 'EXTEND' → HOLD (meskipun sudah lewat 30 menit).
+   - marketSignal.oorDecision = 'PANIC_EXIT' → zap_out SEGERA.
+   - oorThresholdExceeded = true DAN tidak ada signal EXTEND → zap_out.
+   - Masih di bawah timer → HOLD, kecuali signal BEARISH kuat.
 
    STOP LOSS TAMBAHAN (jika pre-flight gagal):
    - pnlPct < -${safety.stopLossPct}% DAN BEARISH → close_position, lalu swap_to_sol

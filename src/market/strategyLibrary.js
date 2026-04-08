@@ -143,6 +143,7 @@ const BUILTIN_STRATEGIES = [
       preferredBinSteps: [80, 100, 125],
       minMcap: 250000,
       minVolume24h: 1000000,
+      binPadding: 1,
     },
     entryConditions: 'Price momentum align with UPTREND on 15m. Pool bin step 80/100/125. Narrative/token harus lolos Coin Filter.',
     exitConditions: 'Momentum reversal or fee velocity drop. Emergency stop-loss tetap aktif.',

@@ -78,6 +78,21 @@ STRATEGI PRIORITAS (default: Single-Side SOL):
 4. Single-Side Token X → HANYA jika uptrend kuat + SM buying + volume sangat tinggi
 5. Curve Concentrated → HANYA jika pool sangat stabil + volatilitas rendah
 
+}
+  }
+}
+
+═══════════════════════════════════════════════════════════
+ADAPTIVE OOR (OUT OF RANGE) RESPONSE:
+═══════════════════════════════════════════════════════════
+Jika currentPosition.inRange === false:
+1. BULLISH OOR (Price > Upper Range):
+   - Jika Confidence > 0.7 & Volume Spike: Usulkan EXTEND/REBALANCE. Jangan buru-buru close.
+   - Jika Confidence < 0.5: Ikuti timer OOR standar (CLOSE).
+2. BEARISH OOR (Price < Lower Range):
+   - Jika Confidence > 0.8: Trigger PANIC EXIT (Action: CLOSE, Urgency: immediate).
+   - Jika Confidence < 0.6: HOLD sebentar (monitor retrace) s/d timer habis.
+
 Respond HANYA dalam JSON:
 {
   "signal": "BULLISH" | "BEARISH" | "NEUTRAL",
@@ -89,7 +104,8 @@ Respond HANYA dalam JSON:
   "thesis": "1 kalimat ringkasan kondisi LP",
   "dlmmReason": "alasan spesifik DLMM: fee APR, range status, IL risk — 2-3 kalimat",
   "keyRisks": ["risk LP 1", "risk LP 2"],
-  "urgency": "immediate" | "next_cycle" | "monitor"
+  "urgency": "immediate" | "next_cycle" | "monitor",
+  "oorDecision": "EXTEND" | "PANIC_EXIT" | "NORMAL_TIMER" | null
 }`;
 
   const userPrompt = `Analisa kondisi LP untuk posisi ini:
@@ -178,6 +194,13 @@ function buildDLMMContext(snapshot, position) {
 - MACD: ${macdLine}
 ${ta.evilPanda?.exit?.triggered ? `⚠️ Evil Panda EXIT signal: ${ta.evilPanda.exit.reason}` : ''}
 ${ta.evilPanda?.entry?.justCrossedAbove ? `🐼 Evil Panda ENTRY signal: ${ta.evilPanda.entry.reason}` : ''}`);
+  }
+
+  if (position && !position.inRange) {
+    parts.push(`⚠️ OOR CONTEXT:
+- Out-of-range selama: ${position.outOfRangeMins ?? 0} menit
+- Bin Distance: ${position.outOfRangeBins ?? 'Unknown'} bins
+- Current PnL: ${position.pnlPct?.toFixed(2)}%`);
   }
 
   return parts.join('\n\n') || 'Data tidak tersedia.';

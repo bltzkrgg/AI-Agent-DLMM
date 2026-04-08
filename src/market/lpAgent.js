@@ -162,26 +162,74 @@ export async function getWalletPositions(ownerAddress) {
 // Menggunakan cache dari discoverPools() — zero extra API calls.
 // Return map: poolAddress → { organicScore, feeTVLRatio, inLPAgentList }
 
-export async function enrichPools(poolAddresses = []) {
-  // Refresh cache jika stale — 1 API call
-  if (isCacheStale()) {
-    await discoverPools({ pageSize: 100 });
-  }
-
-  const map = {};
-  for (const addr of poolAddresses) {
-    const found = _poolCache.pools.find(p => p.address === addr);
-    map[addr] = found
-      ? {
-          inLPAgentList:    true,
-          organicScore:     found.organicScore,
-          feeTVLRatioLP:    found.feeTVLRatio,
-          vol24hLP:         found.vol24h,
-          lpAgentName:      found.name,
-        }
-      : { inLPAgentList: false };
-  }
   return map;
+}
+
+// ─── 4. Smart Wallet Tracking (Meridian-style) ────────────────────
+// Mengambil daftar "Top LPers" (Top 5 berdasarkan fee earned / efficiency)
+// untuk pool tertentu agar Healer bisa meniru range mereka.
+
+export async function getTopLPers(poolAddress) {
+  if (!poolAddress) return [];
+
+  const data = await rateLimitedFetch('/pools/top-lpers', {
+    pool: poolAddress,
+    limit: 5,
+    sortBy: 'efficiency'
+  });
+
+  if (!data) return [];
+
+  const rows = Array.isArray(data) ? data : (data.data || []);
+  return rows.map(r => ({
+    owner:     r.owner,
+    label:     r.label || 'Smart LP',
+    efficiency: parseFloat(r.efficiency || 0),
+    pnlUsd:    parseFloat(r.pnl_usd || 0),
+    lowerTick: r.lower_tick,
+    upperTick: r.upper_tick,
+    inRange:   r.is_in_range
+  }));
+}
+
+// ─── 5. Social & Trending Awareness ──────────────────────────────
+// Integrasi dengan Meridian Social Signal API atau LP Agent Trending.
+
+export async function getSocialTrending(limit = 10) {
+  // LP Agent: Trending pools based on inflow / swap frequency
+  const data = await rateLimitedFetch('/pools/trending', { limit });
+  if (!data) return [];
+  
+  const rows = Array.isArray(data) ? data : (data.data || []);
+  return rows.map(p => ({
+    address: p.address,
+    symbol:  p.symbol,
+    intensity: p.trend_score || p.velocity || 0,
+    reason:   `LP Agent Trending (${p.reason || 'Volume Spike'})`
+  }));
+}
+
+// ─── 6. Master Intelligence Layer ────────────────────────────────
+// Mengintegrasikan banyak sinyal ke dalam satu "Smart Money" digest.
+
+export async function getPoolSmartMoney(poolAddress) {
+  const [topLP, trending] = await Promise.all([
+    getTopLPers(poolAddress),
+    getSocialTrending(20)
+  ]);
+
+  const socialMatch = trending.find(t => t.address === poolAddress);
+
+  return {
+    smartLpCount: topLP.filter(lp => lp.efficiency > 0.8 && lp.inRange).length,
+    avgSmartEfficiency: topLP.length ? topLP.reduce((s, l) => s + l.efficiency, 0) / topLP.length : 0,
+    isTrending: !!socialMatch,
+    socialIntensity: socialMatch?.intensity || 0,
+    consensusRange: topLP.length > 0 ? {
+      lower: Math.min(...topLP.map(lp => lp.lowerTick)),
+      upper: Math.max(...topLP.map(lp => lp.upperTick))
+    } : null
+  };
 }
 
 // ─── Utility: cek apakah LP Agent aktif ──────────────────────────

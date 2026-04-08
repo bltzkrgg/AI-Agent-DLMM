@@ -9,7 +9,9 @@ import { getAllStrategies, parseStrategyParameters } from '../strategies/strateg
 import { getStrategyProfile } from '../strategies/profiles.js';
 import { checkMaxDrawdown, validateStrategyForMarket, requestConfirmation } from '../safety/safetyManager.js';
 import { matchStrategyToMarket, getLibraryStats } from '../market/strategyLibrary.js';
-import { fetchCandles, getMarketSnapshot, getOHLCV, getMultiTFScore } from '../market/oracle.js';
+import { fetchCandles, getMarketSnapshot, getOHLCV } from '../market/oracle.js';
+import { getMultiTFScore } from '../market/multiTF.js';
+import { getSocialSignals } from '../market/socialScanner.js';
 import { getInstinctsContext } from '../market/memory.js';
 import { getStrategyIntelligenceContext } from '../market/strategyPerformance.js';
 import { screenToken, formatScreenResult } from '../market/coinfilter.js';
@@ -19,8 +21,9 @@ import { formatStrategyAlert } from '../utils/alerts.js';
 import { getDarwinWeights, captureSignals } from '../market/signalWeights.js';
 import { isOnCooldown, getPoolMemoryContext, recordDeployment } from '../market/poolMemory.js';
 import { checkSmartWalletsOnPool, formatSmartWalletSignal } from '../market/smartWallets.js';
-import { discoverPools as lpAgentDiscoverPools, enrichPools as lpAgentEnrichPools, isLPAgentEnabled } from '../market/lpAgent.js';
 import { executeControlledOperation } from '../app/executionService.js';
+import { getSocialSignals, getTokenSocialScore } from '../market/socialScanner.js';
+import { runEvolutionCycle } from '../learn/evolve.js';
 
 // ─── State ───────────────────────────────────────────────────────
 
@@ -54,33 +57,26 @@ async function evaluateStrategyReadiness({ strategyName, poolInfo, poolAddress }
       if (!profile.allowedBinSteps?.includes(poolInfo.binStep)) {
         blockers.push(`bin step ${poolInfo.binStep} tidak termasuk EP-eligible (${profile.allowedBinSteps.join('/')})`);
       }
-      // Momentum proxy: Uptrend confirmed + >3% gain in latest snapshot
-      const isBullishMomentum = ohlcv.trend === 'UPTREND' && ohlcv.priceChange > 3;
-      if (!isBullishMomentum) {
-        blockers.push('momentum belum cukup kuat (trend bukan UPTREND atau pump spike <3%)');
-      }
-    }
-
-    if (strategyName === 'Wave Enjoyer') {
-      const support = ohlcv.low24h;
-      const currentPrice = ohlcv.currentPrice;
-      const distPct = support && currentPrice > 0 ? ((currentPrice - support) / support) * 100 : null;
       
-      // Check if price is within range of 24h support
-      if (!(distPct >= 0 && distPct <= (profile.entry.supportDistancePctMax || 5))) {
-        blockers.push(`harga tidak cukup dekat 24h support (${distPct == null ? '-' : distPct.toFixed(1)}%)`);
-      }
-      notes.push(`24h support dist ${distPct == null ? '-' : distPct.toFixed(1)}%`);
-    }
-
-    if (strategyName === 'NPC') {
-      const spikeRatio = ohlcv.avgVolume > 0 ? ohlcv.latestVolume / ohlcv.avgVolume : 1;
-      const nearAth = ohlcv.high24h > 0 && ((ohlcv.high24h - ohlcv.currentPrice) / ohlcv.high24h) * 100 <= 3;
+      // Multi-TF Momentum Logic (5m vs 1h)
+      // UPTREND confirmed if m5 > 1.5% and h1 > 0
+      const isBullishM5 = (ohlcv.priceChangeM5 || 0) > (profile.entry?.momentumTriggerM5 || 1.5);
+      const isBullishH1 = (ohlcv.priceChangeH1 || 0) > 0;
       
-      if (spikeRatio < 1.5 && !nearAth) {
-        blockers.push('belum ada volume spike (min 1.5x avg) atau ATH event (3% dist)');
+      // ELASTIC MODE: If M5 is cold but H1 is breaking out (>5%) AND Fee APR is high (>1000%)
+      const isElasticH1 = (ohlcv.priceChangeH1 || 0) > 5.0 && (poolInfo.feeApr || 0) > 1000;
+      
+      if (!isBullishM5 && !isElasticH1) {
+        blockers.push(`momentum 5m sepi (${(ohlcv.priceChangeM5 || 0).toFixed(2)}%) dan tidak ada H1 breakout untuk Elastic Mode`);
+      } else if (!isBullishM5 && isElasticH1) {
+        notes.push('⚠️ ELASTIC MODE: M5 sepi, tapi H1 breakout (>5%) + High Fee detected.');
       }
-      notes.push(`spike ratio ${spikeRatio.toFixed(1)}x${nearAth ? ' | near ATH' : ''}`);
+      
+      if (ohlcv.trend === 'DOWNTREND' && !isBullishM5 && !isElasticH1) {
+        blockers.push('trend global DOWNTREND dan tidak ada momentum/elastic signal');
+      }
+
+      notes.push(`m5: ${(ohlcv.priceChangeM5 || 0).toFixed(2)}% | h1: ${(ohlcv.priceChangeH1 || 0).toFixed(2)}% | trend: ${ohlcv.trend}`);
     }
   }
 
@@ -133,6 +129,13 @@ function calculateDarwinScore(pool, weightsOverride) {
   // multiTFScore — bonus jika tersedia (di-set saat enrichment)
   if (pool.multiTFScore > 0) {
     score += pool.multiTFScore * (w.multiTFScore || 1.5);
+  }
+
+  // Social Signal bonus
+  if (pool.socialSignal) {
+    const socialWeight = cfg.socialSignalWeight || 1.5;
+    const intensityBonus = (pool.socialSignal.intensity || 5) / 10;
+    score *= (socialWeight + intensityBonus);
   }
 
   return parseFloat(score.toFixed(4));
@@ -204,6 +207,16 @@ const HUNTER_TOOLS = [
       },
       required: ['pool_address', 'reasoning'],
     },
+  },
+  {
+    name: 'get_social_signals',
+    description: 'Ambil daftar token trending dari Discord/KOL/Social channels (Meridian-style). Gunakan untuk menemukan early gems sebelum masuk volume screener.',
+    input_schema: { type: 'object', properties: {}, required: [] },
+  },
+  {
+    name: 'run_evolution',
+    description: 'Trigger autonomous evolution cycle untuk kalibrasi ulang threshold config berdasarkan performa trade terakhir.',
+    input_schema: { type: 'object', properties: {}, required: [] },
   },
 ];
 
@@ -285,12 +298,14 @@ async function executeTool(name, input) {
         let smartWalletSignal = null;
         let poolMemCtx = '';
         try {
-          const [mtf, sw] = await Promise.allSettled([
+          const [mtf, sw, ss] = await Promise.allSettled([
             getMultiTFScore(p.tokenX, p.address),
             checkSmartWalletsOnPool(p.address),
+            getTokenSocialScore(p.tokenX || p.tokenY)
           ]);
           if (mtf.status === 'fulfilled') multiTFScore = mtf.value.score || 0;
           if (sw.status === 'fulfilled' && sw.value.found) smartWalletSignal = sw.value;
+          if (ss.status === 'fulfilled' && ss.value) pool.socialSignal = ss.value;
           poolMemCtx = getPoolMemoryContext(p.address);
         } catch { /* best-effort */ }
 
@@ -370,36 +385,18 @@ async function executeTool(name, input) {
         } : null,
         priceContext: price ? {
           trend:              price.trend,
+          momentumM5:         price.priceChangeM5,
           volatility:         `${price.volatility24h}% (${price.volatilityCategory})`,
           binStepFit:         info.binStep >= price.suggestedBinStepMin ? 'OK' : `⚠️ Butuh bin step ≥${price.suggestedBinStepMin}`,
           buyPressure:        `${price.buyPressurePct}% (${price.sentiment})`,
         } : null,
-        taSignals: dlmmSnapshot?.ta ? {
-          rsi14:          dlmmSnapshot.ta.rsi14,
-          rsi2:           dlmmSnapshot.ta.rsi2,
-          supertrend:     dlmmSnapshot.ta.supertrend,
-          evilPandaEntry: dlmmSnapshot.ta.evilPanda?.entry ?? null,
-          evilPandaExit:  dlmmSnapshot.ta.evilPanda?.exit  ?? null,
-          bb:             dlmmSnapshot.ta.bb,
-          macd:           dlmmSnapshot.ta.macd
-            ? { histogram: dlmmSnapshot.ta.macd.histogram, firstGreenAfterRed: dlmmSnapshot.ta.macd.firstGreenAfterRed }
-            : null,
-          dataSource:     dlmmSnapshot.dataSource,
-        } : null,
         strategyRecommendation: strategyMatch ? {
-          recommended:     strategyMatch.recommended?.name,
+          recommended:     'Evil Panda (Adaptive)',
           confidence:      strategyMatch.recommended?.matchScore,
-          entryConditions: strategyMatch.recommended?.entryConditions,
-          exitConditions:  strategyMatch.recommended?.exitConditions,
-          alternatives:    strategyMatch.alternatives?.map(s => s.name),
+          entryConditions: 'm5 Momentum + h1 Trend Alignment',
+          exitConditions:  'Evil Panda Confluence',
         } : null,
-        deployToken: {
-          symbol: 'SOL',
-          mint: 'So11111111111111111111111111111111111111112',
-          isSOL: true,
-          note: 'Bot hanya menyimpan SOL — semua deploy adalah Single-Side SOL (tokenX=0, tokenY=SOL)',
-        },
-        validStrategyNames: ['Single-Side SOL', 'Evil Panda', 'Wave Enjoyer', 'NPC', 'Fee Sniper', 'Spot Balanced', 'Bid-Ask Wide', 'Single-Side Token X', 'Curve Concentrated'],
+        validStrategyNames: ['Evil Panda'],
       }, null, 2);
     }
 
@@ -421,17 +418,8 @@ async function executeTool(name, input) {
         eligible:        result.eligible,
         highFlags:       result.highFlags.map(f => f.msg),
         mediumFlags:     result.mediumFlags.map(f => f.msg),
-        rugcheck:        result.rugCheckData?.available ? {
-          dangerRisks: result.rugCheckData.dangerRisks,
-          warnRisks:   result.rugCheckData.warnRisks,
-          scoreNorm:   result.rugCheckData.scoreNorm,
-          rugged:      result.rugCheckData.rugged,
-        } : null,
-        mcap:            result.mcap ?? null,
-        drawdownPct:     result.drawdownPct ?? null,
-        jupiterStrict:   result.jupiterData?.isStrict   || false,
-        jupiterVerified: result.jupiterData?.isVerified || false,
-        jupiterPrice:    result.jupiterData?.priceUsd   || null,
+        priceImpact:     result.priceImpact,
+        sources:         result.sources,
         action: result.verdict === 'AVOID'
           ? 'SKIP — cari kandidat lain'
           : 'LANJUT DEPLOY — jumlah token dihitung otomatis',
@@ -554,11 +542,7 @@ async function executeTool(name, input) {
       }
 
       // Strategy validation sebelum lock
-      const allStrategies = getAllStrategies();
-      const ALLOWED_STRATEGIES = ['Evil Panda', 'Wave Enjoyer', 'NPC'];
-      const strategy = allStrategies.find(
-        s => s.name === input.strategy_name && ALLOWED_STRATEGIES.includes(s.name)
-      );
+      const strategy = getAllStrategies().find(s => s.name === 'Evil Panda');
 
       if (!strategy) {
         return JSON.stringify({
@@ -738,6 +722,24 @@ async function executeTool(name, input) {
       return JSON.stringify({ ...result, strategyUsed: strategy?.name, reasoning: input.reasoning }, null, 2);
     }
 
+    case 'get_social_signals': {
+      const signals = await getSocialSignals();
+      return JSON.stringify({
+        source: 'Meridian Social Hivemind',
+        signals: signals.slice(0, 15),
+        note: 'Gunakan mint address ini untuk memanggil screen_token jika belum ada di screen_pools.'
+      }, null, 2);
+    }
+
+    case 'run_evolution': {
+      const updates = await runEvolutionCycle();
+      return JSON.stringify({
+        success: !!updates,
+        appliedUpdates: updates || 'No updates needed at this cycle (performance stable).',
+        summary: updates ? 'Thresholds adjusted based on recent trade performance.' : 'Current thresholds are optimal.'
+      }, null, 2);
+    }
+
     default:
       return `Tool tidak dikenali: ${name}`;
   }
@@ -779,13 +781,16 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null, opt
   // ── PRE-COMPUTE: parallelkan pool screening sebelum LLM loop ─
   // Mengurangi LLM round trips dari 40+ menjadi ~6-8.
   // getTopPools + pool memory + OKX dijalankan sekaligus, bukan satu per satu oleh LLM.
-  if (notifyFn) await notifyFn(`🔍 *Screening kandidat pool...*`);
+  if (notifyFn) await notifyFn(`🔍 *Screening kandidat pool...*\n📡 _Social Awareness: Active (Meridian Feed)_`);
 
   let preComputedContext = '';
   try {
     const thresholds = getThresholds();
     const weights    = getDarwinWeights(); // adaptive weights dari data nyata
-    const rawPools   = await getTopPools(25);
+    const [rawPools, socialSignals] = await Promise.all([
+      getTopPools(25),
+      getSocialSignals().catch(() => [])
+    ]);
 
     const filtered = rawPools
       .filter(p => {
@@ -801,7 +806,12 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null, opt
           !isOnCooldown(p.address) // skip pool sedang cooldown
         );
       })
-      .map(p => ({ ...p, darwinScore: calculateDarwinScore(p, weights) }))
+      .map(p => {
+        // Map social signal if available
+        const socialMatch = socialSignals.find(s => s.mint === p.tokenX);
+        if (socialMatch) p.socialSignal = socialMatch;
+        return { ...p, darwinScore: calculateDarwinScore(p, weights) };
+      })
       .sort((a, b) => b.darwinScore - a.darwinScore)
       .slice(0, 7);
 
@@ -838,6 +848,7 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null, opt
         darwinScore:  p.darwinScore,
         tvl:          tvl.toFixed(0),
         fees24h:      (p.fees24hRaw || 0).toFixed(2),
+        socialHype:   p.socialSignal ? `🔥 Discord Impact: ${p.socialSignal.intensity}/10` : 'Neutral',
         feeToTvlPct:  tvl > 0 ? ((p.fees24hRaw || 0) / tvl * 100).toFixed(2) + '%' : '0%',
         binStep:      p.binStep,
         tokenXMint:   p.tokenX,
@@ -891,86 +902,46 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null, opt
   const strategyIntel = getStrategyIntelligenceContext();
   const libraryStats = getLibraryStats();
 
-  const systemPrompt = `Kamu adalah Hunter Alpha — autonomous DLMM LP agent untuk Meteora di Solana.
+  const systemPrompt = `Kamu adalah Adaptive Evil Panda Specialist — autonomous DLMM agent untuk Meteora.
+Bot ini tidak lagi menggunakan strategi kaku, melainkan menggunakan "Instinct" dari trade sebelumnya dan "5m Momentum Velocity".
 
 ╔══════════════════════════════════════════════════════════════╗
 ║  MODE AUTONOMOUS — TIDAK ADA INTERAKSI DENGAN USER          ║
-║  Kamu HARUS memutuskan dan mengeksekusi SENDIRI.             ║
-║  JANGAN tanya jumlah token. JANGAN minta konfirmasi.         ║
-║  JANGAN tunggu input siapapun. LANGSUNG pakai tool.          ║
-║  Jumlah token sudah dihitung OTOMATIS oleh sistem.           ║
+║  Kamu ADAPTIF. Pelajari kegagalan masa lalu agar tidak rugi.║
+║  JANGAN tanya konfirmasi. LANGSUNG pakai tool.              ║
+║  Gunakan HANYA strategi "Evil Panda".                       ║
 ╚══════════════════════════════════════════════════════════════╝
 
-MINDSET: Kamu LP specialist. Profit = FEE, bukan price appreciation.
+MINDSET: Kamu mengejar FEE di pool yang sedang "pumping" volume-nya di timeframe 5 menit.
 
-ALUR KERJA — JALANKAN CEPAT, MAKSIMAL 3 KANDIDAT:
-Data pool memory dan OKX sudah tersedia di pesan user — JANGAN fetch ulang.
-1. Baca kandidat dari data pre-screening yang sudah dikirim
-2. get_wallet_status → cek balance & slot (jika penuh/kurang → STOP total)
-3. Pilih TOP 2 kandidat (darwinScore tertinggi, bukan HINDARI/SKIP):
-   a. get_pool_detail → baca feeApr, feeVelocity, healthScore, binStep fit
-      • eligible = false atau feeApr < 30% → SKIP
-      • healthScore < 40 → SKIP
-   b. screen_token → Coin Filter WAJIB
-      • action = 'SKIP' → kandidat berikutnya
-      • action = 'LANJUT DEPLOY' → LANGSUNG deploy_position SEKARANG
-4. Selesai — laporkan hasil singkat ke user
+ALUR KERJA — ADAPTIVE EVIL PANDA SPECIALIST:
+1. Baca kandidat dari data pre-screening (darwinScore).
+2. get_wallet_status → cek balance & slot.
+3. Untuk TOP 3 kandidat:
+   a. get_pool_detail → Wajib cek: momentumM5 (harus green/spike) dan feeApr (>100% preferred).
+   b. get_pool_memory → Jika pool ini punya histori "HINDARI", buang langsung.
+   c. screen_token → SECURITY WALLS (Auto Check):
+      • Mint/Freeze Authority aktif? → REJECT (AVOID)
+      • Price Impact > 0.5%? → REJECT (AVOID)
+   d. MEMORY CHECK (Instincts):
+      • Baca lessonsCtx dan instincts. Jika pattern pool ini mirip kegagalan sebelumnya (pm-lessons), JANGAN masuk.
+4. deploy_position → Gunakan "Evil Panda".
 
-⚠️ ATURAN WAJIB — deploy_position returns alreadyDeployed:true:
-   → DIAM-DIAM lanjut ke kandidat berikutnya. JANGAN tulis apapun tentang ini di laporan.
-   → JANGAN sebut "skip", "sudah ada", "posisi aktif", atau sejenisnya.
-   → Posisi sudah dikelola Healer Alpha — tidak perlu dilaporkan.
+⚠️ ATURAN STRATEGI "EVIL PANDA":
+- Target: Pool dengan Bin Step 80-200.
+- Trigger: Momentum 5m > 1.5% (UPTREND) atau > 3% (PUMPING).
+- Focus: Fee APR tinggi (>2000%) lebih diutamakan jika momentum stabil.
 
-STRATEGI — URUTAN PRIORITAS TETAP, JANGAN GANTI-GANTI:
-  Coba dalam urutan ini. Begitu satu cocok → DEPLOY, jangan coba yang lain.
-  Jika tidak ada yang cocok → SKIP pool (jangan deploy sama sekali).
+⚠️ POST-MORTEM LEARNING:
+Bot ini secara otomatis melakukan analisa "Kenapa Loss" setiap kali trade selesai.
+Gunakan data di bawah (${lessonsCtx}) sebagai "Suara Hati" kamu saat memilih pool.
 
-  🐼 EVIL PANDA — STRATEGI UTAMA (coba pertama selalu)
-  • Bin step 80/100/125 | Volume24h >$1M | MC >$250k
-  • GATE WAJIB: taSignals.supertrend.justCrossedAbove === true
-  • Trend UPTREND | OKX SM buying (bonus)
-  • Range: ATR-dynamic (~12-80%)
-
-  🌊 WAVE ENJOYER — CADANGAN 1 (jika Evil Panda tidak fit)
-  • Price dalam 8% di atas support 24h (priceContext.support)
-  • RSI14 antara 35-62 | Volume ≥ 70% rata-rata | Trend SIDEWAYS/mild down
-
-  🎯 NPC — CADANGAN 2 (jika Wave Enjoyer tidak fit)
-  • 24h price range >15% | ATR < 12% dari range24h
-  • Volume elevated ≥ avg | Supertrend masih bullish
-
-  ⛔ JIKA TIDAK ADA YANG COCOK → SKIP POOL. Jangan coba nama strategi lain.
-
-  ⚠️ NAMA STRATEGI — WAJIB PERSIS: "Evil Panda" | "Wave Enjoyer" | "NPC"
-  Nama lain (Fee Sniper, Single-Side SOL, dll) akan DIBLOKIR sistem.
-  Satu pool = satu percobaan deploy. Jangan retry dengan nama berbeda.
-
-LP AGENT SIGNAL (di setiap kandidat pool):
-  lpAgent.inLPAgentList = true → pool diakui LP Agent sebagai top performer
-  lpAgent.organicScore → organic score menurut LP Agent (0-100, >70 = bagus)
-  lpAgent.feeTVLRatioLP → fee/TVL ratio versi LP Agent (cross-check vs DexScreener)
-  Pool dari LP Agent dengan inLPAgentList=true = sinyal SMART LP interest — bobot setara smartWallet.
-
-DARWINIAN WEIGHTS:
-  TVL (2.5x) + fee/TVL (2.3x) = sinyal kuat. Volume (0.36x) + holders (0.3x) = abaikan.
-
-FILTER TOKEN (dari Coin Filter — DexScreener, RugCheck, Helius, OKX, GeckoTerminal):
-  AVOID → SKIP pool. CAUTION/PASS → DEPLOY LANGSUNG.
-  RugCheck: warn+danger risks → REJECT. Mcap + ATH drawdown juga di-check.
-
-NAMA STRATEGI — WAJIB PERSIS SALAH SATU DARI 3 INI:
-  "Evil Panda" (utama) | "Wave Enjoyer" (cadangan 1) | "NPC" (cadangan 2)
-  ⚠️ Nama lain DIBLOKIR. Satu pool = satu deploy attempt. Jangan retry nama berbeda.
-
-STRATEGY LIBRARY (${libraryStats.totalStrategies} strategi):
-${libraryStats.topStrategies.map(s => `  ${s.name} (${s.type}, ${(s.confidence * 100).toFixed(0)}% conf)`).join('\n')}
-
-Mode: 🔴 LIVE | Deploy: ${cfg.deployAmountSol} SOL/posisi${_hunterTargetCount != null ? ` | Target: ${_hunterTargetCount} posisi baru` : ''}
+Mode: 🔴 LIVE ALPHA | Strategi: EVIL PANDA ONLY
 ${lessonsCtx}
 ${instincts}
 ${strategyIntel}
 
-Gunakan Bahasa Indonesia untuk laporan akhir. Reasoning singkat, action langsung.`;
+Gunakan Bahasa Indonesia. Reasoning tajam, eksekusi cepat.`;
 
   const targetNote = _hunterTargetCount != null
     ? ` Tujuan: buka ${_hunterTargetCount} posisi baru.`

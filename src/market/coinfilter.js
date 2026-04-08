@@ -201,6 +201,100 @@ function step9_mcapFilter(dexFdv, thresholds = {}) {
 
 // ─── Main filter function ────────────────────────────────────────
 
+async function getOnChainAuthority(tokenMint) {
+  const HELIUS_KEY = process.env.HELIUS_API_KEY;
+  if (!HELIUS_KEY) {
+    console.warn('⚠️ Helius API Key missing. Skipping authority checks (failing-safe).');
+    return { mutable: true, mintAuthority: true, freezeAuthority: true }; 
+  }
+
+  try {
+    const res = await fetchWithTimeout(
+      `https://mainnet.helius-rpc.com/?api-key=${HELIUS_KEY}`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          jsonrpc: '2.0',
+          id: 'auth-check',
+          method: 'getAccountInfo',
+          params: [tokenMint, { encoding: 'jsonParsed' }]
+        })
+      },
+      8000
+    );
+    
+    if (!res.ok) {
+      console.error(`❌ Helius RPC Error: ${res.status} ${res.statusText}`);
+      return { mutable: true, mintAuthority: true, freezeAuthority: true };
+    }
+    
+    const data = await res.json();
+    const parsed = data.result?.value?.data?.parsed?.info;
+    
+    if (!parsed) {
+      console.warn(`⚠️ Helius: Account info not found for ${tokenMint.slice(0, 8)}. Likely burned or wrong mint.`);
+      return { mutable: true, mintAuthority: true, freezeAuthority: true };
+    }
+
+    return {
+      mintAuthority:   !!parsed.mintAuthority,
+      freezeAuthority: !!parsed.freezeAuthority,
+      isInitialized:   !!parsed.isInitialized,
+    };
+  } catch (e) { 
+    console.error(`❌ getOnChainAuthority failed for ${tokenMint.slice(0, 8)}:`, e.message);
+    return { mutable: true, mintAuthority: true, freezeAuthority: true }; 
+  }
+}
+
+async function getSlippageSimulation(tokenMint, amountSol) {
+  try {
+    const WSOL = 'So11111111111111111111111111111111111111112';
+    const amountLamports = Math.floor(amountSol * 1_000_000_000);
+    const res = await fetchWithTimeout(
+      `https://quote-api.jup.ag/v6/quote?inputMint=${WSOL}&outputMint=${tokenMint}&amount=${amountLamports}&slippageBps=50`,
+      {}, 8000
+    );
+    if (!res.ok) {
+      console.error(`❌ Jupiter Quote Error: ${res.status}`);
+      return null;
+    }
+    const data = await res.json();
+    return {
+      priceImpactPct: parseFloat(data.priceImpactPct || 0),
+      outAmount:      data.outAmount,
+    };
+  } catch (e) { 
+    console.error(`❌ getSlippageSimulation failed for ${tokenMint.slice(0, 8)}:`, e.message);
+    return null; 
+  }
+}
+
+// ─── Step functions ──────────────────────────────────────────────
+
+function step10_authorityCheck(auth) {
+  const rejects = [];
+  if (auth.mintAuthority)  rejects.push({ rule: 'MINT_AUTH_ACTIVE', msg: 'Mint authority masih aktif — dev bisa cetak token baru' });
+  if (auth.freezeAuthority) rejects.push({ rule: 'FREEZE_AUTH_ACTIVE', msg: 'Freeze authority masih aktif — wallet bisa di-lock' });
+  return rejects;
+}
+
+function step11_slippageCheck(sim, maxImpact = 0.5) {
+  const rejects = [];
+  const warnings = [];
+  if (!sim) {
+    warnings.push({ rule: 'SIM_FAILED', msg: 'Gagal simulasi slippage — proceed with caution' });
+    return { rejects, warnings };
+  }
+  if (sim.priceImpactPct > maxImpact) {
+    rejects.push({ rule: 'HIGH_PRICE_IMPACT', msg: `Price impact ${sim.priceImpactPct.toFixed(2)}% > ${maxImpact}% — likuiditas terlalu tipis` });
+  }
+  return { rejects, warnings };
+}
+
+// ─── Main filter function ────────────────────────────────────────
+
 export async function screenToken(tokenMint, tokenName = '', tokenSymbol = '', opts = {}) {
   const cfg = getConfig();
   const thresholds = {
@@ -208,33 +302,43 @@ export async function screenToken(tokenMint, tokenName = '', tokenSymbol = '', o
     maxMcap:      cfg.maxMcap      ?? 0,
     minVolume24h: cfg.minVolume24h ?? 0,
     minOrganic:   cfg.minOrganic   ?? 55,
+    maxImpact:    cfg.maxPriceImpactPct ?? 0.5,
   };
 
-  const [dexResult, jupResult] = await Promise.allSettled([
+  const deployAmount = cfg.deployAmountSol || 0.1;
+
+  const [dexResult, jupResult, authResult, simResult] = await Promise.allSettled([
     getDexScreenerInfo(tokenMint),
     getJupiterData(tokenMint),
+    getOnChainAuthority(tokenMint),
+    getSlippageSimulation(tokenMint, deployAmount),
   ]);
 
-  const dex = dexResult.status === 'fulfilled' ? dexResult.value : null;
-  const jup = jupResult.status === 'fulfilled' ? jupResult.value : null;
+  const dex  = dexResult.status === 'fulfilled'  ? dexResult.value  : null;
+  const jup  = jupResult.status === 'fulfilled'  ? jupResult.value  : null;
+  const auth = authResult.status === 'fulfilled' ? authResult.value : { mintAuthority: true, freezeAuthority: true };
+  const sim  = simResult.status === 'fulfilled'  ? simResult.value  : null;
 
   const name   = tokenName   || dex?.name   || jup?.name   || '';
   const symbol = tokenSymbol || dex?.symbol || jup?.symbol || '';
 
-  const s1 = step1_basicValidation(dex, jup);
-  const s2 = step2_narrativeFilter(name, symbol);
-  const s3 = step3_priceHealth(dex, thresholds);
-  const s5 = step5_txnAnalysis(dex);
-  const s6 = step6_tokenSafety(jup);
-  const s7 = step7_organicScore(dex, jup, thresholds);
-  const s9 = step9_mcapFilter(dex?.fdv, thresholds);
+  const s1  = step1_basicValidation(dex, jup);
+  const s2  = step2_narrativeFilter(name, symbol);
+  const s3  = step3_priceHealth(dex, thresholds);
+  const s5  = step5_txnAnalysis(dex);
+  const s6  = step6_tokenSafety(jup);
+  const s7  = step7_organicScore(dex, jup, thresholds);
+  const s9  = step9_mcapFilter(dex?.fdv, thresholds);
+  const s10 = step10_authorityCheck(auth);
+  const s11 = step11_slippageCheck(sim, thresholds.maxImpact);
 
   const allRejects = [
     ...s1.rejects, ...s2, ...s3.rejects,
     ...s5.rejects, ...s6.rejects, ...s7.rejects, ...s9.rejects,
+    ...s10, ...s11.rejects,
   ];
   const allWarnings = [
-    ...s1.warnings, ...s3.warnings, ...s6.warnings,
+    ...s1.warnings, ...s3.warnings, ...s6.warnings, ...s11.warnings,
   ];
 
   let verdict = allRejects.length > 0 ? 'AVOID' : (allWarnings.length > 0 ? 'CAUTION' : 'PASS');
@@ -243,7 +347,8 @@ export async function screenToken(tokenMint, tokenName = '', tokenSymbol = '', o
     tokenMint, name, symbol, verdict, eligible: allRejects.length === 0,
     highFlags: allRejects, mediumFlags: allWarnings,
     organicScore: s7.score, mcap: s9.mcap,
-    sources: { dexscreener: !!dex, jupiter: !!(jup?.found) },
+    priceImpact: sim?.priceImpactPct,
+    sources: { dexscreener: !!dex, jupiter: !!(jup?.found), helius: (authResult.status==='fulfilled') },
   };
 }
 

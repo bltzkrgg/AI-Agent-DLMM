@@ -90,6 +90,17 @@ const DEFAULTS = {
     'Wave Enjoyer': {},
     'NPC': {},
   },
+
+  // Meridian Integration & Evolution
+  autonomousEvolutionEnabled: true,
+  evolveIntervalTrades: 5,        // Recalibrate after every N closed trades
+  useSocialSignals: true,          // Enable Meridian Discord/KOL signals
+  socialSignalWeight: 1.5,        // Multiplier for Darwinian Score if social signal exists
+  minSmartMoneyOverlap:      1,        // Minimum overlapping "SmartWallets" to boost confidence
+  useSmartWalletRanges:      true,     // Mirror Top LPer ranges in Healer
+
+  // Adaptive Post-Mortem
+  autoPostMortemEnabled:     true,     // Enable LLM-based analysis of closed trades
 };
 
 const KNOWN_CONFIG_KEYS = new Set(Object.keys(DEFAULTS));
@@ -130,6 +141,9 @@ const CONFIG_BOUNDS = {
   minVolume24h:               { min: 0,     max: 1000000000 },
   athFilterPct:               { min: -99,   max: -10 },
   athLookbackDays:            { min: 7,     max: 365 },
+  evolveIntervalTrades:      { min: 1,     max: 100 },
+  socialSignalWeight:        { min: 1.0,   max: 5.0 },
+  minSmartMoneyOverlap:      { min: 0,     max: 10 },
 };
 
 function safeParseJSON(raw) {
