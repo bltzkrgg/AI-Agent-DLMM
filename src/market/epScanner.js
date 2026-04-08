@@ -8,8 +8,8 @@
  */
 
 import { getTopPools } from '../solana/meteora.js';
-import { fetchCandles, getDLMMPoolData, getSentiment } from './oracle.js';
-import { detectEvilPandaSignals, calculateATR, calcDynamicRangePct } from './taIndicators.js';
+import { getTopPools } from '../solana/meteora.js';
+import { getOHLCV, getDLMMPoolData, getSentiment } from './oracle.js';
 import { kv, hr, codeBlock, shortAddr } from '../utils/table.js';
 
 const _alertedPools   = new Map();   // poolAddress → last alert timestamp
@@ -39,39 +39,19 @@ export async function runEvilPandaScanner(notifyFn) {
       const lastAlert = _alertedPools.get(pool.address);
       if (lastAlert && (now - lastAlert) < COOLDOWN_MS) continue;
 
-      // Fetch 15m candles
-      const candles = await fetchCandles(tokenMint, '15m', 100, pool.address);
-      if (!candles || candles.length < 35) continue;
+      // Fetch consolidated OHLCV snapshot (no candles)
+      const ohlcv = await getOHLCV(tokenMint, pool.address);
+      if (!ohlcv) continue;
 
-      // Check Evil Panda entry signal (justCrossedAbove)
-      const signals = detectEvilPandaSignals(candles);
-      if (!signals?.entry?.triggered) continue;
+      // Momentum-based Evil Panda Signal (Proxy for Supertrend break)
+      const isBullishMomentum = ohlcv.trend === 'UPTREND' && ohlcv.priceChange > 3;
+      if (!isBullishMomentum) continue;
 
       // Mark as alerted
       _alertedPools.set(pool.address, now);
 
-      // Fetch supporting data in parallel
-      const [poolDataRes, sentimentRes] = await Promise.allSettled([
-        getDLMMPoolData(pool.address),
-        getSentiment(tokenMint),
-      ]);
-
-      const pd  = poolDataRes.status  === 'fulfilled' ? poolDataRes.value  : null;
-      const sen = sentimentRes.status === 'fulfilled' ? sentimentRes.value : null;
-      const atr = calculateATR(candles, 14);
-
-      const closes       = candles.map(c => c.c);
-      const currentPrice = closes[closes.length - 1];
-      const ep           = signals;
-
-      // Estimate dynamic range for EP
-      const rangePct = calcDynamicRangePct({
-        atr14Pct:    atr?.atrPct      ?? 0,
-        range24hPct: 0, // no 24h range here, use ATR only
-        trend:       sen?.sentiment === 'BULLISH' ? 'UPTREND' : 'SIDEWAYS',
-        bbBandwidth: ep.raw?.bb?.bandwidth ?? 0,
-        strategyType: 'evil_panda',
-      });
+      // Fetch supporting pool data
+      const pd = await getDLMMPoolData(pool.address).catch(() => null);
 
       // ── Build alert ──────────────────────────────────────────────
       const tokenName = pool.name?.replace('/SOL', '').trim() || shortAddr(tokenMint, 4, 4);
@@ -79,19 +59,14 @@ export async function runEvilPandaScanner(notifyFn) {
       const chartLines = [
         kv('Token',    tokenName, 10),
         kv('Pool',     shortAddr(pool.address), 10),
-        kv('Harga',    currentPrice.toFixed(8), 10),
+        kv('Harga',    ohlcv.currentPrice?.toFixed(8) || '-', 10),
         hr(44),
-        '📈 CHART (15m)',
-        kv('Supertrend', 'CROSS ABOVE ✓ <- ENTRY', 12),
-        kv('RSI14',      ep.raw?.supertrend ? (ep.raw?.rsi2?.toFixed(1) ?? '-') + ' (RSI2)' : '-', 12),
-        kv('BB %B',      ep.raw?.bb ? ep.raw.bb.percentB.toFixed(0) + '%  W=' + ep.raw.bb.bandwidth.toFixed(1) : '-', 12),
-        kv('MACD',       ep.raw?.macd?.histogram > 0 ? '+' + ep.raw.macd.histogram.toFixed(8) : (ep.raw?.macd?.histogram?.toFixed(8) ?? '-'), 12),
+        '📈 MOMENTUM (Consolidated)',
+        kv('Trend',      ohlcv.trend || '-', 12),
+        kv('Gain 1h',    (ohlcv.priceChange?.toFixed(2) || '0') + '%', 12),
+        kv('Volatility', ohlcv.volatilityCategory || '-', 12),
         hr(44),
-        '🌊 MARKET',
-        kv('Sentiment', sen ? sen.sentiment + ' (' + sen.buyPressurePct + '% buy)' : '-', 12),
-        kv('Trend',     sen?.sentiment || '-', 12),
-        hr(44),
-        '💧 POOL',
+        '💧 POOL (Meteora)',
         kv('TVL',       pd ? (pd.tvl >= 1e6 ? '$' + (pd.tvl/1e6).toFixed(2)+'M' : '$' + (pd.tvl/1e3).toFixed(1)+'K') : (pool.tvlStr || '-'), 12),
         kv('Fee APR',   pd ? pd.feeApr + '%  ' + pd.feeAprCategory : '-', 12),
         kv('BinStep',   String(binStep || '-'), 12),
@@ -99,20 +74,25 @@ export async function runEvilPandaScanner(notifyFn) {
         hr(44),
         '⚡ REKOMENDASI',
         kv('Strategy',  'Evil Panda', 12),
-        kv('Range Est', '~' + rangePct.toFixed(1) + '% (ATR-based)', 12),
-        kv('ATR 15m',   atr ? atr.atrPct.toFixed(3) + '%  ' + atr.atrCategory : '-', 12),
+        kv('Range Est', '~20-40% (Momentum-based)', 12),
       ];
 
       const alertMsg =
-        `🐼 *EVIL PANDA ALERT*\n\n` +
+        `🐼 *EVIL PANDA MOMENTUM ALERT*\n\n` +
         codeBlock(chartLines) + '\n\n' +
-        `💭 _${ep.entry.reason}_\n\n` +
+        `💭 _Terdeteksi bullish momentum kuat: Trend ${ohlcv.trend} dengan kenaikan ${ohlcv.priceChange?.toFixed(1)}% dalam 1 jam._\n\n` +
         `👉 Ketik /hunt untuk deploy sekarang`;
 
       await notifyFn(alertMsg);
 
       // Delay antar alert agar tidak flood
       await new Promise(r => setTimeout(r, 1500));
+
+    } catch (e) { 
+      console.warn(`[EP Scanner] Error scanning pool ${pool.address}:`, e.message);
+    }
+  }
+}
 
     } catch { /* skip pool jika error — jangan crash scanner */ }
   }

@@ -144,8 +144,8 @@ const BUILTIN_STRATEGIES = [
       minMcap: 250000,
       minVolume24h: 1000000,
     },
-    entryConditions: 'Price break above Supertrend on 15m. Pool bin step 80/100/125. Narrative/token harus lolos Coin Filter.',
-    exitConditions: 'Confluence exit: RSI(2)>90 + close above BB upper, ATAU RSI(2)>90 + MACD first green histogram. Emergency stop-loss tetap aktif.',
+    entryConditions: 'Price momentum align with UPTREND on 15m. Pool bin step 80/100/125. Narrative/token harus lolos Coin Filter.',
+    exitConditions: 'Momentum reversal or fee velocity drop. Emergency stop-loss tetap aktif.',
     confidence: 0.82,
     performanceHistory: [],
   },
@@ -225,8 +225,8 @@ const BUILTIN_STRATEGIES = [
       tokenYWeight: 100,
       singleSide: 'y',
     },
-    entryConditions: 'BB bandwidth < 8% (squeeze). ATR < 2%. Fee APR > 200%. Volume sustained ≥ 60% avg. Price sideways.',
-    exitConditions: 'BB mulai expand (bandwidth > 10%) → close sebelum OOR. Fee velocity drop → claim & close. Hold 1-4 jam.',
+    entryConditions: 'Low volatility (ATR < 2%). Fee APR > 200%. Volume sustained ≥ 60% avg. Price sideways.',
+    exitConditions: 'Volatility breakout or fee velocity drop → claim & close. Hold 1-4 jam.',
     confidence: 0.78,
     performanceHistory: [],
   },
@@ -313,9 +313,7 @@ export function matchStrategyToMarket(marketSnapshot) {
   const ohlcv = marketSnapshot.ohlcv;
   const sentiment = marketSnapshot.sentiment;
   const onChain = marketSnapshot.onChain;
-  const ta = marketSnapshot.ta;
 
-  const smBuying = marketSnapshot.okx?.smartMoneyBuying ?? null;
   const trend    = ohlcv?.trend || 'SIDEWAYS';
   const buyPressure = sentiment?.buyPressurePct || 50;
 
@@ -338,8 +336,7 @@ export function matchStrategyToMarket(marketSnapshot) {
   const postBreakout  = range24h >= 15;
   const consolidating = atrPct > 0 && atrPct < range24h * 0.12;
 
-  // BB squeeze + high fee (Fee Sniper signal)
-  const bbSqueeze  = bb && bb.bandwidth < 8;
+  // High fee (Fee Sniper signal)
   const highFeeApr = feeApr > 200;
 
   const currentConditions = {
@@ -348,18 +345,8 @@ export function matchStrategyToMarket(marketSnapshot) {
     sentiment: sentiment?.sentiment || 'NEUTRAL',
     volumeVsAvg: parseFloat(ohlcv?.volumeVsAvg || 1.0),
     buyPressure,
-    whaleRisk: marketSnapshot.onChain?.whaleRisk || onChain?.whaleRisk || 'LOW',
-    // Sinyal kuat uptrend
-    strongUptrend: trend === 'UPTREND' && smBuying === true && buyPressure > 65,
-    // Evil Panda TA gate
-    supertrendJustCrossedAbove: ta?.supertrend?.justCrossedAbove === true,
-    evilPandaEntrySignal: ta?.evilPanda?.entry?.justCrossedAbove === true,
-    // Wave Enjoyer
-    priceNearSupport, rsi14,
-    // NPC
-    postBreakout, consolidating,
     // Fee Sniper
-    bbSqueeze, highFeeApr,
+    highFeeApr,
   };
 
   // Score each strategy against current conditions
@@ -436,51 +423,39 @@ function scoreStrategy(strategy, conditions) {
     score += 0.10;
   }
 
-  // Override: kalau uptrend SANGAT kuat (SM buying), kurangi score single_side_y
-  // karena SOL range akan habis terlalu cepat
-  if (conditions.strongUptrend && strategy.type === 'single_side_y') {
-    score -= 0.15;
-  }
-
-  // Evil Panda TA bonus — Supertrend justCrossedAbove adalah hard entry trigger
+  // Evil Panda momentum bonus
   if (strategy.id === 'builtin_evil_panda') {
-    if (conditions.supertrendJustCrossedAbove) {
+    if (conditions.trend === 'UPTREND' && conditions.buyPressure > 60) {
       score += 0.35;
     } else {
-      score -= 0.50; // tanpa fresh cross tidak valid
+      score -= 0.50;
     }
-    if (conditions.evilPandaEntrySignal) score += 0.10;
   }
 
-  // Wave Enjoyer — butuh price near support + RSI accumulation zone
+  // Wave Enjoyer — price near support
   if (strategy.id === 'builtin_wave_enjoyer') {
     if (conditions.priceNearSupport) {
-      score += 0.35; // main signal
+      score += 0.35;
     } else {
-      score -= 0.40; // wave tanpa support proximity tidak valid
+      score -= 0.40;
     }
-    const rsi = conditions.rsi14 || 50;
-    if (rsi >= 35 && rsi <= 60) score += 0.20; // accumulation zone
-    else if (rsi > 75)          score -= 0.20; // overbought saat near support = trap
   }
 
-  // NPC — butuh post-breakout consolidation
+  // NPC — consolidation
   if (strategy.id === 'builtin_npc') {
     if (conditions.postBreakout && conditions.consolidating) {
-      score += 0.40; // main signal
+      score += 0.40;
     } else {
-      score -= 0.35; // NPC tanpa breakout tidak valid
+      score -= 0.35;
     }
   }
 
-  // Fee Sniper — butuh BB squeeze + high fee APR
+  // Fee Sniper — high fee APR
   if (strategy.id === 'builtin_fee_sniper') {
-    if (conditions.bbSqueeze && conditions.highFeeApr) {
-      score += 0.45; // main signal
-    } else if (conditions.bbSqueeze) {
-      score += 0.15; // partial signal
+    if (conditions.highFeeApr) {
+      score += 0.45;
     } else {
-      score -= 0.35; // tanpa squeeze, fee sniper tidak optimal
+      score -= 0.35;
     }
   }
 

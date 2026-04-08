@@ -137,8 +137,8 @@ function buildDLMMContext(snapshot, position) {
 
   if (snapshot.pool) {
     const p = snapshot.pool;
-    parts.push(`📦 POOL DLMM:
-- Fee APR: ${p.feeApr}% (${p.feeAprCategory}) — trend: ${p.feeVelocity}
+    parts.push(`📦 POOL DLMM (Meteora):
+- Fee APR: ${p.feeApr}% (${p.feeAprCategory})
 - Fee/TVL: ${(p.feeTvlRatio * 100).toFixed(3)}%/hari | TVL: $${p.tvl >= 1e6 ? (p.tvl/1e6).toFixed(2)+'M' : (p.tvl/1000).toFixed(1)+'K'}
 - Volume 24h: $${p.volume24h >= 1e6 ? (p.volume24h/1e6).toFixed(2)+'M' : (p.volume24h/1000).toFixed(1)+'K'} | Fees 24h: $${p.fees24h?.toFixed(2)}
 - Bin step: ${p.binStep}`);
@@ -148,65 +148,30 @@ function buildDLMMContext(snapshot, position) {
 
   if (snapshot.ohlcv) {
     const o = snapshot.ohlcv;
-    parts.push(`📊 PRICE ACTION (${o.timeframe}):
+    parts.push(`📊 PRICE & MOMENTUM (DexScreener):
 - Harga: $${o.currentPrice} | Trend: ${o.trend}
-- Range 24h: ${o.range24hPct}% (${o.volatilityCategory}) | Vol vs avg: ${o.volumeVsAvg}x
-- Support: $${o.support} | Resistance: $${o.resistance}
-- LP Note: ${o.dlmmNote}`);
+- Volatilitas 24h: ${o.range24hPct}% (${o.volatilityCategory})
+- Support: $${o.low24h} | Resistance: $${o.high24h}`);
   }
 
   if (snapshot.onChain?.available) {
     const oc = snapshot.onChain;
-    parts.push(`🐋 ON-CHAIN:
-- Total holders: ${oc.holders != null ? oc.holders.toLocaleString() : 'N/A'} | Top 10: ${oc.top10HolderPct}% | Whale risk: ${oc.whaleRisk}
-- Recent tx: ${oc.recentTxCount} | Token aktif: ${oc.tokenActive ? 'Ya' : 'Sepi'}
-- LP Note: ${oc.dlmmNote}`);
+    parts.push(`🐋 ON-CHAIN (Helius):
+- Holders: ${oc.holders != null ? oc.holders.toLocaleString() : 'N/A'} | Whale risk: ${oc.whaleRisk}
+- Token aktif: ${oc.tokenActive ? 'Ya' : 'Sepi'}`);
   }
 
   if (snapshot.sentiment) {
     const s = snapshot.sentiment;
-    parts.push(`💹 TEKANAN PASAR:
+    parts.push(`💹 MARKET PRESSURE (DexScreener):
 - Buy pressure: ${s.buyPressurePct}% (${s.sentiment})
-- Change: 1h ${s.priceChange1h >= 0 ? '+' : ''}${s.priceChange1h}% | 6h ${s.priceChange6h >= 0 ? '+' : ''}${s.priceChange6h}% | 24h ${s.priceChange24h >= 0 ? '+' : ''}${s.priceChange24h}%
-- LP Note: ${s.dlmmNote}`);
-  }
-
-  if (snapshot.okx?.available) {
-    const ox = snapshot.okx;
-    const riskFlags = [
-      ox.isHoneypot   ? 'HONEYPOT' : null,
-      ox.isMintable   ? 'Mintable' : null,
-      ox.riskLevel    ? `Risk: ${ox.riskLevel}` : null,
-    ].filter(Boolean);
-    parts.push(`🧠 SMART MONEY (OKX):
-- SM Signal: ${ox.smartMoneySignal || 'N/A'} | Buying: ${ox.smartMoneyBuying ?? 'N/A'} | Selling: ${ox.smartMoneySelling ?? 'N/A'}
-- Token risk: ${riskFlags.length ? riskFlags.join(', ') : 'Aman'}
-- LP Note: ${ox.dlmmNote}`);
+- Change: 1h ${s.priceChange1h >= 0 ? '+' : ''}${s.priceChange1h}% | 24h ${s.priceChange24h >= 0 ? '+' : ''}${s.priceChange24h}%`);
   }
 
   if (snapshot.pool && snapshot.ohlcv) {
-    const binOk = snapshot.pool.binStep >= snapshot.ohlcv.suggestedBinStepMin;
-    parts.push(`🔍 BIN STEP FIT CHECK:
+    parts.push(`🔍 FIT CHECK:
 - Pool bin step: ${snapshot.pool.binStep} vs volatilitas 24h ${snapshot.ohlcv.range24hPct}%
-- Fit: ${binOk ? '✅ Sesuai' : `⚠️ Butuh bin step ≥${snapshot.ohlcv.suggestedBinStepMin} — IL risk meningkat`}
 - Health score: ${snapshot.healthScore}/100
-- Data source: ${snapshot.dataSource || 'unknown'} (${snapshot.ohlcv.candleCount || 0} candles)`);
-  }
-
-  // TA indicators — hanya tersedia kalau Birdeye candles berhasil di-fetch
-  if (snapshot.ta) {
-    const ta = snapshot.ta;
-    const stLine = ta.supertrend
-      ? `ST ${ta.supertrend.isBullish ? '🟢 BULLISH' : '🔴 BEARISH'}${ta.supertrend.justCrossedAbove ? ' ← FRESH CROSS' : ''}`
-      : 'N/A';
-    const bbLine = ta.bb
-      ? `BB upper ${ta.bb.aboveUpper ? '✅ HIT' : '❌'} | %B=${ta.bb.percentB}`
-      : 'N/A';
-    const macdLine = ta.macd
-      ? `Histogram ${ta.macd.histogram?.toFixed(6)} | First green ${ta.macd.firstGreenAfterRed ? '✅' : '❌'}`
-      : 'N/A';
-
-    parts.push(`📐 TA INDICATORS (real candles, 15m):
 - RSI(14): ${ta.rsi14 ?? 'N/A'} | RSI(2): ${ta.rsi2 ?? 'N/A'}
 - ${stLine}
 - BB: ${bbLine}

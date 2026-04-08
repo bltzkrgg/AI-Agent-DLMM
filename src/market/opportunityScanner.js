@@ -12,15 +12,7 @@
  */
 
 import { getTopPools } from '../solana/meteora.js';
-import { fetchCandles, getDLMMPoolData, getMultiTFScore } from './oracle.js';
-import {
-  computeRSI,
-  computeBollingerBands,
-  computeSupertrend,
-  computeVolumeVsAvg,
-  detectEvilPandaSignals,
-  calculateATR,
-} from './taIndicators.js';
+import { getOHLCV, getDLMMPoolData, getMultiTFScore } from './oracle.js';
 import { formatStrategyAlert } from '../utils/alerts.js';
 
 // Cooldown state: Map<`${poolAddress}:${strategy}`, timestamp>
@@ -28,11 +20,7 @@ const _cooldown   = new Map();
 const COOLDOWN_MS = 3 * 60 * 60 * 1000; // 3 jam
 const EP_BIN_STEPS = new Set([80, 100, 125]);
 
-// Multi-TF minimum score untuk alert (0.0–1.0)
-// Pool dengan multiTFScore < threshold ini di-skip meskipun sinyal 15m bagus
 const MIN_MULTITF_SCORE = 0.4; // minimal 40% TF bullish
-
-// ─── Main scanner ────────────────────────────────────────────────
 
 export async function runOpportunityScanner(notifyFn) {
   if (!notifyFn) return;
@@ -49,28 +37,18 @@ export async function runOpportunityScanner(notifyFn) {
       const tokenMint = pool.tokenX;
       if (!tokenMint) continue;
 
-      // Fetch 15m candles — basis semua deteksi
-      const candles = await fetchCandles(tokenMint, '15m', 100, pool.address);
-      if (!candles || candles.length < 35) continue;
+      // Fetch consolidated OHLCV snapshot
+      const ohlcv = await getOHLCV(tokenMint, pool.address);
+      if (!ohlcv) continue;
 
-      // Compute TA dari candles
-      const ta = _computeTA(candles);
+      // Fetch pool data in parallel (optional)
+      const [poolData, mtf] = await Promise.all([
+        getDLMMPoolData(pool.address).catch(() => null),
+        getMultiTFScore(tokenMint, pool.address).catch(() => ({ score: 0, breakdown: {} })),
+      ]);
 
-      // Multi-TF score — filter sinyal 15m dengan konfirmasi dari TF lebih tinggi
-      let multiTFScore = 0;
-      let multiTFBreakdown = {};
-      try {
-        const mtf = await getMultiTFScore(tokenMint, pool.address);
-        multiTFScore     = mtf.score;
-        multiTFBreakdown = mtf.breakdown;
-      } catch { /* optional, jangan block */ }
-
-      // Fetch pool fee data untuk Fee Sniper (best-effort)
-      let poolData = null;
-      try { poolData = await getDLMMPoolData(pool.address); } catch { /* optional */ }
-
-      // Detect opportunities — rule-based, no LLM
-      const opps = _detectOpportunities(pool, ta, poolData);
+      // Detect opportunities based on snapshot
+      const opps = _detectOpportunities(pool, ohlcv, poolData);
 
       for (const opp of opps) {
         const key = `${pool.address}:${opp.strategy}`;
@@ -78,17 +56,16 @@ export async function runOpportunityScanner(notifyFn) {
         if (last && (now - last) < COOLDOWN_MS) continue;
 
         // Skip jika multi-TF score terlalu rendah (konfirmasi lemah)
-        // Fee Sniper tidak perlu konfirmasi TF — berbasis fee/TVL
-        if (opp.strategy !== 'Fee Sniper' && multiTFScore < MIN_MULTITF_SCORE) continue;
+        if (opp.strategy !== 'Fee Sniper' && mtf.score < MIN_MULTITF_SCORE) continue;
 
         _cooldown.set(key, now);
 
         // Tambahkan multi-TF info ke reason
-        const tfSummary = Object.entries(multiTFBreakdown)
+        const tfSummary = Object.entries(mtf.breakdown || {})
           .map(([tf, d]) => `${tf}:${d.bullish ? '✅' : '❌'}`)
           .join(' ');
-        const enrichedReason = multiTFScore > 0
-          ? `${opp.reason} | TF: ${tfSummary} (${(multiTFScore * 100).toFixed(0)}% bullish)`
+        const enrichedReason = mtf.score > 0
+          ? `${opp.reason} | TF: ${tfSummary} (${(mtf.score * 100).toFixed(0)}% bullish)`
           : opp.reason;
 
         await notifyFn(formatStrategyAlert({
@@ -96,121 +73,74 @@ export async function runOpportunityScanner(notifyFn) {
           pool:        pool.name || null,
           poolAddress: pool.address,
           reason:      enrichedReason,
-          priority:    multiTFScore >= 0.67 ? 'HIGH' : opp.priority, // upgrade priority jika 4+ TF bullish
+          priority:    mtf.score >= 0.67 ? 'HIGH' : opp.priority,
         }));
 
         await new Promise(r => setTimeout(r, 1200)); // anti-flood
       }
 
-    } catch { /* skip pool — jangan crash scanner */ }
+    } catch (e) {
+      console.warn(`[Opp Scanner] Error scanning pool ${pool.address}:`, e.message);
+    }
   }
 }
 
-// ─── TA computation dari raw candles ─────────────────────────────
-
-function _computeTA(candles) {
-  const closes = candles.map(c => c.c);
-  const highs  = candles.map(c => c.h);
-  const lows   = candles.map(c => c.l);
-
-  const currentPrice = closes[closes.length - 1];
-  const last96       = candles.slice(-96);
-  const high24h      = Math.max(...last96.map(c => c.h));
-  const low24h       = Math.min(...last96.map(c => c.l));
-  const range24hPct  = low24h > 0
-    ? parseFloat(((high24h - low24h) / low24h * 100).toFixed(2)) : 0;
-
-  const recent20 = closes.slice(-20);
-  const prior20  = closes.slice(-40, -20);
-  let trend = 'SIDEWAYS';
-  if (prior20.length >= 10) {
-    const rA = recent20.reduce((a, b) => a + b, 0) / recent20.length;
-    const pA = prior20.reduce((a, b) => a + b, 0)  / prior20.length;
-    const chg = pA > 0 ? (rA - pA) / pA * 100 : 0;
-    if (chg > 2)  trend = 'UPTREND';
-    if (chg < -2) trend = 'DOWNTREND';
-  }
-
-  const atr      = calculateATR(candles, 14);
-  const rsi14    = computeRSI(closes, 14);
-  const bb       = computeBollingerBands(closes, 20, 2);
-  const st       = computeSupertrend(highs, lows, closes, 10, 3);
-  const ep       = detectEvilPandaSignals(candles);
-  const volVsAvg = computeVolumeVsAvg(candles);
-
-  return {
-    currentPrice, high24h, low24h, range24hPct, trend,
-    atr, rsi14, bb, supertrend: st, evilPanda: ep,
-    volumeVsAvg: volVsAvg,
-    support:    low24h,
-    resistance: high24h,
-  };
-}
-
-// ─── Opportunity detection — rule-based ──────────────────────────
-
-function _detectOpportunities(pool, ta, poolData) {
+function _detectOpportunities(pool, ohlcv, poolData) {
   const results = [];
-  const {
-    currentPrice, support, range24hPct, trend,
-    atr, rsi14, bb, supertrend: st, evilPanda: ep,
-    volumeVsAvg,
-  } = ta;
+  const currentPrice = ohlcv.currentPrice || 0;
+  const low24h = ohlcv.low24h || 0;
+  const high24h = ohlcv.high24h || 0;
+  const range24hPct = ohlcv.range24hPct || 0;
+  const trend = ohlcv.trend || 'SIDEWAYS';
+  const priceChange1h = ohlcv.priceChange || 0;
+  const latestVol = ohlcv.latestVolume || 0;
+  const avgVol = ohlcv.avgVolume || 0;
 
-  const atrPct = atr?.atrPct ?? 0;
   const feeApr = poolData?.feeApr
     ?? parseFloat(String(pool.apr || '0').replace('%', ''))
     ?? 0;
 
-  // ── Evil Panda — Supertrend 15m fresh crossover ───────────────
-  if (ep?.entry?.triggered && EP_BIN_STEPS.has(pool.binStep)) {
+  // ── Evil Panda — Momentum Proxy ───────────────
+  if (EP_BIN_STEPS.has(pool.binStep) && trend === 'UPTREND' && priceChange1h > 3) {
     results.push({
       strategy: 'Evil Panda',
-      reason:   ep.entry.reason || 'Supertrend 15m baru cross ke atas',
+      reason:   `Bullish Momentum: Gain 1h ${priceChange1h.toFixed(1)}% | Trend ${trend}`,
       priority: 'HIGH',
     });
   }
 
-  // ── Wave Enjoyer — price dekat support + buyers masuk ─────────
-  if (support > 0 && currentPrice > 0) {
-    const distPct     = ((currentPrice - support) / support) * 100;
-    const nearSupport = distPct >= 0 && distPct <= 8;
-    const rsiZone     = rsi14 !== null && rsi14 >= 35 && rsi14 <= 62;
-    const volOk       = volumeVsAvg >= 0.7;
+  // ── Wave Enjoyer — near 24h low proxy ─────────
+  if (low24h > 0 && currentPrice > 0) {
+    const distPct = ((currentPrice - low24h) / low24h) * 100;
+    const nearLow = distPct >= 0 && distPct <= 8;
+    const volOk = latestVol >= avgVol * 0.7;
 
-    if (nearSupport && rsiZone && volOk) {
+    if (nearLow && (trend === 'SIDEWAYS' || trend === 'DOWNTREND') && volOk) {
       results.push({
         strategy: 'Wave Enjoyer',
-        reason:   `Price ${distPct.toFixed(1)}% di atas support 24h | RSI14=${rsi14?.toFixed(0)} | Vol=${(volumeVsAvg * 100).toFixed(0)}% avg`,
+        reason:   `Price ${distPct.toFixed(1)}% di atas support 24h | Vol=${(latestVol/avgVol*100).toFixed(0)}% avg`,
         priority: 'MEDIUM',
       });
     }
   }
 
-  // ── NPC — post-breakout consolidation ─────────────────────────
-  const postBreakout  = range24hPct >= 15;
-  const consolidating = atrPct > 0 && atrPct < range24hPct * 0.12;
-  const trendOk       = trend !== 'DOWNTREND';
-  const stBullish     = st?.isBullish !== false;
-
-  if (postBreakout && consolidating && trendOk && stBullish && volumeVsAvg >= 0.9) {
+  // ── NPC — breakout/high range consolidation ─────────────────────────
+  const postBreakout = range24hPct >= 15;
+  const isCapping = priceChange1h > -2 && priceChange1h < 2; // consolidating in 1h
+  
+  if (postBreakout && isCapping && trend !== 'DOWNTREND') {
     results.push({
       strategy: 'NPC',
-      reason:   `Post-breakout: 24h range=${range24hPct.toFixed(1)}% → ATR kini ${atrPct.toFixed(2)}% (${range24hPct > 0 ? ((atrPct / range24hPct) * 100).toFixed(0) : '-'}% dari range)`,
+      reason:   `Post-breakout Consolidation: 24h range=${range24hPct.toFixed(1)}% | 1h Stable`,
       priority: 'LOW',
     });
   }
 
-  // ── Fee Sniper — BB squeeze + fee APR tinggi ──────────────────
-  const bbTight    = bb !== null && bb.bandwidth < 8;
-  const atrLow     = atrPct < 2;
-  const highFee    = feeApr > 200;
-  const volSustain = volumeVsAvg >= 0.6;
-
-  if (bbTight && atrLow && highFee && volSustain) {
+  // ── Fee Sniper — Fee APR tinggi (Meteora Only) ──────────────────
+  if (feeApr > 250 && latestVol >= avgVol * 0.6) {
     results.push({
       strategy: 'Fee Sniper',
-      reason:   `BB width=${bb.bandwidth.toFixed(1)}% (squeeze) | ATR=${atrPct.toFixed(2)}% | Fee APR ${feeApr.toFixed(0)}%`,
+      reason:   `High Yield Opportunity: Fee APR ${feeApr.toFixed(0)}% | Volume Sustained`,
       priority: 'MEDIUM',
     });
   }
