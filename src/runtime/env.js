@@ -1,9 +1,9 @@
-const PROVIDERS = new Set(['anthropic', 'openrouter', 'openai', 'custom']);
+const PROVIDERS = new Set(['anthropic', 'openrouter', 'openai', 'custom', 'groq', 'huggingface']);
 
 export function getAIProvider() {
   const provider = (process.env.AI_PROVIDER || 'openrouter').toLowerCase();
   if (!PROVIDERS.has(provider)) {
-    throw new Error(`AI_PROVIDER tidak didukung: ${provider}`);
+    throw new Error(`AI_PROVIDER tidak didukung: ${provider}. Pilihan: ${Array.from(PROVIDERS).join(', ')}`);
   }
   return provider;
 }
@@ -17,6 +17,8 @@ export function getRequiredEnvKeys({ requireTrading = true } = {}) {
     openrouter: 'OPENROUTER_API_KEY',
     openai: 'OPENAI_API_KEY',
     custom: 'CUSTOM_AI_BASE_URL',
+    groq: 'GROQ_API_KEY',
+    huggingface: 'HUGGINGFACE_API_KEY',
   };
   required.push(providerKeyMap[provider]);
 

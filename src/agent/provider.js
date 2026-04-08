@@ -51,6 +51,28 @@ function getCustomClient() {
   return _openaiClient;
 }
 
+function getGroqClient() {
+  if (!process.env.GROQ_API_KEY) throw new Error('GROQ_API_KEY tidak di-set di .env');
+  if (!_openaiClient) {
+    _openaiClient = new OpenAI({
+      apiKey: process.env.GROQ_API_KEY,
+      baseURL: 'https://api.groq.com/openai/v1',
+    });
+  }
+  return _openaiClient;
+}
+
+function getHuggingFaceClient() {
+  if (!process.env.HUGGINGFACE_API_KEY) throw new Error('HUGGINGFACE_API_KEY tidak di-set di .env');
+  if (!_openaiClient) {
+    _openaiClient = new OpenAI({
+      apiKey: process.env.HUGGINGFACE_API_KEY,
+      baseURL: 'https://api-inference.huggingface.co/v1',
+    });
+  }
+  return _openaiClient;
+}
+
 // ─── Model resolution ────────────────────────────────────────────
 // Priority (highest → lowest):
 //   1. AI_MODEL env var — set di .env, absolute override
@@ -68,10 +90,12 @@ export function resolveModel(modelFromConfig) {
   if (modelFromConfig) return modelFromConfig;
   // 4. Provider default
   const defaults = {
-    openrouter: 'openai/gpt-4o-mini',
-    anthropic:  'claude-haiku-4-5',
-    openai:     'gpt-4o-mini',
-    custom:     'gpt-4o-mini',
+    openrouter:  'openai/gpt-4o-mini',
+    anthropic:   'claude-haiku-4-5',
+    openai:      'gpt-4o-mini',
+    custom:      'gpt-4o-mini',
+    groq:        'mixtral-8x7b-32768',
+    huggingface: 'mistral-7b-instruct-v0.1',
   };
   return defaults[PROVIDER] || 'openai/gpt-4o-mini';
 }
@@ -178,12 +202,39 @@ function cleanError(e) {
   return msg.slice(0, 200);
 }
 
+// ─── Response validators ─────────────────────────────────────────
+
+function isValidResponse(response) {
+  // Check if response has content
+  if (!response) return false;
+
+  // Anthropic format: { content: [{ type: 'text', text: '...' }, ...] }
+  if (response.content && Array.isArray(response.content)) {
+    if (response.content.length === 0) return false;
+    // At least one non-empty text content block
+    const hasText = response.content.some(b =>
+      b.type === 'text' && b.text && String(b.text).trim().length > 0
+    );
+    return hasText;
+  }
+
+  return false;
+}
+
+function extractResponseText(response) {
+  if (!response?.content?.length) return '';
+  const textBlock = response.content.find(b => b.type === 'text');
+  return textBlock?.text ?? '';
+}
+
 // ─── Core: createMessage ─────────────────────────────────────────
 // Interface tetap sama untuk semua caller — provider-specific logic di sini.
+// Improved: Better validation, fallback chains, and error handling
 
 export async function createMessage({ model, maxTokens = 4096, system, tools, messages, forceModel }) {
   let resolvedModel = forceModel || resolveModel(model);
   let lastError;
+  let usedFallback = false;
 
   for (let attempt = 0; attempt < 3; attempt++) {
     try {
@@ -198,10 +249,13 @@ export async function createMessage({ model, maxTokens = 4096, system, tools, me
         response = await client.messages.create(params);
 
       } else {
-        // ── OpenAI-compatible (openrouter / openai / custom) ──
-        const client = PROVIDER === 'openai' ? getOpenAIClient()
-          : PROVIDER === 'custom'     ? getCustomClient()
-          : getOpenRouterClient();
+        // ── OpenAI-compatible (openrouter / openai / custom / groq / huggingface) ──
+        let client;
+        if (PROVIDER === 'openai') client = getOpenAIClient();
+        else if (PROVIDER === 'custom') client = getCustomClient();
+        else if (PROVIDER === 'groq') client = getGroqClient();
+        else if (PROVIDER === 'huggingface') client = getHuggingFaceClient();
+        else client = getOpenRouterClient();
 
         const oaiMessages = toOAIMessages(system, messages);
         const params = {
@@ -209,8 +263,14 @@ export async function createMessage({ model, maxTokens = 4096, system, tools, me
           max_tokens: maxTokens,
           messages: oaiMessages,
         };
+
         // Only include tools if model supports them
-        const modelsWithoutTools = ['minimax/minimax-m2.7', 'minimax-m2.7'];
+        const modelsWithoutTools = [
+          'minimax/minimax-m2.7',
+          'minimax/minimax-m2.5',
+          'minimax-m2.7',
+          'minimax-m2.5',
+        ];
         if (tools?.length && !modelsWithoutTools.some(m => resolvedModel.includes(m))) {
           params.tools = toOAITools(tools);
         }
@@ -219,20 +279,39 @@ export async function createMessage({ model, maxTokens = 4096, system, tools, me
         response = toAnthropicResponse(oaiResponse);
       }
 
-      if (!response?.content?.length) {
-        lastError = new Error(`Model "${resolvedModel}" returned empty content. Model mungkin tidak tersedia atau tidak support endpoint ini.`);
-        console.warn(`⚠️ Attempt ${attempt + 1}: Empty response from ${resolvedModel}`);
-        await new Promise(r => setTimeout(r, 2000));
+      // ── Validate response content ──────────────────────────
+      if (!isValidResponse(response)) {
+        const text = extractResponseText(response);
+        lastError = new Error(
+          `Model "${resolvedModel}" returned empty/invalid response: "${text.slice(0, 50)}". ` +
+          `Model mungkin overloaded, unsupported, atau response corrupted.`
+        );
+        console.warn(`⚠️ Attempt ${attempt + 1}: Invalid response from ${resolvedModel}`);
+
+        // Fallback to fallback model on second attempt
+        if (attempt === 1 && resolvedModel !== FALLBACK_MODEL && !usedFallback) {
+          console.warn(`⚠️ Switching to fallback model: ${FALLBACK_MODEL}`);
+          resolvedModel = FALLBACK_MODEL;
+          usedFallback = true;
+          continue;
+        }
+
+        await new Promise(r => setTimeout(r, 2000 * (attempt + 1)));
         continue;
       }
+
       return response;
 
     } catch (e) {
       lastError = e;
       const status = e?.status || e?.statusCode;
+      const isRateLimit = status === 429;
+      const isNotFound = status === 404;
+      const isServerError = status === 502 || status === 503 || status === 529 || status === 500;
+      const isTimeout = e?.code === 'ECONNABORTED' || e?.code === 'ETIMEDOUT';
 
-      // Rate limit — 10s backoff (bukan 30s) agar tidak terasa stuck
-      if (status === 429) {
+      // Rate limit — exponential backoff
+      if (isRateLimit) {
         const wait = (attempt + 1) * 10000; // 10s, 20s, 30s
         console.warn(`⚠️ Rate limited, waiting ${wait / 1000}s... (attempt ${attempt + 1}/3)`);
         await new Promise(r => setTimeout(r, wait));
@@ -240,26 +319,33 @@ export async function createMessage({ model, maxTokens = 4096, system, tools, me
       }
 
       // Model tidak ditemukan → switch ke fallback
-      if (status === 404) {
-        if (resolvedModel !== FALLBACK_MODEL) {
-          console.warn(`⚠️ Model "${resolvedModel}" 404, switch ke fallback: ${FALLBACK_MODEL}`);
+      if (isNotFound) {
+        if (resolvedModel !== FALLBACK_MODEL && !usedFallback) {
+          console.warn(`⚠️ Model "${resolvedModel}" not found (404), switching to fallback: ${FALLBACK_MODEL}`);
           resolvedModel = FALLBACK_MODEL;
+          usedFallback = true;
           continue;
         }
         throw new Error(`Model tidak tersedia: ${resolvedModel}. Cek AI_MODEL di .env`);
       }
 
-      // Provider error → fallback di attempt ke-2
-      if (status === 502 || status === 503 || status === 529 || status === 500) {
-        if (attempt === 1 && resolvedModel !== FALLBACK_MODEL) {
-          console.warn(`⚠️ Provider error (${status}), switch ke fallback: ${FALLBACK_MODEL}`);
+      // Server error atau timeout → retry dengan fallback
+      if (isServerError || isTimeout) {
+        if (attempt === 1 && resolvedModel !== FALLBACK_MODEL && !usedFallback) {
+          console.warn(`⚠️ Server error (${status || 'timeout'}), switching to fallback: ${FALLBACK_MODEL}`);
           resolvedModel = FALLBACK_MODEL;
+          usedFallback = true;
           continue;
         }
         const delay = (attempt + 1) * 5000;
-        console.warn(`⚠️ Provider error (${status}), retry in ${delay}ms...`);
+        console.warn(`⚠️ Server error (${status || 'timeout'}), retry in ${delay}ms...`);
         await new Promise(r => setTimeout(r, delay));
         continue;
+      }
+
+      // Auth error — fail immediately
+      if (status === 401 || status === 403) {
+        throw new Error(`Authentication failed for ${PROVIDER}. Check your API keys in .env`);
       }
 
       break;

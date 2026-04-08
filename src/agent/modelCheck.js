@@ -46,25 +46,59 @@ export async function testModel(modelId) {
   }
 }
 
-// ─── Fetch free models dari OpenRouter ───────────────────────────
+// ─── Fetch free models dari berbagai provider ───────────────────
 
 export async function fetchFreeModels() {
-  if (PROVIDER !== 'openrouter') return [];
-  const key = process.env.OPENROUTER_API_KEY;
-  if (!key) return [];
+  const freeModels = [];
 
-  try {
-    const res = await fetch('https://openrouter.ai/api/v1/models', {
-      headers: { Authorization: `Bearer ${key}` },
-    });
-    if (!res.ok) return [];
-    const data = await res.json();
-    return (data.data || [])
-      .filter(m => m.id.endsWith(':free'))
-      .map(m => m.id);
-  } catch {
-    return [];
+  // OpenRouter free models
+  if (PROVIDER === 'openrouter' || process.env.OPENROUTER_API_KEY) {
+    try {
+      const key = process.env.OPENROUTER_API_KEY;
+      if (key) {
+        const res = await fetch('https://openrouter.ai/api/v1/models', {
+          headers: { Authorization: `Bearer ${key}` },
+        });
+        if (res.ok) {
+          const data = await res.json();
+          const orFree = (data.data || [])
+            .filter(m => m.id.endsWith(':free'))
+            .map(m => m.id);
+          freeModels.push(...orFree.slice(0, 10));
+        }
+      }
+    } catch (e) {
+      console.warn('Failed to fetch OpenRouter free models:', e.message);
+    }
   }
+
+  // Groq free models (jika ada key)
+  if (process.env.GROQ_API_KEY) {
+    freeModels.push(
+      'groq/mixtral-8x7b-32768',
+      'groq/llama2-70b-4096',
+      'groq/gemma-7b-it'
+    );
+  }
+
+  // HuggingFace free inference (jika ada key)
+  if (process.env.HUGGINGFACE_API_KEY) {
+    freeModels.push(
+      'huggingface/mistral-7b-instruct-v0.1',
+      'huggingface/zephyr-7b-beta'
+    );
+  }
+
+  // Fallback free models
+  if (freeModels.length === 0) {
+    freeModels.push(
+      'openai/gpt-4o-mini',
+      'qwen/qwen3.6-plus:free',
+      'meta-llama/llama-2-70b-chat'
+    );
+  }
+
+  return freeModels;
 }
 
 // ─── Format pesan status model — INSTANT, tanpa API call ─────────
