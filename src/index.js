@@ -24,6 +24,7 @@ import { initMonitor } from './monitor/positionMonitor.js';
 import { autoEvolveIfReady } from './learn/evolve.js';
 import { getTodayResults, formatDailyReport, savePerformanceSnapshot, backupAllData } from './market/strategyPerformance.js';
 import { runStartupModelCheck, formatModelStatus, testModel, testCurrentModel, fetchFreeModels } from './agent/modelCheck.js';
+import { discoverAllModels, formatModelList, listAvailableModels, getModelInfo, initializeModelDiscovery } from './agent/modelDiscovery.js';
 import { runOpportunityScanner } from './market/opportunityScanner.js';
 import { addSmartWallet, removeSmartWallet, formatWalletList } from './market/smartWallets.js';
 import { formatPoolMemoryReport } from './market/poolMemory.js';
@@ -357,16 +358,24 @@ bot.onText(/\/testmodel/, async (msg) => {
   const chatId = msg.chat.id;
   bot.sendMessage(chatId, '🔍 Testing model connection...');
   try {
-    // Test API + fetch free models (operasi lambat, tapi ini memang tujuannya)
-    const [testResult, freeModels] = await Promise.all([
+    // Test API + fetch available models (operasi lambat, tapi ini memang tujuannya)
+    const [testResult, discoveredModels] = await Promise.all([
       testCurrentModel(),
-      fetchFreeModels(),
+      discoverAllModels(),
     ]);
     let text = formatModelStatus();
     text += `\n\n*Test Result:* ${testResult.ok ? '✅ OK' : `❌ ${testResult.error}`}\n`;
-    if (freeModels.length > 0) {
-      text += `\n📋 *Free models tersedia (${freeModels.length}):*\n`;
-      freeModels.slice(0, 10).forEach(m => { text += `• \`${m}\`\n`; });
+    if (discoveredModels.length > 0) {
+      text += `\n📋 *All discovered models (${discoveredModels.length}):*\n`;
+      // Show top models by quality
+      const topModels = listAvailableModels({ sortBy: 'quality' }).slice(0, 10);
+      topModels.forEach(m => {
+        const free = m.isFree ? ' 🆓' : '';
+        text += `• \`${m.id}\`${free}\n`;
+      });
+      if (discoveredModels.length > 10) {
+        text += `... and ${discoveredModels.length - 10} more\n`;
+      }
     }
     await sendLong(chatId, text, { parse_mode: 'Markdown' });
   } catch (e) { bot.sendMessage(chatId, `❌ ${e.message}`); }
@@ -382,6 +391,13 @@ bot.onText(/\/model(?:\s+(.+))?/, async (msg, match) => {
     try {
       const text = formatModelStatus();
       await sendLong(chatId, text, { parse_mode: 'Markdown' });
+
+      // Also show available models discovered from configured providers
+      const discoveredModels = listAvailableModels({ sortBy: 'quality' });
+      if (discoveredModels.length > 0) {
+        const modelList = formatModelList(discoveredModels);
+        await sendLong(chatId, modelList, { parse_mode: 'Markdown' });
+      }
     } catch (e) { bot.sendMessage(chatId, `❌ ${e.message}`); }
     return;
   }
@@ -1186,6 +1202,10 @@ process.on('unhandledRejection', (reason) => {
 
 setTimeout(async () => {
   try {
+    // Initialize model discovery to discover all available models from configured providers
+    console.log('🔍 Initializing model discovery...');
+    await initializeModelDiscovery();
+
     const balance = await getWalletBalance();
     await notify(
       `🚀 *Bot Started!*\n\n` +

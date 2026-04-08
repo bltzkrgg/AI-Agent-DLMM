@@ -1,6 +1,15 @@
 import Anthropic from '@anthropic-ai/sdk';
 import OpenAI from 'openai';
 import { getConfig } from '../config.js';
+import {
+  discoverAllModels,
+  getBestModel,
+  buildAdaptiveFallbackChain,
+  getNextFallback,
+  resetFallbackChain,
+  setModelStatus,
+  getModelStatus,
+} from './modelDiscovery.js';
 
 const PROVIDER = (process.env.AI_PROVIDER || 'openrouter').toLowerCase();
 
@@ -302,6 +311,7 @@ export async function createMessage({ model, maxTokens = 4096, system, tools, me
   let resolvedModel = forceModel || resolveModel(model);
   let lastError;
   let usedFallback = false;
+  let fallbackChain = null;
 
   // Block minimax models — they fail silently on OpenRouter
   if (BLOCKED_MODELS.has(resolvedModel)) {
@@ -309,6 +319,20 @@ export async function createMessage({ model, maxTokens = 4096, system, tools, me
     resolvedModel = FALLBACK_MODEL;
     usedFallback = true;
   }
+
+  // Initialize adaptive fallback chain on first failure
+  const initializeFallbackChain = () => {
+    if (!fallbackChain) {
+      // Discover models if not already done
+      discoverAllModels().catch(e => console.warn('Model discovery failed:', e.message));
+
+      // Build chain: exclude current model and blocked models
+      fallbackChain = buildAdaptiveFallbackChain(resolvedModel, {
+        maxChainLength: 5,
+        free: true,
+      }).filter(m => !BLOCKED_MODELS.has(m));
+    }
+  };
 
   for (let attempt = 0; attempt < 3; attempt++) {
     try {
@@ -363,18 +387,34 @@ export async function createMessage({ model, maxTokens = 4096, system, tools, me
           `Model mungkin overloaded, unsupported, atau response corrupted.`
         );
         console.warn(`⚠️ Attempt ${attempt + 1}: Invalid response from ${resolvedModel}`);
+        setModelStatus(resolvedModel, false, 'Empty response');
 
-        // Fallback to fallback model on second attempt
-        if (attempt === 1 && resolvedModel !== FALLBACK_MODEL && !usedFallback) {
-          console.warn(`⚠️ Switching to fallback model: ${FALLBACK_MODEL}`);
-          resolvedModel = FALLBACK_MODEL;
-          usedFallback = true;
+        // Try adaptive fallback on empty response
+        if (attempt === 1 && !usedFallback) {
+          initializeFallbackChain();
+          if (fallbackChain && fallbackChain.length > 0) {
+            const nextModel = fallbackChain.shift();
+            console.warn(`⚠️ Switching to fallback model: ${nextModel}`);
+            resolvedModel = nextModel;
+            usedFallback = true;
+            continue;
+          }
+        }
+
+        // Use another fallback on attempt 2
+        if (attempt === 2 && fallbackChain && fallbackChain.length > 0) {
+          const nextModel = fallbackChain.shift();
+          console.warn(`⚠️ Trying next fallback: ${nextModel}`);
+          resolvedModel = nextModel;
           continue;
         }
 
         await new Promise(r => setTimeout(r, 2000 * (attempt + 1)));
         continue;
       }
+
+      // Mark model as working
+      setModelStatus(resolvedModel, true);
 
       return response;
 
@@ -394,15 +434,30 @@ export async function createMessage({ model, maxTokens = 4096, system, tools, me
         continue;
       }
 
-      // Model tidak ditemukan → switch ke fallback
+      // Model tidak ditemukan → try adaptive fallback chain
       if (isNotFound) {
-        if (resolvedModel !== FALLBACK_MODEL && !usedFallback) {
-          console.warn(`⚠️ Model "${resolvedModel}" not found (404), switching to fallback: ${FALLBACK_MODEL}`);
-          resolvedModel = FALLBACK_MODEL;
-          usedFallback = true;
+        if (!usedFallback) {
+          initializeFallbackChain();
+          const nextModel = fallbackChain.length > 0 ? fallbackChain.shift() : null;
+
+          if (nextModel) {
+            console.warn(`⚠️ Model "${resolvedModel}" not found (404), trying fallback: ${nextModel}`);
+            resolvedModel = nextModel;
+            setModelStatus(resolvedModel, false, 'Not found');
+            usedFallback = true;
+            continue;
+          }
+        }
+
+        // No more fallbacks available
+        if (fallbackChain && fallbackChain.length > 0) {
+          const nextModel = fallbackChain.shift();
+          console.warn(`⚠️ Trying next fallback: ${nextModel}`);
+          resolvedModel = nextModel;
           continue;
         }
-        throw new Error(`Model tidak tersedia: ${resolvedModel}. Cek AI_MODEL di .env`);
+
+        throw new Error(`Model tidak tersedia: ${resolvedModel}. Tidak ada fallback models tersedia. Cek API keys di .env`);
       }
 
       // Server error atau timeout → retry dengan fallback
