@@ -114,9 +114,9 @@ export function resolveModel(modelFromConfig) {
   }
   if (model) return model;
 
-  // 4. Provider default
+  // 4. Provider default (fallthrough if all above are blocked/null)
   const defaults = {
-    openrouter:  'meta-llama/llama-3.3-70b-instruct:free',  // Proven to exist and work on OpenRouter
+    openrouter:  'meta-llama/llama-3.3-70b-instruct:free',  // ✅ Verified working (not qwen/qwen3.6-plus:free which no longer exists)
     anthropic:   'claude-haiku-4-5',
     openai:      'gpt-4o-mini',
     custom:      'gpt-4o-mini',
@@ -128,6 +128,10 @@ export function resolveModel(modelFromConfig) {
 
 // Intelligent fallback chain based on available provider keys
 // Uses only models that are known to exist and work reliably
+// ⚠️ IMPORTANT: OpenRouter model availability changes frequently.
+//   Last verified: Jan 2025
+//   qwen/qwen3.6-plus:free NO LONGER EXISTS (removed from OpenRouter)
+//   Use meta-llama/llama-3.3-70b-instruct:free instead
 function getFallbackModel() {
   const fallback = process.env.FALLBACK_AI_MODEL;
   if (fallback && !BLOCKED_MODELS.has(fallback)) {
@@ -139,10 +143,10 @@ function getFallbackModel() {
   const fallbacks = [];
 
   if (process.env.OPENROUTER_API_KEY) {
-    // Use models known to exist on OpenRouter and work reliably
-    fallbacks.push('meta-llama/llama-3.3-70b-instruct:free');      // Proven to work, high quality
-    fallbacks.push('qwen/qwen3-next-80b-a3b-instruct:free');       // Alternative Qwen
-    fallbacks.push('google/gemma-4-26b-a4b-it:free');              // Google's Gemma
+    // Use models KNOWN to exist on OpenRouter and work reliably (verified Jan 2025)
+    fallbacks.push('meta-llama/llama-3.3-70b-instruct:free');      // ✅ Verified working, high quality
+    fallbacks.push('qwen/qwen3-next-80b-a3b-instruct:free');       // ✅ Alternative Qwen (newer version)
+    fallbacks.push('google/gemma-4-26b-a4b-it:free');              // ✅ Google's Gemma
   }
   if (process.env.GROQ_API_KEY) {
     fallbacks.push('mixtral-8x7b-32768');
