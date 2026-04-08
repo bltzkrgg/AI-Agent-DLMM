@@ -9,8 +9,7 @@ import { getAllStrategies, parseStrategyParameters } from '../strategies/strateg
 import { getStrategyProfile } from '../strategies/profiles.js';
 import { checkMaxDrawdown, validateStrategyForMarket, requestConfirmation } from '../safety/safetyManager.js';
 import { matchStrategyToMarket, getLibraryStats } from '../market/strategyLibrary.js';
-import { fetchCandles, getMarketSnapshot, getOHLCV } from '../market/oracle.js';
-import { getMultiTFScore } from '../market/multiTF.js';
+import { fetchCandles, getMarketSnapshot, getOHLCV, getMultiTFScore } from '../market/oracle.js';
 import { getSocialSignals, getTokenSocialScore } from '../market/socialScanner.js';
 import { getInstinctsContext } from '../market/memory.js';
 import { getStrategyIntelligenceContext } from '../market/strategyPerformance.js';
