@@ -50,6 +50,13 @@ export async function testModel(modelId) {
 
 export async function fetchFreeModels() {
   const freeModels = [];
+  // Blocked models that should never be suggested
+  const blockedModels = new Set([
+    'minimax/minimax-m2.5',
+    'minimax/minimax-m2.7',
+    'minimax-m2.5',
+    'minimax-m2.7',
+  ]);
 
   // OpenRouter free models
   if (PROVIDER === 'openrouter' || process.env.OPENROUTER_API_KEY) {
@@ -62,7 +69,7 @@ export async function fetchFreeModels() {
         if (res.ok) {
           const data = await res.json();
           const orFree = (data.data || [])
-            .filter(m => m.id.endsWith(':free'))
+            .filter(m => m.id.endsWith(':free') && !blockedModels.has(m.id))
             .map(m => m.id);
           freeModels.push(...orFree.slice(0, 10));
         }

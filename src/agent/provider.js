@@ -80,27 +80,85 @@ function getHuggingFaceClient() {
 //   3. modelFromConfig  — per-component config (managementModel / screeningModel / generalModel)
 //   4. provider default fallback
 
+// Models that should never be used — they fail silently or return empty responses
+const BLOCKED_MODELS = new Set([
+  'minimax/minimax-m2.5',
+  'minimax/minimax-m2.7',
+  'minimax-m2.5',
+  'minimax-m2.7',
+]);
+
 export function resolveModel(modelFromConfig) {
   // 1. Env var selalu menang — user set di .env = "saya mau model ini"
-  if (process.env.AI_MODEL) return process.env.AI_MODEL;
+  let model = process.env.AI_MODEL;
+  if (model && BLOCKED_MODELS.has(model)) {
+    console.warn(`⚠️ Model "${model}" from AI_MODEL env is blocked. Using safe default instead.`);
+    model = null;
+  }
+  if (model) return model;
+
   const cfg = getConfig();
   // 2. /model command override (session-level, hanya berlaku jika AI_MODEL tidak di-set)
-  if (cfg.activeModel) return cfg.activeModel;
+  model = cfg.activeModel;
+  if (model && BLOCKED_MODELS.has(model)) {
+    console.warn(`⚠️ Model "${model}" from /model command is blocked. Using safe default instead.`);
+    model = null;
+  }
+  if (model) return model;
+
   // 3. Per-component config
-  if (modelFromConfig) return modelFromConfig;
+  model = modelFromConfig;
+  if (model && BLOCKED_MODELS.has(model)) {
+    console.warn(`⚠️ Model "${model}" from config is blocked. Using safe default instead.`);
+    model = null;
+  }
+  if (model) return model;
+
   // 4. Provider default
   const defaults = {
-    openrouter:  'openai/gpt-4o-mini',
+    openrouter:  'qwen/qwen3.6-plus:free',  // Switched from gpt-4o-mini (needs key) to free model
     anthropic:   'claude-haiku-4-5',
     openai:      'gpt-4o-mini',
     custom:      'gpt-4o-mini',
     groq:        'mixtral-8x7b-32768',
     huggingface: 'mistral-7b-instruct-v0.1',
   };
-  return defaults[PROVIDER] || 'openai/gpt-4o-mini';
+  return defaults[PROVIDER] || 'qwen/qwen3.6-plus:free';
 }
 
-const FALLBACK_MODEL = process.env.FALLBACK_AI_MODEL || 'openai/gpt-4o-mini';
+// Intelligent fallback chain based on available provider keys
+function getFallbackModel() {
+  const fallback = process.env.FALLBACK_AI_MODEL;
+  if (fallback && !BLOCKED_MODELS.has(fallback)) {
+    return fallback;
+  }
+
+  // Build fallback chain based on what provider keys are available
+  const fallbacks = [];
+
+  if (process.env.OPENROUTER_API_KEY) {
+    fallbacks.push('qwen/qwen3.6-plus:free');
+    fallbacks.push('meta-llama/llama-2-70b-chat:free');
+  }
+  if (process.env.GROQ_API_KEY) {
+    fallbacks.push('mixtral-8x7b-32768');
+  }
+  if (process.env.OPENAI_API_KEY) {
+    fallbacks.push('gpt-4o-mini');
+  }
+  if (process.env.ANTHROPIC_API_KEY) {
+    fallbacks.push('claude-haiku-4-5');
+  }
+
+  // Default fallback if nothing else configured
+  if (fallbacks.length === 0) {
+    fallbacks.push('qwen/qwen3.6-plus:free');
+  }
+
+  return fallbacks[0];
+}
+
+const FALLBACK_MODEL = getFallbackModel();
 
 // ─── extractText — skip thinking blocks dari reasoning models ─────
 
@@ -236,6 +294,13 @@ export async function createMessage({ model, maxTokens = 4096, system, tools, me
   let lastError;
   let usedFallback = false;
 
+  // Block minimax models — they fail silently on OpenRouter
+  if (BLOCKED_MODELS.has(resolvedModel)) {
+    console.warn(`⚠️ Model "${resolvedModel}" is blocked (known to fail). Switching to fallback: ${FALLBACK_MODEL}`);
+    resolvedModel = FALLBACK_MODEL;
+    usedFallback = true;
+  }
+
   for (let attempt = 0; attempt < 3; attempt++) {
     try {
       let response;
@@ -265,13 +330,15 @@ export async function createMessage({ model, maxTokens = 4096, system, tools, me
         };
 
         // Only include tools if model supports them
+        // Note: Minimax models are already blocked upstream, but keeping for defense-in-depth
         const modelsWithoutTools = [
           'minimax/minimax-m2.7',
           'minimax/minimax-m2.5',
           'minimax-m2.7',
           'minimax-m2.5',
         ];
-        if (tools?.length && !modelsWithoutTools.some(m => resolvedModel.includes(m))) {
+        const supportsTools = !modelsWithoutTools.some(m => resolvedModel.includes(m));
+        if (tools?.length && supportsTools) {
           params.tools = toOAITools(tools);
         }
 
