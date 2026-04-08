@@ -34,7 +34,6 @@ import { resolvePositionSnapshot } from './app/positionSnapshot.js';
 import { getWalletPositions, isLPAgentEnabled } from './market/lpAgent.js';
 import { DbBackup } from './db/backup.js';
 import { initializeRpcManager, getRpcMetrics } from './utils/helius.js';
-import { CandleManager } from './providers/candleProvider.js';
 import { CircuitBreaker } from './safety/circuitBreaker.js';
 import { createMessageTransport } from './telegram/messageTransport.js';
 
@@ -113,12 +112,6 @@ const circuitBreaker = new CircuitBreaker({
 
 // Initialize API fallback providers (dengan circuit breaker)
 const rpcManager = initializeRpcManager(circuitBreaker);
-const candleManager = new CandleManager({
-  gecko: true, // GeckoTerminal always enabled (free)
-  coingecko: true, // CoinGecko as fallback (free but limited)
-  birdeye: process.env.BIRDEYE_API_KEY, // Birdeye optional (requires API key)
-  circuitBreaker: circuitBreaker, // Pass circuit breaker to candle providers
-});
 
 const _dryRun = getConfig().dryRun;
 console.log(`🦞 Meteora DLMM Bot started! Mode: ${_dryRun ? 'DRY RUN' : 'LIVE'}`);
@@ -164,9 +157,11 @@ async function getLpPnlMap() {
 }
 
 // ─── Busy flags — cegah 2 cycle jalan bersamaan ──────────────────
-let _hunterBusy = false;
-let _healerBusy = false;
-let _screeningBusy = false;
+// Menggunakan timestamp (Date.now()) untuk mendukung lock expiration
+let _hunterBusy = 0;
+let _healerBusy = 0;
+let _screeningBusy = 0;
+const LOCK_TIMEOUT_MS = 15 * 60 * 1000; // 15 menit
 
 // ─── Pending approval state (auto-screening) ─────────────────────
 // Map: approvalKey → { candidates, chatId, expiresAt, messageId }
@@ -189,7 +184,7 @@ async function triggerHunter(targetCount = null) {
     notify(`⚠️ Circuit Breaker AKTIF (state: ${circuitBreaker.getState().state}). Trading sedang dipause karena sistem degraded.`).catch(() => {});
     return;
   }
-  if (_hunterBusy) return;
+  if (_hunterBusy && (Date.now() - _hunterBusy < LOCK_TIMEOUT_MS)) return;
   const liveCfg = getConfig();
   const openPos = getOpenPositions();
   // Cek kuota: jika targetCount diberikan, cek apakah masih ada slot
@@ -201,10 +196,10 @@ async function triggerHunter(targetCount = null) {
     notify(`⚠️ Posisi sudah penuh (${openPos.length}/${liveCfg.maxPositions}). Tutup posisi dulu sebelum entry baru.`).catch(() => {});
     return;
   }
-  _hunterBusy = true;
+  _hunterBusy = Date.now();
   try { await runHunterAlpha(notify, bot, ALLOWED_ID, { targetCount }); }
   catch (e) { notify(`❌ Hunter error: ${e.message}`).catch(() => {}); }
-  finally { _hunterBusy = false; }
+  finally { _hunterBusy = 0; }
 }
 
 // Healer — hanya manage posisi, tidak ada reopen prompt
@@ -229,9 +224,9 @@ cron.schedule('* * * * *', async () => {
   const now     = Date.now();
   if (now - _lastHealerRun < liveCfg.managementIntervalMin * 60 * 1000) return;
   // Update SETELAH cek busy — supaya timer tidak mundur saat healer masih jalan
-  if (_healerBusy) { console.log('⏭ Healer skip — masih berjalan'); return; }
+  if (_healerBusy && (Date.now() - _healerBusy < LOCK_TIMEOUT_MS)) { console.log('⏭ Healer skip — masih berjalan'); return; }
   _lastHealerRun = now;
-  _healerBusy = true;
+  _healerBusy = Date.now();
   try {
     await runHealerWithReopenCheck();
     autoEvolveIfReady(notify).catch(e => console.error('Auto-evolve error:', e.message));
@@ -239,7 +234,7 @@ cron.schedule('* * * * *', async () => {
     savePerformanceSnapshot();
   }
   catch (e) { notify(`❌ Healer error: ${e.message}`).catch(() => {}); }
-  finally { _healerBusy = false; }
+  finally { _healerBusy = 0; }
 });
 
 // ─── Auto-screening Hunter — interval dibaca live dari config ────
@@ -252,7 +247,10 @@ async function runAutoScreening() {
     console.log(`⏭ Auto-screening skip — Circuit Breaker ${circuitBreaker.getState().state}`);
     return;
   }
-  if (_screeningBusy || _hunterBusy) return;
+  const now = Date.now();
+  const isHunterBusy = _hunterBusy && (now - _hunterBusy < LOCK_TIMEOUT_MS);
+  const isScreeningBusy = _screeningBusy && (now - _screeningBusy < LOCK_TIMEOUT_MS);
+  if (isScreeningBusy || isHunterBusy) return;
   const liveCfg = getConfig();
   if (!liveCfg.autoScreeningEnabled) return;
 
@@ -262,16 +260,16 @@ async function runAutoScreening() {
   const balance = await getWalletBalance().catch(() => '0');
   if (parseFloat(balance) < (liveCfg.deployAmountSol + (liveCfg.gasReserve ?? 0.02))) return;
 
-  _screeningBusy = true;
-  _hunterBusy    = true;
+  _screeningBusy = Date.now();
+  _hunterBusy    = Date.now();
   try {
     await runHunterAlpha(notify, bot, ALLOWED_ID);
   } catch (e) {
     console.error('Auto-screening error:', e.message);
     notify(`❌ Auto-screening error: ${e.message}`).catch(() => {});
   } finally {
-    _screeningBusy = false;
-    _hunterBusy    = false;
+    _screeningBusy = 0;
+    _hunterBusy    = 0;
   }
 }
 
@@ -708,8 +706,11 @@ bot.onText(/\/pools/, async (msg) => {
 
 bot.onText(/\/hunt/, async (msg) => {
   if (msg.from.id !== ALLOWED_ID) return;
-  if (_hunterBusy || _screeningBusy) {
-    bot.sendMessage(msg.chat.id, '⏳ Hunter sedang berjalan. Tunggu siklus saat ini selesai.');
+  const now = Date.now();
+  const isHunterBusy = _hunterBusy && (now - _hunterBusy < LOCK_TIMEOUT_MS);
+  const isScreeningBusy = _screeningBusy && (now - _screeningBusy < LOCK_TIMEOUT_MS);
+  if (isHunterBusy || isScreeningBusy) {
+    bot.sendMessage(msg.chat.id, '⏳ Hunter sedang berjalan (atau terkunci). Tunggu siklus saat ini selesai.');
     return;
   }
   bot.sendMessage(msg.chat.id, '🦅 Menjalankan Hunter Alpha...');
@@ -719,9 +720,15 @@ bot.onText(/\/hunt/, async (msg) => {
 
 bot.onText(/\/heal/, async (msg) => {
   if (msg.from.id !== ALLOWED_ID) return;
+  if (_healerBusy && (Date.now() - _healerBusy < LOCK_TIMEOUT_MS)) {
+    bot.sendMessage(msg.chat.id, '⏳ Healer sedang berjalan. Tunggu siklus saat ini selesai.');
+    return;
+  }
   bot.sendMessage(msg.chat.id, '🩺 Menjalankan Healer Alpha...');
+  _healerBusy = Date.now();
   try { await runHealerWithReopenCheck(); }
   catch (e) { bot.sendMessage(msg.chat.id, `❌ ${e.message}`); }
+  finally { _healerBusy = 0; }
 });
 
 

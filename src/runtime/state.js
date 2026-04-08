@@ -1,41 +1,82 @@
-import { existsSync, readFileSync, writeFileSync, renameSync } from 'fs';
+import { existsSync, readFileSync, promises as fs, renameSync } from 'fs';
 import { dirname, join } from 'path';
 import { fileURLToPath } from 'url';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const STATE_PATH = process.env.BOT_RUNTIME_STATE_PATH || join(__dirname, '../../runtime-state.json');
 
-function readStateFile() {
-  if (!existsSync(STATE_PATH)) return {};
+// ─── In-memory state singleton ────────────────────────────────────
+let _cachedState = null;
+let _isPersisting = false;
+let _needsPersist = false;
+let _persistTimeout = null;
+
+function loadStateSync() {
+  if (_cachedState !== null) return _cachedState;
+  if (!existsSync(STATE_PATH)) {
+    _cachedState = {};
+    return _cachedState;
+  }
   try {
-    return JSON.parse(readFileSync(STATE_PATH, 'utf-8'));
-  } catch {
-    return {};
+    _cachedState = JSON.parse(readFileSync(STATE_PATH, 'utf-8'));
+  } catch (e) {
+    console.warn(`[state] Failed to parse state file, starting fresh: ${e.message}`);
+    _cachedState = {};
+  }
+  return _cachedState;
+}
+
+// ─── Throttled Persistence ────────────────────────────────────────
+// Persists state to disk asynchronously, throttled to 500ms.
+async function persistState() {
+  if (_isPersisting) {
+    _needsPersist = true;
+    return;
+  }
+
+  _isPersisting = true;
+  _needsPersist = false;
+
+  const tmpPath = `${STATE_PATH}.tmp`;
+  try {
+    const data = JSON.stringify(_cachedState, null, 2);
+    await fs.writeFile(tmpPath, data, 'utf-8');
+    // Atomic swap
+    renameSync(tmpPath, STATE_PATH);
+  } catch (e) {
+    console.error(`[state] Failed to persist state to disk: ${e.message}`);
+  } finally {
+    _isPersisting = false;
+    if (_needsPersist) {
+      // If another update happened while we were writing, write again
+      triggerPersist();
+    }
   }
 }
 
-function writeStateFile(state) {
-  const tmpPath = `${STATE_PATH}.tmp`;
-  writeFileSync(tmpPath, JSON.stringify(state, null, 2));
-  renameSync(tmpPath, STATE_PATH);
+function triggerPersist() {
+  if (_persistTimeout) clearTimeout(_persistTimeout);
+  _persistTimeout = setTimeout(persistState, 500);
 }
 
+// ─── Public API ───────────────────────────────────────────────────
+
 export function getRuntimeState(key, fallback = null) {
-  const state = readStateFile();
+  const state = loadStateSync();
   return key in state ? state[key] : fallback;
 }
 
 export function setRuntimeState(key, value) {
-  const state = readStateFile();
+  const state = loadStateSync();
   state[key] = value;
-  writeStateFile(state);
+  triggerPersist();
   return value;
 }
 
 export function deleteRuntimeState(key) {
-  const state = readStateFile();
+  const state = loadStateSync();
   delete state[key];
-  writeStateFile(state);
+  triggerPersist();
 }
 
 export function getRuntimeCollection(key) {
@@ -54,10 +95,11 @@ export function getRuntimeCollectionItem(key, itemKey, fallback = null) {
 }
 
 export function updateRuntimeCollectionItem(key, itemKey, updater) {
-  const state = readStateFile();
+  const state = loadStateSync();
   const collection = state[key] && typeof state[key] === 'object' && !Array.isArray(state[key])
     ? state[key]
     : {};
+
   const currentValue = itemKey in collection ? collection[itemKey] : null;
   const nextValue = typeof updater === 'function' ? updater(currentValue) : updater;
 
@@ -68,16 +110,17 @@ export function updateRuntimeCollectionItem(key, itemKey, updater) {
   }
 
   state[key] = collection;
-  writeStateFile(state);
+  triggerPersist();
   return nextValue;
 }
 
 export function deleteRuntimeCollectionItem(key, itemKey) {
-  const state = readStateFile();
+  const state = loadStateSync();
   const collection = state[key] && typeof state[key] === 'object' && !Array.isArray(state[key])
     ? state[key]
     : {};
+
   delete collection[itemKey];
   state[key] = collection;
-  writeStateFile(state);
+  triggerPersist();
 }

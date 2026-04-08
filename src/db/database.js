@@ -16,6 +16,11 @@ function initializeDatabase() {
     db.prepare("PRAGMA integrity_check").all();
     console.log('✅ Database integrity check passed');
 
+    // Enable WAL mode for better concurrency
+    db.pragma('journal_mode = WAL');
+    db.pragma('synchronous = NORMAL');
+    console.log('⚡ SQLite WAL mode enabled');
+
     return db;
   } catch (e) {
     console.error('❌ Database corrupted or unreadable:', e.message);
