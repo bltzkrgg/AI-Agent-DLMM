@@ -81,6 +81,12 @@ export const globalRateLimiter = new RateLimiter({
     // LP Agent
     'api.lpagent.io': 60,
 
+    // AI Providers — protected to prevent 429 burst errors
+    'openrouter.ai': 40,
+    'api.anthropic.com': 40,
+    'api.openai.com': 40,
+    'api.groq.com': 40,
+
     // Helius — RPC
     'mainnet.helius-rpc.com': 60,
     'solana-mainnet.g.alchemy.com': 60,

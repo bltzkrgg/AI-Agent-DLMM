@@ -1,6 +1,7 @@
 import Anthropic from '@anthropic-ai/sdk';
 import OpenAI from 'openai';
 import { getConfig } from '../config.js';
+import { globalRateLimiter } from '../utils/rateLimiter.js';
 import {
   discoverAllModels,
   getBestModel,
@@ -344,6 +345,8 @@ export async function createMessage({ model, maxTokens = 4096, system, tools, me
         const params = { model: resolvedModel, max_tokens: maxTokens, messages };
         if (system) params.system = system;
         if (tools?.length) params.tools = tools;
+        
+        await globalRateLimiter.acquire('api.anthropic.com');
         response = await client.messages.create(params);
 
       } else {
@@ -361,9 +364,8 @@ export async function createMessage({ model, maxTokens = 4096, system, tools, me
           max_tokens: maxTokens,
           messages: oaiMessages,
         };
-
-        // Only include tools if model supports them
-        // Note: Minimax models are already blocked upstream, but keeping for defense-in-depth
+        
+        // ... tool support logic ...
         const modelsWithoutTools = [
           'minimax/minimax-m2.7',
           'minimax/minimax-m2.5',
@@ -375,6 +377,11 @@ export async function createMessage({ model, maxTokens = 4096, system, tools, me
           params.tools = toOAITools(tools);
         }
 
+        const hostname = PROVIDER === 'openai' ? 'api.openai.com'
+                       : PROVIDER === 'groq'   ? 'api.groq.com'
+                       : 'openrouter.ai';
+                       
+        await globalRateLimiter.acquire(hostname);
         const oaiResponse = await client.chat.completions.create(params);
         response = toAnthropicResponse(oaiResponse);
       }
@@ -428,7 +435,7 @@ export async function createMessage({ model, maxTokens = 4096, system, tools, me
 
       // Rate limit — exponential backoff
       if (isRateLimit) {
-        const wait = (attempt + 1) * 10000; // 10s, 20s, 30s
+        const wait = (attempt + 1) * 20000; // 20s, 40s, 60s
         console.warn(`⚠️ Rate limited, waiting ${wait / 1000}s... (attempt ${attempt + 1}/3)`);
         await new Promise(r => setTimeout(r, wait));
         continue;

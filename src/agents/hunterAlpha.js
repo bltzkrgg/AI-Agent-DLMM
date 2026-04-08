@@ -997,6 +997,9 @@ Gunakan Bahasa Indonesia. Reasoning tajam, eksekusi cepat.`;
     messages.push({ role: 'assistant', content: response.content });
     messages.push({ role: 'user', content: toolResults });
 
+    // Pacing delay to prevent rapid-fire 429 errors during tool use cycles
+    await new Promise(r => setTimeout(r, 1000));
+
     response = await createMessage({
       model: resolveModel(cfg.screeningModel),
       maxTokens: 4096,
