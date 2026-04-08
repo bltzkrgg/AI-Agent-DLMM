@@ -156,18 +156,6 @@ async function getLpPnlMap() {
   return pnlMap;
 }
 
-/**
- * Convenience wrapper for the main loop to call periodically.
- * Only sends a notification if an evolution actually occurred.
- */
-export async function autoEvolveIfReady(notifyFn) {
-  const updates = await runEvolutionCycle();
-  if (updates && notifyFn) {
-    const keys = Object.keys(updates).join(', ');
-    await notifyFn(`🧬 *Autonomous Evolution Occurred*\n\nRecalibrated parameters: \`${keys}\`\nCheck history for detailed reasoning.`);
-  }
-  return updates;
-}
 
 // ─── Busy flags — cegah 2 cycle jalan bersamaan ──────────────────
 // Menggunakan timestamp (Date.now()) untuk mendukung lock expiration
