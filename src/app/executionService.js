@@ -1,5 +1,6 @@
 import { createOperationLog, updateOperationLog } from '../db/database.js';
 import { validateExecutionPolicy } from './executionPolicy.js';
+import { logError, logInfo } from '../utils/logger.js';
 
 function extractTxHashes(result) {
   if (!result) return [];
@@ -16,22 +17,32 @@ export async function executeControlledOperation({
   policy = {},
   execute,
 }) {
+  const safeEntityId = operationType === 'OPEN_POSITION' ? null : entityId;
   validateExecutionPolicy({
     operationType,
-    entityId,
+    entityId: safeEntityId,
     ...policy,
   });
 
-  const log = createOperationLog({
-    operationType,
-    entityId,
-    payload,
-    metadata,
-    status: 'pending',
-  });
+  let log;
+  try {
+    log = createOperationLog({
+      operationType,
+      entityId: safeEntityId,
+      payload,
+      metadata,
+      status: 'pending',
+    });
+  } catch (error) {
+    if (String(error?.message || '').includes('UNIQUE constraint failed')) {
+      throw new Error(`Operasi ${operationType} masih berjalan. Coba lagi setelah selesai.`);
+    }
+    throw error;
+  }
   const operationId = log.lastInsertRowid;
 
   updateOperationLog(operationId, { status: 'in_progress', metadata });
+  logInfo('operation_started', { operationType, entityId: safeEntityId, operationId });
 
   try {
     const result = await execute();
@@ -41,12 +52,19 @@ export async function executeControlledOperation({
       metadata,
       txHashes: extractTxHashes(result),
     });
+    logInfo('operation_succeeded', { operationType, entityId: safeEntityId, operationId });
     return { operationId, result };
   } catch (error) {
     updateOperationLog(operationId, {
       status: 'failed',
       errorMessage: error.message,
       metadata,
+    });
+    logError('operation_failed', {
+      operationType,
+      entityId: safeEntityId,
+      operationId,
+      error: error.message,
     });
     throw error;
   }

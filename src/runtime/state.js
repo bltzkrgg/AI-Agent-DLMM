@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, writeFileSync } from 'fs';
+import { existsSync, readFileSync, writeFileSync, renameSync } from 'fs';
 import { dirname, join } from 'path';
 import { fileURLToPath } from 'url';
 
@@ -15,7 +15,9 @@ function readStateFile() {
 }
 
 function writeStateFile(state) {
-  writeFileSync(STATE_PATH, JSON.stringify(state, null, 2));
+  const tmpPath = `${STATE_PATH}.tmp`;
+  writeFileSync(tmpPath, JSON.stringify(state, null, 2));
+  renameSync(tmpPath, STATE_PATH);
 }
 
 export function getRuntimeState(key, fallback = null) {
@@ -52,7 +54,10 @@ export function getRuntimeCollectionItem(key, itemKey, fallback = null) {
 }
 
 export function updateRuntimeCollectionItem(key, itemKey, updater) {
-  const collection = getRuntimeCollection(key);
+  const state = readStateFile();
+  const collection = state[key] && typeof state[key] === 'object' && !Array.isArray(state[key])
+    ? state[key]
+    : {};
   const currentValue = itemKey in collection ? collection[itemKey] : null;
   const nextValue = typeof updater === 'function' ? updater(currentValue) : updater;
 
@@ -62,12 +67,17 @@ export function updateRuntimeCollectionItem(key, itemKey, updater) {
     collection[itemKey] = nextValue;
   }
 
-  setRuntimeCollection(key, collection);
+  state[key] = collection;
+  writeStateFile(state);
   return nextValue;
 }
 
 export function deleteRuntimeCollectionItem(key, itemKey) {
-  const collection = getRuntimeCollection(key);
+  const state = readStateFile();
+  const collection = state[key] && typeof state[key] === 'object' && !Array.isArray(state[key])
+    ? state[key]
+    : {};
   delete collection[itemKey];
-  setRuntimeCollection(key, collection);
+  state[key] = collection;
+  writeStateFile(state);
 }

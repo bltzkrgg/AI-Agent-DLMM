@@ -118,6 +118,23 @@ db.exec(`
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
   );
+
+  CREATE TABLE IF NOT EXISTS reconcile_queue (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    issue_type TEXT NOT NULL,
+    entity_id TEXT NOT NULL,
+    payload TEXT,
+    status TEXT NOT NULL DEFAULT 'pending',
+    notes TEXT,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+  );
+`);
+
+db.exec(`
+  CREATE UNIQUE INDEX IF NOT EXISTS idx_operation_active_unique
+  ON operation_log(operation_type, IFNULL(entity_id, '__global__'))
+  WHERE status IN ('pending', 'in_progress');
 `);
 
 // Migrasi kolom — setiap ALTER dijalankan sendiri supaya error satu tidak block yang lain
@@ -331,6 +348,35 @@ export function createOperationLog({ operationType, entityId = null, payload = n
     payload ? JSON.stringify(payload) : null,
     metadata ? JSON.stringify(metadata) : null,
   );
+}
+
+export function enqueueReconcileIssue({ issueType, entityId, payload = null, notes = null }) {
+  return db.prepare(`
+    INSERT INTO reconcile_queue (issue_type, entity_id, payload, notes)
+    VALUES (?, ?, ?, ?)
+  `).run(
+    issueType,
+    entityId,
+    payload ? JSON.stringify(payload) : null,
+    notes,
+  );
+}
+
+export function listPendingReconcileIssues(limit = 50) {
+  return db.prepare(`
+    SELECT * FROM reconcile_queue
+    WHERE status = 'pending'
+    ORDER BY created_at ASC
+    LIMIT ?
+  `).all(limit);
+}
+
+export function resolveReconcileIssue(id, notes = null) {
+  return db.prepare(`
+    UPDATE reconcile_queue
+    SET status = 'resolved', notes = COALESCE(?, notes), updated_at = CURRENT_TIMESTAMP
+    WHERE id = ?
+  `).run(notes, id);
 }
 
 export function updateOperationLog(id, { status, result, metadata, errorMessage, txHashes }) {

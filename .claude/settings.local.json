@@ -58,7 +58,10 @@
       "Bash(git checkout:*)",
       "Bash(git rebase:*)",
       "Bash(git pull:*)",
-      "Bash(chmod +x:*)"
+      "Bash(chmod +x:*)",
+      "Bash(npm test:*)",
+      "Bash(npm run:*)",
+      "Bash(/tmp/verify-fixes.sh)"
     ]
   }
 }

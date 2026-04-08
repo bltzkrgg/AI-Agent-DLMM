@@ -544,6 +544,26 @@ src/
 
 ## Troubleshooting
 
+## Operational Runbook
+
+### Saat Circuit Breaker aktif (OPEN/HALF_OPEN)
+1. Cek `/providers` untuk melihat provider mana yang error/latency tinggi.
+2. Cek `/safety` dan `/status` untuk memastikan posisi masih terpantau.
+3. Jangan paksa `/hunt` saat state belum `CLOSED`.
+4. Jika issue dari RPC/provider eksternal, tunggu recovery otomatis lalu verifikasi ulang.
+
+### Saat posisi masuk `manual_review`
+1. Verifikasi posisi di Meteora UI berdasarkan `position_address`.
+2. Cek operasi terbaru lewat command/tool `list_recent_operations`.
+3. Jika posisi masih ada on-chain, lakukan close/claim manual dan catat hasil.
+4. Setelah reconciled, lanjutkan operasi normal.
+
+### Saat perlu restore database
+1. Jalankan `node scripts/restore-db.js`.
+2. Pilih backup yang benar dan konfirmasi `yes`.
+3. Restart bot setelah restore selesai.
+4. Jalankan `/status` untuk memastikan posisi dan stats terbaca normal.
+
 **`SyntaxError: Unexpected reserved word`**
 ```bash
 nvm install 20 && nvm use 20

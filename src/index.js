@@ -1,10 +1,11 @@
 import 'dotenv/config';
 import TelegramBot from 'node-telegram-bot-api';
 import cron from 'node-cron';
+import { PublicKey } from '@solana/web3.js';
 import { writeFileSync, readFileSync, existsSync, unlinkSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
-import { initSolana, getWallet, getWalletBalance } from './solana/wallet.js';
+import { initSolana, getConnection, getWallet, getWalletBalance } from './solana/wallet.js';
 import { processMessage } from './agent/claude.js';
 import { handleStrategyCommand, isInStrategySession } from './strategies/strategyHandler.js';
 import { runHunterAlpha, getCandidates } from './agents/hunterAlpha.js';
@@ -16,7 +17,7 @@ import { evolveFromTrades, getMemoryStats, getInstinctsContext } from './market/
 import { extractStrategiesFromArticle, summarizeArticle } from './market/researcher.js';
 import { getLibraryStats } from './market/strategyLibrary.js';
 import { screenToken, formatScreenResult } from './market/coinfilter.js';
-import { getOpenPositions, getPositionStats, closePositionWithPnl } from './db/database.js';
+import { getOpenPositions, getPositionStats } from './db/database.js';
 import { getPositionInfo, getPositionInfoLight, getSolPriceUsd } from './solana/meteora.js';
 import { padR, hr, kv, codeBlock, formatPnl, shortAddr, shortStrat } from './utils/table.js';
 import { initMonitor } from './monitor/positionMonitor.js';
@@ -34,6 +35,7 @@ import { DbBackup } from './db/backup.js';
 import { initializeRpcManager, getRpcMetrics } from './utils/helius.js';
 import { CandleManager } from './providers/candleProvider.js';
 import { CircuitBreaker } from './safety/circuitBreaker.js';
+import { createMessageTransport } from './telegram/messageTransport.js';
 
 // ─── PID lock — cegah multiple instance ─────────────────────────
 const PID_FILE = new URL('../../bot.pid', import.meta.url).pathname;
@@ -136,50 +138,10 @@ async function syncStartingBalanceBaseline() {
 
 await syncStartingBalanceBaseline();
 
-const TG_MAX = 4000; // Telegram limit 4096, sisakan buffer untuk formatting
-
-// Potong teks panjang menjadi chunks di batas baris
-function splitText(text) {
-  if (text.length <= TG_MAX) return [text];
-  const chunks = [];
-  let remaining = text;
-  while (remaining.length > 0) {
-    if (remaining.length <= TG_MAX) { chunks.push(remaining); break; }
-    let cutAt = remaining.lastIndexOf('\n', TG_MAX);
-    if (cutAt < TG_MAX * 0.5) cutAt = TG_MAX;
-    chunks.push(remaining.slice(0, cutAt));
-    remaining = remaining.slice(cutAt).trimStart();
-  }
-  return chunks;
-}
-
-// Kirim dengan Markdown, fallback ke plain text kalau Telegram reject
-async function sendLong(chatId, text, opts = {}) {
-  const chunks = splitText(String(text));
-  for (const chunk of chunks) {
-    try {
-      await bot.sendMessage(chatId, chunk, opts);
-    } catch (e) {
-      // Kalau Markdown error, kirim ulang tanpa formatting
-      if (e.message?.includes('parse') || e.message?.includes('Bad Request')) {
-        try {
-          const plainOpts = { ...opts };
-          delete plainOpts.parse_mode;
-          await bot.sendMessage(chatId, chunk, plainOpts);
-        } catch (e2) {
-          console.error('sendLong fallback error:', e2.message);
-        }
-      } else {
-        console.error('sendLong error:', e.message);
-      }
-    }
-  }
-}
-
-// Fire-and-forget notify — tidak pernah throw, tidak pernah crash agent
+const transport = createMessageTransport(bot, ALLOWED_ID);
+const sendLong = transport.sendLong;
 async function notify(text) {
-  sendLong(ALLOWED_ID, String(text), { parse_mode: 'Markdown', disable_web_page_preview: true })
-    .catch(e => console.error('Notify error:', e.message));
+  transport.notify(text).catch(e => console.error('Notify error:', e.message));
 }
 
 async function getLpPnlMap() {
@@ -551,30 +513,46 @@ bot.onText(/\/status/, async (msg) => {
       }
     }));
 
-    // Auto-mark manually closed positions in DB
+    // Detect suspected manual close, but never mutate DB from /status.
+    // Reconciliation must happen in healer flow after stronger verification.
     for (const pos of openPos) {
-      const c = chainMap[pos.position_address];
+      const c = chainMap[pos.position_address] || { status: 'Unknown' };
       if (c?.manualClose) {
-        closePositionWithPnl(pos.position_address, {
-          pnlUsd: 0,
-          pnlPct: 0,
-          feesUsd: 0,
-          closeReason: 'MANUAL_CLOSE',
-          lifecycleState: 'closed_reconciled',
-        });
-        notify(
-          `⚠️ *Posisi Ditutup Manual*\n\n` +
-          `Pool     : \`${pos.pool_address}\`\n` +
-          `Posisi   : \`${pos.position_address}\`\n` +
-          `Strategi : ${pos.strategy_used || '-'}\n` +
-          `Deploy   : ${(pos.deployed_sol || 0).toFixed(4)} SOL\n\n` +
-          `_Posisi tidak ditemukan on-chain. Telah ditandai CLOSED di database._`
-        ).catch(() => {});
+        let accountExists = true;
+        try {
+          const info = await getConnection().getAccountInfo(new PublicKey(pos.position_address));
+          accountExists = info !== null;
+        } catch {
+          accountExists = true;
+        }
+
+        if (!accountExists) {
+          chainMap[pos.position_address] = {
+            ...c,
+            status: 'SuspectClosed',
+            suspectedManualClose: true,
+          };
+          notify(
+            `⚠️ *Suspected Manual Close*\n\n` +
+            `Pool     : \`${pos.pool_address}\`\n` +
+            `Posisi   : \`${pos.position_address}\`\n` +
+            `Strategi : ${pos.strategy_used || '-'}\n\n` +
+            `_Posisi tidak terlihat via SDK/API dan account on-chain tidak ditemukan._\n` +
+            `_Status bersifat sementara; healer akan reconcile sebelum perubahan DB._`
+          ).catch(() => {});
+        } else {
+          chainMap[pos.position_address] = {
+            ...c,
+            status: 'RPCInconsistent',
+            manualClose: false,
+            suspectedManualClose: false,
+          };
+        }
       }
     }
 
-    // Filter ulang posisi yang benar-benar masih open (belum di-mark manual)
-    const activePos = openPos.filter(p => !chainMap[p.position_address]?.manualClose);
+    // Keep all open positions visible in /status.
+    const activePos = openPos;
 
     // ── Header ───────────────────────────────────────────────────
     let text = `📊 *Status Bot* 🔴 LIVE\n\n`;
@@ -714,12 +692,12 @@ bot.onText(/\/pools/, async (msg) => {
 
 bot.onText(/\/hunt/, async (msg) => {
   if (msg.from.id !== ALLOWED_ID) return;
-  if (!circuitBreaker.isHealthy()) {
-    bot.sendMessage(msg.chat.id, `⚠️ Circuit Breaker AKTIF (${circuitBreaker.getState().state}). Trading sedang dipause.`);
+  if (_hunterBusy || _screeningBusy) {
+    bot.sendMessage(msg.chat.id, '⏳ Hunter sedang berjalan. Tunggu siklus saat ini selesai.');
     return;
   }
   bot.sendMessage(msg.chat.id, '🦅 Menjalankan Hunter Alpha...');
-  try { await runHunterAlpha(notify, bot, ALLOWED_ID); }
+  try { await triggerHunter(); }
   catch (e) { bot.sendMessage(msg.chat.id, `❌ ${e.message}`); }
 });
 

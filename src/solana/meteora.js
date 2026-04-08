@@ -2,7 +2,7 @@ import DLMM, { chunkBinRange } from '@meteora-ag/dlmm';
 import { PublicKey, Keypair, Transaction, ComputeBudgetProgram, VersionedTransaction } from '@solana/web3.js';
 import BN from 'bn.js';
 import { getConnection, getWallet } from './wallet.js';
-import { savePosition, closePositionWithPnl } from '../db/database.js';
+import { savePosition, closePositionWithPnl, enqueueReconcileIssue, updatePositionLifecycle } from '../db/database.js';
 import { fetchWithTimeout, withRetry } from '../utils/safeJson.js';
 import { resolveTokens, WSOL_MINT } from '../utils/tokenMeta.js';
 import { isDryRun } from '../config.js';
@@ -13,13 +13,25 @@ const METEORA_DLMM_API = 'https://dlmm-api.meteora.ag';
 // Strip existing ComputeBudget instructions then inject fresh ones.
 // Prevents "duplicate instruction" error when SDK already includes ComputeBudget.
 function injectPriorityFee(tx, { units = 400_000, microLamports = 200_000 } = {}) {
-  if (tx instanceof VersionedTransaction) return;
+  // Both Transaction and VersionedTransaction need priority fees
+  const isVersioned = tx instanceof VersionedTransaction;
   const CB = ComputeBudgetProgram.programId.toString();
-  tx.instructions = tx.instructions.filter(ix => ix.programId.toString() !== CB);
-  tx.instructions.unshift(
-    ComputeBudgetProgram.setComputeUnitLimit({ units }),
-    ComputeBudgetProgram.setComputeUnitPrice({ microLamports }),
-  );
+
+  if (isVersioned) {
+    // For VersionedTransaction, filter and inject into message.instructions
+    tx.message.instructions = tx.message.instructions.filter(ix => ix.programId.toString() !== CB);
+    tx.message.instructions.unshift(
+      ComputeBudgetProgram.setComputeUnitLimit({ units }),
+      ComputeBudgetProgram.setComputeUnitPrice({ microLamports }),
+    );
+  } else {
+    // For Transaction, inject into tx.instructions
+    tx.instructions = tx.instructions.filter(ix => ix.programId.toString() !== CB);
+    tx.instructions.unshift(
+      ComputeBudgetProgram.setComputeUnitLimit({ units }),
+      ComputeBudgetProgram.setComputeUnitPrice({ microLamports }),
+    );
+  }
 }
 
 // ─── Safe BN conversion — avoids floating point errors ──────────
@@ -434,6 +446,7 @@ export async function openPosition(poolAddress, tokenXAmount, tokenYAmount, pric
 
   // Save each position chunk to DB — retry once on failure to guard against
   // transient DB write errors after TX has already landed on-chain.
+  const dbWriteFailures = [];
   for (const pos of deployedPositions) {
     const record = {
       pool_address:     poolAddress,
@@ -453,9 +466,40 @@ export async function openPosition(poolAddress, tokenXAmount, tokenYAmount, pric
     } catch (dbErr) {
       console.warn(`[openPosition] DB write failed (${dbErr.message}), retrying in 1s…`);
       await new Promise(r => setTimeout(r, 1000));
-      try { savePosition(record); }
-      catch (e2) { console.error(`[openPosition] DB write retry failed: ${e2.message}`); }
+      try {
+        savePosition(record);
+      } catch (e2) {
+        console.error(`[openPosition] DB write retry failed: ${e2.message}`);
+        dbWriteFailures.push({
+          positionAddress: pos.address,
+          error: e2.message,
+          poolAddress: poolAddress,
+          txHashes: allTxHashes,
+          deployedSol: pos.yAmountSol,
+        });
+        enqueueReconcileIssue({
+          issueType: 'DEPLOY_DB_WRITE_FAILED',
+          entityId: pos.address,
+          payload: {
+            poolAddress,
+            positionAddress: pos.address,
+            txHashes: allTxHashes,
+            deployedSol: pos.yAmountSol,
+            strategyName,
+            error: e2.message,
+          },
+          notes: 'On-chain deploy succeeded but DB save failed. Reconcile required.',
+        });
+      }
     }
+  }
+
+  if (dbWriteFailures.length > 0) {
+    const impacted = dbWriteFailures.map(f => f.positionAddress.slice(0, 8)).join(', ');
+    throw new Error(
+      `Deploy on-chain berhasil, tetapi persistence DB gagal untuk posisi: ${impacted}. ` +
+      `Posisi ditandai manual_review dan harus direkonsiliasi sebelum entry baru.`
+    );
   }
 
   return {
@@ -644,15 +688,14 @@ export async function closePositionDLMM(poolAddress, positionAddress, pnlData = 
         }
 
         if (!emptyCloseOk) {
-          closePositionWithPnl(positionAddress, {
-            pnlUsd: pnlData.pnlUsd || 0,
-            pnlPct: pnlData.pnlPct || 0,
-            feesUsd: pnlData.feeUsd || 0,
-            closeReason: 'EMPTY_POSITION_PURGED',
-            lifecycleState: 'manual_review',
+          updatePositionLifecycle(positionAddress, 'manual_review');
+          enqueueReconcileIssue({
+            issueType: 'EMPTY_POSITION_CLOSE_FAILED',
+            entityId: positionAddress,
+            payload: { poolAddress, positionAddress, pnlData },
+            notes: 'All close methods failed on empty position. Keep tracking and reconcile manually.',
           });
-          return { success: true, txHashes: [], emptyPositionPurged: true,
-            note: 'Posisi kosong — semua metode close gagal. Dana mungkin sudah kembali ke wallet. Verifikasi manual.' };
+          throw new Error('Posisi kosong gagal ditutup oleh semua metode. Lifecycle diubah ke manual_review untuk rekonsiliasi.');
         }
       }
 
@@ -772,17 +815,17 @@ export async function closePositionDLMM(poolAddress, positionAddress, pnlData = 
           await new Promise(r => setTimeout(r, 5000 * attempt));
           continue; // retry dengan state terbaru
         }
-        // Semua retry habis — purge DB supaya bot tidak stuck loop selamanya
-        closePositionWithPnl(positionAddress, {
-          pnlUsd: pnlData.pnlUsd || 0,
-          pnlPct: pnlData.pnlPct || 0,
-          feesUsd: pnlData.feeUsd || 0,
-          closeReason: 'CLOSE_FAILED_PURGED',
-          lifecycleState: 'manual_review',
+        // Semua retry habis — keep tracked as manual_review (never purge)
+        updatePositionLifecycle(positionAddress, 'manual_review');
+        enqueueReconcileIssue({
+          issueType: 'CLOSE_POSITION_RETRY_EXHAUSTED',
+          entityId: positionAddress,
+          payload: { poolAddress, positionAddress, pnlData },
+          notes: 'Close retries exhausted. Position still appears on-chain. Manual reconcile required.',
         });
         throw new Error(
           'Posisi masih memiliki likuiditas setelah 3 percobaan — ' +
-          'DB sudah di-clear. Verifikasi manual di Meteora UI diperlukan.'
+          'lifecycle diubah ke manual_review. Verifikasi manual di Meteora UI diperlukan.'
         );
       }
 
