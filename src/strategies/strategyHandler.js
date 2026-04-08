@@ -114,7 +114,7 @@ function handleStrategySteps(bot, chatId, userId, text, session) {
   const { step, data } = session;
 
   switch (step) {
-    case 'name':
+    case 'name': {
       if (text.length < 3) {
         bot.sendMessage(chatId, '⚠️ Nama terlalu pendek, minimal 3 karakter. Coba lagi:');
         return;
@@ -131,8 +131,9 @@ function handleStrategySteps(bot, chatId, userId, text, session) {
         { parse_mode: 'Markdown' }
       );
       break;
+    }
 
-    case 'description':
+    case 'description': {
       data.description = text;
       session.step = 'type';
       bot.sendMessage(chatId,
@@ -144,8 +145,9 @@ function handleStrategySteps(bot, chatId, userId, text, session) {
         { parse_mode: 'Markdown' }
       );
       break;
+    }
 
-    case 'type':
+    case 'type': {
       const validTypes = ['spot', 'curve', 'bid_ask'];
       if (!validTypes.includes(text.toLowerCase())) {
         bot.sendMessage(chatId, '⚠️ Tipe tidak valid. Pilih: `spot`, `curve`, atau `bid_ask`', { parse_mode: 'Markdown' });
@@ -164,8 +166,9 @@ function handleStrategySteps(bot, chatId, userId, text, session) {
         { parse_mode: 'Markdown' }
       );
       break;
+    }
 
-    case 'parameters':
+    case 'parameters': {
       try {
         const params = JSON.parse(text);
         if (!params.priceRangePercent || !params.binStep) {
@@ -185,8 +188,9 @@ function handleStrategySteps(bot, chatId, userId, text, session) {
         bot.sendMessage(chatId, '⚠️ Format JSON tidak valid. Contoh yang benar:\n`{"priceRangePercent": 5, "binStep": 10}`\n\nCoba lagi:', { parse_mode: 'Markdown' });
       }
       break;
+    }
 
-    case 'logic':
+    case 'logic': {
       data.logic = text.toLowerCase() === 'skip' ? null : text;
       session.step = 'confirm';
 
@@ -201,8 +205,9 @@ function handleStrategySteps(bot, chatId, userId, text, session) {
 
       bot.sendMessage(chatId, summary, { parse_mode: 'Markdown' });
       break;
+    }
 
-    case 'confirm':
+    case 'confirm': {
       if (text.toLowerCase() === 'ya') {
         try {
           const result = addStrategy({
@@ -232,6 +237,7 @@ function handleStrategySteps(bot, chatId, userId, text, session) {
         bot.sendMessage(chatId, 'Ketik `ya` untuk simpan atau `batal` untuk membatalkan.', { parse_mode: 'Markdown' });
       }
       break;
+    }
   }
 }
 
