@@ -114,18 +114,27 @@ export async function getTokenHolderData(tokenMint) {
       heliusRpc('getTokenSupply',          [tokenMint]),
     ]);
 
-    if (largestResult.status !== 'fulfilled' || supplyResult.status !== 'fulfilled') {
-      return null;
-    }
+    const largestArr = largestResult.status === 'fulfilled' ? (largestResult.value?.value || []) : [];
+    const supply     = supplyResult.status  === 'fulfilled' ? supplyResult.value?.value : null;
 
-    const largest = largestResult.value?.value || [];
-    const supply  = supplyResult.value?.value;
-    if (!supply || largest.length === 0) return null;
+    if (!supply) return null;
 
     const totalSupply = parseFloat(supply.uiAmount || 0);
+    // If supply is missing but token is known to exist, try to recover or fail safely
     if (totalSupply === 0) return null;
 
-    const top10Amount = largest.slice(0, 10)
+    if (largestArr.length === 0) {
+      // If we have supply but no top accounts list, it might be a very new token not yet indexed.
+      // We return a "CAUTION" state rather than null failure.
+      return {
+        available:      true,
+        top10HolderPct: 100, // assume worst case (concentrated)
+        whaleRisk:      'UNCERTAIN',
+        note:           'Holder list not yet indexed by Helius (very new token)'
+      };
+    }
+
+    const top10Amount = largestArr.slice(0, 10)
       .reduce((s, h) => s + parseFloat(h.uiAmount || 0), 0);
     const top10Pct = parseFloat(((top10Amount / totalSupply) * 100).toFixed(2));
 
@@ -133,9 +142,9 @@ export async function getTokenHolderData(tokenMint) {
       available:      true,
       top10HolderPct: top10Pct,
       whaleRisk:      top10Pct > 50 ? 'HIGH' : top10Pct > 30 ? 'MEDIUM' : 'LOW',
-      // holderCount via Helius getProgramAccounts is expensive — skip, use DexScreener fallback
     };
-  } catch {
+  } catch (e) {
+    console.warn(`[helius] getTokenHolderData error for ${tokenMint}: ${e.message}`);
     return null;
   }
 }

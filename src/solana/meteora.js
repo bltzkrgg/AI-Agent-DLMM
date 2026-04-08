@@ -5,6 +5,7 @@ import { getConnection, getWallet } from './wallet.js';
 import { savePosition, closePositionWithPnl, enqueueReconcileIssue, updatePositionLifecycle } from '../db/database.js';
 import { fetchWithTimeout, withRetry } from '../utils/safeJson.js';
 import { resolveTokens, WSOL_MINT } from '../utils/tokenMeta.js';
+import { getRecommendedPriorityFee } from '../utils/helius.js';
 import { isDryRun } from '../config.js';
 import { getWalletPositions as getLPAgentPositions, isLPAgentEnabled } from '../market/lpAgent.js';
 
@@ -37,9 +38,15 @@ function injectPriorityFee(tx, { units = 400_000, microLamports = 200_000 } = {}
 // ─── Safe BN conversion — avoids floating point errors ──────────
 
 function toBN(amount, decimals) {
-  const factor = Math.pow(10, decimals);
-  const rounded = Math.floor(amount * factor);
-  return new BN(rounded.toString());
+  // Use string manipulation to avoid floating point precision issues
+  // Example: 0.1 * 10^9 can be 99999999.99999 which Math.floor makes 99,999,999
+  const parts = String(amount).split('.');
+  const intPart = parts[0] || '0';
+  let decPart = parts[1] || '';
+  decPart = decPart.padEnd(decimals, '0').slice(0, decimals);
+  
+  const combined = intPart + decPart;
+  return new BN(combined.replace(/^0+/, '') || '0');
 }
 
 // ─── TX confirmation via polling ─────────────────────────────────
@@ -388,8 +395,14 @@ export async function openPosition(poolAddress, tokenXAmount, tokenYAmount, pric
       tx.recentBlockhash = blockhash;
       tx.feePayer = wallet.publicKey;
 
-      // Priority fee — strip existing ComputeBudget lalu inject ulang (cegah duplicate)
-      injectPriorityFee(tx, { units: 400_000, microLamports: 200_000 });
+      // Priority fee — use Helius recommendation if available, otherwise fallback
+      let microLamports = 200_000;
+      try {
+        const recommended = await getRecommendedPriorityFee([poolAddress, xMint, yMint]);
+        if (recommended > 0) microLamports = recommended;
+      } catch { /* use default */ }
+
+      injectPriorityFee(tx, { units: 400_000, microLamports });
 
       tx.sign(wallet, posKp);
 

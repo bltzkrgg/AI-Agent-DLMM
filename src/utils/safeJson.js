@@ -47,8 +47,7 @@ export async function fetchWithTimeout(url, options = {}, timeoutMs = 10000) {
 
   // Domains yang PERLU rate limiting (strict free tier)
   const needsRateLimiting = [
-    'api.dexscreener.com', 'api.coingecko.com', 'api.geckoterminal.com',
-    'api.rugcheck.xyz', 'www.okx.com',
+    'api.dexscreener.com',
   ];
 
   if (needsRateLimiting.includes(hostname) && !skipRateLimiting.includes(hostname)) {
@@ -81,7 +80,7 @@ export async function fetchWithTimeout(url, options = {}, timeoutMs = 10000) {
 }
 
 /**
- * Retry wrapper for flaky network calls
+ * Retry wrapper for flaky network calls with basic linear delay
  */
 export async function withRetry(fn, retries = 3, delayMs = 1000) {
   let lastError;
@@ -89,6 +88,27 @@ export async function withRetry(fn, retries = 3, delayMs = 1000) {
     try { return await fn(); } catch (e) {
       lastError = e;
       if (i < retries - 1) await new Promise(r => setTimeout(r, delayMs * (i + 1)));
+    }
+  }
+  throw lastError;
+}
+
+/**
+ * Advanced retry wrapper with exponential backoff.
+ * Delay formula: min(baseDelay * 2^attempt, maxDelay) + jitter
+ */
+export async function withExponentialBackoff(fn, { maxRetries = 3, baseDelay = 1000, maxDelay = 10000 } = {}) {
+  let lastError;
+  for (let i = 0; i < maxRetries; i++) {
+    try {
+      return await fn();
+    } catch (e) {
+      lastError = e;
+      if (i < maxRetries - 1) {
+        const delay = Math.min(baseDelay * Math.pow(2, i), maxDelay);
+        const jitter = Math.random() * 200; // random 0-200ms
+        await new Promise(r => setTimeout(r, delay + jitter));
+      }
     }
   }
   throw lastError;

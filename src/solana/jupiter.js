@@ -7,7 +7,7 @@
 
 import { VersionedTransaction, PublicKey } from '@solana/web3.js';
 import { getConnection, getWallet } from './wallet.js';
-import { fetchWithTimeout, withRetry } from '../utils/safeJson.js';
+import { fetchWithTimeout, withRetry, withExponentialBackoff } from '../utils/safeJson.js';
 import { getRecommendedPriorityFee } from '../utils/helius.js';
 import { isDryRun } from '../config.js';
 
@@ -27,27 +27,38 @@ function getJupiterHeaders(extra = {}) {
   return headers;
 }
 
-async function fetchJupiter(path, options = {}, timeoutMs = 10000) {
+async function fetchJupiter(path, options = {}, timeoutMs = 15000) {
   let lastError;
 
   for (const baseUrl of getJupiterBaseUrls()) {
     const url = `${baseUrl}${path}`;
     try {
-      return await withRetry(
-        () => fetchWithTimeout(url, {
-          ...options,
-          headers: getJupiterHeaders(options.headers || {}),
-        }, timeoutMs),
-        2,
-        1200,
+      // Use exponential backoff for each provider attempt
+      return await withExponentialBackoff(
+        async () => {
+          const res = await fetchWithTimeout(url, {
+            ...options,
+            headers: getJupiterHeaders(options.headers || {}),
+          }, timeoutMs);
+
+          if (!res.ok) {
+            const status = res.status;
+            // 401/403 on primary jup.ag without key -> move to next provider immediately
+            if ((status === 401 || status === 403) && baseUrl === 'https://api.jup.ag' && !JUPITER_API_KEY) {
+              throw new Error('UNAUTHORIZED_PROVIDER');
+            }
+            // 429 or 5xx -> retry with backoff
+            if (status === 429 || status >= 500) {
+              throw new Error(`HTTP_${status}`);
+            }
+          }
+          return res;
+        },
+        { maxRetries: 3, baseDelay: 1500 }
       );
     } catch (e) {
+      if (e.message === 'UNAUTHORIZED_PROVIDER') continue;
       lastError = e;
-      const msg = e?.message || '';
-      const isUnauthorized = msg.includes('401') || msg.includes('Unauthorized');
-      if (baseUrl === 'https://api.jup.ag' && isUnauthorized && !JUPITER_API_KEY) {
-        continue;
-      }
     }
   }
 
@@ -163,6 +174,12 @@ export async function swapToSOL(inputMint, amountRaw, slippageBps = 100) {
   // 1. Get quote
   const quote = await getJupiterQuote(inputMint, SOL_MINT, amountRaw, slippageBps);
   const outSol = parseInt(quote.outAmount) / 1e9;
+
+  // 1.1 Dust protection — avoid swapping if expected return is too small (< 0.0001 SOL)
+  // Prevents "minimum output not met" or "insufficient funds for rent" on tiny amounts.
+  if (outSol < 0.0001) {
+    return { skipped: true, reason: `Dust amount: expected return ${outSol.toFixed(7)} SOL is too small` };
+  }
 
   // 2. Get Helius priority fee recommendation (best-effort)
   let priorityFeeLamports = 50000; // default 0.00005 SOL

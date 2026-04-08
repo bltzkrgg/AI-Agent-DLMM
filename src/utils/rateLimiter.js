@@ -67,25 +67,10 @@ export class RateLimiter {
  */
 export const globalRateLimiter = new RateLimiter({
   domainLimits: {
-    // GeckoTerminal — paling critical (150+ calls per screening cycle)
-    'api.geckoterminal.com': 30,
+    // DexScreener — primary market source
+    'api.dexscreener.com': 60,
 
-    // DexScreener — ~20-30 calls per screening
-    'api.dexscreener.com': 30,
-
-    // CoinGecko — free tier paling ketat
-    'api.coingecko.com': 10,
-
-    // RugCheck — ~10 calls per screening
-    'api.rugcheck.xyz': 30,
-
-    // Birdeye — paid tier lebih longgar
-    'api.birdeye.so': 60,
-
-    // OKX — ~5 calls per screening
-    'www.okx.com': 20,
-
-    // Jupiter — dua domain
+    // Jupiter
     'tokens.jup.ag': 60,
     'api.jup.ag': 60,
 
@@ -94,9 +79,9 @@ export const globalRateLimiter = new RateLimiter({
     'dlmm.datapi.meteora.ag': 60,
 
     // LP Agent
-    'api.lpagent.io': 60, // sudah punya rate limiter sendiri (13s), ini backup saja
+    'api.lpagent.io': 60,
 
-    // Helius — RPC dengan failover, cache 5 menit
+    // Helius — RPC
     'mainnet.helius-rpc.com': 60,
     'solana-mainnet.g.alchemy.com': 60,
     'solana-mainnet.quiknode.pro': 60,

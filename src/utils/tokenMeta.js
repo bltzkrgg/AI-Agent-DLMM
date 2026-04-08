@@ -1,13 +1,10 @@
-/**
- * Token metadata resolution: mint address → { symbol, decimals }
- * Cache: in-memory Map (process lifetime). Hits known tokens instantly,
- * falls back to Jupiter API then DexScreener for unknowns.
- */
 import { fetchWithTimeout } from './safeJson.js';
+import { getConnection } from '../solana/wallet.js';
+import { PublicKey } from '@solana/web3.js';
 
 export const WSOL_MINT = 'So11111111111111111111111111111111111111112';
 
-// ─── Well-known tokens — zero API calls, always correct ──────────
+// ─── Well-known tokens ──────────────────────────────────────────
 const KNOWN = {
   [WSOL_MINT]:                                          { symbol: 'SOL',     decimals: 9 },
   'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v':    { symbol: 'USDC',    decimals: 6 },
@@ -40,23 +37,15 @@ const KNOWN = {
 
 const _cache = new Map(Object.entries(KNOWN));
 
-/**
- * Resolve a Solana mint address to { symbol, decimals }.
- * Results are cached for the process lifetime.
- */
 export async function resolveToken(mintAddress) {
   if (!mintAddress) return { symbol: '???', decimals: 9 };
 
   const cached = _cache.get(mintAddress);
   if (cached) return cached;
 
-  // ── Jupiter per-token API ─────────────────────────────────────
+  // ── 1. Jupiter API ──────────────────────────────────────────
   try {
-    const res = await fetchWithTimeout(
-      `https://lite.jupiter.ag/v6/token/${mintAddress}`,
-      { headers: { Accept: 'application/json' } },
-      6000
-    );
+    const res = await fetchWithTimeout(`https://lite.jupiter.ag/v6/token/${mintAddress}`, {}, 5000);
     if (res.ok) {
       const d = await res.json();
       if (d?.symbol) {
@@ -65,40 +54,37 @@ export async function resolveToken(mintAddress) {
         return meta;
       }
     }
-  } catch { /* fallthrough */ }
+  } catch {}
 
-  // ── DexScreener fallback ──────────────────────────────────────
+  // ── 2. DexScreener Fallback (Symbol only) ──────────────────
+  let symbol = mintAddress.slice(0, 5) + '..';
   try {
-    const res = await fetchWithTimeout(
-      `https://api.dexscreener.com/latest/dex/tokens/${mintAddress}`,
-      {},
-      6000
-    );
+    const res = await fetchWithTimeout(`https://api.dexscreener.com/latest/dex/tokens/${mintAddress}`, {}, 5000);
     if (res.ok) {
       const d = await res.json();
-      const pair = d.pairs?.[0];
-      if (pair) {
-        const isBase = pair.baseToken?.address === mintAddress;
-        const sym = isBase ? pair.baseToken?.symbol : pair.quoteToken?.symbol;
-        if (sym) {
-          // DexScreener does not provide decimals — keep SDK value if available
-          const meta = { symbol: sym, decimals: 9 };
-          _cache.set(mintAddress, meta);
-          return meta;
-        }
-      }
+      const sym = d.pairs?.[0]?.baseToken?.symbol;
+      if (sym) symbol = sym;
     }
-  } catch { /* fallthrough */ }
+  } catch {}
 
-  // ── Last resort: truncated mint ───────────────────────────────
-  const meta = { symbol: mintAddress.slice(0, 5) + '..', decimals: 9 };
+  // ── 3. ON-CHAIN FALLBACK (DECIMALS) ──────────────────────────
+  // DANGEROUS: many tokens are 6, SOL is 9. Guessing wrong fails the TX.
+  let decimals = 9;
+  try {
+    const conn    = getConnection();
+    const mintPub = new PublicKey(mintAddress);
+    const info    = await conn.getParsedAccountInfo(mintPub);
+    const d       = info?.value?.data?.parsed?.info?.decimals;
+    if (typeof d === 'number') decimals = d;
+  } catch (e) {
+    console.warn(`[tokenMeta] Failed on-chain decimal lookup for ${mintAddress}: ${e.message}`);
+  }
+
+  const meta = { symbol, decimals };
   _cache.set(mintAddress, meta);
   return meta;
 }
 
-/**
- * Batch resolve multiple mints in parallel.
- */
 export async function resolveTokens(mints) {
   return Promise.all(mints.map(resolveToken));
 }
