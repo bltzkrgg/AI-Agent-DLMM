@@ -11,7 +11,7 @@ import { checkMaxDrawdown, validateStrategyForMarket, requestConfirmation } from
 import { matchStrategyToMarket, getLibraryStats } from '../market/strategyLibrary.js';
 import { fetchCandles, getMarketSnapshot, getOHLCV } from '../market/oracle.js';
 import { getMultiTFScore } from '../market/multiTF.js';
-import { getSocialSignals } from '../market/socialScanner.js';
+import { getSocialSignals, getTokenSocialScore } from '../market/socialScanner.js';
 import { getInstinctsContext } from '../market/memory.js';
 import { getStrategyIntelligenceContext } from '../market/strategyPerformance.js';
 import { screenToken, formatScreenResult } from '../market/coinfilter.js';
@@ -22,7 +22,6 @@ import { getDarwinWeights, captureSignals } from '../market/signalWeights.js';
 import { isOnCooldown, getPoolMemoryContext, recordDeployment } from '../market/poolMemory.js';
 import { checkSmartWalletsOnPool, formatSmartWalletSignal } from '../market/smartWallets.js';
 import { executeControlledOperation } from '../app/executionService.js';
-import { getSocialSignals, getTokenSocialScore } from '../market/socialScanner.js';
 import { runEvolutionCycle } from '../learn/evolve.js';
 
 // ─── State ───────────────────────────────────────────────────────
