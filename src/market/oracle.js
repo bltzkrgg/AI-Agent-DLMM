@@ -189,17 +189,3 @@ export async function fetchCandles() { return null; }
 export async function getMultiTFScore() { return { score: 0.5, validCount: 0 }; }
 export async function fetchMultiTFOHLCV() { return {}; }
 export async function getOKXData() { return { available: false, reason: 'Source removed per consolidation' }; }
-  dataSource: ohlcv?.source || 'unknown',
-    // Backward-compat
-    liquidity: pool ? { tvl: pool.tvl, volume24h: pool.volume24h, feeApr: pool.feeApr } : null,
-    price: sentiment ? {
-      currentPrice: sentiment.priceUsd,
-      trend: ohlcv?.trend || 'SIDEWAYS',
-      volatility24h: ohlcv?.range24hPct || 0,
-      volatilityCategory: ohlcv?.volatilityCategory || 'MEDIUM',
-      buyPressurePct: sentiment.buyPressurePct,
-      sentiment: sentiment.sentiment,
-      suggestedBinStepMin: ohlcv?.suggestedBinStepMin || 10,
-    } : null,
-  };
-}
