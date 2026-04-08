@@ -2,15 +2,18 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import { pathToFileURL } from 'node:url';
+import { dirname, join } from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const repoRoot = join(__dirname, '..');
 
 function importFresh(modulePath) {
   return import(`${pathToFileURL(modulePath).href}?t=${Date.now()}_${Math.random()}`);
 }
 
 test('resolvePositionSnapshot keeps pnl/status consistent across surfaces', async () => {
-  const { resolvePositionSnapshot } = await importFresh('/Users/mkhtramn/Documents/New project/repo/src/app/positionSnapshot.js');
+  const { resolvePositionSnapshot } = await importFresh(join(repoRoot, 'src/app/positionSnapshot.js'));
 
   const snapshot = resolvePositionSnapshot({
     dbPosition: {
@@ -39,14 +42,14 @@ test('position runtime state persists peak pnl and oor markers', async () => {
   const root = mkdtempSync(join(tmpdir(), 'dlmm-runtime-'));
   process.env.BOT_RUNTIME_STATE_PATH = join(root, 'runtime-state.json');
 
-  const runtimeModule = await importFresh('/Users/mkhtramn/Documents/New project/repo/src/app/positionRuntimeState.js');
+  const runtimeModule = await importFresh(join(repoRoot, 'src/app/positionRuntimeState.js'));
   runtimeModule.updatePositionRuntimeState('pos-abc', {
     peakPnlPct: 9.2,
     trailingActive: true,
     oorSince: 123456,
   });
 
-  const runtimeModuleReloaded = await importFresh('/Users/mkhtramn/Documents/New project/repo/src/app/positionRuntimeState.js');
+  const runtimeModuleReloaded = await importFresh(join(repoRoot, 'src/app/positionRuntimeState.js'));
   const state = runtimeModuleReloaded.getPositionRuntimeState('pos-abc');
   assert.equal(state.peakPnlPct, 9.2);
   assert.equal(state.trailingActive, true);
@@ -59,7 +62,7 @@ test('position lifecycle state is stored alongside close records', async (t) => 
 
   let dbModule;
   try {
-    dbModule = await importFresh('/Users/mkhtramn/Documents/New project/repo/src/db/database.js');
+    dbModule = await importFresh(join(repoRoot, 'src/db/database.js'));
   } catch (error) {
     if (String(error?.message || '').includes('Could not locate the bindings file')) {
       t.skip('better-sqlite3 native binding is not available in this test environment');

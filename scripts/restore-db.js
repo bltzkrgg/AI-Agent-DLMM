@@ -6,7 +6,6 @@
  * Example: node scripts/restore-db.js --from "2026-04-07T12-30-45.123Z"
  */
 
-import fs from 'fs';
 import path from 'path';
 import readline from 'readline';
 import { DbBackup } from '../src/db/backup.js';
@@ -24,6 +23,10 @@ async function main() {
   const args = process.argv.slice(2);
   const fromArg = args.indexOf('--from');
   const fromValue = fromArg !== -1 ? args[fromArg + 1] : null;
+  if (fromArg !== -1 && !fromValue) {
+    console.error('❌ Missing value for --from');
+    process.exit(1);
+  }
 
   const dbPath = process.env.BOT_DB_PATH || path.join(process.cwd(), 'data.db');
   const backup = new DbBackup(dbPath);
@@ -41,8 +44,8 @@ async function main() {
   console.log('Available backups:\n');
   backups.forEach((b, i) => {
     const date = new Date(b.mtime).toLocaleString();
-    const size = (b.mtime / 1024).toFixed(2);
-    console.log(`  [${i}] ${b.name} (${date})`);
+    const sizeKb = (b.size / 1024).toFixed(2);
+    console.log(`  [${i}] ${b.name} (${date}, ${sizeKb} KB)`);
   });
   console.log('');
 

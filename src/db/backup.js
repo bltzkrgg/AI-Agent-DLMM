@@ -1,9 +1,5 @@
 import fs from 'fs';
 import path from 'path';
-import { dirname } from 'path';
-import { fileURLToPath } from 'url';
-
-const __dirname = dirname(fileURLToPath(import.meta.url));
 const logger = console; // Fallback ke console jika logger tidak tersedia
 
 export class DbBackup {
@@ -85,11 +81,16 @@ export class DbBackup {
     try {
       const files = fs.readdirSync(this.backupDir)
         .filter(f => f.startsWith('data.db.'))
-        .map(f => ({
-          name: f,
-          path: path.join(this.backupDir, f),
-          mtime: fs.statSync(path.join(this.backupDir, f)).mtime,
-        }))
+        .map(f => {
+          const fullPath = path.join(this.backupDir, f);
+          const stats = fs.statSync(fullPath);
+          return {
+            name: f,
+            path: fullPath,
+            mtime: stats.mtime,
+            size: stats.size,
+          };
+        })
         .sort((a, b) => b.mtime - a.mtime);
 
       return files;

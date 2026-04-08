@@ -2,8 +2,11 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import { pathToFileURL } from 'node:url';
+import { dirname, join } from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const repoRoot = join(__dirname, '..');
 
 function importFresh(modulePath) {
   return import(`${pathToFileURL(modulePath).href}?t=${Date.now()}_${Math.random()}`);
@@ -15,7 +18,7 @@ test('config rejects unknown keys and merges nested signal weights safely', asyn
   mkdirSync(root, { recursive: true });
 
   process.env.BOT_CONFIG_PATH = configPath;
-  const configModule = await importFresh('/Users/mkhtramn/Documents/New project/repo/src/config.js');
+  const configModule = await importFresh(join(repoRoot, 'src/config.js'));
 
   assert.equal(configModule.isConfigKeySupported('deployAmountSol'), true);
   assert.equal(configModule.isConfigKeySupported('totallyUnknownKey'), false);
@@ -40,8 +43,8 @@ test('strategy overrides merge safely without replacing core config', async () =
   const configPath = join(root, 'user-config.json');
 
   process.env.BOT_CONFIG_PATH = configPath;
-  const configModule = await importFresh('/Users/mkhtramn/Documents/New project/repo/src/config.js');
-  const profileModule = await importFresh('/Users/mkhtramn/Documents/New project/repo/src/strategies/profiles.js');
+  const configModule = await importFresh(join(repoRoot, 'src/config.js'));
+  const profileModule = await importFresh(join(repoRoot, 'src/strategies/profiles.js'));
 
   configModule.updateConfig({
     strategyOverrides: {
