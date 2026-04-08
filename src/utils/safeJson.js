@@ -33,12 +33,30 @@ export function safeParseAI(text, fallback = null) {
  * Includes rate limiting per domain + HTTP 429 backoff
  */
 export async function fetchWithTimeout(url, options = {}, timeoutMs = 10000) {
-  // Apply rate limiting per domain
-  try {
-    const hostname = new URL(url).hostname;
-    await globalRateLimiter.acquire(hostname);
-  } catch (e) {
-    throw new Error(`Rate limiter error: ${e.message}`);
+  // Apply rate limiting ONLY to critical domains with strict rate limits
+  // Skip: LLM APIs (handle own limiting), internal APIs, already rate-limiting endpoints
+  const hostname = new URL(url).hostname;
+
+  // Domains yang SKIP rate limiting (sudah aman atau tidak critical)
+  const skipRateLimiting = [
+    'api.openai.com', 'api.anthropic.com', 'openrouter.ai', 'api.openrouter.org', // LLM APIs
+    'tokens.jup.ag', 'api.jup.ag', // Jupiter (sudah punya rate limiting sendiri)
+    'api.lpagent.io', // LP Agent (sudah punya 13s interval)
+    'mainnet.helius-rpc.com', 'solana-mainnet.g.alchemy.com', 'solana-mainnet.quiknode.pro', // RPC (sudah aman)
+  ];
+
+  // Domains yang PERLU rate limiting (strict free tier)
+  const needsRateLimiting = [
+    'api.dexscreener.com', 'api.coingecko.com', 'api.geckoterminal.com',
+    'api.rugcheck.xyz', 'www.okx.com',
+  ];
+
+  if (needsRateLimiting.includes(hostname) && !skipRateLimiting.includes(hostname)) {
+    try {
+      await globalRateLimiter.acquire(hostname);
+    } catch (e) {
+      console.warn(`⚠️ Rate limiter error for ${hostname}: ${e.message}`);
+    }
   }
 
   const controller = new AbortController();
@@ -47,12 +65,10 @@ export async function fetchWithTimeout(url, options = {}, timeoutMs = 10000) {
     const res = await fetch(url, { ...options, signal: controller.signal });
     clearTimeout(timer);
 
-    // Handle HTTP 429 (Rate Limited)
+    // Handle HTTP 429 (Rate Limited) — log but don't fail, let caller handle
     if (res.status === 429) {
       const retryAfter = parseInt(res.headers.get('retry-after') || '10', 10);
-      const retryMs = retryAfter * 1000;
-      await new Promise(r => setTimeout(r, retryMs));
-      throw new Error(`Rate limited (HTTP 429) — retried after ${retryAfter}s`);
+      console.warn(`⚠️ HTTP 429 from ${hostname}, retry-after: ${retryAfter}s`);
     }
 
     return res;
