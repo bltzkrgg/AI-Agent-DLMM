@@ -209,15 +209,20 @@ export async function createMessage({ model, maxTokens = 4096, system, tools, me
           max_tokens: maxTokens,
           messages: oaiMessages,
         };
-        if (tools?.length) params.tools = toOAITools(tools);
+        // Only include tools if model supports them
+        const modelsWithoutTools = ['minimax/minimax-m2.7', 'minimax-m2.7'];
+        if (tools?.length && !modelsWithoutTools.some(m => resolvedModel.includes(m))) {
+          params.tools = toOAITools(tools);
+        }
 
         const oaiResponse = await client.chat.completions.create(params);
         response = toAnthropicResponse(oaiResponse);
       }
 
       if (!response?.content?.length) {
-        lastError = new Error('API returned empty content');
-        await new Promise(r => setTimeout(r, 3000));
+        lastError = new Error(`Model "${resolvedModel}" returned empty content. Model mungkin tidak tersedia atau tidak support endpoint ini.`);
+        console.warn(`⚠️ Attempt ${attempt + 1}: Empty response from ${resolvedModel}`);
+        await new Promise(r => setTimeout(r, 2000));
         continue;
       }
       return response;
