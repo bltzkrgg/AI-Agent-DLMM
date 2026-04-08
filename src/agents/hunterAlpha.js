@@ -572,10 +572,9 @@ async function executeTool(name, input) {
       }
 
       // Dynamic range — gunakan profile strategy lebih dulu, baru fallback generic.
-      let priceRangePct = strategyEval?.priceRangePct ?? stratParams.priceRangePercent ?? 10;
-      const deployOptions = strategyEval?.deployOptions || {};
       // Range — use strategy profile or default
-      let priceRangePct = strategyEval?.priceRangePct ?? stratParams.priceRangePercent ?? 10;
+      let targetPriceRangePct = strategyEval?.priceRangePct ?? stratParams.priceRangePercent ?? 10;
+      const deployOptions = strategyEval?.deployOptions || {};
 
       // Strategy vs pool warning (non-blocking)
       try {
@@ -631,7 +630,7 @@ async function executeTool(name, input) {
               poolAddress: input.pool_address,
               tokenXAmount,
               tokenYAmount,
-              priceRangePct,
+              priceRangePct: targetPriceRangePct,
               strategy: strategy.name,
               deployOptions,
             },
@@ -641,7 +640,7 @@ async function executeTool(name, input) {
               input.pool_address,
               tokenXAmount,
               tokenYAmount,
-              priceRangePct,
+              targetPriceRangePct,
               strategy.name,
               deployOptions,
             ),
@@ -684,10 +683,10 @@ async function executeTool(name, input) {
             ) : []),
             hr(40),
             kv('Entry',    result.entryPrice?.toFixed(8)  ?? '-', 9),
-            kv('Bawah',    `${result.lowerPrice?.toFixed(8) ?? '-'}  (-${priceRangePct}%)`, 9),
+            kv('Bawah',    `${result.lowerPrice?.toFixed(8) ?? '-'}  (-${targetPriceRangePct}%)`, 9),
             kv('Atas',     `${result.upperPrice?.toFixed(8) ?? '-'}  (entry)`, 9),
             kv('Fee/bin',  `${result.feeRatePct}%`, 9),
-            kv('Range',    `${deployOptions.fixedBinsBelow ? `${result.binsBelow + 1} bins` : `${priceRangePct}%`} | ${result.positions.reduce((s, p) => s + p.binCount, 0)} bins total`, 9),
+            kv('Range',    `${deployOptions.fixedBinsBelow ? `${result.binsBelow + 1} bins` : `${targetPriceRangePct}%`} | ${result.positions.reduce((s, p) => s + p.binCount, 0)} bins total`, 9),
             hr(40),
             kv('TP',       `+${tpTarget}%  Trail: +${trailAct}%  SL: -${slTarget}%`, 9),
             ...(strategyEval?.notes?.length ? [kv('Setup', strategyEval.notes.join(' | ').slice(0, 40), 9)] : []),
