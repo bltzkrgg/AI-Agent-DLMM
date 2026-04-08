@@ -201,42 +201,49 @@ Tests if current model is working and responsive.
 
 ## Troubleshooting
 
-### Empty Response from Model (⚠️ Attempt 1: Empty response from minimax/minimax-m2.5)
+### ✅ FIXED: Empty Response from Minimax Models
 
-**Problem:** Model returns empty content
+**Status:** PERMANENTLY FIXED (v2.0.1+)
+
+**Original Problem:** Minimax models (minimax-m2.5, minimax-m2.7) on OpenRouter returned empty responses:
 ```
 ⚠️ Attempt 1: Empty response from minimax/minimax-m2.5
+Model "minimax/minimax-m2.5" returned empty content. Model mungkin overloaded...
 ```
 
-**Solutions:**
-1. **Switch provider** - Not all providers work equally:
-   ```bash
-   /model openai/gpt-4o-mini:free
-   ```
+**Root Cause:** Minimax models fail silently on OpenRouter — they don't return errors, just empty content. This happens regardless of tools parameter or request format.
 
-2. **Use free OpenRouter model:**
-   ```bash
-   /model qwen/qwen3.6-plus:free
-   ```
+**Solution Implemented:** Minimax models are now PERMANENTLY BLOCKED from use.
 
-3. **Use Groq (fastest):**
-   ```bash
-   /model mixtral-8x7b-32768
-   ```
+**How It Works:**
+1. **Automatic Detection** — System detects if minimax is configured (via AI_MODEL env, /model command, or config file)
+2. **Immediate Blocking** — Minimax is rejected before any API call is made
+3. **Intelligent Fallback** — System automatically switches to a working model:
+   - **OpenRouter users** → `qwen/qwen3.6-plus:free` (proven working)
+   - **Groq users** → `mixtral-8x7b-32768` (if GROQ_API_KEY set)
+   - **OpenAI users** → `gpt-4o-mini` (if OPENAI_API_KEY set)
+   - **Anthropic users** → `claude-haiku-4-5` (if ANTHROPIC_API_KEY set)
+4. **User Notification** — Warning logged so you know why model changed
+5. **Never Suggested** — Minimax won't appear in model suggestions
 
-4. **Check API key validity:**
-   - Make sure your API key is correct in `.env`
-   - Delete and recreate the key from provider dashboard
+**What Users See:**
+```
+⚠️ Model "minimax/minimax-m2.5" is blocked (known to fail). Switching to fallback: qwen/qwen3.6-plus:free
+✅ Model check OK: qwen/qwen3.6-plus:free
+```
 
-5. **Switch provider entirely:**
-   ```bash
-   # Edit .env
-   AI_PROVIDER=groq
-   GROQ_API_KEY=...
-   
-   # Restart bot
-   npm start
-   ```
+**Defense-in-Depth:**
+- `resolveModel()` blocks it at priority level
+- `createMessage()` blocks it as backup safety
+- `fetchFreeModels()` excludes it from suggestions
+- BLOCKED_MODELS Set checked at 3+ locations
+
+**If you still see minimax errors:**
+1. Check `.env` and remove any `AI_MODEL=minimax/...` line
+2. Clear session: `/model reset`
+3. Restart bot: `npm start`
+
+The system will then use intelligent fallback based on your configured provider keys.
 
 ### Model Not Found (404)
 
@@ -366,6 +373,25 @@ Bot automatically falls back to `FALLBACK_AI_MODEL` (default: `openai/gpt-4o-min
 
 ---
 
+## Blocked Models (DO NOT USE)
+
+⛔ **MINIMAX MODELS ARE BLOCKED AND WILL NOT WORK:**
+```
+❌ minimax/minimax-m2.5
+❌ minimax/minimax-m2.7
+❌ minimax-m2.5
+❌ minimax-m2.7
+```
+
+**Why?** These models fail silently on OpenRouter by returning empty responses. The system automatically blocks them and switches to `qwen/qwen3.6-plus:free` instead.
+
+**If you see "Model minimax..." in config:**
+- Remove it from `.env` (if set as `AI_MODEL`)
+- Or use `/model reset` to clear session override
+- System will auto-switch to working model
+
+---
+
 ## Common Mistakes
 
 ❌ **Don't:**
@@ -373,12 +399,14 @@ Bot automatically falls back to `FALLBACK_AI_MODEL` (default: `openai/gpt-4o-min
 - Put API key in code (use `.env`)
 - Mix providers without updating `.env`
 - Use `:free` suffix with non-free providers
+- **Use minimax models** (they are blocked — use qwen instead)
 
 ✅ **Do:**
 - Test model with `/testmodel` before reporting issues
 - Use free models for testing before switching to paid
 - Keep API keys in `.env` file (add to `.gitignore`)
 - Check provider's model list before using model ID
+- Use `qwen/qwen3.6-plus:free` as fallback if unsure
 
 ---
 
