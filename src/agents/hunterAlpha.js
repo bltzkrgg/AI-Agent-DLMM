@@ -22,6 +22,7 @@ import { getDarwinWeights, captureSignals } from '../market/signalWeights.js';
 import { isOnCooldown, getPoolMemoryContext, recordDeployment } from '../market/poolMemory.js';
 import { checkSmartWalletsOnPool, formatSmartWalletSignal } from '../market/smartWallets.js';
 import { executeControlledOperation } from '../app/executionService.js';
+import { discoverPools as lpAgentDiscoverPools, enrichPools as lpAgentEnrichPools, isLPAgentEnabled } from '../market/lpAgent.js';
 import { runEvolutionCycle } from '../learn/evolve.js';
 
 // ─── State ───────────────────────────────────────────────────────

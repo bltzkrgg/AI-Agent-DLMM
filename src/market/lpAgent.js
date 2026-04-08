@@ -161,7 +161,23 @@ export async function getWalletPositions(ownerAddress) {
 // Dipakai di screen_pools untuk cross-reference candidate pools.
 // Menggunakan cache dari discoverPools() — zero extra API calls.
 // Return map: poolAddress → { organicScore, feeTVLRatio, inLPAgentList }
+export async function enrichPools(addresses) {
+  const map = {};
+  if (!_poolCache.pools.length || isCacheStale()) {
+    return map;
+  }
 
+  const cacheMap = new Map(_poolCache.pools.map(p => [p.address, p]));
+  
+  for (const addr of addresses) {
+    const cached = cacheMap.get(addr);
+    map[addr] = {
+      inLPAgentList: !!cached,
+      organicScore:  cached?.organicScore  ?? 0,
+      feeTVLRatioLP: cached?.feeTVLRatio   ?? 0,
+      vol24hLP:      cached?.vol24h        ?? 0,
+    };
+  }
   return map;
 }
 
