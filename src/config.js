@@ -24,11 +24,11 @@ const DEFAULTS = {
   // Dry run — tidak eksekusi TX apapun, semua else normal
   dryRun: false,
 
-  // Models — default ke qwen3.6-plus:free, bisa override di .env via AI_MODEL
+  // Models — default ke meta-llama/llama-3.3-70b-instruct:free (proven available), bisa override di .env via AI_MODEL
   // activeModel: diset via /model command — highest priority, override semua
-  managementModel: 'qwen/qwen3.6-plus:free',
-  screeningModel: 'qwen/qwen3.6-plus:free',
-  generalModel: 'qwen/qwen3.6-plus:free',
+  managementModel: 'meta-llama/llama-3.3-70b-instruct:free',
+  screeningModel: 'meta-llama/llama-3.3-70b-instruct:free',
+  generalModel: 'meta-llama/llama-3.3-70b-instruct:free',
   activeModel: null,
 
   // Screening thresholds

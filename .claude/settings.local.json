@@ -61,7 +61,8 @@
       "Bash(chmod +x:*)",
       "Bash(npm test:*)",
       "Bash(npm run:*)",
-      "Bash(/tmp/verify-fixes.sh)"
+      "Bash(/tmp/verify-fixes.sh)",
+      "Bash(git restore:*)"
     ]
   }
 }

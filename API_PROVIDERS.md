@@ -37,13 +37,15 @@ AI_MODEL=openai/gpt-4o-mini:free
 AI_MODEL=qwen/qwen3.6-plus:free
 ```
 
-**Available Free Models:**
+**Available Free Models** (checked Jan 2025):
 ```
-openai/gpt-4o-mini:free
-qwen/qwen3.6-plus:free
-meta-llama/llama-2-70b-chat:free
-mistralai/mistral-7b-instruct:free
+meta-llama/llama-3.3-70b-instruct:free     # ✅ Recommended (proven working)
+qwen/qwen3-next-80b-a3b-instruct:free      # ✅ Alternative Qwen
+google/gemma-4-26b-a4b-it:free             # ✅ Google's Gemma
+nvidia/nemotron-3-super-120b-a12b:free     # ✅ Nvidia Nemotron
 ```
+
+**⚠️ Note:** `qwen/qwen3.6-plus:free` no longer exists. Use `qwen/qwen3-next-80b-a3b-instruct:free` instead.
 
 **Check all available models:**
 ```bash

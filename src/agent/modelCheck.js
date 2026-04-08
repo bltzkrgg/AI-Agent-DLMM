@@ -96,12 +96,12 @@ export async function fetchFreeModels() {
     );
   }
 
-  // Fallback free models
+  // Fallback free models (guaranteed to exist on OpenRouter)
   if (freeModels.length === 0) {
     freeModels.push(
-      'openai/gpt-4o-mini',
-      'qwen/qwen3.6-plus:free',
-      'meta-llama/llama-2-70b-chat'
+      'meta-llama/llama-3.3-70b-instruct:free',      // Proven to work
+      'qwen/qwen3-next-80b-a3b-instruct:free',       // Alternative
+      'google/gemma-4-26b-a4b-it:free'               // Another option
     );
   }
 

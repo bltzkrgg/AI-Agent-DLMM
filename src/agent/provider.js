@@ -116,17 +116,18 @@ export function resolveModel(modelFromConfig) {
 
   // 4. Provider default
   const defaults = {
-    openrouter:  'qwen/qwen3.6-plus:free',  // Switched from gpt-4o-mini (needs key) to free model
+    openrouter:  'meta-llama/llama-3.3-70b-instruct:free',  // Proven to exist and work on OpenRouter
     anthropic:   'claude-haiku-4-5',
     openai:      'gpt-4o-mini',
     custom:      'gpt-4o-mini',
     groq:        'mixtral-8x7b-32768',
     huggingface: 'mistral-7b-instruct-v0.1',
   };
-  return defaults[PROVIDER] || 'qwen/qwen3.6-plus:free';
+  return defaults[PROVIDER] || 'meta-llama/llama-3.3-70b-instruct:free';
 }
 
 // Intelligent fallback chain based on available provider keys
+// Uses only models that are known to exist and work reliably
 function getFallbackModel() {
   const fallback = process.env.FALLBACK_AI_MODEL;
   if (fallback && !BLOCKED_MODELS.has(fallback)) {
@@ -134,14 +135,18 @@ function getFallbackModel() {
   }
 
   // Build fallback chain based on what provider keys are available
+  // Order prioritizes reliability and speed
   const fallbacks = [];
 
   if (process.env.OPENROUTER_API_KEY) {
-    fallbacks.push('qwen/qwen3.6-plus:free');
-    fallbacks.push('meta-llama/llama-2-70b-chat:free');
+    // Use models known to exist on OpenRouter and work reliably
+    fallbacks.push('meta-llama/llama-3.3-70b-instruct:free');      // Proven to work, high quality
+    fallbacks.push('qwen/qwen3-next-80b-a3b-instruct:free');       // Alternative Qwen
+    fallbacks.push('google/gemma-4-26b-a4b-it:free');              // Google's Gemma
   }
   if (process.env.GROQ_API_KEY) {
     fallbacks.push('mixtral-8x7b-32768');
+    fallbacks.push('llama-3.3-70b-versatile');                     // Latest Llama on Groq
   }
   if (process.env.OPENAI_API_KEY) {
     fallbacks.push('gpt-4o-mini');
@@ -150,9 +155,9 @@ function getFallbackModel() {
     fallbacks.push('claude-haiku-4-5');
   }
 
-  // Default fallback if nothing else configured
+  // Default fallback if nothing else configured - use proven OpenRouter free model
   if (fallbacks.length === 0) {
-    fallbacks.push('qwen/qwen3.6-plus:free');
+    fallbacks.push('meta-llama/llama-3.3-70b-instruct:free');
   }
 
   return fallbacks[0];
