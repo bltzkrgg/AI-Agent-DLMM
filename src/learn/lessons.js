@@ -46,6 +46,20 @@ export function unpinLesson(indexOrId) {
   return { ok: true };
 }
 
+export function deleteLesson(indexOrId) {
+  const lessons = loadLessons();
+  const idx = typeof indexOrId === 'number' ? indexOrId : lessons.findIndex(l => l.id === indexOrId);
+  if (idx < 0 || idx >= lessons.length) return { ok: false, reason: 'Index tidak valid' };
+  const removed = lessons.splice(idx, 1);
+  saveLessons(lessons);
+  return { ok: true, lesson: removed[0].lesson };
+}
+
+export function clearAllLessons() {
+  saveLessons([]);
+  return { ok: true };
+}
+
 // ─── Tiered lesson context injection ─────────────────────────────
 // Tier 1: pinned (selalu muncul, max 5)
 // Tier 2: cross-pool (berlaku di banyak pool, max 5)
