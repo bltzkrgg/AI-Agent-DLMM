@@ -1025,30 +1025,46 @@ bot.onText(/\/dryrun(?:\s+(on|off))?/, (msg, match) => {
   );
 });
 
-// /autoscreen on|off — toggle auto-screening (alias: /autohunter)
-bot.onText(/\/(?:autoscreen|autohunter)(?:\s+(on|off))?/, async (msg, match) => {
+// /autoscreen on|off [interval] — toggle auto-screening (alias: /autohunter)
+bot.onText(/\/(?:autoscreen|autohunter)(?:\s+(on|off))?(?:\s+(\d+))?/, async (msg, match) => {
   if (msg.from.id !== ALLOWED_ID) return;
   const chatId = msg.chat.id;
   const toggle = match[1]?.toLowerCase();
+  const intervalArg = match[2];
+
   if (!toggle) {
     const current = getConfig().autoScreeningEnabled;
     bot.sendMessage(chatId,
       `🤖 *Auto-Screening*: ${current ? '✅ ON' : '❌ OFF'}\n\n` +
-      `Gunakan \`/autoscreen on\` atau \`/autoscreen off\` untuk toggle.\n` +
+      `Gunakan \`/autoscreen on [interval]\` atau \`/autoscreen off\` untuk toggle.\n` +
       `Interval screening: ${getConfig().screeningIntervalMin} menit`,
       { parse_mode: 'Markdown' }
     );
     return;
   }
+
   const enable = toggle === 'on';
-  updateConfig({ autoScreeningEnabled: enable });
-  bot.sendMessage(chatId,
-    `🤖 *Auto-Screening*: ${enable ? '✅ Diaktifkan' : '❌ Dimatikan'}\n\n` +
-    (enable
-      ? `Hunter akan auto-screen setiap ${getConfig().screeningIntervalMin} menit dan deploy kandidat terbaik otomatis.`
-      : `Hunter tidak akan auto-deploy. Gunakan /autoscreen on untuk mengaktifkan kembali.`),
-    { parse_mode: 'Markdown' }
-  );
+  const updates = { autoScreeningEnabled: enable };
+  
+  if (enable && intervalArg) {
+    const val = parseInt(intervalArg);
+    if (val >= 5 && val <= 1440) {
+      updates.screeningIntervalMin = val;
+    }
+  }
+
+  updateConfig(updates);
+
+  if (enable) {
+    bot.sendMessage(chatId,
+      `🤖 *Auto-Screening*: ✅ Diaktifkan\n` +
+      `Interval: ${getConfig().screeningIntervalMin} menit\n\n` +
+      `⏳ _Bot akan mengikuti jadwal interval yang sudah ditentukan._`,
+      { parse_mode: 'Markdown' }
+    );
+  } else {
+    bot.sendMessage(chatId, `🤖 *Auto-Screening*: ❌ Dimatikan. Hunter tidak akan auto-deploy.`, { parse_mode: 'Markdown' });
+  }
 });
 
 // ─── Signal Weights command ───────────────────────────────────────
