@@ -161,7 +161,7 @@ function loadUserConfig() {
 
 export function getConfig() {
   const user = loadUserConfig();
-  return {
+  const merged = {
     ...DEFAULTS,
     ...user,
     signalWeights: {
@@ -169,6 +169,22 @@ export function getConfig() {
       ...(user.signalWeights || {}),
     },
   };
+
+  // Automated Lenient numeric parsing for manual edits (anti-NaN guard)
+  for (const key of Object.keys(merged)) {
+    if (typeof DEFAULTS[key] === 'number' && typeof merged[key] === 'string') {
+      // Extract numbers (including signs and decimals), ignore everything else
+      const raw = merged[key].replace(/[^-0-9.]/g, '');
+      const parsed = parseFloat(raw);
+      if (!isNaN(parsed)) {
+        merged[key] = parsed;
+      } else {
+        merged[key] = DEFAULTS[key]; // fallback to default if no numbers found
+      }
+    }
+  }
+
+  return merged;
 }
 
 export function isConfigKeySupported(key) {
