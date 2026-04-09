@@ -93,7 +93,8 @@ async function evaluateStrategyReadiness({ strategyName, poolInfo, poolAddress }
           const adaptive = 70 + Math.floor(ohlcv.range24hPct * 2);
           return Math.min(125, Math.max(70, adaptive));
         }
-        return profile.deploy?.fixedBinsBelow;
+        // Fallback: minimal 70 bin untuk Evil Panda
+        return strategyName === 'Evil Panda' ? 70 : profile.deploy?.fixedBinsBelow;
       })(),
       binPadding: strategyName === 'Evil Panda' ? 0 : 1, // Max range 0% above active price
       rangeLabel: profile.deploy?.label,
@@ -775,7 +776,7 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null, opt
   // ── PRE-COMPUTE: parallelkan pool screening sebelum LLM loop ─
   // Mengurangi LLM round trips dari 40+ menjadi ~6-8.
   // getTopPools + pool memory + OKX dijalankan sekaligus, bukan satu per satu oleh LLM.
-  if (notifyFn) await notifyFn(`🔍 *Screening kandidat pool...*\n📡 _Social Awareness: Active (Meridian Feed)_`);
+  if (notifyFn) await notifyFn(`🔍 *Screening kandidat pool...*`);
 
   let preComputedContext = '';
   try {
@@ -873,11 +874,18 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null, opt
         `✅ Viable: ${viable.length}  ❌ Filtered: ${skipped}\n` +
         (highTFAlign > 0 ? `📈 Multi-TF kuat (≥4 TF): ${highTFAlign} pool\n` : '') +
         (smartWalletHits > 0 ? `🎯 Smart wallet detected: ${smartWalletHits} pool\n` : '') +
-        `_Menjalankan analisis mendalam..._`
+        (viable.length === 0 ? `🛑 _Skipping AI: Tidak ada kandidat sehat untuk dianalisis._` : `_Menjalankan analisis mendalam (Top ${Math.min(10, viable.length)})..._`)
       );
     }
 
-    const display = viable.length > 0 ? viable : enriched.slice(0, 3);
+    // Early Exit: Jika tidak ada pool layak, jangan panggil LLM (hemat API cost)
+    if (viable.length === 0) {
+      _hunterTargetCount = null;
+      return null;
+    }
+
+    // Cap kandidat ke 10 pool terbaik saja (hemat API context)
+    const display = viable.slice(0, 10);
 
     preComputedContext =
       `\n\n──────────────────────────────────────\n` +
@@ -891,7 +899,9 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null, opt
     preComputedContext = '\n\nCatatan: Pre-screening gagal. Gunakan screen_pools untuk ambil kandidat.';
   }
 
-  const lessonsCtx = getLessonsContext();
+  // Lessons Toggle: Hanya kirim histori trade setiap 2 hari sekali (hemat API context)
+  const shouldSendLessons = Math.floor(Date.now() / (1000 * 3600 * 24)) % 2 === 0;
+  const lessonsCtx = shouldSendLessons ? getLessonsContext() : "";
   const instincts = getInstinctsContext();
   const strategyIntel = getStrategyIntelligenceContext();
   const libraryStats = getLibraryStats();
@@ -928,10 +938,10 @@ ALUR KERJA — ADAPTIVE EVIL PANDA SPECIALIST:
 
 ⚠️ POST-MORTEM LEARNING:
 Bot ini secara otomatis melakukan analisa "Kenapa Loss" setiap kali trade selesai.
-Gunakan data di bawah (${lessonsCtx}) sebagai "Suara Hati" kamu saat memilih pool.
+Gunakan data di bawah (${lessonsCtx ? `Gunakan data di bawah (${lessonsCtx}) sebagai "Suara Hati" kamu saat memilih pool.` : 'Gunakan insting tajam untuk memilih pool berdasarkan data market terbaru.'})
 
 Mode: 🔴 LIVE ALPHA | Strategi: EVIL PANDA ONLY
-${lessonsCtx}
+${lessonsCtx || '_Lessons suppressed for cost saving in this run_'}
 ${instincts}
 ${strategyIntel}
 
