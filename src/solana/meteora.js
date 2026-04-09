@@ -387,8 +387,8 @@ export async function openPosition(poolAddress, tokenXAmount, tokenYAmount, pric
   const totalBins = (rangeMax - rangeMin) + 1;
 
   // Meteora PositionV2 supports up to 1,400 bins. SDK's chunkBinRange splits at 69/70 for legacy compatibility.
-  // We manually consolidate if totalBins is small (e.g., < 200) to ensure 1 deploy = 1 position.
-  const binChunks = totalBins <= 200 
+  // We manually consolidate if totalBins matches our safety ceiling (69) to ensure 1 deploy = 1 position.
+  const binChunks = totalBins <= 69 
     ? [{ lowerBinId: rangeMin, upperBinId: rangeMax }]
     : chunkBinRange(rangeMin, rangeMax);
 
