@@ -311,13 +311,11 @@ cron.schedule('0 21 * * *', async () => {
 // Scan top 25 pools untuk semua strategi: Evil Panda, Wave Enjoyer, NPC, Fee Sniper
 // Alert dikirim regardless posisi terbuka / balance / status deploy
 // KOMENTAR: Dimatikan atas permintaan user untuk mengurangi noise notifikasi.
-/*
-cron.schedule('*/15 * * * *', async () => {
-  try {
-    await runOpportunityScanner(notify);
-  } catch (e) { console.error('Opportunity scanner error:', e.message); }
-});
-*/
+// cron.schedule('*/15 * * * *', async () => {
+//   try {
+//     await runOpportunityScanner(notify);
+//   } catch (e) { console.error('Opportunity scanner error:', e.message); }
+// });
 
 // ─── Daily Briefing jam 7 pagi ───────────────────────────────────
 cron.schedule('0 7 * * *', async () => {
