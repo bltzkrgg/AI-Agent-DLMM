@@ -10,7 +10,7 @@ import { processMessage } from './agent/claude.js';
 import { handleStrategyCommand, isInStrategySession } from './strategies/strategyHandler.js';
 import { runHunterAlpha, getCandidates } from './agents/hunterAlpha.js';
 import { runHealerAlpha } from './agents/healerAlpha.js';
-import { learnFromPool, learnFromMultiplePools, loadLessons, pinLesson, unpinLesson, formatLessonsList } from './learn/lessons.js';
+import { learnFromPool, learnFromMultiplePools, loadLessons, pinLesson, unpinLesson, deleteLesson, clearAllLessons, formatLessonsList } from './learn/lessons.js';
 import { getConfig, getThresholds, updateConfig, isConfigKeySupported } from './config.js';
 import { handleConfirmationReply, getSafetyStatus, setStartingBalanceUsd } from './safety/safetyManager.js';
 import { evolveFromTrades, getMemoryStats, getInstinctsContext } from './market/memory.js';
@@ -474,6 +474,7 @@ bot.onText(/\/start/, (msg) => {
     `/check <mint> — screen token (RugCheck + mcap)\n` +
     `/testmodel /model /strategies /library /research\n` +
     `/learn [pool] /lessons /memory /evolve\n` +
+    `/deletelesson [nomor] /clearlessons /unpinlesson\n` +
     `/thresholds /safety /weights /poolmemory\n\n` +
     `*Smart Wallets:*\n` +
     `/addwallet <addr> <label> | /removewallet | /listwallet\n\n` +
@@ -907,6 +908,27 @@ bot.onText(/\/unpinlesson(?:\s+(\d+))?/, (msg, match) => {
   }
   const result = unpinLesson(idx);
   bot.sendMessage(msg.chat.id, result.ok ? '✅ Lesson di-unpin.' : `❌ ${result.reason}`);
+});
+
+bot.onText(/\/deletelesson(?:\s+(\d+))?/, (msg, match) => {
+  if (msg.from.id !== ALLOWED_ID) return;
+  const idx = match[1] ? parseInt(match[1]) - 1 : null;
+  if (idx === null || isNaN(idx)) {
+    bot.sendMessage(msg.chat.id, '❓ Gunakan: `/deletelesson <nomor>` (lihat nomor di /lessons)', { parse_mode: 'Markdown' });
+    return;
+  }
+  const result = deleteLesson(idx);
+  if (result.ok) {
+    bot.sendMessage(msg.chat.id, `✅ Lesson dihapus: _${result.lesson}_`, { parse_mode: 'Markdown' });
+  } else {
+    bot.sendMessage(msg.chat.id, `❌ ${result.reason}`);
+  }
+});
+
+bot.onText(/\/clearlessons/, (msg) => {
+  if (msg.from.id !== ALLOWED_ID) return;
+  const result = clearAllLessons();
+  bot.sendMessage(msg.chat.id, result.ok ? '🗑️ Semua lessons telah dihapus.' : '❌ Gagal menghapus lessons.');
 });
 
 bot.onText(/\/thresholds/, (msg) => {
