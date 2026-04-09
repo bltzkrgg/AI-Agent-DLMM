@@ -13,8 +13,12 @@ export async function runEvolutionCycle() {
   console.log('🧬 Evolution Engine: Starting recalibration cycle...');
 
   const closed = getClosedPositions();
-  if (closed.length < cfg.evolveIntervalTrades) {
-    console.log(`🧬 Evolution Engine: Not enough data yet (${closed.length}/${cfg.evolveIntervalTrades} trades)`);
+  const totalClosedCount = closed.length;
+
+  // Evolution Guard: Only evolve if enough NEW trades have occurred since last evolution
+  if (totalClosedCount < (cfg.lastEvolutionTradeCount || 0) + cfg.evolveIntervalTrades) {
+    const needed = (cfg.lastEvolutionTradeCount || 0) + cfg.evolveIntervalTrades - totalClosedCount;
+    console.log(`🧬 Evolution Engine: Waiting for ${needed} more trades since last evolution (${totalClosedCount}/${(cfg.lastEvolutionTradeCount || 0) + cfg.evolveIntervalTrades})`);
     return null;
   }
 
@@ -54,6 +58,7 @@ export async function runEvolutionCycle() {
   }
 
   if (Object.keys(updates).length > 0) {
+    updates.lastEvolutionTradeCount = totalClosedCount;
     updateConfig(updates);
     const summary = `🧬 *EVOLUTION COMPLETED*\n\nReasoning:\n${logs.map(l => `• ${l}`).join('\n')}\n\nStats: WinRate ${(winRate*100).toFixed(1)}% | Sample: ${recentTrades.length} trades`;
     addToHistory('system', summary);
