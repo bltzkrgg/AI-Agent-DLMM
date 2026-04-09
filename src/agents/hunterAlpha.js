@@ -88,13 +88,14 @@ async function evaluateStrategyReadiness({ strategyName, poolInfo, poolAddress }
     deployOptions: {
       fixedBinsBelow: (function() {
         if (strategyName === 'Evil Panda' && ohlcv?.range24hPct) {
-          // Adaptive formula: 70 min + (2 * 24h volatility)
-          // Example: 10% vol -> 90 bins | 30% vol -> 130 -> 125 capped
-          const adaptive = 70 + Math.floor(ohlcv.range24hPct * 2);
-          return Math.min(125, Math.max(70, adaptive));
+          // Adaptive formula with Solana's 10KB (69-bin) safety cap.
+          // 40 min + (1.5 * 24h volatility)
+          // we use 68 as max because totalBins = (rangeMax - rangeMin) + 1
+          const adaptive = 40 + Math.floor(ohlcv.range24hPct * 1.5);
+          return Math.min(68, Math.max(40, adaptive));
         }
-        // Fallback: minimal 70 bin untuk Evil Panda
-        return strategyName === 'Evil Panda' ? 70 : profile.deploy?.fixedBinsBelow;
+        // Fallback: 68 bin (+1 active = 69) untuk Evil Panda agar sukses 1-TX
+        return strategyName === 'Evil Panda' ? 68 : profile.deploy?.fixedBinsBelow;
       })(),
       binPadding: strategyName === 'Evil Panda' ? 0 : 1, // Max range 0% above active price
       rangeLabel: profile.deploy?.label,
