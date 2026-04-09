@@ -87,7 +87,16 @@ async function evaluateStrategyReadiness({ strategyName, poolInfo, poolAddress }
     ohlcv15m: ohlcv, // preserved field name for compatibility
     priceRangePct: profile.deploy?.lowerRangeGuidePct || null,
     deployOptions: {
-      fixedBinsBelow: profile.deploy?.fixedBinsBelow,
+      fixedBinsBelow: (function() {
+        if (strategyName === 'Evil Panda' && ohlcv?.range24hPct) {
+          // Adaptive formula: 70 min + (2 * 24h volatility)
+          // Example: 10% vol -> 90 bins | 30% vol -> 130 -> 125 capped
+          const adaptive = 70 + Math.floor(ohlcv.range24hPct * 2);
+          return Math.min(125, Math.max(70, adaptive));
+        }
+        return profile.deploy?.fixedBinsBelow;
+      })(),
+      binPadding: strategyName === 'Evil Panda' ? 0 : 1, // Max range 0% above active price
       rangeLabel: profile.deploy?.label,
     },
   };

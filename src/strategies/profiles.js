@@ -10,7 +10,7 @@ const BASE_STRATEGY_PROFILES = {
       adaptiveMode: true,
     },
     deploy: {
-      fixedBinsBelow: 69,
+      fixedBinsBelow: null, // Now calculated dynamically in hunterAlpha
       label: 'adaptive_evil_panda',
     },
     exit: {

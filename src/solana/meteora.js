@@ -373,15 +373,14 @@ export async function openPosition(poolAddress, tokenXAmount, tokenYAmount, pric
 
   // ── Bin range calculation ────────────────────────────────────────
   // binsBelow = priceRangePercent * 100 / binStep
-  // Meteora on-chain limit = 70 bins per position account.
-  // Cap rawBins ke 69 agar selalu 1 position account per deploy (tidak chunking).
-  // Ini memastikan 1 deploy_position = 1 position address di on-chain.
+  // Meteora PositionV2 supports up to 1,400 bins per position account.
+  // We use the user-requested range of 70-125 for adaptive stability.
   const fixedBinsBelow = Number.isFinite(deployOptions?.fixedBinsBelow)
-    ? Math.min(69, Math.max(2, Math.floor(deployOptions.fixedBinsBelow)))
+    ? Math.min(125, Math.max(2, Math.floor(deployOptions.fixedBinsBelow)))
     : null;
   const binPadding = Number.isFinite(deployOptions?.binPadding) ? deployOptions.binPadding : 1; 
 
-  const rawBins  = fixedBinsBelow ?? Math.min(68 - binPadding, Math.max(2, Math.floor((priceRangePercent / 100) / (binStep / 10000))));
+  const rawBins  = fixedBinsBelow ?? Math.min(125 - binPadding, Math.max(2, Math.floor((priceRangePercent / 100) / (binStep / 10000))));
   
   const rangeMin = activeBin.binId - rawBins;
   const rangeMax = activeBin.binId + binPadding; 

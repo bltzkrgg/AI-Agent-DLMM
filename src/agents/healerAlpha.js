@@ -1094,6 +1094,7 @@ export async function runHealerAlpha(notifyFn) {
 
             // Check re-entry conditions
             if (st?.isBullish && distPct >= 0 && distPct <= 12 && rsi14Val >= 35 && rsi14Val <= 65) {
+              /*
               await notifyFn?.(formatStrategyAlert({
                 strategy:    pos.strategy_used || 'Wave Enjoyer',
                 pool:        null,
@@ -1101,6 +1102,7 @@ export async function runHealerAlpha(notifyFn) {
                 reason:      `Re-entry setelah close — Supertrend masih BULLISH | Price ${distPct.toFixed(1)}% di atas support | RSI14=${rsi14Val?.toFixed(0)}`,
                 priority:    'MEDIUM',
               }));
+              */
             }
           }
         } catch { /* best-effort, jangan crash */ }
