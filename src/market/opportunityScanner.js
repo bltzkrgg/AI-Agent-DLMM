@@ -13,7 +13,6 @@
 
 import { getTopPools } from '../solana/meteora.js';
 import { getOHLCV, getDLMMPoolData, getMultiTFScore } from './oracle.js';
-import { formatStrategyAlert } from '../utils/alerts.js';
 
 // Cooldown state: Map<`${poolAddress}:${strategy}`, timestamp>
 const _cooldown   = new Map();
@@ -68,13 +67,7 @@ export async function runOpportunityScanner(notifyFn) {
           ? `${opp.reason} | TF: ${tfSummary} (${(mtf.score * 100).toFixed(0)}% bullish)`
           : opp.reason;
 
-        await notifyFn(formatStrategyAlert({
-          strategy:    opp.strategy,
-          pool:        pool.name || null,
-          poolAddress: pool.address,
-          reason:      enrichedReason,
-          priority:    mtf.score >= 0.67 ? 'HIGH' : opp.priority,
-        }));
+        // Strategy alert silenced (Opportunity identified and available in logs)
 
         await new Promise(r => setTimeout(r, 1200)); // anti-flood
       }
