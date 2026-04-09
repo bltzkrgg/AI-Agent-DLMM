@@ -13,7 +13,7 @@ import { swapAllToSOL, SOL_MINT } from '../solana/jupiter.js';
 import { getMarketSnapshot, getOHLCV } from '../market/oracle.js';
 import { fetchWithTimeout, withRetry, withExponentialBackoff } from '../utils/safeJson.js';
 import { kv, hr, codeBlock, formatPnl, shortAddr, shortStrat } from '../utils/table.js';
-import { recordHealAttempt, recordClose } from '../market/poolMemory.js';
+import { recordClose } from '../market/poolMemory.js';
 import { executeControlledOperation } from '../app/executionService.js';
 import { getWalletPositions, isLPAgentEnabled } from '../market/lpAgent.js';
 import { resolvePnlSnapshot } from '../app/pnl.js';
