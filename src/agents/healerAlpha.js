@@ -13,8 +13,7 @@ import { swapAllToSOL, SOL_MINT } from '../solana/jupiter.js';
 import { getMarketSnapshot, getOHLCV } from '../market/oracle.js';
 import { fetchWithTimeout, withRetry, withExponentialBackoff } from '../utils/safeJson.js';
 import { kv, hr, codeBlock, formatPnl, shortAddr, shortStrat } from '../utils/table.js';
-import { formatStrategyAlert } from '../utils/alerts.js';
-import { recordClose } from '../market/poolMemory.js';
+import { recordHealAttempt, recordClose } from '../market/poolMemory.js';
 import { executeControlledOperation } from '../app/executionService.js';
 import { getWalletPositions, isLPAgentEnabled } from '../market/lpAgent.js';
 import { resolvePnlSnapshot } from '../app/pnl.js';
@@ -1094,15 +1093,7 @@ export async function runHealerAlpha(notifyFn) {
 
             // Check re-entry conditions
             if (st?.isBullish && distPct >= 0 && distPct <= 12 && rsi14Val >= 35 && rsi14Val <= 65) {
-              /*
-              await notifyFn?.(formatStrategyAlert({
-                strategy:    pos.strategy_used || 'Wave Enjoyer',
-                pool:        null,
-                poolAddress: pos.pool_address,
-                reason:      `Re-entry setelah close — Supertrend masih BULLISH | Price ${distPct.toFixed(1)}% di atas support | RSI14=${rsi14Val?.toFixed(0)}`,
-                priority:    'MEDIUM',
-              }));
-              */
+              // Strategy alert silenced (Supertrend Bullish info available in logs)
             }
           }
         } catch { /* best-effort, jangan crash */ }
