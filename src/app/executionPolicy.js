@@ -10,9 +10,7 @@ function ensureRuntimeReady() {
 }
 
 function ensureNoDuplicateOperation(operationType, entityId) {
-  const active = operationType === 'OPEN_POSITION'
-    ? getActiveOperation(operationType)
-    : getActiveOperation(operationType, entityId);
+  const active = getActiveOperation(operationType, entityId);
   if (active) {
     throw new Error(`Operasi ${operationType} untuk ${entityId || 'entity ini'} masih berjalan.`);
   }

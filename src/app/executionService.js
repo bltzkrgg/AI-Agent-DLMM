@@ -17,7 +17,7 @@ export async function executeControlledOperation({
   policy = {},
   execute,
 }) {
-  const safeEntityId = operationType === 'OPEN_POSITION' ? null : entityId;
+  const safeEntityId = entityId;
   validateExecutionPolicy({
     operationType,
     entityId: safeEntityId,
