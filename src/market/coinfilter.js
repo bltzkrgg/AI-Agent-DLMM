@@ -1,4 +1,4 @@
-import { fetchWithTimeout, safeNum } from '../utils/safeJson.js';
+import { fetchWithTimeout, safeNum, withExponentialBackoff } from '../utils/safeJson.js';
 import { getConfig } from '../config.js';
 
 const DEXSCREENER_BASE   = 'https://api.dexscreener.com';
@@ -252,21 +252,26 @@ async function getSlippageSimulation(tokenMint, amountSol) {
   try {
     const WSOL = 'So11111111111111111111111111111111111111112';
     const amountLamports = Math.floor(amountSol * 1_000_000_000);
-    const res = await fetchWithTimeout(
-      `https://quote-api.jup.ag/v6/quote?inputMint=${WSOL}&outputMint=${tokenMint}&amount=${amountLamports}&slippageBps=50`,
-      {}, 8000
-    );
-    if (!res.ok) {
-      console.error(`❌ Jupiter Quote Error: ${res.status}`);
-      return null;
-    }
-    const data = await res.json();
+    
+    // Use exponential backoff to handle transient DNS (ENOTFOUND) or rate limits
+    const data = await withExponentialBackoff(async () => {
+      const res = await fetchWithTimeout(
+        `https://quote-api.jup.ag/v6/quote?inputMint=${WSOL}&outputMint=${tokenMint}&amount=${amountLamports}&slippageBps=50`,
+        {}, 8000
+      );
+      if (!res.ok) {
+        if (res.status === 429) throw new Error('RATELIMIT');
+        throw new Error(`HTTP_${res.status}`);
+      }
+      return await res.json();
+    }, { maxRetries: 3, baseDelay: 1500 });
+
     return {
       priceImpactPct: parseFloat(data.priceImpactPct || 0),
       outAmount:      data.outAmount,
     };
   } catch (e) { 
-    console.error(`❌ getSlippageSimulation failed for ${tokenMint.slice(0, 8)}:`, e.message);
+    console.error(`❌ getSlippageSimulation failed for ${tokenMint.slice(0, 8)} after retries:`, e.message);
     return null; 
   }
 }
