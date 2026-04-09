@@ -31,8 +31,7 @@ let lastReport = null;
 let hunterNotifyFn = null;
 let hunterBotRef = null;
 let hunterAllowedId = null;
-let _hunterTargetCount = null; // jumlah posisi yang ingin dibuka dalam 1 run /entry
-const _deployingPools  = new Set(); // lock sementara selama TX in-flight
+let _hunterTargetCount = null; // Local caches for tool output (shared across rounds)
 
 export function getCandidates() { return lastCandidates; }
 export function getLastHunterReport() { return lastReport; }
@@ -503,13 +502,7 @@ async function executeTool(name, input) {
         }
       }
 
-      // ── Guard: TX in-flight (deploy sedang berjalan untuk pool ini) ──
-      if (_deployingPools.has(input.pool_address)) {
-        return JSON.stringify({
-          blocked: true,
-          reason: `Pool ${input.pool_address.slice(0, 8)}... sedang dalam proses deploy — tunggu TX selesai. Jangan retry.`,
-        }, null, 2);
-      }
+      // NOTE: Database-level lock in executeControlledOperation handles duplicate guard per pool.
 
       // ── Guard: slot posisi penuh ─────────────────────────────────
       const effectiveMaxPos = _hunterTargetCount != null
@@ -593,8 +586,7 @@ async function executeTool(name, input) {
         }
       } catch { /* skip */ }
 
-      // ── Semua validasi lulus — sekarang lock dan kirim "Deploying..." ──
-      _deployingPools.add(input.pool_address);
+      // ── Semua validasi lulus — sekarang kirim "Deploying..." ──
 
       if (hunterNotifyFn) {
         await hunterNotifyFn(
@@ -666,9 +658,7 @@ async function executeTool(name, input) {
           }
           throw deployErr; // re-throw agar AI tahu dan bisa report
         }
-      } finally {
-        _deployingPools.delete(input.pool_address);
-      }
+      } 
 
       // Notifikasi & recording — dikurung try/catch agar error Telegram
       // tidak membuat tool return Error dan memicu AI retry ke pool yang sama
