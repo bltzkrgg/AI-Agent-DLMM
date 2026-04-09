@@ -16,7 +16,6 @@ import { getStrategyIntelligenceContext } from '../market/strategyPerformance.js
 import { screenToken, formatScreenResult } from '../market/coinfilter.js';
 import { parseTvl } from '../utils/safeJson.js';
 import { kv, hr, codeBlock, shortAddr } from '../utils/table.js';
-import { formatStrategyAlert } from '../utils/alerts.js';
 import { getDarwinWeights, captureSignals } from '../market/signalWeights.js';
 import { isOnCooldown, getPoolMemoryContext, recordDeployment } from '../market/poolMemory.js';
 import { checkSmartWalletsOnPool, formatSmartWalletSignal } from '../market/smartWallets.js';
