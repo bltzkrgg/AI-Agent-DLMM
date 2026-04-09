@@ -93,6 +93,7 @@ const DEFAULTS = {
 
   // Meridian Integration & Evolution
   autonomousEvolutionEnabled: true,
+  lastEvolutionTradeCount: 0,
   evolveIntervalTrades: 5,        // Recalibrate after every N closed trades
   useSocialSignals: true,          // Enable Meridian Discord/KOL signals
   socialSignalWeight: 1.5,        // Multiplier for Darwinian Score if social signal exists
