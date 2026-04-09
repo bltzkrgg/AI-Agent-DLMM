@@ -597,11 +597,9 @@ async function executeTool(name, input) {
         );
       }
 
-      // Semua kode setelah lock dibungkus try/finally agar lock SELALU dilepas
       let result;
-      try {
-        // Konfirmasi Telegram (di sini karena butuh lock untuk cegah race)
-        if (cfg.requireConfirmation && hunterNotifyFn && hunterBotRef && hunterAllowedId) {
+      // Konfirmasi Telegram (cegah race)
+      if (cfg.requireConfirmation && hunterNotifyFn && hunterBotRef && hunterAllowedId) {
           const confirmed = await requestConfirmation(
             hunterNotifyFn,
             hunterBotRef,
@@ -658,7 +656,6 @@ async function executeTool(name, input) {
           }
           throw deployErr; // re-throw agar AI tahu dan bisa report
         }
-      } 
 
       // Notifikasi & recording — dikurung try/catch agar error Telegram
       // tidak membuat tool return Error dan memicu AI retry ke pool yang sama
