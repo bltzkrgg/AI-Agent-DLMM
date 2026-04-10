@@ -247,9 +247,9 @@ async function executeTool(name, input) {
         isLPAgentEnabled()
           ? lpAgentDiscoverPools({
               pageSize:        50,
-              vol24hMin:       cfg.minVolume24h || 100000,
-              organicScoreMin: cfg.minOrganic   || 50,
-              binStepMin:      cfg.minBinStep   || 1,
+              vol24hMin:       cfg.minVolume24h,
+              organicScoreMin: cfg.minOrganic,
+              binStepMin:      cfg.minBinStep,
               binStepMax:      250,
               feeTVLInterval:  '1h',
             })
@@ -282,8 +282,8 @@ async function executeTool(name, input) {
         : {};
 
       // Filter dasar
-      const minBinStep      = cfg.minBinStep      || 1;
-      const minTokenFeesSol = cfg.minTokenFeesSol || 0;
+      const minBinStep      = cfg.minBinStep;
+      const minTokenFeesSol = cfg.minTokenFeesSol;
       const preFiltered = combined.filter(p => {
         const tvl      = parseTvl(p.tvlStr || p.tvl || 0);
         const fees     = p.fees24hRaw || 0;
