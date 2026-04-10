@@ -486,31 +486,34 @@ export async function evaluateStrategyReadiness({ strategyName, poolAddress, sna
     }
 
     // ── Warp Panda: Contextual Adaptive Discovery ──────────────────
-    const currentPrice = o.currentPrice || 0;
-    const bb = ta.bb || { upper: 0, lower: 0, middle: 0 };
-    const atr = ta.atr || (currentPrice * 0.02); // Fallback to 2% if ATR missing
-    
-    // 1. Calculate Bollinger Spread
+    const currentPrice = snapshot.ohlcv.currentPrice;
+    const rsi = snapshot.ta?.rsi14 || 50;
+    const bb = snapshot.ta?.bb || { middle: currentPrice, lower: currentPrice, upper: currentPrice };
+    const st = snapshot.ta?.supertrend || { trend: 'NEUTRAL', value: currentPrice };
+
+    // --- Intelligence Matrix: SNIPER vs DEEP JARING ---
     const bbWidePct = ((bb.upper - bb.lower) / currentPrice) * 100;
+    const distFromSupportPct = ((st.value - currentPrice) / currentPrice) * 100;
+
+    // Detect Capitulation (Panic Selling)
+    const isCapitulation = rsi < 30 || distFromSupportPct > 15;
     
-    // 2. Select Range Mode (The Intelligence Matrix)
-    let rangeMultiplier = 1.5;
-    let mode = 'EXPANSION';
+    // Multiplier scaling: Sniper (1.2x) to Deep Jaring (3.0x)
+    let rangeMultiplier = isCapitulation ? 3.0 : (bbWidePct < 2.5 ? 1.2 : (bbWidePct < 5.0 ? 1.5 : 2.0));
     
-    if (bbWidePct < 2.5) {
-      rangeMultiplier = 1.2;
-      mode = 'SQUEEZE';
-    } else if (bbWidePct > 10.0) {
-      rangeMultiplier = 2.0;
-      mode = 'EXTREME';
+    // Hard scale range width based on Volatility + Capitulation
+    // Goal: Sniper (10-30%) vs Deep Jaring (60-90%)
+    let targetRangePct = Math.max(8.0, bbWidePct * rangeMultiplier);
+    if (isCapitulation) {
+      targetRangePct = Math.max(60.0, targetRangePct); // Floor 60% if crashing
     }
+    targetRangePct = Math.min(95.0, targetRangePct); // Hard cap 95%
+
+    // --- Technical Anchoring ---
+    // If momentum: Anchor to Supertrend. If crash: Anchor even deeper.
+    const technicalFloor = isCapitulation ? (currentPrice * (1 - (targetRangePct / 100))) : Math.max(st.value, bb.lower);
     
-    // 3. Calculate target range width (Ensures "Room to Run" for 3% TP)
-    const targetRangePct = Math.max(8.0, bbWidePct * rangeMultiplier);
-    
-    // 4. Calculate Bottom Anchor (Safety Support)
-    // We anchor to the HIGHER of Supertrend or Lower BB (Strongest technical support)
-    const technicalFloor = Math.max(st.value, bb.lower);
+    const offsetMin = isCapitulation ? (targetRangePct * 0.8) : 0; // Much deeper jaring for crashes
     const offsetMax = Math.max(targetRangePct, ((currentPrice - technicalFloor) / currentPrice) * 100);
     
     // 5. Calculate Dynamic Headroom (Padding)
@@ -521,17 +524,22 @@ export async function evaluateStrategyReadiness({ strategyName, poolAddress, sna
     // 6. Suggested Slippage
     const suggestedSlippage = vol > 50 ? 2.5 : 1.0;
 
+    const modeText = isCapitulation ? 'DEEP_JARING' : 'SNIPER_MODE';
+    const technicalReasoning = isCapitulation
+      ? `🚨 ${modeText}: Capitulation detected (RSI ${rsi.toFixed(0)}), deploying WIDE range ${targetRangePct.toFixed(1)}% to catch bottom.`
+      : `🎯 ${modeText}: Momentum active, range ${targetRangePct.toFixed(1)}% anchored to technical floor.`;
+
     return {
       ok: true,
       blockers: [],
-      notes: `[Warp Panda] ${mode} mode detection. Anchoring to technical support at $${technicalFloor.toFixed(6)}. Range matched to ${targetRangePct.toFixed(1)}% volatility.`,
+      notes: technicalReasoning,
       deployOptions: {
         priceRangePct: targetRangePct,
-        entryPriceOffsetMin: 0, // Pivot at current price for BREAKOUT
+        entryPriceOffsetMin: offsetMin,
         entryPriceOffsetMax: offsetMax,
         binPadding: paddingBins,
         slippagePct: suggestedSlippage,
-        technicalReasoning: `Anchored to ST/BB Support. ${mode} widening active.`
+        technicalReasoning
       }
     };
   }
