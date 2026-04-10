@@ -60,6 +60,9 @@ const DEFAULTS = {
   proactiveExitMinProfitPct: 1.0,
   proactiveExitBearishConfidence: 0.7,
   maxPriceImpactPct: 0.5,     // Maksimal price impact (%) yang diijinkan saat simulasi swap
+  maxBinsPerPosition: 150,   // Kapasitas bin maksimal per transaksi (Meteora V2)
+  activePreset: 'rsi_plus_supertrend', // Mode keputusan: supertrend_break, rsi_reversal, rsi_plus_supertrend
+  rsi2Threshold: 90,         // Threshold RSI(2) untuk sinyal exit/zap-out
 
   // Darwinian Signal Weighting — dari 263 closed positions
   // Higher weight = stronger predictor of profitable positions
@@ -135,6 +138,8 @@ const CONFIG_BOUNDS = {
   socialSignalWeight:        { min: 1.0,   max: 5.0 },
   minSmartMoneyOverlap:      { min: 0,     max: 10 },
   maxPriceImpactPct:          { min: 0.1,   max: 5 },
+  maxBinsPerPosition:         { min: 20,    max: 150 },
+  rsi2Threshold:              { min: 50,    max: 98 },
   lastEvolutionTradeCount:   { min: 0,     max: 1000000 },
 };
 
