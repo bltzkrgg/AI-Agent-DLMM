@@ -4,6 +4,7 @@ import { fileURLToPath } from 'url';
 import { createMessage, resolveModel, extractText } from '../agent/provider.js';
 import { getConfig } from '../config.js';
 import { safeParseAI } from '../utils/safeJson.js';
+import { kv, codeBlock } from '../utils/table.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const LESSONS_PATH = join(__dirname, '../../lessons.json');
