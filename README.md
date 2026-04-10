@@ -33,6 +33,7 @@ git clone https://github.com/bltzkrgg/AI-Agent-DLMM.git
 cd AI-Agent-DLMM
 npm install
 cp .env.example .env # Isi API Keys lo di sini!
+cp user-config.example.json user-config.json # Setting awal bot lo
 npm start
 ```
 
