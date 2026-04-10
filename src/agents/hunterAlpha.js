@@ -559,10 +559,11 @@ async function executeTool(name, input) {
 
       let strategyEval = null;
       try {
+        const snapshot = await getMarketSnapshot(poolInfo.tokenX, input.pool_address);
         strategyEval = await evaluateStrategyReadiness({
           strategyName: strategy.name,
-          poolInfo,
           poolAddress: input.pool_address,
+          snapshot,
         });
       } catch { /* best-effort */ }
 

@@ -284,11 +284,21 @@ async function executeTool(name, input) {
             const minProfit         = cfg.proactiveExitMinProfitPct      ?? 1.0;
             const bearishThreshold  = cfg.proactiveExitBearishConfidence ?? 0.7;
             const proactiveEnabled  = cfg.proactiveExitEnabled !== false;
+            
+            // ── Technical Sniper Exit (Evil Panda / Confluence) ──────
+            const taExit = analysis.snapshot?.ta?.evilPanda?.exit;
+            const preset = cfg.activePreset;
+            if (preset === 'rsi_plus_supertrend' || preset === 'rsi_reversal') {
+              if (taExit?.triggered && pnlPct >= 0.5) {
+                proactiveCloseRecommended = true;
+                proactiveWarning = `🎯 TECHNICAL EXIT: ${taExit.reason} (PnL: ${pnlPct.toFixed(2)}%). Locking profit at local top.`;
+              }
+            }
 
-            if (proactiveEnabled && isProfit && pnlPct >= minProfit && analysis.signal === 'BEARISH' && analysis.confidence >= bearishThreshold) {
+            if (!proactiveCloseRecommended && proactiveEnabled && isProfit && pnlPct >= minProfit && analysis.signal === 'BEARISH' && analysis.confidence >= bearishThreshold) {
               proactiveCloseRecommended = true;
               proactiveWarning = `⚠️ Profit ${pnlPct.toFixed(2)}% tapi market BEARISH (${(analysis.confidence * 100).toFixed(0)}% confidence). Rekomendasikan close untuk lock profit.`;
-            } else if (proactiveEnabled && isProfit && pnlPct >= minProfit && analysis.signal === 'BEARISH' && analysis.confidence >= 0.5) {
+            } else if (!proactiveCloseRecommended && proactiveEnabled && isProfit && pnlPct >= minProfit && analysis.signal === 'BEARISH' && analysis.confidence >= 0.5) {
               proactiveWarning = `👀 Profit ${pnlPct.toFixed(2)}% — market mulai bearish (${(analysis.confidence * 100).toFixed(0)}% confidence). Monitor lebih ketat.`;
             }
           } catch {
