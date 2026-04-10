@@ -372,23 +372,38 @@ export async function openPosition(poolAddress, tokenXAmount, tokenYAmount, pric
   const rawActivePrice = parseFloat(activeBin.pricePerToken) || 0;
 
   // ── Bin range calculation ────────────────────────────────────────
-  // binsBelow = priceRangePercent * 100 / binStep
-  // Meteora PositionV2 supports up to 1,400 bins per position account.
-  // We use the user-requested range of 70-125 for adaptive stability.
-  const fixedBinsBelow = Number.isFinite(deployOptions?.fixedBinsBelow)
-    ? Math.min(125, Math.max(2, Math.floor(deployOptions.fixedBinsBelow)))
-    : null;
-  const binPadding = Number.isFinite(deployOptions?.binPadding) ? deployOptions.binPadding : 1; 
+  // Support for Deep-Dip Offset strategies (e.g. Evil Panda -86% to -94%)
+  const offsetMin = deployOptions?.entryPriceOffsetMin; // e.g. 86
+  const offsetMax = deployOptions?.entryPriceOffsetMax; // e.g. 94
 
-  const rawBins  = fixedBinsBelow ?? Math.min(125 - binPadding, Math.max(2, Math.floor((priceRangePercent / 100) / (binStep / 10000))));
-  
-  const rangeMin = activeBin.binId - rawBins;
-  const rangeMax = activeBin.binId + binPadding; 
+  let rangeMin, rangeMax;
+
+  if (Number.isFinite(offsetMin) && Number.isFinite(offsetMax)) {
+    // Deep Fishing logic: Price < Current
+    // BinStepPct = binStep / 10000.  Percent / BinStepPct = Bins.
+    const binStepPct = binStep / 10000;
+    rangeMax = activeBin.binId - Math.floor((offsetMin / 100) / binStepPct);
+    rangeMin = activeBin.binId - Math.floor((offsetMax / 100) / binStepPct);
+    
+    // Safety check: ensure min < max
+    if (rangeMin > rangeMax) [rangeMin, rangeMax] = [rangeMax, rangeMin];
+  } else {
+    // Classic centered-ish range
+    const fixedBinsBelow = Number.isFinite(deployOptions?.fixedBinsBelow)
+      ? Math.min(150, Math.max(2, Math.floor(deployOptions.fixedBinsBelow)))
+      : null;
+    const binPadding = Number.isFinite(deployOptions?.binPadding) ? deployOptions.binPadding : 1; 
+
+    const rawBins  = fixedBinsBelow ?? Math.min(150 - binPadding, Math.max(2, Math.floor((priceRangePercent / 100) / (binStep / 10000))));
+    rangeMin = activeBin.binId - rawBins;
+    rangeMax = activeBin.binId + binPadding; 
+  }
+
   const totalBins = (rangeMax - rangeMin) + 1;
 
-  // Meteora PositionV2 supports up to 1,400 bins. SDK's chunkBinRange splits at 69/70 for legacy compatibility.
-  // We manually consolidate if totalBins matches our safety ceiling (69) to ensure 1 deploy = 1 position.
-  const binChunks = totalBins <= 69 
+  // Meteora PositionV2 supports up to 1,400 bins. 
+  // We lift the legacy safety ceiling to 150 bins to support deep ranges in 1 TX.
+  const binChunks = totalBins <= 150 
     ? [{ lowerBinId: rangeMin, upperBinId: rangeMax }]
     : chunkBinRange(rangeMin, rangeMax);
 
@@ -421,14 +436,15 @@ export async function openPosition(poolAddress, tokenXAmount, tokenYAmount, pric
       tx.recentBlockhash = blockhash;
       tx.feePayer = wallet.publicKey;
 
-      // Priority fee — use Helius recommendation if available, otherwise fallback
-      let microLamports = 200_000;
+      // Priority fee — use higher compute budget for large bin ranges
+      let microLamports = 250_000;
+      let computeUnits = totalBins > 80 ? 800_000 : 400_000;
       try {
         const recommended = await getRecommendedPriorityFee([poolAddress, xMint, yMint]);
         if (recommended > 0) microLamports = recommended;
       } catch { /* use default */ }
 
-      injectPriorityFee(tx, { units: 400_000, microLamports });
+      injectPriorityFee(tx, { units: computeUnits, microLamports });
 
       tx.sign(wallet, posKp);
 
