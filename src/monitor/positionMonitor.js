@@ -17,13 +17,34 @@ export function initMonitor(telegramBot, userId) {
   bot = telegramBot;
   allowedUserId = userId;
 
-  // Satu cron per menit — interval dibaca live dari config, tidak perlu restart
+  // Adaptive Cron: Runs every minute, but logic handles tiering
   cron.schedule('* * * * *', async () => {
     const cfg = getConfig();
     const now = Date.now();
+    const openPositions = getOpenPositions();
 
-    // OOR check — hardcoded 5 menit
-    if (now - _lastOorCheckRun >= 5 * 60 * 1000) {
+    if (openPositions.length === 0) return;
+
+    // ── Tiered Polling Logic ──────────────────────────────────────
+    // Mode Sniper: 1m (PnL > 1.5% or near boundary)
+    // Mode Peace: 5m (Standard)
+    
+    let needsHighFreq = false;
+    for (const pos of openPositions) {
+      const runtimeState = getPositionRuntimeState(pos.position_address);
+      const lastPnl = runtimeState?.lastPnlPct || 0;
+      const isNearEdge = (runtimeState?.distToEdgeBins || 99) < 10;
+      
+      if (lastPnl > 1.5 || isNearEdge || !runtimeState?.inRange) {
+        needsHighFreq = true;
+        break;
+      }
+    }
+
+    const currentIntervalMs = needsHighFreq ? (1 * 60 * 1000) : (5 * 60 * 1000);
+
+    // OOR check
+    if (now - _lastOorCheckRun >= currentIntervalMs) {
       _lastOorCheckRun = now;
       checkOutOfRange().catch(e => console.error('OOR check error:', e.message));
     }
@@ -72,28 +93,37 @@ async function checkOutOfRange() {
           if (Date.now() - lastAlertAt < 30 * 60 * 1000) {
             continue;
           }
+          const oorSince = runtimeState?.oorSince || Date.now();
+          const lastAlert = runtimeState?.lastOorAlertAt || 0;
+          const shouldAlert = (Date.now() - lastAlert) >= (cfg.oorAlertIntervalMin || 30) * 60 * 1000;
 
-          const priceStr = pos.displayCurrentPrice != null
-            ? `${pos.displayCurrentPrice} ${pos.priceUnit || ''}`
-            : String(pos.currentPrice);
-          const rangeStr = pos.displayLowerPrice != null
-            ? `${pos.displayLowerPrice} – ${pos.displayUpperPrice} ${pos.priceUnit || ''}`
-            : `Bin ${pos.lowerBinId} – ${pos.upperBinId}`;
-          const message =
-            `⚠️ *POSISI OUT OF RANGE!*\n\n` +
-            `📍 Pool: \`${poolAddress.slice(0, 8)}...${poolAddress.slice(-8)}\`\n` +
-            `📍 Posisi: \`${pos.address.slice(0, 8)}...${pos.address.slice(-8)}\`\n` +
-            `💱 Pair: ${pos.tokenXSymbol || 'X'}/${pos.tokenYSymbol || 'Y'}\n` +
-            `💰 Harga saat ini: ${priceStr}\n` +
-            `📊 Range posisi: ${rangeStr}\n` +
-            `⏱ Sudah OOR: *${durStr}*\n\n` +
-            `_Posisi tidak menghasilkan fee. Pertimbangkan rebalance atau tutup posisi._`;
+          if (shouldAlert) {
+            const message = `🔴 *POSITION OUT OF RANGE*\n\n` +
+              `Pool: \`${pos.pool_address.slice(0, 12)}...\`\n` +
+              `Range: ${pos.rangeMin} - ${pos.rangeMax}\n` +
+              `Active: ${pos.activeBin}\n` +
+              `Distance: ${pos.outOfRangeBins || 0} bins\n\n` +
+              `_Bot monitor lebih ketat (1m) sampai posisi kembali in-range atau ditutup._`;
 
-          await bot.sendMessage(allowedUserId, message, { parse_mode: 'Markdown' });
-          saveNotification('out_of_range', message);
-          updatePositionRuntimeState(pos.address, { oorSince, lastOorAlertAt: Date.now() });
+            await bot.sendMessage(allowedUserId, message, { parse_mode: 'Markdown' });
+            saveNotification('out_of_range', message);
+          }
+          
+          updatePositionRuntimeState(pos.address, { 
+            oorSince, 
+            lastOorAlertAt: (Date.now() - (shouldAlert ? 0 : 0)), // placeholder
+            inRange: false,
+            distToEdgeBins: distToEdge
+          });
+          if (shouldAlert) updatePositionRuntimeState(pos.address, { lastOorAlertAt: Date.now() });
+
         } else {
-          updatePositionRuntimeState(pos.address, { oorSince: null, lastOorAlertAt: null });
+          updatePositionRuntimeState(pos.address, { 
+            oorSince: null, 
+            lastOorAlertAt: null,
+            inRange: true,
+            distToEdgeBins: distToEdge
+          });
         }
       }
     } catch (e) {
@@ -156,6 +186,13 @@ async function sendPositionStatus() {
         livePosition: pos,
         providerPnlPct: lpPnlMap.has(pos.address) ? lpPnlMap.get(pos.address) : null,
         directPnlPct: Number.isFinite(pos?.pnlPct) ? pos.pnlPct : null,
+      });
+
+      // Update runtime state for Tiered Polling
+      updatePositionRuntimeState(pos.address, {
+        lastPnlPct: snapshot.pnlPct,
+        inRange: !!pos.inRange,
+        distToEdgeBins: pos.outOfRangeBins || 99
       });
 
       const rangeIcon = pos.inRange ? '🟢' : '🔴';

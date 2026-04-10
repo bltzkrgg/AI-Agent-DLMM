@@ -580,8 +580,7 @@ async function executeTool(name, input) {
 
       // Dynamic range — gunakan profile strategy lebih dulu, baru fallback generic.
       // Range — use strategy profile or default
-      let targetPriceRangePct = strategyEval?.priceRangePct ?? stratParams.priceRangePercent ?? 10;
-      const deployOptions = strategyEval?.deployOptions || {};
+      let targetPriceRangePct = deployOptions?.priceRangePct ?? stratParams.priceRangePercent ?? 10;
 
       // Strategy vs pool warning (non-blocking)
       try {
@@ -598,7 +597,8 @@ async function executeTool(name, input) {
           `⚡ *Deploying...*\n` +
           `Pool: \`${input.pool_address.slice(0, 8)}...\`\n` +
           `Strategi: ${strategy.name}\n` +
-          `_${(input.reasoning || '').slice(0, 100)}_`
+          `Range: ${targetPriceRangePct.toFixed(1)}%\n` +
+          `_${(deployOptions.technicalReasoning || input.reasoning || '').slice(0, 150)}_`
         );
       }
 
@@ -611,10 +611,10 @@ async function executeTool(name, input) {
             hunterAllowedId,
             `🚀 *Hunter Alpha ingin deploy:*\n\n` +
             `📍 Pool: \`${input.pool_address.slice(0,8)}...\`\n` +
-            `📊 Strategi: ${strategy.name}\n` +
+            `📊 Strategi: ${strategy.name} (${targetPriceRangePct.toFixed(1)}%)\n` +
             `💰 Deploy: ${deployAmountSol} SOL (Single-Side SOL)\n` +
             `  tokenX: 0 | tokenY: ${tokenYAmount.toFixed(4)} SOL\n\n` +
-            `💭 ${input.reasoning}`
+            `💭 ${deployOptions.technicalReasoning || input.reasoning}`
           );
           if (!confirmed) {
             // Kirim notif batal agar user tidak bingung kenapa "Deploying..." tanpa follow-up
