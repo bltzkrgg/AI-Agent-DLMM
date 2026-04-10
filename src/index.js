@@ -217,8 +217,9 @@ async function runHealerWithReopenCheck() {
 // Semua cron jalan setiap menit dan cek interval live dari config.
 // Ini memungkinkan perubahan interval via /setconfig TANPA restart bot.
 
-let _lastHealerRun    = Date.now(); // delay run pertama sampai interval berlalu
-let _lastScreeningRun = Date.now();
+let _lastHealerRun    = 0; // lari instan pas bot nyala pertama kali
+let _lastScreeningRun = 0;
+let _lastBalanceWarningAt = 0; // cooldown notif saldo low
 
 cron.schedule('* * * * *', async () => {
   const liveCfg = getConfig();
@@ -256,10 +257,31 @@ async function runAutoScreening() {
   if (!liveCfg.autoScreeningEnabled) return;
 
   const openPos = getOpenPositions();
-  if (openPos.length >= liveCfg.maxPositions) return; // slot penuh
+  if (openPos.length >= liveCfg.maxPositions) {
+    console.log(`⏭ Hunter skip — slot penuh (${openPos.length}/${liveCfg.maxPositions})`);
+    return;
+  }
 
   const balance = await getWalletBalance().catch(() => '0');
-  if (parseFloat(balance) < (liveCfg.deployAmountSol + (liveCfg.gasReserve ?? 0.02))) return;
+  const needed = liveCfg.deployAmountSol + (liveCfg.gasReserve ?? 0.02);
+  
+  if (parseFloat(balance) < needed) {
+    const balNum = parseFloat(balance).toFixed(4);
+    console.log(`⏭ Hunter skip — saldo low (${balNum} < ${needed.toFixed(2)})`);
+    
+    // Kirim notifikasi Telegram cuma sekali tiap 6 jam agar tidak spam
+    if (Date.now() - _lastBalanceWarningAt > 6 * 60 * 60 * 1000) {
+      _lastBalanceWarningAt = Date.now();
+      notify(`⚠️ *Hunter Terhenti: Saldo Low!*\n\n` +
+             `💰 Saldo: \`${balNum} SOL\`\n` +
+             `🎯 Butuh: \`${needed.toFixed(2)} SOL\` (Deploy: ${liveCfg.deployAmountSol} + Gas: ${liveCfg.gasReserve || 0.02})\n\n` +
+             `_Hunter tidak bisa mencari koin baru. Harap top-up SOL ke wallet bot._`).catch(() => {});
+    }
+    return;
+  }
+
+  // Reset warning kalau saldo sudah cukup lagi
+  _lastBalanceWarningAt = 0;
 
   _screeningBusy = Date.now();
   _hunterBusy    = Date.now();
