@@ -17,6 +17,7 @@ import { createMessage, resolveModel, extractText } from '../agent/provider.js';
 import { getConfig } from '../config.js';
 import { getMarketSnapshot } from './oracle.js';
 import { loadMemory, saveMemory } from './memory.js';
+import { getLessonsContext } from '../learn/lessons.js';
 
 export async function analyzeMarket(tokenMint, poolAddress, currentPosition = null) {
   const cfg = getConfig();
@@ -30,6 +31,7 @@ export async function analyzeMarket(tokenMint, poolAddress, currentPosition = nu
     .join('\n');
 
   const ctx = buildDLMMContext(snapshot, currentPosition);
+  const lessons = getLessonsContext();
 
   const systemPrompt = `Kamu adalah DLMM LP specialist untuk Meteora di Solana.
 
@@ -111,6 +113,7 @@ Respond HANYA dalam JSON:
   const userPrompt = `Analisa kondisi LP untuk posisi ini:
 
 ${ctx}
+${lessons ? `\n${lessons}` : ''}
 ${relevantMemory ? `\nPengalaman sebelumnya dengan token/kondisi serupa:\n${relevantMemory}` : ''}
 
 ${currentPosition
@@ -118,7 +121,7 @@ ${currentPosition
 - In range: ${currentPosition.inRange ?? 'unknown'}
 - PnL: ${currentPosition.pnlPct != null ? (currentPosition.pnlPct >= 0 ? '+' : '') + currentPosition.pnlPct.toFixed(2) + '%' : 'N/A'}
 - Out-of-range selama: ${currentPosition.outOfRangeMins ?? 0} menit`
-  : 'Evaluasi untuk posisi baru — apakah worth deploy?'}
+  : `Evaluasi untuk posisi baru @ Mcap $${snapshot.pool?.mcap || 'Unknown'} — apakah worth deploy? (INGAT: minMcap $250k adalah syarat mutlak)`}
 
 Pertanyaan: ${currentPosition
   ? 'Apakah posisi ini HOLD, CLOSE, atau REBALANCE? Lihat dari sudut pandang LP, bukan trader.'
@@ -157,7 +160,7 @@ function buildDLMMContext(snapshot, position) {
 - Fee APR: ${p.feeApr}% (${p.feeAprCategory})
 - Fee/TVL: ${(p.feeTvlRatio * 100).toFixed(3)}%/hari | TVL: $${p.tvl >= 1e6 ? (p.tvl/1e6).toFixed(2)+'M' : (p.tvl/1000).toFixed(1)+'K'}
 - Volume 24h: $${p.volume24h >= 1e6 ? (p.volume24h/1e6).toFixed(2)+'M' : (p.volume24h/1000).toFixed(1)+'K'} | Fees 24h: $${p.fees24h?.toFixed(2)}
-- Bin step: ${p.binStep}`);
+- Bin step: ${p.binStep}${snapshot.smartMoney?.skewPct ? `\n- Whale Skew: ${snapshot.smartMoney.skewPct}% (${snapshot.smartMoney.skewPct > 25 ? '⚠️ HIGH' : 'SAFE'})` : ''}`);
   } else {
     parts.push('⚠️ Data pool DLMM tidak tersedia');
   }

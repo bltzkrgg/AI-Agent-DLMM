@@ -12,6 +12,7 @@
  */
 
 import { fetchWithTimeout } from '../utils/safeJson.js';
+import { getConfig } from '../config.js';
 
 const LP_AGENT_BASE = 'https://api.lpagent.io/open-api/v1';
 const MIN_INTERVAL_MS = 13000; // conservative ~4.6 RPM (under 5 RPM limit)
@@ -21,7 +22,18 @@ const MIN_INTERVAL_MS = 13000; // conservative ~4.6 RPM (under 5 RPM limit)
 let _lastCallTs = 0;
 
 async function rateLimitedFetch(path, params = {}) {
-  const apiKey = process.env.LP_AGENT_API_KEY;
+  const cfg = getConfig();
+  let apiKey = process.env.LP_AGENT_API_KEY;
+  let baseUrl = LP_AGENT_BASE;
+  let useRelay = false;
+
+  // Use Meridian Relay if enabled and no private key is present
+  if (cfg.lpAgentRelayEnabled && (!apiKey || cfg.publicApiKey)) {
+    apiKey = cfg.publicApiKey || 'bWVyaWRpYW4taXMtdGhlLWJlc3QtYWdlbnRz';
+    baseUrl = cfg.agentMeridianApiUrl || 'https://api.agentmeridian.xyz/api';
+    useRelay = true;
+  }
+
   if (!apiKey) return null; // API key not configured — skip silently
 
   const now  = Date.now();
@@ -33,10 +45,13 @@ async function rateLimitedFetch(path, params = {}) {
     const query = new URLSearchParams(
       Object.fromEntries(Object.entries(params).filter(([, v]) => v != null))
     ).toString();
-    const url = `${LP_AGENT_BASE}${path}${query ? '?' + query : ''}`;
+    const url = `${baseUrl}${path}${query ? '?' + query : ''}`;
 
     const res = await fetchWithTimeout(url, {
-      headers: { 'x-api-key': apiKey, 'Content-Type': 'application/json' },
+      headers: { 
+        [useRelay ? 'Authorization' : 'x-api-key']: (useRelay ? `Bearer ${apiKey}` : apiKey),
+        'Content-Type': 'application/json' 
+      },
     }, 12000);
 
     if (!res.ok) {
@@ -250,5 +265,6 @@ export async function getPoolSmartMoney(poolAddress) {
 
 // ─── Utility: cek apakah LP Agent aktif ──────────────────────────
 export function isLPAgentEnabled() {
-  return !!process.env.LP_AGENT_API_KEY;
+  const cfg = getConfig();
+  return !!(process.env.LP_AGENT_API_KEY || cfg.lpAgentRelayEnabled);
 }

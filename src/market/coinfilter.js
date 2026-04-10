@@ -253,25 +253,38 @@ async function getSlippageSimulation(tokenMint, amountSol) {
     const WSOL = 'So11111111111111111111111111111111111111112';
     const amountLamports = Math.floor(amountSol * 1_000_000_000);
     
-    // Use exponential backoff to handle transient DNS (ENOTFOUND) or rate limits
-    const data = await withExponentialBackoff(async () => {
+    // --- 1. Simulation Beli (SOL -> Token) ---
+    const buyData = await withExponentialBackoff(async () => {
       const res = await fetchWithTimeout(
         `https://quote-api.jup.ag/v6/quote?inputMint=${WSOL}&outputMint=${tokenMint}&amount=${amountLamports}&slippageBps=50`,
         {}, 8000
       );
+      if (!res.ok) throw new Error(`BUY_HTTP_${res.status}`);
+      return await res.json();
+    }, { maxRetries: 2, baseDelay: 1000 });
+
+    // --- 2. Simulation Jual (Token -> SOL) - Honeypot Check ---
+    // Gunakan outputAmount dari Simulasi Beli sebagai input untuk Simulasi Jual
+    const sellData = await withExponentialBackoff(async () => {
+      const res = await fetchWithTimeout(
+        `https://quote-api.jup.ag/v6/quote?inputMint=${tokenMint}&outputMint=${WSOL}&amount=${buyData.outAmount}&slippageBps=50`,
+        {}, 8000
+      );
       if (!res.ok) {
-        if (res.status === 429) throw new Error('RATELIMIT');
-        throw new Error(`HTTP_${res.status}`);
+        if (res.status === 400) return { error: 'Honeypot/No-Liquidity-Back' };
+        throw new Error(`SELL_HTTP_${res.status}`);
       }
       return await res.json();
-    }, { maxRetries: 3, baseDelay: 1500 });
+    }, { maxRetries: 2, baseDelay: 1000 }).catch(() => ({ error: 'Sim-Sell-Failed' }));
 
     return {
-      priceImpactPct: parseFloat(data.priceImpactPct || 0),
-      outAmount:      data.outAmount,
+      priceImpactBuy: parseFloat(buyData.priceImpactPct || 0),
+      priceImpactSell: parseFloat(sellData?.priceImpactPct || 0),
+      isHoneypot: !!(sellData?.error),
+      sellError: sellData?.error,
     };
   } catch (e) { 
-    console.error(`❌ getSlippageSimulation failed for ${tokenMint.slice(0, 8)} after retries:`, e.message);
+    console.error(`❌ getSlippageSimulation failed for ${tokenMint.slice(0, 8)}:`, e.message);
     return null; 
   }
 }
@@ -292,9 +305,19 @@ function step11_slippageCheck(sim, maxImpact = 0.5) {
     warnings.push({ rule: 'SIM_FAILED', msg: 'Gagal simulasi slippage — proceed with caution' });
     return { rejects, warnings };
   }
-  if (sim.priceImpactPct > maxImpact) {
-    rejects.push({ rule: 'HIGH_PRICE_IMPACT', msg: `Price impact ${sim.priceImpactPct.toFixed(2)}% > ${maxImpact}% — likuiditas terlalu tipis` });
+
+  if (sim.isHoneypot) {
+    rejects.push({ rule: 'HONEYPOT_DETECTED', msg: `Honeypot risk! Simulasi jual gagal: ${sim.sellError || 'Unknown Error'}` });
   }
+
+  if (sim.priceImpactBuy > maxImpact) {
+    rejects.push({ rule: 'HIGH_PRICE_IMPACT_BUY', msg: `Price impact beli ${sim.priceImpactBuy.toFixed(2)}% > ${maxImpact}% — likuiditas terlalu tipis` });
+  }
+
+  if (sim.priceImpactSell > Math.max(10, maxImpact * 10)) {
+    rejects.push({ rule: 'HIGH_PRICE_IMPACT_SELL', msg: `Price impact jual ${sim.priceImpactSell.toFixed(2)}% — indikasi pajak jual tinggi atau likuiditas satu arah` });
+  }
+
   return { rejects, warnings };
 }
 
@@ -352,7 +375,8 @@ export async function screenToken(tokenMint, tokenName = '', tokenSymbol = '', o
     tokenMint, name, symbol, verdict, eligible: allRejects.length === 0,
     highFlags: allRejects, mediumFlags: allWarnings,
     organicScore: s7.score, mcap: s9.mcap,
-    priceImpact: sim?.priceImpactPct,
+    priceImpact: sim?.priceImpactBuy,
+    priceImpactSell: sim?.priceImpactSell,
     sources: { dexscreener: !!dex, jupiter: !!(jup?.found), helius: (authResult.status==='fulfilled') },
   };
 }

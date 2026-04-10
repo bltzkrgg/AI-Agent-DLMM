@@ -1,6 +1,7 @@
 import { fetchWithTimeout, safeNum } from '../utils/safeJson.js';
 import { getHeliusOnChainSignals } from '../utils/helius.js';
 import * as ta from '../utils/ta.js';
+import { getPoolSmartMoney } from '../market/lpAgent.js';
 
 const DEXSCREENER_BASE = 'https://api.dexscreener.com';
 const METEORA_DATAPI   = 'https://dlmm.datapi.meteora.ag';
@@ -79,6 +80,7 @@ export async function getSentiment(tokenMint) {
       priceChange24h: safeNum(best.priceChange?.h24),
       liquidityUsd:   safeNum(best.liquidity?.usd),
       buys24h: buys, sells24h: sells, buyPressurePct,
+      fdv: safeNum(best.fdv),
       sentiment: buyPressurePct > 60 ? 'BULLISH' : buyPressurePct < 40 ? 'BEARISH' : 'NEUTRAL',
     };
   } catch { return null; }
@@ -200,17 +202,19 @@ async function getHistoryOHLCV(poolAddress) {
 // ─── Full DLMM Snapshot ──────────────────────────────────────────
 
 export async function getMarketSnapshot(tokenMint, poolAddress = null) {
-  const [ohlcvR, poolR, onChainR, sentimentR] = await Promise.allSettled([
+  const [ohlcvR, poolR, onChainR, sentimentR, smartMoneyR] = await Promise.allSettled([
     getOHLCV(tokenMint, poolAddress),
     poolAddress ? getDLMMPoolData(poolAddress) : Promise.resolve(null),
     getOnChainSignals(tokenMint),
     getSentiment(tokenMint),
+    poolAddress ? getPoolSmartMoney(poolAddress) : Promise.resolve(null),
   ]);
 
-  const ohlcv     = ohlcvR.status     === 'fulfilled' ? ohlcvR.value     : null;
-  const pool      = poolR.status      === 'fulfilled' ? poolR.value      : null;
-  const onChain   = onChainR.status   === 'fulfilled' ? onChainR.value   : null;
-  const sentiment = sentimentR.status === 'fulfilled' ? sentimentR.value : null;
+  const ohlcv      = ohlcvR.status     === 'fulfilled' ? ohlcvR.value     : null;
+  const pool       = poolR.status      === 'fulfilled' ? poolR.value      : null;
+  const onChain    = onChainR.status   === 'fulfilled' ? onChainR.value   : null;
+  const sentiment  = sentimentR.status === 'fulfilled' ? sentimentR.value : null;
+  const smartMoney = smartMoneyR.status === 'fulfilled' ? smartMoneyR.value : null;
 
   // Simplified Health Score (using only allowed sources)
   let healthScore = 50;
@@ -225,12 +229,19 @@ export async function getMarketSnapshot(tokenMint, poolAddress = null) {
     healthScore += sentiment.buyPressurePct > 60 ? 10 : sentiment.buyPressurePct < 40 ? -5 : 0;
   }
 
+  if (smartMoney && pool?.tvl > 0) {
+    const skew = (smartMoney.topLpUsd / pool.tvl) * 100;
+    smartMoney.skewPct = parseFloat(skew.toFixed(2));
+    if (skew > 25) healthScore -= 10;
+  }
+
   healthScore = Math.max(0, Math.min(100, healthScore));
 
   return {
     tokenMint, poolAddress,
     timestamp: new Date().toISOString(),
-    ohlcv, pool, onChain, sentiment,
+    ohlcv, pool: pool ? { ...pool, mcap: sentiment?.fdv || 0 } : null, onChain, sentiment,
+    smartMoney,
     healthScore,
     ta:   ohlcv?.ta || null,
     dataSource: ohlcv?.source || 'unknown',
