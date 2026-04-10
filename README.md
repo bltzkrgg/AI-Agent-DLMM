@@ -48,21 +48,21 @@ pm2 save
 
 ## ⚙️ Configuration (user-config.json)
 
-Bot ini menyimpan pengaturan otonom di file `user-config.json`. File ini akan otomatis terbuat saat lo mengubah setting via Telegram, tapi lo juga bisa edit manual untuk kontrol lebih dalam:
+Bot ini menggunakan `user-config.json` untuk menyimpan parameter trading lo secara persisten. Gunakan `user-config.example.json` sebagai referensi lengkap.
 
 ```json
 {
   "deployAmountSol": 0.1,      // Jumlah SOL per posisi
   "maxPositions": 1,           // Maksimal slot posisi terbuka
   "managementIntervalMin": 5,  // Jeda Healer (manajemen posisi)
-  "screeningIntervalMin": 30, // Jeda Hunter (cari koin baru)
-  "minMcap": 250000,           // Filter minimal Market Cap
   "autoScreeningEnabled": true // Status otonom (ON/OFF)
 }
 ```
 
-> [!TIP]
-> Bot sekarang mendukung **Lenient Parsing**. Kalau lo typo edit manual (misal: `" = 30"`), bot bakal tetep pinter buat ngebaca angka murninya.
+> [!IMPORTANT]
+> - **Full Template**: Gunakan template di `user-config.example.json` untuk melihat semua parameter (Mcap, TVL, WinRate, Darwinian Weights, dll).
+> - **Sensitive Keys**: API Keys dan RPC Host tetap disimpan di file **`.env`** demi keamanan.
+> - **Lenient Parsing**: Bot tetap toleran terhadap typo angka atau karakter non-numerik saat lo edit manual.
 
 ---
 
