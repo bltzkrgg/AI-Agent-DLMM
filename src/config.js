@@ -19,7 +19,6 @@ const DEFAULTS = {
 
   // Auto-screening
   autoScreeningEnabled: false,  // Aktifkan auto-screening Hunter via cron
-  approvalTimeoutMin: 15,       // Menit sebelum kandidat dianggap stale
 
   // Dry run — tidak eksekusi TX apapun, semua else normal
   dryRun: false,
@@ -36,11 +35,8 @@ const DEFAULTS = {
   minTvl: 10000,
   maxTvl: 150000,
   minOrganic: 55,
-  minHolders: 500,
   minBinStep: 1,             // Min bin step pool yang akan dipertimbangkan
   minTokenFeesSol: 0,        // Min total fees SOL untuk pool (0 = disabled)
-  timeframe: '5m',
-  category: 'trending',
 
   // Position management
   takeProfitFeePct: 5,
@@ -63,6 +59,7 @@ const DEFAULTS = {
   proactiveExitEnabled: true,
   proactiveExitMinProfitPct: 1.0,
   proactiveExitBearishConfidence: 0.7,
+  maxPriceImpactPct: 0.5,     // Maksimal price impact (%) yang diijinkan saat simulasi swap
 
   // Darwinian Signal Weighting — dari 263 closed positions
   // Higher weight = stronger predictor of profitable positions
@@ -79,10 +76,6 @@ const DEFAULTS = {
   minMcap: 250000,           // Min market cap ($) — null data → skip
   maxMcap: 0,                // Max market cap ($, 0 = disabled)
   minVolume24h: 1000000,     // Min 24h volume ($) untuk Evil Panda
-
-  // ATH drawdown filter
-  athFilterPct: -75,         // Reject jika harga > X% di bawah 30-day high
-  athLookbackDays: 30,       // Lookback window untuk approx ATH (1D candles)
 
   // Strategy-specific tuning. Core identity stays in code; these are safe overrides.
   strategyOverrides: {
@@ -115,12 +108,10 @@ const CONFIG_BOUNDS = {
   managementIntervalMin:       { min: 1,     max: 1440 },
   screeningIntervalMin:        { min: 5,     max: 1440 },
   positionUpdateIntervalMin:   { min: 1,     max: 1440 },
-  approvalTimeoutMin:         { min: 5,     max: 60 },
   minFeeActiveTvlRatio:       { min: 0.001, max: 1 },
   minTvl:                     { min: 100,   max: 10000000 },
   maxTvl:                     { min: 1000,  max: 100000000 },
   minOrganic:                 { min: 0,     max: 100 },
-  minHolders:                 { min: 0,     max: 1000000 },
   minBinStep:                 { min: 1,     max: 400 },
   minTokenFeesSol:            { min: 0,     max: 10000 },
   takeProfitFeePct:           { min: 0.1,   max: 100 },
@@ -140,11 +131,10 @@ const CONFIG_BOUNDS = {
   minMcap:                    { min: 0,     max: 100000000 },
   maxMcap:                    { min: 0,     max: 10000000000 },
   minVolume24h:               { min: 0,     max: 1000000000 },
-  athFilterPct:               { min: -99,   max: -10 },
-  athLookbackDays:            { min: 7,     max: 365 },
   evolveIntervalTrades:      { min: 1,     max: 100 },
   socialSignalWeight:        { min: 1.0,   max: 5.0 },
   minSmartMoneyOverlap:      { min: 0,     max: 10 },
+  maxPriceImpactPct:          { min: 0.1,   max: 5 },
   lastEvolutionTradeCount:   { min: 0,     max: 1000000 },
 };
 
@@ -271,8 +261,8 @@ export function getThresholds() {
     minFeeActiveTvlRatio: cfg.minFeeActiveTvlRatio,
     minTvl: cfg.minTvl,
     maxTvl: cfg.maxTvl,
+    minVolume24h: cfg.minVolume24h,
     minOrganic: cfg.minOrganic,
-    minHolders: cfg.minHolders,
     takeProfitFeePct: cfg.takeProfitFeePct,
     outOfRangeWaitMinutes: cfg.outOfRangeWaitMinutes,
     minFeeClaimUsd: cfg.minFeeClaimUsd,
