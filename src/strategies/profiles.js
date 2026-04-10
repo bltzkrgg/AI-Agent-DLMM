@@ -4,14 +4,13 @@ const BASE_STRATEGY_PROFILES = {
   'Evil Panda': {
     allowedBinSteps: [80, 100, 125, 200],
     entry: {
-      requireSupertrendBreak: false, // Moved to 5m momentum
-      momentumTriggerM5: 1.5,
+      requireSupertrendBreak: true, // Now strictly using 15m confluence
+      momentumTriggerM5: 2.0,      // Higher conviction required
       narrativeRequired: true,
       adaptiveMode: true,
     },
     deploy: {
-      fixedBinsBelow: null, // Now calculated dynamically in hunterAlpha
-      label: 'adaptive_evil_panda',
+      label: 'warp_panda_sniper',
     },
     exit: {
       mode: 'evil_panda_confluence',

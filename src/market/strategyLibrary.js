@@ -485,28 +485,53 @@ export async function evaluateStrategyReadiness({ strategyName, poolAddress, sna
       };
     }
 
-    // ── Adaptive Range Depth (Volatility Based) ───────────────────
-    let offsetMin = 86;
-    let offsetMax = 94;
-
-    if (vol > 40) {
-      // High Volatility (Standard Evil Panda)
-      offsetMin = 86; offsetMax = 94;
-    } else if (vol > 15) {
-      // Medium Volatility (Moderate Offset)
-      offsetMin = 30; offsetMax = 50;
-    } else {
-      // Low Volatility (Conservative Offset)
-      offsetMin = 10; offsetMax = 20;
+    // ── Warp Panda: Contextual Adaptive Discovery ──────────────────
+    const currentPrice = o.currentPrice || 0;
+    const bb = ta.bb || { upper: 0, lower: 0, middle: 0 };
+    const atr = ta.atr || (currentPrice * 0.02); // Fallback to 2% if ATR missing
+    
+    // 1. Calculate Bollinger Spread
+    const bbWidePct = ((bb.upper - bb.lower) / currentPrice) * 100;
+    
+    // 2. Select Range Mode (The Intelligence Matrix)
+    let rangeMultiplier = 1.5;
+    let mode = 'EXPANSION';
+    
+    if (bbWidePct < 2.5) {
+      rangeMultiplier = 1.2;
+      mode = 'SQUEEZE';
+    } else if (bbWidePct > 10.0) {
+      rangeMultiplier = 2.0;
+      mode = 'EXTREME';
     }
+    
+    // 3. Calculate target range width (Ensures "Room to Run" for 3% TP)
+    const targetRangePct = Math.max(8.0, bbWidePct * rangeMultiplier);
+    
+    // 4. Calculate Bottom Anchor (Safety Support)
+    // We anchor to the HIGHER of Supertrend or Lower BB (Strongest technical support)
+    const technicalFloor = Math.max(st.value, bb.lower);
+    const offsetMax = Math.max(targetRangePct, ((currentPrice - technicalFloor) / currentPrice) * 100);
+    
+    // 5. Calculate Dynamic Headroom (Padding)
+    // We want enough bins above price to survive 2.5x ATR of movement
+    const binStepPct = (snapshot?.pool?.binStep || 100) / 10000;
+    const paddingBins = Math.max(5, Math.ceil(((atr * 2.5) / currentPrice) / binStepPct));
+    
+    // 6. Suggested Slippage
+    const suggestedSlippage = vol > 50 ? 2.5 : 1.0;
 
     return {
       ok: true,
       blockers: [],
-      notes: `Supertrend BULLISH confirmed. Adaptive range set to -${offsetMin}% to -${offsetMax}% based on volatility (${vol.toFixed(1)}%).`,
+      notes: `[Warp Panda] ${mode} mode detection. Anchoring to technical support at $${technicalFloor.toFixed(6)}. Range matched to ${targetRangePct.toFixed(1)}% volatility.`,
       deployOptions: {
-        entryPriceOffsetMin: offsetMin,
+        priceRangePct: targetRangePct,
+        entryPriceOffsetMin: 0, // Pivot at current price for BREAKOUT
         entryPriceOffsetMax: offsetMax,
+        binPadding: paddingBins,
+        slippagePct: suggestedSlippage,
+        technicalReasoning: `Anchored to ST/BB Support. ${mode} widening active.`
       }
     };
   }
