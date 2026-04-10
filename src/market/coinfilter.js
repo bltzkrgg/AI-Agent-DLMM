@@ -155,10 +155,10 @@ function step6_tokenSafety(jup) {
   return { rejects, warnings };
 }
 
-function step7_organicScore(dex, jup, thresholds = {}) {
+function step7_organicScore(dex, jup, thresholds) {
   const rejects = [];
   const warnings = [];
-  const minOrganic = thresholds.minOrganic ?? 55;
+  const minOrganic = thresholds.minOrganic;
   let score = 0;
 
   if (dex?.hasImage)        score += 15;
@@ -183,10 +183,10 @@ function step7_organicScore(dex, jup, thresholds = {}) {
   return { rejects, warnings, score };
 }
 
-function step9_mcapFilter(dexFdv, thresholds = {}) {
+function step9_mcapFilter(dexFdv, thresholds) {
   const rejects = [];
-  const minMcap = thresholds.minMcap || 0;
-  const maxMcap = thresholds.maxMcap || 0;
+  const minMcap = thresholds.minMcap;
+  const maxMcap = thresholds.maxMcap;
   const mcap = dexFdv || null;
 
   if (mcap === null) return { rejects, mcap: null, skipped: true };
@@ -303,11 +303,11 @@ function step11_slippageCheck(sim, maxImpact = 0.5) {
 export async function screenToken(tokenMint, tokenName = '', tokenSymbol = '', opts = {}) {
   const cfg = getConfig();
   const thresholds = {
-    minMcap:      cfg.minMcap      ?? 0,
-    maxMcap:      cfg.maxMcap      ?? 0,
-    minVolume24h: cfg.minVolume24h ?? 0,
-    minOrganic:   cfg.minOrganic   ?? 55,
-    maxImpact:    cfg.maxPriceImpactPct ?? 0.5,
+    minMcap:      cfg.minMcap,
+    maxMcap:      cfg.maxMcap,
+    minVolume24h: cfg.minVolume24h,
+    minOrganic:   cfg.minOrganic,
+    maxImpact:    cfg.maxPriceImpactPct,
   };
 
   const deployAmount = cfg.deployAmountSol || 0.1;
