@@ -271,3 +271,25 @@ Respond HANYA dengan JSON array index (0-based) yang cross-pool. Contoh: [0, 2, 
 
   return { lessons: allLessons, errors };
 }
+
+/**
+ * Catat pelajaran taktis secara manual (dari feedback user atau perintah langsung).
+ * Ini akan masuk ke database "Brain" bot dan mempengaruhi keputusan Hunter/Healer di masa depan.
+ */
+export function recordStrategicLesson(lessonText, metadata = {}) {
+  const existing = loadLessons();
+  const newLesson = {
+    id: `u-${Date.now()}`,
+    lesson: lessonText,
+    confidence: 1.0, // Feedback user diprioritaskan
+    crossPool: true,
+    learnedAt: new Date().toISOString(),
+    source: metadata.source || 'user_critique',
+    pinned: true,
+    metadata
+  };
+
+  const updated = [...existing, newLesson].slice(-1000);
+  saveLessons(updated);
+  return newLesson;
+}
