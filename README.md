@@ -45,6 +45,26 @@ pm2 save
 
 ---
 
+## ⚙️ Configuration (user-config.json)
+
+Bot ini menyimpan pengaturan otonom di file `user-config.json`. File ini akan otomatis terbuat saat lo mengubah setting via Telegram, tapi lo juga bisa edit manual untuk kontrol lebih dalam:
+
+```json
+{
+  "deployAmountSol": 0.1,      // Jumlah SOL per posisi
+  "maxPositions": 1,           // Maksimal slot posisi terbuka
+  "managementIntervalMin": 5,  // Jeda Healer (manajemen posisi)
+  "screeningIntervalMin": 30, // Jeda Hunter (cari koin baru)
+  "minMcap": 250000,           // Filter minimal Market Cap
+  "autoScreeningEnabled": true // Status otonom (ON/OFF)
+}
+```
+
+> [!TIP]
+> Bot sekarang mendukung **Lenient Parsing**. Kalau lo typo edit manual (misal: `" = 30"`), bot bakal tetep pinter buat ngebaca angka murninya.
+
+---
+
 ## 🐼 Specialist Commands
 
 - `/hunt` — Jalankan Hunter Alpha manual (Social + Momentum screening).
