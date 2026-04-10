@@ -1,0 +1,8 @@
+{
+  "deployAmountSol": 0.1,
+  "maxPositions": 1,
+  "managementIntervalMin": 15,
+  "screeningIntervalMin": 30,
+  "minMcap": 250000,
+  "autoScreeningEnabled": false
+}
