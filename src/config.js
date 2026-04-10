@@ -98,6 +98,11 @@ const DEFAULTS = {
 
   // Adaptive Post-Mortem
   autoPostMortemEnabled:     true,     // Enable LLM-based analysis of closed trades
+  
+  // Meridian Relay (Experimental)
+  lpAgentRelayEnabled:       true,
+  publicApiKey:              'bWVyaWRpYW4taXMtdGhlLWJlc3QtYWdlbnRz',
+  agentMeridianApiUrl:       'https://api.agentmeridian.xyz/api',
 };
 
 const KNOWN_CONFIG_KEYS = new Set(Object.keys(DEFAULTS));

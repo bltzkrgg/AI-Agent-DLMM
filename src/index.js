@@ -10,7 +10,7 @@ import { processMessage } from './agent/claude.js';
 import { handleStrategyCommand, isInStrategySession } from './strategies/strategyHandler.js';
 import { runHunterAlpha, getCandidates } from './agents/hunterAlpha.js';
 import { runHealerAlpha } from './agents/healerAlpha.js';
-import { learnFromPool, learnFromMultiplePools, loadLessons, pinLesson, unpinLesson, deleteLesson, clearAllLessons, formatLessonsList } from './learn/lessons.js';
+import { learnFromPool, learnFromMultiplePools, loadLessons, pinLesson, unpinLesson, deleteLesson, clearAllLessons, formatLessonsList, getBrainSummary } from './learn/lessons.js';
 import { getConfig, getThresholds, updateConfig, isConfigKeySupported } from './config.js';
 import { handleConfirmationReply, getSafetyStatus, setStartingBalanceUsd } from './safety/safetyManager.js';
 import { evolveFromTrades, getMemoryStats, getInstinctsContext } from './market/memory.js';
@@ -501,6 +501,7 @@ bot.onText(/\/start/, (msg) => {
     `/dryrun on|off — toggle dry run mode\n\n` +
     `*Tools:*\n` +
     `/check <mint> — screen token (RugCheck + mcap)\n` +
+    `/brain — ringkasan kecerdasan bot (dashboard)\n` +
     `/testmodel /model /strategies /library /research\n` +
     `/learn [pool] /lessons /memory /evolve\n` +
     `/deletelesson [nomor] /clearlessons /unpinlesson\n` +
@@ -671,6 +672,15 @@ bot.onText(/\/evolve/, async (msg) => {
     } else {
       bot.sendMessage(chatId, 'ℹ️ Tidak ada update yang diperlukan. Thresholds saat ini masih optimal berdasarkan data trade terakhir.');
     }
+  } catch (e) { bot.sendMessage(chatId, `❌ ${e.message}`); }
+});
+
+bot.onText(/\/brain/, async (msg) => {
+  if (msg.from.id !== ALLOWED_ID) return;
+  const chatId = msg.chat.id;
+  try {
+    const summary = getBrainSummary();
+    bot.sendMessage(chatId, summary, { parse_mode: 'Markdown' });
   } catch (e) { bot.sendMessage(chatId, `❌ ${e.message}`); }
 });
 
