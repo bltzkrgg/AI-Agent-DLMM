@@ -280,8 +280,8 @@ async function getSlippageSimulation(tokenMint, amountSol) {
     return {
       priceImpactBuy: parseFloat(buyData.priceImpactPct || 0),
       priceImpactSell: parseFloat(sellData?.priceImpactPct || 0),
-      isHoneypot: !!(sellData?.error),
       sellError: sellData?.error,
+      isSimFailure: (sellData?.error === 'Sim-Sell-Failed'),
     };
   } catch (e) { 
     console.error(`❌ getSlippageSimulation failed for ${tokenMint.slice(0, 8)}:`, e.message);
@@ -306,8 +306,10 @@ function step11_slippageCheck(sim, maxImpact = 0.5) {
     return { rejects, warnings };
   }
 
-  if (sim.isHoneypot) {
+  if (sim.isHoneypot && !sim.isSimFailure) {
     rejects.push({ rule: 'HONEYPOT_DETECTED', msg: `Honeypot risk! Simulasi jual gagal: ${sim.sellError || 'Unknown Error'}` });
+  } else if (sim.isSimFailure) {
+    warnings.push({ rule: 'SIM_SELL_FAILED', msg: 'Gagal simulasi jual (Network/Timeout) — Honeypot check tidak konklusif' });
   }
 
   if (sim.priceImpactBuy > maxImpact) {
