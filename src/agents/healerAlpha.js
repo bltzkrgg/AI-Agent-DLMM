@@ -1126,7 +1126,6 @@ export async function runHealerAlpha(notifyFn) {
   const strategyIntel = getStrategyIntelligenceContext();
 
   const trailCfgForPrompt = getTrailingConfig();
-  const lessonsCtx = getLessonsContext();
   const systemPrompt = `Kamu adalah Healer Alpha — autonomous position management agent untuk Meteora DLMM.
 
 CATATAN: Stop-loss, Take Profit, Trailing TP, Evil Panda Exit, Multi-TF Exit, dan Fib Resistance Exit
