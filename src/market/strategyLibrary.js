@@ -134,7 +134,8 @@ const BUILTIN_STRATEGIES = [
       volumeVsAvg: { min: 2.0, max: 999 },
     },
     parameters: {
-      fixedBinsBelow: 69,
+      entryPriceOffsetMin: 86,
+      entryPriceOffsetMax: 94,
       binStep: 100,
       strategyType: 0,
       tokenXWeight: 0,
@@ -463,11 +464,71 @@ function scoreStrategy(strategy, conditions) {
   return Math.max(0, Math.min(1, score));
 }
 
-function classifyVolatility(ohlcv) {
+/**
+ * Eval readiness based on technical indicators and market snapshot.
+ * Integrated for Technical Sniper upgrade.
+ */
+export async function evaluateStrategyReadiness({ strategyName, poolAddress, snapshot }) {
+  const ta = snapshot?.ta || {};
+  const o   = snapshot?.ohlcv || {};
+  const vol = snapshot?.ohlcv?.range24hPct || 0;
+
+  if (strategyName === 'Evil Panda') {
+    const st = ta.supertrend || { trend: 'NEUTRAL' };
+    
+    // ── Hard Guard: Supertrend Entry ──────────────────────────────
+    if (st.trend !== 'BULLISH') {
+      return {
+        ok: false,
+        blockers: ['Supertrend is BEARISH/NEUTRAL (15m)'],
+        notes: 'Evil Panda memerlukan konfirmasi UPTREND pada Supertrend 15m sebelum entry. Standby.',
+      };
+    }
+
+    // ── Adaptive Range Depth (Volatility Based) ───────────────────
+    let offsetMin = 86;
+    let offsetMax = 94;
+
+    if (vol > 40) {
+      // High Volatility (Standard Evil Panda)
+      offsetMin = 86; offsetMax = 94;
+    } else if (vol > 15) {
+      // Medium Volatility (Moderate Offset)
+      offsetMin = 30; offsetMax = 50;
+    } else {
+      // Low Volatility (Conservative Offset)
+      offsetMin = 10; offsetMax = 20;
+    }
+
+    return {
+      ok: true,
+      blockers: [],
+      notes: `Supertrend BULLISH confirmed. Adaptive range set to -${offsetMin}% to -${offsetMax}% based on volatility (${vol.toFixed(1)}%).`,
+      deployOptions: {
+        entryPriceOffsetMin: offsetMin,
+        entryPriceOffsetMax: offsetMax,
+      }
+    };
+  }
+
+  // Fallback for other strategies
+  return { ok: true, blockers: [], notes: 'Ready to deploy.' };
+}
+
+export function getRecommendedStrategies(snapshot) {
+  const ohlcv = snapshot.ohlcv;
   if (!ohlcv) return 'MEDIUM';
   const range = ohlcv.high24h && ohlcv.low24h
     ? ((ohlcv.high24h - ohlcv.low24h) / ohlcv.low24h * 100)
     : 0;
+  if (range > 15) return 'HIGH';
+  if (range < 5) return 'LOW';
+  return 'MEDIUM';
+}
+
+function classifyVolatility(ohlcv) {
+  if (!ohlcv) return 'MEDIUM';
+  const range = ohlcv.range24hPct || 0;
   if (range > 15) return 'HIGH';
   if (range < 5) return 'LOW';
   return 'MEDIUM';
