@@ -155,7 +155,8 @@ const HEALER_TOOLS = [
   },
 ];
 
-async function executeTool(name, input) {
+export async function executeTool(name, input, notifyFn = null) {
+  const currentNotify = notifyFn || _healerNotifyFn;
   const cfg = getConfig();
   const thresholds = getThresholds();
 
@@ -387,8 +388,8 @@ async function executeTool(name, input) {
       } catch { /* swap best-effort */ }
 
       // Notifikasi jika swap gagal
-      if (swapErrors.length > 0 && _healerNotifyFn) {
-        _healerNotifyFn(
+      if (swapErrors.length > 0 && currentNotify) {
+        currentNotify(
           `⚠️ *Auto-Swap Gagal (Claim Fees)*\n\n` +
           `Fee sudah di-claim, tapi token belum dikonversi ke SOL.\n` +
           `Error: ${swapErrors.map(e => e.error || e.mint).join(', ')}\n` +
@@ -459,7 +460,7 @@ async function executeTool(name, input) {
         strategy_used: pnlData.strategyUsed || 'EVIL_PANDA',
         close_reason: pnlData.closeReason || 'AGENT_CLOSE',
         range_efficiency_pct: 50, // default
-      }, _healerNotifyFn).catch(e => console.error('Post-Mortem error:', e.message));
+      }, currentNotify).catch(e => console.error('Post-Mortem error:', e.message));
 
       // Record ke pool memory — best-effort, jangan gagalkan response jika throw
       try {
@@ -501,17 +502,17 @@ async function executeTool(name, input) {
       updatePositionLifecycle(input.position_address, lifecycleState);
 
       // Notifikasi swap + mulai post-close monitor
-      if (_healerNotifyFn) {
+      if (currentNotify) {
         const totalSol = swapResults.reduce((s, r) => s + (r.outSol || 0), 0);
         if (swapResults.some(r => r.outSol)) {
           const swapLine = swapResults.map(r => r.outSol ? `+${r.outSol.toFixed(4)}◎` : 'skip').join(', ');
-          _healerNotifyFn(
+          currentNotify(
             `🔄 *Auto-Swap Selesai*\n\n` +
             `Token → SOL: ${swapLine}\n` +
             `Total: \`+${totalSol.toFixed(4)} SOL\``
           ).catch(() => {});
         } else if (swapErrors.length > 0) {
-          _healerNotifyFn(
+          currentNotify(
             `⚠️ *Auto-Swap Gagal*\n\n` +
             `Posisi sudah ditutup, tapi token belum dikonversi ke SOL.\n` +
             `Error: ${swapErrors.map(e => e.error || e.mint).join(', ')}\n` +
@@ -610,7 +611,7 @@ async function executeTool(name, input) {
         strategy_used: zapPnlData.strategyUsed || 'EVIL_PANDA',
         close_reason: 'ZAP_OUT',
         range_efficiency_pct: 50,
-      }, _healerNotifyFn).catch(e => console.error('Zap Out Post-Mortem error:', e.message));
+      }, currentNotify).catch(e => console.error('Zap Out Post-Mortem error:', e.message));
 
       // Record ke pool memory — best-effort, jangan gagalkan response jika throw
       try {
@@ -653,16 +654,16 @@ async function executeTool(name, input) {
       updatePositionLifecycle(input.position_address, lifecycleState);
 
       // Notifikasi hasil + mulai post-close monitor
-      if (_healerNotifyFn) {
+      if (currentNotify) {
         if (swapResults.some(r => r.outSol)) {
           const swapLine = swapResults.map(r => r.outSol ? `+${r.outSol.toFixed(4)}◎` : 'skip').join(', ');
-          _healerNotifyFn(
+          currentNotify(
             `⚡ *Zap Out Selesai*\n\n` +
             `Token → SOL: ${swapLine}\n` +
             `Total: \`+${totalSwappedSol.toFixed(4)} SOL\``
           ).catch(() => {});
         } else if (swapErrors.length > 0) {
-          _healerNotifyFn(
+          currentNotify(
             `⚠️ *Zap Out — Swap Gagal*\n\n` +
             `Posisi sudah ditutup, tapi token belum dikonversi ke SOL.\n` +
             `Error: ${swapErrors.map(e => e.error || e.mint).join(', ')}\n` +
@@ -670,7 +671,7 @@ async function executeTool(name, input) {
           ).catch(() => {});
         } else {
           // Semua di-skip (balance 0 — kemungkinan single-side SOL yang belum OOR)
-          _healerNotifyFn(
+          currentNotify(
             `✅ *Zap Out Selesai*\n\nPosisi ditutup. Semua dana sudah dalam bentuk SOL.`
           ).catch(() => {});
         }

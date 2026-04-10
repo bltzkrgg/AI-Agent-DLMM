@@ -958,7 +958,7 @@ ${lessonsCtx || '_Lessons suppressed for cost saving in this run_'}
 
 ${isBalanceLow ? `⚠️ PORTFOLIO AWARENESS ACTIVE: Saldo SOL kamu menipis (${balanceSnapshot.toFixed(4)} SOL). 
    - Kamu HARUS 2x lebih selektif. 
-   - Hanya terima koin dengan confidence > 0.9.
+   - Hanya terima koin dengan confidence > 0.85.
    - Hindari koin dengan high price impact meskipun narrative bagus.` : ''}
 ${instincts}
 ${strategyIntel}
