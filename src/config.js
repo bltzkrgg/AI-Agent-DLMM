@@ -145,6 +145,7 @@ const CONFIG_BOUNDS = {
   evolveIntervalTrades:      { min: 1,     max: 100 },
   socialSignalWeight:        { min: 1.0,   max: 5.0 },
   minSmartMoneyOverlap:      { min: 0,     max: 10 },
+  lastEvolutionTradeCount:   { min: 0,     max: 1000000 },
 };
 
 function safeParseJSON(raw) {
