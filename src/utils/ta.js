@@ -163,6 +163,7 @@ export function calculateSupertrend(candles, period = 10, multiplier = 3) {
   return {
     trend: trend === 1 ? 'BULLISH' : 'BEARISH',
     value: supertrendArr[supertrendArr.length - 1],
+    atr: atrs[atrs.length - 1], // Return the last ATR value
     changed: trend !== (candles[candles.length - 2]?.trend === 'BULLISH' ? 1 : -1)
   };
 }

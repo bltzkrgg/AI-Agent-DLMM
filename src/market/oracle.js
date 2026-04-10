@@ -139,6 +139,7 @@ async function buildOHLCVFromDexScreener(tokenMint, poolAddress = null) {
           bb,
           macd,
           supertrend: st,
+          atr: st.atr, // Expose raw ATR for adaptive range logic
           evilPanda: {
             entry: {
               justCrossedAbove: st.trend === 'BULLISH' && st.changed,
