@@ -157,6 +157,19 @@ const tools = [
       required: ['pool_address', 'strategy_name', 'token_x_amount', 'token_y_amount'],
     },
   },
+  {
+    name: 'analyze_user_critique',
+    description: 'Analisa komplain atau masukan strategis dari user dan simpan sebagai pelajaran permanen di otak bot.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        critique_text: { type: 'string', description: 'Isi kritik atau masukan dari user' },
+        pool_address: { type: 'string', description: 'Pool yang dikritik (opsional)' },
+        technical_correction: { type: 'string', description: 'Koreksi teknis yang harus dilakukan (misal: naikkan bin padding)' },
+      },
+      required: ['critique_text', 'technical_correction'],
+    },
+  },
 ];
 
 async function executeTool(toolName, toolInput) {
@@ -321,6 +334,14 @@ async function executeTool(toolName, toolInput) {
       });
       return JSON.stringify({ operationId, ...result, strategyUsed: strategy.name, strategyParams: params }, null, 2);
     }
+    case 'analyze_user_critique': {
+      const { recordStrategicLesson } = await import('../learn/lessons.js');
+      const lesson = recordStrategicLesson(
+        `[USER_CRITIQUE] ${toolInput.technical_correction} | Context: ${toolInput.critique_text}`,
+        { pool: toolInput.pool_address, source: 'telegram_feedback' }
+      );
+      return `✅ Pesan diterima. Gue udah analisa dan gue simpan ke "Instinct" bot: "${lesson.lesson}". Hunter & Healer bakal nerapin ini di siklus berikutnya.`;
+    }
     default:
       return `Tool tidak dikenali: ${toolName}`;
   }
@@ -336,24 +357,23 @@ export async function processMessage(userMessage) {
     { role: 'user', content: userMessage },
   ];
 
-  const systemPrompt = `Kamu adalah AI trading assistant untuk Meteora DLMM di Solana.
-Kamu bisa membantu user untuk:
-- Monitor posisi DLMM (cek apakah in/out of range)
-- Analisa pool terbaik berdasarkan APR dan volume
-- Buka dan tutup posisi DLMM
-- Klaim fees dari posisi
-- Cek balance wallet
+  const systemPrompt = `Kamu adalah Meteora DLMM Execution Engine — lapisan intelijensi otonom untuk trading di Solana.
+Kamu BUKAN "asisten AI" biasa. Kamu adalah partner trading yang teknis, dingin, dan akuntabel.
 
-ATURAN WAJIB:
-- Saat user minta tutup/close posisi: LANGSUNG panggil get_open_positions terlebih dahulu untuk dapat pool_address dan position_address. JANGAN pernah tanya user soal alamat — cari sendiri dari data yang ada.
-- Saat user minta klaim fee: LANGSUNG panggil get_open_positions terlebih dahulu.
-- Jangan tanya user informasi yang bisa kamu cari sendiri dengan tool.
-- Untuk aksi write, selalu mulai dari tool \`recommend_*\` agar preview dan konteksnya jelas.
-- Gunakan tool \`execute_*\` hanya jika user memang meminta eksekusi, bukan sekadar bertanya atau minta analisis.
+ATURAN KOMUNIKASI (WAJIB):
+1. DILARANG menggunakan basa-basi boso-basi "Terima kasih atas masukan Anda", "Senang bisa membantu", atau "Ada lagi yang bisa saya bantu?". Ini membuang waktu trader.
+2. Jawab langsung ke inti masalah (The Meat). Gunakan bahasa Indonesia yang santai tapi profesional (Gue/Lu atau Saya/Anda diperbolehkan selama tidak terdengar seperti CS).
+3. AKUNTABILITAS: Jika strategi gagal (OOR, Loss, dsb) dan user komplain, jangan beri alasan generik. ANALISA datanya (lebar bin, ATR, liquidity) dan akui jika ada kesalahan logika (misal: "Gue akui range-nya terlalu sempit buat ATR koin ini").
+4. BELAJAR: Jika user memberikan masukan teknis atau complain yang valid, GUNAKAN tool 'analyze_user_critique' untuk menyimpan pelajaran tersebut secara permanen.
+5. TEKNIS: Selalu prioritaskan data teknis (ATR, BB Width, Bin Step, PnL %) dalam setiap penjelasan.
 
-Selalu gunakan bahasa Indonesia. Jelaskan setiap aksi yang kamu lakukan dengan jelas.
-Kalau ada error, jelaskan dengan bahasa yang mudah dipahami.
-Format angka dengan rapi dan tambahkan emoji yang relevan untuk readability.`;
+TUGAS UTAMA:
+- Monitor posisi & evaluasi In-Range efficiency.
+- Analisa pool & jalankan order strategi [Warp Panda].
+- Belajar dari setiap feedback user untuk menajamkan Instinct bot.
+
+Jangan tanya user informasi yang bisa kamu cari sendiri dengan tool.
+Gunakan emoji secara taktis untuk readability data, bukan untuk sekadar hiasan.`;
 
   let response = await createMessage({
     model: resolveModel(cfg.generalModel),
