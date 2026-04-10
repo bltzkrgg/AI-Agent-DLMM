@@ -15,12 +15,11 @@ import { fetchWithTimeout, withRetry, withExponentialBackoff } from '../utils/sa
 import { kv, hr, codeBlock, formatPnl, shortAddr, shortStrat } from '../utils/table.js';
 import { recordClose } from '../market/poolMemory.js';
 import { executeControlledOperation } from '../app/executionService.js';
-import { getWalletPositions, isLPAgentEnabled } from '../market/lpAgent.js';
+import { getWalletPositions, isLPAgentEnabled, getPoolSmartMoney } from '../market/lpAgent.js';
 import { resolvePnlSnapshot } from '../app/pnl.js';
 import { clearPositionRuntimeState, getPositionRuntimeState, updatePositionRuntimeState } from '../app/positionRuntimeState.js';
 import { resolvePositionSnapshot } from '../app/positionSnapshot.js';
 import { getStrategyProfile } from '../strategies/profiles.js';
-import { getPoolSmartMoney } from '../market/lpAgent.js';
 import { analyzeTradeResult } from '../learn/failureAnalysis.js';
 
 // Verifikasi apakah position account benar-benar tidak ada on-chain.
@@ -257,9 +256,9 @@ async function executeTool(name, input) {
             trailingActive: tracker.trailingActive,
           });
 
-          // ── Smart Money Tracking (Meridian-style) ────────────
+          // ── Smart Money Tracking (Meteora Native) ────────────
           let smartMoney = null;
-          if (cfg.useSmartWalletRanges && isLPAgentEnabled()) {
+          if (cfg.useSmartWalletRanges || cfg.useSocialSignals) {
             smartMoney = await getPoolSmartMoney(pos.pool_address).catch(() => null);
           }
 
@@ -1127,6 +1126,7 @@ export async function runHealerAlpha(notifyFn) {
   const strategyIntel = getStrategyIntelligenceContext();
 
   const trailCfgForPrompt = getTrailingConfig();
+  const lessonsCtx = getLessonsContext();
   const systemPrompt = `Kamu adalah Healer Alpha — autonomous position management agent untuk Meteora DLMM.
 
 CATATAN: Stop-loss, Take Profit, Trailing TP, Evil Panda Exit, Multi-TF Exit, dan Fib Resistance Exit

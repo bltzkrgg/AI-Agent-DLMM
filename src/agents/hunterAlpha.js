@@ -421,6 +421,11 @@ async function executeTool(name, input) {
       if (result.verdict === 'AVOID' && hunterNotifyFn) {
         await hunterNotifyFn(`🚫 *Token Ditolak Coin Filter*\n\n${formatScreenResult(result)}`);
       }
+      
+      const action = result.verdict === 'AVOID'
+        ? 'SKIP — cari kandidat lain'
+        : 'LANJUT DEPLOY — jumlah token dihitung otomatis';
+
       return JSON.stringify({
         verdict:         result.verdict,
         eligible:        result.eligible,
@@ -428,9 +433,7 @@ async function executeTool(name, input) {
         mediumFlags:     result.mediumFlags.map(f => f.msg),
         priceImpact:     result.priceImpact,
         sources:         result.sources,
-        action: result.verdict === 'AVOID'
-          ? 'SKIP — cari kandidat lain'
-          : 'LANJUT DEPLOY — jumlah token dihitung otomatis',
+        action,
       }, null, 2);
     }
 
@@ -754,6 +757,15 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null, opt
   _hunterTargetCount = options.targetCount ?? null;
 
   const cfg = getConfig();
+  
+  // --- Portfolio Awareness ---
+  const balanceSnapshot = await getWalletBalance().catch(() => 0);
+  const minSolNeeded = cfg.minSolToOpen + (cfg.gasReserve ?? 0.02);
+  const isBalanceLow = balanceSnapshot < (minSolNeeded * 3);
+  
+  if (isBalanceLow) {
+    console.log(`📡 Portfolio Awareness: Saldo SOL menipis (${balanceSnapshot.toFixed(4)}). Memperketat filter entry...`);
+  }
 
   // ── Skip silently jika slot posisi penuh ─────────────────────
   const openPos = getOpenPositions();
@@ -943,6 +955,11 @@ Gunakan data di bawah (${lessonsCtx ? `Gunakan data di bawah (${lessonsCtx}) seb
 
 Mode: 🔴 LIVE ALPHA | Strategi: EVIL PANDA ONLY
 ${lessonsCtx || '_Lessons suppressed for cost saving in this run_'}
+
+${isBalanceLow ? `⚠️ PORTFOLIO AWARENESS ACTIVE: Saldo SOL kamu menipis (${balanceSnapshot.toFixed(4)} SOL). 
+   - Kamu HARUS 2x lebih selektif. 
+   - Hanya terima koin dengan confidence > 0.9.
+   - Hindari koin dengan high price impact meskipun narrative bagus.` : ''}
 ${instincts}
 ${strategyIntel}
 
