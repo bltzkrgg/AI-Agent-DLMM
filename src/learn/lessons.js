@@ -124,6 +124,28 @@ export function formatLessonsList() {
   return text;
 }
 
+export function getBrainSummary() {
+  const lessons = loadLessons();
+  const pinned = lessons.filter(l => l.pinned).length;
+  const crossPool = lessons.filter(l => l.crossPool).length;
+  const highConf = lessons.filter(l => (l.confidence || 0) >= 0.8).length;
+  
+  // Calculate average confidence
+  const avgConf = lessons.length > 0
+    ? (lessons.reduce((s, l) => s + (l.confidence || 0), 0) / lessons.length * 100).toFixed(1)
+    : 0;
+
+  const lines = [
+    kv('Total Pelajaran', lessons.length, 16),
+    kv('High Confidence', highConf, 16),
+    kv('Pinned (Utama)', pinned, 16),
+    kv('Lintas Pool', crossPool, 16),
+    kv('Avg Confidence', `${avgConf}%`, 16),
+  ];
+
+  return `🧠 *Intelligence Dashboard*\n\n${codeBlock(lines)}\n\n_Bot terus belajar dari Top LPers dan histori perdagangan guna mempertajam akurasi entry/exit._`;
+}
+
 async function fetchTopLpers(poolAddress) {
   try {
     // Fetch top LPers from Meteora API
@@ -195,7 +217,7 @@ Jangan ada teks lain selain JSON.`;
     if (!a.pinned && b.pinned) return 1;
     return (b.confidence || 0) - (a.confidence || 0);
   });
-  const kept = sorted.slice(0, 50);
+  const kept = sorted.slice(0, 1000); // Simpan selamanya (limit 1000)
   saveLessons(kept);
 
   return newLessons;

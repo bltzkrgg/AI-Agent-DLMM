@@ -2,10 +2,7 @@ import { getClosedPositions, getPositionStats } from '../db/database.js';
 import { getConfig, updateConfig } from '../config.js';
 import { addToHistory } from '../db/database.js';
 
-/**
- * Evolution Engine — Autonomous Config Calibration
- * Belajar dari performa perdagangan aktual untuk menyesuaikan threshold risiko.
- */
+const PROTECTED_KEYS = ['minMcap', 'maxMcap', 'deployAmountSol'];
 export async function runEvolutionCycle() {
   const cfg = getConfig();
   if (!cfg.autonomousEvolutionEnabled) return null;
@@ -55,6 +52,14 @@ export async function runEvolutionCycle() {
     // Terlalu banyak OOR — mungkin range terlalu sempit atau wait time terlalu pendek
     updates.outOfRangeWaitMinutes = Math.min(cfg.outOfRangeWaitMinutes + 15, 120);
     logs.push(`Increasing OOR wait time to ${updates.outOfRangeWaitMinutes}m to avoid premature exits`);
+  }
+
+  // Evolution Guard: Filter out HARAM keys
+  for (const key of PROTECTED_KEYS) {
+    if (key in updates) {
+      delete updates[key];
+      logs.push(`⚠️ Protected key '${key}' blocked from autonomous update.`);
+    }
   }
 
   if (Object.keys(updates).length > 0) {

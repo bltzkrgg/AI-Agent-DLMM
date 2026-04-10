@@ -89,7 +89,7 @@ Respond HANYA dengan JSON array, format:
 
       if (enriched.length > 0) {
         const merged = [...existing, ...enriched];
-        saveLessons(merged.slice(-50));
+        saveLessons(merged.slice(-1000)); // Simpan hingga 1000 pelajaran (efektif selamanya)
 
         if (notifyFn && isLoss) {
           const lessonStr = enriched.map(l => `• ${l.lesson}`).join('\n');
