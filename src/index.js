@@ -9,7 +9,7 @@ import { initSolana, getConnection, getWallet, getWalletBalance } from './solana
 import { processMessage } from './agent/claude.js';
 import { handleStrategyCommand, isInStrategySession } from './strategies/strategyHandler.js';
 import { runHunterAlpha, getCandidates } from './agents/hunterAlpha.js';
-import { runHealerAlpha } from './agents/healerAlpha.js';
+import { runHealerAlpha, executeTool } from './agents/healerAlpha.js';
 import { learnFromPool, learnFromMultiplePools, loadLessons, pinLesson, unpinLesson, deleteLesson, clearAllLessons, formatLessonsList, getBrainSummary } from './learn/lessons.js';
 import { getConfig, getThresholds, updateConfig, isConfigKeySupported } from './config.js';
 import { handleConfirmationReply, getSafetyStatus, setStartingBalanceUsd } from './safety/safetyManager.js';
@@ -485,30 +485,24 @@ bot.onText(/\/results/, async (msg) => {
 bot.onText(/\/start/, (msg) => {
   if (msg.from.id !== ALLOWED_ID) return;
   bot.sendMessage(msg.chat.id,
-    `🦞 *Meteora DLMM Bot* \`[LIVE]\`\n\n` +
-    `🐼 Panda — Adaptive & Elastic (m5 momentum + H1 fallback)\n` +
-    `🩺 Healer — Post-Mortem enabled (auto-learn from losses)\n` +
-    `📡 Scanner — alert peluang tiap 15min (multi-TF)\n\n` +
-    `*Deploy:*\n` +
-    `/autoscreen on|off — aktifkan/matikan auto-deploy\n\n` +
-    `*Monitor:*\n` +
-    `/pos — snapshot posisi cepat (REST API, instan)\n` +
-    `/status — posisi lengkap + balance + stats (on-chain)\n` +
-    `/heal /results /pools\n\n` +
-    `*Config:*\n` +
-    `/setconfig — lihat semua config\n` +
-    `/setconfig key value — ubah config tanpa restart\n` +
-    `/dryrun on|off — toggle dry run mode\n\n` +
-    `*Tools:*\n` +
-    `/check <mint> — screen token (RugCheck + mcap)\n` +
-    `/brain — ringkasan kecerdasan bot (dashboard)\n` +
-    `/testmodel /model /strategies /library /research\n` +
-    `/learn [pool] /lessons /memory /evolve\n` +
-    `/deletelesson [nomor] /clearlessons /unpinlesson\n` +
-    `/thresholds /safety /weights /poolmemory\n\n` +
-    `*Smart Wallets:*\n` +
-    `/addwallet <addr> <label> | /removewallet | /listwallet\n\n` +
-    `Atau chat bebas langsung!`,
+    `🦞 *AI-Agent-DLMM* \`[LIVE]\`\n\n` +
+    `🐼 *Hunter* — Adaptive Panda logic\n` +
+    `🩺 *Healer* — Autonomous position management\n` +
+    `🧠 *Brain* — Intelligence dashboard\n\n` +
+    `*Monitoring:*\n` +
+    `/status — On-chain position details\n` +
+    `/pos — Fast REST summary\n` +
+    `/results — Daily PnL report\n\n` +
+    `*Control:*\n` +
+    `/autoscreen on|off — Toggle autonomy\n` +
+    `/dryrun on|off — Toggle simulation mode\n` +
+    `/zap <addr> — 🆘 Emergency Exit\n` +
+    `/check <mint> — Custom RugCheck\n\n` +
+    `*Brain & Evolution:*\n` +
+    `/brain /lessons /evolve /poolmemory\n\n` +
+    `*Admin:*\n` +
+    `/setconfig /safety /providers /model /testmodel\n\n` +
+    `_Atau chat bebas langsung untuk instruksi manual!_`,
     { parse_mode: 'Markdown' }
   );
 });
@@ -754,6 +748,46 @@ bot.onText(/\/pos$/, async (msg) => {
   }
 });
 
+bot.onText(/\/zap(?:\s+(\S+))?/, async (msg, match) => {
+  if (msg.from.id !== ALLOWED_ID) return;
+  const chatId = msg.chat.id;
+  const target = match[1]?.trim();
+
+  if (!target) {
+    return bot.sendMessage(chatId, '🆘 *Emergency Zap Out*\n\nGunakan: `/zap <mint_atau_pool_address>`\n\n_Perintah ini akan menutup posisi dan swap SEMUA token ke SOL secara paksa via Jupiter (3x retry)._', { parse_mode: 'Markdown' });
+  }
+
+  const openPos = getOpenPositions();
+  const matchPos = openPos.find(p => p.position_address === target || p.pool_address === target || p.token_x === target);
+
+  if (!matchPos) {
+    return bot.sendMessage(chatId, `❌ Posisi tidak ditemukan untuk: \`${target}\``, { parse_mode: 'Markdown' });
+  }
+
+  bot.sendMessage(chatId, `⚠️ *KONFIRMASI ZAP OUT*\n\nKamu akan menutup paksa posisi:\nToken: *${matchPos.token_x_symbol || 'unknown'}*\nPool: \`${shortAddr(matchPos.pool_address)}\`\n\nKetik \`GAS ZAP\` untuk mengeksekusi.`, { parse_mode: 'Markdown' });
+  
+  const confirmHandler = async (cMsg) => {
+    if (cMsg.from.id === ALLOWED_ID && cMsg.text === 'GAS ZAP' && cMsg.chat.id === chatId) {
+      bot.removeListener('message', confirmHandler);
+      bot.sendMessage(chatId, '🚀 *ZAPPING OUT...* ⚡');
+      try {
+        await executeTool('zap_out', {
+          pool_address: matchPos.pool_address,
+          position_address: matchPos.position_address,
+          reasoning: 'MANUAL_ZAP_EMERGENCY'
+        }, notify);
+      } catch (e) {
+        bot.sendMessage(chatId, `❌ Zap failed: ${e.message}`);
+      }
+    } else if (cMsg.from.id === ALLOWED_ID && cMsg.chat.id === chatId && cMsg.text !== 'GAS ZAP' && !cMsg.text.startsWith('/')) {
+       bot.removeListener('message', confirmHandler);
+       bot.sendMessage(chatId, '❌ Zap dibatalkan.');
+    }
+  };
+  bot.on('message', confirmHandler);
+  setTimeout(() => bot.removeListener('message', confirmHandler), 30000);
+});
+
 bot.onText(/\/pools/, async (msg) => {
   if (msg.from.id !== ALLOWED_ID) return;
   await handleMessage(msg, 'Analisa dan tampilkan 5 pool DLMM terbaik berdasarkan fee APR saat ini');
@@ -858,17 +892,6 @@ async function processResearchArticle(chatId, articleText) {
   } catch (e) { bot.sendMessage(chatId, `❌ ${e.message}`); }
 }
 
-bot.onText(/\/memory/, (msg) => {
-  if (msg.from.id !== ALLOWED_ID) return;
-  const stats = getMemoryStats();
-  const instincts = getInstinctsContext();
-  let text = `🧠 *Memory Stats*\n\n`;
-  text += `Trades: ${stats.totalTrades} | Win rate: ${stats.winRate}\n`;
-  text += `Instincts: ${stats.instinctCount} | Evolution: ${stats.evolutionCount}x\n`;
-  text += `Last evolve: ${stats.lastEvolution ? new Date(stats.lastEvolution).toLocaleString() : 'Belum pernah'}\n`;
-  if (instincts) text += `\n${instincts}`;
-  bot.sendMessage(msg.chat.id, text, { parse_mode: 'Markdown' });
-});
 
 bot.onText(/\/evolve/, async (msg) => {
   if (msg.from.id !== ALLOWED_ID) return;
@@ -970,15 +993,6 @@ bot.onText(/\/clearlessons/, (msg) => {
   bot.sendMessage(msg.chat.id, result.ok ? '🗑️ Semua lessons telah dihapus.' : '❌ Gagal menghapus lessons.');
 });
 
-bot.onText(/\/thresholds/, (msg) => {
-  if (msg.from.id !== ALLOWED_ID) return;
-  const t = getThresholds();
-  const stats = getPositionStats();
-  let text = `⚙️ *Thresholds:*\n\n`;
-  Object.entries(t).forEach(([k, v]) => { text += `• \`${k}\`: ${v}\n`; });
-  text += `\n📈 Closed: ${stats.closedPositions} | Win: ${stats.winRate} | Avg PnL: ${stats.avgPnl}`;
-  bot.sendMessage(msg.chat.id, text, { parse_mode: 'Markdown' });
-});
 
 bot.onText(/\/safety/, (msg) => {
   if (msg.from.id !== ALLOWED_ID) return;
@@ -1175,12 +1189,6 @@ bot.onText(/\/setconfig(?:\s+(\S+))?(?:\s+(.+))?/, (msg, match) => {
 });
 
 // /weights — tampilkan/recalibrate bobot Darwinian
-bot.onText(/\/weights/, async (msg) => {
-  if (msg.from.id !== ALLOWED_ID) return;
-  bot.sendMessage(msg.chat.id, '⚙️ Recalibrating signal weights...');
-  const result = recalibrateWeights();
-  sendLong(msg.chat.id, formatWeightsReport(result), { parse_mode: 'Markdown' }).catch(() => {});
-});
 
 // /providers — tampilkan status RPC, candle providers, dan circuit breaker
 bot.onText(/\/providers/, async (msg) => {
