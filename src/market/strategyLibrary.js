@@ -474,7 +474,8 @@ export async function evaluateStrategyReadiness({ strategyName, poolAddress, sna
   const vol = snapshot?.ohlcv?.range24hPct || 0;
 
   if (strategyName === 'Evil Panda') {
-    const st = ta.supertrend || { trend: 'NEUTRAL' };
+    const currentPrice = snapshot.ohlcv?.currentPrice || 0;
+    const st = ta.supertrend || { trend: 'NEUTRAL', value: currentPrice };
     
     // ── Hard Guard: Supertrend Entry ──────────────────────────────
     if (st.trend !== 'BULLISH') {
@@ -486,10 +487,8 @@ export async function evaluateStrategyReadiness({ strategyName, poolAddress, sna
     }
 
     // ── Warp Panda: Contextual Adaptive Discovery ──────────────────
-    const currentPrice = snapshot.ohlcv.currentPrice;
     const rsi = snapshot.ta?.rsi14 || 50;
     const bb = snapshot.ta?.bb || { middle: currentPrice, lower: currentPrice, upper: currentPrice };
-    const st = snapshot.ta?.supertrend || { trend: 'NEUTRAL', value: currentPrice };
 
     // --- Intelligence Matrix: SNIPER vs DEEP JARING ---
     const bbWidePct = ((bb.upper - bb.lower) / currentPrice) * 100;
