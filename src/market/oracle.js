@@ -1,5 +1,6 @@
 import { fetchWithTimeout, safeNum } from '../utils/safeJson.js';
 import { getHeliusOnChainSignals } from '../utils/helius.js';
+import * as ta from '../utils/ta.js';
 
 const DEXSCREENER_BASE = 'https://api.dexscreener.com';
 const METEORA_DATAPI   = 'https://dlmm.datapi.meteora.ag';
@@ -85,7 +86,7 @@ export async function getSentiment(tokenMint) {
 
 // ─── OHLCV Build helper ──────────────────────────────────────────
 
-async function buildOHLCVFromDexScreener(tokenMint) {
+async function buildOHLCVFromDexScreener(tokenMint, poolAddress = null) {
   try {
     const res = await fetchWithTimeout(
       `${DEXSCREENER_BASE}/latest/dex/tokens/${tokenMint}`, {}, 8000
@@ -94,12 +95,15 @@ async function buildOHLCVFromDexScreener(tokenMint) {
     const data = await res.json();
     const pairs = data.pairs || [];
     if (!pairs.length) return null;
-    const best = pairs.sort((a, b) => safeNum(b.liquidity?.usd) - safeNum(a.liquidity?.usd))[0];
+    
+    // Use matching pool if provided, else best liquidity
+    const best = poolAddress 
+      ? (pairs.find(p => p.pairAddress === poolAddress) || pairs.sort((a,b) => safeNum(b.liquidity?.usd) - safeNum(a.liquidity?.usd))[0])
+      : pairs.sort((a, b) => safeNum(b.liquidity?.usd) - safeNum(a.liquidity?.usd))[0];
 
     const currentPrice   = safeNum(best.priceUsd);
     const priceChangeM5  = safeNum(best.priceChange?.m5);
     const priceChange1h  = safeNum(best.priceChange?.h1);
-    const priceChange6h  = safeNum(best.priceChange?.h6);
     const priceChange24h = safeNum(best.priceChange?.h24);
     const volume24h      = safeNum(best.volume?.h24);
     const range24hPct    = Math.abs(priceChange24h);
@@ -107,36 +111,95 @@ async function buildOHLCVFromDexScreener(tokenMint) {
     const high24h = currentPrice / (1 - Math.max(0, priceChange24h) / 100) || currentPrice;
     const low24h  = currentPrice / (1 + Math.max(0, -priceChange24h) / 100) || currentPrice;
 
-    // Adaptive Trend derived from m5 (short) vs h1 (medium) price changes
-    // Bulllish if m5 is pumping (>1.5%) AND h1 is at least stable or uptrend
     const trend = (priceChangeM5 > 1.5 && priceChange1h > 0) ? 'UPTREND'
       : (priceChangeM5 < -1.5 && priceChange1h < 0) ? 'DOWNTREND'
-      : (priceChangeM5 > 3) ? 'PUMPING' // Extreme short term momentum
+      : (priceChangeM5 > 3) ? 'PUMPING'
       : 'SIDEWAYS';
+
+    // ─── Fetch History & Calculate TA (Now using DexScreener V1) ───
+    let taData = null;
+    let historySuccess = false;
+    const actualPool = poolAddress || best.pairAddress;
+
+    if (actualPool) {
+      const history = await getHistoryOHLCV(actualPool);
+      if (history && history.length >= 26) {
+        const closes = history.map(c => c.close);
+        const rsi2   = ta.calculateRSI(closes, 2);
+        const rsi14  = ta.calculateRSI(closes, 14);
+        const bb     = ta.calculateBB(closes, 20, 2);
+        const macd   = ta.calculateMACD(closes);
+        const st     = ta.calculateSupertrend(history, 10, 3);
+        
+        taData = {
+          rsi2: parseFloat(rsi2.toFixed(2)),
+          rsi14: parseFloat(rsi14.toFixed(2)),
+          bb,
+          macd,
+          supertrend: st,
+          evilPanda: {
+            entry: {
+              justCrossedAbove: st.trend === 'BULLISH' && st.changed,
+              reason: st.trend === 'BULLISH' ? 'Price crossed above Supertrend (15m)' : null
+            },
+            exit: {
+              triggered: rsi2 > 90 && currentPrice > bb.upper,
+              reason: (rsi2 > 90 && currentPrice > bb.upper) ? 'RSI(2) > 90 + BB Upper Confluence' : null
+            }
+          }
+        };
+        historySuccess = true;
+      }
+    }
 
     return {
       tokenMint,
-      timeframe:      'snapshot',
-      source:         'dexscreener',
+      timeframe:      '15m',
+      source:         'dexscreener-v1',
       currentPrice,
       priceChangeM5,
       priceChangeH1:  priceChange1h,
       high24h, low24h,
       range24hPct:    parseFloat(range24hPct.toFixed(2)),
-      avgVolume:      parseFloat((volume24h / 24).toFixed(2)),
-      latestVolume:   parseFloat((volume24h / 24).toFixed(2)),
       trend,
-      suggestedBinStepMin: range24hPct > 20 ? 20 : range24hPct > 7 ? 10 : 5,
       volatilityCategory:  range24hPct > 20 ? 'HIGH' : range24hPct > 7 ? 'MEDIUM' : 'LOW',
-      ta: null,
-      candleCount: 0,
+      ta: taData,
+      historySuccess,
     };
+  } catch (e) { 
+    console.error('[oracle] buildOHLCV failed:', e.message);
+    return null; 
+  }
+}
+
+async function getHistoryOHLCV(poolAddress) {
+  try {
+    // DexScreener V1 OHLCV API (Solana) 
+    // Format: https://api.dexscreener.com/ohlcv/latest/v1/solana/{poolAddress}
+    const res = await fetchWithTimeout(
+      `https://api.dexscreener.com/ohlcv/latest/v1/solana/${poolAddress}`,
+      {},
+      8000
+    );
+    if (!res.ok) return null;
+    const json = await res.json();
+    const candles = json.candles || [];
+    
+    // DexScreener format: { t: timestamp, o: open, h: high, l: low, c: close, v: volume }
+    return candles.map(c => ({
+      time:  c.t,
+      open:  safeNum(c.o),
+      high:  safeNum(c.h),
+      low:   safeNum(c.l),
+      close: safeNum(c.c),
+      volume: safeNum(c.v)
+    })).sort((a, b) => a.time - b.time); // Ensure ascending for TA libs
   } catch { return null; }
 }
 
 // ─── Full DLMM Snapshot ──────────────────────────────────────────
 
-export async function getMarketSnapshot(tokenMint, poolAddress) {
+export async function getMarketSnapshot(tokenMint, poolAddress = null) {
   const [ohlcvR, poolR, onChainR, sentimentR] = await Promise.allSettled([
     getOHLCV(tokenMint, poolAddress),
     poolAddress ? getDLMMPoolData(poolAddress) : Promise.resolve(null),

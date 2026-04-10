@@ -185,15 +185,23 @@ function buildDLMMContext(snapshot, position) {
   }
 
   if (snapshot.pool && snapshot.ohlcv) {
-    parts.push(`🔍 FIT CHECK:
-- Pool bin step: ${snapshot.pool.binStep} vs volatilitas 24h ${snapshot.ohlcv.range24hPct}%
-- Health score: ${snapshot.healthScore}/100
+    const ta = snapshot.ta || {};
+    const o = snapshot.ohlcv;
+    const st = ta.supertrend || { trend: 'NEUTRAL', value: 0 };
+
+    parts.push(`🔍 TECHNICAL ANALYSIS (15m):
 - RSI(14): ${ta.rsi14 ?? 'N/A'} | RSI(2): ${ta.rsi2 ?? 'N/A'}
-- ${stLine}
-- BB: ${bbLine}
-- MACD: ${macdLine}
-${ta.evilPanda?.exit?.triggered ? `⚠️ Evil Panda EXIT signal: ${ta.evilPanda.exit.reason}` : ''}
-${ta.evilPanda?.entry?.justCrossedAbove ? `🐼 Evil Panda ENTRY signal: ${ta.evilPanda.entry.reason}` : ''}`);
+- Supertrend: ${st.trend} (Value: $${st.value.toFixed(8)})
+- Bollinger Bands: High $${ta.bb?.upper?.toFixed(8)} | Mid $${ta.bb?.middle?.toFixed(8)} | Low $${ta.bb?.lower?.toFixed(8)}
+- MACD: Hist ${ta.macd?.histogram?.toFixed(8)}
+- Result: ${o.historySuccess ? '✅ Data Histori Valid' : '⚠️ Snapshot Mode (No History)'}`);
+
+    if (ta.evilPanda?.exit?.triggered) {
+      parts.push(`⚠️ EVIL PANDA EXIT SIGNAL: ${ta.evilPanda.exit.reason}`);
+    }
+    if (ta.evilPanda?.entry?.justCrossedAbove) {
+      parts.push(`🐼 EVIL PANDA ENTRY SIGNAL: ${ta.evilPanda.entry.reason}`);
+    }
   }
 
   if (position && !position.inRange) {
