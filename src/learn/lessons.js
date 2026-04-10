@@ -5,6 +5,7 @@ import { createMessage, resolveModel, extractText } from '../agent/provider.js';
 import { getConfig } from '../config.js';
 import { safeParseAI } from '../utils/safeJson.js';
 import { kv, codeBlock } from '../utils/table.js';
+import { getMemoryStats } from '../market/memory.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const LESSONS_PATH = join(__dirname, '../../lessons.json');
@@ -131,17 +132,19 @@ export function getBrainSummary() {
   const crossPool = lessons.filter(l => l.crossPool).length;
   const highConf = lessons.filter(l => (l.confidence || 0) >= 0.8).length;
   
-  // Calculate average confidence
   const avgConf = lessons.length > 0
     ? (lessons.reduce((s, l) => s + (l.confidence || 0), 0) / lessons.length * 100).toFixed(1)
     : 0;
 
+  const memStats = getMemoryStats();
+  
   const lines = [
     kv('Total Pelajaran', lessons.length, 16),
     kv('High Confidence', highConf, 16),
-    kv('Pinned (Utama)', pinned, 16),
-    kv('Lintas Pool', crossPool, 16),
+    kv('Insting Adaptif', memStats.instinctCount, 16),
     kv('Avg Confidence', `${avgConf}%`, 16),
+    kv('Win Rate (Hist)', memStats.winRate, 16),
+    kv('Range Efficiency', memStats.avgRangeEfficiency, 16),
   ];
 
   return `🧠 *Intelligence Dashboard*\n\n${codeBlock(lines)}\n\n_Bot terus belajar dari Top LPers dan histori perdagangan guna mempertajam akurasi entry/exit._`;
