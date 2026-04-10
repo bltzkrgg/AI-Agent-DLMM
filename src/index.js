@@ -80,6 +80,13 @@ const bot = new TelegramBot(process.env.TELEGRAM_BOT_TOKEN, { polling: true });
 const cfg = getConfig();
 initMonitor(bot, ALLOWED_ID);
 
+// Kirim sinyal standby pas bot nyala
+const bootMsg = `🚀 *Bot Started!* (Mode: Survivalist)\n\n` +
+               `🛡️ Hunter: *ON* (Standby ⏳)\n` +
+               `🩺 Healer: *ON* (Standby ⏳)\n\n` +
+               `_Sesuai jadwal, bot akan mulai bekerja dalam ${cfg.managementIntervalMin} - ${cfg.screeningIntervalMin} menit._`;
+bot.sendMessage(ALLOWED_ID, bootMsg, { parse_mode: 'Markdown' }).catch(() => {});
+
 // Initialize DB backup system
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const dbPath = process.env.BOT_DB_PATH || join(__dirname, '../data.db');
@@ -217,8 +224,8 @@ async function runHealerWithReopenCheck() {
 // Semua cron jalan setiap menit dan cek interval live dari config.
 // Ini memungkinkan perubahan interval via /setconfig TANPA restart bot.
 
-let _lastHealerRun    = 0; // lari instan pas bot nyala pertama kali
-let _lastScreeningRun = 0;
+let _lastHealerRun    = Date.now(); // delay run pertama sampai interval berlalu
+let _lastScreeningRun = Date.now();
 let _lastBalanceWarningAt = 0; // cooldown notif saldo low
 
 cron.schedule('* * * * *', async () => {
