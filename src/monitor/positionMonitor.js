@@ -78,23 +78,23 @@ async function checkOutOfRange() {
 
       for (const pos of positions) {
         const runtimeState = getPositionRuntimeState(pos.address);
+        // Proactive Distance Tracking: How many bins until we hit the edge?
+        let distToEdge = 99;
+        if (pos.inRange && pos.activeBin && pos.rangeMin && pos.rangeMax) {
+          const distToLower = Math.abs(pos.activeBin - pos.rangeMin);
+          const distToUpper = Math.abs(pos.activeBin - pos.rangeMax);
+          distToEdge = Math.min(distToLower, distToUpper);
+        } else if (!pos.inRange) {
+          distToEdge = 0;
+        }
+
         if (!pos.inRange) {
           const oorSince = runtimeState.oorSince || Date.now();
           if (!runtimeState.oorSince) {
             updatePositionRuntimeState(pos.address, { oorSince });
           }
-          const oorMs  = Date.now() - oorSince;
-          const oorMin = Math.round(oorMs / 60000);
-          const durStr = oorMin < 60
-            ? `${oorMin} menit`
-            : `${Math.floor(oorMin / 60)}j ${oorMin % 60}m`;
-
-          const lastAlertAt = runtimeState.lastOorAlertAt || 0;
-          if (Date.now() - lastAlertAt < 30 * 60 * 1000) {
-            continue;
-          }
-          const oorSince = runtimeState?.oorSince || Date.now();
-          const lastAlert = runtimeState?.lastOorAlertAt || 0;
+          
+          const lastAlert = runtimeState.lastOorAlertAt || 0;
           const shouldAlert = (Date.now() - lastAlert) >= (cfg.oorAlertIntervalMin || 30) * 60 * 1000;
 
           if (shouldAlert) {
@@ -111,12 +111,10 @@ async function checkOutOfRange() {
           
           updatePositionRuntimeState(pos.address, { 
             oorSince, 
-            lastOorAlertAt: (Date.now() - (shouldAlert ? 0 : 0)), // placeholder
+            lastOorAlertAt: shouldAlert ? Date.now() : lastAlert,
             inRange: false,
             distToEdgeBins: distToEdge
           });
-          if (shouldAlert) updatePositionRuntimeState(pos.address, { lastOorAlertAt: Date.now() });
-
         } else {
           updatePositionRuntimeState(pos.address, { 
             oorSince: null, 
