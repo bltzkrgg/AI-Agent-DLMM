@@ -452,6 +452,7 @@ async function _openPositionLogic(poolAddress, tokenXAmount, tokenYAmount, price
 
     const txList = Array.isArray(txs) ? txs : [txs];
     for (const tx of txList) {
+      // Ensure we always have a fresh blockhash for every chunk
       const { blockhash } = await connection.getLatestBlockhash('confirmed');
       tx.recentBlockhash = blockhash;
       tx.feePayer = wallet.publicKey;
@@ -593,11 +594,14 @@ export async function closePositionDLMM(poolAddress, positionAddress, pnlData = 
       // Helper: kirim satu TX dan tunggu konfirmasi, tambahkan hash ke txHashes
       // Dipakai di step 4 dan step 6 closePosition cleanup.
       const sendAndConfirmTx = async (tx, hashes) => {
+        // Access 'connection' via closure from outer scope (defined at line 541)
         const { blockhash } = await connection.getLatestBlockhash('confirmed');
         tx.recentBlockhash = blockhash;
         tx.feePayer = wallet.publicKey;
-        injectPriorityFee(tx, { units: 600_000, microLamports: 200_000 });
+
+        injectPriorityFee(tx, { units: 400_000, microLamports: 250_000 });
         tx.sign(wallet);
+
         const hash = await connection.sendRawTransaction(tx.serialize(), {
           skipPreflight: true,
           maxRetries:    3,

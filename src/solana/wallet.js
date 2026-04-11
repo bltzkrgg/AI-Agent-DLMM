@@ -44,6 +44,8 @@ export function getWallet() {
 }
 
 export async function getWalletBalance() {
+  if (!wallet) return '0.0000';
+  const connection = getConnection();
   const balance = await connection.getBalance(wallet.publicKey);
   return (balance / 1e9).toFixed(4); // Convert lamports to SOL
 }
@@ -51,6 +53,7 @@ export async function getWalletBalance() {
 export async function getTokenBalance(mintAddress) {
   const { PublicKey } = await import('@solana/web3.js');
   try {
+    const connection = getConnection();
     const mint = new PublicKey(mintAddress);
     const tokenAccounts = await connection.getParsedTokenAccountsByOwner(
       wallet.publicKey,

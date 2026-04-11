@@ -118,13 +118,12 @@ async function detectLikelySwapSuccess({ connection, wallet, inputMint, amountRa
 // ─── Get token balance for a specific mint ────────────────────────
 
 export async function getTokenBalance(walletPublicKey, tokenMint) {
+  const connection = getConnection();
   if (tokenMint === SOL_MINT) {
-    const connection = getConnection();
     const balance = await connection.getBalance(walletPublicKey);
     return balance; // in lamports
   }
   try {
-    const connection = getConnection();
     const mintPubkey = new PublicKey(tokenMint);
     const accounts = await connection.getParsedTokenAccountsByOwner(walletPublicKey, {
       mint: mintPubkey,
@@ -245,8 +244,9 @@ export async function swapToSOL(inputMint, amountRaw, slippageBps = 100) {
       priceImpactPct: quote.priceImpactPct || 0,
     };
   } catch (error) {
+    // Standardized connection access via closure or explicit getter
     const likelySuccess = await detectLikelySwapSuccess({
-      connection,
+      connection: getConnection(),
       wallet,
       inputMint,
       amountRaw,
