@@ -135,6 +135,9 @@ export function getStrategy(name) {
   return { ...final, name };
 }
 
+// Alias for backward compatibility with legacy agents (Claude, Handler)
+export { getStrategy as getStrategyByName };
+
 export function getAllStrategies() {
   return Object.keys(BASELINE_STRATEGIES).map(name => getStrategy(name));
 }
