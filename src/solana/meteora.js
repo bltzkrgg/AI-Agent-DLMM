@@ -891,6 +891,8 @@ export async function closePositionDLMM(poolAddress, positionAddress, pnlData = 
         pnlUsd:      pnlData.pnlUsd   || 0,
         pnlPct:      pnlData.pnlPct   || 0,
         feesUsd:     pnlData.feeUsd   || 0,
+        pnlSol:      pnlData.pnlSol   || 0,
+        feesSol:     pnlData.feeSol   || 0,
         closeReason: pnlData.closeReason || 'closed',
         lifecycleState: pnlData.lifecycleState || 'closed_pending_swap',
       });
