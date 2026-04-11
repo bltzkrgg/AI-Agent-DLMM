@@ -5,9 +5,7 @@ import { getWalletBalance, getConnection } from '../solana/wallet.js';
 import { PublicKey } from '@solana/web3.js';
 import { getOpenPositions, getPoolStats, closePositionWithPnl } from '../db/database.js';
 import { getLessonsContext } from '../learn/lessons.js';
-import { getAllStrategies, parseStrategyParameters } from '../strategies/strategyManager.js';
-import { getStrategyProfile } from '../strategies/profiles.js';
-import { checkMaxDrawdown, validateStrategyForMarket, requestConfirmation } from '../safety/safetyManager.js';
+import { getStrategy, parseStrategyParameters, getAllStrategies } from '../strategies/strategyManager.js';
 import { matchStrategyToMarket, getLibraryStats } from '../market/strategyLibrary.js';
 import { fetchCandles, getMarketSnapshot, getOHLCV, getMultiTFScore } from '../market/oracle.js';
 import { getSocialSignals, getTokenSocialScore } from '../market/socialScanner.js';
@@ -36,9 +34,9 @@ export function getCandidates() { return lastCandidates; }
 export function getLastHunterReport() { return lastReport; }
 
 async function evaluateStrategyReadiness({ strategyName, poolInfo, poolAddress }) {
-  const profile = getStrategyProfile(strategyName);
-  if (!profile) {
-    return { ok: true, profile: null, priceRangePct: null, deployOptions: {} };
+  const strategy = getStrategy(strategyName);
+  if (!strategy) {
+    return { ok: true, strategy: null, priceRangePct: null, deployOptions: {} };
   }
 
   // Snapshot-only market data (consolidated API)
@@ -50,54 +48,69 @@ async function evaluateStrategyReadiness({ strategyName, poolInfo, poolAddress }
   if (!ohlcv) {
     blockers.push('Market snapshot tidak tersedia');
   } else {
-    if (strategyName === 'Evil Panda') {
-      if (!profile.allowedBinSteps?.includes(poolInfo.binStep)) {
-        blockers.push(`bin step ${poolInfo.binStep} tidak termasuk EP-eligible (${profile.allowedBinSteps.join('/')})`);
+    if (strategy.entry) {
+      if (strategy.allowedBinSteps && !strategy.allowedBinSteps.includes(poolInfo.binStep)) {
+        blockers.push(`bin step ${poolInfo.binStep} tidak termasuk eligible (${strategy.allowedBinSteps.join('/')})`);
       }
+
+      // ─── Entry Decision ───
+      const oracleTrigger = ohlcv.ta?.[strategyName]?.entry;
       
-      // Multi-TF Momentum Logic (5m vs 1h)
-      // UPTREND confirmed if m5 > 1.5% and h1 > 0
-      const isBullishM5 = (ohlcv.priceChangeM5 || 0) > (profile.entry?.momentumTriggerM5 || 1.5);
-      const isBullishH1 = (ohlcv.priceChangeH1 || 0) > 0;
-      
-      // ELASTIC MODE: If M5 is cold but H1 is breaking out (>5%) AND Fee APR is high (>1000%)
-      const isElasticH1 = (ohlcv.priceChangeH1 || 0) > 5.0 && (poolInfo.feeApr || 0) > 1000;
-      
-      if (!isBullishM5 && !isElasticH1) {
-        blockers.push(`momentum 5m sepi (${(ohlcv.priceChangeM5 || 0).toFixed(2)}%) dan tidak ada H1 breakout untuk Elastic Mode`);
-      } else if (!isBullishM5 && isElasticH1) {
-        notes.push('⚠️ ELASTIC MODE: M5 sepi, tapi H1 breakout (>5%) + High Fee detected.');
-      }
-      
-      if (ohlcv.trend === 'DOWNTREND' && !isBullishM5 && !isElasticH1) {
-        blockers.push('trend global DOWNTREND dan tidak ada momentum/elastic signal');
+      if (oracleTrigger) {
+        // Jika ada trigger khusus (misal: Evil Panda Dip Buy), gunakan itu sebagai prioritas utama
+        if (!oracleTrigger.triggered) {
+          blockers.push(`Strategi ${strategyName} belum terpicu: ${oracleTrigger.reason || 'Sinyal belum konfirmasi'}`);
+        } else {
+          notes.push(`✅ Trigger Spesifik: ${oracleTrigger.reason}`);
+        }
+      } else {
+        // Fallback ke Momentum Logic standar untuk strategi lain
+        const momentumThreshold = strategy.entry.momentumTriggerM5 || 1.0;
+        const isBullishM5 = (ohlcv.priceChangeM5 || 0) > momentumThreshold;
+        const isElasticH1 = (ohlcv.priceChangeH1 || 0) > 5.0 && (poolInfo.feeApr || 0) > 800;
+
+        if (!isBullishM5 && !isElasticH1 && strategy.entry.momentumRequired !== false) {
+          blockers.push(`momentum 5m sepi (${(ohlcv.priceChangeM5 || 0).toFixed(2)}%) < threshold ${momentumThreshold}%`);
+        }
+
+        if (ohlcv.trend === 'DOWNTREND' && !isBullishM5 && !isElasticH1) {
+          blockers.push('trend global DOWNTREND — sniper menahan diri dari pisau jatuh');
+        }
       }
 
       notes.push(`m5: ${(ohlcv.priceChangeM5 || 0).toFixed(2)}% | h1: ${(ohlcv.priceChangeH1 || 0).toFixed(2)}% | trend: ${ohlcv.trend}`);
     }
   }
 
+  // JIT Volume Delta Guard: Cek akumulasi volume di lilin terakhir (1m/5m)
+  const volDelta = (ohlcv?.buyVolume && ohlcv?.sellVolume) 
+    ? (ohlcv.buyVolume / (ohlcv.buyVolume + ohlcv.sellVolume))
+    : 1;
+
+  if (volDelta < 0.45) {
+    blockers.push(`VOLUME_DELTA_DUMP: Tekanan jual tinggi dlm 5m terakhir (${(volDelta*100).toFixed(0)}% Buy)`);
+  }
+
   return {
     ok: blockers.length === 0,
     blockers,
     notes,
-    profile,
+    strategy,
     ohlcv15m: ohlcv, // preserved field name for compatibility
-    priceRangePct: profile.deploy?.lowerRangeGuidePct || null,
+    priceRangePct: strategy.deploy?.priceRangePct || null,
     deployOptions: {
-      fixedBinsBelow: (function() {
+      fixedBinsBelow: (function () {
         if (strategyName === 'Evil Panda' && ohlcv?.range24hPct) {
-          // Adaptive formula with Solana's 10KB (69-bin) safety cap.
-          // 40 min + (1.5 * 24h volatility)
-          // we use 68 as max because totalBins = (rangeMax - rangeMin) + 1
-          const adaptive = 40 + Math.floor(ohlcv.range24hPct * 1.5);
-          return Math.min(68, Math.max(40, adaptive));
+          // Evil Panda Sweet Spot: 40 to 125 bins (Max efficiency for fee capture)
+          const adaptive = 40 + Math.floor(ohlcv.range24hPct * 1.2);
+          return Math.min(125, Math.max(40, adaptive));
         }
-        // Fallback: 68 bin (+1 active = 69) untuk Evil Panda agar sukses 1-TX
-        return strategyName === 'Evil Panda' ? 68 : profile.deploy?.fixedBinsBelow;
+        // Deep Sea Kraken & others can still use up to 250 bins
+        const maxFloor = strategyName === 'Deep Sea Kraken' ? 250 : 125;
+        return Math.min(maxFloor, strategy.deploy?.fixedBinsBelow || 68);
       })(),
-      binPadding: strategyName === 'Evil Panda' ? 0 : 1, // Max range 0% above active price
-      rangeLabel: profile.deploy?.label,
+      binPadding: strategyName === 'Evil Panda' ? 0 : 1,
+      rangeLabel: strategy.deploy?.label,
     },
   };
 }
@@ -111,10 +124,10 @@ function calculateDarwinScore(pool, weightsOverride) {
   let score = 0;
 
   // fee/TVL ratio — strong predictor
-  const tvl  = pool.liquidityRaw || pool.tvl || 0;
-  const fees = pool.fees24hRaw   || 0;
+  const tvl = pool.liquidityRaw || pool.tvl || 0;
+  const fees = pool.fees24hRaw || 0;
   if (tvl > 0 && fees > 0) {
-    const ratio      = fees / tvl;
+    const ratio = fees / tvl;
     const ratioScore = Math.min(ratio / 0.05, 2.0) / 2.0; // 5% ratio = max 1.0
     score += ratioScore * (w.feeActiveTvlRatio || 2.3);
   }
@@ -209,9 +222,9 @@ const HUNTER_TOOLS = [
     input_schema: {
       type: 'object',
       properties: {
-        pool_address:  { type: 'string' },
+        pool_address: { type: 'string' },
         strategy_name: { type: 'string', description: 'Nama strategi dari Strategy Library' },
-        reasoning:     { type: 'string', description: 'Alasan memilih pool dan strategi ini (DLMM-specific: fee APR, range fit, volatilitas)' },
+        reasoning: { type: 'string', description: 'Alasan memilih pool dan strategi ini (DLMM-specific: fee APR, range fit, volatilitas)' },
       },
       required: ['pool_address', 'reasoning'],
     },
@@ -231,19 +244,15 @@ const HUNTER_TOOLS = [
 // ─── Tool execution ──────────────────────────────────────────────
 
 async function executeTool(name, input) {
-  const cfg = getConfig();
-  let deployOptions = {}; // Safeguard initialization
-  let strategyEval  = null;
-
-  // Final Audit Marker
-  console.log(`[hunter] Technical Sniper Engine v2.1 Activated — Scope Lockdown OK (Tool: ${name})`);
+  // Global Marker
+  console.log(`[hunter] Rebirth Engine v3.0 Unified — Tool: ${name}`);
 
   switch (name) {
 
     case 'screen_pools': {
       const limit = input.limit || 10;
       const thresholds = getThresholds();
-      const weights    = getDarwinWeights();
+      const weights = getDarwinWeights();
 
       // ── LP Agent: discover top pools (1 API call, cached 10 menit) ──
       // Berjalan paralel dengan getTopPools untuk hemat waktu
@@ -251,30 +260,30 @@ async function executeTool(name, input) {
         getTopPools(limit * 3),
         isLPAgentEnabled()
           ? lpAgentDiscoverPools({
-              pageSize:        50,
-              vol24hMin:       cfg.minVolume24h,
-              organicScoreMin: cfg.minOrganic,
-              binStepMin:      cfg.minBinStep,
-              binStepMax:      250,
-              feeTVLInterval:  '1h',
-            })
+            pageSize: 50,
+            vol24hMin: cfg.minVolume24h,
+            organicScoreMin: cfg.minOrganic,
+            binStepMin: cfg.minBinStep,
+            binStepMax: 250,
+            feeTVLInterval: '1h',
+          })
           : Promise.resolve([]),
       ]);
 
       const rawDex = dexPools.status === 'fulfilled' ? (dexPools.value || []) : [];
-      const rawLP  = lpAgentPools.status === 'fulfilled' ? (lpAgentPools.value || []) : [];
+      const rawLP = lpAgentPools.status === 'fulfilled' ? (lpAgentPools.value || []) : [];
 
       // Merge: LP Agent pools tidak ada di DexScreener → tambahkan sebagai kandidat baru
       // Pool yang sudah ada di DexScreener → tidak di-double
-      const dexAddresses  = new Set(rawDex.map(p => p.address));
-      const lpAgentOnly   = rawLP.filter(p => p.address && !dexAddresses.has(p.address)).map(p => ({
-        address:      p.address,
-        name:         p.name || p.tokenXSymbol ? `${p.tokenXSymbol}-SOL` : '',
-        tokenX:       p.tokenX,
-        tokenY:       p.tokenY,
-        tvl:          p.tvl,
-        fees24hRaw:   p.vol24h * (p.feeTVLRatio || 0),
-        binStep:      p.binStep,
+      const dexAddresses = new Set(rawDex.map(p => p.address));
+      const lpAgentOnly = rawLP.filter(p => p.address && !dexAddresses.has(p.address)).map(p => ({
+        address: p.address,
+        name: p.name || p.tokenXSymbol ? `${p.tokenXSymbol}-SOL` : '',
+        tokenX: p.tokenX,
+        tokenY: p.tokenY,
+        tvl: p.tvl,
+        fees24hRaw: p.vol24h * (p.feeTVLRatio || 0),
+        binStep: p.binStep,
         _fromLPAgent: true,
       }));
       const combined = [...rawDex, ...lpAgentOnly];
@@ -282,18 +291,18 @@ async function executeTool(name, input) {
       // ── Satu call enrichment LP Agent untuk semua kandidat ──
       // enrich pools SETELAH merge, zero extra API calls (pakai cache)
       const allAddresses = combined.map(p => p.address).filter(Boolean);
-      const lpEnrichMap  = isLPAgentEnabled()
+      const lpEnrichMap = isLPAgentEnabled()
         ? await lpAgentEnrichPools(allAddresses).catch(() => ({}))
         : {};
 
       // Filter dasar
-      const minBinStep      = cfg.minBinStep;
+      const minBinStep = cfg.minBinStep;
       const minTokenFeesSol = cfg.minTokenFeesSol;
       const preFiltered = combined.filter(p => {
-        const tvl      = parseTvl(p.tvlStr || p.tvl || 0);
-        const fees     = p.fees24hRaw || 0;
+        const tvl = parseTvl(p.tvlStr || p.tvl || 0);
+        const fees = p.fees24hRaw || 0;
         const feeRatio = tvl > 0 ? fees / tvl : 0;
-        const binStep  = p.binStep || 0;
+        const binStep = p.binStep || 0;
         return (
           binStep >= minBinStep &&
           binStep <= 250 &&
@@ -330,9 +339,9 @@ async function executeTool(name, input) {
           smartWallet: smartWalletSignal
             ? { found: true, wallets: smartWalletSignal.matches.map(m => m.label), confidence: smartWalletSignal.confidence }
             : null,
-          poolMemory:   poolMemCtx || undefined,
-          lpAgent:      lpData,   // { inLPAgentList, organicScore, feeTVLRatioLP, vol24hLP }
-          darwinScore:  calculateDarwinScore({ ...p, multiTFScore }, weights),
+          poolMemory: poolMemCtx || undefined,
+          lpAgent: lpData,   // { inLPAgentList, organicScore, feeTVLRatioLP, vol24hLP }
+          darwinScore: calculateDarwinScore({ ...p, multiTFScore }, weights),
           feeToTvlRatio: (() => {
             const tvl = parseTvl(p.tvlStr || p.tvl || 0);
             return tvl > 0 ? ((p.fees24hRaw || 0) / tvl).toFixed(4) : '0';
@@ -352,17 +361,17 @@ async function executeTool(name, input) {
 
       // Trim kandidat — hapus field verbose yang tidak dibutuhkan LLM untuk keputusan
       const trimmedCandidates = filtered.map(p => ({
-        address:        p.address,
-        name:           p.name || '',
-        binStep:        p.binStep,
-        tvl:            typeof p.tvl === 'number' ? Math.round(p.tvl) : p.tvlStr,
-        fees24h:        p.fees24hRaw ? parseFloat(p.fees24hRaw.toFixed(2)) : undefined,
-        feeToTvlRatio:  p.feeToTvlRatio,
-        darwinScore:    p.darwinScore ? parseFloat(p.darwinScore.toFixed(3)) : undefined,
-        multiTFScore:   p.multiTFScore || undefined,
-        smartWallet:    p.smartWallet || undefined,
-        poolMemory:     p.poolMemory  || undefined,
-        lpAgent:        p.lpAgent?.inLPAgentList
+        address: p.address,
+        name: p.name || '',
+        binStep: p.binStep,
+        tvl: typeof p.tvl === 'number' ? Math.round(p.tvl) : p.tvlStr,
+        fees24h: p.fees24hRaw ? parseFloat(p.fees24hRaw.toFixed(2)) : undefined,
+        feeToTvlRatio: p.feeToTvlRatio,
+        darwinScore: p.darwinScore ? parseFloat(p.darwinScore.toFixed(3)) : undefined,
+        multiTFScore: p.multiTFScore || undefined,
+        smartWallet: p.smartWallet || undefined,
+        poolMemory: p.poolMemory || undefined,
+        lpAgent: p.lpAgent?.inLPAgentList
           ? { organicScore: p.lpAgent.organicScore, feeTVLRatioLP: p.lpAgent.feeTVLRatioLP }
           : undefined,
       }));
@@ -388,26 +397,26 @@ async function executeTool(name, input) {
       return JSON.stringify({
         poolInfo: info,
         dlmmEconomics: pool ? {
-          feeApr:         `${pool.feeApr}% (${pool.feeAprCategory})`,
-          feeVelocity:    pool.feeVelocity,
+          feeApr: `${pool.feeApr}% (${pool.feeAprCategory})`,
+          feeVelocity: pool.feeVelocity,
           feeTvlRatioPct: `${(pool.feeTvlRatio * 100).toFixed(3)}%/hari`,
-          tvl:            pool.tvl,
-          volume24h:      pool.volume24h,
-          healthScore:    dlmmSnapshot?.healthScore,
-          eligible:       pool.feeAprCategory !== 'LOW' && pool.feeTvlRatio > 0.01,
+          tvl: pool.tvl,
+          volume24h: pool.volume24h,
+          healthScore: dlmmSnapshot?.healthScore,
+          eligible: pool.feeAprCategory !== 'LOW' && pool.feeTvlRatio > 0.01,
         } : null,
         priceContext: price ? {
-          trend:              price.trend,
-          momentumM5:         price.priceChangeM5,
-          volatility:         `${price.volatility24h}% (${price.volatilityCategory})`,
-          binStepFit:         info.binStep >= price.suggestedBinStepMin ? 'OK' : `⚠️ Butuh bin step ≥${price.suggestedBinStepMin}`,
-          buyPressure:        `${price.buyPressurePct}% (${price.sentiment})`,
+          trend: price.trend,
+          momentumM5: price.priceChangeM5,
+          volatility: `${price.volatility24h}% (${price.volatilityCategory})`,
+          binStepFit: info.binStep >= price.suggestedBinStepMin ? 'OK' : `⚠️ Butuh bin step ≥${price.suggestedBinStepMin}`,
+          buyPressure: `${price.buyPressurePct}% (${price.sentiment})`,
         } : null,
         strategyRecommendation: strategyMatch ? {
-          recommended:     'Evil Panda (Adaptive)',
-          confidence:      strategyMatch.recommended?.matchScore,
+          recommended: 'Evil Panda (Adaptive)',
+          confidence: strategyMatch.recommended?.matchScore,
           entryConditions: 'm5 Momentum + h1 Trend Alignment',
-          exitConditions:  'Evil Panda Confluence',
+          exitConditions: 'Evil Panda Confluence',
         } : null,
         validStrategyNames: ['Evil Panda'],
       }, null, 2);
@@ -426,18 +435,18 @@ async function executeTool(name, input) {
       if (result.verdict === 'AVOID' && hunterNotifyFn) {
         await hunterNotifyFn(`🚫 *Token Ditolak Coin Filter*\n\n${formatScreenResult(result)}`);
       }
-      
+
       const action = result.verdict === 'AVOID'
         ? 'SKIP — cari kandidat lain'
         : 'LANJUT DEPLOY — jumlah token dihitung otomatis';
 
       return JSON.stringify({
-        verdict:         result.verdict,
-        eligible:        result.eligible,
-        highFlags:       result.highFlags.map(f => f.msg),
-        mediumFlags:     result.mediumFlags.map(f => f.msg),
-        priceImpact:     result.priceImpact,
-        sources:         result.sources,
+        verdict: result.verdict,
+        eligible: result.eligible,
+        highFlags: result.highFlags.map(f => f.msg),
+        mediumFlags: result.mediumFlags.map(f => f.msg),
+        priceImpact: result.priceImpact,
+        sources: result.sources,
         action,
       }, null, 2);
     }
@@ -467,23 +476,23 @@ async function executeTool(name, input) {
       const verdict = stats.winRate < 40
         ? 'HINDARI — win rate rendah, histori buruk di pool ini'
         : stats.winRate < 60
-        ? 'HATI-HATI — win rate di bawah rata-rata'
-        : 'OK — histori positif di pool ini';
+          ? 'HATI-HATI — win rate di bawah rata-rata'
+          : 'OK — histori positif di pool ini';
       return JSON.stringify({ ...stats, verdict }, null, 2);
     }
 
     case 'deploy_position': {
       // ── Guard: cegah deploy duplikat ke pool yang sama ──────────
       let existingPositions = getOpenPositions();
-      const existingForPool   = existingPositions.find(p => p.pool_address === input.pool_address);
+      const existingForPool = existingPositions.find(p => p.pool_address === input.pool_address);
       if (existingForPool) {
         // Ada di DB — verifikasi on-chain dulu. DB bisa stale jika position ditutup
         // di luar bot (manual close, expired, dll) tanpa DB di-update.
         let accountExists = true;
         try {
-          const conn    = getConnection();
-          const pubkey  = new PublicKey(existingForPool.position_address);
-          const info    = await conn.getAccountInfo(pubkey);
+          const conn = getConnection();
+          const pubkey = new PublicKey(existingForPool.position_address);
+          const info = await conn.getAccountInfo(pubkey);
           accountExists = info !== null;
         } catch { /* best-effort — kalau gagal, anggap masih ada (safe default) */ }
 
@@ -501,12 +510,12 @@ async function executeTool(name, input) {
         } else {
           // Posisi benar-benar masih ada on-chain → tolak duplikat
           return JSON.stringify({
-            success:         true,
+            success: true,
             alreadyDeployed: true,
             positionAddress: existingForPool.position_address,
-            pool_address:    input.pool_address,
-            strategyUsed:    existingForPool.strategy_used,
-            note:            'SUDAH_ADA — skip diam-diam, lanjut kandidat berikutnya.',
+            pool_address: input.pool_address,
+            strategyUsed: existingForPool.strategy_used,
+            note: 'SUDAH_ADA — skip diam-diam, lanjut kandidat berikutnya.',
           }, null, 2);
         }
       }
@@ -536,8 +545,8 @@ async function executeTool(name, input) {
 
       // ── Auto-calculate position sizing ──────────────────────────
       const deployAmountSol = cfg.deployAmountSol || 0.1;
-      const tokenXAmount    = 0;
-      const tokenYAmount    = deployAmountSol;
+      const tokenXAmount = 0;
+      const tokenYAmount = deployAmountSol;
 
       // Ambil pool info + validasi sebelum lock
       const poolInfo = await getPoolInfo(input.pool_address);
@@ -547,12 +556,12 @@ async function executeTool(name, input) {
       if (poolInfo.tokenY !== WSOL_MINT) {
         return JSON.stringify({
           blocked: true,
-          reason: `Pool tokenY bukan WSOL (${poolInfo.tokenYSymbol || poolInfo.tokenY?.slice(0,8)}) — bot hanya deploy ke pool TOKEN/SOL. Skip pool ini.`,
+          reason: `Pool tokenY bukan WSOL (${poolInfo.tokenYSymbol || poolInfo.tokenY?.slice(0, 8)}) — bot hanya deploy ke pool TOKEN/SOL. Skip pool ini.`,
         }, null, 2);
       }
 
       // Strategy validation sebelum lock
-      const strategy = getAllStrategies().find(s => s.name === 'Evil Panda');
+      const strategy = getStrategy(input.strategy_name || 'Evil Panda');
 
       if (!strategy) {
         return JSON.stringify({
@@ -562,9 +571,9 @@ async function executeTool(name, input) {
       }
 
       const stratParams = parseStrategyParameters(strategy);
-      const strategyType = strategy?.strategy_type || 'spot';
-      const strategyProfile = getStrategyProfile(strategy.name);
-      deployOptions = { ...(strategyProfile?.deployment || {}) };
+      const strategyType = strategy?.type || 'spot';
+      const strategyProfile = getStrategy(strategy.name);
+      deployOptions = { ...(strategyProfile?.deploy || {}) };
 
       try {
         const snapshot = await getMarketSnapshot(poolInfo.tokenX, input.pool_address);
@@ -615,91 +624,91 @@ async function executeTool(name, input) {
       let result;
       // Konfirmasi Telegram (cegah race)
       if (cfg.requireConfirmation && hunterNotifyFn && hunterBotRef && hunterAllowedId) {
-          const confirmed = await requestConfirmation(
-            hunterNotifyFn,
-            hunterBotRef,
-            hunterAllowedId,
-            `🚀 *Hunter Alpha ingin deploy:*\n\n` +
-            `📍 Pool: \`${input.pool_address.slice(0,8)}...\`\n` +
-            `📊 Strategi: ${strategy.name} (${targetPriceRangePct.toFixed(1)}%)\n` +
-            `💰 Deploy: ${deployAmountSol} SOL (Single-Side SOL)\n` +
-            `  tokenX: 0 | tokenY: ${tokenYAmount.toFixed(4)} SOL\n\n` +
-            `💭 ${deployOptions.technicalReasoning || input.reasoning}`
-          );
-          if (!confirmed) {
-            // Kirim notif batal agar user tidak bingung kenapa "Deploying..." tanpa follow-up
-            if (hunterNotifyFn) {
-              await hunterNotifyFn(`❌ *Deploy Dibatalkan*\n\nUser tidak menyetujui deploy ke pool \`${input.pool_address.slice(0,8)}...\``).catch(() => {});
-            }
-            return JSON.stringify({ blocked: true, reason: 'Ditolak oleh user.' }, null, 2);
-          }
-        }
-
-        // Execute TX — jika gagal, notifikasi user sebelum re-throw
-        try {
-          ({ result } = await executeControlledOperation({
-            operationType: 'OPEN_POSITION',
-            entityId: input.pool_address,
-            payload: {
-              poolAddress: input.pool_address,
-              tokenXAmount,
-              tokenYAmount,
-              priceRangePct: targetPriceRangePct,
-              strategy: strategy.name,
-              deployOptions,
-            },
-            metadata: { source: 'hunter_alpha', strategy: strategy.name },
-            policy: { isEntryOperation: true },
-            execute: () => openPosition(
-              input.pool_address,
-              tokenXAmount,
-              tokenYAmount,
-              targetPriceRangePct,
-              strategy.name,
-              deployOptions,
-            ),
-          }));
-        } catch (deployErr) {
-          // Kirim notif gagal supaya user tidak stuck di "Deploying..." tanpa follow-up
+        const confirmed = await requestConfirmation(
+          hunterNotifyFn,
+          hunterBotRef,
+          hunterAllowedId,
+          `🚀 *Hunter Alpha ingin deploy:*\n\n` +
+          `📍 Pool: \`${input.pool_address.slice(0, 8)}...\`\n` +
+          `📊 Strategi: ${strategy.name} (${targetPriceRangePct.toFixed(1)}%)\n` +
+          `💰 Deploy: ${deployAmountSol} SOL (Single-Side SOL)\n` +
+          `  tokenX: 0 | tokenY: ${tokenYAmount.toFixed(4)} SOL\n\n` +
+          `💭 ${deployOptions.technicalReasoning || input.reasoning}`
+        );
+        if (!confirmed) {
+          // Kirim notif batal agar user tidak bingung kenapa "Deploying..." tanpa follow-up
           if (hunterNotifyFn) {
-            hunterNotifyFn(
-              `❌ *Deploy Gagal*\n\n` +
-              `Pool: \`${input.pool_address.slice(0,8)}...\`\n` +
-              `Error: ${deployErr.message}\n` +
-              `_Cek wallet balance dan Meteora UI untuk memastikan posisi tidak terbuat._`
-            ).catch(() => {});
+            await hunterNotifyFn(`❌ *Deploy Dibatalkan*\n\nUser tidak menyetujui deploy ke pool \`${input.pool_address.slice(0, 8)}...\``).catch(() => { });
           }
-          throw deployErr; // re-throw agar AI tahu dan bisa report
+          return JSON.stringify({ blocked: true, reason: 'Ditolak oleh user.' }, null, 2);
         }
+      }
+
+      // Execute TX — jika gagal, notifikasi user sebelum re-throw
+      try {
+        ({ result } = await executeControlledOperation({
+          operationType: 'OPEN_POSITION',
+          entityId: input.pool_address,
+          payload: {
+            poolAddress: input.pool_address,
+            tokenXAmount,
+            tokenYAmount,
+            priceRangePct: targetPriceRangePct,
+            strategy: strategy.name,
+            deployOptions,
+          },
+          metadata: { source: 'hunter_alpha', strategy: strategy.name },
+          policy: { isEntryOperation: true },
+          execute: () => openPosition(
+            input.pool_address,
+            tokenXAmount,
+            tokenYAmount,
+            targetPriceRangePct,
+            strategy.name,
+            deployOptions,
+          ),
+        }));
+      } catch (deployErr) {
+        // Kirim notif gagal supaya user tidak stuck di "Deploying..." tanpa follow-up
+        if (hunterNotifyFn) {
+          hunterNotifyFn(
+            `❌ *Deploy Gagal*\n\n` +
+            `Pool: \`${input.pool_address.slice(0, 8)}...\`\n` +
+            `Error: ${deployErr.message}\n` +
+            `_Cek wallet balance dan Meteora UI untuk memastikan posisi tidak terbuat._`
+          ).catch(() => { });
+        }
+        throw deployErr; // re-throw agar AI tahu dan bisa report
+      }
 
       // Notifikasi & recording — dikurung try/catch agar error Telegram
       // tidak membuat tool return Error dan memicu AI retry ke pool yang sama
       try {
         if (hunterNotifyFn && result.success) {
-          const cfg2    = getConfig();
+          const cfg2 = getConfig();
           const tpTarget = strategyProfile?.exit?.takeProfitPct ?? cfg2.takeProfitFeePct ?? 5;
           const slTarget = strategyProfile?.exit?.emergencyStopLossPct ?? cfg2.stopLossPct ?? 5;
           const trailAct = strategyProfile?.exit?.trailingTriggerPct ?? cfg2.trailingTriggerPct ?? 3.0;
-          const nPos     = result.positionCount ?? 1;
+          const nPos = result.positionCount ?? 1;
 
           const details = [
-            kv('Posisi',   nPos > 1
+            kv('Posisi', nPos > 1
               ? `${nPos}x chunks (${result.positions.map(p => shortAddr(p.address, 4, 4)).join(', ')})`
               : shortAddr(result.positionAddress, 4, 4), 9),
-            kv('Pool',     shortAddr(input.pool_address, 4, 4), 9),
+            kv('Pool', shortAddr(input.pool_address, 4, 4), 9),
             kv('Strategi', strategy?.name || 'default', 9),
-            kv('Deploy',   `${deployAmountSol} SOL (${nPos > 1 ? `${nPos} positions` : 'Single-Side'})`, 9),
+            kv('Deploy', `${deployAmountSol} SOL (${nPos > 1 ? `${nPos} positions` : 'Single-Side'})`, 9),
             ...(nPos > 1 ? result.positions.map((p, i) =>
-              kv(`Chunk${i+1}`, `${p.yAmountSol.toFixed(4)}◎ @ ${p.binCount} bins`, 9)
+              kv(`Chunk${i + 1}`, `${p.yAmountSol.toFixed(4)}◎ @ ${p.binCount} bins`, 9)
             ) : []),
             hr(40),
-            kv('Entry',    result.entryPrice?.toFixed(8)  ?? '-', 9),
-            kv('Bawah',    `${result.lowerPrice?.toFixed(8) ?? '-'}  (-${targetPriceRangePct}%)`, 9),
-            kv('Atas',     `${result.upperPrice?.toFixed(8) ?? '-'}  (entry)`, 9),
-            kv('Fee/bin',  `${result.feeRatePct}%`, 9),
-            kv('Range',    `${deployOptions.fixedBinsBelow ? `${result.binsBelow + 1} bins` : `${targetPriceRangePct}%`} | ${result.positions.reduce((s, p) => s + p.binCount, 0)} bins total`, 9),
+            kv('Entry', result.entryPrice?.toFixed(8) ?? '-', 9),
+            kv('Bawah', `${result.lowerPrice?.toFixed(8) ?? '-'}  (-${targetPriceRangePct}%)`, 9),
+            kv('Atas', `${result.upperPrice?.toFixed(8) ?? '-'}  (entry)`, 9),
+            kv('Fee/bin', `${result.feeRatePct}%`, 9),
+            kv('Range', `${deployOptions.fixedBinsBelow ? `${result.binsBelow + 1} bins` : `${targetPriceRangePct}%`} | ${result.positions.reduce((s, p) => s + p.binCount, 0)} bins total`, 9),
             hr(40),
-            kv('TP',       `+${tpTarget}%  Trail: +${trailAct}%  SL: -${slTarget}%`, 9),
+            kv('TP', `+${tpTarget}%  Trail: +${trailAct}%  SL: -${slTarget}%`, 9),
             ...(strategyEval?.notes?.length ? [kv('Setup', strategyEval.notes.join(' | ').slice(0, 40), 9)] : []),
           ];
 
@@ -767,12 +776,12 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null, opt
   _hunterTargetCount = options.targetCount ?? null;
 
   const cfg = getConfig();
-  
+
   // --- Portfolio Awareness ---
   const balanceSnapshot = await getWalletBalance().catch(() => 0);
   const minSolNeeded = cfg.minSolToOpen + (cfg.gasReserve ?? 0.02);
   const isBalanceLow = balanceSnapshot < (minSolNeeded * 3);
-  
+
   if (isBalanceLow) {
     console.log(`📡 Portfolio Awareness: Saldo SOL menipis (${balanceSnapshot.toFixed(4)}). Memperketat filter entry...`);
   }
@@ -804,7 +813,7 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null, opt
   let preComputedContext = '';
   try {
     const thresholds = getThresholds();
-    const weights    = getDarwinWeights(); // adaptive weights dari data nyata
+    const weights = getDarwinWeights(); // adaptive weights dari data nyata
     const [rawPools, socialSignals] = await Promise.all([
       getTopPools(25),
       getSocialSignals().catch(() => [])
@@ -812,14 +821,14 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null, opt
 
     const filtered = rawPools
       .filter(p => {
-        const tvl      = p.liquidityRaw || 0;
-        const fees     = p.fees24hRaw   || 0;
+        const tvl = p.liquidityRaw || 0;
+        const fees = p.fees24hRaw || 0;
         const feeRatio = tvl > 0 ? fees / tvl : 0;
-        const binStep  = p.binStep || 0;
+        const binStep = p.binStep || 0;
         return (
           binStep > 0 && binStep <= 250 &&
-          tvl >= thresholds.minTvl     &&
-          tvl <= thresholds.maxTvl     &&
+          tvl >= thresholds.minTvl &&
+          tvl <= thresholds.maxTvl &&
           feeRatio >= thresholds.minFeeActiveTvlRatio &&
           !isOnCooldown(p.address) // skip pool sedang cooldown
         );
@@ -845,35 +854,35 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null, opt
 
       const mem = memResult.status === 'fulfilled' ? memResult.value : null;
       const mtf = mtfResult.status === 'fulfilled' ? mtfResult.value : null;
-      const sw  = swResult.status  === 'fulfilled' ? swResult.value  : null;
+      const sw = swResult.status === 'fulfilled' ? swResult.value : null;
 
       // Update darwinScore dengan multiTFScore
       if (mtf?.score > 0) {
         p.multiTFScore = mtf.score;
-        p.darwinScore  = calculateDarwinScore({ ...p, multiTFScore: mtf.score }, weights);
+        p.darwinScore = calculateDarwinScore({ ...p, multiTFScore: mtf.score }, weights);
       }
 
       const memVerdict = !mem
         ? 'firstTime'
         : mem.winRate < 40 ? 'HINDARI'
-        : mem.winRate < 60 ? 'HATI-HATI'
-        : 'OK';
+          : mem.winRate < 60 ? 'HATI-HATI'
+            : 'OK';
 
       const tvl = p.liquidityRaw || 0;
       return {
-        address:      p.address,
-        name:         p.name,
-        darwinScore:  p.darwinScore,
-        tvl:          tvl.toFixed(0),
-        fees24h:      (p.fees24hRaw || 0).toFixed(2),
-        socialHype:   p.socialSignal ? `🔥 Discord Impact: ${p.socialSignal.intensity}/10` : 'Neutral',
-        feeToTvlPct:  tvl > 0 ? ((p.fees24hRaw || 0) / tvl * 100).toFixed(2) + '%' : '0%',
-        binStep:      p.binStep,
-        tokenXMint:   p.tokenX,
-        poolMemory:   mem
+        address: p.address,
+        name: p.name,
+        darwinScore: p.darwinScore,
+        tvl: tvl.toFixed(0),
+        fees24h: (p.fees24hRaw || 0).toFixed(2),
+        socialHype: p.socialSignal ? `🔥 Discord Impact: ${p.socialSignal.intensity}/10` : 'Neutral',
+        feeToTvlPct: tvl > 0 ? ((p.fees24hRaw || 0) / tvl * 100).toFixed(2) + '%' : '0%',
+        binStep: p.binStep,
+        tokenXMint: p.tokenX,
+        poolMemory: mem
           ? { winRate: mem.winRate, totalTrades: mem.totalTrades, verdict: memVerdict }
           : { verdict: 'firstTime' },
-        multiTF:      mtf ? {
+        multiTF: mtf ? {
           score: mtf.score,
           bullishTFs: `${mtf.bullishCount}/${mtf.validCount}`,
           breakdown: Object.entries(mtf.breakdown || {})
@@ -886,12 +895,12 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null, opt
     }));
 
     // Filter obvious rejects sebelum dikirim ke LLM
-    const viable  = enriched.filter(p => p.poolMemory.verdict !== 'HINDARI');
+    const viable = enriched.filter(p => p.poolMemory.verdict !== 'HINDARI');
     const skipped = enriched.length - viable.length;
 
     if (notifyFn) {
       const smartWalletHits = enriched.filter(p => p.smartWallet?.wallets?.length > 0).length;
-      const highTFAlign     = enriched.filter(p => (p.multiTF?.score || 0) >= 0.67).length;
+      const highTFAlign = enriched.filter(p => (p.multiTF?.score || 0) >= 0.67).length;
       await notifyFn(
         `📊 *Pre-screening selesai*\n` +
         `✅ Viable: ${viable.length}  ❌ Filtered: ${skipped}\n` +

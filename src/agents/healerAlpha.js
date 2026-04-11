@@ -19,7 +19,7 @@ import { getWalletPositions, isLPAgentEnabled, getPoolSmartMoney } from '../mark
 import { resolvePnlSnapshot } from '../app/pnl.js';
 import { clearPositionRuntimeState, getPositionRuntimeState, updatePositionRuntimeState } from '../app/positionRuntimeState.js';
 import { resolvePositionSnapshot } from '../app/positionSnapshot.js';
-import { getStrategyProfile } from '../strategies/profiles.js';
+import { getStrategy } from '../strategies/strategyManager.js';
 import { analyzeTradeResult } from '../learn/failureAnalysis.js';
 
 // Verifikasi apakah position account benar-benar tidak ada on-chain.
@@ -795,7 +795,7 @@ export async function runHealerAlpha(notifyFn) {
       const pnlSol = snapshot.pnlSol;
       const addr   = pos.position_address;
       const runtimeState = getPositionRuntimeState(addr);
-      const strategyProfile = getStrategyProfile(pos.strategy_used || '');
+      const strategyProfile = getStrategy(pos.strategy_used || '');
       const positionAgeMin = getPositionAgeMinutes(pos);
       const exitMode = strategyProfile?.exit?.mode || 'default';
       const trailCfg = getTrailingConfig();
@@ -888,7 +888,12 @@ export async function runHealerAlpha(notifyFn) {
           holdReason = `Chart BULLISH (${(conf * 100).toFixed(0)}% conf) — aktifkan trailing, biarkan profit jalan`;
         }
       } else if (slCheck.triggered) {
-        if (sig === 'BULLISH' && conf >= 0.65) {
+        // SNIPER REBIRTH: Mode trend_confirmed won't SL if trend is still BULLISH
+        const needsTrendConf = exitMode === 'evil_panda_confluence' || exitMode === 'trend_confirmed';
+        if (needsTrendConf && sig === 'BULLISH') {
+          decision = 'HOLD';
+          holdReason = `Strategy Aware: Tren masih BULLISH — nunggu recovery di jaring Panda.`;
+        } else if (sig === 'BULLISH' && conf >= 0.65) {
           decision   = 'HOLD';
           holdReason = `Chart masih BULLISH (${(conf * 100).toFixed(0)}% conf) — hold untuk recovery`;
         }

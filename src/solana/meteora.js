@@ -404,33 +404,46 @@ export async function openPosition(poolAddress, tokenXAmount, tokenYAmount, pric
   const totalBins = (rangeMax - rangeMin) + 1;
 
   // Meteora PositionV2 supports up to 1,400 bins. 
-  // We lift the legacy safety ceiling to 150 bins to support deep ranges in 1 TX.
-  const binChunks = totalBins <= 150 
+  // We chunk for Transaction Size Safety (Solana ~1232 byte limit),
+  // but we target ONE unified position address.
+  const binChunks = totalBins <= 68 
     ? [{ lowerBinId: rangeMin, upperBinId: rangeMax }]
     : chunkBinRange(rangeMin, rangeMax);
 
-  const allPositionKps  = binChunks.map(() => Keypair.generate());
-  const allTxHashes     = [];
-  const deployedPositions = [];
+  // Unified position keypair
+  const posKp = Keypair.generate();
+  const allTxHashes = [];
+  let totalSucceededSol = 0;
 
   for (let ci = 0; ci < binChunks.length; ci++) {
-    const chunk     = binChunks[ci];
+    const chunk = binChunks[ci];
     const chunkBins = chunk.upperBinId - chunk.lowerBinId + 1;
 
-    // Proportional SOL allocation — more bins → more liquidity
-    const chunkYSol  = tokenYAmount * (chunkBins / totalBins);
+    // Proportional SOL allocation
+    const chunkYSol = tokenYAmount * (chunkBins / totalBins);
     const chunkTotalX = new BN(0);
     const chunkTotalY = toBN(chunkYSol, yDecimals);
 
-    const posKp = allPositionKps[ci];
-
-    const txs = await dlmmPool.initializePositionAndAddLiquidityByStrategy({
-      positionPubKey: posKp.publicKey,
-      user:           wallet.publicKey,
-      totalXAmount:   chunkTotalX,
-      totalYAmount:   chunkTotalY,
-      strategy:       { maxBinId: chunk.upperBinId, minBinId: chunk.lowerBinId, strategyType: 0 },
-    });
+    let txs;
+    if (ci === 0) {
+      // First chunk: Initialize the position account + first liquidity deposit
+      txs = await dlmmPool.initializePositionAndAddLiquidityByStrategy({
+        positionPubKey: posKp.publicKey,
+        user:           wallet.publicKey,
+        totalXAmount:   chunkTotalX,
+        totalYAmount:   chunkTotalY,
+        strategy:       { maxBinId: chunk.upperBinId, minBinId: chunk.lowerBinId, strategyType: 0 },
+      });
+    } else {
+      // Subsequent chunks: Add liquidity to the EXISTING position address
+      txs = await dlmmPool.addLiquidityByStrategy({
+        positionPubKey: posKp.publicKey,
+        user:           wallet.publicKey,
+        totalXAmount:   chunkTotalX,
+        totalYAmount:   chunkTotalY,
+        strategy:       { maxBinId: chunk.upperBinId, minBinId: chunk.lowerBinId, strategyType: 0 },
+      });
+    }
 
     const txList = Array.isArray(txs) ? txs : [txs];
     for (const tx of txList) {
@@ -438,16 +451,17 @@ export async function openPosition(poolAddress, tokenXAmount, tokenYAmount, pric
       tx.recentBlockhash = blockhash;
       tx.feePayer = wallet.publicKey;
 
-      // Priority fee — use higher compute budget for large bin ranges
+      // Priority fee — slightly higher for large bin deployments
       let microLamports = 250_000;
       let computeUnits = totalBins > 80 ? 800_000 : 400_000;
       try {
         const recommended = await getRecommendedPriorityFee([poolAddress, xMint, yMint]);
         if (recommended > 0) microLamports = recommended;
-      } catch { /* use default */ }
+      } catch { /* fallback */ }
 
       injectPriorityFee(tx, { units: computeUnits, microLamports });
 
+      // Sign with wallet and the single position keypair
       tx.sign(wallet, posKp);
 
       const txHash = await connection.sendRawTransaction(tx.serialize(), {
@@ -456,133 +470,51 @@ export async function openPosition(poolAddress, tokenXAmount, tokenYAmount, pric
         maxRetries: 3,
       });
 
-      // Jika polling timeout, TX mungkin sudah landing tapi RPC lambat index.
-      // Verifikasi via getAccountInfo(posKp) sebagai ground truth sebelum throw.
-      try {
-        await pollTxConfirm(connection, txHash, 60000);
-      } catch (confirmErr) {
-        await new Promise(r => setTimeout(r, 4000)); // tunggu finalisasi
-        const acct = await connection.getAccountInfo(posKp.publicKey).catch(() => null);
-        if (acct === null) {
-          // Benar-benar gagal — tidak ada account terbuat
-          throw new Error(`TX deploy gagal dan posisi tidak ada on-chain: ${confirmErr.message}`);
-        }
-        // Account sudah ada — TX landed meski polling timeout
-        console.warn(`[openPosition] pollTxConfirm timeout tapi posisi sudah ada on-chain — lanjut sebagai sukses`);
-      }
+      await pollTxConfirm(connection, txHash);
       allTxHashes.push(txHash);
+      totalSucceededSol += chunkYSol;
     }
-
-    deployedPositions.push({
-      address:   posKp.publicKey.toString(),
-      minBinId:  chunk.lowerBinId,
-      maxBinId:  chunk.upperBinId,
-      binCount:  chunkBins,
-      yAmountSol: parseFloat(chunkYSol.toFixed(6)),
-    });
   }
 
-  const minBinId = rangeMin;
-  const maxBinId = rangeMax;
-
-  // ── Price range display ──────────────────────────────────────────
-  const lowerRaw = binPrice(rawActivePrice, binStep, minBinId - activeBin.binId);
-  const upperRaw = binPrice(rawActivePrice, binStep, maxBinId - activeBin.binId);
-
-  // For SOL pairs: invert & swap so displayLower < displayUpper
-  const displayLowerPrice = isSOLPair
-    ? (upperRaw > 0 ? parseFloat((1 / upperRaw).toFixed(4)) : 0)
-    : parseFloat(lowerRaw.toFixed(8));
-  const displayUpperPrice = isSOLPair
-    ? (lowerRaw > 0 ? parseFloat((1 / lowerRaw).toFixed(4)) : 0)
-    : parseFloat(upperRaw.toFixed(8));
-  const displayCurrentPrice = parseFloat(toDisplayPrice(rawActivePrice, isSOLPair).toFixed(4));
-  const priceUnit = isSOLPair ? `${xMeta.symbol}/SOL` : `${yMeta.symbol}/${xMeta.symbol}`;
-
+  // ── Save to DB (Single Unified Entry) ──────────────────────────
   const solPriceUsd = await getSolPriceUsd().catch(() => 150);
+  const record = {
+    pool_address:     poolAddress,
+    position_address: posKp.publicKey.toString(),
+    token_x:          xMint,
+    token_y:          yMint,
+    token_x_amount:   0,
+    token_y_amount:   totalSucceededSol,
+    deployed_sol:     totalSucceededSol,
+    entry_price:      rawActivePrice,
+    deployed_usd:     parseFloat((totalSucceededSol * solPriceUsd).toFixed(2)),
+    strategy_used:    strategyName,
+    token_x_symbol:   xMeta.symbol,
+  };
+  
+  savePosition(record);
 
-  // Save each position chunk to DB — retry once on failure to guard against
-  // transient DB write errors after TX has already landed on-chain.
-  const dbWriteFailures = [];
-  for (const pos of deployedPositions) {
-    const record = {
-      pool_address:     poolAddress,
-      position_address: pos.address,
-      token_x:          xMint,
-      token_y:          yMint,
-      token_x_amount:   tokenXAmount,
-      token_y_amount:   pos.yAmountSol,
-      deployed_sol:     pos.yAmountSol,
-      entry_price:      rawActivePrice,
-      deployed_usd:     parseFloat((pos.yAmountSol * solPriceUsd).toFixed(2)),
-      strategy_used:    strategyName,
-      token_x_symbol:   xMeta.symbol,
-    };
-    try {
-      savePosition(record);
-    } catch (dbErr) {
-      console.warn(`[openPosition] DB write failed (${dbErr.message}), retrying in 1s…`);
-      await new Promise(r => setTimeout(r, 1000));
-      try {
-        savePosition(record);
-      } catch (e2) {
-        console.error(`[openPosition] DB write retry failed: ${e2.message}`);
-        dbWriteFailures.push({
-          positionAddress: pos.address,
-          error: e2.message,
-          poolAddress: poolAddress,
-          txHashes: allTxHashes,
-          deployedSol: pos.yAmountSol,
-        });
-        enqueueReconcileIssue({
-          issueType: 'DEPLOY_DB_WRITE_FAILED',
-          entityId: pos.address,
-          payload: {
-            poolAddress,
-            positionAddress: pos.address,
-            txHashes: allTxHashes,
-            deployedSol: pos.yAmountSol,
-            strategyName,
-            error: e2.message,
-          },
-          notes: 'On-chain deploy succeeded but DB save failed. Reconcile required.',
-        });
-      }
-    }
-  }
-
-  if (dbWriteFailures.length > 0) {
-    const impacted = dbWriteFailures.map(f => f.positionAddress.slice(0, 8)).join(', ');
-    throw new Error(
-      `Deploy on-chain berhasil, tetapi persistence DB gagal untuk posisi: ${impacted}. ` +
-      `Posisi ditandai manual_review dan harus direkonsiliasi sebelum entry baru.`
-    );
-  }
+  const priceUnit = isSOLPair ? `${xMeta.symbol}/SOL` : `${yMeta.symbol}/${xMeta.symbol}`;
 
   return {
     success:            true,
     txHash:             allTxHashes[0],
     txHashes:           allTxHashes,
-    positionAddress:    deployedPositions[0].address,     // backward compat
-    positionAddresses:  deployedPositions.map(p => p.address),
-    positionCount:      deployedPositions.length,
-    positions:          deployedPositions,
-    // Human-readable prices
-    entryPrice:         displayCurrentPrice,
-    lowerPrice:         displayLowerPrice,
-    upperPrice:         displayUpperPrice,
+    positionAddress:    posKp.publicKey.toString(),
+    positionAddresses:  [posKp.publicKey.toString()],
+    positionCount:      1,
+    entryPrice:         parseFloat(toDisplayPrice(rawActivePrice, isSOLPair).toFixed(10)),
+    lowerPrice:         parseFloat(toDisplayPrice(binPrice(rawActivePrice, binStep, rangeMin - activeBin.binId), isSOLPair).toFixed(10)),
+    upperPrice:         parseFloat(toDisplayPrice(binPrice(rawActivePrice, binStep, rangeMax - activeBin.binId), isSOLPair).toFixed(10)),
     priceUnit,
     priceRangePct:      priceRangePercent,
-    binRange:           { min: minBinId, max: maxBinId, active: activeBin.binId },
-    binsBelow:          rawBins,
+    binRange:           { min: rangeMin, max: rangeMax, active: activeBin.binId },
     binStep,
     feeRatePct:         parseFloat((binStep / 100).toFixed(4)),
-    tokenXAmount,
-    tokenYAmount,
+    tokenXAmount:       0,
+    tokenYAmount:       totalSucceededSol,
     tokenXSymbol:       xMeta.symbol,
     tokenYSymbol:       yMeta.symbol,
-    tokenXMint:         xMint,
-    tokenYMint:         yMint,
   };
 }
 
