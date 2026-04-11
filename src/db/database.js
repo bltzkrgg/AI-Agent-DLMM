@@ -154,6 +154,8 @@ const migrations = [
   'ALTER TABLE positions ADD COLUMN deployed_sol REAL DEFAULT 0',
   'ALTER TABLE positions ADD COLUMN token_x_symbol TEXT',
   "ALTER TABLE positions ADD COLUMN lifecycle_state TEXT DEFAULT 'open'",
+  'ALTER TABLE positions ADD COLUMN pnl_sol REAL DEFAULT 0',
+  'ALTER TABLE positions ADD COLUMN fees_collected_sol REAL DEFAULT 0',
 ];
 for (const sql of migrations) {
   try { db.exec(sql); } catch { /* kolom sudah ada, skip */ }
@@ -191,7 +193,7 @@ export function closePosition(positionAddress) {
   `).run(positionAddress);
 }
 
-export function closePositionWithPnl(positionAddress, { pnlUsd, pnlPct, feesUsd, closeReason, rangeEfficiencyPct, lifecycleState }) {
+export function closePositionWithPnl(positionAddress, { pnlUsd, pnlPct, feesUsd, pnlSol, feesSol, closeReason, rangeEfficiencyPct, lifecycleState }) {
   const effPct = rangeEfficiencyPct ?? (
     closeReason === 'TAKE_PROFIT'             ? 90 :
     closeReason?.startsWith('TRAILING')       ? 85 :
@@ -207,6 +209,8 @@ export function closePositionWithPnl(positionAddress, { pnlUsd, pnlPct, feesUsd,
       pnl_usd = ?,
       pnl_pct = ?,
       fees_collected_usd = ?,
+      pnl_sol = ?,
+      fees_collected_sol = ?,
       close_reason = ?,
       range_efficiency_pct = ?,
       lifecycle_state = ?
@@ -215,6 +219,8 @@ export function closePositionWithPnl(positionAddress, { pnlUsd, pnlPct, feesUsd,
     pnlUsd || 0,
     pnlPct || 0,
     feesUsd || 0,
+    pnlSol || 0,
+    feesSol || 0,
     closeReason || 'unknown',
     effPct,
     lifecycleState || 'closed_reconciled',
@@ -253,17 +259,21 @@ export function getPositionStats() {
     };
   }
 
-  const winners = closed.filter(p => (p.pnl_usd || 0) > 0);
-  const totalPnl = closed.reduce((s, p) => s + (p.pnl_usd || 0), 0);
-  const totalFees = closed.reduce((s, p) => s + (p.fees_collected_usd || 0), 0);
+  const winners = closed.filter(p => (p.pnl_sol || p.pnl_usd || 0) > 0);
+  const totalPnlUsd = closed.reduce((s, p) => s + (p.pnl_usd || 0), 0);
+  const totalFeesUsd = closed.reduce((s, p) => s + (p.fees_collected_usd || 0), 0);
+  const totalPnlSol = closed.reduce((s, p) => s + (p.pnl_sol || 0), 0);
+  const totalFeesSol = closed.reduce((s, p) => s + (p.fees_collected_sol || 0), 0);
 
   return {
     openPositions: open.count,
     closedPositions: closed.length,
     winRate: ((winners.length / closed.length) * 100).toFixed(1) + '%',
-    avgPnl: '$' + (totalPnl / closed.length).toFixed(2),
-    totalPnlUsd: totalPnl.toFixed(2),
-    totalFeesUsd: totalFees.toFixed(2),
+    avgPnl: '◎' + (totalPnlSol / closed.length).toFixed(4),
+    totalPnlUsd: totalPnlUsd.toFixed(2),
+    totalFeesUsd: totalFeesUsd.toFixed(2),
+    totalPnlSol: totalPnlSol.toFixed(4),
+    totalFeesSol: totalFeesSol.toFixed(4),
   };
 }
 

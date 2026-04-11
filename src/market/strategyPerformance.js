@@ -66,8 +66,10 @@ export function getStrategyPerformance() {
         losses: 0,
         totalFeesUsd: 0,
         totalPnlUsd: 0,
-        avgFeesUsd: 0,
-        avgPnlUsd: 0,
+        totalFeesSol: 0,
+        totalPnlSol: 0,
+        avgFeesSol: 0,
+        avgPnlSol: 0,
         winRate: 0,
         closeReasons: {},
       };
@@ -77,8 +79,10 @@ export function getStrategyPerformance() {
     s.count++;
     s.totalFeesUsd += pos.fees_collected_usd || 0;
     s.totalPnlUsd  += pos.pnl_usd || 0;
+    s.totalFeesSol += pos.fees_collected_sol || 0;
+    s.totalPnlSol  += pos.pnl_sol || 0;
 
-    if ((pos.pnl_usd || 0) > 0) s.wins++;
+    if ((pos.pnl_sol || pos.pnl_usd || 0) > 0) s.wins++;
     else s.losses++;
 
     const reason = pos.close_reason || 'unknown';
@@ -87,8 +91,8 @@ export function getStrategyPerformance() {
 
   // Hitung rata-rata
   for (const s of Object.values(perf)) {
-    s.avgFeesUsd = s.count > 0 ? s.totalFeesUsd / s.count : 0;
-    s.avgPnlUsd  = s.count > 0 ? s.totalPnlUsd  / s.count : 0;
+    s.avgFeesSol = s.count > 0 ? s.totalFeesSol / s.count : 0;
+    s.avgPnlSol  = s.count > 0 ? s.totalPnlSol  / s.count : 0;
     s.winRate    = s.count > 0 ? (s.wins / s.count * 100) : 0;
   }
 
@@ -109,22 +113,26 @@ export function getTodayResults() {
     return { date: today, count: 0, totalFeesUsd: 0, totalPnlUsd: 0, byStrategy: {}, positions: [] };
   }
 
-  const totalFees = todayPositions.reduce((s, p) => s + (p.fees_collected_usd || 0), 0);
-  const totalPnl  = todayPositions.reduce((s, p) => s + (p.pnl_usd || 0), 0);
-  const winners   = todayPositions.filter(p => (p.pnl_usd || 0) > 0);
+  const totalFeesSol = todayPositions.reduce((s, p) => s + (p.fees_collected_sol || 0), 0);
+  const totalPnlSol  = todayPositions.reduce((s, p) => s + (p.pnl_sol || 0), 0);
+  const totalFeesUsd = todayPositions.reduce((s, p) => s + (p.fees_collected_usd || 0), 0);
+  const totalPnlUsd  = todayPositions.reduce((s, p) => s + (p.pnl_usd || 0), 0);
+  const winners   = todayPositions.filter(p => (p.pnl_sol || p.pnl_usd || 0) > 0);
 
   // Grouping per strategi
   const byStrategy = {};
   for (const pos of todayPositions) {
     const strat = pos.strategy_used || 'unknown';
     if (!byStrategy[strat]) {
-      byStrategy[strat] = { wins: 0, losses: 0, feesUsd: 0, pnlUsd: 0, count: 0 };
+      byStrategy[strat] = { wins: 0, losses: 0, feesSol: 0, pnlSol: 0, feesUsd: 0, pnlUsd: 0, count: 0 };
     }
     const s = byStrategy[strat];
     s.count++;
+    s.feesSol += pos.fees_collected_sol || 0;
+    s.pnlSol  += pos.pnl_sol || 0;
     s.feesUsd += pos.fees_collected_usd || 0;
     s.pnlUsd  += pos.pnl_usd || 0;
-    if ((pos.pnl_usd || 0) > 0) s.wins++;
+    if ((pos.pnl_sol || pos.pnl_usd || 0) > 0) s.wins++;
     else s.losses++;
   }
 
@@ -134,8 +142,10 @@ export function getTodayResults() {
     wins: winners.length,
     losses: todayPositions.length - winners.length,
     winRate: ((winners.length / todayPositions.length) * 100).toFixed(0),
-    totalFeesUsd: totalFees,
-    totalPnlUsd: totalPnl,
+    totalFeesSol,
+    totalPnlSol,
+    totalFeesUsd,
+    totalPnlUsd,
     byStrategy,
     positions: todayPositions,
   };
@@ -148,23 +158,24 @@ export function formatDailyReport(results) {
     return `📊 *Hasil Hari Ini (${results.date})*\n\nBelum ada posisi yang ditutup hari ini.`;
   }
 
-  const totalNet = results.totalFeesUsd + results.totalPnlUsd;
-  const netEmoji = totalNet >= 0 ? '🟢' : '🔴';
+  const totalNetSol = results.totalFeesSol + results.totalPnlSol;
+  const netEmoji = totalNetSol >= 0 ? '🟢' : '🔴';
 
   let text = `📊 *Hasil Hari Ini — ${results.date}*\n\n`;
-  text += `${netEmoji} Net: ◎${totalNet.toFixed(4)} (Fees: ◎${results.totalFeesUsd.toFixed(4)} | PnL: ◎${results.totalPnlUsd.toFixed(4)})\n`;
+  text += `${netEmoji} Net: ◎${totalNetSol.toFixed(4)} (Fees: ◎${results.totalFeesSol.toFixed(4)} | PnL: ◎${results.totalPnlSol.toFixed(4)})\n`;
+  text += `💰 Value: $${(results.totalFeesUsd + results.totalPnlUsd).toFixed(2)}\n`;
   text += `📍 Posisi ditutup: ${results.count} | ✅ Win: ${results.wins} | ❌ Loss: ${results.losses} | Win rate: ${results.winRate}%\n\n`;
 
   // Per strategi
-  const strategies = Object.entries(results.byStrategy).sort((a, b) => b[1].feesUsd - a[1].feesUsd);
+  const strategies = Object.entries(results.byStrategy).sort((a, b) => b[1].feesSol - a[1].feesSol);
 
   if (strategies.length > 0) {
     text += `*Performa per Strategi:*\n`;
     for (const [name, s] of strategies) {
-      const net = s.feesUsd + s.pnlUsd;
-      const emoji = net >= 0 ? '✅' : '❌';
+      const netSol = s.feesSol + s.pnlSol;
+      const emoji = netSol >= 0 ? '✅' : '❌';
       text += `\n${emoji} *${name}* (${s.count}x)\n`;
-      text += `   Fees: ◎${s.feesUsd.toFixed(4)} | PnL: ◎${s.pnlUsd.toFixed(4)}\n`;
+      text += `   Fees: ◎${s.feesSol.toFixed(4)} | PnL: ◎${s.pnlSol.toFixed(4)}\n`;
       text += `   Win: ${s.wins} Loss: ${s.losses}\n`;
     }
   }
@@ -188,7 +199,7 @@ function generateRecommendations(byStrategy) {
 
   // Strategi terbaik (fee + pnl tertinggi)
   const best = entries
-    .map(([name, s]) => ({ name, net: s.feesUsd + s.pnlUsd, winRate: s.wins / s.count }))
+    .map(([name, s]) => ({ name, net: s.feesSol + s.pnlSol, winRate: s.wins / s.count }))
     .sort((a, b) => b.net - a.net);
 
   const winners = best.filter(s => s.net > 0);
@@ -224,21 +235,21 @@ export function getStrategyIntelligenceContext() {
   if (winners.length > 0) {
     ctx += '\n✅ Strategi yang TERBUKTI PROFIT:';
     for (const s of winners.slice(0, 3)) {
-      ctx += `\n  • ${s.name}: ${s.wins}W/${s.losses}L | Fees ◎${s.totalFeesUsd.toFixed(4)} | Avg PnL ◎${s.avgPnlUsd.toFixed(4)}`;
+      ctx += `\n  • ${s.name}: ${s.wins}W/${s.losses}L | Fees ◎${s.totalFeesSol.toFixed(4)} | Avg PnL ◎${s.avgPnlSol.toFixed(4)}`;
     }
   }
 
   if (losers.length > 0) {
     ctx += '\n❌ Strategi yang SERING RUGI (hindari):';
     for (const s of losers.slice(0, 3)) {
-      ctx += `\n  • ${s.name}: ${s.wins}W/${s.losses}L | Total loss ◎${s.totalPnlUsd.toFixed(4)}`;
+      ctx += `\n  • ${s.name}: ${s.wins}W/${s.losses}L | Total loss ◎${s.totalPnlSol.toFixed(4)}`;
     }
   }
 
   // Today snapshot
   const today = getTodayResults();
   if (today.count > 0) {
-    ctx += `\n\n📅 Hari ini: ${today.count} posisi closed | Net ◎${(today.totalFeesUsd + today.totalPnlUsd).toFixed(4)} | Win rate ${today.winRate}%`;
+    ctx += `\n\n📅 Hari ini: ${today.count} posisi closed | Net ◎${(today.totalFeesSol + today.totalPnlSol).toFixed(4)} | Win rate ${today.winRate}%`;
   }
 
   return ctx;
