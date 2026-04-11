@@ -67,31 +67,6 @@ if (isNaN(ALLOWED_ID)) {
   process.exit(1);
 }
 
-let solanaReady = false;
-try {
-  initSolana();
-  solanaReady = true;
-} catch (e) {
-  console.warn(`⚠️ Solana wallet init failed: ${e.message}`);
-  console.warn('Bot will start but trading features will be disabled until wallet is fixed.');
-}
-
-const bot = new TelegramBot(process.env.TELEGRAM_BOT_TOKEN, { polling: true });
-const cfg = getConfig();
-initMonitor(bot, ALLOWED_ID);
-
-// Kirim sinyal standby pas bot nyala
-const bootMsg = `🚀 *Bot Started!* (Mode: Survivalist)\n\n` +
-               `🛡️ Hunter: *ON* (Standby ⏳)\n` +
-               `🩺 Healer: *ON* (Standby ⏳)\n\n` +
-               `_Sesuai jadwal, bot akan mulai bekerja dalam ${cfg.managementIntervalMin} - ${cfg.screeningIntervalMin} menit._`;
-bot.sendMessage(ALLOWED_ID, bootMsg, { parse_mode: 'Markdown' }).catch(() => {});
-
-// Initialize DB backup system
-const __dirname = dirname(fileURLToPath(import.meta.url));
-const dbPath = process.env.BOT_DB_PATH || join(__dirname, '../data.db');
-const dbBackup = new DbBackup(dbPath, './backups');
-
 // Initialize Circuit Breaker untuk system safety (harus sebelum RPC Manager)
 const circuitBreaker = new CircuitBreaker({
   errorThreshold: 3,
@@ -119,6 +94,15 @@ const circuitBreaker = new CircuitBreaker({
 
 // Initialize API fallback providers (dengan circuit breaker)
 const rpcManager = initializeRpcManager(circuitBreaker);
+
+let solanaReady = false;
+try {
+  initSolana();
+  solanaReady = true;
+} catch (e) {
+  console.warn(`⚠️ Solana wallet init failed: ${e.message}`);
+  console.warn('Bot will start but trading features will be disabled until wallet is fixed.');
+}
 
 const _dryRun = getConfig().dryRun;
 console.log(`🦞 Meteora DLMM Bot started! Mode: ${_dryRun ? 'DRY RUN' : 'LIVE'}`);
