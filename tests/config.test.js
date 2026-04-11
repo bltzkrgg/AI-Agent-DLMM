@@ -44,7 +44,7 @@ test('strategy overrides merge safely without replacing core config', async () =
 
   process.env.BOT_CONFIG_PATH = configPath;
   const configModule = await importFresh(join(repoRoot, 'src/config.js'));
-  const profileModule = await importFresh(join(repoRoot, 'src/strategies/profiles.js'));
+  const strategyModule = await importFresh(join(repoRoot, 'src/strategies/strategyManager.js'));
 
   configModule.updateConfig({
     strategyOverrides: {
@@ -54,8 +54,8 @@ test('strategy overrides merge safely without replacing core config', async () =
     },
   });
 
-  const profile = profileModule.getStrategyProfile('Wave Enjoyer');
-  assert.equal(profile.exit.holdMaxMinutes, 25);
-  assert.equal(profile.exit.holdMinMinutes, 10);
-  assert.equal(profile.deploy.fixedBinsBelow, 24);
+  const strategy = strategyModule.getStrategy('Wave Enjoyer');
+  assert.equal(strategy.exit.holdMaxMinutes, 25);
+  assert.equal(strategy.exit.holdMinMinutes, 10);
+  assert.equal(strategy.deploy.fixedBinsBelow, 24);
 });
