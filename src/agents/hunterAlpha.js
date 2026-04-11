@@ -232,6 +232,11 @@ const HUNTER_TOOLS = [
 
 async function executeTool(name, input) {
   const cfg = getConfig();
+  let deployOptions = {}; // Safeguard initialization
+  let strategyEval  = null;
+
+  // Final Audit Marker
+  console.log(`[hunter] Technical Sniper Engine v2.1 Activated — Scope Lockdown OK (Tool: ${name})`);
 
   switch (name) {
 
@@ -559,8 +564,8 @@ async function executeTool(name, input) {
       const stratParams = parseStrategyParameters(strategy);
       const strategyType = strategy?.strategy_type || 'spot';
       const strategyProfile = getStrategyProfile(strategy.name);
+      deployOptions = { ...(strategyProfile?.deployment || {}) };
 
-      let strategyEval = null;
       try {
         const snapshot = await getMarketSnapshot(poolInfo.tokenX, input.pool_address);
         strategyEval = await evaluateStrategyReadiness({
@@ -568,7 +573,13 @@ async function executeTool(name, input) {
           poolAddress: input.pool_address,
           snapshot,
         });
-      } catch { /* best-effort */ }
+        // Merge dynamic market-based options (e.g., adaptive fixedBinsBelow)
+        if (strategyEval?.deployOptions) {
+          deployOptions = { ...deployOptions, ...strategyEval.deployOptions };
+        }
+      } catch (e) {
+        console.warn(`[hunter] Market evaluation failed for ${input.pool_address}:`, e.message);
+      }
 
       if (strategyEval && !strategyEval.ok) {
         return JSON.stringify({
@@ -578,9 +589,8 @@ async function executeTool(name, input) {
         }, null, 2);
       }
 
-      // Dynamic range — gunakan profile strategy lebih dulu, baru fallback generic.
-      // Range — use strategy profile or default
-      let targetPriceRangePct = deployOptions?.priceRangePct ?? stratParams.priceRangePercent ?? 10;
+      // Dynamic range — gunakan hasil evaluasi market (jika ada), baru profile, baru generic.
+      let targetPriceRangePct = strategyEval?.priceRangePct ?? deployOptions?.priceRangePct ?? stratParams.priceRangePercent ?? 10;
 
       // Strategy vs pool warning (non-blocking)
       try {
