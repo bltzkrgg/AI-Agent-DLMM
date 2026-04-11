@@ -62,7 +62,9 @@
       "Bash(npm test:*)",
       "Bash(npm run:*)",
       "Bash(/tmp/verify-fixes.sh)",
-      "Bash(git restore:*)"
+      "Bash(git restore:*)",
+      "Bash(wc:*)",
+      "Bash(xargs ls:*)"
     ]
   }
 }
