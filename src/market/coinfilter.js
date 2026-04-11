@@ -255,35 +255,53 @@ async function getSlippageSimulation(tokenMint, amountSol) {
     
     // --- 1. Simulation Beli (SOL -> Token) ---
     const buyData = await withExponentialBackoff(async () => {
-      const res = await fetchWithTimeout(
-        `https://quote-api.jup.ag/v6/quote?inputMint=${WSOL}&outputMint=${tokenMint}&amount=${amountLamports}&slippageBps=50`,
-        {}, 8000
-      );
-      if (!res.ok) throw new Error(`BUY_HTTP_${res.status}`);
-      return await res.json();
+      try {
+        const res = await fetchWithTimeout(
+          `https://quote-api.jup.ag/v6/quote?inputMint=${WSOL}&outputMint=${tokenMint}&amount=${amountLamports}&slippageBps=50`,
+          {}, 8000
+        );
+        if (!res.ok) throw new Error(`BUY_HTTP_${res.status}`);
+        return await res.json();
+      } catch (e) {
+        if (e.message.includes('ENOTFOUND') || e.message.includes('ETIMEDOUT')) {
+          throw new Error('NETWORK_ERROR');
+        }
+        throw e;
+      }
     }, { maxRetries: 2, baseDelay: 1000 });
 
     // --- 2. Simulation Jual (Token -> SOL) - Honeypot Check ---
-    // Gunakan outputAmount dari Simulasi Beli sebagai input untuk Simulasi Jual
     const sellData = await withExponentialBackoff(async () => {
-      const res = await fetchWithTimeout(
-        `https://quote-api.jup.ag/v6/quote?inputMint=${tokenMint}&outputMint=${WSOL}&amount=${buyData.outAmount}&slippageBps=50`,
-        {}, 8000
-      );
-      if (!res.ok) {
-        if (res.status === 400) return { error: 'Honeypot/No-Liquidity-Back' };
-        throw new Error(`SELL_HTTP_${res.status}`);
+      try {
+        const res = await fetchWithTimeout(
+          `https://quote-api.jup.ag/v6/quote?inputMint=${tokenMint}&outputMint=${WSOL}&amount=${buyData.outAmount}&slippageBps=50`,
+          {}, 8000
+        );
+        if (!res.ok) {
+          if (res.status === 400) return { error: 'Honeypot/No-Liquidity-Back' };
+          throw new Error(`SELL_HTTP_${res.status}`);
+        }
+        return await res.json();
+      } catch (e) {
+        if (e.message.includes('ENOTFOUND') || e.message.includes('ETIMEDOUT')) {
+          throw new Error('NETWORK_ERROR');
+        }
+        throw e;
       }
-      return await res.json();
-    }, { maxRetries: 2, baseDelay: 1000 }).catch(() => ({ error: 'Sim-Sell-Failed' }));
+    }, { maxRetries: 1, baseDelay: 1000 }).catch(err => ({ error: err.message }));
 
     return {
       priceImpactBuy: parseFloat(buyData.priceImpactPct || 0),
       priceImpactSell: parseFloat(sellData?.priceImpactPct || 0),
       sellError: sellData?.error,
-      isSimFailure: (sellData?.error === 'Sim-Sell-Failed'),
+      isSimFailure: (sellData?.error === 'NETWORK_ERROR'),
+      networkError: (sellData?.error === 'NETWORK_ERROR')
     };
   } catch (e) { 
+    if (e.message === 'NETWORK_ERROR') {
+      console.warn(`🌐 Jupiter API unreachable (ENOTFOUND) for ${tokenMint.slice(0, 8)}. Skipping slippage check.`);
+      return { networkError: true, isSimFailure: true };
+    }
     console.error(`❌ getSlippageSimulation failed for ${tokenMint.slice(0, 8)}:`, e.message);
     return null; 
   }
