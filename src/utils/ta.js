@@ -133,6 +133,7 @@ export function calculateSupertrend(candles, period = 10, multiplier = 3) {
   // 2. Bands
   let finalUpper = 0, finalLower = 0, trend = 1; // 1 = Bull, -1 = Bear
   let supertrendArr = [];
+  let previousTrend = 1;
 
   for (let i = 0; i < candles.length; i++) {
     const hl2 = (candles[i].high + candles[i].low) / 2;
@@ -145,25 +146,24 @@ export function calculateSupertrend(candles, period = 10, multiplier = 3) {
       finalUpper = basicUpper;
       finalLower = basicLower;
     } else {
-      // Logic for sticky bands
       finalUpper = (basicUpper < finalUpper || candles[i-1].close > finalUpper) ? basicUpper : finalUpper;
       finalLower = (basicLower > finalLower || candles[i-1].close < finalLower) ? basicLower : finalLower;
     }
     
-    // Trend flip logic
+    if (i === candles.length - 2) previousTrend = trend; // Capture trend before the last candle
+
     if (trend === 1 && candles[i].close < finalLower) {
       trend = -1;
     } else if (trend === -1 && candles[i].close > finalUpper) {
       trend = 1;
     }
-    
     supertrendArr.push(trend === 1 ? finalLower : finalUpper);
   }
 
   return {
     trend: trend === 1 ? 'BULLISH' : 'BEARISH',
     value: supertrendArr[supertrendArr.length - 1],
-    atr: atrs[atrs.length - 1], // Return the last ATR value
-    changed: trend !== (candles[candles.length - 2]?.trend === 'BULLISH' ? 1 : -1)
+    atr: atrs[atrs.length - 1],
+    changed: trend !== previousTrend
   };
 }

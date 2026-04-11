@@ -126,12 +126,16 @@ async function buildOHLCVFromDexScreener(tokenMint, poolAddress = null) {
     if (actualPool) {
       const history = await getHistoryOHLCV(actualPool);
       if (history && history.length >= 26) {
-        const closes = history.map(c => c.close);
+        // SNIPER REBIRTH: Ignore the last (live/partial) candle to prevent flickering signals.
+        // We only calculate TA based on COMPLETED 15m candles.
+        const closedHistory = history.slice(0, -1);
+        const closes = closedHistory.map(c => c.close);
+        
         const rsi2   = ta.calculateRSI(closes, 2);
         const rsi14  = ta.calculateRSI(closes, 14);
         const bb     = ta.calculateBB(closes, 20, 2);
         const macd   = ta.calculateMACD(closes);
-        const st     = ta.calculateSupertrend(history, 10, 3);
+        const st     = ta.calculateSupertrend(closedHistory, 10, 3);
         
         taData = {
           rsi2: parseFloat(rsi2.toFixed(2)),
@@ -140,14 +144,15 @@ async function buildOHLCVFromDexScreener(tokenMint, poolAddress = null) {
           macd,
           supertrend: st,
           atr: st.atr, // Expose raw ATR for adaptive range logic
-          evilPanda: {
+          // Strategy-specific triggers (Normalized keys)
+          "Evil Panda": {
             entry: {
-              justCrossedAbove: st.trend === 'BULLISH' && st.changed,
-              reason: st.trend === 'BULLISH' ? 'Price crossed above Supertrend (15m)' : null
+              triggered: st.trend === 'BULLISH' && rsi2 < 20,
+              reason: (st.trend === 'BULLISH' && rsi2 < 20) ? `Dip Buy: RSI(2) ${rsi2.toFixed(1)} < 20 in Uptrend` : null
             },
             exit: {
-              triggered: rsi2 > 90 && currentPrice > bb.upper,
-              reason: (rsi2 > 90 && currentPrice > bb.upper) ? 'RSI(2) > 90 + BB Upper Confluence' : null
+              triggered: rsi2 > 90 || (st.trend === 'BEARISH' && st.changed),
+              reason: rsi2 > 90 ? `Profit Take: RSI(2) ${rsi2.toFixed(1)} > 90` : (st.trend === 'BEARISH' ? 'Trend Flip: Supertrend Bearish' : null)
             }
           }
         };
