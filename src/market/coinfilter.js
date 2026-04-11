@@ -261,7 +261,7 @@ async function getSlippageSimulation(tokenMint, amountSol) {
       try {
         const res = await fetchWithTimeout(
           `https://quote-api.jup.ag/v6/quote?inputMint=${WSOL}&outputMint=${tokenMint}&amount=${amountLamports}&slippageBps=50`,
-          {}, 8000
+          {}, 15000
         );
         if (!res.ok) throw new Error(`BUY_HTTP_${res.status}`);
         return await res.json();
@@ -278,7 +278,7 @@ async function getSlippageSimulation(tokenMint, amountSol) {
       try {
         const res = await fetchWithTimeout(
           `https://quote-api.jup.ag/v6/quote?inputMint=${tokenMint}&outputMint=${WSOL}&amount=${buyData.outAmount}&slippageBps=50`,
-          {}, 8000
+          {}, 15000
         );
         if (!res.ok) {
           if (res.status === 400) return { error: 'Honeypot/No-Liquidity-Back' };

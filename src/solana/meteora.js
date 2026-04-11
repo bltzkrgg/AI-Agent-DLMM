@@ -3,7 +3,7 @@ import { PublicKey, Keypair, Transaction, ComputeBudgetProgram, VersionedTransac
 import BN from 'bn.js';
 import { getConnection, getWallet } from './wallet.js';
 import { savePosition, closePositionWithPnl, enqueueReconcileIssue, updatePositionLifecycle } from '../db/database.js';
-import { fetchWithTimeout, withRetry } from '../utils/safeJson.js';
+import { fetchWithTimeout, withRetry, withExponentialBackoff } from '../utils/safeJson.js';
 import { resolveTokens, WSOL_MINT } from '../utils/tokenMeta.js';
 import { getRecommendedPriorityFee } from '../utils/helius.js';
 import { isDryRun } from '../config.js';
@@ -57,7 +57,7 @@ async function pollTxConfirm(connection, txHash, maxWaitMs = 60000) {
   const start = Date.now();
   while (Date.now() - start < maxWaitMs) {
     try {
-      const status = await connection.getSignatureStatus(txHash, { searchTransactionHistory: false });
+      const status = await connection.getSignatureStatus(txHash, { searchTransactionHistory: true });
       const val = status?.value;
       if (val?.err) throw new Error(`TX gagal on-chain: ${JSON.stringify(val.err)}`);
       if (val?.confirmationStatus === 'confirmed' || val?.confirmationStatus === 'finalized') {
@@ -342,8 +342,13 @@ export async function getSolPriceUsd() {
 }
 
 // ─── Open Position ───────────────────────────────────────────────
-
 export async function openPosition(poolAddress, tokenXAmount, tokenYAmount, priceRangePercent = 5, strategyName = null, deployOptions = {}) {
+  return withExponentialBackoff(async () => {
+    return _openPositionLogic(poolAddress, tokenXAmount, tokenYAmount, priceRangePercent, strategyName, deployOptions);
+  }, { maxRetries: 3, baseDelay: 2000 });
+}
+
+async function _openPositionLogic(poolAddress, tokenXAmount, tokenYAmount, priceRangePercent = 5, strategyName = null, deployOptions = {}) {
   if (isDryRun()) {
     console.log(`[DRY RUN] openPosition skipped: pool=${poolAddress} tokenX=${tokenXAmount} tokenY=${tokenYAmount}`);
     return { dryRun: true, poolAddress, tokenXAmount, tokenYAmount, priceRangePercent };
