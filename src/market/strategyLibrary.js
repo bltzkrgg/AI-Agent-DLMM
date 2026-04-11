@@ -280,7 +280,7 @@ export async function evaluateStrategyReadiness({ strategyName, poolAddress, sna
     // 5. Calculate Dynamic Headroom (Padding)
     // We want enough bins above price to survive 2.5x ATR of movement
     const binStepPct = (snapshot?.pool?.binStep || 100) / 10000;
-    const paddingBins = Math.max(5, Math.ceil(((atr * 2.5) / currentPrice) / binStepPct));
+    const paddingBins = Math.max(5, Math.ceil(((ta.atr * 2.5) / currentPrice) / binStepPct));
     
     // 6. Suggested Slippage
     const suggestedSlippage = vol > 50 ? 2.5 : 1.0;
