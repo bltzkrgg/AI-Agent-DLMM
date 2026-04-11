@@ -1,4 +1,4 @@
-import { fetchWithTimeout } from './safeJson.js';
+import { fetchWithTimeout, withRetry } from './safeJson.js';
 import { getConnection } from '../solana/wallet.js';
 import { PublicKey } from '@solana/web3.js';
 
@@ -43,7 +43,12 @@ export async function resolveToken(mintAddress) {
   const cached = _cache.get(mintAddress);
   if (cached) return cached;
 
-  // ── 1. Jupiter API ──────────────────────────────────────────
+  return withRetry(async () => {
+    return _resolveTokenLogic(mintAddress);
+  }, 2, 1000);
+}
+
+async function _resolveTokenLogic(mintAddress) {
   try {
     const res = await fetchWithTimeout(`https://lite.jupiter.ag/v6/token/${mintAddress}`, {}, 5000);
     if (res.ok) {

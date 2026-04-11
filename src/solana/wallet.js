@@ -1,40 +1,42 @@
 import { Connection, Keypair } from '@solana/web3.js';
 import bs58 from 'bs58';
-import { getHeliusRpcUrl } from '../utils/helius.js';
+import { getHeliusRpcUrl, getRpcManager } from '../utils/helius.js';
 
-let connection;
 let wallet;
 
 export function initSolana() {
-  // Helius RPC sebagai primary — lebih reliable, rate limit lebih tinggi.
-  // Fallback ke SOLANA_RPC_URL jika HELIUS_API_KEY tidak ada.
-  let rpcUrl;
-  try {
-    rpcUrl = getHeliusRpcUrl();
-    console.log('✅ RPC: Helius');
-  } catch {
-    rpcUrl = process.env.SOLANA_RPC_URL;
-    if (!rpcUrl) throw new Error('Neither HELIUS_API_KEY nor SOLANA_RPC_URL is set');
-    console.log('⚠️  RPC: fallback ke SOLANA_RPC_URL (Helius direkomendasikan)');
+  const manager = getRpcManager();
+  if (manager) {
+    console.log(`✅ RPC: Managed (Initial primary: ${manager.getPrimaryProvider().name})`);
+  } else {
+    try {
+      getHeliusRpcUrl();
+      console.log('✅ RPC: Helius');
+    } catch {
+      if (!process.env.SOLANA_RPC_URL) throw new Error('Neither HELIUS_API_KEY nor SOLANA_RPC_URL is set');
+      console.log('⚠️  RPC: fallback ke SOLANA_RPC_URL (Helius direkomendasikan)');
+    }
   }
-
-  connection = new Connection(rpcUrl, {
-    commitment:            'confirmed',
-    confirmTransactionInitialTimeout: 90000,  // 90 detik timeout konfirmasi
-    wsEndpoint: rpcUrl.startsWith('https://')
-      ? rpcUrl.replace('https://', 'wss://')
-      : undefined,
-  });
 
   const privateKeyBytes = bs58.decode(process.env.WALLET_PRIVATE_KEY);
   wallet = Keypair.fromSecretKey(privateKeyBytes);
 
   console.log(`✅ Wallet loaded: ${wallet.publicKey.toString()}`);
-  return { connection, wallet };
+  return { wallet };
 }
 
 export function getConnection() {
-  return connection;
+  const manager = getRpcManager();
+  if (manager) {
+    return manager.getConnection('confirmed');
+  }
+
+  // Pure fallback: Create a one-off connection if no manager exists
+  const rpcUrl = process.env.SOLANA_RPC_URL || getHeliusRpcUrl();
+  return new Connection(rpcUrl, {
+    commitment: 'confirmed',
+    confirmTransactionInitialTimeout: 90000,
+  });
 }
 
 export function getWallet() {
