@@ -122,11 +122,8 @@ function step3_priceHealth(dex, thresholds = {}) {
   else if (dex.liquidity < 15000)
     warnings.push({ rule: 'THIN_LIQUIDITY', msg: `Liquidity $${dex.liquidity.toFixed(0)} ($5k-$15k) — tipis, slippage tinggi` });
 
-  if (dex.pairCreatedAt) {
-    const ageHours = (Date.now() - dex.pairCreatedAt) / 3600000;
-    if (ageHours < 6)
-      rejects.push({ rule: 'TOO_NEW', msg: `Pair baru ${ageHours.toFixed(1)}h — belum terbukti` });
-  }
+  if (dex.priceChange24h > 250)
+    rejects.push({ rule: 'BUBBLE_DETECTED', msg: `Harga naik ${dex.priceChange24h.toFixed(0)}% dalam 24h — bubble risking dump` });
 
   return { rejects, warnings };
 }
@@ -139,9 +136,15 @@ function step5_txnAnalysis(dex) {
   const total1h = dex.buys1h + dex.sells1h;
   if (total1h > 10) {
     const sellRatio = dex.sells1h / total1h;
-    if (sellRatio > 0.80)
+    // Sniper Hardening: Reject if > 65% txn is selling. Prevents "Falling Knife" entry.
+    if (sellRatio > 0.65)
       rejects.push({ rule: 'HEAVY_SELLING_1H', msg: `${(sellRatio*100).toFixed(0)}% txn 1h adalah SELL` });
   }
+
+  // Final Spike Protection: Nolak kalau harga naik > 15% cuma dlm 5 menit (FOMO Risk)
+  if (dex.priceChangeM5 > 15)
+    rejects.push({ rule: 'PRICE_SPIKE_M5', msg: `Harga meledak ${dex.priceChangeM5.toFixed(1)}% dlm 5 menit — terlalu berisiko` });
+
   return { rejects, warnings };
 }
 
