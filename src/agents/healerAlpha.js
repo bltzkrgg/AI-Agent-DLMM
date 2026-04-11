@@ -181,7 +181,7 @@ export async function executeTool(name, input, notifyFn = null) {
               return { ...pos, status: 'open', rpcError: true };
             }
             closePositionWithPnl(pos.position_address, {
-              pnlUsd: 0, pnlPct: 0, feesUsd: 0, closeReason: 'MANUAL_CLOSE', lifecycleState: 'closed_reconciled',
+              pnlUsd: 0, pnlPct: 0, feesUsd: 0, pnlSol: 0, feesSol: 0, closeReason: 'MANUAL_CLOSE', lifecycleState: 'closed_reconciled',
             });
             // Trigger post-mortem silently for manual close (optional)
             analyzeTradeResult({ ...pos, pnl_pct: 0, close_reason: 'MANUAL_CLOSE' }).catch(() => {});
@@ -425,7 +425,9 @@ export async function executeTool(name, input, notifyFn = null) {
           const solPriceUsd = await getSolPriceUsd().catch(() => 150);
           pnlData.pnlUsd  = parseFloat((pnl.pnlSol * solPriceUsd).toFixed(2));
           pnlData.pnlPct  = pnl.pnlPct;
+          pnlData.pnlSol  = pnl.pnlSol;
           pnlData.feeUsd  = parseFloat(((match.feeCollectedSol ?? 0) * solPriceUsd).toFixed(2));
+          pnlData.feeSol  = match.feeCollectedSol || 0;
         }
       } catch { /* best-effort, tetap close */ }
 
@@ -576,7 +578,9 @@ export async function executeTool(name, input, notifyFn = null) {
           const solPriceUsd = await getSolPriceUsd().catch(() => 150);
           zapPnlData.pnlUsd = parseFloat((pnl.pnlSol * solPriceUsd).toFixed(2));
           zapPnlData.pnlPct = pnl.pnlPct;
+          zapPnlData.pnlSol = pnl.pnlSol;
           zapPnlData.feeUsd = parseFloat(((match.feeCollectedSol ?? 0) * solPriceUsd).toFixed(2));
+          zapPnlData.feeSol = match.feeCollectedSol || 0;
         }
       } catch { /* best-effort */ }
 
@@ -760,7 +764,7 @@ export async function runHealerAlpha(notifyFn) {
           continue;
         }
         closePositionWithPnl(pos.position_address, {
-          pnlUsd: 0, pnlPct: 0, feesUsd: 0, closeReason: 'MANUAL_CLOSE', lifecycleState: 'closed_reconciled',
+          pnlUsd: 0, pnlPct: 0, feesUsd: 0, pnlSol: 0, feesSol: 0, closeReason: 'MANUAL_CLOSE', lifecycleState: 'closed_reconciled',
         });
         clearPositionState(pos.position_address);
         const manualLines = [
@@ -1018,6 +1022,8 @@ export async function runHealerAlpha(notifyFn) {
           pnlUsd:      realizedPnlUsd,
           pnlPct,
           feeUsd:      realizedFeesUsd,
+          pnlSol:      pnlSol,
+          feeSol:      match.feeCollectedSol || 0,
           closeReason: triggerLabel.toUpperCase().replace(/ /g, '_'),
           lifecycleState: 'closed_pending_swap',
         });

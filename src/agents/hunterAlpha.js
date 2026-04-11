@@ -487,7 +487,7 @@ async function executeTool(name, input) {
           console.log(`[hunter] DB stale: posisi ${existingForPool.position_address} tidak ada on-chain, bersihkan dan izinkan re-deploy`);
           try {
             closePositionWithPnl(existingForPool.position_address, {
-              pnlUsd: 0, pnlPct: 0, feesUsd: 0, closeReason: 'MANUAL_CLOSE', lifecycleState: 'closed_reconciled',
+              pnlUsd: 0, pnlPct: 0, feesUsd: 0, pnlSol: 0, feesSol: 0, closeReason: 'MANUAL_CLOSE', lifecycleState: 'closed_reconciled',
             });
           } catch { /* best-effort */ }
           // Re-fetch setelah cleanup agar slot count akurat
