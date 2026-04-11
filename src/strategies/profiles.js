@@ -19,6 +19,22 @@ const BASE_STRATEGY_PROFILES = {
       emergencyStopLossPct: 8,
     },
   },
+  'Wave Enjoyer': {
+    allowedBinSteps: [1, 5, 10, 20, 50, 100],
+    entry: {
+      momentumTriggerM5: 1.0,
+      narrativeRequired: false,
+    },
+    deploy: {
+      fixedBinsBelow: 24,
+      label: 'wave_enjoyment',
+    },
+    exit: {
+      holdMinMinutes: 10,
+      holdMaxMinutes: 120,
+      mode: 'wave_exit',
+    },
+  },
 };
 
 function deepMerge(base, override) {
