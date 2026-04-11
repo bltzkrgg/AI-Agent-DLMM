@@ -1,4 +1,5 @@
 import { getConfig } from '../config.js';
+import db from '../db/database.js';
 
 /**
  * BASELINE_STRATEGIES
@@ -42,7 +43,7 @@ const BASELINE_STRATEGIES = {
       entryPriceOffsetMax: 80, // Target extreme wicks (-80%)
     },
     entry: {
-      momentumTriggerM5: 0.5, // Low trigger for slow recovery capture
+      momentumTriggerM5: 0.5, 
       volatilityRequired: 'HIGH',
     },
     deploy: {
@@ -97,6 +98,37 @@ const BASELINE_STRATEGIES = {
 };
 
 /**
+ * Persitence Helpers (CRUD)
+ */
+
+export function addStrategy(data) {
+  const paramsStr = typeof data.parameters === 'object' ? JSON.stringify(data.parameters) : data.parameters;
+  const result = db.prepare(`
+    INSERT INTO strategies (name, description, strategy_type, parameters, logic, created_by)
+    VALUES (?, ?, ?, ?, ?, ?)
+  `).run(data.name, data.description, data.strategyType, paramsStr, data.logic || null, data.createdBy || 'admin');
+  
+  return { id: result.lastInsertRowid, ...data };
+}
+
+export function updateStrategy(name, data) {
+  const paramsStr = typeof data.parameters === 'object' ? JSON.stringify(data.parameters) : data.parameters;
+  return db.prepare(`
+    UPDATE strategies 
+    SET description = ?, strategy_type = ?, parameters = ?, logic = ?, updated_at = CURRENT_TIMESTAMP
+    WHERE name = ?
+  `).run(data.description, data.strategyType, paramsStr, data.logic || null, name);
+}
+
+export function deleteStrategy(name) {
+  // Prevent deleting baseline strategies
+  if (BASELINE_STRATEGIES[name]) return false;
+  
+  const result = db.prepare(`DELETE FROM strategies WHERE name = ?`).run(name);
+  return result.changes > 0;
+}
+
+/**
  * Deep merge utility for strategy overrides
  */
 function deepMerge(base, override) {
@@ -119,19 +151,34 @@ function deepMerge(base, override) {
 }
 
 /**
- * Mendapatkan strategi final (Baseline + Overrides dari User Config)
+ * Mendapatkan strategi final (Baseline + DB + Overrides dari User Config)
  */
 export function getStrategy(name) {
-  const base = BASELINE_STRATEGIES[name];
+  // 1. Check Baseline (Factory Presets)
+  let base = BASELINE_STRATEGIES[name];
+
+  // 2. Check Database (User Defined)
+  if (!base) {
+    const row = db.prepare(`SELECT * FROM strategies WHERE name = ? AND is_active = 1`).get(name);
+    if (row) {
+      base = {
+        name: row.name,
+        description: row.description,
+        type: row.strategy_type === 'spot' ? 'single_side_y' : row.strategy_type,
+        parameters: JSON.parse(row.parameters),
+        logic: row.logic,
+        _db: true
+      };
+    }
+  }
+
   if (!base) return null;
 
+  // 3. User Config Overrides
   const cfg = getConfig();
   const overrides = cfg.strategyOverrides?.[name] || {};
 
-  // Merge hasil
   const final = deepMerge(base, overrides);
-
-  // Tambahkan flag 'name' agar consumer tahu strategi apa ini
   return { ...final, name };
 }
 
@@ -139,7 +186,16 @@ export function getStrategy(name) {
 export { getStrategy as getStrategyByName };
 
 export function getAllStrategies() {
-  return Object.keys(BASELINE_STRATEGIES).map(name => getStrategy(name));
+  // 1. Baseline
+  const baselineList = Object.keys(BASELINE_STRATEGIES).map(name => getStrategy(name));
+
+  // 2. Database
+  const dbRows = db.prepare(`SELECT name FROM strategies WHERE is_active = 1`).all();
+  const dbList = dbRows
+    .filter(row => !BASELINE_STRATEGIES[row.name])
+    .map(row => getStrategy(row.name));
+
+  return [...baselineList, ...dbList];
 }
 
 /**
