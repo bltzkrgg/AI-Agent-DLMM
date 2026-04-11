@@ -64,7 +64,11 @@
       "Bash(/tmp/verify-fixes.sh)",
       "Bash(git restore:*)",
       "Bash(wc:*)",
-      "Bash(xargs ls:*)"
+      "Bash(xargs ls:*)",
+      "Bash(jest --version)",
+      "Bash(ls:*)",
+      "Bash(nvm list:*)",
+      "Bash(nvm exec:*)"
     ]
   }
 }
