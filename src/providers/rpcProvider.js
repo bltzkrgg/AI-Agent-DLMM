@@ -140,10 +140,10 @@ class QuickNodeProvider extends RpcProvider {
 
 class SolamiProvider extends RpcProvider {
   constructor(urlOrKey, circuitBreaker = null) {
-    // Solami bisa berupa full URL atau cuma API key
+    // Solami can be a full URL (Jito-dedicated) or just an API key
     const url = urlOrKey.startsWith('http') 
       ? urlOrKey 
-      : `https://rpc.solami.fast/?api-key=${urlOrKey}`;
+      : `https://api.solami.io/?api-key=${urlOrKey}`;
     super('Solami', url, circuitBreaker);
   }
 }

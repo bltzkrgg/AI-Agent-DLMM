@@ -45,7 +45,7 @@ export function initializeRpcManager(circuitBreaker = null) {
 
   const config = {
     helius: process.env.HELIUS_API_KEY,
-    solami: process.env.SOLAMI_API_KEY || process.env.SOLAMI_RPC_URL,
+    solami: process.env.SOLAMI_RPC_URL || process.env.SOLAMI_API_KEY,
     alchemy: process.env.ALCHEMY_API_KEY,
     quicknode: process.env.QUICKNODE_API_KEY,
     circuitBreaker: circuitBreaker,
