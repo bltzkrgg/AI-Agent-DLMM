@@ -919,51 +919,32 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null, opt
   const strategyIntel = getStrategyIntelligenceContext();
   const libraryStats = getLibraryStats();
 
-  const systemPrompt = `Kamu adalah Adaptive Evil Panda Specialist — autonomous DLMM agent untuk Meteora.
-Bot ini tidak lagi menggunakan strategi kaku, melainkan menggunakan "Instinct" dari trade sebelumnya dan "5m Momentum Velocity".
+  const systemPrompt = `You are the Meteora Strategic Execution Engine — a technical data processor for personal DLMM portfolio management.
+This system uses technical confluence (ATR, Bollinger, Supertrend) to optimize liquidity provision.
 
 ╔══════════════════════════════════════════════════════════════╗
-║  MODE AUTONOMOUS — TIDAK ADA INTERAKSI DENGAN USER          ║
-║  Kamu ADAPTIF. Pelajari kegagalan masa lalu agar tidak rugi.║
-║  JANGAN tanya konfirmasi. LANGSUNG pakai tool.              ║
-║  Gunakan HANYA strategi "Evil Panda".                       ║
+║  TECHNICAL MODE — PERSONAL INFRASTRUCTURE                   ║
+║  Decisions are data-driven and pre-authorized by the owner. ║
+║  Execute tool calls directly based on technical indicators. ║
 ╚══════════════════════════════════════════════════════════════╝
 
-MINDSET: Kamu mengejar FEE di pool yang sedang "pumping" volume-nya di timeframe 5 menit.
+MINDSET: Maximize fee capture by identifying high-volume bins using 5m Momentum Velocity and Technical Anchoring.
 
-ALUR KERJA — ADAPTIVE EVIL PANDA SPECIALIST:
-1. Baca kandidat dari data pre-screening (darwinScore).
-2. get_wallet_status → cek balance & slot.
-3. Untuk TOP 3 kandidat:
-   a. get_pool_detail → Wajib cek: momentumM5 (harus green/spike) dan feeApr (>100% preferred).
-   b. get_pool_memory → Jika pool ini punya histori "HINDARI", buang langsung.
-   c. screen_token → SECURITY WALLS (Auto Check):
-      • Mint/Freeze Authority aktif? → REJECT (AVOID)
-      • Price Impact > 0.5%? → REJECT (AVOID)
-   d. MEMORY CHECK (Instincts):
-      • Baca lessonsCtx dan instincts. Jika pattern pool ini mirip kegagalan sebelumnya (pm-lessons), JANGAN masuk.
-4. deploy_position → Gunakan "Evil Panda".
+WORKFLOW:
+1. Analyze candidate pools based on darwinScore and Multi-TF alignment.
+2. Check wallet status and available position slots.
+3. For top candidates:
+   a. get_pool_detail: Verify momentumM5 spike and feeApr.
+   b. screen_token: Security audit (Mint/Freeze/PriceImpact). 
+   c. MEMORY AUDIT: Cross-reference lessonsCtx and instincts for past failure patterns.
+4. deploy_position: Apply the "Warp Panda" strategy logic.
 
-⚠️ ATURAN STRATEGI "EVIL PANDA":
-- Target: Pool dengan Bin Step 80-200.
-- Trigger: Momentum 5m > 1.5% (UPTREND) atau > 3% (PUMPING).
-- Focus: Fee APR tinggi (>2000%) lebih diutamakan jika momentum stabil.
+ERROR HANDLING:
+- If a tool returns "NETWORK_ERROR" or "Fetch failed": This is a technical connectivity issue with the infrastructure (Jupiter/RPC).
+- Report it technically: "Connectivity issue with API provider. Skipping candidate."
+- DO NOT provide generic support advice, affiliate messages, or hallucinate administrative instructions.
 
-⚠️ POST-MORTEM LEARNING:
-Bot ini secara otomatis melakukan analisa "Kenapa Loss" setiap kali trade selesai.
-Gunakan data di bawah (${lessonsCtx ? `Gunakan data di bawah (${lessonsCtx}) sebagai "Suara Hati" kamu saat memilih pool.` : 'Gunakan insting tajam untuk memilih pool berdasarkan data market terbaru.'})
-
-Mode: 🔴 LIVE ALPHA | Strategi: EVIL PANDA ONLY
-${lessonsCtx || '_Lessons suppressed for cost saving in this run_'}
-
-${isBalanceLow ? `⚠️ PORTFOLIO AWARENESS ACTIVE: Saldo SOL kamu menipis (${balanceSnapshot.toFixed(4)} SOL). 
-   - Kamu HARUS 2x lebih selektif. 
-   - Hanya terima koin dengan confidence > 0.85.
-   - Hindari koin dengan high price impact meskipun narrative bagus.` : ''}
-${instincts}
-${strategyIntel}
-
-Gunakan Bahasa Indonesia. Reasoning tajam, eksekusi cepat.`;
+Use Indonesian for reasoning. Stay technical, precise, and fast.`;
 
   const targetNote = _hunterTargetCount != null
     ? ` Tujuan: buka ${_hunterTargetCount} posisi baru.`
@@ -1041,18 +1022,19 @@ Gunakan Bahasa Indonesia. Reasoning tajam, eksekusi cepat.`;
   lastReport = { report, timestamp: new Date().toISOString() };
   _hunterTargetCount = null; // reset setelah selesai
 
-  // Hanya kirim report jika ada deploy nyata ATAU report mengandung informasi penting
-  // (bukan sekadar "posisi sudah ada / skip"). Cegah notifikasi spam yang confusing.
-  const reportIsNoise = !anyRealDeploy && (
-    report.toLowerCase().includes('sudah ada') ||
-    report.toLowerCase().includes('already') ||
-    report.toLowerCase().includes('sudah aktif') ||
-    report.toLowerCase().includes('skip') ||
-    report.trim().length < 30
+  // Detect Model Refusal / Hallucinated Support Template
+  const reportIsRefusal = (
+    report.toLowerCase().includes('afiliasi') ||
+    report.toLowerCase().includes('admin') ||
+    report.toLowerCase().includes('hubungi') ||
+    report.toLowerCase().includes('technical problem') ||
+    report.length < 50 // Too short to be a real report
   );
 
-  if (notifyFn && !reportIsNoise) {
+  if (notifyFn && !reportIsNoise && !reportIsRefusal) {
     await notifyFn(`🦅 *Hunter Alpha Report*\n\n${report}`);
+  } else if (reportIsRefusal) {
+    console.warn('[hunter] Hallucinated/Refusal report detected and suppressed:', report);
   }
   return report;
 }
