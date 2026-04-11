@@ -3,6 +3,7 @@
  * Implements failover chain: Helius → Alchemy → QuickNode
  */
 
+import { Connection } from '@solana/web3.js';
 import { fetchWithTimeout } from '../utils/safeJson.js';
 
 const logger = console; // Use console for logging
@@ -18,6 +19,20 @@ class RpcProvider {
     this.errorCount = 0;
     this.successCount = 0;
     this.circuitBreaker = circuitBreaker;
+    this._connection = null;
+  }
+
+  getConnection(commitment = 'confirmed') {
+    if (!this._connection) {
+      this._connection = new Connection(this.url, {
+        commitment,
+        confirmTransactionInitialTimeout: 90000,
+        wsEndpoint: this.url.startsWith('https://') 
+          ? this.url.replace('https://', 'wss://') 
+          : undefined,
+      });
+    }
+    return this._connection;
   }
 
   async call(method, params = [], timeoutMs = 10000) {
@@ -123,6 +138,16 @@ class QuickNodeProvider extends RpcProvider {
   }
 }
 
+class SolamiProvider extends RpcProvider {
+  constructor(urlOrKey, circuitBreaker = null) {
+    // Solami bisa berupa full URL atau cuma API key
+    const url = urlOrKey.startsWith('http') 
+      ? urlOrKey 
+      : `https://rpc.solami.fast/?api-key=${urlOrKey}`;
+    super('Solami', url, circuitBreaker);
+  }
+}
+
 // ──── RPC Manager (Fallback Chain) ──────────────────────────────
 
 export class RpcManager {
@@ -136,6 +161,9 @@ export class RpcManager {
     // Initialize providers in order: try primary first, then fallbacks
     if (config.helius) {
       this.providers.push(new HeliusProvider(config.helius, this.circuitBreaker));
+    }
+    if (config.solami) {
+      this.providers.push(new SolamiProvider(config.solami, this.circuitBreaker));
     }
     if (config.alchemy) {
       this.providers.push(new AlchemyProvider(config.alchemy, this.circuitBreaker));
@@ -152,14 +180,26 @@ export class RpcManager {
   }
 
   /**
+   * Get a healthy connection object
+   */
+  getConnection(commitment = 'confirmed') {
+    const provider = this.getPrimaryProvider();
+    return provider.getConnection(commitment);
+  }
+
+  /**
    * Call method with automatic failover
    */
   async call(method, params = [], timeoutMs = 10000) {
-    // Try cache first
-    const cacheKey = `${method}:${JSON.stringify(params)}`;
-    const cached = this.cache.get(cacheKey);
-    if (cached && Date.now() - cached.time < this.cacheExpiry) {
-      return cached.result;
+    // Skip cache for real-time methods
+    const bypassCache = ['getSlot', 'getRecentPrioritizationFees', 'getLatestBlockhash', 'getSignatureStatuses'];
+    const cacheKey = bypassCache.includes(method) ? null : `${method}:${JSON.stringify(params)}`;
+    
+    if (cacheKey) {
+      const cached = this.cache.get(cacheKey);
+      if (cached && Date.now() - cached.time < this.cacheExpiry) {
+        return cached.result;
+      }
     }
 
     // Try each provider in order
@@ -177,7 +217,8 @@ export class RpcManager {
 
         // Try next provider
         if (i < this.providers.length - 1) {
-          logger.log(`↻ Trying next provider...`);
+          const next = this.providers[i + 1];
+          logger.log(`↻ Failover: Switching from ${provider.name} to ${next.name} for ${method}`);
           continue;
         }
 
