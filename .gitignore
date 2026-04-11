@@ -8,4 +8,5 @@ backups/
 bot.pid
 user-config.json
 runtime-state.json
+strategy-adaptive.json
 tmp/

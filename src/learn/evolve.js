@@ -3,6 +3,7 @@ import { createMessage, resolveModel, extractText } from '../agent/provider.js';
 import { getConfig, updateConfig, getThresholds } from '../config.js';
 import { getClosedPositions, getPositionStats } from '../db/database.js';
 import { loadMemory, saveMemory } from '../market/memory.js';
+import { refreshAdaptiveStrategyOverrides } from '../strategies/adaptive.js';
 
 // ─── Percentile helper ────────────────────────────────────────────
 
@@ -189,11 +190,14 @@ Respond HANYA dengan JSON format:
   updateConfig(result.changes);
   const after = getThresholds();
 
+  const adaptive = refreshAdaptiveStrategyOverrides({ persist: true });
+
   return {
     summary: result.summary,
     changes: result.changes,
     rationale: result.rationale,
     dataEvolution: dataEvolution || null,
+    adaptiveEvolution: adaptive || null,
     before,
     after,
   };
@@ -221,6 +225,7 @@ export async function autoEvolveIfReady(notifyFn = null) {
     }
 
     updateConfig(result.changes);
+    const adaptive = refreshAdaptiveStrategyOverrides({ persist: true });
 
     memory.lastEvolvedAtCount = currentCount;
     memory.lastAutoEvolution = new Date().toISOString();
@@ -234,6 +239,9 @@ export async function autoEvolveIfReady(notifyFn = null) {
 
     if (notifyFn) await notifyFn(msg);
     console.log('🧬 Auto-evolution applied:', result.changes);
+    if (adaptive?.updated) {
+      console.log('🧬 Adaptive strategy tuning updated:', Object.keys(adaptive.strategies || {}));
+    }
     return result;
   } catch (e) {
     console.error('Auto-evolve error:', e.message);

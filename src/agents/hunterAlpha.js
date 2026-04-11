@@ -74,9 +74,12 @@ async function evaluateStrategyReadiness({ strategyName, poolInfo, poolAddress }
     return { ok: true, profile: null, priceRangePct: null, deployOptions: {} };
   }
 
-  const [ohlcv15m, candles5m] = await Promise.all([
+  const [ohlcv15m, candles5m, marketSnapshot] = await Promise.all([
     getOHLCV(poolInfo.tokenX, poolAddress).catch(() => null),
     fetchCandles(poolInfo.tokenX, '5m', 36, poolAddress).catch(() => null),
+    strategyName === 'Evil Panda' && profile.entry?.minVolume24hUsd
+      ? getMarketSnapshot(poolInfo.tokenX, poolAddress).catch(() => null)
+      : Promise.resolve(null),
   ]);
 
   const blockers = [];
@@ -89,6 +92,12 @@ async function evaluateStrategyReadiness({ strategyName, poolInfo, poolAddress }
     if (ohlcv15m?.ta?.evilPanda?.entry?.triggered !== true) {
       blockers.push('belum ada fresh Supertrend 15m break di atas');
     }
+    const volume24h = marketSnapshot?.pool?.volume24h ?? poolInfo.volume24hRaw ?? 0;
+    const minVolume24h = profile.entry?.minVolume24hUsd || profile.entry?.minVolume24h || 0;
+    if (minVolume24h > 0 && volume24h < minVolume24h) {
+      blockers.push(`volume 24h ${Math.round(volume24h).toLocaleString()} < min ${Math.round(minVolume24h).toLocaleString()}`);
+    }
+    notes.push(`volume24h ${Math.round(volume24h || 0).toLocaleString()}`);
   }
 
   if (strategyName === 'Wave Enjoyer') {

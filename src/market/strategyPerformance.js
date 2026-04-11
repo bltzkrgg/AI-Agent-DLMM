@@ -11,6 +11,7 @@ import { writeFileSync, existsSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { getClosedPositions } from '../db/database.js';
+import { getAdaptiveStrategyContext } from '../strategies/adaptive.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(__dirname, '../..');
@@ -239,6 +240,11 @@ export function getStrategyIntelligenceContext() {
   const today = getTodayResults();
   if (today.count > 0) {
     ctx += `\n\n📅 Hari ini: ${today.count} posisi closed | Net ◎${(today.totalFeesUsd + today.totalPnlUsd).toFixed(4)} | Win rate ${today.winRate}%`;
+  }
+
+  const adaptive = getAdaptiveStrategyContext();
+  if (adaptive) {
+    ctx += adaptive;
   }
 
   return ctx;
