@@ -1031,6 +1031,15 @@ Use Indonesian for reasoning. Stay technical, precise, and fast.`;
     report.length < 50 // Too short to be a real report
   );
 
+  // Noise = report is "Nothing found" and NO real deploys were made this round
+  const reportIsNoise = !anyRealDeploy && (
+    report.toLowerCase().includes('no pools found') ||
+    report.toLowerCase().includes('nothing found') ||
+    report.toLowerCase().includes('no promising') ||
+    report.toLowerCase().includes('no pools that match') ||
+    report.toLowerCase().includes('tidak ada pool')
+  );
+
   if (notifyFn && !reportIsNoise && !reportIsRefusal) {
     await notifyFn(`🦅 *Hunter Alpha Report*\n\n${report}`);
   } else if (reportIsRefusal) {
