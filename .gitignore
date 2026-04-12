@@ -16,3 +16,4 @@ memory.json
 strategyPerformance.json
 *.db-shm
 *.db-wal
+npm-debug.log
