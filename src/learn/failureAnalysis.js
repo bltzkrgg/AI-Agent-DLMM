@@ -46,7 +46,6 @@ Respond HANYA dengan JSON array, format:
 ]`;
 
   try {
-    const cfg = getConfig();
     const response = await createMessage({
       model: resolveModel(cfg.generalModel),
       maxTokens: 1000,
