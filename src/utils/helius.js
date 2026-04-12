@@ -56,8 +56,8 @@ export function initializeRpcManager(circuitBreaker = null) {
     Object.entries(config).filter(([k, v]) => k === 'circuitBreaker' || v !== undefined)
   );
 
-  if (!activeConfig.helius && !activeConfig.alchemy && !activeConfig.quicknode) {
-    console.warn('⚠️ No RPC providers configured. Using direct Helius RPC calls.');
+  if (!activeConfig.helius && !activeConfig.alchemy && !activeConfig.quicknode && !activeConfig.solami) {
+    console.warn('⚠️ No RPC providers configured (Helius, Alchemy, QuickNode, or Solami). Fallback to direct Helius calls.');
     return null;
   }
 

@@ -68,7 +68,8 @@
       "Bash(jest --version)",
       "Bash(ls:*)",
       "Bash(nvm list:*)",
-      "Bash(nvm exec:*)"
+      "Bash(nvm exec:*)",
+      "Bash(npm start:*)"
     ]
   }
 }
