@@ -20,6 +20,7 @@ import { checkSmartWalletsOnPool, formatSmartWalletSignal } from '../market/smar
 import { executeControlledOperation } from '../app/executionService.js';
 import { discoverPools as lpAgentDiscoverPools, enrichPools as lpAgentEnrichPools, isLPAgentEnabled } from '../market/lpAgent.js';
 import { runEvolutionCycle } from '../learn/evolve.js';
+import { checkMaxDrawdown, requestConfirmation, validateStrategyForMarket } from '../safety/safetyManager.js';
 
 // ─── State ───────────────────────────────────────────────────────
 
@@ -687,10 +688,9 @@ async function executeTool(name, input) {
       // tidak membuat tool return Error dan memicu AI retry ke pool yang sama
       try {
         if (hunterNotifyFn && result.success) {
-          const cfg2 = getConfig();
-          const tpTarget = strategyProfile?.exit?.takeProfitPct ?? cfg2.takeProfitFeePct ?? 5;
-          const slTarget = strategyProfile?.exit?.emergencyStopLossPct ?? cfg2.stopLossPct ?? 5;
-          const trailAct = strategyProfile?.exit?.trailingTriggerPct ?? cfg2.trailingTriggerPct ?? 3.0;
+          const tpTarget = strategyProfile?.exit?.takeProfitPct ?? cfg.takeProfitFeePct ?? 5;
+          const slTarget = strategyProfile?.exit?.emergencyStopLossPct ?? cfg.stopLossPct ?? 5;
+          const trailAct = strategyProfile?.exit?.trailingTriggerPct ?? cfg.trailingTriggerPct ?? 3.0;
           const nPos = result.positionCount ?? 1;
 
           const details = [

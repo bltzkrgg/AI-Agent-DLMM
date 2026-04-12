@@ -21,6 +21,7 @@ import { clearPositionRuntimeState, getPositionRuntimeState, updatePositionRunti
 import { resolvePositionSnapshot } from '../app/positionSnapshot.js';
 import { getStrategy } from '../strategies/strategyManager.js';
 import { analyzeTradeResult } from '../learn/failureAnalysis.js';
+import { calculateRSI, calculateSupertrend } from '../utils/ta.js';
 
 // Verifikasi apakah position account benar-benar tidak ada on-chain.
 // Dipakai sebelum mark MANUAL_CLOSE — cegah false positive dari RPC glitch.
@@ -1105,8 +1106,8 @@ export async function runHealerAlpha(notifyFn) {
             const closes   = epCandles.map(c => c.c);
             const highs    = epCandles.map(c => c.h);
             const lows     = epCandles.map(c => c.l);
-            const st       = computeSupertrend(highs, lows, closes, 10, 3);
-            const rsi14Val = computeRSI(closes, 14);
+            const st       = calculateSupertrend(highs, lows, closes, 10, 3);
+            const rsi14Val = calculateRSI(closes, 14);
             const last96   = epCandles.slice(-96);
             const low24h   = Math.min(...last96.map(c => c.l));
             const curPrice = closes[closes.length - 1];
