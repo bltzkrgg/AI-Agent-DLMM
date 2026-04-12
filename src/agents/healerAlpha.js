@@ -1163,11 +1163,39 @@ export async function runHealerAlpha(notifyFn) {
     } catch { /* skip jika gagal fetch */ }
   }
 
-  // Skip LLM jika pre-flight sudah close semua posisi — hemat API call
-  if (getOpenPositions().length === 0) return null;
+  // ── 7. Aegis Phase 4: Automatic Technical Sweep ─────────
+  // Obelisk: Parallelized sweep for near-instant reaction time
+  // Obelisk: Parallelized sweep for near-instant reaction time
+  const openPositionsRel = getOpenPositions();
+  if (openPositionsRel.length > 0) {
+    await Promise.all(openPositionsRel.map(async (pos) => {
+      try {
+        const addr = pos.position_address;
+        const analysis = await analyzeMarket(pos.token_x, pos.pool_address, { pnlPct: 0 });
+        const snapshot = analysis?.snapshot;
+        const ta = snapshot?.ta?.['Evil Panda'] || snapshot?.ta?.[pos.strategy_used];
+        
+        if (ta?.exit?.triggered) {
+          console.log(`[healer] AEGIS PRIORITY EXIT: Technical trigger for ${addr.slice(0,8)} - Reason: ${ta.exit.reason}`);
+          const triggerLabel = ta.exit.shadowExit ? 'SHADOW EXIT' : 'TECHNICAL EXIT';
+          const triggerReason = ta.exit.reason || 'Confluence reached';
 
-  // Smart skip: semua posisi healthy (in-range, fees rendah, PnL normal) — skip LLM
-  if (!_healerNeedsLLM) return null;
+          await notifyFn?.(`🦅 *AEGIS GUARD* — ${triggerLabel}\n\nPosition: \`${addr.slice(0, 8)}\`\nReason: ${triggerReason}\n_Executing immediate liquidation..._`);
+          
+          await closePositionDLMM(pos.pool_address, addr, {
+            closeReason: triggerLabel,
+            lifecycleState: 'closed_pending_swap'
+          });
+          clearPositionState(addr);
+        }
+      } catch (e) {
+        console.warn(`[healer] Technical sweep failed for ${pos.position_address.slice(0,8)}:`, e.message);
+      }
+    }));
+  }
+
+  // Refresh after sweep
+  if (getOpenPositions().length === 0) return null;
 
   const safety   = getSafetyStatus();
   const instincts = getInstinctsContext();
@@ -1225,11 +1253,16 @@ ALUR KERJA:
    - proactiveCloseRecommended = true → WAJIB zap_out (exit bersih ke SOL)
    - proactiveWarning ada tapi tidak recommended → monitor ketat
 
-   OUT OF RANGE (Adaptive):
-   - marketSignal.oorDecision = 'EXTEND' → HOLD (meskipun sudah lewat 30 menit).
-   - marketSignal.oorDecision = 'PANIC_EXIT' → zap_out SEGERA.
-   - oorThresholdExceeded = true DAN tidak ada signal EXTEND → zap_out.
-   - Masih di bawah timer → HOLD, kecuali signal BEARISH kuat.
+    OUT OF RANGE (Adaptive Aegis Logic):
+    - marketSignal.oorDecision === 'EXTEND' && poolTaSignals.supertrend.trend === 'BULLISH' → BERTAHAN (Extra 15m wait).
+    - marketSignal.oorDecision === 'PANIC_EXIT' OR poolTaSignals.supertrend.trend === 'BEARISH' → EXIT SEGERA (Zap Out).
+    - Jika posisi OOR tapi Fee APR > 100% dan harga tertahan di Support → BERTAHAN (Y-only fee extraction).
+    - Jika OOR > Threshold standar (30m) dan tidak ada sinyal Bullish kuat → EXIT.
+
+    ALGORITMA ADAPTIF (PnL vs Fees):
+    - Jika PnL Negatif (-1 s/d -5%) tapi Fee Velocity "meningkat" → BERTAHAN (Fees akan menutup kerugian).
+    - Jika PnL Negatif dan Fee Velocity "menurun" → CUT LOSS (Meninggalkan kolam yang mati).
+    - Jika PnL Positif (>5%) dan RSI2 < 80 → BERTAHAN (Let the profit run).
 
    STOP LOSS TAMBAHAN (jika pre-flight gagal):
    - pnlPct < -${safety.stopLossPct}% DAN BEARISH → close_position, lalu swap_to_sol
@@ -1267,6 +1300,31 @@ Gunakan Bahasa Indonesia. Selalu explain kenapa HOLD atau CLOSE.`;
   const messages = [
     { role: 'user', content: 'Jalankan siklus manajemen posisi sekarang. Evaluasi semua posisi dan ambil tindakan yang diperlukan.' }
   ];
+
+  // Obelisk: Healer Silence — Skip LLM if all positions are "Perfectly Fine"
+  let needsDeliberation = false;
+  const currentPositions = getOpenPositions();
+  for (const pos of currentPositions) {
+    try {
+      const analysis = await analyzeMarket(pos.token_x, pos.pool_address, { inRange: true, pnlPct: 0 });
+      const snap = analysis?.snapshot;
+      const ta = snap?.ta?.['Evil Panda'] || snap?.ta?.[pos.strategy_used];
+      
+      const isOOR = !snap?.inRange;
+      const isLowFees = (snap?.unclaimedFeesUsd || 0) < (pos.deployed_capital * 0.03); 
+      const isHealthyPnL = (analysis?.pnlPct || 0) > -2.0;
+
+      if (isOOR || !isHealthyPnL || !isLowFees || ta?.supertrend?.trend === 'BEARISH') {
+        needsDeliberation = true;
+        break;
+      }
+    } catch { needsDeliberation = true; break; }
+  }
+
+  if (!needsDeliberation && currentPositions.length > 0) {
+    console.log(`[healer] HEALER SILENCE: Semua posisi sehat (${currentPositions.length}). Melewati pemanggilan LLM untuk menghemat biaya API.`);
+    return null; 
+  }
 
   let response = await createMessage({
     model: resolveModel(cfg.managementModel),

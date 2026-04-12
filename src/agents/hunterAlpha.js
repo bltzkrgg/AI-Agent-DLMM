@@ -58,7 +58,15 @@ async function evaluateStrategyReadiness({ strategyName, poolInfo, poolAddress }
 
       // ─── Entry Decision ───
       const oracleTrigger = ohlcv.ta?.[strategyName]?.entry;
+      const isSupertrendBullish = ohlcv.ta?.supertrend?.trend === 'BULLISH';
       
+      if (strategyName === 'Evil Panda') {
+        // Falling Knife Guard: Evil Panda WAJIB Bullish di M15
+        if (!isSupertrendBullish) {
+          blockers.push(`Trend 15m masih ${ohlcv.ta?.supertrend?.trend || 'Unknown'} — Menahan diri dari 'Falling Knife'`);
+        }
+      }
+
       if (oracleTrigger) {
         // Jika ada trigger khusus (misal: Evil Panda Dip Buy), gunakan itu sebagai prioritas utama
         if (!oracleTrigger.triggered) {
@@ -81,7 +89,8 @@ async function evaluateStrategyReadiness({ strategyName, poolInfo, poolAddress }
         }
       }
 
-      notes.push(`m5: ${(ohlcv.priceChangeM5 || 0).toFixed(2)}% | h1: ${(ohlcv.priceChangeH1 || 0).toFixed(2)}% | trend: ${ohlcv.trend}`);
+      const trendDisplay = ohlcv.ta?.supertrend?.trend || ohlcv.trend;
+      notes.push(`m5: ${(ohlcv.priceChangeM5 || 0).toFixed(2)}% | h1: ${(ohlcv.priceChangeH1 || 0).toFixed(2)}% | trend: ${trendDisplay}`);
     }
   }
 
@@ -112,13 +121,24 @@ async function evaluateStrategyReadiness({ strategyName, poolInfo, poolAddress }
     priceRangePct: strategy.deploy?.priceRangePct || null,
     deployOptions: {
       fixedBinsBelow: (function () {
+        const atr = ohlcv?.ta?.atr;
+        const currentPrice = ohlcv?.currentPrice;
+        if (strategyName === 'Evil Panda' && atr && currentPrice) {
+          // Aegis ATR Range: Cover 3x ATR (volatility standard)
+          // ATR / Price = volatility pct per candle. 
+          // (volPct / binStepPct) = bins needed to cover that volatility.
+          const binStepPct = poolInfo.binStep / 10000;
+          const atrPct = (atr / currentPrice);
+          const adaptive = Math.floor((atrPct * 3.0) / binStepPct); 
+          
+          // Clamp: standard Panda 40-125 bins
+          return Math.min(125, Math.max(40, adaptive));
+        }
+        // Fallback to legacy 24h range if ATR missing
         if (strategyName === 'Evil Panda' && ohlcv?.range24hPct) {
-          // Evil Panda Sweet Spot: 40 to 125 bins (Standard)
-          // Sniper Expansion: increase multiplier to 2.5x to ensure "Deep Range" coverage
           const adaptive = 40 + Math.floor(ohlcv.range24hPct * 2.5);
           return Math.min(125, Math.max(40, adaptive));
         }
-        // Deep Sea Kraken & others can still use up to 250 bins
         const maxFloor = strategyName === 'Deep Sea Kraken' ? 250 : 125;
         return Math.min(maxFloor, strategy.deploy?.fixedBinsBelow || 68);
       })(),
@@ -584,10 +604,14 @@ async function executeTool(name, input) {
       // Strategy validation sebelum lock
       const strategy = getStrategy(input.strategy_name || 'Evil Panda');
 
-      if (!strategy) {
+      // ── Guard: Gas Vault & Balance Check ───────────────────────
+      const walletBalance = await getWalletBalance();
+      const gasReserve = cfg.gasReserve || 0.025; // Aegis-level reserve
+      const minRequired = (deployAmountSol || 0.1) + gasReserve;
+      if (parseFloat(walletBalance) < minRequired) {
         return JSON.stringify({
           blocked: true,
-          reason: `Strategy "${input.strategy_name}" tidak valid. Gunakan salah satu dari: Evil Panda (utama), Wave Enjoyer (cadangan 1), NPC (cadangan 2). Pool DISKIP — jangan retry dengan nama lain.`,
+          reason: `Saldo SOL tidak cukup (${walletBalance} SOL). Butuh ${minRequired} SOL (Amount: ${deployAmountSol} + Reserve: ${gasReserve}) untuk menjamin exit gas.`,
         }, null, 2);
       }
 

@@ -17,6 +17,7 @@ const BASELINE_STRATEGIES = {
       binStep: 100,
       minMcap: 250000,
       minVolume24h: 1000000,
+      timeframe: '15m', // Master Guard timeframe
     },
     entry: {
       requireSupertrendBreak: true,
@@ -24,9 +25,10 @@ const BASELINE_STRATEGIES = {
       narrativeRequired: true,
       adaptiveMode: true,
       minBuySellRatio: 1.3,
+      note: 'Refundable bins allow for disciplined re-entry on trend breaks.',
     },
     deploy: {
-      label: 'warp_panda_sniper',
+      label: 'warp_panda_sniper_m15',
       priceRangePct: 10,
     },
     exit: {
