@@ -450,9 +450,11 @@ async function _openPositionLogic(poolAddress, tokenXAmount, tokenYAmount, price
     const chunk = binChunks[ci];
     const chunkBinsCount = chunk.upperBinId - chunk.lowerBinId + 1;
 
-    // Proportional SOL allocation
-    const chunkYSol = tokenYAmount * (chunkBinsCount / totalBins);
-    const chunkTotalX = new BN(0);
+    // Proportional allocation for both tokens
+    const chunkX = parseFloat(tokenXAmount) * (chunkBinsCount / totalBins);
+    const chunkYSol = parseFloat(tokenYAmount) * (chunkBinsCount / totalBins);
+    
+    const chunkTotalX = toBN(chunkX, xDecimals);
     const chunkTotalY = toBN(chunkYSol, yDecimals);
 
     let txs;
@@ -462,6 +464,7 @@ async function _openPositionLogic(poolAddress, tokenXAmount, tokenYAmount, price
       // ── case A: New deployment, First chunk ───────────────
       // If Dip Fishing (SOL only below price), use initializePosition + addLiquidityByWeight
       // to avoid the SBF panic in the SDK's internal strategy mapper.
+      if (isDipFishing) {
         const binIds = [];
         for (let b = chunk.lowerBinId; b <= chunk.upperBinId; b++) binIds.push(b);
         

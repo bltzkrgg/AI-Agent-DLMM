@@ -161,14 +161,14 @@ async function buildOHLCVFromDexScreener(tokenMint, poolAddress = null) {
               reason: (st.trend === 'BULLISH' && rsi2 < 20) ? `Dip Buy: RSI(2) ${rsi2.toFixed(1)} < 20 in Uptrend` : null
             },
             exit: {
-              triggered: (rsi2 > 90 && (closes[closes.length-1] > bb.upper || macd.histogram < 0)) || 
-                         (st.trend === 'BEARISH' && st.changed) || 
-                         (realTimePrice && realTimePrice < st.value && st.trend === 'BULLISH'),
-              shadowExit: (realTimePrice && realTimePrice < st.value && st.trend === 'BULLISH'),
-              reason: (rsi2 > 90 && closes[closes.length-1] > bb.upper) ? `Profit Take: RSI(2) ${rsi2.toFixed(1)} > 90 + BB Upper Cross`
-                      : (rsi2 > 90 && macd.histogram < 0) ? `Profit Take: RSI(2) ${rsi2.toFixed(1)} > 90 + MACD Bearish Cross`
-                      : (st.trend === 'BEARISH' ? 'Trend Flip: Supertrend Bearish' 
-                      : (realTimePrice && realTimePrice < st.value ? `Shadow Exit: Real-time Price ${realTimePrice.toFixed(6)} < ${st.value.toFixed(6)}` : null))
+              triggered: (rsi2 > 90 && ((bb && closes[closes.length-1] > bb.upper) || (macd && macd.histogram < 0))) || 
+                         (st && st.trend === 'BEARISH' && st.changed) || 
+                         (realTimePrice && st && realTimePrice < st.value && st.trend === 'BULLISH'),
+              shadowExit: (realTimePrice && st && realTimePrice < st.value && st.trend === 'BULLISH'),
+              reason: (rsi2 > 90 && bb && closes[closes.length-1] > bb.upper) ? `Profit Take: RSI(2) ${rsi2.toFixed(1)} > 90 + BB Upper Cross`
+                      : (rsi2 > 90 && macd && macd.histogram < 0) ? `Profit Take: RSI(2) ${rsi2.toFixed(1)} > 90 + MACD Bearish Cross`
+                      : (st && st.trend === 'BEARISH' ? 'Trend Flip: Supertrend Bearish' 
+                      : (realTimePrice && st && realTimePrice < st.value ? `Shadow Exit: Real-time Price ${realTimePrice.toFixed(6)} < ${st.value.toFixed(6)}` : null))
             }
           }
         };
