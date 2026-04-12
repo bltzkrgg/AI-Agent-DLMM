@@ -1,3 +1,5 @@
+'use strict';
+
 import { getConfig } from '../config.js';
 import db from '../db/database.js';
 

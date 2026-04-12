@@ -1,3 +1,5 @@
+'use strict';
+
 import { createMessage, resolveModel } from '../agent/provider.js';
 import { getConfig, getThresholds } from '../config.js';
 import { getTopPools, getPoolInfo, openPosition } from '../solana/meteora.js';
@@ -484,6 +486,13 @@ async function executeTool(name, input) {
     }
 
     case 'deploy_position': {
+      // ── Initialization (Top-level scope to prevent ReferenceError) ──
+      const cfg = getConfig();
+      let deployOptions = {};
+      let strategyEval = null;
+      let targetPriceRangePct = 10;
+      let result = null;
+
       // ── Guard: cegah deploy duplikat ke pool yang sama ──────────
       let existingPositions = getOpenPositions();
       const existingForPool = existingPositions.find(p => p.pool_address === input.pool_address);
@@ -576,15 +585,15 @@ async function executeTool(name, input) {
       const stratParams = parseStrategyParameters(strategy);
       const strategyType = strategy?.type || 'spot';
       const strategyProfile = getStrategy(strategy.name);
-      let deployOptions = { ...(strategyProfile?.deploy || {}) };
-      let strategyEval = null;
+      deployOptions = { ...(strategyProfile?.deploy || {}) };
+      strategyEval = null;
 
       try {
         const snapshot = await getMarketSnapshot(poolInfo.tokenX, input.pool_address);
         strategyEval = await evaluateStrategyReadiness({
           strategyName: strategy.name,
+          poolInfo,
           poolAddress: input.pool_address,
-          snapshot,
         });
         // Merge dynamic market-based options (e.g., adaptive fixedBinsBelow)
         if (strategyEval?.deployOptions) {
@@ -603,7 +612,7 @@ async function executeTool(name, input) {
       }
 
       // Dynamic range — gunakan hasil evaluasi market (jika ada), baru profile, baru generic.
-      let targetPriceRangePct = strategyEval?.priceRangePct ?? deployOptions?.priceRangePct ?? stratParams.priceRangePercent ?? 10;
+      targetPriceRangePct = strategyEval?.priceRangePct ?? deployOptions?.priceRangePct ?? stratParams.priceRangePercent ?? 10;
 
       // Strategy vs pool warning (non-blocking)
       try {
@@ -625,7 +634,7 @@ async function executeTool(name, input) {
         );
       }
 
-      let result;
+
       // Konfirmasi Telegram (cegah race)
       if (cfg.requireConfirmation && hunterNotifyFn && hunterBotRef && hunterAllowedId) {
         const confirmed = await requestConfirmation(
