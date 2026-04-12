@@ -398,12 +398,23 @@ async function _openPositionLogic(poolAddress, tokenXAmount, tokenYAmount, price
       ? Math.min(150, Math.max(2, Math.floor(deployOptions.fixedBinsBelow)))
       : null;
     const binPadding = Number.isFinite(deployOptions?.binPadding) 
-      ? Math.max(0, Math.floor(deployOptions.binPadding)) 
-      : 2; // Default to 2 for minimal peace of mind
+      ? Math.max(-2, Math.floor(deployOptions.binPadding)) 
+      : 0; // Default to 0, which will be clamped to -1 later for Single Side
 
     const rawBins  = fixedBinsBelow ?? Math.min(150 - binPadding, Math.max(2, Math.floor((priceRangePercent / 100) / (binStep / 10000))));
     rangeMin = activeBin.binId - rawBins;
     rangeMax = activeBin.binId + binPadding; 
+  }
+
+  // Single-Side Y Safety Clamp:
+  // If we supply 0 token X, the bin range MUST fall entirely strictly BELOW the active bin.
+  // Otherwise, the SDK math calculates a required X proportion and throws an error/crash.
+  if (tokenXAmount === 0 || tokenXAmount === '0') {
+    rangeMax = Math.min(rangeMax, activeBin.binId - 1);
+    if (rangeMin > rangeMax) {
+      // Fallback fallback if calculation pushed min over max
+      rangeMin = rangeMax - 2; 
+    }
   }
 
   const totalBins = (rangeMax - rangeMin) + 1;
