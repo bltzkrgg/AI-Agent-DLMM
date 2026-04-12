@@ -1315,7 +1315,6 @@ setTimeout(async () => {
     await initializeModelDiscovery();
 
     const balance = await getWalletBalance();
-    const cfg = getConfig();
     await notify(
       `🚀 *Bot Started!*\n\n` +
       `💰 Balance: ${balance} SOL | Mode: ${getConfig().dryRun ? '🟡 DRY RUN' : '🔴 LIVE'}\n` +

@@ -296,7 +296,6 @@ async function executeTool(name, input) {
         : {};
 
       // Filter dasar
-      const cfg = getConfig();
       const minBinStep = cfg.minBinStep;
       const minTokenFeesSol = cfg.minTokenFeesSol;
       const preFiltered = combined.filter(p => {
@@ -547,7 +546,6 @@ async function executeTool(name, input) {
       }
 
       // ── Auto-calculate position sizing ──────────────────────────
-      const cfg = getConfig();
       const deployAmountSol = cfg.deployAmountSol || 0.1;
       const tokenXAmount = 0;
       const tokenYAmount = deployAmountSol;
@@ -627,7 +625,6 @@ async function executeTool(name, input) {
 
       let result;
       // Konfirmasi Telegram (cegah race)
-      const cfg = getConfig();
       if (cfg.requireConfirmation && hunterNotifyFn && hunterBotRef && hunterAllowedId) {
         const confirmed = await requestConfirmation(
           hunterNotifyFn,
@@ -804,7 +801,6 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null, opt
   // ── Skip silently jika balance tidak cukup ───────────────────
   try {
     const balance = await getWalletBalance();
-    const cfg = getConfig();
     if (parseFloat(balance) < (cfg.deployAmountSol + (cfg.gasReserve ?? 0.02))) {
       _hunterTargetCount = null;
       return null;
