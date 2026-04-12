@@ -784,7 +784,6 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null, opt
 
   // --- Portfolio Awareness ---
   const balanceSnapshot = await getWalletBalance().catch(() => 0);
-  const cfg = getConfig();
   const minSolNeeded = cfg.minSolToOpen + (cfg.gasReserve ?? 0.02);
   const isBalanceLow = balanceSnapshot < (minSolNeeded * 3);
 
@@ -794,7 +793,6 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null, opt
 
   // ── Skip silently jika slot posisi penuh ─────────────────────
   const openPos = getOpenPositions();
-  const cfg = getConfig();
   const effectiveMax = _hunterTargetCount != null
     ? openPos.length + _hunterTargetCount
     : cfg.maxPositions;
@@ -806,7 +804,6 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null, opt
   // ── Skip silently jika balance tidak cukup ───────────────────
   try {
     const balance = await getWalletBalance();
-    const cfg = getConfig();
     const cfg = getConfig();
     if (parseFloat(balance) < (cfg.deployAmountSol + (cfg.gasReserve ?? 0.02))) {
       _hunterTargetCount = null;

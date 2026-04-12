@@ -282,14 +282,12 @@ export async function executeTool(name, input, notifyFn = null) {
               holdRecommendation: analysis.holdRecommendation,
             };
 
-            const cfg = getConfig();
             const minProfit         = cfg.proactiveExitMinProfitPct      ?? 1.0;
             const bearishThreshold  = cfg.proactiveExitBearishConfidence ?? 0.7;
             const proactiveEnabled  = cfg.proactiveExitEnabled !== false;
             
             // ── Technical Sniper Exit (Evil Panda / Confluence) ──────
             const taExit = analysis.snapshot?.ta?.evilPanda?.exit;
-            const cfg = getConfig();
             const preset = cfg.activePreset;
             if (preset === 'rsi_plus_supertrend' || preset === 'rsi_reversal') {
               if (taExit?.triggered && pnlPct >= 0.5) {
@@ -316,7 +314,6 @@ export async function executeTool(name, input, notifyFn = null) {
             saveNotification('trailing_tp', `Trailing TP triggered: posisi ${addr.slice(0, 8)}... PnL turun dari peak ${tracker.peakPnl.toFixed(2)}% ke ${pnlPct.toFixed(2)}%`);
           }
 
-          const cfg = getConfig();
           return {
             ...pos,
             onChain:      match || null,
@@ -1270,7 +1267,6 @@ Gunakan Bahasa Indonesia. Selalu explain kenapa HOLD atau CLOSE.`;
     messages.push({ role: 'assistant', content: response.content });
     messages.push({ role: 'user', content: toolResults });
 
-    const cfg = getConfig();
     response = await createMessage({
       model: resolveModel(cfg.managementModel),
       maxTokens: 4096,
