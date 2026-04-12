@@ -120,6 +120,7 @@ async function evaluateStrategyReadiness({ strategyName, poolInfo, poolAddress }
 // Fallback ke defaults jika belum ada data.
 
 function calculateDarwinScore(pool, weightsOverride) {
+  const cfg = getConfig();
   const w = weightsOverride || getDarwinWeights();
   let score = 0;
 
@@ -161,8 +162,6 @@ function calculateDarwinScore(pool, weightsOverride) {
 
   return parseFloat(score.toFixed(4));
 }
-
-// ─── Tools ───────────────────────────────────────────────────────
 
 const HUNTER_TOOLS = [
   {
@@ -254,6 +253,7 @@ async function executeTool(name, input) {
       const thresholds = getThresholds();
       const weights = getDarwinWeights();
 
+      const cfg = getConfig();
       // ── LP Agent: discover top pools (1 API call, cached 10 menit) ──
       // Berjalan paralel dengan getTopPools untuk hemat waktu
       const [dexPools, lpAgentPools] = await Promise.allSettled([
@@ -296,6 +296,7 @@ async function executeTool(name, input) {
         : {};
 
       // Filter dasar
+      const cfg = getConfig();
       const minBinStep = cfg.minBinStep;
       const minTokenFeesSol = cfg.minTokenFeesSol;
       const preFiltered = combined.filter(p => {
@@ -452,6 +453,7 @@ async function executeTool(name, input) {
     }
 
     case 'get_wallet_status': {
+      const cfg = getConfig();
       const balance = await getWalletBalance();
       const openPos = getOpenPositions();
       // Jika run dari /entry dengan targetCount, hitung batas berdasarkan posisi yang akan dibuka
@@ -523,6 +525,7 @@ async function executeTool(name, input) {
       // NOTE: Database-level lock in executeControlledOperation handles duplicate guard per pool.
 
       // ── Guard: slot posisi penuh ─────────────────────────────────
+      const cfg = getConfig();
       const effectiveMaxPos = _hunterTargetCount != null
         ? existingPositions.length + _hunterTargetCount
         : cfg.maxPositions;
@@ -544,6 +547,7 @@ async function executeTool(name, input) {
       }
 
       // ── Auto-calculate position sizing ──────────────────────────
+      const cfg = getConfig();
       const deployAmountSol = cfg.deployAmountSol || 0.1;
       const tokenXAmount = 0;
       const tokenYAmount = deployAmountSol;
@@ -623,6 +627,7 @@ async function executeTool(name, input) {
 
       let result;
       // Konfirmasi Telegram (cegah race)
+      const cfg = getConfig();
       if (cfg.requireConfirmation && hunterNotifyFn && hunterBotRef && hunterAllowedId) {
         const confirmed = await requestConfirmation(
           hunterNotifyFn,
@@ -779,6 +784,7 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null, opt
 
   // --- Portfolio Awareness ---
   const balanceSnapshot = await getWalletBalance().catch(() => 0);
+  const cfg = getConfig();
   const minSolNeeded = cfg.minSolToOpen + (cfg.gasReserve ?? 0.02);
   const isBalanceLow = balanceSnapshot < (minSolNeeded * 3);
 
@@ -788,6 +794,7 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null, opt
 
   // ── Skip silently jika slot posisi penuh ─────────────────────
   const openPos = getOpenPositions();
+  const cfg = getConfig();
   const effectiveMax = _hunterTargetCount != null
     ? openPos.length + _hunterTargetCount
     : cfg.maxPositions;
@@ -799,6 +806,8 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null, opt
   // ── Skip silently jika balance tidak cukup ───────────────────
   try {
     const balance = await getWalletBalance();
+    const cfg = getConfig();
+    const cfg = getConfig();
     if (parseFloat(balance) < (cfg.deployAmountSol + (cfg.gasReserve ?? 0.02))) {
       _hunterTargetCount = null;
       return null;

@@ -71,19 +71,19 @@ const bot = new TelegramBot(process.env.TELEGRAM_BOT_TOKEN, { polling: true });
 const cfg = getConfig();
 initMonitor(bot, ALLOWED_ID);
 
-// Kirim sinyal standby pas bot nyala
-const bootMsg = `🚀 *Bot Started!* (Mode: Survivalist)\n\n` +
-               `🛡️ Hunter: *ON* (Standby ⏳)\n` +
-               `🩺 Healer: *ON* (Standby ⏳)\n\n` +
-               `_Sesuai jadwal, bot akan mulai bekerja dalam ${cfg.managementIntervalMin} - ${cfg.screeningIntervalMin} menit._`;
-bot.sendMessage(ALLOWED_ID, bootMsg, { parse_mode: 'Markdown' }).catch(() => {});
+// ─── Shared Utilities ───────────────────────────────────────────
+const transport = createMessageTransport(bot, ALLOWED_ID);
+const sendLong = transport.sendLong;
+async function notify(text) {
+  transport.notify(text).catch(e => console.error('Notify error:', e.message));
+}
 
 // Initialize DB backup system
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const dbPath = process.env.BOT_DB_PATH || join(__dirname, '../data.db');
 const dbBackup = new DbBackup(dbPath, './backups');
 
-// Initialize Circuit Breaker untuk system safety (harus sebelum RPC Manager)
+// Initialize Circuit Breaker untuk system safety
 const circuitBreaker = new CircuitBreaker({
   errorThreshold: 3,
   errorWindow: 5 * 60 * 1000,
@@ -120,8 +120,15 @@ try {
   console.warn('Bot will start but trading features will be disabled until wallet is fixed.');
 }
 
-const _dryRun = getConfig().dryRun;
+const _dryRun = cfg.dryRun;
 console.log(`🦞 Meteora DLMM Bot started! Mode: ${_dryRun ? 'DRY RUN' : 'LIVE'}`);
+
+// Kirim sinyal standby pas bot nyala
+const bootMsg = `🚀 *Bot Started!* (Mode: Survivalist)\n\n` +
+               `🛡️ Hunter: *ON* (Standby ⏳)\n` +
+               `🩺 Healer: *ON* (Standby ⏳)\n\n` +
+               `_Sesuai jadwal, bot akan mulai bekerja dalam ${cfg.managementIntervalMin} - ${cfg.screeningIntervalMin} menit._`;
+bot.sendMessage(ALLOWED_ID, bootMsg, { parse_mode: 'Markdown' }).catch(() => {});
 
 async function syncStartingBalanceBaseline() {
   if (!solanaReady) return;
@@ -138,12 +145,6 @@ async function syncStartingBalanceBaseline() {
 }
 
 await syncStartingBalanceBaseline();
-
-const transport = createMessageTransport(bot, ALLOWED_ID);
-const sendLong = transport.sendLong;
-async function notify(text) {
-  transport.notify(text).catch(e => console.error('Notify error:', e.message));
-}
 
 async function getLpPnlMap() {
   const pnlMap = new Map();
@@ -1314,6 +1315,7 @@ setTimeout(async () => {
     await initializeModelDiscovery();
 
     const balance = await getWalletBalance();
+    const cfg = getConfig();
     await notify(
       `🚀 *Bot Started!*\n\n` +
       `💰 Balance: ${balance} SOL | Mode: ${getConfig().dryRun ? '🟡 DRY RUN' : '🔴 LIVE'}\n` +
