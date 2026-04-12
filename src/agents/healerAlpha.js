@@ -289,12 +289,19 @@ export async function executeTool(name, input, notifyFn = null) {
             const proactiveEnabled  = cfg.proactiveExitEnabled !== false;
             
             // ── Technical Sniper Exit (Evil Panda / Confluence) ──────
-            const taExit = analysis.snapshot?.ta?.evilPanda?.exit;
+            const taExit = analysis.snapshot?.ta?.['Evil Panda']?.exit || analysis.snapshot?.ta?.[pos.strategy_used]?.exit;
             const preset = cfg.activePreset;
-            if (preset === 'rsi_plus_supertrend' || preset === 'rsi_reversal') {
-              if (taExit?.triggered && pnlPct >= 0.5) {
-                proactiveCloseRecommended = true;
-                proactiveWarning = `🎯 TECHNICAL EXIT: ${taExit.reason} (PnL: ${pnlPct.toFixed(2)}%). Locking profit at local top.`;
+            if (preset === 'rsi_plus_supertrend' || preset === 'rsi_reversal' || pos.strategy_used === 'Evil Panda') {
+              // Sniper Technical Exit:
+              // - Jika Trend Reversal (Bearish), WAJIB exit secepatnya untuk cut loss / lock profit.
+              // - Jika Overbought (RSI), exit kalau profit >= 0.1%.
+              const isSupertrendBearish = stTrend === 'BEARISH';
+              if (taExit?.triggered || isSupertrendBearish) {
+                const isReversal = isSupertrendBearish || taExit?.reason?.includes('Trend Flip') || taExit?.reason?.includes('Bearish');
+                if (isReversal || pnlPct >= 0.1) {
+                  proactiveCloseRecommended = true;
+                  proactiveWarning = `🎯 TECHNICAL EXIT: ${taExit?.reason || 'Market Berubah Bearish'} (PnL: ${pnlPct.toFixed(2)}%).`;
+                }
               }
             }
 
@@ -303,6 +310,32 @@ export async function executeTool(name, input, notifyFn = null) {
               proactiveWarning = `⚠️ Profit ${pnlPct.toFixed(2)}% tapi market BEARISH (${(analysis.confidence * 100).toFixed(0)}% confidence). Rekomendasikan close untuk lock profit.`;
             } else if (!proactiveCloseRecommended && proactiveEnabled && isProfit && pnlPct >= minProfit && analysis.signal === 'BEARISH' && analysis.confidence >= 0.5) {
               proactiveWarning = `👀 Profit ${pnlPct.toFixed(2)}% — market mulai bearish (${(analysis.confidence * 100).toFixed(0)}% confidence). Monitor lebih ketat.`;
+            }
+
+            // ── Panic Dump Guard ──
+            const hTotalVol = (analysis.snapshot?.ohlcv?.buyVolume || 0) + (analysis.snapshot?.ohlcv?.sellVolume || 0);
+            const hVolDelta = hTotalVol > 0 ? (analysis.snapshot?.ohlcv?.buyVolume || 0) / hTotalVol : 0.5;
+            const stTrend   = analysis.snapshot?.ta?.supertrend?.trend || 'UNKNOWN';
+            const isPanda   = pos.strategy_used === 'Evil Panda';
+
+            // Panda Resilience: Only panic if Volume Dump CONFORMS with Bearish Trend.
+            // If Bullish, we hold and accumulate (up to -40% SL).
+            if (!proactiveCloseRecommended && hVolDelta < 0.40 && pnlPct < -1.5) {
+               if (stTrend === 'BEARISH') {
+                 proactiveCloseRecommended = true;
+                 proactiveWarning = `🚨 PANIC DUMP CONFIRMED: Trend Bearish + Sell pressure ${(100 - hVolDelta * 100).toFixed(0)}%. Kabur total (PnL: ${pnlPct.toFixed(2)}%).`;
+               } else if (!isPanda) {
+                 // Non-Panda strategies might still want to cut earlier
+                 proactiveCloseRecommended = true;
+                 proactiveWarning = `🚨 PANIC DUMP DETECTED: Sell pressure ${(100-hVolDelta*100).toFixed(0)}%. Proactive close for safety (PnL: ${pnlPct.toFixed(2)}%).`;
+               }
+            }
+
+            // Hard Stop Loss (The Panda Floor: -40% from strategyManager.js)
+            const hardSl = isPanda ? -40 : -20;
+            if (!proactiveCloseRecommended && pnlPct <= hardSl) {
+              proactiveCloseRecommended = true;
+              proactiveWarning = `💀 EMERGENCY FLOOR HIT: PnL ${pnlPct.toFixed(2)}% <= Hard SL ${hardSl}%. Closing immediately.`;
             }
           } catch {
             // Market analysis optional

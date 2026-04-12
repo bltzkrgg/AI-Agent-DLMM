@@ -14,8 +14,6 @@ const BASELINE_STRATEGIES = {
     type: 'single_side_y', // SOL only
     allowedBinSteps: [80, 100, 125, 200],
     parameters: {
-      entryPriceOffsetMin: 86,
-      entryPriceOffsetMax: 94,
       binStep: 100,
       minMcap: 250000,
       minVolume24h: 1000000,

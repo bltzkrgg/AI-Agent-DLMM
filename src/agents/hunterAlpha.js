@@ -86,12 +86,21 @@ async function evaluateStrategyReadiness({ strategyName, poolInfo, poolAddress }
   }
 
   // JIT Volume Delta Guard: Cek akumulasi volume di lilin terakhir (1m/5m)
-  const volDelta = (ohlcv?.buyVolume && ohlcv?.sellVolume) 
-    ? (ohlcv.buyVolume / (ohlcv.buyVolume + ohlcv.sellVolume))
-    : 1;
+  const totalVol = (ohlcv?.buyVolume || 0) + (ohlcv?.sellVolume || 0);
+  const volDelta = totalVol > 0 ? (ohlcv.buyVolume || 0) / totalVol : 0.5;
 
+  const isEvilPanda = strategyName === 'Evil Panda';
+  const isUptrend = ohlcv?.ta?.supertrend?.trend === 'BULLISH';
+
+  // Panda Resilience: Bypass volume dump filter if we are in an uptrend (Dip Buy territory)
   if (volDelta < 0.45) {
-    blockers.push(`VOLUME_DELTA_DUMP: Tekanan jual tinggi dlm 5m terakhir (${(volDelta*100).toFixed(0)}% Buy)`);
+    if (isEvilPanda && isUptrend) {
+      notes.push(`Volume Delta: ${(volDelta*100).toFixed(0)}% Buy pressure (Panda Dip Mode: Ignoring Dump)`);
+    } else {
+      blockers.push(`VOLUME_DELTA_DUMP: Tekanan jual tinggi dlm 5m terakhir (${(volDelta*100).toFixed(0)}% Buy)`);
+    }
+  } else {
+    notes.push(`Volume Delta: ${(volDelta*100).toFixed(0)}% Buy pressure`);
   }
 
   return {
@@ -104,8 +113,9 @@ async function evaluateStrategyReadiness({ strategyName, poolInfo, poolAddress }
     deployOptions: {
       fixedBinsBelow: (function () {
         if (strategyName === 'Evil Panda' && ohlcv?.range24hPct) {
-          // Evil Panda Sweet Spot: 40 to 125 bins (Max efficiency for fee capture)
-          const adaptive = 40 + Math.floor(ohlcv.range24hPct * 1.2);
+          // Evil Panda Sweet Spot: 40 to 125 bins (Standard)
+          // Sniper Expansion: increase multiplier to 2.5x to ensure "Deep Range" coverage
+          const adaptive = 40 + Math.floor(ohlcv.range24hPct * 2.5);
           return Math.min(125, Math.max(40, adaptive));
         }
         // Deep Sea Kraken & others can still use up to 250 bins
@@ -330,7 +340,7 @@ async function executeTool(name, input) {
           ]);
           if (mtf.status === 'fulfilled') multiTFScore = mtf.value.score || 0;
           if (sw.status === 'fulfilled' && sw.value.found) smartWalletSignal = sw.value;
-          if (ss.status === 'fulfilled' && ss.value) pool.socialSignal = ss.value;
+          if (ss.status === 'fulfilled' && ss.value) p.socialSignal = ss.value;
           poolMemCtx = getPoolMemoryContext(p.address);
         } catch { /* best-effort */ }
 
@@ -585,7 +595,7 @@ async function executeTool(name, input) {
       const stratParams = parseStrategyParameters(strategy);
       const strategyType = strategy?.type || 'spot';
       const strategyProfile = getStrategy(strategy.name);
-      deployOptions = { ...(strategyProfile?.deploy || {}) };
+      deployOptions = { ...(strategyProfile?.parameters || {}), ...(strategyProfile?.deploy || {}) };
       strategyEval = null;
 
       try {
