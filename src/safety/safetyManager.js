@@ -8,6 +8,8 @@
  * 4. Konfirmasi Telegram sebelum deploy
  */
 
+'use strict';
+
 import { getConfig } from '../config.js';
 import { getRuntimeState, setRuntimeState } from '../runtime/state.js';
 

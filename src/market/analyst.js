@@ -12,8 +12,11 @@
  *   5. Kalau harus pilih: HOLD, CLOSE, atau REBALANCE?
  */
 
+'use strict';
+
 import { safeParseAI } from '../utils/safeJson.js';
 import { createMessage, resolveModel, extractText } from '../agent/provider.js';
+
 import { getConfig } from '../config.js';
 import { getMarketSnapshot } from './oracle.js';
 import { loadMemory, saveMemory } from './memory.js';
