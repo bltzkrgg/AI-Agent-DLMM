@@ -63,6 +63,7 @@ export function initMonitor(telegramBot, userId) {
 // ─── Out-of-range alert ──────────────────────────────────────────
 
 async function checkOutOfRange() {
+  const cfg = getConfig();
   const openPositions = getOpenPositions();
   if (!openPositions.length) return;
 

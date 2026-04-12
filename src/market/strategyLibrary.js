@@ -249,8 +249,9 @@ export async function evaluateStrategyReadiness({ strategyName, poolAddress, sna
     }
 
     // ── Warp Panda: Contextual Adaptive Discovery ──────────────────
-    const rsi = snapshot.ta?.rsi14 || 50;
-    const bb = snapshot.ta?.bb || { middle: currentPrice, lower: currentPrice, upper: currentPrice };
+    const ta = snapshot.ta || {};
+    const rsi = ta.rsi14 || 50;
+    const bb = ta.bb || { middle: currentPrice, lower: currentPrice, upper: currentPrice };
 
     // --- Intelligence Matrix: SNIPER vs DEEP JARING ---
     const bbWidePct = ((bb.upper - bb.lower) / currentPrice) * 100;
