@@ -1,5 +1,6 @@
 import { fetchWithTimeout, safeNum } from '../utils/safeJson.js';
 import { getHeliusOnChainSignals } from '../utils/helius.js';
+import { getJupiterPrice } from '../utils/jupiter.js';
 import * as ta from '../utils/ta.js';
 import { getPoolSmartMoney } from '../market/lpAgent.js';
 
@@ -129,7 +130,11 @@ async function buildOHLCVFromDexScreener(tokenMint, poolAddress = null) {
     const actualPool = poolAddress || best.pairAddress;
 
     if (actualPool) {
-      const history = await getHistoryOHLCV(actualPool);
+      const [history, realTimePrice] = await Promise.all([
+        getHistoryOHLCV(actualPool),
+        getJupiterPrice(tokenMint)
+      ]);
+
       if (history && history.length >= 26) {
         // SNIPER REBIRTH: Ignore the last (live/partial) candle to prevent flickering signals.
         // We only calculate TA based on COMPLETED 15m candles.
@@ -156,8 +161,14 @@ async function buildOHLCVFromDexScreener(tokenMint, poolAddress = null) {
               reason: (st.trend === 'BULLISH' && rsi2 < 20) ? `Dip Buy: RSI(2) ${rsi2.toFixed(1)} < 20 in Uptrend` : null
             },
             exit: {
-              triggered: rsi2 > 90 || (st.trend === 'BEARISH' && st.changed),
-              reason: rsi2 > 90 ? `Profit Take: RSI(2) ${rsi2.toFixed(1)} > 90` : (st.trend === 'BEARISH' ? 'Trend Flip: Supertrend Bearish' : null)
+              triggered: (rsi2 > 90 && (closes[closes.length-1] > bb.upper || macd.histogram < 0)) || 
+                         (st.trend === 'BEARISH' && st.changed) || 
+                         (realTimePrice && realTimePrice < st.value && st.trend === 'BULLISH'),
+              shadowExit: (realTimePrice && realTimePrice < st.value && st.trend === 'BULLISH'),
+              reason: (rsi2 > 90 && closes[closes.length-1] > bb.upper) ? `Profit Take: RSI(2) ${rsi2.toFixed(1)} > 90 + BB Upper Cross`
+                      : (rsi2 > 90 && macd.histogram < 0) ? `Profit Take: RSI(2) ${rsi2.toFixed(1)} > 90 + MACD Bearish Cross`
+                      : (st.trend === 'BEARISH' ? 'Trend Flip: Supertrend Bearish' 
+                      : (realTimePrice && realTimePrice < st.value ? `Shadow Exit: Real-time Price ${realTimePrice.toFixed(6)} < ${st.value.toFixed(6)}` : null))
             }
           }
         };
@@ -187,6 +198,55 @@ async function buildOHLCVFromDexScreener(tokenMint, poolAddress = null) {
   }
 }
 
+function aggregateCandles(candles, targetMinutes = 15) {
+  if (!candles || candles.length === 0) return [];
+  const targetSeconds = targetMinutes * 60;
+  
+  const result = [];
+  let currentGroup = [];
+  
+  // DexScreener candles usually come in 1m or 5m increments.
+  // We group them into targetMinutes-sized buckets.
+  for (const c of candles) {
+    if (currentGroup.length === 0) {
+      currentGroup.push(c);
+      continue;
+    }
+    
+    // Group by floor(time / targetSeconds)
+    const currentBucket = Math.floor(currentGroup[0].time / targetSeconds);
+    const bucket = Math.floor(c.time / targetSeconds);
+    
+    if (bucket === currentBucket) {
+      currentGroup.push(c);
+    } else {
+      result.push({
+        time: currentGroup[0].time,
+        open: currentGroup[0].open,
+        high: Math.max(...currentGroup.map(g => g.high)),
+        low: Math.min(...currentGroup.map(g => g.low)),
+        close: currentGroup[currentGroup.length - 1].close,
+        volume: currentGroup.reduce((s, g) => s + g.volume, 0)
+      });
+      currentGroup = [c];
+    }
+  }
+  
+  // PUSH the last (potentially incomplete) bucket so history.slice(0, -1) works predictably
+  if (currentGroup.length > 0) {
+    result.push({
+      time: currentGroup[0].time,
+      open: currentGroup[0].open,
+      high: Math.max(...currentGroup.map(g => g.high)),
+      low: Math.min(...currentGroup.map(g => g.low)),
+      close: currentGroup[currentGroup.length - 1].close,
+      volume: currentGroup.reduce((s, g) => s + g.volume, 0)
+    });
+  }
+  
+  return result;
+}
+
 async function getHistoryOHLCV(poolAddress) {
   try {
     // DexScreener V1 OHLCV API (Solana) 
@@ -201,14 +261,17 @@ async function getHistoryOHLCV(poolAddress) {
     const candles = json.candles || [];
     
     // DexScreener format: { t: timestamp, o: open, h: high, l: low, c: close, v: volume }
-    return candles.map(c => ({
-      time:  c.t,
+    const raw = candles.map(c => ({
+      time:  c.t / 1000, // API returns ms, we use seconds for TA
       open:  safeNum(c.o),
       high:  safeNum(c.h),
       low:   safeNum(c.l),
       close: safeNum(c.c),
       volume: safeNum(c.v)
-    })).sort((a, b) => a.time - b.time); // Ensure ascending for TA libs
+    })).sort((a, b) => a.time - b.time);
+
+    // Aggregate to 15m for Sniper Bullish Guard
+    return aggregateCandles(raw, 15);
   } catch { return null; }
 }
 

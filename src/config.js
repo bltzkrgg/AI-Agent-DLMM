@@ -93,59 +93,59 @@ const DEFAULTS = {
   evolveIntervalTrades: 5,        // Recalibrate after every N closed trades
   useSocialSignals: true,          // Enable Meridian Discord/KOL signals
   socialSignalWeight: 1.5,        // Multiplier for Darwinian Score if social signal exists
-  minSmartMoneyOverlap:      1,        // Minimum overlapping "SmartWallets" to boost confidence
-  useSmartWalletRanges:      true,     // Mirror Top LPer ranges in Healer
+  minSmartMoneyOverlap: 1,        // Minimum overlapping "SmartWallets" to boost confidence
+  useSmartWalletRanges: true,     // Mirror Top LPer ranges in Healer
 
   // Adaptive Post-Mortem
-  autoPostMortemEnabled:     true,     // Enable LLM-based analysis of closed trades
-  
+  autoPostMortemEnabled: true,     // Enable LLM-based analysis of closed trades
+
   // Meridian Relay (Experimental)
-  lpAgentRelayEnabled:       true,
-  publicApiKey:              'bWVyaWRpYW4taXMtdGhlLWJlc3QtYWdlbnRz',
-  agentMeridianApiUrl:       'https://api.agentmeridian.xyz/api',
+  lpAgentRelayEnabled: true,
+  publicApiKey: 'bWVyaWRpYW4taXMtdGhlLWJlc3QtYWdlbnRz',
+  agentMeridianApiUrl: 'https://api.agentmeridian.xyz/api',
 };
 
 const KNOWN_CONFIG_KEYS = new Set(Object.keys(DEFAULTS));
 
 // Bounds for AI-driven config updates — prevent AI from setting dangerous values
 const CONFIG_BOUNDS = {
-  deployAmountSol:            { min: 0.01,  max: 50 },
-  maxPositions:               { min: 1,     max: 20 },
-  minSolToOpen:               { min: 0.01,  max: 1 },
-  gasReserve:                 { min: 0.01,  max: 0.5 },
-  managementIntervalMin:       { min: 1,     max: 1440 },
-  screeningIntervalMin:        { min: 5,     max: 1440 },
-  positionUpdateIntervalMin:   { min: 1,     max: 1440 },
-  minFeeActiveTvlRatio:       { min: 0.001, max: 1 },
-  minTvl:                     { min: 100,   max: 10000000 },
-  maxTvl:                     { min: 1000,  max: 100000000 },
-  minOrganic:                 { min: 0,     max: 100 },
-  minBinStep:                 { min: 1,     max: 400 },
-  minTokenFeesSol:            { min: 0,     max: 10000 },
-  takeProfitFeePct:           { min: 0.1,   max: 100 },
-  trailingTriggerPct:         { min: 0.5,   max: 50 },
-  trailingDropPct:            { min: 0.1,   max: 20 },
-  outOfRangeWaitMinutes:      { min: 1,     max: 1440 },
-  outOfRangeBinsToClose:      { min: 1,     max: 200 },
-  oorCooldownTriggerCount:    { min: 1,     max: 20 },
-  oorCooldownHours:           { min: 1,     max: 168 },
-  minFeeClaimUsd:             { min: 0.01,  max: 1000 },
-  stopLossPct:                { min: 0.1,   max: 50 },
-  maxDailyDrawdownPct:        { min: 0.5,   max: 50 },
-  proactiveExitMinProfitPct:  { min: 0.1,   max: 100 },
+  deployAmountSol: { min: 0.01, max: 50 },
+  maxPositions: { min: 1, max: 20 },
+  minSolToOpen: { min: 0.01, max: 1 },
+  gasReserve: { min: 0.01, max: 0.5 },
+  managementIntervalMin: { min: 1, max: 1440 },
+  screeningIntervalMin: { min: 5, max: 1440 },
+  positionUpdateIntervalMin: { min: 1, max: 1440 },
+  minFeeActiveTvlRatio: { min: 0.001, max: 1 },
+  minTvl: { min: 100, max: 10000000 },
+  maxTvl: { min: 1000, max: 100000000 },
+  minOrganic: { min: 0, max: 100 },
+  minBinStep: { min: 1, max: 400 },
+  minTokenFeesSol: { min: 0, max: 10000 },
+  takeProfitFeePct: { min: 0.1, max: 100 },
+  trailingTriggerPct: { min: 0.5, max: 50 },
+  trailingDropPct: { min: 0.1, max: 20 },
+  outOfRangeWaitMinutes: { min: 1, max: 1440 },
+  outOfRangeBinsToClose: { min: 1, max: 200 },
+  oorCooldownTriggerCount: { min: 1, max: 20 },
+  oorCooldownHours: { min: 1, max: 168 },
+  minFeeClaimUsd: { min: 0.01, max: 1000 },
+  stopLossPct: { min: 0.1, max: 50 },
+  maxDailyDrawdownPct: { min: 0.5, max: 50 },
+  proactiveExitMinProfitPct: { min: 0.1, max: 100 },
   proactiveExitBearishConfidence: { min: 0.5, max: 1.0 },
-  darwinWindowDays:           { min: 7,     max: 365 },
-  darwinRecalcEvery:          { min: 1,     max: 50 },
-  minMcap:                    { min: 0,     max: 100000000 },
-  maxMcap:                    { min: 0,     max: 10000000000 },
-  minVolume24h:               { min: 0,     max: 1000000000 },
-  evolveIntervalTrades:      { min: 1,     max: 100 },
-  socialSignalWeight:        { min: 1.0,   max: 5.0 },
-  minSmartMoneyOverlap:      { min: 0,     max: 10 },
-  maxPriceImpactPct:          { min: 0.1,   max: 5 },
-  maxBinsPerPosition:         { min: 20,    max: 150 },
-  rsi2Threshold:              { min: 50,    max: 98 },
-  lastEvolutionTradeCount:   { min: 0,     max: 1000000 },
+  darwinWindowDays: { min: 7, max: 365 },
+  darwinRecalcEvery: { min: 1, max: 50 },
+  minMcap: { min: 0, max: 100000000 },
+  maxMcap: { min: 0, max: 10000000000 },
+  minVolume24h: { min: 0, max: 1000000000 },
+  evolveIntervalTrades: { min: 1, max: 100 },
+  socialSignalWeight: { min: 1.0, max: 5.0 },
+  minSmartMoneyOverlap: { min: 0, max: 10 },
+  maxPriceImpactPct: { min: 0.1, max: 5 },
+  maxBinsPerPosition: { min: 20, max: 150 },
+  rsi2Threshold: { min: 50, max: 98 },
+  lastEvolutionTradeCount: { min: 0, max: 1000000 },
 };
 
 function safeParseJSON(raw) {
