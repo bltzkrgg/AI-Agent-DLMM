@@ -8,6 +8,9 @@ import { resolveTokens, WSOL_MINT } from '../utils/tokenMeta.js';
 import { getRecommendedPriorityFee } from '../utils/helius.js';
 import { isDryRun } from '../config.js';
 import { getWalletPositions as getLPAgentPositions, isLPAgentEnabled } from '../market/lpAgent.js';
+import { swapToSol } from '../utils/jupiter.js';
+import { getTokenBalance } from './wallet.js';
+import crypto from 'crypto';
 
 const METEORA_DLMM_API = 'https://dlmm-api.meteora.ag';
 
@@ -420,44 +423,93 @@ async function _openPositionLogic(poolAddress, tokenXAmount, tokenYAmount, price
   const totalBins = (rangeMax - rangeMin) + 1;
 
   // Meteora PositionV2 supports up to 1,400 bins. 
-  // We chunk for Transaction Size Safety (Solana ~1232 byte limit),
-  // but we target ONE unified position address.
-  const binChunks = totalBins <= 68 
+  // We chunk for Transaction Size Safety (Solana ~1232 byte limit).
+  // Aegis: Increased safety margin to 50 bins per chunk.
+  const binChunks = totalBins <= 50 
     ? [{ lowerBinId: rangeMin, upperBinId: rangeMax }]
     : chunkBinRange(rangeMin, rangeMax);
 
-  // Unified position keypair
-  const posKp = Keypair.generate();
+  // ── Unified deterministic position recovery ─────────────────────
+  // Derived from: (wallet + pool + strategy) - Allows auto-discovery after crash.
+  const seedString = `${wallet.publicKey.toString()}_${poolAddress}_${strategyName || 'default'}`;
+  const seed = crypto.createHash('sha256').update(seedString).digest();
+  const posKp = Keypair.fromSeed(seed);
+  
+  // Aegis Recovery: Check if the position account already exists (partial previous deploy)
+  let accountExists = false;
+  try {
+    const info = await connection.getAccountInfo(posKp.publicKey);
+    accountExists = info !== null;
+    if (accountExists) console.log(`[meteora] AEGIS RECOVER: Alamat posisi ${posKp.publicKey.toString()} sudah ada on-chain. Menggunakan akun yang ada.`);
+  } catch { /* proceed with fallback */ }
+
   const allTxHashes = [];
   let totalSucceededSol = 0;
 
   for (let ci = 0; ci < binChunks.length; ci++) {
     const chunk = binChunks[ci];
-    const chunkBins = chunk.upperBinId - chunk.lowerBinId + 1;
+    const chunkBinsCount = chunk.upperBinId - chunk.lowerBinId + 1;
 
     // Proportional SOL allocation
-    const chunkYSol = tokenYAmount * (chunkBins / totalBins);
+    const chunkYSol = tokenYAmount * (chunkBinsCount / totalBins);
     const chunkTotalX = new BN(0);
     const chunkTotalY = toBN(chunkYSol, yDecimals);
 
     let txs;
-    if (ci === 0) {
-      // First chunk: Initialize the position account + first liquidity deposit
-      txs = await dlmmPool.initializePositionAndAddLiquidityByStrategy({
-        positionPubKey: posKp.publicKey,
-        user:           wallet.publicKey,
-        totalXAmount:   chunkTotalX,
-        totalYAmount:   chunkTotalY,
-        strategy:       { maxBinId: chunk.upperBinId, minBinId: chunk.lowerBinId, strategyType: 0 },
-      });
+    const isDipFishing = (tokenXAmount === 0 || tokenXAmount === '0');
+
+    if (ci === 0 && !accountExists) {
+      // ── case A: New deployment, First chunk ───────────────
+      // If Dip Fishing (SOL only below price), use initializePosition + addLiquidityByWeight
+      // to avoid the SBF panic in the SDK's internal strategy mapper.
+        const binIds = [];
+        for (let b = chunk.lowerBinId; b <= chunk.upperBinId; b++) binIds.push(b);
+        
+        // Obelisk: Precision weight distribution (Sum exactly 10,000)
+        const weights = new Array(binIds.length).fill(Math.floor(10000 / binIds.length));
+        const currentSum = weights.reduce((a, b) => a + b, 0);
+        if (currentSum < 10000) {
+          weights[weights.length - 1] += (10000 - currentSum);
+        }
+        
+        txs = await dlmmPool.initializePositionAndAddLiquidityByWeight({
+          positionPubKey: posKp.publicKey,
+          user: wallet.publicKey,
+          totalXAmount: chunkTotalX,
+          totalYAmount: chunkTotalY,
+          binIds,
+          weights,
+        });
+      } else {
+        // Normal Deployment (e.g. Wave Enjoyer with X+Y)
+        txs = await dlmmPool.initializePositionAndAddLiquidityByStrategy({
+          positionPubKey: posKp.publicKey,
+          user: wallet.publicKey,
+          totalXAmount: chunkTotalX,
+          totalYAmount: chunkTotalY,
+          strategy: { maxBinId: chunk.upperBinId, minBinId: chunk.lowerBinId, strategyType: 0 },
+        });
+      }
     } else {
-      // Subsequent chunks: Add liquidity to the EXISTING position address
-      txs = await dlmmPool.addLiquidityByStrategy({
+      // ── case B: Existing account or subsequent chunks ──────────
+      // Use addLiquidityByWeight to bypass strategy math jitter
+      const binIds = [];
+      for (let b = chunk.lowerBinId; b <= chunk.upperBinId; b++) binIds.push(b);
+      
+      // Obelisk: Precision weight distribution (Sum exactly 10,000)
+      const weights = new Array(binIds.length).fill(Math.floor(10000 / binIds.length));
+      const currentSum = weights.reduce((a, b) => a + b, 0);
+      if (currentSum < 10000) {
+        weights[weights.length - 1] += (10000 - currentSum);
+      }
+
+      txs = await dlmmPool.addLiquidityByWeight({
         positionPubKey: posKp.publicKey,
-        user:           wallet.publicKey,
-        totalXAmount:   chunkTotalX,
-        totalYAmount:   chunkTotalY,
-        strategy:       { maxBinId: chunk.upperBinId, minBinId: chunk.lowerBinId, strategyType: 0 },
+        user: wallet.publicKey,
+        totalXAmount: chunkTotalX,
+        totalYAmount: chunkTotalY,
+        binIds,
+        weights,
       });
     }
 
@@ -470,7 +522,8 @@ async function _openPositionLogic(poolAddress, tokenXAmount, tokenYAmount, price
 
       // Priority fee — slightly higher for large bin deployments
       let microLamports = 250_000;
-      let computeUnits = totalBins > 80 ? 800_000 : 400_000;
+      // Aegis: Increased compute budget for addLiquidityByWeight (more instructions)
+      let computeUnits = totalBins > 50 ? 1_200_000 : 600_000;
       try {
         const recommended = await getRecommendedPriorityFee([poolAddress, xMint, yMint]);
         if (recommended > 0) microLamports = recommended;
@@ -481,15 +534,23 @@ async function _openPositionLogic(poolAddress, tokenXAmount, tokenYAmount, price
       // Sign with wallet and the single position keypair
       tx.sign(wallet, posKp);
 
-      const txHash = await connection.sendRawTransaction(tx.serialize(), {
-        skipPreflight: false,
-        preflightCommitment: 'confirmed',
-        maxRetries: 3,
-      });
+      try {
+        const txHash = await connection.sendRawTransaction(tx.serialize(), {
+          skipPreflight: false,
+          preflightCommitment: 'confirmed',
+          maxRetries: 3,
+        });
 
-      await pollTxConfirm(connection, txHash);
-      allTxHashes.push(txHash);
-      totalSucceededSol += chunkYSol;
+        await pollTxConfirm(connection, txHash);
+        allTxHashes.push(txHash);
+        totalSucceededSol += chunkYSol;
+      } catch (e) {
+        // Aegis: Log program logs on simulation failure
+        if (e.logs) {
+          console.error(`[meteora] TX Failed. Program Logs:\n${e.logs.join('\n')}`);
+        }
+        throw e;
+      }
     }
   }
 
@@ -610,7 +671,14 @@ export async function closePositionDLMM(poolAddress, positionAddress, pnlData = 
         tx.recentBlockhash = blockhash;
         tx.feePayer = wallet.publicKey;
 
-        injectPriorityFee(tx, { units: 400_000, microLamports: 250_000 });
+        let microLamports = 250_000;
+        try {
+          // Dynamic Exit Fee: Royal priority during dumps
+          const rec = await getRecommendedPriorityFee([poolAddress]);
+          if (rec > 0) microLamports = Math.floor(rec * 1.5); 
+        } catch { /* fallback */ }
+
+        injectPriorityFee(tx, { units: 400_000, microLamports });
         tx.sign(wallet);
 
         const hash = await connection.sendRawTransaction(tx.serialize(), {
@@ -848,6 +916,32 @@ export async function closePositionDLMM(poolAddress, positionAddress, pnlData = 
         closeReason: pnlData.closeReason || 'closed',
         lifecycleState: pnlData.lifecycleState || 'closed_pending_swap',
       });
+
+      // ── 8. Aegis Zero-Dust Swap ─────────────────────────────
+      if (!isDryRun()) {
+        try {
+          const xBalance = await getTokenBalance(xMint);
+          if (xBalance > 0) {
+            // Small threshold check: only swap if value is worth the gas (> ~$0.20 approx)
+            // But for 0.5 SOL test, we swap everything to keep it clean
+            console.log(`[closePositionDLMM] Auto-Swap: Converting ${xBalance} Token X back to SOL...`);
+            const swapResult = await swapToSol(xMint, Math.floor(xBalance * Math.pow(10, xMeta.decimals)));
+            if (swapResult) {
+              const connection = getConnection();
+              const wallet     = getWallet();
+              const { VersionedTransaction } = await import('@solana/web3.js');
+              const swapTx = VersionedTransaction.deserialize(Buffer.from(swapResult.swapTransaction, 'base64'));
+              swapTx.sign([wallet]);
+              const hash = await connection.sendRawTransaction(swapTx.serialize(), { skipPreflight: true });
+              await pollTxConfirm(connection, hash, 45000);
+              console.log(`[closePositionDLMM] Auto-Swap Success: ${hash}`);
+              txHashes.push(hash);
+            }
+          }
+        } catch (eSwap) {
+          console.warn('[closePositionDLMM] Auto-Swap back to SOL failed:', eSwap.message);
+        }
+      }
 
       return { success: true, txHashes };
 

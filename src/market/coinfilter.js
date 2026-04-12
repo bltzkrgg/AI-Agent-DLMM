@@ -1,5 +1,6 @@
 import { fetchWithTimeout, safeNum, withExponentialBackoff } from '../utils/safeJson.js';
 import { getConfig } from '../config.js';
+import { getJupiterPrice } from '../utils/jupiter.js';
 
 const DEXSCREENER_BASE   = 'https://api.dexscreener.com';
 const JUPITER_TOKEN_BASE = 'https://tokens.jup.ag';
@@ -244,6 +245,8 @@ async function getOnChainAuthority(tokenMint) {
       mintAuthority:   !!parsed.mintAuthority,
       freezeAuthority: !!parsed.freezeAuthority,
       isInitialized:   !!parsed.isInitialized,
+      supply:          safeNum(parsed.supply),
+      decimals:        safeNum(parsed.decimals)
     };
   } catch (e) { 
     console.error(`❌ getOnChainAuthority failed for ${tokenMint.slice(0, 8)}:`, e.message);
@@ -379,7 +382,18 @@ export async function screenToken(tokenMint, tokenName = '', tokenSymbol = '', o
   const s5  = step5_txnAnalysis(dex);
   const s6  = step6_tokenSafety(jup);
   const s7  = step7_organicScore(dex, jup, thresholds);
-  const s9  = step9_mcapFilter(dex?.fdv, thresholds);
+  
+  // Obelisk Handle: Manual MCAP calculation if DexScreener is lagging
+  let mcap = dex?.fdv || null;
+  if (!mcap && auth?.supply && auth?.decimals) {
+    const rawPrice = dex?.priceUsd || (jup?.found ? await getJupiterPrice(tokenMint) : 0);
+    if (rawPrice > 0) {
+      const supplyFixed = auth.supply / Math.pow(10, auth.decimals);
+      mcap = rawPrice * supplyFixed;
+    }
+  }
+
+  const s9  = step9_mcapFilter(mcap, thresholds);
   const s10 = step10_authorityCheck(auth);
   const s11 = step11_slippageCheck(sim, thresholds.maxImpact);
 
