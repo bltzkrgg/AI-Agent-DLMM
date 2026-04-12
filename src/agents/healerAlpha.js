@@ -259,7 +259,6 @@ export async function executeTool(name, input, notifyFn = null) {
 
           // ── Smart Money Tracking (Meteora Native) ────────────
           let smartMoney = null;
-          const cfg = getConfig();
           if (cfg.useSmartWalletRanges || cfg.useSocialSignals) {
             smartMoney = await getPoolSmartMoney(pos.pool_address).catch(() => null);
           }
@@ -1233,7 +1232,6 @@ Gunakan Bahasa Indonesia. Selalu explain kenapa HOLD atau CLOSE.`;
     { role: 'user', content: 'Jalankan siklus manajemen posisi sekarang. Evaluasi semua posisi dan ambil tindakan yang diperlukan.' }
   ];
 
-  const cfg = getConfig();
   let response = await createMessage({
     model: resolveModel(cfg.managementModel),
     maxTokens: 4096,

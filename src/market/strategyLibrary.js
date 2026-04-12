@@ -249,7 +249,6 @@ export async function evaluateStrategyReadiness({ strategyName, poolAddress, sna
     }
 
     // ── Warp Panda: Contextual Adaptive Discovery ──────────────────
-    const ta = snapshot.ta || {};
     const rsi = ta.rsi14 || 50;
     const bb = ta.bb || { middle: currentPrice, lower: currentPrice, upper: currentPrice };
 
