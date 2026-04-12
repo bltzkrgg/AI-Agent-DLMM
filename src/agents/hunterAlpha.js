@@ -544,7 +544,6 @@ async function executeTool(name, input) {
       // NOTE: Database-level lock in executeControlledOperation handles duplicate guard per pool.
 
       // ── Guard: slot posisi penuh ─────────────────────────────────
-      const cfg = getConfig();
       const effectiveMaxPos = _hunterTargetCount != null
         ? existingPositions.length + _hunterTargetCount
         : cfg.maxPositions;
