@@ -398,7 +398,7 @@ async function _openPositionLogic(poolAddress, tokenXAmount, tokenYAmount, price
       ? Math.min(150, Math.max(2, Math.floor(deployOptions.fixedBinsBelow)))
       : null;
     const binPadding = Number.isFinite(deployOptions?.binPadding) 
-      ? Math.max(2, Math.floor(deployOptions.binPadding)) 
+      ? Math.max(0, Math.floor(deployOptions.binPadding)) 
       : 2; // Default to 2 for minimal peace of mind
 
     const rawBins  = fixedBinsBelow ?? Math.min(150 - binPadding, Math.max(2, Math.floor((priceRangePercent / 100) / (binStep / 10000))));

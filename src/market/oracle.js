@@ -113,6 +113,11 @@ async function buildOHLCVFromDexScreener(tokenMint, poolAddress = null) {
     const high24h = currentPrice / (1 - Math.max(0, priceChange24h) / 100) || currentPrice;
     const low24h  = currentPrice / (1 + Math.max(0, -priceChange24h) / 100) || currentPrice;
 
+    // Volume Delta components (m5 preferred for sniper logic)
+    const txns   = best.txns?.m5 || best.txns?.h1 || {};
+    const buys   = safeNum(txns.buys);
+    const sells  = safeNum(txns.sells);
+
     const trend = (priceChangeM5 > 1.5 && priceChange1h > 0) ? 'UPTREND'
       : (priceChangeM5 < -1.5 && priceChange1h < 0) ? 'DOWNTREND'
       : (priceChangeM5 > 3) ? 'PUMPING'
@@ -169,6 +174,8 @@ async function buildOHLCVFromDexScreener(tokenMint, poolAddress = null) {
       priceChangeH1:  priceChange1h,
       high24h, low24h,
       range24hPct:    parseFloat(range24hPct.toFixed(2)),
+      buyVolume:      buys,
+      sellVolume:     sells,
       trend,
       volatilityCategory:  range24hPct > 20 ? 'HIGH' : range24hPct > 7 ? 'MEDIUM' : 'LOW',
       ta: taData,
