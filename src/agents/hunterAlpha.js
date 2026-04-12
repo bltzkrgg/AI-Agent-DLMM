@@ -576,7 +576,8 @@ async function executeTool(name, input) {
       const stratParams = parseStrategyParameters(strategy);
       const strategyType = strategy?.type || 'spot';
       const strategyProfile = getStrategy(strategy.name);
-      deployOptions = { ...(strategyProfile?.deploy || {}) };
+      let deployOptions = { ...(strategyProfile?.deploy || {}) };
+      let strategyEval = null;
 
       try {
         const snapshot = await getMarketSnapshot(poolInfo.tokenX, input.pool_address);
