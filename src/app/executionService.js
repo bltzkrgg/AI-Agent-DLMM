@@ -26,7 +26,7 @@ export async function executeControlledOperation({
 
   let log;
   try {
-    log = createOperationLog({
+    log = await createOperationLog({
       operationType,
       entityId: safeEntityId,
       payload,
@@ -41,12 +41,12 @@ export async function executeControlledOperation({
   }
   const operationId = log.lastInsertRowid;
 
-  updateOperationLog(operationId, { status: 'in_progress', metadata });
+  await updateOperationLog(operationId, { status: 'in_progress', metadata });
   logInfo('operation_started', { operationType, entityId: safeEntityId, operationId });
 
   try {
     const result = await execute();
-    updateOperationLog(operationId, {
+    await updateOperationLog(operationId, {
       status: 'success',
       result,
       metadata,
@@ -55,7 +55,7 @@ export async function executeControlledOperation({
     logInfo('operation_succeeded', { operationType, entityId: safeEntityId, operationId });
     return { operationId, result };
   } catch (error) {
-    updateOperationLog(operationId, {
+    await updateOperationLog(operationId, {
       status: 'failed',
       errorMessage: error.message,
       metadata,

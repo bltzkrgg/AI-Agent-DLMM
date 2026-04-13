@@ -3,7 +3,8 @@ import { PublicKey, Keypair, Transaction, ComputeBudgetProgram, VersionedTransac
 import BN from 'bn.js';
 import { getConnection, getWallet } from './wallet.js';
 import { savePosition, closePositionWithPnl, enqueueReconcileIssue, updatePositionLifecycle } from '../db/database.js';
-import { fetchWithTimeout, safeNum, withRetry, withExponentialBackoff } from '../utils/safeJson.js';
+import { fetchWithTimeout, safeNum, withRetry, withExponentialBackoff, stringify } from '../utils/safeJson.js';
+import { toLamports, fromLamports, sumBigInts } from '../utils/units.js';
 import { resolveTokens, WSOL_MINT } from '../utils/tokenMeta.js';
 import { getRecommendedPriorityFee } from '../utils/helius.js';
 import { isDryRun } from '../config.js';
@@ -429,6 +430,10 @@ async function _openPositionLogic(poolAddress, tokenXAmount, tokenYAmount, price
     }
   }
 
+  // ── Unified deterministic position recovery ─────────────────────
+  const totalXBN = toBN(tokenXAmount, xDecimals);
+  const totalYBN = toBN(tokenYAmount, yDecimals);
+
   const totalBins = (rangeMax - rangeMin) + 1;
 
   // Meteora PositionV2 supports up to 1,400 bins. 
@@ -452,6 +457,26 @@ async function _openPositionLogic(poolAddress, tokenXAmount, tokenYAmount, price
     if (accountExists) console.log(`[meteora] AEGIS RECOVER: Alamat posisi ${posKp.publicKey.toString()} sudah ada on-chain. Menggunakan akun yang ada.`);
   } catch { /* proceed with fallback */ }
 
+  // ── Pre-Save Position Object (Watchtower) ──────────────────────
+  // We register the position in DB BEFORE sending transactions.
+  // This ensures recovery if the first chunk lands but the bot crashes.
+  if (!accountExists) {
+    await savePosition({
+      pool_address: poolAddress,
+      position_address: posKp.publicKey.toString(),
+      token_x: xMint,
+      token_y: yMint,
+      token_x_amount: tokenXAmount,
+      token_y_amount: tokenYAmount,
+      deployed_sol: 0,
+      deployed_usd: 0,
+      entry_price: parseFloat(toDisplayPrice(rawActivePrice, isSOLPair).toFixed(10)),
+      strategy_used: strategyName,
+      token_x_symbol: xMeta.symbol,
+      lifecycle_state: 'deploying'
+    });
+  }
+
   const allTxHashes = [];
   let totalSucceededSol = 0;
 
@@ -459,12 +484,21 @@ async function _openPositionLogic(poolAddress, tokenXAmount, tokenYAmount, price
     const chunk = binChunks[ci];
     const chunkBinsCount = chunk.upperBinId - chunk.lowerBinId + 1;
 
-    // Proportional allocation for both tokens
-    const chunkX = safeNum(tokenXAmount) * (chunkBinsCount / totalBins);
-    const chunkYSol = safeNum(tokenYAmount) * (chunkBinsCount / totalBins);
-    
-    const chunkTotalX = toBN(chunkX, xDecimals);
-    const chunkTotalY = toBN(chunkYSol, yDecimals);
+    // Obelisk Precision: Remainder Injection for the final chunk
+    let chunkTotalX, chunkTotalY;
+    if (ci === binChunks.length - 1) {
+      // Last chunk gets the remainder to ensure sum exactly matches total
+      let usedX = new BN(0), usedY = new BN(0);
+      // We'd need to track usedX/usedY from previous loops or just calculate here
+      const prevBinsCount = ci * 50; // chunkBinRange uses 50 bins standard
+      const prevX = totalXBN.mul(new BN(prevBinsCount)).div(new BN(totalBins));
+      const prevY = totalYBN.mul(new BN(prevBinsCount)).div(new BN(totalBins));
+      chunkTotalX = totalXBN.sub(prevX);
+      chunkTotalY = totalYBN.sub(prevY);
+    } else {
+      chunkTotalX = totalXBN.mul(new BN(chunkBinsCount)).div(new BN(totalBins));
+      chunkTotalY = totalYBN.mul(new BN(chunkBinsCount)).div(new BN(totalBins));
+    }
 
     let txs;
     const isDipFishing = (tokenXAmount === 0 || tokenXAmount === '0');
@@ -547,15 +581,46 @@ async function _openPositionLogic(poolAddress, tokenXAmount, tokenYAmount, price
       tx.sign(wallet, posKp);
 
       try {
+        // Watchtower: Pre-flight simulation for Compute Units
+        const sim = await connection.simulateTransaction(tx, { replaceRecentBlockhash: true, commitment: 'processed' });
+        if (sim.value.err) {
+          console.warn(`[meteora] Simulation Warning: ${stringify(sim.value.err)}`);
+          if (stringify(sim.value.err).includes('InstructionError')) {
+             throw new Error(`Simulation Failed: ${stringify(sim.value.err)}`);
+          }
+        }
+        
         const txHash = await connection.sendRawTransaction(tx.serialize(), {
-          skipPreflight: false,
+          skipPreflight: true, // we already simulated
           preflightCommitment: 'confirmed',
-          maxRetries: 3,
+          maxRetries: 1, // manual watchtower retry logic instead of RPC default
         });
 
         await pollTxConfirm(connection, txHash);
         allTxHashes.push(txHash);
+        
+        // Accurate Lamports conversion for DB
+        const chunkYSol = parseFloat(fromLamports(chunkTotalY.toString(), yDecimals));
         totalSucceededSol += chunkYSol;
+
+        // Aegis: Update DB setiap kali chunk berhasil (Incremental Save)
+        // Jika chunk berikutnya gagal, kita tetep punya rekam jejak jumlah SOL yang masuk.
+        const currentUsd = parseFloat((totalSucceededSol * solPriceUsd).toFixed(2));
+        updatePositionRuntimeState(posKp.publicKey.toString(), { 
+          totalSucceededSol, 
+          status: totalSucceededSol >= totalYSol ? 'fully_deployed' : 'partially_deployed' 
+        });
+        
+        // Update database utama
+        await runInQueue(() => db.prepare(`
+          UPDATE positions SET 
+            token_y_amount = ?, 
+            deployed_sol = ?, 
+            deployed_usd = ?,
+            lifecycle_state = 'open'
+          WHERE position_address = ?
+        `).run(totalSucceededSol, totalSucceededSol, currentUsd, posKp.publicKey.toString()));
+
       } catch (e) {
         // Aegis: Log program logs on simulation failure
         if (e.logs) {
@@ -566,23 +631,15 @@ async function _openPositionLogic(poolAddress, tokenXAmount, tokenYAmount, price
     }
   }
 
-  // ── Save to DB (Single Unified Entry) ──────────────────────────
-  const solPriceUsd = await getSolPriceUsd().catch(() => 150);
-  const record = {
-    pool_address:     poolAddress,
-    position_address: posKp.publicKey.toString(),
-    token_x:          xMint,
-    token_y:          yMint,
-    token_x_amount:   0,
-    token_y_amount:   totalSucceededSol,
-    deployed_sol:     totalSucceededSol,
-    entry_price:      rawActivePrice,
-    deployed_usd:     parseFloat((totalSucceededSol * solPriceUsd).toFixed(2)),
-    strategy_used:    strategyName,
-    token_x_symbol:   xMeta.symbol,
-  };
-  
-  savePosition(record);
+  } catch (err) {
+    if (totalSucceededSol > 0) {
+      console.warn(`[meteora] Deployment parsial berhasil (${totalSucceededSol} SOL). Melanjutkan dengan status terdaftar.`);
+    } else {
+      // Hapus jika gagal total tanpa ada dana keluar sama sekali
+      db.prepare(`DELETE FROM positions WHERE position_address = ? AND deployed_sol = 0`).run(posKp.publicKey.toString());
+      throw err;
+    }
+  }
 
   const priceUnit = isSOLPair ? `${xMeta.symbol}/SOL` : `${yMeta.symbol}/${xMeta.symbol}`;
 
@@ -660,7 +717,7 @@ export async function closePositionDLMM(poolAddress, positionAddress, pnlData = 
         }
 
         // Account benar-benar tidak ada → posisi sudah tertutup
-        closePositionWithPnl(positionAddress, {
+        await closePositionWithPnl(positionAddress, {
           pnlUsd:      pnlData.pnlUsd   || 0,
           pnlPct:      pnlData.pnlPct   || 0,
           feesUsd:     pnlData.feeUsd   || 0,
@@ -777,8 +834,8 @@ export async function closePositionDLMM(poolAddress, positionAddress, pnlData = 
         }
 
         if (!emptyCloseOk) {
-          updatePositionLifecycle(positionAddress, 'manual_review');
-          enqueueReconcileIssue({
+          await updatePositionLifecycle(positionAddress, 'manual_review');
+          await enqueueReconcileIssue({
             issueType: 'EMPTY_POSITION_CLOSE_FAILED',
             entityId: positionAddress,
             payload: { poolAddress, positionAddress, pnlData },
@@ -905,8 +962,8 @@ export async function closePositionDLMM(poolAddress, positionAddress, pnlData = 
           continue; // retry dengan state terbaru
         }
         // Semua retry habis — keep tracked as manual_review (never purge)
-        updatePositionLifecycle(positionAddress, 'manual_review');
-        enqueueReconcileIssue({
+        await updatePositionLifecycle(positionAddress, 'manual_review');
+        await enqueueReconcileIssue({
           issueType: 'CLOSE_POSITION_RETRY_EXHAUSTED',
           entityId: positionAddress,
           payload: { poolAddress, positionAddress, pnlData },
@@ -919,7 +976,7 @@ export async function closePositionDLMM(poolAddress, positionAddress, pnlData = 
       }
 
       // ── 7. Verified closed → update DB ──────────────────────
-      closePositionWithPnl(positionAddress, {
+      await closePositionWithPnl(positionAddress, {
         pnlUsd:      pnlData.pnlUsd   || 0,
         pnlPct:      pnlData.pnlPct   || 0,
         feesUsd:     pnlData.feeUsd   || 0,

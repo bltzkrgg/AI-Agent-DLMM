@@ -46,8 +46,13 @@ export function getWallet() {
 export async function getWalletBalance() {
   if (!wallet) return '0.0000';
   const connection = getConnection();
-  const balance = await connection.getBalance(wallet.publicKey);
-  return (balance / 1e9).toFixed(4); // Convert lamports to SOL
+  try {
+    const balance = await connection.getBalance(wallet.publicKey);
+    return (balance / 1e9).toFixed(4); // Convert lamports to SOL
+  } catch (e) {
+    console.warn(`⚠️ Gagal ambil saldo SOL: ${e.message}`);
+    return '0.0000';
+  }
 }
 
 export async function getTokenBalance(mintAddress) {
@@ -55,6 +60,7 @@ export async function getTokenBalance(mintAddress) {
   try {
     const connection = getConnection();
     const mint = new PublicKey(mintAddress);
+    if (!wallet) return 0;
     const tokenAccounts = await connection.getParsedTokenAccountsByOwner(
       wallet.publicKey,
       { mint }
