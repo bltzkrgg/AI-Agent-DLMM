@@ -342,6 +342,13 @@ export async function executeTool(name, input, notifyFn = null) {
               proactiveCloseRecommended = true;
               proactiveWarning = `💀 EMERGENCY STOP LOSS: ${slCheck.reason}`;
             }
+
+            // ── Hard Take Profit Guard (Sentinel v61) ──
+            const strategyTp = strategyProfile?.exit?.takeProfitPct || 0;
+            if (!proactiveCloseRecommended && strategyTp > 0 && pnlPct >= strategyTp) {
+              proactiveCloseRecommended = true;
+              proactiveWarning = `💰 HARD TAKE PROFIT: Keuntungan mencapai target ${strategyTp}% (PnL: ${pnlPct.toFixed(2)}%). Closing to lock profit and re-anchor.`;
+            }
           } catch {
             // Market analysis optional
           }

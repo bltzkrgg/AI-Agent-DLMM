@@ -525,6 +525,14 @@ async function executeTool(name, input) {
         }, null, 2);
       }
 
+      // ── Guard: binStep Enforcement (Sentinel v61) ──────────────
+      if (strategy.allowedBinSteps && !strategy.allowedBinSteps.includes(poolInfo.binStep)) {
+        return JSON.stringify({
+          blocked: true,
+          reason: `Pool binStep (${poolInfo.binStep}) tidak dijinkan untuk strategi ${strategy.name}. Diperlukan: [${strategy.allowedBinSteps.join(', ')}].`,
+        }, null, 2);
+      }
+
       // ── Guard: Gas Vault & Balance Check ───────────────────────
       const walletBalance = await getWalletBalance();
       const gasReserve = cfg.gasReserve || 0.025; // Aegis-level reserve
