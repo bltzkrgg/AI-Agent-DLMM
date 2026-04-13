@@ -3,6 +3,7 @@
  */
 
 import { globalRateLimiter } from './rateLimiter.js';
+import { safeStringify } from './serializer.js';
 
 /**
  * Safe JSON parse for AI output — handles markdown blocks, extracts JSON from text
@@ -139,4 +140,10 @@ export function safeNum(val, def = 0) {
   const clean = String(val).replace(/[$,\s]/g, '');
   const n = parseFloat(clean);
   return Number.isFinite(n) ? n : def;
+}
+/**
+ * Enhanced Serializer for logging/storage
+ */
+export function stringify(obj, space = 0) {
+  return safeStringify(obj, space);
 }

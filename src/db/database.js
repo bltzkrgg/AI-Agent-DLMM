@@ -2,6 +2,7 @@ import Database from 'better-sqlite3';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { DbBackup } from './backup.js';
+import { safeStringify } from '../utils/serializer.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const DB_PATH = process.env.BOT_DB_PATH || join(__dirname, '../../data.db');
@@ -70,7 +71,38 @@ DbBackup.prototype.attemptRecoverySync = function() {
   return false;
 };
 
-db = initializeDatabase();
+// ─── Singleton Database Instance & Mutex ─────────────────────────
+let db = initializeDatabase();
+
+/**
+ * Mutex Queue to prevent SQLITE_BUSY during concurrent Hunter/Healer execution.
+ * Even though better-sqlite3 is synchronous, concurrent write attempts from 
+ * different async callbacks can still trigger contention in WAL mode.
+ */
+const queue = [];
+let processing = false;
+
+async function processQueue() {
+  if (processing || queue.length === 0) return;
+  processing = true;
+  while (queue.length > 0) {
+    const { task, resolve, reject } = queue.shift();
+    try { 
+      const res = await task();
+      resolve(res); 
+    } catch (err) { 
+      reject(err); 
+    }
+  }
+  processing = false;
+}
+
+export function runInQueue(task) {
+  return new Promise((resolve, reject) => {
+    queue.push({ task, resolve, reject });
+    processQueue();
+  });
+}
 
 db.exec(`
   CREATE TABLE IF NOT EXISTS positions (
@@ -134,6 +166,15 @@ db.exec(`
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
   );
+
+  CREATE TABLE IF NOT EXISTS pending_approvals (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    key TEXT NOT NULL UNIQUE,
+    type TEXT NOT NULL,
+    payload TEXT,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    expires_at DATETIME
+  );
 `);
 
 db.exec(`
@@ -162,7 +203,7 @@ for (const sql of migrations) {
 }
 
 export function savePosition(data) {
-  return db.prepare(`
+  return runInQueue(() => db.prepare(`
     INSERT OR IGNORE INTO positions
     (pool_address, position_address, token_x, token_y, token_x_amount, token_y_amount, deployed_sol, entry_price, deployed_usd, strategy_used, token_x_symbol, lifecycle_state)
     VALUES (@pool_address, @position_address, @token_x, @token_y, @token_x_amount, @token_y_amount, @deployed_sol, @entry_price, @deployed_usd, @strategy_used, @token_x_symbol, @lifecycle_state)
@@ -179,7 +220,7 @@ export function savePosition(data) {
     strategy_used:    data.strategy_used   || null,
     token_x_symbol:   data.token_x_symbol  || null,
     lifecycle_state:  data.lifecycle_state || 'open',
-  });
+  }));
 }
 
 export function getOpenPositions() {
@@ -187,10 +228,10 @@ export function getOpenPositions() {
 }
 
 export function closePosition(positionAddress) {
-  return db.prepare(`
+  return runInQueue(() => db.prepare(`
     UPDATE positions SET status = 'closed', lifecycle_state = 'closed_reconciled', closed_at = CURRENT_TIMESTAMP
     WHERE position_address = ?
-  `).run(positionAddress);
+  `).run(positionAddress));
 }
 
 export function closePositionWithPnl(positionAddress, { pnlUsd, pnlPct, feesUsd, pnlSol, feesSol, closeReason, rangeEfficiencyPct, lifecycleState }) {
@@ -202,7 +243,7 @@ export function closePositionWithPnl(positionAddress, { pnlUsd, pnlPct, feesUsd,
     closeReason === 'CLOSE_FAILED_PURGED'     ?  0 :
     closeReason === 'EMPTY_POSITION_PURGED'   ?  0 : 50
   );
-  return db.prepare(`
+  return runInQueue(() => db.prepare(`
     UPDATE positions SET
       status = 'closed',
       closed_at = CURRENT_TIMESTAMP,
@@ -225,19 +266,19 @@ export function closePositionWithPnl(positionAddress, { pnlUsd, pnlPct, feesUsd,
     effPct,
     lifecycleState || 'closed_reconciled',
     positionAddress,
-  );
+  ));
 }
 
 export function updatePositionStatus(positionAddress, status) {
-  return db.prepare(`UPDATE positions SET status = ? WHERE position_address = ?`).run(status, positionAddress);
+  return runInQueue(() => db.prepare(`UPDATE positions SET status = ? WHERE position_address = ?`).run(status, positionAddress));
 }
 
-export function updatePositionLifecycle(positionAddress, lifecycleState) {
-  return db.prepare(`
+export function await updatePositionLifecycle(positionAddress, lifecycleState) {
+  return runInQueue(() => db.prepare(`
     UPDATE positions
     SET lifecycle_state = ?
     WHERE position_address = ?
-  `).run(lifecycleState, positionAddress);
+  `).run(lifecycleState, positionAddress));
 }
 
 export function getClosedPositions() {
@@ -312,8 +353,8 @@ export function saveNotification(type, message) {
     SELECT id FROM notifications 
     WHERE type = ? AND message = ? AND sent_at > datetime('now', '-30 minutes')
   `).get(type, message);
-  if (recent) return null;
-  return db.prepare(`INSERT INTO notifications (type, message) VALUES (?, ?)`).run(type, message);
+  if (recent) return Promise.resolve(null);
+  return runInQueue(() => db.prepare(`INSERT INTO notifications (type, message) VALUES (?, ?)`).run(type, message));
 }
 
 export function getConversationHistory(limit = 20) {
@@ -324,12 +365,14 @@ export function getConversationHistory(limit = 20) {
 }
 
 export function addToHistory(role, content) {
-  db.prepare(`INSERT INTO conversation_history (role, content) VALUES (?, ?)`).run(role, String(content));
-  db.prepare(`
-    DELETE FROM conversation_history WHERE id NOT IN (
-      SELECT id FROM conversation_history ORDER BY created_at DESC LIMIT 50
-    )
-  `).run();
+  return runInQueue(() => {
+    db.prepare(`INSERT INTO conversation_history (role, content) VALUES (?, ?)`).run(role, String(content));
+    db.prepare(`
+      DELETE FROM conversation_history WHERE id NOT IN (
+        SELECT id FROM conversation_history ORDER BY created_at DESC LIMIT 50
+      )
+    `).run();
+  });
 }
 
 export function getActiveOperation(operationType, entityId = null) {
@@ -353,20 +396,20 @@ export function getActiveOperation(operationType, entityId = null) {
 }
 
 export function createOperationLog({ operationType, entityId = null, payload = null, metadata = null, status = 'pending' }) {
-  return db.prepare(`
+  return runInQueue(() => db.prepare(`
     INSERT INTO operation_log (operation_type, entity_id, status, payload, metadata)
     VALUES (?, ?, ?, ?, ?)
   `).run(
     operationType,
     entityId,
     status,
-    payload ? JSON.stringify(payload) : null,
-    metadata ? JSON.stringify(metadata) : null,
-  );
+    payload ? safeStringify(payload) : null,
+    metadata ? safeStringify(metadata) : null,
+  ));
 }
 
-export function enqueueReconcileIssue({ issueType, entityId, payload = null, notes = null }) {
-  return db.prepare(`
+export function await enqueueReconcileIssue({ issueType, entityId, payload = null, notes = null }) {
+  return runInQueue(() => db.prepare(`
     INSERT INTO reconcile_queue (issue_type, entity_id, payload, notes)
     VALUES (?, ?, ?, ?)
   `).run(
@@ -374,7 +417,7 @@ export function enqueueReconcileIssue({ issueType, entityId, payload = null, not
     entityId,
     payload ? JSON.stringify(payload) : null,
     notes,
-  );
+  ));
 }
 
 export function listPendingReconcileIssues(limit = 50) {
@@ -387,15 +430,15 @@ export function listPendingReconcileIssues(limit = 50) {
 }
 
 export function resolveReconcileIssue(id, notes = null) {
-  return db.prepare(`
+  return runInQueue(() => db.prepare(`
     UPDATE reconcile_queue
     SET status = 'resolved', notes = COALESCE(?, notes), updated_at = CURRENT_TIMESTAMP
     WHERE id = ?
-  `).run(notes, id);
+  `).run(notes, id));
 }
 
 export function updateOperationLog(id, { status, result, metadata, errorMessage, txHashes }) {
-  return db.prepare(`
+  return runInQueue(() => db.prepare(`
     UPDATE operation_log
     SET
       status = COALESCE(?, status),
@@ -412,7 +455,25 @@ export function updateOperationLog(id, { status, result, metadata, errorMessage,
     errorMessage ?? null,
     txHashes !== undefined ? JSON.stringify(txHashes) : null,
     id,
-  );
+  ));
+}
+
+export function setPendingApproval(key, type, payload = null, expiryMinutes = 60) {
+  return runInQueue(() => db.prepare(`
+    INSERT OR REPLACE INTO pending_approvals (key, type, payload, expires_at)
+    VALUES (?, ?, ?, datetime('now', ?))
+  `).run(key, type, payload ? JSON.stringify(payload) : null, `+${expiryMinutes} minutes`));
+}
+
+export function getPendingApproval(key) {
+  return db.prepare(`
+    SELECT * FROM pending_approvals 
+    WHERE key = ? AND (expires_at IS NULL OR expires_at > CURRENT_TIMESTAMP)
+  `).get(key);
+}
+
+export function deletePendingApproval(key) {
+  return runInQueue(() => db.prepare(`DELETE FROM pending_approvals WHERE key = ?`).run(key));
 }
 
 export function listRecentOperations(limit = 20) {
