@@ -1,4 +1,5 @@
 // Terminal-style table helpers for Telegram messages
+import { safeNum } from './safeJson.js';
 // All output goes inside ``` code blocks for monospace alignment
 
 export const padR = (str, n) => {
@@ -21,8 +22,8 @@ export const codeBlock = (lines) => '```\n' + lines.join('\n') + '\n```';
 
 // Format PnL with mandatory sign: "+$1.23 +4.56%"
 export const formatPnl = (usd, pct) => {
-  const u = parseFloat(usd) || 0;
-  const p = parseFloat(pct) || 0;
+  const u = safeNum(usd) || 0;
+  const p = safeNum(pct) || 0;
   const sign = (v) => v >= 0 ? '+' : '';
   return `${sign(u)}$${Math.abs(u).toFixed(2)}  ${sign(p)}${Math.abs(p).toFixed(2)}%`;
 };

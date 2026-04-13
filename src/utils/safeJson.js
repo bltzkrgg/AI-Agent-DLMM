@@ -129,8 +129,14 @@ export function parseTvl(tvlStr) {
 
 /**
  * Safe number — returns default if value is NaN/null/undefined
+ * Now handles commas and spaces in financial strings (e.g. "1,234.56")
  */
 export function safeNum(val, def = 0) {
-  const n = parseFloat(val);
-  return isNaN(n) ? def : n;
+  if (val === null || val === undefined) return def;
+  if (typeof val === 'number') return Number.isFinite(val) ? val : def;
+  
+  // Clean string: remove commas, spaces, and currency symbols
+  const clean = String(val).replace(/[$,\s]/g, '');
+  const n = parseFloat(clean);
+  return Number.isFinite(n) ? n : def;
 }
