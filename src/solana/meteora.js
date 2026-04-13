@@ -403,8 +403,27 @@ async function _openPositionLogic(poolAddress, tokenXAmount, tokenYAmount, price
     rangeMax = activeBin.binId - Math.floor((offsetMin / 100) / binStepPct);
     rangeMin = activeBin.binId - Math.floor((offsetMax / 100) / binStepPct);
     
-    // Safety check: ensure min < max
-    if (rangeMin > rangeMax) [rangeMin, rangeMax] = [rangeMax, rangeMin];
+    // Sentinel v61: Logarithmic math for precision bin placement.
+    // DLMM uses geometric spacing: Price(bin) = Price(active) * (1.0001 ^ (binStep * offset))
+    const binStepInt = parseInt(binStep);
+    const logPriceRatio = (offset) => Math.log(1 - offset / 100);
+    const logBinFactor = binStepInt * Math.log(1.0001);
+
+    // rangeMax (Top) — OffsetMin (0%)
+    // If offsetMin is 0, logPriceRatio is log(1) = 0.
+    const offsetMinBins = Math.round(Math.abs(logPriceRatio(offsetMin) / logBinFactor)) || 0;
+    rangeMax = activeBin.binId - offsetMinBins;
+    
+    // rangeMin (Bottom/Deep Sea) — OffsetMax (94%)
+    const offsetMaxBins = Math.round(Math.abs(logPriceRatio(offsetMax) / logBinFactor));
+    rangeMin = activeBin.binId - offsetMaxBins;
+
+    // Aegis Safety Clamps
+    const MAX_BINS_LIMIT = 1000;
+    rangeMax = Math.min(rangeMax, activeBin.binId - 1); // Strictly Y-only (SOL)
+    if (rangeMax - rangeMin > MAX_BINS_LIMIT) {
+      rangeMin = rangeMax - MAX_BINS_LIMIT;
+    }
   } else {
     // Classic centered-ish range
     const fixedBinsBelow = Number.isFinite(deployOptions?.fixedBinsBelow)
@@ -424,6 +443,16 @@ async function _openPositionLogic(poolAddress, tokenXAmount, tokenYAmount, price
   // Otherwise, the SDK math calculates a required X proportion and throws an error/crash.
   if (tokenXAmount === 0 || tokenXAmount === '0') {
     rangeMax = Math.min(rangeMax, activeBin.binId - 1);
+    
+    // --- Meteora Sentinel Safety: MAX_BINS_LIMIT ---
+    // Total bins supported by DLMM is ~1,400. Transaction size limits often hit around 600-800 per chunk.
+    // We clamp the width to 1,000 bins to prevent deployment failure on high-precision pools.
+    const MAX_WIDTH = 1000;
+    if (rangeMax - rangeMin > MAX_WIDTH) {
+      console.log(`[meteora] Clamp: Wide range truncated from ${rangeMax - rangeMin} bins to ${MAX_WIDTH} bins for transaction stability.`);
+      rangeMin = rangeMax - MAX_WIDTH;
+    }
+
     if (rangeMin > rangeMax) {
       // Fallback fallback if calculation pushed min over max
       rangeMin = rangeMax - 2; 

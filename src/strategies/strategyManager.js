@@ -20,92 +20,28 @@ const BASELINE_STRATEGIES = {
   'Evil Panda': {
     id: 'evil_panda',
     type: 'single_side_y', // SOL only
-    allowedBinSteps: [80, 100, 125, 200],
+    allowedBinSteps: [100, 125],
     parameters: {
       binStep: 100,
       minMcap: 250000,
       minVolume24h: 1000000,
-      timeframe: '15m', // Master Guard timeframe
+      timeframe: '15m', // 15-minute Master Guard
     },
     entry: {
-      requireSupertrendBreak: true,
-      momentumRequired: false, 
-      narrativeRequired: true,
-      adaptiveMode: true,
+      requireSupertrendBullish: true,
+      timeframe: '15m',
+      confirmationOnClose: true,
     },
     deploy: {
-      label: 'warp_panda_sniper_m15',
-      minBinStep: 100, 
-      entryPriceOffsetMin: 6,  
-      entryPriceOffsetMax: 90, 
+      label: 'evil_panda_master_v61',
+      entryPriceOffsetMin: 0,  // Starts at current price
+      entryPriceOffsetMax: 94, // Extends to -94% drop
+      slippagePct: 0.5,
     },
     exit: {
-      mode: 'evil_panda_confluence',
-      emergencyStopLossPct: 40, // Wider SL to allow dip accumulation
-      takeProfitPct: 15,
-    },
-  },
-  'Deep Sea Kraken': {
-    id: 'deep_sea_kraken',
-    type: 'single_side_y',
-    allowedBinSteps: [100, 200],
-    parameters: {
-      entryPriceOffsetMin: 0, 
-      entryPriceOffsetMax: 80, // Target extreme wicks (-80%)
-    },
-    entry: {
-      momentumTriggerM5: 0.5, 
-      volatilityRequired: 'HIGH',
-    },
-    deploy: {
-      label: 'deep_sea_wick_hunter',
-      priceRangePct: 80,
-    },
-    exit: {
-      mode: 'trend_confirmed',
-      emergencyStopLossPct: 60,
-      takeProfitPct: 25,
-    },
-  },
-  'Wave Enjoyer': {
-    id: 'wave_enjoyer',
-    type: 'single_side_y',
-    allowedBinSteps: [1, 5, 10, 20, 50, 100],
-    parameters: {
-      binStep: 80,
-      minVolume5mUsd: 100000,
-    },
-    entry: {
-      momentumTriggerM5: 1.0,
-      proximityToSupport: true,
-    },
-    deploy: {
-      fixedBinsBelow: 24,
-      label: 'wave_enjoyment',
-    },
-    exit: {
-      mode: 'wave_exit',
-      holdMinMinutes: 10,
-      holdMaxMinutes: 120,
-    },
-  },
-  'NPC': {
-    id: 'npc',
-    type: 'single_side_y',
-    allowedBinSteps: [80, 100],
-    parameters: {
-      binStep: 80,
-    },
-    entry: {
-      afterBreakout: true,
-      momentumTriggerM5: 1.5,
-    },
-    deploy: {
-      fixedBinsBelow: 69,
-      label: 'npc_consolidation',
-    },
-    exit: {
-      mode: 'standard',
+      mode: 'supertrend_flip',
+      emergencyStopLossPct: 95, 
+      takeProfitPct: 20,
     },
   }
 };
