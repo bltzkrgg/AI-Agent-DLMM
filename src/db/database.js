@@ -72,7 +72,7 @@ DbBackup.prototype.attemptRecoverySync = function() {
 };
 
 // ─── Singleton Database Instance & Mutex ─────────────────────────
-let db = initializeDatabase();
+db = initializeDatabase();
 
 /**
  * Mutex Queue to prevent SQLITE_BUSY during concurrent Hunter/Healer execution.
