@@ -234,6 +234,7 @@ function scoreStrategy(strategy, conditions) {
 /**
  * Eval readiness based on technical indicators and market snapshot.
  * Integrated for Technical Sniper upgrade.
+ */
 export async function evaluateStrategyReadiness({ strategyName, snapshot }) {
   if (!snapshot || !snapshot.ta) return { ok: false, blockers: ['Missing TA data'] };
   const ta = snapshot.ta;
