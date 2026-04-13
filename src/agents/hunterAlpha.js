@@ -120,21 +120,17 @@ async function evaluateStrategyReadiness({ strategyName, poolInfo, poolAddress }
     ohlcv15m: ohlcv, // preserved field name for compatibility
     priceRangePct: strategy.deploy?.priceRangePct || null,
     deployOptions: {
+      ...strategy.deploy,
       fixedBinsBelow: (function () {
         const atr = ohlcv?.ta?.atr;
         const currentPrice = ohlcv?.currentPrice;
         if (strategyName === 'Evil Panda' && atr && currentPrice) {
-          // Aegis ATR Range: Cover 3x ATR (volatility standard)
-          // ATR / Price = volatility pct per candle. 
-          // (volPct / binStepPct) = bins needed to cover that volatility.
+          // If we have explicit offsets, they will override fixedBinsBelow in meteora.js
           const binStepPct = poolInfo.binStep / 10000;
           const atrPct = (atr / currentPrice);
           const adaptive = Math.floor((atrPct * 3.0) / binStepPct); 
-          
-          // Clamp: standard Panda 40-125 bins
           return Math.min(125, Math.max(40, adaptive));
         }
-        // Fallback to legacy 24h range if ATR missing
         if (strategyName === 'Evil Panda' && ohlcv?.range24hPct) {
           const adaptive = 40 + Math.floor(ohlcv.range24hPct * 2.5);
           return Math.min(125, Math.max(40, adaptive));

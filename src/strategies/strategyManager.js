@@ -21,15 +21,15 @@ const BASELINE_STRATEGIES = {
     },
     entry: {
       requireSupertrendBreak: true,
-      momentumTriggerM5: 2.0,
+      momentumRequired: false, 
       narrativeRequired: true,
       adaptiveMode: true,
-      minBuySellRatio: 1.3,
-      note: 'Refundable bins allow for disciplined re-entry on trend breaks.',
     },
     deploy: {
       label: 'warp_panda_sniper_m15',
-      priceRangePct: 10,
+      minBinStep: 100, 
+      entryPriceOffsetMin: 6,  
+      entryPriceOffsetMax: 90, 
     },
     exit: {
       mode: 'evil_panda_confluence',
