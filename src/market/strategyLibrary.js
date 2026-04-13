@@ -74,6 +74,7 @@ export function addResearchedStrategy(strategy) {
 // ─── Match strategy to market conditions ─────────────────────────
 
 export function matchStrategyToMarket(marketSnapshot) {
+  if (!marketSnapshot) return { recommended: null, alternatives: [], currentConditions: {} };
   const library = loadLibrary();
   const strategies = library.strategies;
 

@@ -77,11 +77,11 @@ CARA BACA SETIAP SIGNAL DALAM KONTEKS DLMM LP:
 ═══════════════════════════════════════════════════════════
 STRATEGI PRIORITAS (default: Single-Side SOL):
 ═══════════════════════════════════════════════════════════
-1. Single-Side SOL  → DEFAULT jika tidak ada sinyal kuat lain
-2. Spot Balanced    → jika sideways + volume normal + tidak ada whale risk
-3. Bid-Ask Wide     → jika volatilitas tinggi + volume di atas rata-rata
-4. Single-Side Token X → HANYA jika uptrend kuat + SM buying + volume sangat tinggi
-5. Curve Concentrated → HANYA jika pool sangat stabil + volatilitas rendah
+1. Single-Side SOL  → DEFAULT. Posisikan sebagai JARING untuk menyerap fee saat harga drop.
+2. Spot Balanced    → Gunakan jika market benar-benar sideways.
+3. Bid-Ask Wide     → Gunakan jika volatilitas tinggi.
+4. LP IDENTITY      → CORE: Jangan kabur saat pullback di market bullish. Dip = Pendapatan.
+5. REVERSAL DANGER  → CLOSE jika trend 24 jam berubah dari Bullish ke Bearish secara total.
 
 }
   }

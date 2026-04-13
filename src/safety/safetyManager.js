@@ -12,6 +12,7 @@
 
 import { getConfig } from '../config.js';
 import { getRuntimeState, setRuntimeState } from '../runtime/state.js';
+import { safeNum } from '../utils/safeJson.js';
 
 // ─── State ───────────────────────────────────────────────────────
 
@@ -19,7 +20,7 @@ const DAILY_RISK_STATE_KEY = 'daily-risk-state';
 
 // Pending confirmations — key: confirmationId, value: { resolve, reject, timeout }
 const pendingConfirmations = new Map();
-let confirmationCounter = 0;
+// No more sequence counter to avoid collision on restart
 
 function getTodayStr() {
   return new Date().toISOString().slice(0, 10);
@@ -51,7 +52,7 @@ function saveDailyRiskState(state) {
 
 export function recordPnlUsd(pnlUsd) {
   const dailyPnl = loadDailyRiskState();
-  dailyPnl.totalPnlUsd += Number(pnlUsd || 0);
+  dailyPnl.totalPnlUsd += safeNum(pnlUsd);
   saveDailyRiskState(dailyPnl);
 }
 
@@ -193,7 +194,8 @@ export function validateStrategyForMarket(strategyType, poolInfo) {
  */
 export function requestConfirmation(notifyFn, bot, allowedId, message, timeoutMs = 5 * 60 * 1000) {
   return new Promise((resolve) => {
-    const id = ++confirmationCounter;
+    // Gunakan 4 digit terakhir dari timestamp untuk ID pendek tapi unik per session
+    const id = Date.now() % 10000;
     const confirmId = `confirm_${id}`;
 
     // Kirim pesan konfirmasi

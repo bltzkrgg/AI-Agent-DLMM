@@ -5,7 +5,7 @@ import * as ta from '../utils/ta.js';
 import { getPoolSmartMoney } from '../market/lpAgent.js';
 
 const DEXSCREENER_BASE = 'https://api.dexscreener.com';
-const METEORA_DATAPI   = 'https://dlmm.datapi.meteora.ag';
+const METEORA_DATAPI   = 'https://dlmm-api.meteora.ag';
 
 // ─── 1. OHLCV — Price Snapshot (DexScreener) ────────────────────
 // Rerouted to DexScreener as the primary source for price/volatility logic.
@@ -111,8 +111,10 @@ async function buildOHLCVFromDexScreener(tokenMint, poolAddress = null) {
     const volume24h      = safeNum(best.volume?.h24);
     const range24hPct    = Math.abs(priceChange24h);
 
-    const high24h = currentPrice / (1 - Math.max(0, priceChange24h) / 100) || currentPrice;
-    const low24h  = currentPrice / (1 + Math.max(0, -priceChange24h) / 100) || currentPrice;
+    const highDenom = 1 - Math.max(0, priceChange24h) / 100;
+    const lowDenom  = 1 + Math.max(0, -priceChange24h) / 100;
+    const high24h = highDenom > 0 ? currentPrice / highDenom : currentPrice * 2;
+    const low24h  = lowDenom > 0 ? currentPrice / lowDenom : currentPrice / 2;
 
     // Volume Delta components (m5 preferred for sniper logic)
     const txns   = best.txns?.m5 || best.txns?.h1 || {};
@@ -260,9 +262,9 @@ async function getHistoryOHLCV(poolAddress) {
     const json = await res.json();
     const candles = json.candles || [];
     
-    // DexScreener format: { t: timestamp, o: open, h: high, l: low, c: close, v: volume }
+    // DexScreener format: { t: timestamp (seconds), o: open, h: high, l: low, c: close, v: volume }
     const raw = candles.map(c => ({
-      time:  c.t / 1000, // API returns ms, we use seconds for TA
+      time:  c.t, // API v1 returns seconds
       open:  safeNum(c.o),
       high:  safeNum(c.h),
       low:   safeNum(c.l),
@@ -283,7 +285,11 @@ export async function getMarketSnapshot(tokenMint, poolAddress = null) {
     poolAddress ? getDLMMPoolData(poolAddress) : Promise.resolve(null),
     getOnChainSignals(tokenMint),
     getSentiment(tokenMint),
-    poolAddress ? getPoolSmartMoney(poolAddress) : Promise.resolve(null),
+    poolAddress 
+      ? fetchWithTimeout(`${METEORA_DATAPI}/pools/${poolAddress}/top-lpers`, {}, 5000)
+          .then(res => res.ok ? res.json() : null)
+          .catch(() => null)
+      : Promise.resolve(null),
   ]);
 
   const ohlcv      = ohlcvR.status     === 'fulfilled' ? ohlcvR.value     : null;
@@ -312,9 +318,11 @@ export async function getMarketSnapshot(tokenMint, poolAddress = null) {
   }
   
   if (smartMoney && pool && pool.tvl > 0) {
-    const skew = (smartMoney.topLpUsd / pool.tvl) * 100;
-    smartMoney.skewPct = Number.isFinite(skew) ? parseFloat(skew.toFixed(2)) : 0;
-    if (skew > 25) healthScore -= 10;
+    const topLp = Array.isArray(smartMoney) ? smartMoney[0] : null;
+    if (topLp && topLp.usd_value) {
+      const skew = (safeNum(topLp.usd_value) / pool.tvl) * 100;
+      if (skew > 25) healthScore -= 10;
+    }
   }
 
   healthScore = Math.max(0, Math.min(100, healthScore));
