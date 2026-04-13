@@ -332,11 +332,15 @@ export async function executeTool(name, input, notifyFn = null) {
                }
             }
 
-            // Hard Stop Loss (The Panda Floor: -40% from strategyManager.js)
-            const hardSl = isPanda ? -40 : -20;
-            if (!proactiveCloseRecommended && pnlPct <= hardSl) {
+            // ── Unified Stop Loss Guard (Maha Bersih v20) ──
+            const strategyProfile = getStrategy(pos.strategy_used);
+            const strategySl = strategyProfile?.exit?.emergencyStopLossPct;
+            
+            const slCheck = checkStopLoss({ ...pos, pnlPct }, strategySl);
+            
+            if (!proactiveCloseRecommended && slCheck.triggered) {
               proactiveCloseRecommended = true;
-              proactiveWarning = `💀 EMERGENCY FLOOR HIT: PnL ${pnlPct.toFixed(2)}% <= Hard SL ${hardSl}%. Closing immediately.`;
+              proactiveWarning = `💀 EMERGENCY STOP LOSS: ${slCheck.reason}`;
             }
           } catch {
             // Market analysis optional
@@ -826,7 +830,6 @@ export async function runHealerAlpha(notifyFn) {
         dbPosition: pos,
         livePosition: match,
         providerPnlPct: lpPnlMap.get(pos.position_address),
-        directPnlPct: Number.isFinite(match?.pnlPct) ? match.pnlPct : null,
       });
       const pnlPct = snapshot.pnlPct;
       const pnlSol = snapshot.pnlSol;

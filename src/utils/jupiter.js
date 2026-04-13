@@ -56,7 +56,7 @@ export async function getJupiterPrice(tokenMint) {
     const res = await fetchWithTimeout(`https://api.jup.ag/price/v2?ids=${tokenMint}`, {}, 5000);
     if (!res.ok) return null;
     const data = await res.json();
-    return parseFloat(data.data[tokenMint]?.price || 0);
+    return safeNum(data.data[tokenMint]?.price);
   } catch {
     return null;
   }
