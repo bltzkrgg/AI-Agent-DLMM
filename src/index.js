@@ -17,6 +17,7 @@ import { evolveFromTrades, getMemoryStats, getInstinctsContext } from './market/
 import { extractStrategiesFromArticle, summarizeArticle } from './market/researcher.js';
 import { getLibraryStats } from './market/strategyLibrary.js';
 import { screenToken, formatScreenResult } from './market/coinfilter.js';
+import { safeNum } from './utils/safeJson.js';
 import { getOpenPositions, getPositionStats } from './db/database.js';
 import { getPositionInfo, getPositionInfoLight, getSolPriceUsd } from './solana/meteora.js';
 import { padR, hr, kv, codeBlock, formatPnl, shortAddr, shortStrat } from './utils/table.js';
