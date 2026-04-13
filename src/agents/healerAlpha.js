@@ -277,6 +277,10 @@ export async function executeTool(name, input, notifyFn = null) {
               { inRange: match?.inRange, pnlPct }
             );
 
+            const hTotalVol = (analysis.snapshot?.ohlcv?.buyVolume || 0) + (analysis.snapshot?.ohlcv?.sellVolume || 0);
+            const hVolDelta = hTotalVol > 0 ? (analysis.snapshot?.ohlcv?.buyVolume || 0) / hTotalVol : 0.5;
+            const stTrend   = analysis.snapshot?.ta?.supertrend?.trend || 'UNKNOWN';
+
             marketSignal = {
               signal:            analysis.signal,
               confidence:        analysis.confidence,
@@ -313,9 +317,6 @@ export async function executeTool(name, input, notifyFn = null) {
             }
 
             // ── Panic Dump Guard ──
-            const hTotalVol = (analysis.snapshot?.ohlcv?.buyVolume || 0) + (analysis.snapshot?.ohlcv?.sellVolume || 0);
-            const hVolDelta = hTotalVol > 0 ? (analysis.snapshot?.ohlcv?.buyVolume || 0) / hTotalVol : 0.5;
-            const stTrend   = analysis.snapshot?.ta?.supertrend?.trend || 'UNKNOWN';
             const isPanda   = pos.strategy_used === 'Evil Panda';
 
             // Panda Resilience: Only panic if Volume Dump CONFORMS with Bearish Trend.

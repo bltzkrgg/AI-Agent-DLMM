@@ -8,13 +8,17 @@ import { PublicKey } from '@solana/web3.js';
 import { getOpenPositions, getPoolStats, closePositionWithPnl } from '../db/database.js';
 import { getLessonsContext } from '../learn/lessons.js';
 import { getStrategy, parseStrategyParameters, getAllStrategies } from '../strategies/strategyManager.js';
-import { matchStrategyToMarket, getLibraryStats } from '../market/strategyLibrary.js';
+import { 
+  matchStrategyToMarket, 
+  getLibraryStats, 
+  evaluateStrategyReadiness as libEvaluateReadiness 
+} from '../market/strategyLibrary.js';
 import { fetchCandles, getMarketSnapshot, getOHLCV, getMultiTFScore } from '../market/oracle.js';
 import { getSocialSignals, getTokenSocialScore } from '../market/socialScanner.js';
 import { getInstinctsContext } from '../market/memory.js';
 import { getStrategyIntelligenceContext } from '../market/strategyPerformance.js';
 import { screenToken, formatScreenResult } from '../market/coinfilter.js';
-import { parseTvl } from '../utils/safeJson.js';
+import { parseTvl, safeNum } from '../utils/safeJson.js';
 import { kv, hr, codeBlock, shortAddr } from '../utils/table.js';
 import { getDarwinWeights, captureSignals } from '../market/signalWeights.js';
 import { isOnCooldown, getPoolMemoryContext, recordDeployment } from '../market/poolMemory.js';
@@ -36,113 +40,9 @@ let _hunterTargetCount = null; // Local caches for tool output (shared across ro
 export function getCandidates() { return lastCandidates; }
 export function getLastHunterReport() { return lastReport; }
 
-async function evaluateStrategyReadiness({ strategyName, poolInfo, poolAddress }) {
-  const strategy = getStrategy(strategyName);
-  if (!strategy) {
-    return { ok: true, strategy: null, priceRangePct: null, deployOptions: {} };
-  }
-
-  // Snapshot-only market data (consolidated API)
-  const ohlcv = await getOHLCV(poolInfo.tokenX, poolAddress).catch(() => null);
-
-  const blockers = [];
-  const notes = [];
-
-  if (!ohlcv) {
-    blockers.push('Market snapshot tidak tersedia');
-  } else {
-    if (strategy.entry) {
-      if (strategy.allowedBinSteps && !strategy.allowedBinSteps.includes(poolInfo.binStep)) {
-        blockers.push(`bin step ${poolInfo.binStep} tidak termasuk eligible (${strategy.allowedBinSteps.join('/')})`);
-      }
-
-      // ─── Entry Decision ───
-      const oracleTrigger = ohlcv.ta?.[strategyName]?.entry;
-      const isSupertrendBullish = ohlcv.ta?.supertrend?.trend === 'BULLISH';
-      
-      if (strategyName === 'Evil Panda') {
-        // Falling Knife Guard: Evil Panda WAJIB Bullish di M15
-        if (!isSupertrendBullish) {
-          blockers.push(`Trend 15m masih ${ohlcv.ta?.supertrend?.trend || 'Unknown'} — Menahan diri dari 'Falling Knife'`);
-        }
-      }
-
-      if (oracleTrigger) {
-        // Jika ada trigger khusus (misal: Evil Panda Dip Buy), gunakan itu sebagai prioritas utama
-        if (!oracleTrigger.triggered) {
-          blockers.push(`Strategi ${strategyName} belum terpicu: ${oracleTrigger.reason || 'Sinyal belum konfirmasi'}`);
-        } else {
-          notes.push(`✅ Trigger Spesifik: ${oracleTrigger.reason}`);
-        }
-      } else {
-        // Fallback ke Momentum Logic standar untuk strategi lain
-        const momentumThreshold = strategy.entry.momentumTriggerM5 || 1.0;
-        const isBullishM5 = (ohlcv.priceChangeM5 || 0) > momentumThreshold;
-        const isElasticH1 = (ohlcv.priceChangeH1 || 0) > 5.0 && (poolInfo.feeApr || 0) > 800;
-
-        if (!isBullishM5 && !isElasticH1 && strategy.entry.momentumRequired !== false) {
-          blockers.push(`momentum 5m sepi (${(ohlcv.priceChangeM5 || 0).toFixed(2)}%) < threshold ${momentumThreshold}%`);
-        }
-
-        if (ohlcv.trend === 'DOWNTREND' && !isBullishM5 && !isElasticH1) {
-          blockers.push('trend global DOWNTREND — sniper menahan diri dari pisau jatuh');
-        }
-      }
-
-      const trendDisplay = ohlcv.ta?.supertrend?.trend || ohlcv.trend;
-      notes.push(`m5: ${(ohlcv.priceChangeM5 || 0).toFixed(2)}% | h1: ${(ohlcv.priceChangeH1 || 0).toFixed(2)}% | trend: ${trendDisplay}`);
-    }
-  }
-
-  // JIT Volume Delta Guard: Cek akumulasi volume di lilin terakhir (1m/5m)
-  const totalVol = (ohlcv?.buyVolume || 0) + (ohlcv?.sellVolume || 0);
-  const volDelta = totalVol > 0 ? (ohlcv.buyVolume || 0) / totalVol : 0.5;
-
-  const isEvilPanda = strategyName === 'Evil Panda';
-  const isUptrend = ohlcv?.ta?.supertrend?.trend === 'BULLISH';
-
-  // Panda Resilience: Bypass volume dump filter if we are in an uptrend (Dip Buy territory)
-  if (volDelta < 0.45) {
-    if (isEvilPanda && isUptrend) {
-      notes.push(`Volume Delta: ${(volDelta*100).toFixed(0)}% Buy pressure (Panda Dip Mode: Ignoring Dump)`);
-    } else {
-      blockers.push(`VOLUME_DELTA_DUMP: Tekanan jual tinggi dlm 5m terakhir (${(volDelta*100).toFixed(0)}% Buy)`);
-    }
-  } else {
-    notes.push(`Volume Delta: ${(volDelta*100).toFixed(0)}% Buy pressure`);
-  }
-
-  return {
-    ok: blockers.length === 0,
-    blockers,
-    notes,
-    strategy,
-    ohlcv15m: ohlcv, // preserved field name for compatibility
-    priceRangePct: strategy.deploy?.priceRangePct || null,
-    deployOptions: {
-      ...strategy.deploy,
-      fixedBinsBelow: (function () {
-        const atr = ohlcv?.ta?.atr;
-        const currentPrice = ohlcv?.currentPrice;
-        if (strategyName === 'Evil Panda' && atr && currentPrice) {
-          // If we have explicit offsets, they will override fixedBinsBelow in meteora.js
-          const binStepPct = poolInfo.binStep / 10000;
-          const atrPct = (atr / currentPrice);
-          const adaptive = Math.floor((atrPct * 3.0) / binStepPct); 
-          return Math.min(125, Math.max(40, adaptive));
-        }
-        if (strategyName === 'Evil Panda' && ohlcv?.range24hPct) {
-          const adaptive = 40 + Math.floor(ohlcv.range24hPct * 2.5);
-          return Math.min(125, Math.max(40, adaptive));
-        }
-        const maxFloor = strategyName === 'Deep Sea Kraken' ? 250 : 125;
-        return Math.min(maxFloor, strategy.deploy?.fixedBinsBelow || 68);
-      })(),
-      binPadding: strategyName === 'Evil Panda' ? 0 : 1,
-      rangeLabel: strategy.deploy?.label,
-    },
-  };
-}
+// --- Kode Zombie Diamputasi (Baris 43-149) ---
+// Logika evaluasi strategi kini terpusat di src/market/strategyLibrary.js 
+// untuk mencegah dualisme kodingan dan shadowing bug.
 
 // ─── Darwinian Scoring ───────────────────────────────────────────
 // Weights di-load dari signalWeights.js (auto-recalibrated dari data nyata).
@@ -442,7 +342,7 @@ async function executeTool(name, input) {
           buyPressure: `${price.buyPressurePct}% (${price.sentiment})`,
         } : null,
         strategyRecommendation: strategyMatch ? {
-          recommended: 'Evil Panda (Adaptive)',
+          recommended: strategyRecommendations.recommended?.name || 'Evil Panda',
           confidence: strategyMatch.recommended?.matchScore,
           entryConditions: 'm5 Momentum + h1 Trend Alignment',
           exitConditions: 'Evil Panda Confluence',
@@ -493,8 +393,8 @@ async function executeTool(name, input) {
         openPositions: openPos.length,
         maxPositions: effectiveMax,
         targetCount: _hunterTargetCount,
-        canOpen: parseFloat(balance) >= (cfg.deployAmountSol + (cfg.gasReserve ?? 0.02)) && openPos.length < effectiveMax,
-        requiredSol: parseFloat((cfg.deployAmountSol + (cfg.gasReserve ?? 0.02)).toFixed(4)),
+        canOpen: safeNum(balance) >= (cfg.deployAmountSol + (cfg.gasReserve ?? 0.02)) && openPos.length < effectiveMax,
+        requiredSol: safeNum((cfg.deployAmountSol + (cfg.gasReserve ?? 0.02)).toFixed(4)),
       }, null, 2);
     }
 
@@ -599,12 +499,19 @@ async function executeTool(name, input) {
 
       // Strategy validation sebelum lock
       const strategy = getStrategy(input.strategy_name || 'Evil Panda');
+      
+      if (!strategy) {
+        return JSON.stringify({
+          blocked: true,
+          reason: `Strategi "${input.strategy_name}" tidak ditemukan di database atau baseline.`,
+        }, null, 2);
+      }
 
       // ── Guard: Gas Vault & Balance Check ───────────────────────
       const walletBalance = await getWalletBalance();
       const gasReserve = cfg.gasReserve || 0.025; // Aegis-level reserve
       const minRequired = (deployAmountSol || 0.1) + gasReserve;
-      if (parseFloat(walletBalance) < minRequired) {
+      if (safeNum(walletBalance) < minRequired) {
         return JSON.stringify({
           blocked: true,
           reason: `Saldo SOL tidak cukup (${walletBalance} SOL). Butuh ${minRequired} SOL (Amount: ${deployAmountSol} + Reserve: ${gasReserve}) untuk menjamin exit gas.`,
@@ -619,10 +526,10 @@ async function executeTool(name, input) {
 
       try {
         const snapshot = await getMarketSnapshot(poolInfo.tokenX, input.pool_address);
-        strategyEval = await evaluateStrategyReadiness({
+        strategyEval = await libEvaluateReadiness({
           strategyName: strategy.name,
-          poolInfo,
           poolAddress: input.pool_address,
+          snapshot,
         });
         // Merge dynamic market-based options (e.g., adaptive fixedBinsBelow)
         if (strategyEval?.deployOptions) {
@@ -840,7 +747,7 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null, opt
   // ── Skip silently jika balance tidak cukup ───────────────────
   try {
     const balance = await getWalletBalance();
-    if (parseFloat(balance) < (cfg.deployAmountSol + (cfg.gasReserve ?? 0.02))) {
+    if (safeNum(balance) < (cfg.deployAmountSol + (cfg.gasReserve ?? 0.02))) {
       _hunterTargetCount = null;
       return null;
     }

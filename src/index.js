@@ -137,8 +137,8 @@ async function syncStartingBalanceBaseline() {
       getWalletBalance(),
       getSolPriceUsd().catch(() => 150),
     ]);
-    const balanceUsd = parseFloat(balance) * solPriceUsd;
-    setStartingBalanceUsd(parseFloat(balanceUsd.toFixed(2)));
+    const balanceUsd = safeNum(balance) * solPriceUsd;
+    setStartingBalanceUsd(safeNum(balanceUsd.toFixed(2)));
   } catch (e) {
     console.warn(`⚠️ Failed to sync starting balance baseline: ${e.message}`);
   }
@@ -273,8 +273,8 @@ async function runAutoScreening() {
   const balance = await getWalletBalance().catch(() => '0');
   const needed = liveCfg.deployAmountSol + (liveCfg.gasReserve ?? 0.02);
   
-  if (parseFloat(balance) < needed) {
-    const balNum = parseFloat(balance).toFixed(4);
+  if (safeNum(balance) < needed) {
+    const balNum = safeNum(balance).toFixed(4);
     console.log(`⏭ Hunter skip — saldo low (${balNum} < ${needed.toFixed(2)})`);
     
     // Kirim notifikasi Telegram cuma sekali tiap 6 jam agar tidak spam
@@ -358,7 +358,7 @@ cron.schedule('0 7 * * *', async () => {
     const instincts = getInstinctsContext();
 
     const briefLines = [
-      kv('Balance', `${parseFloat(balance).toFixed(4)} SOL`, 12),
+      kv('Balance', `${safeNum(balance).toFixed(4)} SOL`, 12),
       kv('Posisi', `${openPos.length} / ${getConfig().maxPositions} terbuka`, 12),
       hr(38),
       kv('Closed', `${stats.closedPositions}  Win: ${stats.winRate}  Avg: ${stats.avgPnl}`, 12),
@@ -598,12 +598,12 @@ bot.onText(/\/status/, async (msg) => {
     // ── Header ───────────────────────────────────────────────────
     let text = `📊 *Status Bot* — 🐼 *ADAPTIVE PANDA*\n\n`;
 
-    const pnlSign  = (v) => parseFloat(v) >= 0 ? '+' : '';
+    const pnlSign  = (v) => safeNum(v) >= 0 ? '+' : '';
     const headerLines = [
-      kv('Balance',   `${parseFloat(balance).toFixed(4)} SOL`, 10),
+      kv('Balance',   `${safeNum(balance).toFixed(4)} SOL`, 10),
       kv('Posisi',    `${activePos.length} / ${getConfig().maxPositions}`, 10),
       kv('Closed',    `${stats.closedPositions}  Win: ${stats.winRate}`, 10),
-      kv('PnL',       `${pnlSign(stats.totalPnlUsd)}$${parseFloat(stats.totalPnlUsd || 0).toFixed(2)}  Fees: +$${parseFloat(stats.totalFeesUsd || 0).toFixed(2)}`, 10),
+      kv('PnL',       `${pnlSign(stats.totalPnlUsd)}$${safeNum(stats.totalPnlUsd || 0).toFixed(2)}  Fees: +$${safeNum(stats.totalFeesUsd || 0).toFixed(2)}`, 10),
       kv('Instincts', `${memStats.instinctCount}`, 10),
     ];
     text += codeBlock(headerLines) + '\n';
@@ -710,7 +710,7 @@ bot.onText(/\/pos$/, async (msg) => {
 
     for (const pos of openPos) {
       const cd        = chainMap[pos.position_address];
-      const deploySol = parseFloat(pos.deployed_sol ?? 0);
+      const deploySol = safeNum(pos.deployed_sol ?? 0);
       const snapshot = cd ? resolvePositionSnapshot({
         dbPosition: pos,
         livePosition: cd,
@@ -718,7 +718,7 @@ bot.onText(/\/pos$/, async (msg) => {
         directPnlPct: Number.isFinite(cd?.pnlPct) ? cd.pnlPct : null,
       }) : null;
       const pnlPct    = snapshot ? snapshot.pnlPct.toFixed(2) : '?';
-      const pnlSign   = parseFloat(pnlPct) >= 0 ? '+' : '';
+      const pnlSign   = safeNum(pnlPct) >= 0 ? '+' : '';
       const rangeIcon = cd ? (cd.inRange ? '🟢' : '🔴') : '⚪';
       const oorLabel  = cd && !cd.inRange ? ' OOR' : '';
       const feesStr   = cd ? `${(cd.feeCollectedSol || 0).toFixed(4)} SOL` : '?';
@@ -839,6 +839,13 @@ bot.onText(/\/check(?:\s+(.+))?/, async (msg, match) => {
 
 bot.onText(/\/library/, (msg) => {
   if (msg.from.id !== ALLOWED_ID) return;
+  const ROOT = join(__dirname, '../data');
+  const DATA_FILES = [
+    join(ROOT, 'memory.json'),
+    join(ROOT, 'lessons.json'),
+    join(ROOT, 'strategyPerformance.json'),
+    join(__dirname, 'strategy-library.json'),
+  ];
   const stats = getLibraryStats();
   const esc = (s) => String(s).replace(/[_*`[]/g, '\\$&');
   let text = `📚 *Strategy Library*\n\n`;
