@@ -630,6 +630,7 @@ async function _openPositionLogic(poolAddress, tokenXAmount, tokenYAmount, price
         throw e;
       }
     }
+    }
   } catch (err) {
     if (totalSucceededSol > 0) {
       console.warn(`[meteora] Deployment parsial berhasil (${totalSucceededSol} SOL). Melanjutkan dengan status terdaftar.`);
