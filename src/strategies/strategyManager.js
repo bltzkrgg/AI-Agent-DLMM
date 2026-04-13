@@ -1,7 +1,14 @@
-'use strict';
-
 import { getConfig } from '../config.js';
 import db from '../db/database.js';
+import { fileURLToPath } from 'url';
+import { dirname, join } from 'path';
+import fs from 'fs';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname  = dirname(__filename);
+
+// Path relatif ke strategy-library.json (Sekarang absolute via import.meta.url)
+const STRATEGIES_JSON_PATH = join(__dirname, '../../src/market/strategy-library.json');
 
 /**
  * BASELINE_STRATEGIES
@@ -11,6 +18,7 @@ import db from '../db/database.js';
  */
 const BASELINE_STRATEGIES = {
   'Evil Panda': {
+    id: 'evil_panda',
     type: 'single_side_y', // SOL only
     allowedBinSteps: [80, 100, 125, 200],
     parameters: {
@@ -38,6 +46,7 @@ const BASELINE_STRATEGIES = {
     },
   },
   'Deep Sea Kraken': {
+    id: 'deep_sea_kraken',
     type: 'single_side_y',
     allowedBinSteps: [100, 200],
     parameters: {
@@ -59,6 +68,7 @@ const BASELINE_STRATEGIES = {
     },
   },
   'Wave Enjoyer': {
+    id: 'wave_enjoyer',
     type: 'single_side_y',
     allowedBinSteps: [1, 5, 10, 20, 50, 100],
     parameters: {
@@ -80,6 +90,7 @@ const BASELINE_STRATEGIES = {
     },
   },
   'NPC': {
+    id: 'npc',
     type: 'single_side_y',
     allowedBinSteps: [80, 100],
     parameters: {
@@ -131,6 +142,16 @@ export function deleteStrategy(name) {
 }
 
 /**
+ * Slugify name for consistent lookup
+ */
+function slugify(text) {
+  return text.toString().toLowerCase().trim()
+    .replace(/\s+/g, '_')
+    .replace(/[^\w-]+/g, '')
+    .replace(/--+/g, '_');
+}
+
+/**
  * Deep merge utility for strategy overrides
  */
 function deepMerge(base, override) {
@@ -155,22 +176,66 @@ function deepMerge(base, override) {
 /**
  * Mendapatkan strategi final (Baseline + DB + Overrides dari User Config)
  */
-export function getStrategy(name) {
-  // 1. Check Baseline (Factory Presets)
-  let base = BASELINE_STRATEGIES[name];
+/**
+ * Helper untuk normalisasi nama (Fuzzy Match)
+ */
+function cleanName(name) {
+  if (!name) return 'evil_panda';
+  return name.toLowerCase().replace(/_/g, ' ').replace(/\(adaptive\)/g, '').trim().replace(/\s+/g, '_');
+}
 
-  // 2. Check Database (User Defined)
+/**
+ * Mendapatkan strategi final (Baseline + DB + Overrides dari User Config)
+ */
+export function getStrategy(name) {
+  if (!name) return BASELINE_STRATEGIES['Evil Panda'];
+
+  // --- Normalisasi Nama (Fuzzy Match) ---
+  const clean = cleanName(name);
+
+  // 1. Load from Baseline (Factory Presets)
+  let base = BASELINE_STRATEGIES[name];
   if (!base) {
-    const row = db.prepare(`SELECT * FROM strategies WHERE name = ? AND is_active = 1`).get(name);
+    const baselineKey = Object.keys(BASELINE_STRATEGIES).find(k => 
+      slugify(k) === clean || 
+      k.toLowerCase() === name.toLowerCase().replace(/_/g, ' ')
+    );
+    if (baselineKey) base = BASELINE_STRATEGIES[baselineKey];
+  }
+
+  // 2. Load from JSON Library (External "Big Book" of strategies)
+  try {
+    if (fs.existsSync(STRATEGIES_JSON_PATH)) {
+      const data = fs.readFileSync(STRATEGIES_JSON_PATH, 'utf8');
+      const library = JSON.parse(data);
+      const jsonMatch = library.strategies?.find(s => 
+        slugify(s.name) === clean || 
+        s.id === clean
+      );
+      if (jsonMatch) {
+        // Overlay JSON on top of baseline (if exists) or use as base
+        base = base ? deepMerge(base, jsonMatch) : jsonMatch;
+      }
+    }
+  } catch (e) {
+    console.error(`[strategyManager] Gagal muat strategi dari JSON:`, e.message);
+  }
+
+  // 3. Load from Database (Persistent Overrides)
+  if (!base || base.id) {
+    const dbClean = base?.id || clean;
+    const row = db.prepare(`SELECT * FROM strategies WHERE LOWER(name) = ? OR id = ? AND is_active = 1`).get(dbClean.replace(/_/g, ' '), dbClean);
     if (row) {
-      base = {
+      const dbParams = JSON.parse(row.parameters || '{}');
+      const dbBase = {
         name: row.name,
         description: row.description,
         type: row.strategy_type === 'spot' ? 'single_side_y' : row.strategy_type,
-        parameters: JSON.parse(row.parameters),
+        parameters: dbParams,
         logic: row.logic,
         _db: true
       };
+      base = base ? deepMerge(base, dbBase) : dbBase;
     }
   }
 
@@ -204,8 +269,10 @@ export function getAllStrategies() {
  * Helper untuk parse parameter ke format yang dimengerti tool deployment lama
  */
 export function parseStrategyParameters(strategy) {
+  if (!strategy) return { priceRangePercent: 10, strategyType: 0, tokenXWeight: 0, tokenYWeight: 100 };
+  
   return {
-    ...strategy.parameters,
+    ...(strategy.parameters || {}),
     priceRangePercent: strategy.deploy?.priceRangePct || 10,
     strategyType: 0, // Default to Spot for DLMM standard
     tokenXWeight: strategy.type === 'single_side_y' ? 0 : 50,

@@ -3,7 +3,7 @@ import { PublicKey, Keypair, Transaction, ComputeBudgetProgram, VersionedTransac
 import BN from 'bn.js';
 import { getConnection, getWallet } from './wallet.js';
 import { savePosition, closePositionWithPnl, enqueueReconcileIssue, updatePositionLifecycle } from '../db/database.js';
-import { fetchWithTimeout, withRetry, withExponentialBackoff } from '../utils/safeJson.js';
+import { fetchWithTimeout, safeNum, withRetry, withExponentialBackoff } from '../utils/safeJson.js';
 import { resolveTokens, WSOL_MINT } from '../utils/tokenMeta.js';
 import { getRecommendedPriorityFee } from '../utils/helius.js';
 import { isDryRun } from '../config.js';
@@ -212,6 +212,12 @@ export async function getPositionInfo(poolAddress) {
   try {
     return await withRetry(async () => {
       const connection = getConnection();
+      const walletBalance = await getWalletBalance();
+      const gasReserve = cfg.gasReserve || 0.025; // Aegis-level reserve
+      const minRequired = (deployAmountSol || 0.1) + gasReserve;
+      if (safeNum(walletBalance) < minRequired) {
+        // ... logic continues
+      }
       const wallet = getWallet();
       const poolPubkey = new PublicKey(poolAddress);
       const dlmmPool = await DLMM.create(connection, poolPubkey);
@@ -360,6 +366,9 @@ async function _openPositionLogic(poolAddress, tokenXAmount, tokenYAmount, price
   const wallet = getWallet();
   const poolPubkey = new PublicKey(poolAddress);
   const dlmmPool = await DLMM.create(connection, poolPubkey);
+  if (!dlmmPool || !dlmmPool.lbPair) {
+    throw new Error(`Gagal memuat detail pool DLMM untuk ${poolAddress}. Pool mungkin tidak valid atau API sedang lag.`);
+  }
 
   const binStep = dlmmPool.lbPair.binStep;
 
@@ -377,7 +386,7 @@ async function _openPositionLogic(poolAddress, tokenXAmount, tokenYAmount, price
   // ── JIT: Re-fetch active bin directly before range calc ─────────
   // This reduces the 'stale price' window between pool creation and deployment.
   const activeBin = await dlmmPool.getActiveBin();
-  const rawActivePrice = parseFloat(activeBin.pricePerToken) || 0;
+  const rawActivePrice = safeNum(activeBin.pricePerToken) || 0;
 
   // ── Bin range calculation ────────────────────────────────────────
   // Support for Deep-Dip Offset strategies (e.g. Evil Panda -86% to -94%)
@@ -398,13 +407,13 @@ async function _openPositionLogic(poolAddress, tokenXAmount, tokenYAmount, price
   } else {
     // Classic centered-ish range
     const fixedBinsBelow = Number.isFinite(deployOptions?.fixedBinsBelow)
-      ? Math.min(150, Math.max(2, Math.floor(deployOptions.fixedBinsBelow)))
+      ? Math.min(250, Math.max(2, Math.floor(deployOptions.fixedBinsBelow)))
       : null;
     const binPadding = Number.isFinite(deployOptions?.binPadding) 
       ? Math.max(-2, Math.floor(deployOptions.binPadding)) 
       : 0; // Default to 0, which will be clamped to -1 later for Single Side
 
-    const rawBins  = fixedBinsBelow ?? Math.min(150 - binPadding, Math.max(2, Math.floor((priceRangePercent / 100) / (binStep / 10000))));
+    const rawBins  = fixedBinsBelow ?? Math.min(250 - binPadding, Math.max(2, Math.floor((priceRangePercent / 100) / (binStep / 10000))));
     rangeMin = activeBin.binId - rawBins;
     rangeMax = activeBin.binId + binPadding; 
   }
@@ -451,8 +460,8 @@ async function _openPositionLogic(poolAddress, tokenXAmount, tokenYAmount, price
     const chunkBinsCount = chunk.upperBinId - chunk.lowerBinId + 1;
 
     // Proportional allocation for both tokens
-    const chunkX = parseFloat(tokenXAmount) * (chunkBinsCount / totalBins);
-    const chunkYSol = parseFloat(tokenYAmount) * (chunkBinsCount / totalBins);
+    const chunkX = safeNum(tokenXAmount) * (chunkBinsCount / totalBins);
+    const chunkYSol = safeNum(tokenYAmount) * (chunkBinsCount / totalBins);
     
     const chunkTotalX = toBN(chunkX, xDecimals);
     const chunkTotalY = toBN(chunkYSol, yDecimals);

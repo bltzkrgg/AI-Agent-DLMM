@@ -36,12 +36,19 @@ export function handleStrategyCommand(bot, msg, allowedUserId) {
 
     let message = '📋 *Daftar Strategi DLMM:*\n\n';
     strategies.forEach((s, i) => {
-      const params = JSON.parse(s.parameters);
+      // Aegis Fix: Parameters is already an object from unified strategyManager
+      const params = s.parameters || {};
+      const deploy = s.deploy || {};
+      
       message += `*${i + 1}. ${s.name}*\n`;
-      message += `📝 ${s.description}\n`;
-      message += `⚙️ Type: \`${s.strategy_type}\`\n`;
-      message += `📊 Range: ${params.priceRangePercent}% | Bin Step: ${params.binStep}\n`;
-      message += `👤 Dibuat: ${s.created_by}\n`;
+      if (s.description) message += `📝 ${s.description}\n`;
+      message += `⚙️ Type: \`${s.type || s.strategy_type || 'spot'}\`\n`;
+      
+      const range = deploy.priceRangePct || params.priceRangePercent || 'Auto';
+      const step  = params.binStep || 'Auto';
+      
+      message += `📊 Range: ${range}% | Bin Step: ${step}\n`;
+      if (s.created_by || s._db) message += `👤 Source: ${s.created_by || 'Database'}\n`;
       if (s.logic) message += `🔧 Custom logic: Ya\n`;
       message += '\n';
     });
