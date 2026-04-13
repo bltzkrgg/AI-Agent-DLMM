@@ -273,7 +273,7 @@ export function updatePositionStatus(positionAddress, status) {
   return runInQueue(() => db.prepare(`UPDATE positions SET status = ? WHERE position_address = ?`).run(status, positionAddress));
 }
 
-export function await updatePositionLifecycle(positionAddress, lifecycleState) {
+export async function updatePositionLifecycle(positionAddress, lifecycleState) {
   return runInQueue(() => db.prepare(`
     UPDATE positions
     SET lifecycle_state = ?
@@ -408,7 +408,7 @@ export function createOperationLog({ operationType, entityId = null, payload = n
   ));
 }
 
-export function await enqueueReconcileIssue({ issueType, entityId, payload = null, notes = null }) {
+export async function enqueueReconcileIssue({ issueType, entityId, payload = null, notes = null }) {
   return runInQueue(() => db.prepare(`
     INSERT INTO reconcile_queue (issue_type, entity_id, payload, notes)
     VALUES (?, ?, ?, ?)
