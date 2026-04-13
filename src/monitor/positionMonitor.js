@@ -107,7 +107,7 @@ async function checkOutOfRange() {
               `_Bot monitor lebih ketat (1m) sampai posisi kembali in-range atau ditutup._`;
 
             await bot.sendMessage(allowedUserId, message, { parse_mode: 'Markdown' });
-            saveNotification('out_of_range', message);
+            await saveNotification('out_of_range', message);
           }
           
           updatePositionRuntimeState(pos.address, { 

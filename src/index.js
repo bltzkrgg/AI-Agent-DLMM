@@ -75,8 +75,14 @@ initMonitor(bot, ALLOWED_ID);
 // ─── Shared Utilities ───────────────────────────────────────────
 const transport = createMessageTransport(bot, ALLOWED_ID);
 const sendLong = transport.sendLong;
+
 async function notify(text) {
   transport.notify(text).catch(e => console.error('Notify error:', e.message));
+}
+
+async function urgentNotify(text) {
+  const urgentText = `🚨 *URGENT INTERVENTION REQUIRED*\n\n${text}\n\n⚠️ _Sistem menghentikan sementara operasional untuk posisi ini. Silakan cek manual._`;
+  return transport.notify(urgentText).catch(e => console.error('Urgent notify error:', e.message));
 }
 
 // Initialize DB backup system
@@ -207,8 +213,13 @@ async function triggerHunter(targetCount = null) {
     return;
   }
   _hunterBusy = Date.now();
-  try { await runHunterAlpha(notify, bot, ALLOWED_ID, { targetCount }); }
-  catch (e) { notify(`❌ Hunter error: ${e.message}`).catch(() => {}); }
+  try { 
+    await runHunterAlpha(notify, bot, ALLOWED_ID, { targetCount }); 
+  }
+  catch (e) { 
+    await urgentNotify(`❌ *Hunter Panic*\nReason: ${e.message}`);
+    console.error(`Hunter Critical Failure:`, e); 
+  }
   finally { _hunterBusy = 0; }
 }
 
@@ -244,7 +255,10 @@ cron.schedule('* * * * *', async () => {
     try { recalibrateWeights(); } catch { /* data belum cukup, skip */ }
     savePerformanceSnapshot();
   }
-  catch (e) { notify(`❌ Healer error: ${e.message}`).catch(() => {}); }
+  catch (e) { 
+    await urgentNotify(`🩺 *Healer Panic*\nReason: ${e.message}\n_Check Solscan for hanging transactions._`);
+    console.error(`Healer Critical Failure:`, e);
+  }
   finally { _healerBusy = 0; }
 });
 

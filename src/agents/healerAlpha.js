@@ -183,7 +183,7 @@ export async function executeTool(name, input, notifyFn = null) {
               // Account masih ada — getPositionInfo gagal karena RPC, bukan manual close
               return { ...pos, status: 'open', rpcError: true };
             }
-            closePositionWithPnl(pos.position_address, {
+            await closePositionWithPnl(pos.position_address, {
               pnlUsd: 0, pnlPct: 0, feesUsd: 0, pnlSol: 0, feesSol: 0, closeReason: 'MANUAL_CLOSE', lifecycleState: 'closed_reconciled',
             });
             // Trigger post-mortem silently for manual close (optional)
@@ -347,11 +347,11 @@ export async function executeTool(name, input, notifyFn = null) {
           }
 
           if (proactiveWarning) {
-            saveNotification('proactive_warning', proactiveWarning);
+            await saveNotification('proactive_warning', proactiveWarning);
           }
 
           if (trailingTpHit) {
-            saveNotification('trailing_tp', `Trailing TP triggered: posisi ${addr.slice(0, 8)}... PnL turun dari peak ${tracker.peakPnl.toFixed(2)}% ke ${pnlPct.toFixed(2)}%`);
+            await saveNotification('trailing_tp', `Trailing TP triggered: posisi ${addr.slice(0, 8)}... PnL turun dari peak ${tracker.peakPnl.toFixed(2)}% ke ${pnlPct.toFixed(2)}%`);
           }
 
           return {
@@ -472,7 +472,7 @@ export async function executeTool(name, input, notifyFn = null) {
         }
       } catch { /* best-effort, tetap close */ }
 
-      updatePositionLifecycle(input.position_address, 'closing');
+      await updatePositionLifecycle(input.position_address, 'closing');
 
       let closeResult;
       try {
@@ -488,7 +488,7 @@ export async function executeTool(name, input, notifyFn = null) {
         }));
       } catch (error) {
         if (getOpenPositions().some(p => p.position_address === input.position_address)) {
-          updatePositionLifecycle(input.position_address, 'open');
+          await updatePositionLifecycle(input.position_address, 'open');
         }
         throw error;
       }
@@ -507,7 +507,7 @@ export async function executeTool(name, input, notifyFn = null) {
 
       // Record ke pool memory — best-effort, jangan gagalkan response jika throw
       try {
-        recordClose(input.pool_address, {
+        await recordClose(input.pool_address, {
           pnlPct: pnlData.pnlPct || 0,
           reason:  pnlData.closeReason || 'AGENT_CLOSE',
         });
@@ -542,7 +542,7 @@ export async function executeTool(name, input, notifyFn = null) {
       } catch { /* swap best-effort */ }
 
       if (swapErrors.length > 0) lifecycleState = 'manual_review';
-      updatePositionLifecycle(input.position_address, lifecycleState);
+      await updatePositionLifecycle(input.position_address, lifecycleState);
 
       // Notifikasi swap + mulai post-close monitor
       if (currentNotify) {
@@ -625,7 +625,7 @@ export async function executeTool(name, input, notifyFn = null) {
         }
       } catch { /* best-effort */ }
 
-      updatePositionLifecycle(input.position_address, 'closing');
+      await updatePositionLifecycle(input.position_address, 'closing');
 
       let closeResult;
       try {
@@ -641,7 +641,7 @@ export async function executeTool(name, input, notifyFn = null) {
         }));
       } catch (error) {
         if (getOpenPositions().some(p => p.position_address === input.position_address)) {
-          updatePositionLifecycle(input.position_address, 'open');
+          await updatePositionLifecycle(input.position_address, 'open');
         }
         throw error;
       }
@@ -660,7 +660,7 @@ export async function executeTool(name, input, notifyFn = null) {
 
       // Record ke pool memory — best-effort, jangan gagalkan response jika throw
       try {
-        recordClose(input.pool_address, {
+        await recordClose(input.pool_address, {
           pnlPct: zapPnlData.pnlPct || 0,
           reason:  zapPnlData.closeReason || 'ZAP_OUT',
         });
@@ -696,7 +696,7 @@ export async function executeTool(name, input, notifyFn = null) {
 
       const totalSwappedSol = swapResults.reduce((s, r) => s + (r.outSol || 0), 0);
       if (swapErrors.length > 0) lifecycleState = 'manual_review';
-      updatePositionLifecycle(input.position_address, lifecycleState);
+      await updatePositionLifecycle(input.position_address, lifecycleState);
 
       // Notifikasi hasil + mulai post-close monitor
       if (currentNotify) {
@@ -804,7 +804,7 @@ export async function runHealerAlpha(notifyFn) {
           // Account masih ada — RPC glitch, bukan manual close → skip siklus ini
           continue;
         }
-        closePositionWithPnl(pos.position_address, {
+        await closePositionWithPnl(pos.position_address, {
           pnlUsd: 0, pnlPct: 0, feesUsd: 0, pnlSol: 0, feesSol: 0, closeReason: 'MANUAL_CLOSE', lifecycleState: 'closed_reconciled',
         });
         clearPositionState(pos.position_address);
@@ -1062,7 +1062,7 @@ export async function runHealerAlpha(notifyFn) {
         const solPriceUsd = await getSolPriceUsd().catch(() => 150);
         const realizedPnlUsd = parseFloat((pnlSol * solPriceUsd).toFixed(2));
         const realizedFeesUsd = parseFloat((((match.feeCollectedSol || 0) * solPriceUsd)).toFixed(2));
-        updatePositionLifecycle(addr, 'closing');
+        await updatePositionLifecycle(addr, 'closing');
         await closePositionDLMM(pos.pool_address, addr, {
           pnlUsd:      realizedPnlUsd,
           pnlPct,
@@ -1075,9 +1075,9 @@ export async function runHealerAlpha(notifyFn) {
         clearPositionState(addr);
 
         // DB updates — best-effort: jangan kirim "❌ Gagal close" kalau ini yang throw
-        try { recordPnlUsd(realizedPnlUsd); } catch { /* best-effort */ }
+        try { await recordPnlUsd(realizedPnlUsd); } catch { /* best-effort */ }
         try {
-          recordClose(pos.pool_address, {
+          await recordClose(pos.pool_address, {
             pnlPct: pnlPct,
             reason: triggerLabel.toUpperCase().replace(/ /g, '_'),
           });
@@ -1097,7 +1097,7 @@ export async function runHealerAlpha(notifyFn) {
             if (mint && mint !== SOL_MINT) {
               for (let swapAttempt = 1; swapAttempt <= 3; swapAttempt++) {
                 try {
-                  const swapRes = await swapAllToSOL(mint);
+                  const isPanic = getSafetyStatus().drawdownPct > 10; const swapRes = await swapAllToSOL(mint, isPanic ? 500 : 100);
                   if (swapRes.success) {
                     swapMsgs.push(`+${swapRes.outSol.toFixed(4)}◎`);
                     totalSwappedSol += swapRes.outSol;
@@ -1112,7 +1112,7 @@ export async function runHealerAlpha(notifyFn) {
           }
         } catch { /* swap best-effort */ }
         if (swapFails.length > 0) lifecycleState = 'manual_review';
-        updatePositionLifecycle(addr, lifecycleState);
+        await updatePositionLifecycle(addr, lifecycleState);
 
         // Notifikasi swap + selalu mulai 5-menit monitor
         if (swapMsgs.length > 0) {
@@ -1160,7 +1160,7 @@ export async function runHealerAlpha(notifyFn) {
         } catch { /* best-effort, jangan crash */ }
       } catch (e) {
         if (getOpenPositions().some(p => p.position_address === addr)) {
-          updatePositionLifecycle(addr, 'open');
+          await updatePositionLifecycle(addr, 'open');
         }
         await notifyFn?.(`❌ Gagal close ${triggerLabel}: ${e.message}`);
       }
@@ -1209,9 +1209,9 @@ export async function runHealerAlpha(notifyFn) {
   const systemPrompt = `Kamu adalah Healer Alpha — autonomous position management agent untuk Meteora DLMM.
 
 CATATAN: Stop-loss, Take Profit, Trailing TP, Evil Panda Exit, Multi-TF Exit, dan Fib Resistance Exit
-sudah diproses di pre-flight dengan mempertimbangkan kondisi chart dan narasi.
+sudah diproses di pre-flight dengan mempertimbangkan kondisi LP.
 Posisi yang sampai di loop ini = belum di-close oleh pre-flight (masih aman atau chart bilang HOLD).
-Fokus kamu: proactive exit saat market bearish, out-of-range, claim fees, dan keputusan edge case.
+Fokus kamu: LP IDENTITY - maksimalkan FEE extraction, jangan panik saat pullback di market bullish.
 
 DUA MODE CLOSE:
    • close_position — tutup posisi, best-effort swap. Untuk kondisi normal.
@@ -1257,11 +1257,11 @@ ALUR KERJA:
    - proactiveCloseRecommended = true → WAJIB zap_out (exit bersih ke SOL)
    - proactiveWarning ada tapi tidak recommended → monitor ketat
 
-    OUT OF RANGE (Adaptive Aegis Logic):
-    - marketSignal.oorDecision === 'EXTEND' && poolTaSignals.supertrend.trend === 'BULLISH' → BERTAHAN (Extra 15m wait).
-    - marketSignal.oorDecision === 'PANIC_EXIT' OR poolTaSignals.supertrend.trend === 'BEARISH' → EXIT SEGERA (Zap Out).
-    - Jika posisi OOR tapi Fee APR > 100% dan harga tertahan di Support → BERTAHAN (Y-only fee extraction).
-    - Jika OOR > Threshold standar (30m) dan tidak ada sinyal Bullish kuat → EXIT.
+    OUT OF RANGE (LP Identity Protocol):
+    - Jika Tren Global = BULLISH → Tahan posisi (HOLD) meskipun OOR atau Supertrend 15m Bearish. Ini adalah fase penyerapan fee dari seller.
+    - marketSignal.oorDecision === 'PANIC_EXIT' DAN Tren Global = BEARISH → EXIT SEGERA (Zap Out).
+    - Jika posisi OOR tapi Fee APR > 100% → BERTAHAN (Fee extraction is priority).
+    - Jangan ZAP_OUT hanya karena retracement teknikal jika trend harian masih kuat.
 
     ALGORITMA ADAPTIF (PnL vs Fees):
     - Jika PnL Negatif (-1 s/d -5%) tapi Fee Velocity "meningkat" → BERTAHAN (Fees akan menutup kerugian).

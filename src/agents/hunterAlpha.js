@@ -13,7 +13,7 @@ import {
   getLibraryStats, 
   evaluateStrategyReadiness as libEvaluateReadiness 
 } from '../market/strategyLibrary.js';
-import { fetchCandles, getMarketSnapshot, getOHLCV, getMultiTFScore } from '../market/oracle.js';
+import { fetchCandles, getMarketSnapshot, getOHLCV, getMultiTFScore, getSentiment } from '../market/oracle.js';
 import { getSocialSignals, getTokenSocialScore } from '../market/socialScanner.js';
 import { getInstinctsContext } from '../market/memory.js';
 import { getStrategyIntelligenceContext } from '../market/strategyPerformance.js';
@@ -48,7 +48,7 @@ export function getLastHunterReport() { return lastReport; }
 // Weights di-load dari signalWeights.js (auto-recalibrated dari data nyata).
 // Fallback ke defaults jika belum ada data.
 
-function calculateDarwinScore(pool, weightsOverride) {
+function calculateDarwinScore(pool, weightsOverride, sentiment = 'NEUTRAL') {
   const cfg = getConfig();
   const w = weightsOverride || getDarwinWeights();
   let score = 0;
@@ -82,11 +82,17 @@ function calculateDarwinScore(pool, weightsOverride) {
     score += pool.multiTFScore * (w.multiTFScore || 1.5);
   }
 
-  // Social Signal bonus
-  if (pool.socialSignal) {
-    const socialWeight = cfg.socialSignalWeight || 1.5;
-    const intensityBonus = (pool.socialSignal.intensity || 5) / 10;
-    score *= (socialWeight + intensityBonus);
+  // Technical Confluence Filter: Slash score if trend is bearish
+  // Sentinel v56 (LP Identity): Only penalize if sentiment is NOT BULLISH
+  const isGlobalBullish = sentiment === 'BULLISH';
+  if (pool.multiTFScore > 0 && pool.multiTFScore < 0.4) {
+    if (!isGlobalBullish) {
+      score *= 0.5; // High risk - Bearish trend override
+    } else {
+      // In Bullish trend, 15m Bearish is a "Buy the Dip" (LP Opportunity)
+      // We keep the score high to encourage entry during pullbacks.
+      score *= 0.95; // Minor buffer for volatility
+    }
   }
 
   return parseFloat(score.toFixed(4));
@@ -248,15 +254,18 @@ async function executeTool(name, input) {
         let multiTFScore = 0;
         let smartWalletSignal = null;
         let poolMemCtx = '';
+        let marketSent = 'NEUTRAL';
         try {
-          const [mtf, sw, ss] = await Promise.allSettled([
+          const [mtf, sw, ss, sent] = await Promise.allSettled([
             getMultiTFScore(p.tokenX, p.address),
             checkSmartWalletsOnPool(p.address),
-            getTokenSocialScore(p.tokenX || p.tokenY)
+            getTokenSocialScore(p.tokenX || p.tokenY),
+            getSentiment(p.tokenX || p.tokenY)
           ]);
           if (mtf.status === 'fulfilled') multiTFScore = mtf.value.score || 0;
           if (sw.status === 'fulfilled' && sw.value.found) smartWalletSignal = sw.value;
           if (ss.status === 'fulfilled' && ss.value) p.socialSignal = ss.value;
+          if (sent.status === 'fulfilled' && sent.value) marketSent = sent.value.sentiment || 'NEUTRAL';
           poolMemCtx = getPoolMemoryContext(p.address);
         } catch { /* best-effort */ }
 
@@ -265,12 +274,13 @@ async function executeTool(name, input) {
         return {
           ...p,
           multiTFScore,
+          marketSentiment: marketSent,
           smartWallet: smartWalletSignal
             ? { found: true, wallets: smartWalletSignal.matches.map(m => m.label), confidence: smartWalletSignal.confidence }
             : null,
           poolMemory: poolMemCtx || undefined,
           lpAgent: lpData,   // { inLPAgentList, organicScore, feeTVLRatioLP, vol24hLP }
-          darwinScore: calculateDarwinScore({ ...p, multiTFScore }, weights),
+          darwinScore: calculateDarwinScore({ ...p, multiTFScore }, weights, marketSent),
           feeToTvlRatio: (() => {
             const tvl = parseTvl(p.tvlStr || p.tvl || 0);
             return tvl > 0 ? ((p.fees24hRaw || 0) / tvl).toFixed(4) : '0';
@@ -315,10 +325,18 @@ async function executeTool(name, input) {
       const info = await getPoolInfo(input.pool_address);
       let strategyMatch = null;
       let dlmmSnapshot = null;
-      try {
-        dlmmSnapshot = await getMarketSnapshot(info.tokenX, input.pool_address);
-        strategyMatch = matchStrategyToMarket(dlmmSnapshot);
-      } catch { /* optional */ }
+      
+      // Retry logic for market snapshot
+      for (let i = 0; i < 3; i++) {
+        try {
+          dlmmSnapshot = await getMarketSnapshot(info.tokenX, input.pool_address);
+          strategyMatch = matchStrategyToMarket(dlmmSnapshot);
+          break;
+        } catch (e) {
+          if (i === 2) console.warn(`[hunter] Failed to get snapshot after 3 retries: ${e.message}`);
+          await new Promise(r => setTimeout(r, 500));
+        }
+      }
 
       const pool = dlmmSnapshot?.pool;
       const price = dlmmSnapshot?.price;
@@ -342,7 +360,7 @@ async function executeTool(name, input) {
           buyPressure: `${price.buyPressurePct}% (${price.sentiment})`,
         } : null,
         strategyRecommendation: strategyMatch ? {
-          recommended: strategyRecommendations.recommended?.name || 'Evil Panda',
+          recommended: strategyMatch.recommended?.name || 'Evil Panda',
           confidence: strategyMatch.recommended?.matchScore,
           entryConditions: 'm5 Momentum + h1 Trend Alignment',
           exitConditions: 'Evil Panda Confluence',
@@ -437,7 +455,7 @@ async function executeTool(name, input) {
           // Account sudah tidak ada on-chain → DB stale → bersihkan dan izinkan deploy baru
           console.log(`[hunter] DB stale: posisi ${existingForPool.position_address} tidak ada on-chain, bersihkan dan izinkan re-deploy`);
           try {
-            closePositionWithPnl(existingForPool.position_address, {
+            await closePositionWithPnl(existingForPool.position_address, {
               pnlUsd: 0, pnlPct: 0, feesUsd: 0, pnlSol: 0, feesSol: 0, closeReason: 'MANUAL_CLOSE', lifecycleState: 'closed_reconciled',
             });
           } catch { /* best-effort */ }
@@ -675,7 +693,7 @@ async function executeTool(name, input) {
 
         // Record deploy ke pool memory + capture signals untuk Darwinian learning
         if (result.success && result.positionAddress) {
-          recordDeployment(input.pool_address);
+          await recordDeployment(input.pool_address);
           const poolData = lastCandidates.find(c => c.address === input.pool_address);
           if (poolData) captureSignals(result.positionAddress, poolData);
         }
@@ -781,33 +799,31 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null, opt
           !isOnCooldown(p.address) // skip pool sedang cooldown
         );
       })
-      .map(p => {
-        // Map social signal if available
-        const socialMatch = socialSignals.find(s => s.mint === p.tokenX);
-        if (socialMatch) p.socialSignal = socialMatch;
-        return { ...p, darwinScore: calculateDarwinScore(p, weights) };
-      })
+        .map(p => ({ ...p, darwinScore: calculateDarwinScore(p, weights, 'NEUTRAL') }))
       .sort((a, b) => b.darwinScore - a.darwinScore)
       .slice(0, 7);
 
     lastCandidates = filtered;
 
-    // Fetch pool memory + multi-TF + smart wallets in parallel
+     // Fetch pool memory + multi-TF + smart wallets + sentiment in parallel
     const enriched = await Promise.all(filtered.map(async (p) => {
-      const [memResult, mtfResult, swResult] = await Promise.allSettled([
+      const [memResult, mtfResult, swResult, sentResult] = await Promise.allSettled([
         Promise.resolve(getPoolStats(p.address)),
         getMultiTFScore(p.tokenX, p.address),
         checkSmartWalletsOnPool(p.address),
+        getSentiment(p.tokenX || p.tokenY)
       ]);
 
       const mem = memResult.status === 'fulfilled' ? memResult.value : null;
       const mtf = mtfResult.status === 'fulfilled' ? mtfResult.value : null;
       const sw = swResult.status === 'fulfilled' ? swResult.value : null;
+      const sent = sentResult.status === 'fulfilled' ? sentResult.value : null;
+      const marketSent = sent?.sentiment || 'NEUTRAL';
 
-      // Update darwinScore dengan multiTFScore
+      // Update darwinScore dengan multiTFScore & Sentiment
       if (mtf?.score > 0) {
         p.multiTFScore = mtf.score;
-        p.darwinScore = calculateDarwinScore({ ...p, multiTFScore: mtf.score }, weights);
+        p.darwinScore = calculateDarwinScore({ ...p, multiTFScore: mtf.score }, weights, marketSent);
       }
 
       const memVerdict = !mem
