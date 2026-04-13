@@ -479,8 +479,9 @@ async function _openPositionLogic(poolAddress, tokenXAmount, tokenYAmount, price
 
   const allTxHashes = [];
   let totalSucceededSol = 0;
-
-  for (let ci = 0; ci < binChunks.length; ci++) {
+  
+  try {
+    for (let ci = 0; ci < binChunks.length; ci++) {
     const chunk = binChunks[ci];
     const chunkBinsCount = chunk.upperBinId - chunk.lowerBinId + 1;
 
@@ -629,8 +630,6 @@ async function _openPositionLogic(poolAddress, tokenXAmount, tokenYAmount, price
         throw e;
       }
     }
-  }
-
   } catch (err) {
     if (totalSucceededSol > 0) {
       console.warn(`[meteora] Deployment parsial berhasil (${totalSucceededSol} SOL). Melanjutkan dengan status terdaftar.`);
