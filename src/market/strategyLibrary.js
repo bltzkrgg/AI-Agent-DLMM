@@ -234,83 +234,44 @@ function scoreStrategy(strategy, conditions) {
 /**
  * Eval readiness based on technical indicators and market snapshot.
  * Integrated for Technical Sniper upgrade.
- */
-export async function evaluateStrategyReadiness({ strategyName, poolAddress, snapshot }) {
-  const ta = snapshot?.ta || {};
-  const o   = snapshot?.ohlcv || {};
-  const vol = snapshot?.ohlcv?.range24hPct || 0;
-
+export async function evaluateStrategyReadiness({ strategyName, snapshot }) {
+  if (!snapshot || !snapshot.ta) return { ok: false, blockers: ['Missing TA data'] };
+  const ta = snapshot.ta;
+  
   if (strategyName === 'Evil Panda') {
-    const currentPrice = snapshot.ohlcv?.currentPrice || 0;
-    const st = ta.supertrend || { trend: 'NEUTRAL', value: currentPrice };
+    const st = ta.supertrend;
     
-    // ── Hard Guard: Supertrend Entry ──────────────────────────────
-    if (st.trend !== 'BULLISH') {
+    // ── Hard Guard: Supertrend Bullish State (15m) ────────────────
+    if (!st || st.trend !== 'BULLISH') {
       return {
         ok: false,
-        blockers: ['Supertrend is BEARISH/NEUTRAL (15m)'],
-        notes: 'Evil Panda memerlukan konfirmasi UPTREND pada Supertrend 15m sebelum entry. Standby.',
+        blockers: ['Supertrend is not BULLISH'],
+        notes: 'Evil Panda Master requires Price > Supertrend on 15m timeframe.',
       };
     }
 
-    // ── Warp Panda: Contextual Adaptive Discovery ──────────────────
-    const rsi = ta.rsi14 || 50;
-    const bb = ta.bb || { middle: currentPrice, lower: currentPrice, upper: currentPrice };
-
-    // --- Intelligence Matrix: SNIPER vs DEEP JARING ---
-    const bbWidePct = ((bb.upper - bb.lower) / currentPrice) * 100;
-    const distFromSupportPct = ((st.value - currentPrice) / currentPrice) * 100;
-
-    // Detect Capitulation (Panic Selling)
-    const isCapitulation = rsi < 30 || distFromSupportPct > 15;
+    // --- Evil Panda Master Parameters (v61 - Ultimate Wide Jaring) ---
+    const targetRangePct = 94.0; // Total width 94%
+    const offsetMin = 0.0;     // Upper Bound (Starts at current price)
+    const offsetMax = 94.0;    // Lower Bound (Ends at -94% drop)
     
-    // --- Industrial Grade Schema: Deep Jaring 86% (200 bins) ---
-    const targetRangePct = 86.0; 
-    const offsetMin = 6.0;   // Start at 94% price
-    const offsetMax = 86.0;  // End at 14% price (86% total drop from active)
-    
-    // 5. Calculate Dynamic Headroom (Padding)
-    // We want enough bins above price to survive 2.5x ATR of movement
-    const binStep = snapshot?.pool?.binStep || 100;
-    const binStepPct = binStep / 10000;
-    const paddingBins = Number.isFinite(ta.atr) && currentPrice > 0
-      ? Math.max(5, Math.ceil(((ta.atr * 2.5) / currentPrice) / binStepPct))
-      : 5;
-    
-    // 6. Suggested Slippage
-    const suggestedSlippage = vol > 50 ? 2.5 : 1.0;
-
-    const modeText = isCapitulation ? 'DEEP_JARING' : 'SNIPER_MODE';
-    const technicalReasoning = isCapitulation
-      ? `🚨 ${modeText}: Capitulation detected (RSI ${rsi.toFixed(0)}), deploying WIDE range ${targetRangePct.toFixed(1)}% to catch bottom.`
-      : `🎯 ${modeText}: Momentum active, range ${targetRangePct.toFixed(1)}% anchored to technical floor.`;
-
-    // --- Defensive Check: Pool Stats ---
-    const pool = snapshot?.pool || {};
-    const tvl = pool.tvl || 0;
-    const thresholds = getThresholds();
-
-    if (!(binStep >= 100 && binStep <= 250 && tvl >= thresholds.minTvl)) {
-      return { ok: false, blockers: ['Invalid Pool Liquidity/BinStep'], notes: 'Pool does not meet Evil Panda requirements.' };
-    }
+    // Suggest 0.5% slippage as per master spec
+    const suggestedSlippage = 0.5;
 
     return {
       ok: true,
       blockers: [],
-      notes: technicalReasoning,
+      notes: `🎯 Evil Panda Master (v61) Active: Price is Bullish. Deploying Ultimate Wide Jaring (0% to -94%).`,
       deployOptions: {
         priceRangePct: targetRangePct,
         entryPriceOffsetMin: offsetMin,
         entryPriceOffsetMax: offsetMax,
-        binPadding: paddingBins,
         slippagePct: suggestedSlippage,
-        technicalReasoning
       }
     };
   }
 
-  // Fallback for other strategies
-  return { ok: true, blockers: [], notes: 'Ready to deploy.' };
+  return { ok: false, blockers: [`Strategy ${strategyName} is currently disabled in Master Mode.`] };
 }
 
 export function getRecommendedStrategies(snapshot) {

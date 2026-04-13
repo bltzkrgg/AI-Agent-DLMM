@@ -81,11 +81,9 @@ const DEFAULTS = {
   maxMcap: 0,                // Max market cap ($, 0 = disabled)
   minVolume24h: 1000000,     // Min 24h volume ($) untuk Evil Panda
 
-  // Strategy-specific tuning. Core identity stays in code; these are safe overrides.
+  // Strategy-specific tuning. Base identity is 'Evil Panda Master'.
   strategyOverrides: {
     'Evil Panda': {},
-    'Wave Enjoyer': {},
-    'NPC': {},
   },
 
   // Meridian Integration & Evolution

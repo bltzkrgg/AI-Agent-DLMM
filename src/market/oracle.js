@@ -160,17 +160,11 @@ async function buildOHLCVFromDexScreener(tokenMint, poolAddress = null) {
           "Evil Panda": {
             entry: {
               triggered: st && st.trend === 'BULLISH',
-              reason: (st && st.trend === 'BULLISH') ? `M15 CONFIRMED: Supertrend 15m Green close.` : null
+              reason: (st && st.trend === 'BULLISH') ? `EVIL PANDA MASTER (v61): Price > Supertrend (15m confirmed). Ready for ULTIMATE WIDE-RANGE jaring (0% to -94%).` : null
             },
             exit: {
-              triggered: (rsi2 > 90 && ((bb && closes[closes.length-1] > bb.upper) || (macd && macd.histogram < 0))) || 
-                         (st && st.trend === 'BEARISH' && st.changed) || 
-                         (realTimePrice && st && realTimePrice < st.value && st.trend === 'BULLISH'),
-              reason: (rsi2 > 90 && bb && closes[closes.length-1] > bb.upper) ? `PROFIT TAKE: RSI(2) ${rsi2.toFixed(1)} > 90 + BB Upper Cross`
-                      : (rsi2 > 90 && macd && macd.histogram < 0) ? `PROFIT TAKE: RSI(2) ${rsi2.toFixed(1)} > 90 + MACD Bearish Cross`
-                      : (st && st.trend === 'BEARISH' && st.changed) ? `CUT LOSS: Supertrend 15m Flip to RED`
-                      : (realTimePrice && st && realTimePrice < st.value) ? `SHADOW EXIT: Price ${realTimePrice} below ST support ${st.value.toFixed(8)}`
-                      : null
+              triggered: st && st.trend === 'BEARISH' && st.changed,
+              reason: (st && st.trend === 'BEARISH' && st.changed) ? `SENTINEL EXIT: Supertrend 15m Flipped to RED. Zapping out.` : null
             }
           },
         };
