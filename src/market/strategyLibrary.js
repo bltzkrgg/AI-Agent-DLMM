@@ -259,23 +259,10 @@ export async function evaluateStrategyReadiness({ strategyName, poolAddress, sna
     // Detect Capitulation (Panic Selling)
     const isCapitulation = rsi < 30 || distFromSupportPct > 15;
     
-    // Multiplier scaling: Sniper (1.2x) to Deep Jaring (3.0x)
-    let rangeMultiplier = isCapitulation ? 3.0 : (bbWidePct < 2.5 ? 1.2 : (bbWidePct < 5.0 ? 1.5 : 2.0));
-    
-    // Hard scale range width based on Volatility + Capitulation
-    // Goal: Sniper (10-30%) vs Deep Jaring (60-90%)
-    let targetRangePct = Math.max(8.0, bbWidePct * rangeMultiplier);
-    if (isCapitulation) {
-      targetRangePct = Math.max(60.0, targetRangePct); // Floor 60% if crashing
-    }
-    targetRangePct = Math.min(95.0, targetRangePct); // Hard cap 95%
-
-    // --- Technical Anchoring ---
-    // If momentum: Anchor to Supertrend. If crash: Anchor even deeper.
-    const technicalFloor = isCapitulation ? (currentPrice * (1 - (targetRangePct / 100))) : Math.max(st.value, bb.lower);
-    
-    const offsetMin = isCapitulation ? (targetRangePct * 0.8) : 0; // Much deeper jaring for crashes
-    const offsetMax = Math.max(targetRangePct, ((currentPrice - technicalFloor) / currentPrice) * 100);
+    // --- Industrial Grade Schema: Deep Jaring 90% ---
+    const targetRangePct = 90.0; 
+    const offsetMin = 6.0;  // Start at 94% price
+    const offsetMax = 90.0; // End at 10% price (90% total range)
     
     // 5. Calculate Dynamic Headroom (Padding)
     // We want enough bins above price to survive 2.5x ATR of movement
@@ -289,6 +276,10 @@ export async function evaluateStrategyReadiness({ strategyName, poolAddress, sna
     const technicalReasoning = isCapitulation
       ? `🚨 ${modeText}: Capitulation detected (RSI ${rsi.toFixed(0)}), deploying WIDE range ${targetRangePct.toFixed(1)}% to catch bottom.`
       : `🎯 ${modeText}: Momentum active, range ${targetRangePct.toFixed(1)}% anchored to technical floor.`;
+
+    if (!(binStep >= 100 && binStep <= 250 && tvl >= thresholds.minTvl)) {
+      return { ok: false, blockers: ['Invalid Pool Liquidity/BinStep'], notes: 'Pool does not meet Evil Panda requirements.' };
+    }
 
     return {
       ok: true,

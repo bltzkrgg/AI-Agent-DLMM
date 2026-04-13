@@ -157,20 +157,20 @@ async function buildOHLCVFromDexScreener(tokenMint, poolAddress = null) {
           // Strategy-specific triggers (Normalized keys)
           "Evil Panda": {
             entry: {
-              triggered: st.trend === 'BULLISH' && rsi2 < 20,
-              reason: (st.trend === 'BULLISH' && rsi2 < 20) ? `Dip Buy: RSI(2) ${rsi2.toFixed(1)} < 20 in Uptrend` : null
+              triggered: st && st.trend === 'BULLISH',
+              reason: (st && st.trend === 'BULLISH') ? `M15 CONFIRMED: Supertrend 15m Green close.` : null
             },
             exit: {
               triggered: (rsi2 > 90 && ((bb && closes[closes.length-1] > bb.upper) || (macd && macd.histogram < 0))) || 
                          (st && st.trend === 'BEARISH' && st.changed) || 
                          (realTimePrice && st && realTimePrice < st.value && st.trend === 'BULLISH'),
-              shadowExit: (realTimePrice && st && realTimePrice < st.value && st.trend === 'BULLISH'),
-              reason: (rsi2 > 90 && bb && closes[closes.length-1] > bb.upper) ? `Profit Take: RSI(2) ${rsi2.toFixed(1)} > 90 + BB Upper Cross`
-                      : (rsi2 > 90 && macd && macd.histogram < 0) ? `Profit Take: RSI(2) ${rsi2.toFixed(1)} > 90 + MACD Bearish Cross`
-                      : (st && st.trend === 'BEARISH' ? 'Trend Flip: Supertrend Bearish' 
-                      : (realTimePrice && st && realTimePrice < st.value ? `Shadow Exit: Real-time Price ${realTimePrice.toFixed(6)} < ${st.value.toFixed(6)}` : null))
+              reason: (rsi2 > 90 && bb && closes[closes.length-1] > bb.upper) ? `PROFIT TAKE: RSI(2) ${rsi2.toFixed(1)} > 90 + BB Upper Cross`
+                      : (rsi2 > 90 && macd && macd.histogram < 0) ? `PROFIT TAKE: RSI(2) ${rsi2.toFixed(1)} > 90 + MACD Bearish Cross`
+                      : (st && st.trend === 'BEARISH' && st.changed) ? `CUT LOSS: Supertrend 15m Flip to RED`
+                      : (realTimePrice && st && realTimePrice < st.value) ? `SHADOW EXIT: Price ${realTimePrice} below ST support ${st.value.toFixed(8)}`
+                      : null
             }
-          }
+          },
         };
         historySuccess = true;
       }

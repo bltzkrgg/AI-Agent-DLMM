@@ -35,7 +35,7 @@ const DEFAULTS = {
   minTvl: 10000,
   maxTvl: 150000,
   minOrganic: 55,
-  minBinStep: 1,             // Min bin step pool yang akan dipertimbangkan
+  minBinStep: 100,            // Minimal 100 bin step (Hukum 3)
   minTokenFeesSol: 0,        // Min total fees SOL untuk pool (0 = disabled)
 
   // Position management
@@ -60,9 +60,10 @@ const DEFAULTS = {
   proactiveExitMinProfitPct: 1.0,
   proactiveExitBearishConfidence: 0.7,
   maxPriceImpactPct: 0.5,     // Maksimal price impact (%) yang diijinkan saat simulasi swap
-  maxBinsPerPosition: 150,   // Kapasitas bin maksimal per transaksi (Meteora V2)
+  maxBinsPerPosition: 125,   // Kapasitas bin maksimal sesuai skema (80-125)
   activePreset: 'rsi_plus_supertrend', // Mode keputusan: supertrend_break, rsi_reversal, rsi_plus_supertrend
-  rsi2Threshold: 90,         // Threshold RSI(2) untuk sinyal exit/zap-out
+  rsi2Threshold: 90,         // Hard scale range width based on Volatility + Capitulation
+  targetRangePct: 90.0,      // Goal: Deep Jaring 90% Range (Hukum 2)
 
   // Darwinian Signal Weighting — dari 263 closed positions
   // Higher weight = stronger predictor of profitable positions
