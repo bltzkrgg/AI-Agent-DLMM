@@ -45,10 +45,12 @@ async function getDexScreenerInfo(tokenMint) {
       hasSocials:     !!(best.info?.socials?.length > 0 || best.info?.websites?.length > 0),
       liquidity:      safeNum(best.liquidity?.usd),
       fdv:            safeNum(best.fdv),
+      priceChangeM5:  safeNum(best.priceChange?.m5),
       priceChange1h:  safeNum(best.priceChange?.h1),
       priceChange6h:  safeNum(best.priceChange?.h6),
       priceChange24h: safeNum(best.priceChange?.h24),
       volume24h:      safeNum(best.volume?.h24),
+      priceUsd:       safeNum(best.priceUsd),
       buys1h:         safeNum(txns1h.buys),
       sells1h:        safeNum(txns1h.sells),
       buys24h:        safeNum(txns24h.buys),
@@ -77,7 +79,7 @@ async function getJupiterData(tokenMint) {
       isStrict:   !!(tokenData?.tags?.includes('strict')),
       isVerified: !!(tokenData?.tags?.includes('verified')),
       isPumpFun:  !!(tokenData?.tags?.includes('pump-fun') || tokenData?.tags?.includes('pumpfun')),
-      priceUsd:   priceInfo?.price || null,
+      priceUsd:   safeNum(priceInfo?.price),
     };
   } catch { return null; }
 }
@@ -334,8 +336,8 @@ function step11_slippageCheck(sim, maxImpact = 0.5) {
     return { rejects, warnings };
   }
 
-  if (sim.isHoneypot && !sim.isSimFailure) {
-    rejects.push({ rule: 'HONEYPOT_DETECTED', msg: `Honeypot risk! Simulasi jual gagal: ${sim.sellError || 'Unknown Error'}` });
+  if (sim.sellError && !sim.isSimFailure) {
+    rejects.push({ rule: 'HONEYPOT_DETECTED', msg: `Honeypot risk! Simulasi jual gagal: ${sim.sellError}` });
   } else if (sim.isSimFailure) {
     warnings.push({ rule: 'SIM_SELL_FAILED', msg: 'Gagal simulasi jual (Network/Timeout) — Honeypot check tidak konklusif' });
   }

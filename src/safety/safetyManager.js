@@ -71,24 +71,26 @@ export function setStartingBalanceUsd(balanceUsd) {
 
 /**
  * Cek apakah posisi harus di-stop-loss
- * @param {object} position - position data dari on-chain
+ * @param {object} position - position data
+ * @param {number} strategySl - optional strategy-specific SL (e.g. -40)
  * @returns {{ triggered: boolean, reason: string }}
  */
-export function checkStopLoss(position) {
+export function checkStopLoss(position, strategySl = null) {
   const cfg = getConfig();
-  const stopLossPct = cfg.stopLossPct ?? 5;
+  // Gunakan strategySl jika ada, jika tidak pakai global config
+  const threshold = (strategySl !== null) ? Math.abs(strategySl) : (cfg.stopLossPct ?? 5);
 
-  // Use ONLY actual pnl — never use fee as pnl proxy
-  // pnlPct comes from Meteora PnL API (real profit/loss on principal)
-  const pnlPct = position.pnlPct ?? null;
+  // pnlPct negative = loss on principal
+  // Prioritas: pnlPct yang di-pass lewat object > data internal position
+  const pnlPct = position.pnlPct ?? position.pnl_pct ?? null;
 
   if (pnlPct === null) return { triggered: false, reason: 'No PnL data available' };
 
   // pnlPct negative = loss on principal
-  if (pnlPct < -stopLossPct) {
+  if (pnlPct < -threshold) {
     return {
       triggered: true,
-      reason: `Stop-loss triggered: PnL ${pnlPct.toFixed(2)}% melewati threshold -${stopLossPct}%`,
+      reason: `Stop-loss triggered: PnL ${pnlPct.toFixed(2)}% melewati threshold -${threshold}%`,
     };
   }
 
