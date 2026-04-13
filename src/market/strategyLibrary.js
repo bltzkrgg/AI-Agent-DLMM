@@ -286,7 +286,6 @@ export async function evaluateStrategyReadiness({ strategyName, poolAddress, sna
 
     // --- Defensive Check: Pool Stats ---
     const pool = snapshot?.pool || {};
-    const binStep = pool.binStep || 0;
     const tvl = pool.tvl || 0;
     const thresholds = getThresholds();
 
