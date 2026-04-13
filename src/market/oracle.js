@@ -295,19 +295,25 @@ export async function getMarketSnapshot(tokenMint, poolAddress = null) {
   // Simplified Health Score (using only allowed sources)
   let healthScore = 50;
   if (pool) {
-    healthScore += pool.feeAprCategory === 'HIGH' ? 20 : pool.feeAprCategory === 'LOW' ? -20 : 0;
-    healthScore += pool.feeTvlRatio > 0.05 ? 15 : pool.feeTvlRatio < 0.01 ? -10 : 0;
+    const feeCat = pool.feeAprCategory || 'MEDIUM';
+    healthScore += feeCat === 'HIGH' ? 20 : feeCat === 'LOW' ? -20 : 0;
+    
+    const feeRatio = Number.isFinite(pool.feeTvlRatio) ? pool.feeTvlRatio : 0;
+    healthScore += feeRatio > 0.05 ? 15 : feeRatio < 0.01 ? -10 : 0;
   }
-  if (onChain?.available) {
+  
+  if (onChain && onChain.available) {
     healthScore += onChain.whaleRisk === 'HIGH' ? -15 : onChain.whaleRisk === 'LOW' ? 5 : 0;
   }
+  
   if (sentiment) {
-    healthScore += sentiment.buyPressurePct > 60 ? 10 : sentiment.buyPressurePct < 40 ? -5 : 0;
+    const bp = Number.isFinite(sentiment.buyPressurePct) ? sentiment.buyPressurePct : 50;
+    healthScore += bp > 60 ? 10 : bp < 40 ? -5 : 0;
   }
-
-  if (smartMoney && pool?.tvl > 0) {
+  
+  if (smartMoney && pool && pool.tvl > 0) {
     const skew = (smartMoney.topLpUsd / pool.tvl) * 100;
-    smartMoney.skewPct = parseFloat(skew.toFixed(2));
+    smartMoney.skewPct = Number.isFinite(skew) ? parseFloat(skew.toFixed(2)) : 0;
     if (skew > 25) healthScore -= 10;
   }
 

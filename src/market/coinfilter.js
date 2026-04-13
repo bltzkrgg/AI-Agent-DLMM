@@ -115,8 +115,10 @@ function step3_priceHealth(dex, thresholds = {}) {
   const warnings = [];
   if (!dex) return { rejects, warnings };
 
-  if (dex.priceChange1h < -15)
-    rejects.push({ rule: 'PRICE_DUMP_1H', msg: `Harga turun ${dex.priceChange1h}% dalam 1h — dump aktif` });
+  if (dex.priceChange1h < -20)
+    warnings.push({ rule: 'HEAVY_DUMP_1H', msg: `Harga turun ${dex.priceChange1h}% (1h) — Risiko tinggi, tapi peluang serok buat Panda` });
+  else if (dex.priceChange1h < -10)
+    warnings.push({ rule: 'PRICE_CORRECTION', msg: `Harga terkoreksi ${dex.priceChange1h}% (1h) — Monitor area support` });
 
   if (dex.liquidity < 5000)
     rejects.push({ rule: 'LOW_LIQUIDITY', msg: `Liquidity $${dex.liquidity.toFixed(0)} (<$5k) — pool terlalu kecil` });
@@ -137,9 +139,11 @@ function step5_txnAnalysis(dex) {
   const total1h = dex.buys1h + dex.sells1h;
   if (total1h > 10) {
     const sellRatio = dex.sells1h / total1h;
-    // Sniper Hardening: Reject if > 65% txn is selling. Prevents "Falling Knife" entry.
-    if (sellRatio > 0.65)
-      rejects.push({ rule: 'HEAVY_SELLING_1H', msg: `${(sellRatio*100).toFixed(0)}% txn 1h adalah SELL` });
+    // Sniper Hardening: Ubah jadi Warning biar Panda bisa deteksi capitulation
+    if (sellRatio > 0.70)
+      warnings.push({ rule: 'EXTREME_SELLING_1H', msg: `${(sellRatio*100).toFixed(0)}% txn h1 adalah SELL — Potensi capitulation/serok bawah` });
+    else if (sellRatio > 0.60)
+      warnings.push({ rule: 'HEAVY_SELLING_1H', msg: `${(sellRatio*100).toFixed(0)}% txn h1 adalah SELL` });
   }
 
   // Final Spike Protection: Nolak kalau harga naik > 15% cuma dlm 5 menit (FOMO Risk)

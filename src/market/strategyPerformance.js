@@ -21,7 +21,7 @@ const DATA_FILES = [
   join(ROOT, 'memory.json'),
   join(ROOT, 'lessons.json'),
   join(ROOT, 'strategyPerformance.json'),
-  join(ROOT, 'strategy-library.json'),
+  join(__dirname, 'strategy-library.json'), // Aegis Corrected Path
 ];
 
 // ─── Simpan snapshot performa ke file lokal ───────────────────────

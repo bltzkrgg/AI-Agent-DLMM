@@ -14,7 +14,10 @@ import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const LIBRARY_PATH = join(__dirname, '../../strategy-library.json');
+// Path absolut ke library strategi di folder yang sama (src/market)
+const LIBRARY_PATH = join(__dirname, 'strategy-library.json');
+
+import { getThresholds } from '../config.js';
 
 const DEFAULT_LIBRARY = {
   strategies: [],
@@ -86,19 +89,20 @@ export function matchStrategyToMarket(marketSnapshot) {
   const range24h    = ohlcv?.range24hPct   ?? 0;
   const currentPrice = ohlcv?.currentPrice ?? 0;
   const support     = ohlcv?.support       ?? 0;
-  const rsi14       = ta?.rsi14            ?? 50;
-  const bb          = ta?.bb;
+  const ta          = marketSnapshot.ta    ?? {};
+  const rsi14       = ta.rsi14            ?? 50;
+  const bb          = ta.bb;
   const feeApr      = marketSnapshot.pool?.feeApr ?? 0;
 
-  // Price proximity to 24h support (Wave Enjoyer signal)
-  const priceVsSupportPct = support > 0 && currentPrice > 0
+  // Price proximity to support (Wave Enjoyer signal)
+  const priceVsSupportPct = Number.isFinite(support) && support > 0 && Number.isFinite(currentPrice) && currentPrice > 0
     ? ((currentPrice - support) / support) * 100 : null;
   const priceNearSupport = priceVsSupportPct !== null
     && priceVsSupportPct >= 0 && priceVsSupportPct <= 8;
 
   // Post-breakout consolidation (NPC signal)
   const postBreakout  = range24h >= 15;
-  const consolidating = atrPct > 0 && atrPct < range24h * 0.12;
+  const consolidating = Number.isFinite(atrPct) && atrPct > 0 && atrPct < range24h * 0.12;
 
   // High fee (Fee Sniper signal)
   const highFeeApr = feeApr > 200;
@@ -188,7 +192,7 @@ function scoreStrategy(strategy, conditions) {
   }
 
   // Evil Panda momentum bonus
-  if (strategy.id === 'builtin_evil_panda') {
+  if (strategy.id === 'evil_panda') {
     if (conditions.trend === 'UPTREND' && conditions.buyPressure > 60) {
       score += 0.35;
     } else {
@@ -197,7 +201,7 @@ function scoreStrategy(strategy, conditions) {
   }
 
   // Wave Enjoyer — price near support
-  if (strategy.id === 'builtin_wave_enjoyer') {
+  if (strategy.id === 'wave_enjoyer') {
     if (conditions.priceNearSupport) {
       score += 0.35;
     } else {
@@ -206,7 +210,7 @@ function scoreStrategy(strategy, conditions) {
   }
 
   // NPC — consolidation
-  if (strategy.id === 'builtin_npc') {
+  if (strategy.id === 'npc') {
     if (conditions.postBreakout && conditions.consolidating) {
       score += 0.40;
     } else {
@@ -215,7 +219,7 @@ function scoreStrategy(strategy, conditions) {
   }
 
   // Fee Sniper — high fee APR
-  if (strategy.id === 'builtin_fee_sniper') {
+  if (strategy.id === 'fee_sniper') {
     if (conditions.highFeeApr) {
       score += 0.45;
     } else {
@@ -259,15 +263,18 @@ export async function evaluateStrategyReadiness({ strategyName, poolAddress, sna
     // Detect Capitulation (Panic Selling)
     const isCapitulation = rsi < 30 || distFromSupportPct > 15;
     
-    // --- Industrial Grade Schema: Deep Jaring 90% ---
-    const targetRangePct = 90.0; 
-    const offsetMin = 6.0;  // Start at 94% price
-    const offsetMax = 90.0; // End at 10% price (90% total range)
+    // --- Industrial Grade Schema: Deep Jaring 86% (200 bins) ---
+    const targetRangePct = 86.0; 
+    const offsetMin = 6.0;   // Start at 94% price
+    const offsetMax = 86.0;  // End at 14% price (86% total drop from active)
     
     // 5. Calculate Dynamic Headroom (Padding)
     // We want enough bins above price to survive 2.5x ATR of movement
-    const binStepPct = (snapshot?.pool?.binStep || 100) / 10000;
-    const paddingBins = Math.max(5, Math.ceil(((ta.atr * 2.5) / currentPrice) / binStepPct));
+    const binStep = snapshot?.pool?.binStep || 100;
+    const binStepPct = binStep / 10000;
+    const paddingBins = Number.isFinite(ta.atr) && currentPrice > 0
+      ? Math.max(5, Math.ceil(((ta.atr * 2.5) / currentPrice) / binStepPct))
+      : 5;
     
     // 6. Suggested Slippage
     const suggestedSlippage = vol > 50 ? 2.5 : 1.0;
@@ -276,6 +283,12 @@ export async function evaluateStrategyReadiness({ strategyName, poolAddress, sna
     const technicalReasoning = isCapitulation
       ? `🚨 ${modeText}: Capitulation detected (RSI ${rsi.toFixed(0)}), deploying WIDE range ${targetRangePct.toFixed(1)}% to catch bottom.`
       : `🎯 ${modeText}: Momentum active, range ${targetRangePct.toFixed(1)}% anchored to technical floor.`;
+
+    // --- Defensive Check: Pool Stats ---
+    const pool = snapshot?.pool || {};
+    const binStep = pool.binStep || 0;
+    const tvl = pool.tvl || 0;
+    const thresholds = getThresholds();
 
     if (!(binStep >= 100 && binStep <= 250 && tvl >= thresholds.minTvl)) {
       return { ok: false, blockers: ['Invalid Pool Liquidity/BinStep'], notes: 'Pool does not meet Evil Panda requirements.' };
