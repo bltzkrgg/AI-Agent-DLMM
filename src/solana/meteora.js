@@ -520,6 +520,18 @@ async function _openPositionLogic(poolAddress, tokenXAmount, tokenYAmount, price
   try {
     for (let ci = 0; ci < binChunks.length; ci++) {
       const chunk = binChunks[ci];
+
+      // Sentinel: Validate chunk structure before processing
+      if (!chunk || typeof chunk.lowerBinId !== 'number' || typeof chunk.upperBinId !== 'number') {
+        console.error(`[meteora] Invalid chunk at index ${ci}:`, chunk);
+        throw new Error(`Invalid bin chunk structure at index ${ci}`);
+      }
+
+      if (chunk.lowerBinId > chunk.upperBinId) {
+        console.error(`[meteora] Invalid bin range: lowerBinId=${chunk.lowerBinId} > upperBinId=${chunk.upperBinId}`);
+        throw new Error(`Invalid bin range in chunk ${ci}: lower > upper`);
+      }
+
       const chunkBinsCount = chunk.upperBinId - chunk.lowerBinId + 1;
 
       // Obelisk Precision: Remainder Injection for the final chunk
@@ -549,11 +561,25 @@ async function _openPositionLogic(poolAddress, tokenXAmount, tokenYAmount, price
           const binIds = [];
           for (let b = chunk.lowerBinId; b <= chunk.upperBinId; b++) binIds.push(b);
 
+          // Sentinel: Validate binIds not empty
+          if (binIds.length === 0) {
+            throw new Error(`binIds array is empty for chunk ${ci}: range [${chunk.lowerBinId}, ${chunk.upperBinId}]`);
+          }
+
           // Obelisk: Precision weight distribution (Sum exactly 10,000)
-          const weights = new Array(binIds.length).fill(Math.floor(10000 / binIds.length));
+          const weightValue = Math.floor(10000 / binIds.length);
+          if (!Number.isFinite(weightValue) || weightValue <= 0) {
+            throw new Error(`Invalid weight calculation: weightValue=${weightValue} for ${binIds.length} bins`);
+          }
+          const weights = new Array(binIds.length).fill(weightValue);
           const currentSum = weights.reduce((a, b) => a + b, 0);
           if (currentSum < 10000) {
             weights[weights.length - 1] += (10000 - currentSum);
+          }
+
+          // Sentinel: Validate weights before passing to SDK
+          if (!Array.isArray(weights) || weights.length === 0 || weights.some(w => !Number.isFinite(w) || w < 0)) {
+            throw new Error(`Invalid weights array: ${JSON.stringify(weights)}`);
           }
 
           txs = await dlmmPool.initializePositionAndAddLiquidityByWeight({
@@ -580,11 +606,25 @@ async function _openPositionLogic(poolAddress, tokenXAmount, tokenYAmount, price
         const binIds = [];
         for (let b = chunk.lowerBinId; b <= chunk.upperBinId; b++) binIds.push(b);
 
+        // Sentinel: Validate binIds not empty
+        if (binIds.length === 0) {
+          throw new Error(`binIds array is empty for chunk ${ci}: range [${chunk.lowerBinId}, ${chunk.upperBinId}]`);
+        }
+
         // Obelisk: Precision weight distribution (Sum exactly 10,000)
-        const weights = new Array(binIds.length).fill(Math.floor(10000 / binIds.length));
+        const weightValue = Math.floor(10000 / binIds.length);
+        if (!Number.isFinite(weightValue) || weightValue <= 0) {
+          throw new Error(`Invalid weight calculation in case B: weightValue=${weightValue} for ${binIds.length} bins`);
+        }
+        const weights = new Array(binIds.length).fill(weightValue);
         const currentSum = weights.reduce((a, b) => a + b, 0);
         if (currentSum < 10000) {
           weights[weights.length - 1] += (10000 - currentSum);
+        }
+
+        // Sentinel: Validate weights before passing to SDK
+        if (!Array.isArray(weights) || weights.length === 0 || weights.some(w => !Number.isFinite(w) || w < 0)) {
+          throw new Error(`Invalid weights array in case B: ${JSON.stringify(weights)}`);
         }
 
         txs = await dlmmPool.addLiquidityByWeight({
