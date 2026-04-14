@@ -356,7 +356,8 @@ async function executeTool(name, input) {
           trend: price.trend,
           momentumM5: price.priceChangeM5,
           volatility: `${price.volatility24h}% (${price.volatilityCategory})`,
-          binStepFit: info.binStep >= price.suggestedBinStepMin ? 'OK' : `⚠️ Butuh bin step ≥${price.suggestedBinStepMin}`,
+          // binStepFit: Defensive implementation v61.2
+          binStepFit: info.binStep >= (price.suggestedBinStepMin || 1) ? 'OK' : `⚠️ Butuh bin step ≥${price.suggestedBinStepMin || 1}`,
           buyPressure: `${price.buyPressurePct}% (${price.sentiment})`,
         } : null,
         strategyRecommendation: strategyMatch ? {

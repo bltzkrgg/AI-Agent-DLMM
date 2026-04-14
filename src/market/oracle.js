@@ -334,6 +334,10 @@ export async function getMarketSnapshot(tokenMint, poolAddress = null) {
       trend: ohlcv?.trend || 'SIDEWAYS',
       volatility24h: ohlcv?.range24hPct || 0,
       volatilityCategory: ohlcv?.volatilityCategory || 'MEDIUM',
+      // Sentinel v61.2: Volatility-based Bin Step Safety Guard
+      suggestedBinStepMin: (ohlcv?.range24hPct >= 200) ? 125 
+                         : (ohlcv?.range24hPct >= 50)  ? 100 
+                         : 1,
       buyPressurePct: sentiment.buyPressurePct,
       sentiment: sentiment.sentiment,
     } : null,
