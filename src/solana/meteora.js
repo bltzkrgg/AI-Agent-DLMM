@@ -2,7 +2,8 @@ import DLMM, { chunkBinRange } from '@meteora-ag/dlmm';
 import { PublicKey, Keypair, Transaction, ComputeBudgetProgram, VersionedTransaction } from '@solana/web3.js';
 import BN from 'bn.js';
 import { getConnection, getWallet } from './wallet.js';
-import { savePosition, closePositionWithPnl, enqueueReconcileIssue, updatePositionLifecycle } from '../db/database.js';
+import db, { savePosition, closePositionWithPnl, enqueueReconcileIssue, updatePositionLifecycle, runInQueue } from '../db/database.js';
+import { updatePositionRuntimeState } from '../app/positionRuntimeState.js';
 import { fetchWithTimeout, safeNum, withRetry, withExponentialBackoff, stringify } from '../utils/safeJson.js';
 import { toLamports, fromLamports, sumBigInts } from '../utils/units.js';
 import { resolveTokens, WSOL_MINT } from '../utils/tokenMeta.js';
@@ -635,10 +636,11 @@ async function _openPositionLogic(poolAddress, tokenXAmount, tokenYAmount, price
 
         // Aegis: Update DB setiap kali chunk berhasil (Incremental Save)
         // Jika chunk berikutnya gagal, kita tetep punya rekam jejak jumlah SOL yang masuk.
+        const solPriceUsd = await getSolPriceUsd();
         const currentUsd = parseFloat((totalSucceededSol * solPriceUsd).toFixed(2));
         updatePositionRuntimeState(posKp.publicKey.toString(), { 
           totalSucceededSol, 
-          status: totalSucceededSol >= totalYSol ? 'fully_deployed' : 'partially_deployed' 
+          status: totalSucceededSol >= tokenYAmount ? 'fully_deployed' : 'partially_deployed' 
         });
         
         // Update database utama
