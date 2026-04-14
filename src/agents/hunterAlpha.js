@@ -391,8 +391,8 @@ async function executeTool(name, input) {
       return JSON.stringify({
         verdict: result.verdict,
         eligible: result.eligible,
-        highFlags: result.highFlags.map(f => f.msg),
-        mediumFlags: result.mediumFlags.map(f => f.msg),
+        highFlags: (result.highFlags || []).map(f => f.msg),
+        mediumFlags: (result.mediumFlags || []).map(f => f.msg),
         priceImpact: result.priceImpact,
         sources: result.sources,
         action,
