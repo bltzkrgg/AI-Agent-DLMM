@@ -810,6 +810,15 @@ async function _openPositionLogic(poolAddress, tokenXAmount, tokenYAmount, price
           throw e;
         }
       }
+
+      // Aegis: Wait between chunks to ensure position state is fully consistent on-chain
+      // Chunk 0 creates the position account, chunk 1+ add liquidity to it
+      // Without this wait, chunk 1 can fail with "index out of bounds" if position isn't fully synced
+      if (ci < binChunks.length - 1) {
+        const delayMs = 2000;
+        console.log(`[meteora] Chunk ${ci} completed. Waiting ${delayMs}ms for position state to stabilize before chunk ${ci + 1}...`);
+        await new Promise(resolve => setTimeout(resolve, delayMs));
+      }
     }
   } catch (err) {
     if (totalSucceededSol > 0) {
