@@ -672,12 +672,19 @@ async function _openPositionLogic(poolAddress, tokenXAmount, tokenYAmount, price
 
         // Sign with wallet and the single position keypair
         console.log(`[meteora] Before signing - Signatures: ${tx.signatures?.length || 0}`);
+        console.log(`[meteora] Wallet pubkey: ${wallet.publicKey?.toString?.()}`);
+        console.log(`[meteora] PosKp pubkey: ${posKp.publicKey?.toString?.()}`);
 
         // Clear signatures array before signing (in case SDK pre-signed)
         if (isVersioned) {
           tx.signatures = [];
-          tx.sign([posKp, wallet]);
-          console.log(`[meteora] Signed VersionedTransaction - After: Signatures: ${tx.signatures?.length || 0}`);
+          try {
+            tx.sign([posKp, wallet]);
+            console.log(`[meteora] Signed VersionedTransaction - After: Signatures: ${tx.signatures?.length || 0}`);
+          } catch (sigErr) {
+            console.error(`[meteora] ERROR signing VersionedTransaction:`, sigErr.message);
+            throw sigErr;
+          }
         } else {
           // For legacy, verify we can sign properly
           if (!tx.signatures) {
@@ -685,8 +692,14 @@ async function _openPositionLogic(poolAddress, tokenXAmount, tokenYAmount, price
           }
           // Clear existing signatures that might be invalid
           tx.signatures = [];
-          tx.sign(wallet, posKp);
-          console.log(`[meteora] Signed Legacy Transaction - After: Signatures: ${tx.signatures?.length || 0}`);
+          try {
+            tx.sign(wallet, posKp);
+            console.log(`[meteora] Signed Legacy Transaction - After: Signatures: ${tx.signatures?.length || 0}`);
+            console.log(`[meteora] Signature[0] length: ${tx.signatures[0]?.length}, Signature[1] length: ${tx.signatures[1]?.length}`);
+          } catch (sigErr) {
+            console.error(`[meteora] ERROR signing Legacy Transaction:`, sigErr.message);
+            throw sigErr;
+          }
         }
 
         // Validate transaction before simulation
@@ -694,12 +707,27 @@ async function _openPositionLogic(poolAddress, tokenXAmount, tokenYAmount, price
         console.log(`  - Transaction type: ${isVersioned ? 'Versioned' : 'Legacy'}`);
         console.log(`  - Blockhash: ${isVersioned ? tx.message.recentBlockhash : tx.recentBlockhash}`);
         console.log(`  - Signatures count: ${tx.signatures?.length || 0}`);
-        console.log(`  - Signatures detail: ${JSON.stringify(tx.signatures?.map((s, i) => ({ index: i, length: s.length })) || [])}`);
+
+        // Detailed signature validation
+        if (tx.signatures && tx.signatures.length > 0) {
+          console.log(`  - Signature 0 type: ${typeof tx.signatures[0]}, constructor: ${tx.signatures[0]?.constructor?.name}`);
+          console.log(`  - Signature 0 value: ${tx.signatures[0]?.toString?.() || JSON.stringify(tx.signatures[0])}`);
+          if (tx.signatures[1]) {
+            console.log(`  - Signature 1 type: ${typeof tx.signatures[1]}, constructor: ${tx.signatures[1]?.constructor?.name}`);
+            console.log(`  - Signature 1 value: ${tx.signatures[1]?.toString?.() || JSON.stringify(tx.signatures[1])}`);
+          }
+        }
+
         console.log(`  - Instructions count: ${isVersioned ? tx.message.instructions?.length : tx.instructions?.length}`);
 
         // Check for null/undefined signatures
         if (!tx.signatures || tx.signatures.length === 0) {
           console.error(`[meteora] ERROR: Transaction has no signatures!`);
+        }
+
+        // Check if signatures contain actual data
+        if (tx.signatures?.some(sig => !sig || (typeof sig === 'object' && Object.keys(sig).length === 0))) {
+          console.error(`[meteora] ERROR: Transaction has empty/null signatures!`);
         }
 
         try {
