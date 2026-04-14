@@ -711,8 +711,19 @@ async function _openPositionLogic(poolAddress, tokenXAmount, tokenYAmount, price
           // Order matters: fee payer (wallet) first, then other signers (posKp)
           try {
             console.log(`[meteora] About to sign legacy tx with wallet and posKp...`);
+            console.log(`[meteora] BEFORE signing - signatures array: ${JSON.stringify(tx.signatures)}`);
+            console.log(`[meteora] BEFORE signing - signatures[0]: ${JSON.stringify(tx.signatures[0])}`);
+
             tx.sign(posKp, wallet);  // Try posKp first, then wallet (position keypair might be the primary signer)
-            console.log(`[meteora] Signed Legacy Transaction - After: Signatures: ${tx.signatures?.length || 0}`);
+
+            console.log(`[meteora] AFTER signing - signatures array length: ${tx.signatures?.length || 0}`);
+            console.log(`[meteora] AFTER signing - full signatures: ${JSON.stringify(tx.signatures?.map(s => ({
+              type: typeof s,
+              isBuffer: Buffer.isBuffer(s),
+              keys: Object.keys(s || {}),
+              content: JSON.stringify(s)
+            })))}`);
+
             if (tx.signatures[0]) {
               console.log(`[meteora] Signature[0] type: ${typeof tx.signatures[0]}, isBuffer: ${Buffer.isBuffer(tx.signatures[0])}, length: ${tx.signatures[0]?.length}`);
             }
