@@ -558,20 +558,21 @@ async function _openPositionLogic(poolAddress, tokenXAmount, tokenYAmount, price
 
       const chunkBinsCount = chunk.upperBinId - chunk.lowerBinId + 1;
 
-      // Obelisk Precision: Remainder Injection for the final chunk
+      // ── Chunk Amount Allocation ──────────────────────────────────
+      // Chunk 0 (position creation): Use FULL amount to initialize position
+      // Chunk 1+ (range extension): Use ZERO amount, only add empty bins
+      // This prevents amount fragmentation and reduces transaction count
       let chunkTotalX, chunkTotalY;
-      if (ci === binChunks.length - 1) {
-        // Last chunk gets the remainder to ensure sum exactly matches total
-        let usedX = new BN(0), usedY = new BN(0);
-        // We'd need to track usedX/usedY from previous loops or just calculate here
-        const prevBinsCount = ci * 50; // chunkBinRange uses 50 bins standard
-        const prevX = totalXBN.mul(new BN(prevBinsCount)).div(new BN(totalBins));
-        const prevY = totalYBN.mul(new BN(prevBinsCount)).div(new BN(totalBins));
-        chunkTotalX = totalXBN.sub(prevX);
-        chunkTotalY = totalYBN.sub(prevY);
+      if (ci === 0) {
+        // First chunk: Deploy full amount to create position
+        chunkTotalX = totalXBN;
+        chunkTotalY = totalYBN;
+        console.log(`[meteora] Chunk 0 allocation: FULL amount (X=${chunkTotalX.toString()}, Y=${chunkTotalY.toString()})`);
       } else {
-        chunkTotalX = totalXBN.mul(new BN(chunkBinsCount)).div(new BN(totalBins));
-        chunkTotalY = totalYBN.mul(new BN(chunkBinsCount)).div(new BN(totalBins));
+        // Subsequent chunks: Zero amount, only extend bin range
+        chunkTotalX = new BN(0);
+        chunkTotalY = new BN(0);
+        console.log(`[meteora] Chunk ${ci} allocation: ZERO amount (only extend range)`);
       }
 
       let txs;
