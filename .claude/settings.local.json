@@ -70,7 +70,8 @@
       "Bash(nvm list:*)",
       "Bash(nvm exec:*)",
       "Bash(npm start:*)",
-      "Bash(pkill -9 node)"
+      "Bash(pkill -9 node)",
+      "Bash(sqlite3:*)"
     ]
   }
 }
