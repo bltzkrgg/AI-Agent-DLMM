@@ -153,6 +153,54 @@ async function syncStartingBalanceBaseline() {
 
 await syncStartingBalanceBaseline();
 
+// ─── Health check: Detect manually-closed positions ────────────────
+async function syncPositionStates() {
+  if (!solanaReady) return;
+  try {
+    const connection = getConnection();
+    const openPositions = getOpenPositions();
+
+    if (!openPositions || openPositions.length === 0) {
+      console.log('✅ No open positions to sync');
+      return;
+    }
+
+    console.log(`🔍 Syncing on-chain state for ${openPositions.length} open positions...`);
+    const { closePositionWithPnl } = await import('./db/database.js');
+
+    let closedCount = 0;
+    for (const pos of openPositions) {
+      try {
+        const positionPubKey = new PublicKey(pos.position_address);
+        const accountInfo = await connection.getAccountInfo(positionPubKey);
+
+        if (accountInfo === null) {
+          // Position account tidak ada on-chain tapi masih di DB → closed manual
+          console.log(`⚠️ Position ${pos.position_address} closed manually (account not found on-chain)`);
+          await closePositionWithPnl(pos.position_address, {
+            pnlUsd: 0,
+            pnlPct: 0,
+            feesUsd: 0,
+            closeReason: 'manually_closed',
+            lifecycleState: 'closed_manual',
+          });
+          closedCount++;
+        }
+      } catch (e) {
+        console.warn(`⚠️ Could not check position ${pos.position_address}: ${e.message}`);
+      }
+    }
+
+    if (closedCount > 0) {
+      console.log(`✅ Synced: ${closedCount} manually-closed positions detected and updated`);
+    }
+  } catch (e) {
+    console.warn(`⚠️ Position sync failed: ${e.message}`);
+  }
+}
+
+await syncPositionStates();
+
 async function getLpPnlMap() {
   const pnlMap = new Map();
   if (!isLPAgentEnabled() || !solanaReady) return pnlMap;
