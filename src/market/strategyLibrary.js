@@ -236,19 +236,22 @@ function scoreStrategy(strategy, conditions) {
  * Integrated for Technical Sniper upgrade.
  */
 export async function evaluateStrategyReadiness({ strategyName, snapshot }) {
-  if (!snapshot || !snapshot.ta) return { ok: false, blockers: ['Missing TA data'] };
-  const ta = snapshot.ta;
+  if (!snapshot) return { ok: false, blockers: ['Missing Snapshot data'] };
+  const ta = snapshot.ta || {};
   
   if (strategyName === 'Evil Panda') {
     const st = ta.supertrend;
     
-    // ── Hard Guard: Supertrend Bullish State (15m) ────────────────
-    if (!st || st.trend !== 'BULLISH') {
+    // ── Hard Guard: Supertrend Bullish State (15m) OR New Token Bypass ──
+    if (st && st.trend !== 'BULLISH') {
       return {
         ok: false,
-        blockers: ['Supertrend is not BULLISH'],
+        blockers: ['Supertrend is ' + st.trend],
         notes: 'Evil Panda Master requires Price > Supertrend on 15m timeframe.',
       };
+    } else if (!st) {
+       // Koin baru belum punya 10 bars untuk 15m Supertrend. Kita baypass.
+       console.log(`🐼 [Evil Panda] Data TA Supertrend tidak tersedia (Koin Terlalu Baru). Mengaktifkan APE MODE (Blind Entry).`);
     }
 
     // --- Evil Panda Master Parameters (v61 - Ultimate Wide Jaring) ---
