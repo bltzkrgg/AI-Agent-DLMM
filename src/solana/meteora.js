@@ -527,6 +527,8 @@ async function _openPositionLogic(poolAddress, tokenXAmount, tokenYAmount, price
         throw new Error(`Invalid bin chunk structure at index ${ci}`);
       }
 
+      console.log(`[meteora] Processing chunk ${ci}: lowerBinId=${chunk.lowerBinId}, upperBinId=${chunk.upperBinId}, accountExists=${accountExists}`);
+
       if (chunk.lowerBinId > chunk.upperBinId) {
         console.error(`[meteora] Invalid bin range: lowerBinId=${chunk.lowerBinId} > upperBinId=${chunk.upperBinId}`);
         throw new Error(`Invalid bin range in chunk ${ci}: lower > upper`);
@@ -582,6 +584,8 @@ async function _openPositionLogic(poolAddress, tokenXAmount, tokenYAmount, price
             throw new Error(`Invalid weights array: ${JSON.stringify(weights)}`);
           }
 
+          console.log(`[meteora] case A init params: binIds=${JSON.stringify(binIds)}, weights=${JSON.stringify(weights)}, totalXAmount=${chunkTotalX.toString()}, totalYAmount=${chunkTotalY.toString()}`);
+
           txs = await dlmmPool.initializePositionAndAddLiquidityByWeight({
             positionPubKey: posKp.publicKey,
             user: wallet.publicKey,
@@ -626,6 +630,8 @@ async function _openPositionLogic(poolAddress, tokenXAmount, tokenYAmount, price
         if (!Array.isArray(weights) || weights.length === 0 || weights.some(w => !Number.isFinite(w) || w < 0)) {
           throw new Error(`Invalid weights array in case B: ${JSON.stringify(weights)}`);
         }
+
+        console.log(`[meteora] case B add params: binIds=${JSON.stringify(binIds)}, weights=${JSON.stringify(weights)}, totalXAmount=${chunkTotalX.toString()}, totalYAmount=${chunkTotalY.toString()}`);
 
         txs = await dlmmPool.addLiquidityByWeight({
           positionPubKey: posKp.publicKey,
