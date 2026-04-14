@@ -326,10 +326,20 @@ async function getSlippageSimulation(tokenMint, amountSol) {
   } catch (e) {
     if (e.message === 'NETWORK_ERROR') {
       console.warn(`🌐 Jupiter API unreachable (ENOTFOUND) for ${tokenMint.slice(0, 8)}. Skipping slippage check.`);
-      return { networkError: true, isSimFailure: true };
+      return {
+        priceImpactBuy: 0,
+        priceImpactSell: 0,
+        networkError: true,
+        isSimFailure: true
+      };
     }
     console.error(`❌ getSlippageSimulation failed for ${tokenMint.slice(0, 8)}:`, e.message);
-    return null;
+    return {
+      priceImpactBuy: 0,
+      priceImpactSell: 0,
+      simError: true,
+      isSimFailure: true
+    };
   }
 }
 
