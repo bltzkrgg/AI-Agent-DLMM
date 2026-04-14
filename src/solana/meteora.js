@@ -670,9 +670,12 @@ async function _openPositionLogic(poolAddress, tokenXAmount, tokenYAmount, price
           // VersionedTransaction has feePayer in message header, no need to set separately
           console.log(`[meteora] Set VersionedTransaction blockhash: ${blockhash}`);
         } else {
-          tx.recentBlockhash = blockhash;
+          // Legacy Transaction: Set feePayer but NOT blockhash
+          // We'll use replaceRecentBlockhash: true in simulateTransaction instead
+          // Setting both causes "Invalid arguments" conflict
           tx.feePayer = wallet.publicKey;
-          console.log(`[meteora] Set Legacy Transaction blockhash: ${blockhash}, feePayer: ${wallet.publicKey.toString()}`);
+          console.log(`[meteora] Set Legacy Transaction feePayer: ${wallet.publicKey.toString()}`);
+          console.log(`[meteora] Blockhash will be replaced by RPC during simulateTransaction`);
         }
 
         // Priority fee — slightly higher for large bin deployments
@@ -739,7 +742,11 @@ async function _openPositionLogic(poolAddress, tokenXAmount, tokenYAmount, price
         // Validate transaction before simulation
         console.log(`[meteora] Pre-simulation validation:`);
         console.log(`  - Transaction type: ${isVersioned ? 'Versioned' : 'Legacy'}`);
-        console.log(`  - Blockhash: ${isVersioned ? tx.message.recentBlockhash : tx.recentBlockhash}`);
+        if (isVersioned) {
+          console.log(`  - Blockhash: ${tx.message.recentBlockhash}`);
+        } else {
+          console.log(`  - Blockhash: <will be set by RPC via replaceRecentBlockhash>`);
+        }
         console.log(`  - Signatures count: ${tx.signatures?.length || 0}`);
 
         // Detailed signature validation
