@@ -720,16 +720,16 @@ async function _openPositionLogic(poolAddress, tokenXAmount, tokenYAmount, price
         console.log(`[meteora] PosKp pubkey: ${posKp.publicKey?.toString?.()}`);
         console.log(`[meteora] PosKp has secretKey: ${!!posKp.secretKey}`);
 
-        // Sign transaction with fee payer (wallet) ONLY
-        // Note: posKp is marked as signer in instructions, doesn't sign the transaction itself
+        // Sign transaction with both fee payer (wallet) and position keypair
+        // SDK Meteora add instructions that require both signatures for account initialization
         try {
           if (isVersioned) {
             tx.signatures = [];
-            tx.sign([wallet]);
-            console.log(`[meteora] Signed VersionedTransaction with wallet only - Signatures: ${tx.signatures?.length || 0}`);
+            tx.sign([wallet, posKp]);
+            console.log(`[meteora] Signed VersionedTransaction with wallet + posKp - Signatures: ${tx.signatures?.length || 0}`);
           } else {
-            tx.sign(wallet);
-            console.log(`[meteora] Signed Legacy Transaction with wallet only - Signatures: ${tx.signatures?.length || 0}`);
+            tx.sign(posKp, wallet);
+            console.log(`[meteora] Signed Legacy Transaction with posKp + wallet - Signatures: ${tx.signatures?.length || 0}`);
           }
         } catch (sigErr) {
           console.error(`[meteora] ERROR signing transaction:`, sigErr.message);
