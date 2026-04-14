@@ -55,7 +55,9 @@ async function rateLimitedFetch(path, params = {}) {
     }, 12000);
 
     if (!res.ok) {
-      console.warn(`[lpAgent] ${path} → ${res.status}`);
+      if (res.status !== 404) {
+        console.warn(`[lpAgent] ${path} → ${res.status}`);
+      }
       return null;
     }
     return await res.json();
