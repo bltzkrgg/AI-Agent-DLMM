@@ -235,7 +235,7 @@ function scoreStrategy(strategy, conditions) {
  * Eval readiness based on technical indicators and market snapshot.
  * Integrated for Technical Sniper upgrade.
  */
-export async function evaluateStrategyReadiness({ strategyName, snapshot }) {
+export async function evaluateStrategyReadiness({ strategyName, snapshot, binStep = 100 }) {
   if (!snapshot) return { ok: false, blockers: ['Missing Snapshot data'] };
   const ta = snapshot.ta || {};
   
@@ -250,14 +250,21 @@ export async function evaluateStrategyReadiness({ strategyName, snapshot }) {
         notes: 'Evil Panda Master requires Price > Supertrend on 15m timeframe.',
       };
     } else if (!st) {
-       // Koin baru belum punya 10 bars untuk 15m Supertrend. Kita baypass.
-       console.log(`🐼 [Evil Panda] Data TA Supertrend tidak tersedia (Koin Terlalu Baru). Mengaktifkan APE MODE (Blind Entry).`);
+      // Koin terlalu baru — Supertrend butuh minimal 10-15 candle 15m (~2.5 jam data).
+      // Evil Panda tidak deploy tanpa konfirmasi TA. Tunggu sampai data tersedia.
+      return {
+        ok: false,
+        blockers: ['Data TA Supertrend belum tersedia — koin terlalu baru'],
+        notes: 'Evil Panda membutuhkan konfirmasi Supertrend 15m. Coba lagi setelah ~2.5 jam dari peluncuran.',
+      };
     }
 
-    // --- Evil Panda Master Parameters (v61 - Ultimate Wide Jaring) ---
-    const targetRangePct = 94.0; // Total width 94%
-    const offsetMin = 0.0;     // Upper Bound (Starts at current price)
-    const offsetMax = 94.0;    // Lower Bound (Ends at -94% drop)
+    // Dynamic range per binStep:
+    //   binStep 100 → 90% range (~230 bins, 5 TX)
+    //   binStep 125 → 94% range (~225 bins, 5 TX)
+    const targetRangePct = binStep === 125 ? 94.0 : 90.0;
+    const offsetMin = 0.0;         // Upper bound: mulai tepat di harga saat ini
+    const offsetMax = targetRangePct; // Lower bound: turun targetRangePct%
     
     // Suggest 0.5% slippage as per master spec
     const suggestedSlippage = 0.5;

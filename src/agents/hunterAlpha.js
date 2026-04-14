@@ -199,7 +199,7 @@ async function executeTool(name, input) {
             vol24hMin: cfg.minVolume24h,
             organicScoreMin: cfg.minOrganic,
             binStepMin: cfg.minBinStep,
-            binStepMax: 250,
+            binStepMax: 125,
             feeTVLInterval: '1h',
           })
           : Promise.resolve([]),
@@ -239,8 +239,7 @@ async function executeTool(name, input) {
         const feeRatio = tvl > 0 ? fees / tvl : 0;
         const binStep = p.binStep || 0;
         return (
-          binStep >= minBinStep &&
-          binStep <= 250 &&
+          (binStep === 100 || binStep === 125) &&
           tvl >= thresholds.minTvl &&
           tvl <= thresholds.maxTvl &&
           feeRatio >= thresholds.minFeeActiveTvlRatio &&
@@ -557,6 +556,7 @@ async function executeTool(name, input) {
           strategyName: strategy.name,
           poolAddress: input.pool_address,
           snapshot,
+          binStep: poolInfo.binStep,
         });
         // Merge dynamic market-based options (e.g., adaptive fixedBinsBelow)
         if (strategyEval?.deployOptions) {

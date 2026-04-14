@@ -1,6 +1,7 @@
 import { fetchWithTimeout, safeNum, withExponentialBackoff } from '../utils/safeJson.js';
 import { getConfig } from '../config.js';
 import { getJupiterPrice } from '../utils/jupiter.js';
+import { getGmgnTokenInfo, getGmgnSecurity } from '../utils/gmgn.js';
 
 const DEXSCREENER_BASE = 'https://api.dexscreener.com';
 const JUPITER_TOKEN_BASE = 'https://tokens.jup.ag';
@@ -377,6 +378,97 @@ function step11_slippageCheck(sim, maxImpact = 0.5) {
   return { rejects, warnings };
 }
 
+// ─── Step 12: GMGN On-Chain Security ─────────────────────────────
+// "Trip Wire" logic: rejects only when GMGN CONFIRMS a bad signal.
+// null values = data unavailable = proceed (no blocking on absence of evidence).
+
+function step12_gmgnSecurity(info, sec) {
+  const rejects = [];
+  const warnings = [];
+
+  // No data from either endpoint → skip entirely
+  if (!info && !sec) return { rejects, warnings };
+
+  // ─── From token info ─────────────────────────────────────────
+  if (info) {
+    // CTO Coin (Community Takeover) — original dev abandoned, new dev unknown
+    if (info.dev?.cto_flag === 1) {
+      rejects.push({ rule: 'GMGN_CTO_COIN', msg: 'CTO Coin (dev.cto_flag=1) — dev original kabur, dev baru tidak dikenal' });
+    }
+
+    // Phishing / Entrapment trader pattern
+    const entrapment = info.stat?.top_entrapment_trader_percentage;
+    if (entrapment != null && entrapment > 0.30) {
+      rejects.push({ rule: 'GMGN_PHISHING_RISK', msg: `Entrapment traders ${(entrapment * 100).toFixed(1)}% > 30% — pola jebakan terorganisir` });
+    }
+
+    // Top 10 concentration — only use info.stat if security data unavailable
+    if (!sec) {
+      const top10 = info.stat?.top_10_holder_rate;
+      if (top10 != null && top10 > 0.30) {
+        rejects.push({ rule: 'GMGN_TOP10_CONCENTRATED', msg: `Top 10 holders ${(top10 * 100).toFixed(1)}% > 30% — risiko whale dump` });
+      }
+    }
+  }
+
+  // ─── From token security ──────────────────────────────────────
+  if (sec) {
+    // SOL-specific: Mint authority not renounced
+    if (sec.renounced_mint === false) {
+      rejects.push({ rule: 'GMGN_MINT_NOT_RENOUNCED', msg: 'Mint authority belum direnounce (GMGN) — dev bisa cetak supply baru' });
+    }
+
+    // SOL-specific: Freeze authority not renounced
+    if (sec.renounced_freeze_account === false) {
+      rejects.push({ rule: 'GMGN_FREEZE_NOT_RENOUNCED', msg: 'Freeze authority belum direnounce (GMGN) — dev bisa freeze wallet' });
+    }
+
+    // Top 10 holder concentration
+    const top10 = sec.top_10_holder_rate;
+    if (top10 != null && top10 > 0.30) {
+      rejects.push({ rule: 'GMGN_TOP10_CONCENTRATED', msg: `Top 10 holders ${(top10 * 100).toFixed(1)}% > 30% — risiko whale dump` });
+    }
+
+    // Dev / Creator supply
+    const creatorRate = sec.creator_balance_rate;
+    if (creatorRate != null && creatorRate > 0.01) {
+      rejects.push({ rule: 'GMGN_DEV_SUPPLY_HIGH', msg: `Dev masih pegang ${(creatorRate * 100).toFixed(2)}% > 1% — risiko dump kapanpun` });
+    }
+
+    // Insider / rat trader volume
+    const insiderRate = sec.rat_trader_amount_rate;
+    if (insiderRate != null && insiderRate > 0) {
+      rejects.push({ rule: 'GMGN_INSIDER_DETECTED', msg: `Insider/rat trader ${(insiderRate * 100).toFixed(1)}% terdeteksi di volume` });
+    }
+
+    // Suspected insider holders (softer signal → warning only)
+    const suspectedInsider = sec.suspected_insider_hold_rate;
+    if (suspectedInsider != null && suspectedInsider > 0) {
+      warnings.push({ rule: 'GMGN_SUSPECTED_INSIDER', msg: `Suspected insider hold ${(suspectedInsider * 100).toFixed(1)}% supply` });
+    }
+
+    // Bundling > 60%
+    const bundlerRate = sec.bundler_trader_amount_rate;
+    if (bundlerRate != null && bundlerRate > 0.60) {
+      rejects.push({ rule: 'GMGN_BUNDLED', msg: `Bundling ${(bundlerRate * 100).toFixed(1)}% > 60% — volume bootstrap palsu` });
+    }
+
+    // LP burn status — only reject if explicitly NOT burned
+    // burn_status == "burn" → safe, "" → unknown (proceed), anything else → reject
+    if (sec.burn_status != null && sec.burn_status !== '' && sec.burn_status !== 'burn') {
+      rejects.push({ rule: 'GMGN_LP_NOT_BURNED', msg: `LP tidak dibakar (status: "${sec.burn_status}") — dev bisa tarik likuiditas kapanpun` });
+    }
+
+    // Rug risk score
+    const rugRatio = sec.rug_ratio;
+    if (rugRatio != null && rugRatio > 0.30) {
+      rejects.push({ rule: 'GMGN_RUG_HISTORY', msg: `Rug risk score ${rugRatio.toFixed(2)} > 0.30 — deployer mencurigakan` });
+    }
+  }
+
+  return { rejects, warnings };
+}
+
 // ─── Main filter function ────────────────────────────────────────
 
 export async function screenToken(tokenMint, tokenName = '', tokenSymbol = '', opts = {}) {
@@ -391,27 +483,32 @@ export async function screenToken(tokenMint, tokenName = '', tokenSymbol = '', o
 
   const deployAmount = cfg.deployAmountSol || 0.1;
 
-  const [dexResult, jupResult, authResult, simResult] = await Promise.allSettled([
+  const [dexResult, jupResult, authResult, simResult, gmgnInfoResult, gmgnSecResult] = await Promise.allSettled([
     getDexScreenerInfo(tokenMint),
     getJupiterData(tokenMint),
     getOnChainAuthority(tokenMint),
     getSlippageSimulation(tokenMint, deployAmount),
+    getGmgnTokenInfo(tokenMint),
+    getGmgnSecurity(tokenMint),
   ]);
 
-  const dex = dexResult.status === 'fulfilled' ? dexResult.value : null;
-  const jup = jupResult.status === 'fulfilled' ? jupResult.value : null;
+  const dex  = dexResult.status  === 'fulfilled' ? dexResult.value  : null;
+  const jup  = jupResult.status  === 'fulfilled' ? jupResult.value  : null;
   const auth = authResult.status === 'fulfilled' ? authResult.value : { mintAuthority: true, freezeAuthority: true };
-  const sim = simResult.status === 'fulfilled' ? simResult.value : null;
+  const sim  = simResult.status  === 'fulfilled' ? simResult.value  : null;
+  const gmgnInfo = gmgnInfoResult.status === 'fulfilled' ? gmgnInfoResult.value : null;
+  const gmgnSec  = gmgnSecResult.status  === 'fulfilled' ? gmgnSecResult.value  : null;
 
-  const name = tokenName || dex?.name || jup?.name || '';
+  const name   = tokenName   || dex?.name   || jup?.name   || '';
   const symbol = tokenSymbol || dex?.symbol || jup?.symbol || '';
 
-  const s1 = step1_basicValidation(dex, jup);
-  const s2 = step2_narrativeFilter(name, symbol);
-  const s3 = step3_priceHealth(dex, thresholds);
-  const s5 = step5_txnAnalysis(dex);
-  const s6 = step6_tokenSafety(jup);
-  const s7 = step7_organicScore(dex, jup, thresholds);
+  const s1  = step1_basicValidation(dex, jup);
+  const s2  = step2_narrativeFilter(name, symbol);
+  const s3  = step3_priceHealth(dex, thresholds);
+  const s5  = step5_txnAnalysis(dex);
+  const s6  = step6_tokenSafety(jup);
+  const s7  = step7_organicScore(dex, jup, thresholds);
+  const s12 = step12_gmgnSecurity(gmgnInfo, gmgnSec);
 
   // Obelisk Handle: Manual MCAP calculation if DexScreener is lagging
   let mcap = dex?.fdv || null;
@@ -423,17 +520,17 @@ export async function screenToken(tokenMint, tokenName = '', tokenSymbol = '', o
     }
   }
 
-  const s9 = step9_mcapFilter(mcap, thresholds);
+  const s9  = step9_mcapFilter(mcap, thresholds);
   const s10 = step10_authorityCheck(auth);
   const s11 = step11_slippageCheck(sim, thresholds.maxImpact);
 
   const allRejects = [
-    ...s1.rejects, ...s2, ...s3.rejects,
-    ...s5.rejects, ...s6.rejects, ...s7.rejects, ...s9.rejects,
-    ...s10, ...s11.rejects,
+    ...s1.rejects,  ...s2,          ...s3.rejects,
+    ...s5.rejects,  ...s6.rejects,  ...s7.rejects,  ...s9.rejects,
+    ...s10,         ...s11.rejects, ...s12.rejects,
   ];
   const allWarnings = [
-    ...s1.warnings, ...s3.warnings, ...s6.warnings, ...s11.warnings,
+    ...s1.warnings, ...s3.warnings, ...s6.warnings, ...s11.warnings, ...s12.warnings,
   ];
 
   let verdict = allRejects.length > 0 ? 'AVOID' : (allWarnings.length > 0 ? 'CAUTION' : 'PASS');
@@ -444,7 +541,12 @@ export async function screenToken(tokenMint, tokenName = '', tokenSymbol = '', o
     organicScore: s7.score, mcap: s9.mcap,
     priceImpact: sim?.priceImpactBuy,
     priceImpactSell: sim?.priceImpactSell,
-    sources: { dexscreener: !!dex, jupiter: !!(jup?.found), helius: (authResult.status === 'fulfilled') },
+    sources: {
+      dexscreener: !!dex,
+      jupiter: !!(jup?.found),
+      helius: (authResult.status === 'fulfilled'),
+      gmgn: !!(gmgnInfo || gmgnSec),
+    },
   };
 }
 

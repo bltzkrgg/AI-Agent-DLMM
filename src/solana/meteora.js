@@ -17,27 +17,22 @@ import crypto from 'crypto';
 const METEORA_DLMM_API = 'https://dlmm-api.meteora.ag';
 
 // Strip existing ComputeBudget instructions then inject fresh ones.
-// Prevents "duplicate instruction" error when SDK already includes ComputeBudget.
+// Only works for Legacy Transaction — VersionedTransaction uses compiled format.
 function injectPriorityFee(tx, { units = 400_000, microLamports = 200_000 } = {}) {
-  // Both Transaction and VersionedTransaction need priority fees
-  const isVersioned = tx instanceof VersionedTransaction;
-  const CB = ComputeBudgetProgram.programId.toString();
-
-  if (isVersioned) {
-    // For VersionedTransaction, filter and inject into message.instructions
-    tx.message.instructions = tx.message.instructions.filter(ix => ix.programId.toString() !== CB);
-    tx.message.instructions.unshift(
-      ComputeBudgetProgram.setComputeUnitLimit({ units }),
-      ComputeBudgetProgram.setComputeUnitPrice({ microLamports }),
-    );
-  } else {
-    // For Transaction, inject into tx.instructions
-    tx.instructions = tx.instructions.filter(ix => ix.programId.toString() !== CB);
-    tx.instructions.unshift(
-      ComputeBudgetProgram.setComputeUnitLimit({ units }),
-      ComputeBudgetProgram.setComputeUnitPrice({ microLamports }),
-    );
+  if (tx instanceof VersionedTransaction) {
+    // VersionedTransaction.message uses compiledInstructions (index-based, not TransactionInstruction[]).
+    // Direct mutation causes TypeError: ix.programId is undefined.
+    // Meteora SDK already embeds ComputeBudget for VersionedTX internally — skip injection.
+    return;
   }
+
+  // Legacy Transaction: strip existing ComputeBudget then prepend fresh limits.
+  const CB = ComputeBudgetProgram.programId.toString();
+  tx.instructions = (tx.instructions || []).filter(ix => ix.programId.toString() !== CB);
+  tx.instructions.unshift(
+    ComputeBudgetProgram.setComputeUnitLimit({ units }),
+    ComputeBudgetProgram.setComputeUnitPrice({ microLamports }),
+  );
 }
 
 // ─── Safe BN conversion — avoids floating point errors ──────────
@@ -396,8 +391,8 @@ async function _openPositionLogic(poolAddress, tokenXAmount, tokenYAmount, price
 
   const binStep = dlmmPool.lbPair.binStep;
 
-  if (binStep > 250) {
-    throw new Error(`Pool ditolak: bin step ${binStep} melebihi batas maksimum 250.`);
+  if (binStep !== 100 && binStep !== 125) {
+    throw new Error(`Pool ditolak: bin step ${binStep} tidak didukung. Evil Panda hanya accept binStep 100 atau 125.`);
   }
 
   const xMint = dlmmPool.tokenX.publicKey.toString();
@@ -682,7 +677,7 @@ async function _openPositionLogic(poolAddress, tokenXAmount, tokenYAmount, price
 
         const isVersioned = tx instanceof VersionedTransaction;
         console.log(`[meteora] Processing transaction type: ${isVersioned ? 'VersionedTransaction' : 'Legacy Transaction'}`);
-        console.log(`[meteora] Pre-modification state - Signatures: ${tx.signatures?.length || 0}, Instructions: ${isVersioned ? tx.message.instructions?.length : tx.instructions?.length}`);
+        console.log(`[meteora] Pre-modification state - Signatures: ${tx.signatures?.length || 0}, Instructions: ${isVersioned ? tx.message.compiledInstructions?.length : tx.instructions?.length}`);
 
         // Ensure we always have a fresh blockhash for every chunk
         const { blockhash } = await connection.getLatestBlockhash('confirmed');
@@ -711,7 +706,7 @@ async function _openPositionLogic(poolAddress, tokenXAmount, tokenYAmount, price
         } catch { /* fallback */ }
 
         injectPriorityFee(tx, { units: computeUnits, microLamports });
-        console.log(`[meteora] After injectPriorityFee - Instructions: ${isVersioned ? tx.message.instructions?.length : tx.instructions?.length}`);
+        console.log(`[meteora] After injectPriorityFee - Instructions: ${isVersioned ? tx.message.compiledInstructions?.length : tx.instructions?.length}`);
 
         // Sign with wallet and the single position keypair
         console.log(`[meteora] Before signing - Signatures: ${tx.signatures?.length || 0}`);
@@ -758,8 +753,7 @@ async function _openPositionLogic(poolAddress, tokenXAmount, tokenYAmount, price
           }
         }
 
-        console.log(`  - Instructions count: ${isVersioned ? tx.message.instructions?.length : tx.instructions?.length}`);
-
+        console.log(`  - Instructions count: ${isVersioned ? tx.message.compiledInstructions?.length : tx.instructions?.length}`);
         // Check for null/undefined signatures
         if (!tx.signatures || tx.signatures.length === 0) {
           console.error(`[meteora] ERROR: Transaction has no signatures!`);
@@ -950,8 +944,16 @@ export async function closePositionDLMM(poolAddress, positionAddress, pnlData = 
       const sendAndConfirmTx = async (tx, hashes) => {
         // Access 'connection' via closure from outer scope (defined at line 541)
         const { blockhash } = await connection.getLatestBlockhash('confirmed');
-        tx.recentBlockhash = blockhash;
-        tx.feePayer = wallet.publicKey;
+        const isTxVersioned = tx instanceof VersionedTransaction;
+
+        if (isTxVersioned) {
+          // VersionedTransaction: blockhash masuk ke message, tidak ada field feePayer
+          tx.message.recentBlockhash = blockhash;
+        } else {
+          // Legacy Transaction
+          tx.recentBlockhash = blockhash;
+          tx.feePayer = wallet.publicKey;
+        }
 
         let microLamports = 250_000;
         try {
@@ -961,7 +963,12 @@ export async function closePositionDLMM(poolAddress, positionAddress, pnlData = 
         } catch { /* fallback */ }
 
         injectPriorityFee(tx, { units: 400_000, microLamports });
-        tx.sign(wallet);
+
+        if (isTxVersioned) {
+          tx.sign([wallet]); // VersionedTransaction.sign() menerima array of Signers
+        } else {
+          tx.sign(wallet);   // Legacy Transaction.sign() menerima spread Keypairs
+        }
 
         const hash = await connection.sendRawTransaction(tx.serialize(), {
           skipPreflight: true,
@@ -1273,13 +1280,23 @@ export async function claimFees(poolAddress, positionAddress) {
 
   for (const tx of txList) {
     const { blockhash } = await connection.getLatestBlockhash('confirmed');
-    tx.recentBlockhash = blockhash;
-    tx.feePayer = wallet.publicKey;
+    const isClaimVersioned = tx instanceof VersionedTransaction;
 
-    // Priority fee — strip existing ComputeBudget lalu inject ulang (cegah duplicate)
+    if (isClaimVersioned) {
+      tx.message.recentBlockhash = blockhash;
+    } else {
+      tx.recentBlockhash = blockhash;
+      tx.feePayer = wallet.publicKey;
+    }
+
+    // Priority fee — safe for both types (Versioned: early return noop)
     injectPriorityFee(tx, { units: 200_000, microLamports: 200_000 });
 
-    tx.sign(wallet);
+    if (isClaimVersioned) {
+      tx.sign([wallet]);
+    } else {
+      tx.sign(wallet);
+    }
 
     const txHash = await connection.sendRawTransaction(tx.serialize(), {
       skipPreflight: false,
