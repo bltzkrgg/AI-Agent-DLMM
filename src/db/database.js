@@ -48,7 +48,7 @@ function initializeDatabase() {
 }
 
 // Synchronous recovery attempt (called during startup)
-DbBackup.prototype.attemptRecoverySync = function() {
+DbBackup.prototype.attemptRecoverySync = function () {
   console.warn('⚠️ Database corrupted, attempting recovery...');
 
   const backups = this.listBackups();
@@ -73,6 +73,7 @@ DbBackup.prototype.attemptRecoverySync = function() {
 
 // ─── Singleton Database Instance & Mutex ─────────────────────────
 db = initializeDatabase();
+globalThis.db = db; // Sledgehammer fix: Make db globally accessible to the process
 
 /**
  * Mutex Queue to prevent SQLITE_BUSY during concurrent Hunter/Healer execution.
@@ -87,11 +88,11 @@ async function processQueue() {
   processing = true;
   while (queue.length > 0) {
     const { task, resolve, reject } = queue.shift();
-    try { 
+    try {
       const res = await task();
-      resolve(res); 
-    } catch (err) { 
-      reject(err); 
+      resolve(res);
+    } catch (err) {
+      reject(err);
     }
   }
   processing = false;
@@ -208,18 +209,18 @@ export function savePosition(data) {
     (pool_address, position_address, token_x, token_y, token_x_amount, token_y_amount, deployed_sol, entry_price, deployed_usd, strategy_used, token_x_symbol, lifecycle_state)
     VALUES (@pool_address, @position_address, @token_x, @token_y, @token_x_amount, @token_y_amount, @deployed_sol, @entry_price, @deployed_usd, @strategy_used, @token_x_symbol, @lifecycle_state)
   `).run({
-    pool_address:     data.pool_address,
+    pool_address: data.pool_address,
     position_address: data.position_address,
-    token_x:          data.token_x,
-    token_y:          data.token_y,
-    token_x_amount:   data.token_x_amount  || 0,
-    token_y_amount:   data.token_y_amount  || 0,
-    deployed_sol:     data.deployed_sol    || 0,
-    entry_price:      data.entry_price     || 0,
-    deployed_usd:     data.deployed_usd    || 0,
-    strategy_used:    data.strategy_used   || null,
-    token_x_symbol:   data.token_x_symbol  || null,
-    lifecycle_state:  data.lifecycle_state || 'open',
+    token_x: data.token_x,
+    token_y: data.token_y,
+    token_x_amount: data.token_x_amount || 0,
+    token_y_amount: data.token_y_amount || 0,
+    deployed_sol: data.deployed_sol || 0,
+    entry_price: data.entry_price || 0,
+    deployed_usd: data.deployed_usd || 0,
+    strategy_used: data.strategy_used || null,
+    token_x_symbol: data.token_x_symbol || null,
+    lifecycle_state: data.lifecycle_state || 'open',
   }));
 }
 
@@ -236,12 +237,12 @@ export function closePosition(positionAddress) {
 
 export function closePositionWithPnl(positionAddress, { pnlUsd, pnlPct, feesUsd, pnlSol, feesSol, closeReason, rangeEfficiencyPct, lifecycleState }) {
   const effPct = rangeEfficiencyPct ?? (
-    closeReason === 'TAKE_PROFIT'             ? 90 :
-    closeReason?.startsWith('TRAILING')       ? 85 :
-    closeReason === 'OUT_OF_RANGE'            ? 20 :
-    closeReason === 'STOP_LOSS'               ? 15 :
-    closeReason === 'CLOSE_FAILED_PURGED'     ?  0 :
-    closeReason === 'EMPTY_POSITION_PURGED'   ?  0 : 50
+    closeReason === 'TAKE_PROFIT' ? 90 :
+      closeReason?.startsWith('TRAILING') ? 85 :
+        closeReason === 'OUT_OF_RANGE' ? 20 :
+          closeReason === 'STOP_LOSS' ? 15 :
+            closeReason === 'CLOSE_FAILED_PURGED' ? 0 :
+              closeReason === 'EMPTY_POSITION_PURGED' ? 0 : 50
   );
   return runInQueue(() => db.prepare(`
     UPDATE positions SET
