@@ -8,10 +8,10 @@ import { PublicKey } from '@solana/web3.js';
 import { getOpenPositions, getPoolStats, closePositionWithPnl } from '../db/database.js';
 import { getLessonsContext } from '../learn/lessons.js';
 import { getStrategy, parseStrategyParameters, getAllStrategies } from '../strategies/strategyManager.js';
-import { 
-  matchStrategyToMarket, 
-  getLibraryStats, 
-  evaluateStrategyReadiness as libEvaluateReadiness 
+import {
+  matchStrategyToMarket,
+  getLibraryStats,
+  evaluateStrategyReadiness as libEvaluateReadiness
 } from '../market/strategyLibrary.js';
 import { fetchCandles, getMarketSnapshot, getOHLCV, getMultiTFScore, getSentiment } from '../market/oracle.js';
 import { getSocialSignals, getTokenSocialScore } from '../market/socialScanner.js';
@@ -325,7 +325,7 @@ async function executeTool(name, input) {
       const info = await getPoolInfo(input.pool_address);
       let strategyMatch = null;
       let dlmmSnapshot = null;
-      
+
       // Retry logic for market snapshot
       for (let i = 0; i < 3; i++) {
         try {
@@ -518,7 +518,7 @@ async function executeTool(name, input) {
 
       // Strategy validation sebelum lock
       const strategy = getStrategy(input.strategy_name || 'Evil Panda');
-      
+
       if (!strategy) {
         return JSON.stringify({
           blocked: true,
@@ -808,13 +808,13 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null, opt
           !isOnCooldown(p.address) // skip pool sedang cooldown
         );
       })
-        .map(p => ({ ...p, darwinScore: calculateDarwinScore(p, weights, 'NEUTRAL') }))
+      .map(p => ({ ...p, darwinScore: calculateDarwinScore(p, weights, 'NEUTRAL') }))
       .sort((a, b) => b.darwinScore - a.darwinScore)
       .slice(0, 7);
 
     lastCandidates = filtered;
 
-     // Fetch pool memory + multi-TF + smart wallets + sentiment in parallel
+    // Fetch pool memory + multi-TF + smart wallets + sentiment in parallel
     const enriched = await Promise.all(filtered.map(async (p) => {
       const [memResult, mtfResult, swResult, sentResult] = await Promise.allSettled([
         Promise.resolve(getPoolStats(p.address)),

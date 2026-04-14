@@ -69,7 +69,8 @@
       "Bash(ls:*)",
       "Bash(nvm list:*)",
       "Bash(nvm exec:*)",
-      "Bash(npm start:*)"
+      "Bash(npm start:*)",
+      "Bash(pkill -9 node)"
     ]
   }
 }

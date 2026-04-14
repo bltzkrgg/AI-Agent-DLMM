@@ -638,10 +638,24 @@ async function _openPositionLogic(poolAddress, tokenXAmount, tokenYAmount, price
 
       const txList = Array.isArray(txs) ? txs : [txs];
       for (const tx of txList) {
+        if (!tx) continue;
+
+        const isVersioned = tx instanceof VersionedTransaction;
+        console.log(`[meteora] Processing transaction type: ${isVersioned ? 'VersionedTransaction' : 'Legacy Transaction'}`);
+
         // Ensure we always have a fresh blockhash for every chunk
         const { blockhash } = await connection.getLatestBlockhash('confirmed');
-        tx.recentBlockhash = blockhash;
-        tx.feePayer = wallet.publicKey;
+
+        // Handle blockhash and feePayer based on transaction type
+        if (isVersioned) {
+          tx.message.recentBlockhash = blockhash;
+          // VersionedTransaction has feePayer in message header, no need to set separately
+          console.log(`[meteora] Set VersionedTransaction blockhash: ${blockhash}`);
+        } else {
+          tx.recentBlockhash = blockhash;
+          tx.feePayer = wallet.publicKey;
+          console.log(`[meteora] Set Legacy Transaction blockhash: ${blockhash}, feePayer: ${wallet.publicKey.toString()}`);
+        }
 
         // Priority fee — slightly higher for large bin deployments
         let microLamports = 250_000;
@@ -655,11 +669,31 @@ async function _openPositionLogic(poolAddress, tokenXAmount, tokenYAmount, price
         injectPriorityFee(tx, { units: computeUnits, microLamports });
 
         // Sign with wallet and the single position keypair
-        tx.sign(wallet, posKp);
+        if (isVersioned) {
+          tx.sign([posKp, wallet]);
+          console.log(`[meteora] Signed VersionedTransaction`);
+        } else {
+          tx.sign(wallet, posKp);
+          console.log(`[meteora] Signed Legacy Transaction`);
+        }
+
+        // Validate transaction before simulation
+        console.log(`[meteora] Pre-simulation validation:`);
+        console.log(`  - Transaction type: ${isVersioned ? 'Versioned' : 'Legacy'}`);
+        console.log(`  - Blockhash: ${isVersioned ? tx.message.recentBlockhash : tx.recentBlockhash}`);
+        console.log(`  - Signatures count: ${tx.signatures?.length || 0}`);
+        console.log(`  - Instructions count: ${isVersioned ? tx.message.instructions?.length : tx.instructions?.length}`);
 
         try {
           // Watchtower: Pre-flight simulation for Compute Units
-          const sim = await connection.simulateTransaction(tx, { replaceRecentBlockhash: true, commitment: 'processed' });
+          let sim;
+          if (isVersioned) {
+            sim = await connection.simulateTransaction(tx, { commitment: 'processed' });
+            console.log(`[meteora] VersionedTransaction simulation result: ${sim.value.err ? 'error' : 'success'}`);
+          } else {
+            sim = await connection.simulateTransaction(tx, { replaceRecentBlockhash: true, commitment: 'processed' });
+            console.log(`[meteora] Legacy Transaction simulation result: ${sim.value.err ? 'error' : 'success'}`);
+          }
           if (sim.value.err) {
             console.warn(`[meteora] Simulation Warning: ${stringify(sim.value.err)}`);
             if (stringify(sim.value.err).includes('InstructionError')) {
