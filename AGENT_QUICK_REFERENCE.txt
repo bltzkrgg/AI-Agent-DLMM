@@ -1,0 +1,383 @@
+╔═══════════════════════════════════════════════════════════════════════════╗
+║        AGENT EXECUTION: Deep Fishing Strategy - Quick Reference            ║
+║              Single Position | Entry → Pool → Bins → Execution             ║
+╚═══════════════════════════════════════════════════════════════════════════╝
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+PHASE 1: ENTRY SIGNAL
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+┌──────────────────────────────────────────────────────────────┐
+│ Detect Supertrend Trend FLIP (not just bullish)             │
+├──────────────────────────────────────────────────────────────┤
+│ Previous Candle:  BEARISH                                    │
+│ Current Candle:   BULLISH   ← FLIP! ✅                       │
+│                                                              │
+│ Wait: 15m candle CLOSE above Supertrend line               │
+│ (NOT just touch/wick - must be final close)                │
+│                                                              │
+│ Price at signal: $2000 (captured)                           │
+│ Price at deploy:  $2000 (or recalc if >2% moved)           │
+└──────────────────────────────────────────────────────────────┘
+
+DECISION POINT: Ready untuk pool selection? → YES → CONTINUE
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+PHASE 2: POOL & BINSTEP SELECTION
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+POOL SCREENING:
+  1. List all pools untuk pair (WETH/SOL, USDC/SOL, etc)
+  2. Filter: >$10k liquidity, non-paused, price available
+  3. Check BinStep for each pool
+
+BINSTEP SELECTION PRIORITY:
+
+  Try BinStep 100? ─→ YES → Calculate range width
+       │                    │
+       NO                   │
+       ↓                    ↓
+  Try BinStep 125? ─→ YES → Calculate range width
+       │
+       NO
+       ↓
+  NO VALID POOL   ─→ WAIT for next scan cycle
+
+ADAPTIVE RANGE CHECK:
+  After calculating range with candidate BinStep:
+
+  If range width ≤ 250 bins?
+    ✅ USE THIS BINSTEP → Deploy
+
+  If range width > 250 bins (with BinStep 100)?
+    → TRY BINSTEP 125 instead (coarser = fewer bins)
+    → If width still > 250 with BinStep 125?
+    → Split into multiple positions OR skip
+
+
+EXAMPLE SELECTION:
+┌─────────────────────────────────────────────────────────────┐
+│ Pool Options Found:                                         │
+├─────────────────────────────────────────────────────────────┤
+│ A) WETH/SOL BinStep 80  ← SELECTED ✅ (priority #1)         │
+│ B) WETH/SOL BinStep 100 (backup)                            │
+│ C) USDC/SOL BinStep 125 (backup)                            │
+│ D) BONK/SOL BinStep 200 (skip)                              │
+└─────────────────────────────────────────────────────────────┘
+
+CAPTURED STATE:
+  Pool: WETH/SOL
+  BinStep: 80
+  Current Price: $2000
+  Active Bin: 10000
+  Fee Tier: 250bps
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+PHASE 3: BIN CALCULATION (-86% to -94% Range)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+CONVERT OFFSETS TO BIN DISTANCE:
+
+  Formula:
+    logBinFactor = binStep × ln(1.0001)
+    offsetBins = |ln(1 - offset/100) / logBinFactor|
+
+  For BinStep 80:
+    logBinFactor = 80 × 0.00009999 ≈ 0.008
+
+  For offsetMin = -86%:
+    offsetMinBins = |ln(1.86) / 0.008| ≈ 77 bins
+
+  For offsetMax = -94%:
+    offsetMaxBins = |ln(1.94) / 0.008| ≈ 83 bins
+
+
+CALCULATE BIN RANGE:
+
+  Active Bin: 10000
+  Bins below active for top (-86%): 77
+  Bins below active for bottom (-94%): 83
+
+  rangeMax = 10000 - 77 = 9923  (TOP, shallower, -86%)
+  rangeMin = 10000 - 83 = 9917  (BOTTOM, deeper, -94%)
+
+  Range Width: 9923 - 9917 = 6 bins ✅
+
+
+VERIFY AGAINST PRICE:
+
+  Bin to price formula: price(bin) = currentPrice / (1.0001 ^ offsetBins)
+
+  Top bin (9923): $2000 / (1.0001^77) ≈ $280    (-86% from $2000) ✅
+  Bottom bin (9917): $2000 / (1.0001^83) ≈ $120  (-94% from $2000) ✅
+
+  Sanity check: Top > Bottom? YES ✅
+
+
+RESULT:
+┌─────────────────────────────────────────────────────────────┐
+│ Deployment Range: BIN 9917 TO 9923                           │
+│                                                              │
+│ Visual price representation:                                 │
+│                                                              │
+│ $2000 (current) ────────────────────────────────────────   │
+│                                                              │
+│                                  ↓ -86%                     │
+│                              $280 ├─ bin 9923 (TOP)          │
+│                                  │ bin 9922                  │
+│                                  │ bin 9921                  │
+│                                  │ bin 9920                  │
+│                                  │ bin 9919                  │
+│                              $120 ├─ bin 9917 (BOTTOM)       │
+│                                  ↑ -94%                     │
+│                                                              │
+│ Total: 6 bins (width correct!) ✅                           │
+└─────────────────────────────────────────────────────────────┘
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+PHASE 4: LIVE PRICE CHECK & POTENTIAL RECALCULATION
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+BEFORE DEPLOYMENT: Check if price moved significantly
+
+  Signal Time: Price = $2000, calculated range = 9917-9923
+  Deploy Time: Price = ? (check now)
+
+  If |currentPrice - signalPrice| / signalPrice ≤ 2%
+    → Price movement acceptable, use original range
+    → Continue to chunking ✅
+
+  If |currentPrice - signalPrice| / signalPrice > 2%
+    → Price moved significantly (pump or dump)
+    → Recalculate offsets from NEW price
+
+RECALCULATION EXAMPLE (price moved to $2100):
+
+  New current price: $2100
+  New active bin: ~10038 (higher)
+
+  Recalculate:
+    offsetMinBins(-86%) from $2100 = 77 bins (same)
+    offsetMaxBins(-94%) from $2100 = 83 bins (same)
+
+  New range:
+    rangeMax = 10038 - 77 = 9961
+    rangeMin = 10038 - 83 = 9955
+    Width: still 6 bins ✅
+
+  Verify:
+    Top: $2100 * 0.14 = $294 ✅
+    Bottom: $2100 * 0.06 = $126 ✅
+
+  → Deploy to NEW range (9955-9961) ✅
+
+
+DECISION:
+  Range valid? → YES → CONTINUE TO CHUNKING
+  Range valid? → NO  → ABORT DEPLOYMENT
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+PHASE 5: BIN CHUNKING (Split into Transactions)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+CONSTRAINT:
+  Max bins per transaction: ~50 bins
+  Solana TX size limit
+
+OUR RANGE:
+  Bin width: 6 bins
+  Max per TX: 50 bins
+
+  6 ≤ 50? → YES ✅ → USE SINGLE TRANSACTION
+
+ALLOCATION STRATEGY:
+
+  Total deploy amount: 0.5 SOL
+  Total bins: 6
+  Amount per bin: 0.5 / 6 = 0.0833 SOL
+
+  Chunk 0 (ONLY chunk needed):
+  ┌─────────────────────────────────────┐
+  │ Bins: 9917, 9918, 9919, 9920, 9921, 9923
+  │ Amount per bin: 0.0833 SOL           │
+  │ Total: 0.5 SOL                       │
+  │ Token X: 0 (single-side SOL)         │
+  │ TX index: 0 (first and only TX)      │
+  └─────────────────────────────────────┘
+
+  Why? Because 6 bins fit in one Solana transaction
+       No need to split across multiple TXs
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+PHASE 6: TRANSACTION EXECUTION
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+BUILD:
+  6 instructions (one per bin):
+    ├─ AddLiquidity bin 9917, 0.0833 SOL, 0 token X
+    ├─ AddLiquidity bin 9918, 0.0833 SOL, 0 token X
+    ├─ AddLiquidity bin 9919, 0.0833 SOL, 0 token X
+    ├─ AddLiquidity bin 9920, 0.0833 SOL, 0 token X
+    ├─ AddLiquidity bin 9921, 0.0833 SOL, 0 token X
+    └─ AddLiquidity bin 9923, 0.0833 SOL, 0 token X
+
+SIGN:
+  Signer 1: Wallet keypair (payer, owner)
+  Signer 2: Position keypair (position account)
+
+SEND:
+  ├─ Serialize transaction
+  ├─ Send to network
+  ├─ Poll for confirmation
+  └─ Check signature status
+
+RETRY:
+  If failed:
+    Wait 1s, retry
+  If failed again:
+    Wait 2s, retry
+  If failed 3x:
+    ABORT, mark as failed
+
+SUCCESS:
+  ✅ Signature: 5y7X...abc
+  ✅ Confirmed on-chain
+  ✅ Position created
+  ✅ Record in database
+
+
+RESULT:
+┌─────────────────────────────────────────────────────────┐
+│ POSITION DEPLOYED SUCCESSFULLY                          │
+├─────────────────────────────────────────────────────────┤
+│ Pool: WETH/SOL (BinStep 80)                             │
+│ Range: bin 9917 - 9923 (6 bins)                         │
+│ Amount: 0.5 SOL (distributed as 0.0833 per bin)        │
+│ Status: Active                                          │
+│ Signature: 5y7X...                                      │
+│ Deploy time: 2026-04-14 14:32:15 UTC                   │
+│                                                         │
+│ NOW MONITORING FOR:                                     │
+│ • Fee accumulation (if price stays above range)         │
+│ • Price crash into -86% to -94% zone                   │
+│ • Fee explosion if crash happens                        │
+└─────────────────────────────────────────────────────────┘
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+MONITORING AFTER DEPLOYMENT
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+SCENARIO A: Price stays above range ($2000 - $3000)
+┌─────────────────────────────────────────────────────────┐
+│ Status: Safe, no impermanent loss                        │
+│ Fee generation: ZERO (no trading in range)               │
+│ Action: Continue monitoring                              │
+│ Exit: Manual close when satisfied                        │
+└─────────────────────────────────────────────────────────┘
+
+SCENARIO B: Price crashes into range ($200 - $1000)
+┌─────────────────────────────────────────────────────────┐
+│ Status: ACTIVE TRADING - FEES PRINTING 🔥🔥🔥              │
+│ Fee generation: MASSIVE (every swap hits range)          │
+│ Action: Monitor fee accumulation closely                 │
+│ Exit: May want to close when crash bottoms out          │
+└─────────────────────────────────────────────────────────┘
+
+SCENARIO C: Price crashes BELOW range (<$100)
+┌─────────────────────────────────────────────────────────┐
+│ Status: Range not active (below deployment)              │
+│ Fee generation: ZERO (price passed through, no more)     │
+│ Action: Close position, realize profits/losses           │
+│ Note: Can only be used if extreme crash (>94%)           │
+└─────────────────────────────────────────────────────────┘
+
+
+═══════════════════════════════════════════════════════════════════════════════
+DECISION TREE: Which Path?
+═══════════════════════════════════════════════════════════════════════════════
+
+                    ┌─────────────────────┐
+                    │ Supertrend Flip?    │
+                    └────────┬────────────┘
+                             │
+                      YES ✅ │ NO ❌
+                             │
+                    ┌────────▼────────┐
+                    │ Wait for candle │
+                    │ close above ST  │
+                    └────────┬────────┘
+                             │
+                      YES ✅ │ NO ❌
+                             │
+                    ┌────────▼────────┐
+                    │ Check price     │
+                    │ movement        │
+                    └────────┬────────┘
+                             │
+                      >2%?   │
+                      YES→ RECALC (or skip)
+                      NO  → USE ORIGINAL
+                             │
+                    ┌────────▼────────┐
+                    │ Select pool:    │
+                    │ Try BS 80→100→125
+                    └────────┬────────┘
+                             │
+                      FOUND? │
+                      YES ✅ │ NO ❌ WAIT
+                             │
+                    ┌────────▼────────┐
+                    │ Calculate bins  │
+                    │ -86% to -94%    │
+                    └────────┬────────┘
+                             │
+                      VALID? │
+                      YES ✅ │ NO ❌ ABORT
+                             │
+                    ┌────────▼────────┐
+                    │ Chunk allocation│
+                    │ (usually 1 TX)  │
+                    └────────┬────────┘
+                             │
+                    ┌────────▼────────┐
+                    │ Build TX & sign │
+                    │ wallet + posKp  │
+                    └────────┬────────┘
+                             │
+                    ┌────────▼────────┐
+                    │ Send & confirm  │
+                    │ retry 3x if fail│
+                    └────────┬────────┘
+                             │
+                      SUCCESS│ FAIL ❌
+                      ✅     │ ABORT
+                             │
+                    ┌────────▼────────┐
+                    │ POSITION ACTIVE │
+                    │ MONITORING MODE │
+                    └─────────────────┘
+
+
+═══════════════════════════════════════════════════════════════════════════════
+QUICK REFERENCE TABLE
+═══════════════════════════════════════════════════════════════════════════════
+
+PHASE           INPUT                   PROCESS            OUTPUT
+─────────────────────────────────────────────────────────────────────────────
+1. Entry        15m candles            FLIP detection     Ready to deploy
+2. Pool         Available pools        BinStep select     Pool + BinStep
+3. Bins         Offset params          Math (log calc)    Range bins
+4. Price chk    Current price          Validation         Confirmed range
+5. Chunk        Range width            Split logic        Chunk plan
+6. TX           Chunk details          Build + sign       Signature
+7. Confirm      Signature              Poll network       Position created
+8. Monitor      Active position        Fee tracking       Fee generation
+
+═══════════════════════════════════════════════════════════════════════════════

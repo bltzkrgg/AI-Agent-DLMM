@@ -1,0 +1,292 @@
+╔════════════════════════════════════════════════════════════════════════════╗
+║         PERBANDINGAN VISUAL: CURRENT CODE vs STRATEGI USER                 ║
+╚════════════════════════════════════════════════════════════════════════════╝
+
+STRATEGI CURRENT: "EVIL PANDA" (Full Spectrum)
+═════════════════════════════════════════════════════════════════════════════
+
+Harga Posisi:   100%  ─────────────────────────────────────────  -94%
+                 │                                               │
+                 Harga Sekarang                              Crash Extreme
+                 │
+Range Deploy:   [░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░] ~1000 bins
+                 │                                               │
+                 0%                                            -94%
+
+Karakteristik:
+  • Deploy dari harga SEKARANG sampai -94% crash
+  • Tangkap SEMUA aliran dari current level
+  • Likuiditas spread luas (low concentration)
+  • Fee APR: SEDANG (tersebar di 1000 bins)
+  • Upside capture: 0% (no token X)
+  • Downside capture: 100% (sampai -94%)
+
+Kelebihan: Catch sideway movement, moderate fees
+Kekurangan: Impermanent loss jika pump, capital spread thin
+
+
+STRATEGI USER: "CRASH BUYER" (Deep Fishing Zone)
+═════════════════════════════════════════════════════════════════════════════
+
+Harga Posisi:   100%  ─────────────────────────────────────────  -94%
+                 │                                               │
+                 Harga Sekarang                              Crash Extreme
+                                            Zona Deploy →
+                                            │              │
+Range Deploy:                          [████] ~4-6 bins
+                                           │              │
+                                         -86%           -94%
+
+Karakteristik:
+  • Deploy HANYA di zone -86% sampai -94%
+  • SKIP semua level di atas -86%
+  • Likuiditas super concentrated (deep zone)
+  • Fee APR: MASSIVE KALAU CRASH TERJADI 🔥
+  • Upside capture: 0% (no token X)
+  • Downside capture: HANYA extreme crashes
+
+Kelebihan: HUGE APR jika crash, zero impermanent loss jika pump
+Kekurangan: Zero fees kalau sideway, capital idle jika no crash
+
+
+PERBANDINGAN BIN WIDTH
+═════════════════════════════════════════════════════════════════════════════
+
+CURRENT:
+  Range: 0% → -94%
+  Bins:  1000 (hardcoded MAX_BINS_LIMIT)
+  Per-bin liquidity: LOW ────────────────────────
+
+  Harga sekarang   ▼
+  ┌──────────────────────────────────────────────┐
+  │░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░│
+  └──────────────────────────────────────────────┘
+  1000 bins (spread LUAS)
+
+USER:
+  Range: -86% → -94%
+  Bins:  4-6 (concentrated)
+  Per-bin liquidity: EXTREME 🔥 ────────────────
+
+                      ▼ Harga sekarang
+  ┌──────────────────────────────────────────────┐
+  │                                           ████│
+  └──────────────────────────────────────────────┘
+  4-6 bins (super concentrated)
+
+
+SIGNAL DETECTION COMPARISON
+═════════════════════════════════════════════════════════════════════════════
+
+CURRENT (Evil Panda):
+  ┌──────────────────────────────┐
+  │ 1. Detect Supertrend Bullish │ ✅
+  │    (price > supertrend line) │
+  │                              │
+  │ 2. Deploy immediately        │ ⚡ (no wait)
+  │                              │
+  │ 3. Monitor & manage          │ ✅
+  └──────────────────────────────┘
+
+USER (Crash Buyer):
+  ┌────────────────────────────────────────────────┐
+  │ 1. Detect Supertrend FLIP                      │ ⚠️
+  │    (trend berubah: -1 → +1)                    │
+  │    PERLU TAMBAH: Flip detection               │
+  │                                                │
+  │ 2. TUNGGU 15m candle CLOSE                     │ ⚠️
+  │    di ATAS garis Supertrend                    │
+  │    (bukan hanya high touch)                    │
+  │    PERLU TAMBAH: Candle close wait             │
+  │                                                │
+  │ 3. Check current price                         │ ⚠️
+  │    (mungkin sudah bergerak)                    │
+  │    PERLU TAMBAH: Live price check              │
+  │                                                │
+  │ 4. RECALC offset -86% to -94%                 │ ⚠️
+  │    dari HARGA BARU                             │
+  │    PERLU TAMBAH: Dynamic offset calculation    │
+  │                                                │
+  │ 5. Deploy ke updated range                     │ ⚠️
+  │    PERLU TAMBAH: Maintain window logic         │
+  │                                                │
+  │ 6. Monitor & manage                            │ ✅
+  └────────────────────────────────────────────────┘
+
+
+FEE GENERATION EXAMPLE
+═════════════════════════════════════════════════════════════════════════════
+
+Situation:
+  - Harga current: $2000
+  - Price sudden drop ke $200 (90% crash)
+  - 10 SOL volume terjadi di level $200
+
+CURRENT DEPLOYMENT:
+  ┌─────────────────────────────────────┐
+  │ Liquidity di range 0% to -94%      │
+  │ Total bins: 1000                    │
+  │                                     │
+  │ 10 SOL volume / 1000 bins           │
+  │ = 0.01 SOL per bin                  │
+  │ = RENDAH APR                        │
+  └─────────────────────────────────────┘
+
+USER DEPLOYMENT:
+  ┌─────────────────────────────────────┐
+  │ Liquidity di range -86% to -94%    │
+  │ Total bins: 4                       │
+  │                                     │
+  │ 10 SOL volume / 4 bins              │
+  │ = 2.5 SOL per bin                   │
+  │ = MASSIVE APR 🔥🔥🔥                 │
+  │                                     │
+  │ 250x lebih besar APR!!!             │
+  └─────────────────────────────────────┘
+
+
+CAPITAL EFFICIENCY SCENARIOS
+═════════════════════════════════════════════════════════════════════════════
+
+SKENARIO A: Price Crash -90%
+┌────────────────────────────────────────────────────────────┐
+│                                                            │
+│ CURRENT:  [████████████████████] earning moderate fees    │
+│           Likuiditas tersebar, APR sedang                  │
+│           ⚠️  Banyak bins kosong (di atas -86%)           │
+│                                                            │
+│ USER:     [██████] earning MASSIVE fees 🔥🔥🔥              │
+│           Likuiditas concentrated, APR luar biasa          │
+│           ✅ Semua capital di crash zone                   │
+│                                                            │
+│ WINNER: USER by 25x APR                                   │
+└────────────────────────────────────────────────────────────┘
+
+SKENARIO B: Price Pump +10%
+┌────────────────────────────────────────────────────────────┐
+│                                                            │
+│ CURRENT:  [████████████████████] IMPERMANENT LOSS 😱       │
+│           Semua capital di ATAS price                      │
+│           Major loss if user close                         │
+│                                                            │
+│ USER:     [██████] AMAN, untouched ✨                      │
+│           Semua capital JAUH di bawah price                │
+│           Zero impact jika close                           │
+│                                                            │
+│ WINNER: USER (protected by deep range)                    │
+└────────────────────────────────────────────────────────────┘
+
+SKENARIO C: Price Sideways (flat)
+┌────────────────────────────────────────────────────────────┐
+│                                                            │
+│ CURRENT:  [████████████████████] decent fees from range   │
+│           Tangkap sideways movement di 1000 bins           │
+│           Moderate APR                                     │
+│                                                            │
+│ USER:     [██████] ZERO fees ☹️                            │
+│           Sideway movement tidak di -86% to -94% zone      │
+│           No volume in deep zone                           │
+│                                                            │
+│ WINNER: CURRENT (catches movement)                        │
+└────────────────────────────────────────────────────────────┘
+
+
+SUPERTREND FLIP DETECTION
+═════════════════════════════════════════════════════════════════════════════
+
+Candle History (15m):
+  Candle 3: Close=$1980 (BEARISH trend, Price < ST line)
+  Candle 4: Close=$2010 (BULLISH flip! Price > ST line) ← ENTRY TRIGGER
+
+Current Implementation:
+  ❌ Cek bullish: YES
+  ❌ Cek flip: NO (tidak compare prev vs current trend)
+  ❌ Cek candle close: NO (instant entry on any bullish)
+
+User Requirement:
+  ✅ Detect trend change (previous ≠ current)
+  ✅ Wait for 15m candle close (tidak mid-candle)
+  ✅ Deploy saat candle fully closed above ST
+
+
+PRICE MOVEMENT DURING EXECUTION
+═════════════════════════════════════════════════════════════════════════════
+
+Timeline: Dari Supertrend flip sampai TX settle (~10 detik)
+
+Current Behavior:
+  T=0s   Signal detected: Price=$2000, offset calculated
+         offsetMin=0, offsetMax=-94%
+         Range: bin 10000 → 9000
+
+  T=5s   Price bumps ke $2100 (5% increase)
+         ❌ Offset TIDAK di-recalc
+         ❌ Range tetap: bin 10000 → 9000 (based on $2000)
+         PROBLEM: Range sudah expired relative ke harga baru!
+
+  T=10s  TX settle dengan range yang STALE
+
+User Requirement:
+  T=0s   Signal detected: Price=$2000, offset calculated
+         offsetMin=-86%, offsetMax=-94%
+         Range: bin 9862 → 9660
+
+  T=5s   Price bumps ke $2100 (5% increase)
+         ✅ Price recalc: NEW offsets
+         offsetMin (from $2100) = $2100 - (0.86 × $2100) = $294
+         offsetMax (from $2100) = $2100 - (0.94 × $2100) = $126
+         Range: recalculated based on new price
+         ✅ Maintain -86% to -94% window!
+
+  T=10s  TX settle dengan range yang FRESH (matched current price)
+
+
+BIN STEP PRECISION COMPARISON
+═════════════════════════════════════════════════════════════════════════════
+
+BinStep 80 (User priority #1):
+  Per-bin price movement: 80 / 10000 = 0.008%
+  Precision: FINEST (good untuk narrow range)
+  Current support: ❌ NOT IN ALLOWEDBIN STEPS
+
+BinStep 100 (User priority #2):
+  Per-bin price movement: 100 / 10000 = 0.01%
+  Precision: Standard (good untuk precision)
+  Current support: ✅ YES
+
+BinStep 125 (User priority #3):
+  Per-bin price movement: 125 / 10000 = 0.0125%
+  Precision: Good (less precision, fewer bins)
+  Current support: ✅ YES
+
+User logic:
+  Try BinStep 80 first (finest precision untuk -86 to -94 range)
+  If tidak available, fallback ke 100
+  If tidak available, fallback ke 125
+
+Current code: [100, 125] - MISSING 80
+
+
+═════════════════════════════════════════════════════════════════════════════
+KESIMPULAN
+═════════════════════════════════════════════════════════════════════════════
+
+Strategi user adalah INVERTED dari current Evil Panda:
+
+CURRENT:  Spektrum luas (0% to -94%), capture semua level
+USER:     Zona sempit (−86% to −94%), capture crash only
+
+Risk/Reward:
+  CRASH HAPPENS:  User WINS 25x lebih besar 🚀
+  NO CRASH:       User LOSES capital idle ☹️
+  PRICE PUMP:     User WINS (protected deep) ✅
+
+Requirements untuk implement:
+  1. ⚠️  Offset: -86% to -94% (NOT 0% to -94%)
+  2. ⚠️  Supertrend flip detection (NOT just bullish)
+  3. ⚠️  15m candle close wait (NOT instant)
+  4. ⚠️  Live price tracking (recalc offsets if moved)
+  5. ⚠️  BinStep 80 support (current missing)
+
+Status: Ready untuk implementasi jika user konfirmasi ✅
+

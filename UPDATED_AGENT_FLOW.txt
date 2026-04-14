@@ -1,0 +1,294 @@
+╔═══════════════════════════════════════════════════════════════════════════╗
+║      UPDATED AGENT EXECUTION FLOW: Deep Fishing Strategy                  ║
+║      Pool Selection: 100 > 125 | Range Limit: ≤ 250 bins                  ║
+╚═══════════════════════════════════════════════════════════════════════════╝
+
+
+═══════════════════════════════════════════════════════════════════════════════
+ENTRY → POOL → BIN CALCULATION → ADAPTIVE BINSTEP → DEPLOY
+═══════════════════════════════════════════════════════════════════════════════
+
+
+PHASE 1: ENTRY SIGNAL & CONFIRMATION
+─────────────────────────────────────────────────────────────────────────────
+
+  ┌─ Scan 15m candles
+  │
+  ├─ prevTrend = 'BEARISH'
+  │  currentTrend = 'BULLISH' ← FLIP DETECTED ✅
+  │
+  ├─ Wait for 15m candle CLOSE above Supertrend
+  │  (not just intra-candle touch)
+  │
+  ├─ CONFIRMED ✅
+  │
+  └─ Ready for pool selection
+
+
+PHASE 2: POOL SELECTION WITH ADAPTIVE BINSTEP
+─────────────────────────────────────────────────────────────────────────────
+
+  Input: Available pools for pair (WETH/SOL, USDC/SOL, etc)
+
+  ┌─ Filter pools by liquidity (min $10k)
+  │
+  ├─ For each candidate pool:
+  │  │
+  │  ├─ Does it have BinStep 100?
+  │  │   YES → Calculate range for -86% to -94%
+  │  │         │
+  │  │         Range ≤ 250 bins? → SELECT & USE ✅
+  │  │         Range > 250 bins? → Try BinStep 125
+  │  │
+  │  │   NO → Try BinStep 125
+  │  │         │
+  │  │         Calculate range for -86% to -94%
+  │  │         │
+  │  │         Range ≤ 250 bins? → SELECT & USE ✅
+  │  │         Range > 250 bins? → Skip this pool
+  │  │
+  │
+  └─ Selected pool with viable BinStep
+
+
+PHASE 3: BIN CALCULATION & ADAPTIVE SELECTION
+─────────────────────────────────────────────────────────────────────────────
+
+  Selected pool: WETH/SOL
+  Current price: $2000
+  Active bin: 10000
+
+  SCENARIO A: BinStep 100 Available
+  ┌─────────────────────────────────────────────────────────┐
+  │ Formula: offsetBins = |ln(1 + offset/100) / logBinFactor│
+  │ logBinFactor = 100 × ln(1.0001) ≈ 0.01                 │
+  │                                                          │
+  │ -86%: ln(1.86) / 0.01 ≈ 62 bins                         │
+  │ -94%: ln(1.94) / 0.01 ≈ 66 bins                         │
+  │                                                          │
+  │ Range: 66 - 62 = 4 bins                                 │
+  │ Limit: 4 ≤ 250? YES ✅                                  │
+  │                                                          │
+  │ → USE BINSTEP 100 with 4-bin range                      │
+  └─────────────────────────────────────────────────────────┘
+
+  SCENARIO B: BinStep 100 Range Too Wide (hypothetical)
+  ┌─────────────────────────────────────────────────────────┐
+  │ Calculated range: 450 bins                              │
+  │ Limit check: 450 > 250? YES ⚠️                          │
+  │                                                          │
+  │ → SWITCH TO BINSTEP 125                                 │
+  │                                                          │
+  │ logBinFactor = 125 × ln(1.0001) ≈ 0.0125               │
+  │                                                          │
+  │ -86%: ln(1.86) / 0.0125 ≈ 49 bins                       │
+  │ -94%: ln(1.94) / 0.0125 ≈ 53 bins                       │
+  │                                                          │
+  │ Range: 53 - 49 = 4 bins                                 │
+  │ Limit: 4 ≤ 250? YES ✅                                  │
+  │                                                          │
+  │ → USE BINSTEP 125 with 4-bin range                      │
+  └─────────────────────────────────────────────────────────┘
+
+  RESULT FOR -86% to -94% DEEP FISHING:
+  ┌─────────────────────────────────────────────────────────┐
+  │ Most common scenario:                                    │
+  │   BinStep 100 → 4-bin range ✅                          │
+  │   0.125 SOL per bin                                     │
+  │   Single transaction (4 < 50 limit)                     │
+  │                                                          │
+  │ Alternative:                                            │
+  │   BinStep 125 → 4-bin range ✅                          │
+  │   0.125 SOL per bin                                     │
+  │   Single transaction (4 < 50 limit)                     │
+  └─────────────────────────────────────────────────────────┘
+
+
+PHASE 4: RANGE VALIDATION
+─────────────────────────────────────────────────────────────────────────────
+
+  Check 1: Range width ≤ 250 bins?
+    YES → Continue ✅
+    NO  → Abort (shouldn't happen for -86 to -94)
+
+  Check 2: Bin order valid (top > bottom)?
+    YES → Continue ✅
+    NO  → Abort
+
+  Check 3: Price drift since signal?
+    <2% change → Use original calculation ✅
+    ≥2% change → Recalculate offsets from new price
+
+
+PHASE 5: LIVE PRICE CHECK (Pre-Deployment)
+─────────────────────────────────────────────────────────────────────────────
+
+  Signal time price: $2000 (captured when FLIP detected)
+  Current time price: ? (check before deploy)
+
+  Price change calculation:
+    drift = |currentPrice - signalPrice| / signalPrice
+
+  If drift ≤ 2%
+    → Price movement acceptable
+    → Deploy with original bin calculation ✅
+
+  If drift > 2%
+    → Price moved significantly (e.g., to $2100)
+    → Recalculate offsets from NEW price
+    → Recalculate range (should maintain -86 to -94 %)
+    → Deploy with updated bins ✅
+
+
+PHASE 6: CHUNKING & DISTRIBUTION
+─────────────────────────────────────────────────────────────────────────────
+
+  Range width: 4 bins
+  Max bins per TX: 50 bins
+  Chunks needed: ceil(4 / 50) = 1 ✅
+
+  Chunk 0:
+    Bins: 9934, 9935, 9936, 9937 (for BinStep 100)
+    Amount: 0.5 SOL
+    Distribution: 0.125 SOL per bin
+    Token X: 0 (single-side)
+    TX index: 0
+
+  Summary:
+    ├─ 4 instructions (one per bin)
+    ├─ 1 transaction
+    ├─ Both keysigners required (wallet + posKey)
+    └─ Ready to send
+
+
+PHASE 7: TRANSACTION EXECUTION
+─────────────────────────────────────────────────────────────────────────────
+
+  Build: 4 AddLiquidity instructions
+
+  Sign:
+    ├─ Wallet keypair (payer)
+    └─ Position keypair (position owner)
+
+  Send:
+    ├─ Send to RPC
+    ├─ Wait for signature
+    ├─ Confirm on-chain
+
+  Retry on failure:
+    ├─ Attempt 1: Immediate
+    ├─ Attempt 2: Wait 1s
+    ├─ Attempt 3: Wait 2s
+    └─ Abort if all fail
+
+
+PHASE 8: POST-DEPLOYMENT MONITORING
+─────────────────────────────────────────────────────────────────────────────
+
+  Track price vs deployed range:
+
+  SCENARIO A: Price stays above -86% level ($280+)
+  ┌───────────────────────────────────────────────────────────┐
+  │ Status: SAFE (no impermanent loss)                        │
+  │ Fee generation: ZERO (no trading in range)                │
+  │ Action: Continue monitoring                               │
+  │ Risk: Capital idle if no crash within N hours             │
+  └───────────────────────────────────────────────────────────┘
+
+  SCENARIO B: Price crashes into -86% to -94% zone ($280 - $120)
+  ┌───────────────────────────────────────────────────────────┐
+  │ Status: ACTIVE TRADING (fees printing!)                   │
+  │ Fee generation: MASSIVE 🔥 (every swap hits range)        │
+  │ Action: Monitor fee accumulation closely                  │
+  │ Exit: Consider closing when crash completes               │
+  └───────────────────────────────────────────────────────────┘
+
+  SCENARIO C: Price crashes BELOW -94% ($120 or less)
+  ┌───────────────────────────────────────────────────────────┐
+  │ Status: RANGE INACTIVE (price passed through)             │
+  │ Fee generation: ZERO (no more trading in zone)            │
+  │ Action: Close position, realize P&L                       │
+  │ Note: Only happens if extreme crash (>94%)                │
+  └───────────────────────────────────────────────────────────┘
+
+
+═══════════════════════════════════════════════════════════════════════════════
+KEY DECISION: ADAPTIVE BINSTEP SELECTION
+═══════════════════════════════════════════════════════════════════════════════
+
+Normal flow (-86% to -94%):
+
+  Try BinStep 100
+    ↓
+  Calculate: 4 bins needed
+    ↓
+  Check: 4 ≤ 250? YES
+    ↓
+  → USE BINSTEP 100 ✅
+
+If range was much larger (hypothetical):
+
+  Try BinStep 100
+    ↓
+  Calculate: 300 bins needed
+    ↓
+  Check: 300 ≤ 250? NO
+    ↓
+  Switch to BinStep 125
+    ↓
+  Calculate: 200 bins needed
+    ↓
+  Check: 200 ≤ 250? YES
+    ↓
+  → USE BINSTEP 125 ✅
+
+
+═══════════════════════════════════════════════════════════════════════════════
+PARAMETER SUMMARY
+═══════════════════════════════════════════════════════════════════════════════
+
+ENTRY:
+  Signal type: Supertrend FLIP (BEARISH → BULLISH)
+  Confirmation: 15m candle close above Supertrend line
+  Entry type: Market entry upon confirmation
+
+POOL:
+  Priority: BinStep 100 > BinStep 125
+  Selection: Adaptive (try 100 first, fallback to 125)
+  Constraint: Selected range width ≤ 250 bins
+
+RANGE:
+  Offset min: -86% (upper bound, shallower)
+  Offset max: -94% (lower bound, deeper)
+  Width: 4 bins (for BinStep 100)
+  Type: Deep Fishing (single-side SOL only)
+
+DEPLOYMENT:
+  Amount: 0.5 SOL
+  Token X: 0 (no cross-token)
+  Distribution: Even across bins (0.125 per bin)
+  Chunks: 1 (fits in single transaction)
+  Signers: 2 (wallet + position key)
+
+MONITORING:
+  Success scenario: Price crashes → high APR
+  Safe scenario: Price above range → zero IL
+  Exit trigger: Price below range OR time-based
+
+
+═══════════════════════════════════════════════════════════════════════════════
+COMPARISON: BINSTEP 100 vs 125 FOR -86% to -94%
+═══════════════════════════════════════════════════════════════════════════════
+
+                     BinStep 100      BinStep 125
+────────────────────────────────────────────────
+Per-bin size:        0.01%            0.0125%
+Range width:         4 bins           3-4 bins
+Per-bin liquidity:   0.125 SOL        0.125-0.167 SOL
+Fee concentration:   High             Very high
+Precision:           Better           Good
+TX complexity:       Simple           Very simple
+Typical choice:      Primary ✅       Fallback
+
+
+═══════════════════════════════════════════════════════════════════════════════
