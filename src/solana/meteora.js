@@ -94,6 +94,13 @@ function toDisplayPrice(rawPrice, isSOLPair) {
 // ─── Pool Info ───────────────────────────────────────────────────
 
 export async function getPoolInfo(poolAddress) {
+  // Validate pool address format before attempting SDK calls
+  if (!poolAddress || typeof poolAddress !== 'string' || poolAddress.length !== 44) {
+    const errorMsg = `Invalid pool address format: "${poolAddress}" (must be 44 chars, got ${poolAddress?.length || 0})`;
+    console.error(`[meteora] ${errorMsg}`);
+    throw new Error(errorMsg);
+  }
+
   return withRetry(async () => {
     const connection = getConnection();
     const poolPubkey = new PublicKey(poolAddress);
@@ -211,6 +218,13 @@ export async function getPositionInfoLight(poolAddress) {
 //   null → fetch error (network issue, don't mark as manual close)
 
 export async function getPositionInfo(poolAddress) {
+  // Validate pool address format before attempting SDK calls
+  if (!poolAddress || typeof poolAddress !== 'string' || poolAddress.length !== 44) {
+    const errorMsg = `Invalid pool address format: "${poolAddress}" (must be 44 chars, got ${poolAddress?.length || 0})`;
+    console.error(`[meteora] ${errorMsg}`);
+    throw new Error(errorMsg);
+  }
+
   try {
     return await withRetry(async () => {
       const connection = getConnection();
@@ -360,6 +374,13 @@ export async function openPosition(poolAddress, tokenXAmount, tokenYAmount, pric
 }
 
 async function _openPositionLogic(poolAddress, tokenXAmount, tokenYAmount, priceRangePercent = 5, strategyName = null, deployOptions = {}) {
+  // Validate pool address format before attempting deployment
+  if (!poolAddress || typeof poolAddress !== 'string' || poolAddress.length !== 44) {
+    const errorMsg = `Invalid pool address format: "${poolAddress}" (must be 44 chars, got ${poolAddress?.length || 0})`;
+    console.error(`[meteora] ${errorMsg}`);
+    throw new Error(errorMsg);
+  }
+
   if (isDryRun()) {
     console.log(`[DRY RUN] openPosition skipped: pool=${poolAddress} tokenX=${tokenXAmount} tokenY=${tokenYAmount}`);
     return { dryRun: true, poolAddress, tokenXAmount, tokenYAmount, priceRangePercent };
