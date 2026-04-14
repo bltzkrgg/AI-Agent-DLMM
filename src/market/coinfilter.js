@@ -2,7 +2,7 @@ import { fetchWithTimeout, safeNum, withExponentialBackoff } from '../utils/safe
 import { getConfig } from '../config.js';
 import { getJupiterPrice } from '../utils/jupiter.js';
 
-const DEXSCREENER_BASE   = 'https://api.dexscreener.com';
+const DEXSCREENER_BASE = 'https://api.dexscreener.com';
 const JUPITER_TOKEN_BASE = 'https://tokens.jup.ag';
 const JUPITER_PRICE_BASE = 'https://api.jup.ag';
 
@@ -36,26 +36,26 @@ async function getDexScreenerInfo(tokenMint) {
     const best = pairs.sort((a, b) =>
       safeNum(b.liquidity?.usd) - safeNum(a.liquidity?.usd)
     )[0];
-    const txns1h  = best.txns?.h1  || {};
+    const txns1h = best.txns?.h1 || {};
     const txns24h = best.txns?.h24 || {};
     return {
-      name:           best.baseToken?.name   || '',
-      symbol:         best.baseToken?.symbol || '',
-      hasImage:       !!(best.info?.imageUrl),
-      hasSocials:     !!(best.info?.socials?.length > 0 || best.info?.websites?.length > 0),
-      liquidity:      safeNum(best.liquidity?.usd),
-      fdv:            safeNum(best.fdv),
-      priceChangeM5:  safeNum(best.priceChange?.m5),
-      priceChange1h:  safeNum(best.priceChange?.h1),
-      priceChange6h:  safeNum(best.priceChange?.h6),
+      name: best.baseToken?.name || '',
+      symbol: best.baseToken?.symbol || '',
+      hasImage: !!(best.info?.imageUrl),
+      hasSocials: !!(best.info?.socials?.length > 0 || best.info?.websites?.length > 0),
+      liquidity: safeNum(best.liquidity?.usd),
+      fdv: safeNum(best.fdv),
+      priceChangeM5: safeNum(best.priceChange?.m5),
+      priceChange1h: safeNum(best.priceChange?.h1),
+      priceChange6h: safeNum(best.priceChange?.h6),
       priceChange24h: safeNum(best.priceChange?.h24),
-      volume24h:      safeNum(best.volume?.h24),
-      priceUsd:       safeNum(best.priceUsd),
-      buys1h:         safeNum(txns1h.buys),
-      sells1h:        safeNum(txns1h.sells),
-      buys24h:        safeNum(txns24h.buys),
-      sells24h:       safeNum(txns24h.sells),
-      pairCreatedAt:  best.pairCreatedAt || null, // ms timestamp
+      volume24h: safeNum(best.volume?.h24),
+      priceUsd: safeNum(best.priceUsd),
+      buys1h: safeNum(txns1h.buys),
+      sells1h: safeNum(txns1h.sells),
+      buys24h: safeNum(txns24h.buys),
+      sells24h: safeNum(txns24h.sells),
+      pairCreatedAt: best.pairCreatedAt || null, // ms timestamp
     };
   } catch { return null; }
 }
@@ -72,14 +72,14 @@ async function getJupiterData(tokenMint) {
       ? await priceRes.value.json().catch(() => null) : null;
     const priceInfo = priceData?.data?.[tokenMint];
     return {
-      found:      !!tokenData,
-      name:       tokenData?.name,
-      symbol:     tokenData?.symbol,
-      tags:       tokenData?.tags || [],
-      isStrict:   !!(tokenData?.tags?.includes('strict')),
+      found: !!tokenData,
+      name: tokenData?.name,
+      symbol: tokenData?.symbol,
+      tags: tokenData?.tags || [],
+      isStrict: !!(tokenData?.tags?.includes('strict')),
       isVerified: !!(tokenData?.tags?.includes('verified')),
-      isPumpFun:  !!(tokenData?.tags?.includes('pump-fun') || tokenData?.tags?.includes('pumpfun')),
-      priceUsd:   safeNum(priceInfo?.price),
+      isPumpFun: !!(tokenData?.tags?.includes('pump-fun') || tokenData?.tags?.includes('pumpfun')),
+      priceUsd: safeNum(priceInfo?.price),
     };
   } catch { return null; }
 }
@@ -93,7 +93,7 @@ function step1_basicValidation(dex, jup) {
     rejects.push({ rule: 'NO_DEXSCREENER_DATA', msg: 'Token tidak ditemukan di DexScreener' });
     return { rejects, warnings };
   }
-  if (!dex.hasImage)   rejects.push({ rule: 'NO_LOGO',         msg: 'Token tidak punya logo — REJECT' });
+  if (!dex.hasImage) rejects.push({ rule: 'NO_LOGO', msg: 'Token tidak punya logo — REJECT' });
   if (!dex.hasSocials) warnings.push({ rule: 'NO_SOCIAL_LINKS', msg: 'Token tidak punya social links — perlu verifikasi manual' });
   return { rejects, warnings };
 }
@@ -104,7 +104,7 @@ function step2_narrativeFilter(name, symbol) {
   for (const p of POLITICAL_PATTERNS)
     if (p.test(text)) { rejects.push({ rule: 'POLITICAL_FIGURE', msg: `Political coin: "${name}" — slow rug pattern` }); break; }
   for (const p of CELEBRITY_PATTERNS)
-    if (p.test(text)) { rejects.push({ rule: 'CELEBRITY_COIN',   msg: `Celebrity coin: "${name}" — dev bisa dump kapan saja` }); break; }
+    if (p.test(text)) { rejects.push({ rule: 'CELEBRITY_COIN', msg: `Celebrity coin: "${name}" — dev bisa dump kapan saja` }); break; }
   for (const p of JUSTICE_PATTERNS)
     if (p.test(text)) { rejects.push({ rule: 'JUSTICE_NARRATIVE', msg: `"Justice/save" narrative: "${name}" — classic rug` }); break; }
   for (const p of CTO_PATTERNS)
@@ -122,13 +122,13 @@ function step3_priceHealth(dex, thresholds = {}) {
   else if (dex.priceChange1h < -10)
     warnings.push({ rule: 'PRICE_CORRECTION', msg: `Harga terkoreksi ${dex.priceChange1h}% (1h) — Monitor area support` });
 
-  if (dex.liquidity < 5000)
-    rejects.push({ rule: 'LOW_LIQUIDITY', msg: `Liquidity $${dex.liquidity.toFixed(0)} (<$5k) — pool terlalu kecil` });
-  else if (dex.liquidity < 15000)
-    warnings.push({ rule: 'THIN_LIQUIDITY', msg: `Liquidity $${dex.liquidity.toFixed(0)} ($5k-$15k) — tipis, slippage tinggi` });
+  if (dex.liquidity < 10000)
+    rejects.push({ rule: 'LOW_LIQUIDITY', msg: `Liquidity $${dex.liquidity.toFixed(0)} (<$10k) — pool terlalu kecil, risiko slippage ekstrem` });
+  else if (dex.liquidity < 20000)
+    warnings.push({ rule: 'THIN_LIQUIDITY', msg: `Liquidity $${dex.liquidity.toFixed(0)} ($10k-$20k) — tipis, perhatikan slippage` });
 
   if (dex.priceChange24h > 250)
-    rejects.push({ rule: 'BUBBLE_DETECTED', msg: `Harga naik ${dex.priceChange24h.toFixed(0)}% dalam 24h — bubble risking dump` });
+    warnings.push({ rule: 'BUBBLE_DETECTED', msg: `Harga naik ${dex.priceChange24h.toFixed(0)}% dalam 24h — Volatilitas masif, siap meraup fee` });
 
   return { rejects, warnings };
 }
@@ -143,14 +143,22 @@ function step5_txnAnalysis(dex) {
     const sellRatio = dex.sells1h / total1h;
     // Sniper Hardening: Ubah jadi Warning biar Panda bisa deteksi capitulation
     if (sellRatio > 0.70)
-      warnings.push({ rule: 'EXTREME_SELLING_1H', msg: `${(sellRatio*100).toFixed(0)}% txn h1 adalah SELL — Potensi capitulation/serok bawah` });
+      warnings.push({ rule: 'EXTREME_SELLING_1H', msg: `${(sellRatio * 100).toFixed(0)}% txn h1 adalah SELL — Potensi capitulation/serok bawah` });
     else if (sellRatio > 0.60)
-      warnings.push({ rule: 'HEAVY_SELLING_1H', msg: `${(sellRatio*100).toFixed(0)}% txn h1 adalah SELL` });
+      warnings.push({ rule: 'HEAVY_SELLING_1H', msg: `${(sellRatio * 100).toFixed(0)}% txn h1 adalah SELL` });
   }
 
-  // Final Spike Protection: Nolak kalau harga naik > 15% cuma dlm 5 menit (FOMO Risk)
+  // Anti-Wash Trading Guard (Volume : TVL Ratio)
+  if (dex.volume24h && dex.liquidity && dex.liquidity > 0) {
+    const volTvlRatio = dex.volume24h / dex.liquidity;
+    if (volTvlRatio >= 100) {
+      rejects.push({ rule: 'WASH_TRADING_DETECTED', msg: `Rasio Vol/TVL tidak wajar (${volTvlRatio.toFixed(1)}x) — Indikasi kuat bot wash trading / thin liquidity trap` });
+    }
+  }
+
+  // Final Spike Protection: Berubah ke warning agar bisa jaring koin liar
   if (dex.priceChangeM5 > 15)
-    rejects.push({ rule: 'PRICE_SPIKE_M5', msg: `Harga meledak ${dex.priceChangeM5.toFixed(1)}% dlm 5 menit — terlalu berisiko` });
+    warnings.push({ rule: 'PRICE_SPIKE_M5', msg: `Harga meledak ${dex.priceChangeM5.toFixed(1)}% dlm 5 menit — Momentum kuat, siap tangkap volatilitas` });
 
   return { rejects, warnings };
 }
@@ -171,18 +179,21 @@ function step7_organicScore(dex, jup, thresholds) {
   const minOrganic = thresholds.minOrganic;
   let score = 0;
 
-  if (dex?.hasImage)        score += 15;
-  if (dex?.hasSocials)      score += 15;
-  if (jup?.isStrict)        score += 20;
+  if (dex?.hasImage) score += 10;
+  if (dex?.hasSocials) score += 10;
+  if (jup?.isStrict) score += 15;
 
   if (dex) {
-    if      (dex.volume24h >= 100000) score += 20;
-    else if (dex.volume24h >= 50000)  score += 15;
-    if ((dex.buys24h + dex.sells24h) >= 100) score += 10;
+    if (dex.volume24h >= 1000000) score += 30; // Volume Sultan
+    else if (dex.volume24h >= 100000) score += 20;
+    else if (dex.volume24h >= 50000) score += 10;
+
+    if ((dex.buys24h + dex.sells24h) >= 500) score += 20; // Pool super aktif
+    else if ((dex.buys24h + dex.sells24h) >= 100) score += 10;
   }
 
   if (dex) {
-    if (dex.priceChange1h >= -10) score += 20;
+    if (dex.priceChange1h >= -10) score += 15;
   }
 
   score = Math.min(100, score);
@@ -199,7 +210,10 @@ function step9_mcapFilter(dexFdv, thresholds) {
   const maxMcap = thresholds.maxMcap;
   const mcap = dexFdv || null;
 
-  if (mcap === null) return { rejects, mcap: null, skipped: true };
+  if (mcap === null) {
+    rejects.push({ rule: 'MISSING_MCAP', msg: 'Data Market Cap tidak tersedia (Kosong) — Risiko dev belum revoke mint atau data on-chain cacat' });
+    return { rejects, mcap: null, skipped: false };
+  }
 
   if (minMcap > 0 && mcap < minMcap)
     rejects.push({ rule: 'BELOW_MIN_MCAP', msg: `Mcap $${mcap.toLocaleString()} < min $${minMcap.toLocaleString()}` });
@@ -215,7 +229,7 @@ async function getOnChainAuthority(tokenMint) {
   const HELIUS_KEY = process.env.HELIUS_API_KEY;
   if (!HELIUS_KEY) {
     console.warn('⚠️ Helius API Key missing. Skipping authority checks (failing-safe).');
-    return { mutable: true, mintAuthority: true, freezeAuthority: true }; 
+    return { mutable: true, mintAuthority: true, freezeAuthority: true };
   }
 
   try {
@@ -233,30 +247,30 @@ async function getOnChainAuthority(tokenMint) {
       },
       8000
     );
-    
+
     if (!res.ok) {
       console.error(`❌ Helius RPC Error: ${res.status} ${res.statusText}`);
       return { mutable: true, mintAuthority: true, freezeAuthority: true };
     }
-    
+
     const data = await res.json();
     const parsed = data.result?.value?.data?.parsed?.info;
-    
+
     if (!parsed) {
       console.warn(`⚠️ Helius: Account info not found for ${tokenMint.slice(0, 8)}. Likely burned or wrong mint.`);
       return { mutable: true, mintAuthority: true, freezeAuthority: true };
     }
 
     return {
-      mintAuthority:   !!parsed.mintAuthority,
+      mintAuthority: !!parsed.mintAuthority,
       freezeAuthority: !!parsed.freezeAuthority,
-      isInitialized:   !!parsed.isInitialized,
-      supply:          safeNum(parsed.supply),
-      decimals:        safeNum(parsed.decimals)
+      isInitialized: !!parsed.isInitialized,
+      supply: safeNum(parsed.supply),
+      decimals: safeNum(parsed.decimals)
     };
-  } catch (e) { 
+  } catch (e) {
     console.error(`❌ getOnChainAuthority failed for ${tokenMint.slice(0, 8)}:`, e.message);
-    return { mutable: true, mintAuthority: true, freezeAuthority: true }; 
+    return { mutable: true, mintAuthority: true, freezeAuthority: true };
   }
 }
 
@@ -264,7 +278,7 @@ async function getSlippageSimulation(tokenMint, amountSol) {
   try {
     const WSOL = 'So11111111111111111111111111111111111111112';
     const amountLamports = Math.floor(amountSol * 1_000_000_000);
-    
+
     // --- 1. Simulation Beli (SOL -> Token) ---
     const buyData = await withExponentialBackoff(async () => {
       try {
@@ -309,13 +323,13 @@ async function getSlippageSimulation(tokenMint, amountSol) {
       isSimFailure: (sellData?.error === 'NETWORK_ERROR'),
       networkError: (sellData?.error === 'NETWORK_ERROR')
     };
-  } catch (e) { 
+  } catch (e) {
     if (e.message === 'NETWORK_ERROR') {
       console.warn(`🌐 Jupiter API unreachable (ENOTFOUND) for ${tokenMint.slice(0, 8)}. Skipping slippage check.`);
       return { networkError: true, isSimFailure: true };
     }
     console.error(`❌ getSlippageSimulation failed for ${tokenMint.slice(0, 8)}:`, e.message);
-    return null; 
+    return null;
   }
 }
 
@@ -323,7 +337,7 @@ async function getSlippageSimulation(tokenMint, amountSol) {
 
 function step10_authorityCheck(auth) {
   const rejects = [];
-  if (auth.mintAuthority)  rejects.push({ rule: 'MINT_AUTH_ACTIVE', msg: 'Mint authority masih aktif — dev bisa cetak token baru' });
+  if (auth.mintAuthority) rejects.push({ rule: 'MINT_AUTH_ACTIVE', msg: 'Mint authority masih aktif — dev bisa cetak token baru' });
   if (auth.freezeAuthority) rejects.push({ rule: 'FREEZE_AUTH_ACTIVE', msg: 'Freeze authority masih aktif — wallet bisa di-lock' });
   return rejects;
 }
@@ -358,11 +372,11 @@ function step11_slippageCheck(sim, maxImpact = 0.5) {
 export async function screenToken(tokenMint, tokenName = '', tokenSymbol = '', opts = {}) {
   const cfg = getConfig();
   const thresholds = {
-    minMcap:      cfg.minMcap,
-    maxMcap:      cfg.maxMcap,
+    minMcap: cfg.minMcap,
+    maxMcap: cfg.maxMcap,
     minVolume24h: cfg.minVolume24h,
-    minOrganic:   cfg.minOrganic,
-    maxImpact:    cfg.maxPriceImpactPct,
+    minOrganic: cfg.minOrganic,
+    maxImpact: cfg.maxPriceImpactPct,
   };
 
   const deployAmount = cfg.deployAmountSol || 0.1;
@@ -374,21 +388,21 @@ export async function screenToken(tokenMint, tokenName = '', tokenSymbol = '', o
     getSlippageSimulation(tokenMint, deployAmount),
   ]);
 
-  const dex  = dexResult.status === 'fulfilled'  ? dexResult.value  : null;
-  const jup  = jupResult.status === 'fulfilled'  ? jupResult.value  : null;
+  const dex = dexResult.status === 'fulfilled' ? dexResult.value : null;
+  const jup = jupResult.status === 'fulfilled' ? jupResult.value : null;
   const auth = authResult.status === 'fulfilled' ? authResult.value : { mintAuthority: true, freezeAuthority: true };
-  const sim  = simResult.status === 'fulfilled'  ? simResult.value  : null;
+  const sim = simResult.status === 'fulfilled' ? simResult.value : null;
 
-  const name   = tokenName   || dex?.name   || jup?.name   || '';
+  const name = tokenName || dex?.name || jup?.name || '';
   const symbol = tokenSymbol || dex?.symbol || jup?.symbol || '';
 
-  const s1  = step1_basicValidation(dex, jup);
-  const s2  = step2_narrativeFilter(name, symbol);
-  const s3  = step3_priceHealth(dex, thresholds);
-  const s5  = step5_txnAnalysis(dex);
-  const s6  = step6_tokenSafety(jup);
-  const s7  = step7_organicScore(dex, jup, thresholds);
-  
+  const s1 = step1_basicValidation(dex, jup);
+  const s2 = step2_narrativeFilter(name, symbol);
+  const s3 = step3_priceHealth(dex, thresholds);
+  const s5 = step5_txnAnalysis(dex);
+  const s6 = step6_tokenSafety(jup);
+  const s7 = step7_organicScore(dex, jup, thresholds);
+
   // Obelisk Handle: Manual MCAP calculation if DexScreener is lagging
   let mcap = dex?.fdv || null;
   if (!mcap && auth?.supply && auth?.decimals) {
@@ -399,7 +413,7 @@ export async function screenToken(tokenMint, tokenName = '', tokenSymbol = '', o
     }
   }
 
-  const s9  = step9_mcapFilter(mcap, thresholds);
+  const s9 = step9_mcapFilter(mcap, thresholds);
   const s10 = step10_authorityCheck(auth);
   const s11 = step11_slippageCheck(sim, thresholds.maxImpact);
 
@@ -420,7 +434,7 @@ export async function screenToken(tokenMint, tokenName = '', tokenSymbol = '', o
     organicScore: s7.score, mcap: s9.mcap,
     priceImpact: sim?.priceImpactBuy,
     priceImpactSell: sim?.priceImpactSell,
-    sources: { dexscreener: !!dex, jupiter: !!(jup?.found), helius: (authResult.status==='fulfilled') },
+    sources: { dexscreener: !!dex, jupiter: !!(jup?.found), helius: (authResult.status === 'fulfilled') },
   };
 }
 
@@ -429,7 +443,7 @@ export function formatScreenResult(result) {
   let text = `${emoji} *${result.name}* — ${result.eligible ? 'ELIGIBLE' : 'AVOID'}\n`;
   text += `📊 Organic score: *${result.organicScore}/100*\n`;
   if (result.mcap) text += `💰 Mcap: $${result.mcap.toLocaleString()}\n`;
-  
+
   if (result.highFlags.length > 0) {
     text += `\n🔴 *Ditolak (${result.highFlags.length}):*\n`;
     result.highFlags.forEach(f => text += `• ${f.msg}\n`);
