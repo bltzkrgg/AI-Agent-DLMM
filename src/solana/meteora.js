@@ -557,9 +557,48 @@ async function _openPositionLogic(poolAddress, tokenXAmount, tokenYAmount, price
 
       if (ci === 0 && !accountExists) {
         // ── case A: New deployment, First chunk ───────────────
-        // If Dip Fishing (SOL only below price), use initializePosition + addLiquidityByWeight
-        // to avoid the SBF panic in the SDK's internal strategy mapper.
+        // Dip Fishing (Y only) and Normal (X+Y) both use strategy-based approach
+        // initializePositionAndAddLiquidityByWeight only works with X+Y, not Y-only
         if (isDipFishing) {
+          // Dip Fishing: Y-only deposit below price (all in range)
+          // Use strategy with spot distribution (type 0)
+          console.log(`[meteora] case A dip fishing: range [${chunk.lowerBinId}, ${chunk.upperBinId}], totalY=${chunkTotalY.toString()}`);
+
+          txs = await dlmmPool.initializePositionAndAddLiquidityByStrategy({
+            positionPubKey: posKp.publicKey,
+            user: wallet.publicKey,
+            totalXAmount: chunkTotalX,
+            totalYAmount: chunkTotalY,
+            strategy: { maxBinId: chunk.upperBinId, minBinId: chunk.lowerBinId, strategyType: 0 },
+          });
+        } else {
+          // Normal Deployment (e.g. Wave Enjoyer with X+Y)
+          console.log(`[meteora] case A normal: range [${chunk.lowerBinId}, ${chunk.upperBinId}], totalX=${chunkTotalX.toString()}, totalY=${chunkTotalY.toString()}`);
+
+          txs = await dlmmPool.initializePositionAndAddLiquidityByStrategy({
+            positionPubKey: posKp.publicKey,
+            user: wallet.publicKey,
+            totalXAmount: chunkTotalX,
+            totalYAmount: chunkTotalY,
+            strategy: { maxBinId: chunk.upperBinId, minBinId: chunk.lowerBinId, strategyType: 0 },
+          });
+        }
+      } else {
+        // ── case B: Existing account or subsequent chunks ──────────
+        // For subsequent chunks, use strategy-based approach (safe for both X+Y and Y-only)
+        // addLiquidityByWeight fails on Y-only (totalXAmount=0)
+        if (isDipFishing) {
+          console.log(`[meteora] case B dip fishing continuation: range [${chunk.lowerBinId}, ${chunk.upperBinId}], totalY=${chunkTotalY.toString()}`);
+
+          txs = await dlmmPool.addLiquidityByStrategy({
+            positionPubKey: posKp.publicKey,
+            user: wallet.publicKey,
+            totalXAmount: chunkTotalX,
+            totalYAmount: chunkTotalY,
+            strategy: { maxBinId: chunk.upperBinId, minBinId: chunk.lowerBinId, strategyType: 0 },
+          });
+        } else {
+          // Normal case B: use weight-based distribution for balance
           const binIds = [];
           for (let b = chunk.lowerBinId; b <= chunk.upperBinId; b++) binIds.push(b);
 
@@ -571,7 +610,7 @@ async function _openPositionLogic(poolAddress, tokenXAmount, tokenYAmount, price
           // Obelisk: Precision weight distribution (Sum exactly 10,000)
           const weightValue = Math.floor(10000 / binIds.length);
           if (!Number.isFinite(weightValue) || weightValue <= 0) {
-            throw new Error(`Invalid weight calculation: weightValue=${weightValue} for ${binIds.length} bins`);
+            throw new Error(`Invalid weight calculation in case B: weightValue=${weightValue} for ${binIds.length} bins`);
           }
           const weights = new Array(binIds.length).fill(weightValue);
           const currentSum = weights.reduce((a, b) => a + b, 0);
@@ -581,12 +620,12 @@ async function _openPositionLogic(poolAddress, tokenXAmount, tokenYAmount, price
 
           // Sentinel: Validate weights before passing to SDK
           if (!Array.isArray(weights) || weights.length === 0 || weights.some(w => !Number.isFinite(w) || w < 0)) {
-            throw new Error(`Invalid weights array: ${JSON.stringify(weights)}`);
+            throw new Error(`Invalid weights array in case B: ${JSON.stringify(weights)}`);
           }
 
-          console.log(`[meteora] case A init params: binIds=${JSON.stringify(binIds)}, weights=${JSON.stringify(weights)}, totalXAmount=${chunkTotalX.toString()}, totalYAmount=${chunkTotalY.toString()}`);
+          console.log(`[meteora] case B normal add: binIds=${JSON.stringify(binIds)}, weights=${JSON.stringify(weights)}, totalXAmount=${chunkTotalX.toString()}, totalYAmount=${chunkTotalY.toString()}`);
 
-          txs = await dlmmPool.initializePositionAndAddLiquidityByWeight({
+          txs = await dlmmPool.addLiquidityByWeight({
             positionPubKey: posKp.publicKey,
             user: wallet.publicKey,
             totalXAmount: chunkTotalX,
@@ -594,53 +633,7 @@ async function _openPositionLogic(poolAddress, tokenXAmount, tokenYAmount, price
             binIds,
             weights,
           });
-        } else {
-          // Normal Deployment (e.g. Wave Enjoyer with X+Y)
-          txs = await dlmmPool.initializePositionAndAddLiquidityByStrategy({
-            positionPubKey: posKp.publicKey,
-            user: wallet.publicKey,
-            totalXAmount: chunkTotalX,
-            totalYAmount: chunkTotalY,
-            strategy: { maxBinId: chunk.upperBinId, minBinId: chunk.lowerBinId, strategyType: 0 },
-          });
         }
-      } else {
-        // ── case B: Existing account or subsequent chunks ──────────
-        // Use addLiquidityByWeight to bypass strategy math jitter
-        const binIds = [];
-        for (let b = chunk.lowerBinId; b <= chunk.upperBinId; b++) binIds.push(b);
-
-        // Sentinel: Validate binIds not empty
-        if (binIds.length === 0) {
-          throw new Error(`binIds array is empty for chunk ${ci}: range [${chunk.lowerBinId}, ${chunk.upperBinId}]`);
-        }
-
-        // Obelisk: Precision weight distribution (Sum exactly 10,000)
-        const weightValue = Math.floor(10000 / binIds.length);
-        if (!Number.isFinite(weightValue) || weightValue <= 0) {
-          throw new Error(`Invalid weight calculation in case B: weightValue=${weightValue} for ${binIds.length} bins`);
-        }
-        const weights = new Array(binIds.length).fill(weightValue);
-        const currentSum = weights.reduce((a, b) => a + b, 0);
-        if (currentSum < 10000) {
-          weights[weights.length - 1] += (10000 - currentSum);
-        }
-
-        // Sentinel: Validate weights before passing to SDK
-        if (!Array.isArray(weights) || weights.length === 0 || weights.some(w => !Number.isFinite(w) || w < 0)) {
-          throw new Error(`Invalid weights array in case B: ${JSON.stringify(weights)}`);
-        }
-
-        console.log(`[meteora] case B add params: binIds=${JSON.stringify(binIds)}, weights=${JSON.stringify(weights)}, totalXAmount=${chunkTotalX.toString()}, totalYAmount=${chunkTotalY.toString()}`);
-
-        txs = await dlmmPool.addLiquidityByWeight({
-          positionPubKey: posKp.publicKey,
-          user: wallet.publicKey,
-          totalXAmount: chunkTotalX,
-          totalYAmount: chunkTotalY,
-          binIds,
-          weights,
-        });
       }
 
       const txList = Array.isArray(txs) ? txs : [txs];
