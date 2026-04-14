@@ -332,9 +332,10 @@ export async function getPositionInfo(poolAddress) {
         };
       });
     }, 3, 2000);
-  } catch {
+  } catch (e) {
     // Tier 2: Meteora REST API fallback
-    console.warn(`[meteora] SDK failed for ${poolAddress?.slice(0, 8)}, trying Meteora API`);
+    console.warn(`[meteora] SDK failed for ${poolAddress} (${poolAddress?.length || 0} chars): ${e.message}`);
+    console.warn(`[meteora] Trying Meteora API...`);
     const meteoraResult = await getPositionInfoFromMeteoraAPI(poolAddress);
     if (meteoraResult !== null) return meteoraResult;
 
