@@ -444,11 +444,11 @@ export function formatScreenResult(result) {
   text += `📊 Organic score: *${result.organicScore}/100*\n`;
   if (result.mcap) text += `💰 Mcap: $${result.mcap.toLocaleString()}\n`;
 
-  if (result.highFlags.length > 0) {
+  if (result.highFlags && result.highFlags.length > 0) {
     text += `\n🔴 *Ditolak (${result.highFlags.length}):*\n`;
     result.highFlags.forEach(f => text += `• ${f.msg}\n`);
   }
-  if (result.mediumFlags.length > 0) {
+  if (result.mediumFlags && result.mediumFlags.length > 0) {
     text += `\n🟡 *Peringatan (${result.mediumFlags.length}):*\n`;
     result.mediumFlags.forEach(f => text += `• ${f.msg}\n`);
   }

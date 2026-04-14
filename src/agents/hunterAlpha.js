@@ -667,13 +667,13 @@ async function executeTool(name, input) {
           const nPos = result.positionCount ?? 1;
 
           const details = [
-            kv('Posisi', nPos > 1
-              ? `${nPos}x chunks (${result.positions.map(p => shortAddr(p.address, 4, 4)).join(', ')})`
+            kv('Posisi', nPos > 1 && result.positionAddresses?.length > 0
+              ? `${nPos}x chunks (${result.positionAddresses.map(a => shortAddr(a, 4, 4)).join(', ')})`
               : shortAddr(result.positionAddress, 4, 4), 9),
             kv('Pool', shortAddr(input.pool_address, 4, 4), 9),
             kv('Strategi', strategy?.name || 'default', 9),
             kv('Deploy', `${deployAmountSol} SOL (${nPos > 1 ? `${nPos} positions` : 'Single-Side'})`, 9),
-            ...(nPos > 1 ? result.positions.map((p, i) =>
+            ...(nPos > 1 && result.positions?.length > 0 ? result.positions.map((p, i) =>
               kv(`Chunk${i + 1}`, `${p.yAmountSol.toFixed(4)}◎ @ ${p.binCount} bins`, 9)
             ) : []),
             hr(40),
@@ -681,7 +681,7 @@ async function executeTool(name, input) {
             kv('Bawah', `${result.lowerPrice?.toFixed(8) ?? '-'}  (-${targetPriceRangePct}%)`, 9),
             kv('Atas', `${result.upperPrice?.toFixed(8) ?? '-'}  (entry)`, 9),
             kv('Fee/bin', `${result.feeRatePct}%`, 9),
-            kv('Range', `${deployOptions.fixedBinsBelow ? `${result.binsBelow + 1} bins` : `${targetPriceRangePct}%`} | ${result.positions.reduce((s, p) => s + p.binCount, 0)} bins total`, 9),
+            kv('Range', `${deployOptions.fixedBinsBelow && result.binsBelow !== undefined ? `${result.binsBelow + 1} bins` : `${targetPriceRangePct}%`} | ${result.positions?.reduce((s, p) => s + p.binCount, 0) ?? (result.binRange ? (result.binRange.max - result.binRange.min + 1) : '?')} bins total`, 9),
             hr(40),
             kv('TP', `+${tpTarget}%  Trail: +${trailAct}%  SL: -${slTarget}%`, 9),
             ...(strategyEval?.notes?.length ? [kv('Setup', strategyEval.notes.join(' | ').slice(0, 40), 9)] : []),
