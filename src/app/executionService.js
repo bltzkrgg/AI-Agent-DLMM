@@ -65,6 +65,7 @@ export async function executeControlledOperation({
       entityId: safeEntityId,
       operationId,
       error: error.message,
+      stack: error.stack,
     });
     throw error;
   }
