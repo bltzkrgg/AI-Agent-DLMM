@@ -636,9 +636,26 @@ async function _openPositionLogic(poolAddress, tokenXAmount, tokenYAmount, price
         }
       }
 
+      console.log(`[meteora] SDK returned txs - type: ${typeof txs}, isArray: ${Array.isArray(txs)}, constructor: ${txs?.constructor?.name}`);
+      if (!Array.isArray(txs) && txs) {
+        console.log(`[meteora] txs object keys: ${Object.keys(txs || {}).slice(0, 10).join(', ')}`);
+        console.log(`[meteora] txs.tx type: ${typeof txs.tx}, txs.transactions type: ${typeof txs.transactions}`);
+      }
+
       const txList = Array.isArray(txs) ? txs : [txs];
       for (const tx of txList) {
         if (!tx) continue;
+
+        console.log(`[meteora] ========== EXAMINING TX OBJECT FROM SDK ==========`);
+        console.log(`[meteora] tx type: ${typeof tx}, constructor: ${tx?.constructor?.name}`);
+        console.log(`[meteora] tx instanceof Transaction: ${tx instanceof Transaction}`);
+        console.log(`[meteora] tx instanceof VersionedTransaction: ${tx instanceof VersionedTransaction}`);
+        console.log(`[meteora] tx.sign type: ${typeof tx.sign}`);
+        console.log(`[meteora] tx.serialize type: ${typeof tx.serialize}`);
+        console.log(`[meteora] tx.signatures type: ${typeof tx.signatures}, isArray: ${Array.isArray(tx.signatures)}`);
+        console.log(`[meteora] tx.instructions type: ${typeof tx.instructions}, isArray: ${Array.isArray(tx.instructions)}`);
+        console.log(`[meteora] tx.message type: ${typeof tx.message}, has recentBlockhash: ${!!tx.message?.recentBlockhash}`);
+        console.log(`[meteora] tx keys: ${Object.keys(tx || {}).join(', ')}`);
 
         const isVersioned = tx instanceof VersionedTransaction;
         console.log(`[meteora] Processing transaction type: ${isVersioned ? 'VersionedTransaction' : 'Legacy Transaction'}`);
