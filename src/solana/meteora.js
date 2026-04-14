@@ -49,7 +49,7 @@ function toBN(amount, decimals) {
   const intPart = parts[0] || '0';
   let decPart = parts[1] || '';
   decPart = decPart.padEnd(decimals, '0').slice(0, decimals);
-  
+
   const combined = intPart + decPart;
   return new BN(combined.replace(/^0+/, '') || '0');
 }
@@ -119,10 +119,10 @@ export async function getPoolInfo(poolAddress) {
       if (resp.ok) {
         const p = await resp.json();
         const fees24h = p.fees?.['24h'] || 0;
-        const apr24h  = (p.fee_tvl_ratio?.['24h'] || 0) * 100 * 365;
+        const apr24h = (p.fee_tvl_ratio?.['24h'] || 0) * 100 * 365;
         extra = {
-          feeApr:  parseFloat(apr24h.toFixed(2)),
-          tvl:     p.tvl,
+          feeApr: parseFloat(apr24h.toFixed(2)),
+          tvl: p.tvl,
           fees24h: fees24h,
           volume24h: p.volume?.['24h'],
         };
@@ -130,19 +130,19 @@ export async function getPoolInfo(poolAddress) {
     } catch { /* proceed with basic on-chain data */ }
 
     return {
-      address:        poolAddress,
-      tokenX:         xMint,
-      tokenY:         yMint,
-      tokenXSymbol:   xMeta.symbol,
-      tokenYSymbol:   yMeta.symbol,
+      address: poolAddress,
+      tokenX: xMint,
+      tokenY: yMint,
+      tokenXSymbol: xMeta.symbol,
+      tokenYSymbol: yMeta.symbol,
       tokenXDecimals: xMeta.decimals,
       tokenYDecimals: yMeta.decimals,
-      activePrice:    rawPrice,
-      displayPrice:   parseFloat(displayPrice.toFixed(6)),
+      activePrice: rawPrice,
+      displayPrice: parseFloat(displayPrice.toFixed(6)),
       priceUnit,
-      activeBinId:    activeBin.binId,
+      activeBinId: activeBin.binId,
       binStep,
-      feeRate:        (binStep / 100).toFixed(2) + '%',
+      feeRate: (binStep / 100).toFixed(2) + '%',
       isSOLPair,
       ...extra,
     };
@@ -157,38 +157,38 @@ export async function getPoolInfo(poolAddress) {
 
 async function getPositionInfoFromMeteoraAPI(poolAddress) {
   try {
-    const wallet  = getWallet();
-    const owner   = wallet.publicKey.toString();
+    const wallet = getWallet();
+    const owner = wallet.publicKey.toString();
 
     // Primary: user+pair filter
     const url = `${METEORA_DLMM_API}/position/list_by_user_and_pair?user=${owner}&pair=${poolAddress}`;
     const res = await fetchWithTimeout(url, {}, 8000);
     if (!res.ok) return null;
 
-    const raw  = await res.json();
+    const raw = await res.json();
     const rows = Array.isArray(raw) ? raw : (raw.userPositions ?? raw.positions ?? raw.data ?? []);
     if (!rows.length) return [];
 
     return rows.map(p => {
-      const xAmt      = parseFloat(p.totalXAmount   ?? p.total_x_amount   ?? 0);
-      const yAmt      = parseFloat(p.totalYAmount   ?? p.total_y_amount   ?? 0);
-      const feeX      = parseFloat(p.feeX           ?? p.fee_x            ?? p.unclaimed_fee_x ?? 0);
-      const feeY      = parseFloat(p.feeY           ?? p.fee_y            ?? p.unclaimed_fee_y ?? 0);
-      const price     = parseFloat(p.currentPrice   ?? p.active_bin_price ?? 0);
-      const valSol    = yAmt + feeY + (xAmt + feeX) * price;
-      const feeSol    = feeY + feeX * price;
+      const xAmt = parseFloat(p.totalXAmount ?? p.total_x_amount ?? 0);
+      const yAmt = parseFloat(p.totalYAmount ?? p.total_y_amount ?? 0);
+      const feeX = parseFloat(p.feeX ?? p.fee_x ?? p.unclaimed_fee_x ?? 0);
+      const feeY = parseFloat(p.feeY ?? p.fee_y ?? p.unclaimed_fee_y ?? 0);
+      const price = parseFloat(p.currentPrice ?? p.active_bin_price ?? 0);
+      const valSol = yAmt + feeY + (xAmt + feeX) * price;
+      const feeSol = feeY + feeX * price;
 
       return {
-        address:          p.address ?? p.pubkey ?? p.positionAddress ?? '',
-        currentValueSol:  parseFloat(valSol.toFixed(9)),
-        feeCollectedSol:  parseFloat(feeSol.toFixed(9)),
-        inRange:          p.inRange          ?? p.is_in_range   ?? true,
-        lowerBinId:       p.lowerBinId       ?? p.lower_bin_id  ?? 0,
-        upperBinId:       p.upperBinId       ?? p.upper_bin_id  ?? 0,
-        activeBinId:      p.activeBinId      ?? p.active_bin_id ?? 0,
-        binStep:          p.binStep          ?? p.bin_step      ?? 0,
-        currentPrice:     price,
-        fromAPI:          true,  // signals this is from REST API, not on-chain
+        address: p.address ?? p.pubkey ?? p.positionAddress ?? '',
+        currentValueSol: parseFloat(valSol.toFixed(9)),
+        feeCollectedSol: parseFloat(feeSol.toFixed(9)),
+        inRange: p.inRange ?? p.is_in_range ?? true,
+        lowerBinId: p.lowerBinId ?? p.lower_bin_id ?? 0,
+        upperBinId: p.upperBinId ?? p.upper_bin_id ?? 0,
+        activeBinId: p.activeBinId ?? p.active_bin_id ?? 0,
+        binStep: p.binStep ?? p.bin_step ?? 0,
+        currentPrice: price,
+        fromAPI: true,  // signals this is from REST API, not on-chain
       };
     });
   } catch (e) {
@@ -248,17 +248,17 @@ export async function getPositionInfo(poolAddress) {
 
       return userPositions.map(pos => {
         const pd = pos.positionData;
-        const lowerBinId  = pd.lowerBinId;
-        const upperBinId  = pd.upperBinId;
+        const lowerBinId = pd.lowerBinId;
+        const upperBinId = pd.upperBinId;
         const activeBinId = activeBin.binId;
-        const inRange     = activeBinId >= lowerBinId && activeBinId <= upperBinId;
-        const posAddr     = pos.publicKey.toString();
+        const inRange = activeBinId >= lowerBinId && activeBinId <= upperBinId;
+        const posAddr = pos.publicKey.toString();
 
         // Raw → human-readable amounts (using resolved decimals)
         const totalXUi = Number(pd.totalXAmount?.toString() || '0') / Math.pow(10, xDecimals);
         const totalYUi = Number(pd.totalYAmount?.toString() || '0') / Math.pow(10, yDecimals);
-        const feeXUi   = Number(pd.feeX?.toString() || '0')         / Math.pow(10, xDecimals);
-        const feeYUi   = Number(pd.feeY?.toString() || '0')         / Math.pow(10, yDecimals);
+        const feeXUi = Number(pd.feeX?.toString() || '0') / Math.pow(10, xDecimals);
+        const feeYUi = Number(pd.feeY?.toString() || '0') / Math.pow(10, yDecimals);
 
         // Current value in SOL — tokenY is always SOL for SOL pairs
         // For non-SOL pairs this is still an approximation
@@ -282,12 +282,12 @@ export async function getPositionInfo(poolAddress) {
         const displayCurrentPrice = parseFloat(toDisplayPrice(rawActivePrice, isSOLPair).toFixed(4));
 
         return {
-          address:      posAddr,
+          address: posAddr,
           // Raw on-chain amounts (string, for DB compat)
-          tokenX:       pd.totalXAmount?.toString() || '0',
-          tokenY:       pd.totalYAmount?.toString() || '0',
-          feeX:         pd.feeX?.toString() || '0',
-          feeY:         pd.feeY?.toString() || '0',
+          tokenX: pd.totalXAmount?.toString() || '0',
+          tokenY: pd.totalYAmount?.toString() || '0',
+          feeX: pd.feeX?.toString() || '0',
+          feeY: pd.feeY?.toString() || '0',
           // Human-readable amounts
           totalXUi,
           totalYUi,
@@ -299,8 +299,8 @@ export async function getPositionInfo(poolAddress) {
           // Token metadata
           tokenXSymbol: xMeta.symbol,
           tokenYSymbol: yMeta.symbol,
-          tokenXMint:   xMint,
-          tokenYMint:   yMint,
+          tokenXMint: xMint,
+          tokenYMint: yMint,
           isSOLPair,
           // Price display (human-readable direction)
           displayCurrentPrice,
@@ -320,7 +320,7 @@ export async function getPositionInfo(poolAddress) {
     }, 3, 2000);
   } catch {
     // Tier 2: Meteora REST API fallback
-    console.warn(`[meteora] SDK failed for ${poolAddress?.slice(0,8)}, trying Meteora API`);
+    console.warn(`[meteora] SDK failed for ${poolAddress?.slice(0, 8)}, trying Meteora API`);
     const meteoraResult = await getPositionInfoFromMeteoraAPI(poolAddress);
     if (meteoraResult !== null) return meteoraResult;
 
@@ -403,7 +403,7 @@ async function _openPositionLogic(poolAddress, tokenXAmount, tokenYAmount, price
     const binStepPct = binStep / 10000;
     rangeMax = activeBin.binId - Math.floor((offsetMin / 100) / binStepPct);
     rangeMin = activeBin.binId - Math.floor((offsetMax / 100) / binStepPct);
-    
+
     // Sentinel v61: Logarithmic math for precision bin placement.
     // DLMM uses geometric spacing: Price(bin) = Price(active) * (1.0001 ^ (binStep * offset))
     const binStepInt = parseInt(binStep);
@@ -414,7 +414,7 @@ async function _openPositionLogic(poolAddress, tokenXAmount, tokenYAmount, price
     // If offsetMin is 0, logPriceRatio is log(1) = 0.
     const offsetMinBins = Math.round(Math.abs(logPriceRatio(offsetMin) / logBinFactor)) || 0;
     rangeMax = activeBin.binId - offsetMinBins;
-    
+
     // rangeMin (Bottom/Deep Sea) — OffsetMax (94%)
     const offsetMaxBins = Math.round(Math.abs(logPriceRatio(offsetMax) / logBinFactor));
     rangeMin = activeBin.binId - offsetMaxBins;
@@ -430,13 +430,13 @@ async function _openPositionLogic(poolAddress, tokenXAmount, tokenYAmount, price
     const fixedBinsBelow = Number.isFinite(deployOptions?.fixedBinsBelow)
       ? Math.min(250, Math.max(2, Math.floor(deployOptions.fixedBinsBelow)))
       : null;
-    const binPadding = Number.isFinite(deployOptions?.binPadding) 
-      ? Math.max(-2, Math.floor(deployOptions.binPadding)) 
+    const binPadding = Number.isFinite(deployOptions?.binPadding)
+      ? Math.max(-2, Math.floor(deployOptions.binPadding))
       : 0; // Default to 0, which will be clamped to -1 later for Single Side
 
-    const rawBins  = fixedBinsBelow ?? Math.min(250 - binPadding, Math.max(2, Math.floor((priceRangePercent / 100) / (binStep / 10000))));
+    const rawBins = fixedBinsBelow ?? Math.min(250 - binPadding, Math.max(2, Math.floor((priceRangePercent / 100) / (binStep / 10000))));
     rangeMin = activeBin.binId - rawBins;
-    rangeMax = activeBin.binId + binPadding; 
+    rangeMax = activeBin.binId + binPadding;
   }
 
   // Single-Side Y Safety Clamp:
@@ -444,7 +444,7 @@ async function _openPositionLogic(poolAddress, tokenXAmount, tokenYAmount, price
   // Otherwise, the SDK math calculates a required X proportion and throws an error/crash.
   if (tokenXAmount === 0 || tokenXAmount === '0') {
     rangeMax = Math.min(rangeMax, activeBin.binId - 1);
-    
+
     // --- Meteora Sentinel Safety: MAX_BINS_LIMIT ---
     // Total bins supported by DLMM is ~1,400. Transaction size limits often hit around 600-800 per chunk.
     // We clamp the width to 1,000 bins to prevent deployment failure on high-precision pools.
@@ -456,7 +456,7 @@ async function _openPositionLogic(poolAddress, tokenXAmount, tokenYAmount, price
 
     if (rangeMin > rangeMax) {
       // Fallback fallback if calculation pushed min over max
-      rangeMin = rangeMax - 2; 
+      rangeMin = rangeMax - 2;
     }
   }
 
@@ -469,7 +469,7 @@ async function _openPositionLogic(poolAddress, tokenXAmount, tokenYAmount, price
   // Meteora PositionV2 supports up to 1,400 bins. 
   // We chunk for Transaction Size Safety (Solana ~1232 byte limit).
   // Aegis: Increased safety margin to 50 bins per chunk.
-  const binChunks = totalBins <= 50 
+  const binChunks = totalBins <= 50
     ? [{ lowerBinId: rangeMin, upperBinId: rangeMax }]
     : chunkBinRange(rangeMin, rangeMax);
 
@@ -478,7 +478,7 @@ async function _openPositionLogic(poolAddress, tokenXAmount, tokenYAmount, price
   const seedString = `${wallet.publicKey.toString()}_${poolAddress}_${strategyName || 'default'}`;
   const seed = crypto.createHash('sha256').update(seedString).digest();
   const posKp = Keypair.fromSeed(seed);
-  
+
   // Aegis Recovery: Check if the position account already exists (partial previous deploy)
   let accountExists = false;
   try {
@@ -509,47 +509,78 @@ async function _openPositionLogic(poolAddress, tokenXAmount, tokenYAmount, price
 
   const allTxHashes = [];
   let totalSucceededSol = 0;
-  
+
   try {
     for (let ci = 0; ci < binChunks.length; ci++) {
-    const chunk = binChunks[ci];
-    const chunkBinsCount = chunk.upperBinId - chunk.lowerBinId + 1;
+      const chunk = binChunks[ci];
+      const chunkBinsCount = chunk.upperBinId - chunk.lowerBinId + 1;
 
-    // Obelisk Precision: Remainder Injection for the final chunk
-    let chunkTotalX, chunkTotalY;
-    if (ci === binChunks.length - 1) {
-      // Last chunk gets the remainder to ensure sum exactly matches total
-      let usedX = new BN(0), usedY = new BN(0);
-      // We'd need to track usedX/usedY from previous loops or just calculate here
-      const prevBinsCount = ci * 50; // chunkBinRange uses 50 bins standard
-      const prevX = totalXBN.mul(new BN(prevBinsCount)).div(new BN(totalBins));
-      const prevY = totalYBN.mul(new BN(prevBinsCount)).div(new BN(totalBins));
-      chunkTotalX = totalXBN.sub(prevX);
-      chunkTotalY = totalYBN.sub(prevY);
-    } else {
-      chunkTotalX = totalXBN.mul(new BN(chunkBinsCount)).div(new BN(totalBins));
-      chunkTotalY = totalYBN.mul(new BN(chunkBinsCount)).div(new BN(totalBins));
-    }
+      // Obelisk Precision: Remainder Injection for the final chunk
+      let chunkTotalX, chunkTotalY;
+      if (ci === binChunks.length - 1) {
+        // Last chunk gets the remainder to ensure sum exactly matches total
+        let usedX = new BN(0), usedY = new BN(0);
+        // We'd need to track usedX/usedY from previous loops or just calculate here
+        const prevBinsCount = ci * 50; // chunkBinRange uses 50 bins standard
+        const prevX = totalXBN.mul(new BN(prevBinsCount)).div(new BN(totalBins));
+        const prevY = totalYBN.mul(new BN(prevBinsCount)).div(new BN(totalBins));
+        chunkTotalX = totalXBN.sub(prevX);
+        chunkTotalY = totalYBN.sub(prevY);
+      } else {
+        chunkTotalX = totalXBN.mul(new BN(chunkBinsCount)).div(new BN(totalBins));
+        chunkTotalY = totalYBN.mul(new BN(chunkBinsCount)).div(new BN(totalBins));
+      }
 
-    let txs;
-    const isDipFishing = (tokenXAmount === 0 || tokenXAmount === '0');
+      let txs;
+      const isDipFishing = (tokenXAmount === 0 || tokenXAmount === '0');
 
-    if (ci === 0 && !accountExists) {
-      // ── case A: New deployment, First chunk ───────────────
-      // If Dip Fishing (SOL only below price), use initializePosition + addLiquidityByWeight
-      // to avoid the SBF panic in the SDK's internal strategy mapper.
-      if (isDipFishing) {
+      if (ci === 0 && !accountExists) {
+        // ── case A: New deployment, First chunk ───────────────
+        // If Dip Fishing (SOL only below price), use initializePosition + addLiquidityByWeight
+        // to avoid the SBF panic in the SDK's internal strategy mapper.
+        if (isDipFishing) {
+          const binIds = [];
+          for (let b = chunk.lowerBinId; b <= chunk.upperBinId; b++) binIds.push(b);
+
+          // Obelisk: Precision weight distribution (Sum exactly 10,000)
+          const weights = new Array(binIds.length).fill(Math.floor(10000 / binIds.length));
+          const currentSum = weights.reduce((a, b) => a + b, 0);
+          if (currentSum < 10000) {
+            weights[weights.length - 1] += (10000 - currentSum);
+          }
+
+          txs = await dlmmPool.initializePositionAndAddLiquidityByWeight({
+            positionPubKey: posKp.publicKey,
+            user: wallet.publicKey,
+            totalXAmount: chunkTotalX,
+            totalYAmount: chunkTotalY,
+            binIds,
+            weights,
+          });
+        } else {
+          // Normal Deployment (e.g. Wave Enjoyer with X+Y)
+          txs = await dlmmPool.initializePositionAndAddLiquidityByStrategy({
+            positionPubKey: posKp.publicKey,
+            user: wallet.publicKey,
+            totalXAmount: chunkTotalX,
+            totalYAmount: chunkTotalY,
+            strategy: { maxBinId: chunk.upperBinId, minBinId: chunk.lowerBinId, strategyType: 0 },
+          });
+        }
+      } else {
+        // ── case B: Existing account or subsequent chunks ──────────
+        // Use addLiquidityByWeight to bypass strategy math jitter
         const binIds = [];
         for (let b = chunk.lowerBinId; b <= chunk.upperBinId; b++) binIds.push(b);
-        
+
         // Obelisk: Precision weight distribution (Sum exactly 10,000)
         const weights = new Array(binIds.length).fill(Math.floor(10000 / binIds.length));
         const currentSum = weights.reduce((a, b) => a + b, 0);
         if (currentSum < 10000) {
           weights[weights.length - 1] += (10000 - currentSum);
         }
-        
-        txs = await dlmmPool.initializePositionAndAddLiquidityByWeight({
+
+        txs = await dlmmPool.addLiquidityByWeight({
           positionPubKey: posKp.publicKey,
           user: wallet.publicKey,
           totalXAmount: chunkTotalX,
@@ -557,94 +588,64 @@ async function _openPositionLogic(poolAddress, tokenXAmount, tokenYAmount, price
           binIds,
           weights,
         });
-      } else {
-        // Normal Deployment (e.g. Wave Enjoyer with X+Y)
-        txs = await dlmmPool.initializePositionAndAddLiquidityByStrategy({
-          positionPubKey: posKp.publicKey,
-          user: wallet.publicKey,
-          totalXAmount: chunkTotalX,
-          totalYAmount: chunkTotalY,
-          strategy: { maxBinId: chunk.upperBinId, minBinId: chunk.lowerBinId, strategyType: 0 },
-        });
-      }
-    } else {
-      // ── case B: Existing account or subsequent chunks ──────────
-      // Use addLiquidityByWeight to bypass strategy math jitter
-      const binIds = [];
-      for (let b = chunk.lowerBinId; b <= chunk.upperBinId; b++) binIds.push(b);
-      
-      // Obelisk: Precision weight distribution (Sum exactly 10,000)
-      const weights = new Array(binIds.length).fill(Math.floor(10000 / binIds.length));
-      const currentSum = weights.reduce((a, b) => a + b, 0);
-      if (currentSum < 10000) {
-        weights[weights.length - 1] += (10000 - currentSum);
       }
 
-      txs = await dlmmPool.addLiquidityByWeight({
-        positionPubKey: posKp.publicKey,
-        user: wallet.publicKey,
-        totalXAmount: chunkTotalX,
-        totalYAmount: chunkTotalY,
-        binIds,
-        weights,
-      });
-    }
+      const txList = Array.isArray(txs) ? txs : [txs];
+      for (const tx of txList) {
+        // Ensure we always have a fresh blockhash for every chunk
+        const { blockhash } = await connection.getLatestBlockhash('confirmed');
+        tx.recentBlockhash = blockhash;
+        tx.feePayer = wallet.publicKey;
 
-    const txList = Array.isArray(txs) ? txs : [txs];
-    for (const tx of txList) {
-      // Ensure we always have a fresh blockhash for every chunk
-      const { blockhash } = await connection.getLatestBlockhash('confirmed');
-      tx.recentBlockhash = blockhash;
-      tx.feePayer = wallet.publicKey;
+        // Priority fee — slightly higher for large bin deployments
+        let microLamports = 250_000;
+        // Aegis: Increased compute budget for addLiquidityByWeight (more instructions)
+        let computeUnits = totalBins > 50 ? 1_200_000 : 600_000;
+        try {
+          const recommended = await getRecommendedPriorityFee([poolAddress, xMint, yMint]);
+          if (recommended > 0) microLamports = recommended;
+        } catch { /* fallback */ }
 
-      // Priority fee — slightly higher for large bin deployments
-      let microLamports = 250_000;
-      // Aegis: Increased compute budget for addLiquidityByWeight (more instructions)
-      let computeUnits = totalBins > 50 ? 1_200_000 : 600_000;
-      try {
-        const recommended = await getRecommendedPriorityFee([poolAddress, xMint, yMint]);
-        if (recommended > 0) microLamports = recommended;
-      } catch { /* fallback */ }
+        injectPriorityFee(tx, { units: computeUnits, microLamports });
 
-      injectPriorityFee(tx, { units: computeUnits, microLamports });
+        // Sign with wallet and the single position keypair
+        tx.sign(wallet, posKp);
 
-      // Sign with wallet and the single position keypair
-      tx.sign(wallet, posKp);
-
-      try {
-        // Watchtower: Pre-flight simulation for Compute Units
-        const sim = await connection.simulateTransaction(tx, { replaceRecentBlockhash: true, commitment: 'processed' });
-        if (sim.value.err) {
-          console.warn(`[meteora] Simulation Warning: ${stringify(sim.value.err)}`);
-          if (stringify(sim.value.err).includes('InstructionError')) {
-             throw new Error(`Simulation Failed: ${stringify(sim.value.err)}`);
+        try {
+          // Watchtower: Pre-flight simulation for Compute Units
+          const sim = await connection.simulateTransaction(tx, { replaceRecentBlockhash: true, commitment: 'processed' });
+          if (sim.value.err) {
+            console.warn(`[meteora] Simulation Warning: ${stringify(sim.value.err)}`);
+            if (stringify(sim.value.err).includes('InstructionError')) {
+              throw new Error(`Simulation Failed: ${stringify(sim.value.err)}`);
+            }
           }
-        }
-        
-        const txHash = await connection.sendRawTransaction(tx.serialize(), {
-          skipPreflight: true, // we already simulated
-          preflightCommitment: 'confirmed',
-          maxRetries: 1, // manual watchtower retry logic instead of RPC default
-        });
 
-        await pollTxConfirm(connection, txHash);
-        allTxHashes.push(txHash);
-        
-        // Accurate Lamports conversion for DB
-        const chunkYSol = parseFloat(fromLamports(chunkTotalY.toString(), yDecimals));
-        totalSucceededSol += chunkYSol;
+          const txHash = await connection.sendRawTransaction(tx.serialize(), {
+            skipPreflight: true, // we already simulated
+            preflightCommitment: 'confirmed',
+            maxRetries: 1, // manual watchtower retry logic instead of RPC default
+          });
 
-        // Aegis: Update DB setiap kali chunk berhasil (Incremental Save)
-        // Jika chunk berikutnya gagal, kita tetep punya rekam jejak jumlah SOL yang masuk.
-        const solPriceUsd = await getSolPriceUsd();
-        const currentUsd = parseFloat((totalSucceededSol * solPriceUsd).toFixed(2));
-        updatePositionRuntimeState(posKp.publicKey.toString(), { 
-          totalSucceededSol, 
-          status: totalSucceededSol >= tokenYAmount ? 'fully_deployed' : 'partially_deployed' 
-        });
-        
-        // Update database utama
-        await runInQueue(() => db.prepare(`
+          await pollTxConfirm(connection, txHash);
+          allTxHashes.push(txHash);
+
+          // Accurate Lamports conversion for DB
+          const chunkYSol = parseFloat(fromLamports(chunkTotalY.toString(), yDecimals));
+          totalSucceededSol += chunkYSol;
+
+          // Aegis: Update DB setiap kali chunk berhasil (Incremental Save)
+          // Jika chunk berikutnya gagal, kita tetep punya rekam jejak jumlah SOL yang masuk.
+          const solPriceUsd = await getSolPriceUsd();
+          const currentUsd = parseFloat((totalSucceededSol * solPriceUsd).toFixed(2));
+          updatePositionRuntimeState(posKp.publicKey.toString(), {
+            totalSucceededSol,
+            status: totalSucceededSol >= tokenYAmount ? 'fully_deployed' : 'partially_deployed'
+          });
+
+          // Update database utama
+          const _db = db || globalThis.db;
+          await runInQueue(() => _db.prepare(`
           UPDATE positions SET 
             token_y_amount = ?, 
             deployed_sol = ?, 
@@ -653,21 +654,22 @@ async function _openPositionLogic(poolAddress, tokenXAmount, tokenYAmount, price
           WHERE position_address = ?
         `).run(totalSucceededSol, totalSucceededSol, currentUsd, posKp.publicKey.toString()));
 
-      } catch (e) {
-        // Aegis: Log program logs on simulation failure
-        if (e.logs) {
-          console.error(`[meteora] TX Failed. Program Logs:\n${e.logs.join('\n')}`);
+        } catch (e) {
+          // Aegis: Log program logs on simulation failure
+          if (e.logs) {
+            console.error(`[meteora] TX Failed. Program Logs:\n${e.logs.join('\n')}`);
+          }
+          throw e;
         }
-        throw e;
       }
-    }
     }
   } catch (err) {
     if (totalSucceededSol > 0) {
       console.warn(`[meteora] Deployment parsial berhasil (${totalSucceededSol} SOL). Melanjutkan dengan status terdaftar.`);
     } else {
       // Hapus jika gagal total tanpa ada dana keluar sama sekali
-      db.prepare(`DELETE FROM positions WHERE position_address = ? AND deployed_sol = 0`).run(posKp.publicKey.toString());
+      const _db = db || globalThis.db;
+      _db.prepare(`DELETE FROM positions WHERE position_address = ? AND deployed_sol = 0`).run(posKp.publicKey.toString());
       throw err;
     }
   }
@@ -675,24 +677,24 @@ async function _openPositionLogic(poolAddress, tokenXAmount, tokenYAmount, price
   const priceUnit = isSOLPair ? `${xMeta.symbol}/SOL` : `${yMeta.symbol}/${xMeta.symbol}`;
 
   return {
-    success:            true,
-    txHash:             allTxHashes[0],
-    txHashes:           allTxHashes,
-    positionAddress:    posKp.publicKey.toString(),
-    positionAddresses:  [posKp.publicKey.toString()],
-    positionCount:      1,
-    entryPrice:         parseFloat(toDisplayPrice(rawActivePrice, isSOLPair).toFixed(10)),
-    lowerPrice:         parseFloat(toDisplayPrice(binPrice(rawActivePrice, binStep, rangeMin - activeBin.binId), isSOLPair).toFixed(10)),
-    upperPrice:         parseFloat(toDisplayPrice(binPrice(rawActivePrice, binStep, rangeMax - activeBin.binId), isSOLPair).toFixed(10)),
+    success: true,
+    txHash: allTxHashes[0],
+    txHashes: allTxHashes,
+    positionAddress: posKp.publicKey.toString(),
+    positionAddresses: [posKp.publicKey.toString()],
+    positionCount: 1,
+    entryPrice: parseFloat(toDisplayPrice(rawActivePrice, isSOLPair).toFixed(10)),
+    lowerPrice: parseFloat(toDisplayPrice(binPrice(rawActivePrice, binStep, rangeMin - activeBin.binId), isSOLPair).toFixed(10)),
+    upperPrice: parseFloat(toDisplayPrice(binPrice(rawActivePrice, binStep, rangeMax - activeBin.binId), isSOLPair).toFixed(10)),
     priceUnit,
-    priceRangePct:      priceRangePercent,
-    binRange:           { min: rangeMin, max: rangeMax, active: activeBin.binId },
+    priceRangePct: priceRangePercent,
+    binRange: { min: rangeMin, max: rangeMax, active: activeBin.binId },
     binStep,
-    feeRatePct:         parseFloat((binStep / 100).toFixed(4)),
-    tokenXAmount:       0,
-    tokenYAmount:       totalSucceededSol,
-    tokenXSymbol:       xMeta.symbol,
-    tokenYSymbol:       yMeta.symbol,
+    feeRatePct: parseFloat((binStep / 100).toFixed(4)),
+    tokenXAmount: 0,
+    tokenYAmount: totalSucceededSol,
+    tokenXSymbol: xMeta.symbol,
+    tokenYSymbol: yMeta.symbol,
   };
 }
 
@@ -712,14 +714,14 @@ export async function closePositionDLMM(poolAddress, positionAddress, pnlData = 
     return { dryRun: true, poolAddress, positionAddress, pnlData };
   }
   const connection = getConnection();
-  const wallet     = getWallet();
+  const wallet = getWallet();
   const poolPubkey = new PublicKey(poolAddress);
   const MAX_ATTEMPTS = 3;
 
   for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
     try {
       // ── 1. Fresh pool + fresh state per attempt ──────────────
-      const dlmmPool      = await DLMM.create(connection, poolPubkey);
+      const dlmmPool = await DLMM.create(connection, poolPubkey);
       const positionPubkey = new PublicKey(positionAddress);
 
       const { userPositions } = await dlmmPool.getPositionsByUserAndLbPair(wallet.publicKey);
@@ -749,9 +751,9 @@ export async function closePositionDLMM(poolAddress, positionAddress, pnlData = 
 
         // Account benar-benar tidak ada → posisi sudah tertutup
         await closePositionWithPnl(positionAddress, {
-          pnlUsd:      pnlData.pnlUsd   || 0,
-          pnlPct:      pnlData.pnlPct   || 0,
-          feesUsd:     pnlData.feeUsd   || 0,
+          pnlUsd: pnlData.pnlUsd || 0,
+          pnlPct: pnlData.pnlPct || 0,
+          feesUsd: pnlData.feeUsd || 0,
           closeReason: pnlData.closeReason || 'closed',
           lifecycleState: pnlData.lifecycleState || 'closed_pending_swap',
         });
@@ -775,7 +777,7 @@ export async function closePositionDLMM(poolAddress, positionAddress, pnlData = 
         try {
           // Dynamic Exit Fee: Royal priority during dumps
           const rec = await getRecommendedPriorityFee([poolAddress]);
-          if (rec > 0) microLamports = Math.floor(rec * 1.5); 
+          if (rec > 0) microLamports = Math.floor(rec * 1.5);
         } catch { /* fallback */ }
 
         injectPriorityFee(tx, { units: 400_000, microLamports });
@@ -783,7 +785,7 @@ export async function closePositionDLMM(poolAddress, positionAddress, pnlData = 
 
         const hash = await connection.sendRawTransaction(tx.serialize(), {
           skipPreflight: true,
-          maxRetries:    3,
+          maxRetries: 3,
         });
         await pollTxConfirm(connection, hash, 60000);
         hashes.push(hash);
@@ -792,7 +794,7 @@ export async function closePositionDLMM(poolAddress, positionAddress, pnlData = 
       // SDK removeLiquidity minta fromBinId/toBinId/bps (BN) — BUKAN binIds/liquiditiesBpsToRemove.
       // bps = 10000 = 100% removal. Range dari positionData.lowerBinId/upperBinId.
       const fromBinId = pd.lowerBinId;
-      const toBinId   = pd.upperBinId;
+      const toBinId = pd.upperBinId;
 
       if (binIdsToRemove.length > 0) {
         // ── 4a. Position dengan bin aktif ────────────────────────
@@ -800,22 +802,22 @@ export async function closePositionDLMM(poolAddress, positionAddress, pnlData = 
         // shouldClaimAndClose:false hanya tarik likuiditas, account TETAP ADA → Meteora UI open!
         try {
           removeLiqTx = await dlmmPool.removeLiquidity({
-            position:            positionPubkey,
-            user:                wallet.publicKey,
+            position: positionPubkey,
+            user: wallet.publicKey,
             fromBinId,
             toBinId,
-            bps:                 new BN(10000), // 100% removal
+            bps: new BN(10000), // 100% removal
             shouldClaimAndClose: true,
           });
         } catch {
           // Fallback: tarik likuiditas saja — account akan tetap ada.
           // Step 6 akan panggil closePosition() dengan LbPosition object yang benar.
           removeLiqTx = await dlmmPool.removeLiquidity({
-            position:            positionPubkey,
-            user:                wallet.publicKey,
+            position: positionPubkey,
+            user: wallet.publicKey,
             fromBinId,
             toBinId,
-            bps:                 new BN(10000),
+            bps: new BN(10000),
             shouldClaimAndClose: false,
           });
         }
@@ -829,7 +831,7 @@ export async function closePositionDLMM(poolAddress, positionAddress, pnlData = 
         try {
           if (typeof dlmmPool.closePositionIfEmpty === 'function') {
             removeLiqTx = await dlmmPool.closePositionIfEmpty({
-              owner:    wallet.publicKey,
+              owner: wallet.publicKey,
               position: position, // LbPosition object dari step 1
             });
             emptyCloseOk = true;
@@ -841,7 +843,7 @@ export async function closePositionDLMM(poolAddress, positionAddress, pnlData = 
           try {
             if (typeof dlmmPool.closePosition === 'function') {
               removeLiqTx = await dlmmPool.closePosition({
-                owner:    wallet.publicKey,
+                owner: wallet.publicKey,
                 position: position, // LbPosition object dari step 1
               });
               emptyCloseOk = true;
@@ -853,11 +855,11 @@ export async function closePositionDLMM(poolAddress, positionAddress, pnlData = 
         if (!emptyCloseOk) {
           try {
             removeLiqTx = await dlmmPool.removeLiquidity({
-              position:            positionPubkey,
-              user:                wallet.publicKey,
+              position: positionPubkey,
+              user: wallet.publicKey,
               fromBinId,
               toBinId,
-              bps:                 new BN(10000),
+              bps: new BN(10000),
               shouldClaimAndClose: true,
             });
             emptyCloseOk = true;
@@ -909,9 +911,9 @@ export async function closePositionDLMM(poolAddress, positionAddress, pnlData = 
         } else {
           console.log('[closePositionDLMM] Account masih ada setelah removeLiquidity — jalankan cleanup cycle...');
           try {
-            const dlmmPool2  = await DLMM.create(connection, poolPubkey);
+            const dlmmPool2 = await DLMM.create(connection, poolPubkey);
             const { userPositions: vPos } = await dlmmPool2.getPositionsByUserAndLbPair(wallet.publicKey);
-            const livePos    = vPos?.find(p => p.publicKey.toString() === positionAddress);
+            const livePos = vPos?.find(p => p.publicKey.toString() === positionAddress);
 
             if (livePos) {
               const pd2 = livePos.positionData;
@@ -920,11 +922,11 @@ export async function closePositionDLMM(poolAddress, positionAddress, pnlData = 
               // 6c. Re-run removeLiquidity(shouldClaimAndClose:true) — klaim sisa fee/reward + close
               try {
                 const cleanupTxs = await dlmmPool2.removeLiquidity({
-                  position:            positionPubkey,
-                  user:                wallet.publicKey,
-                  fromBinId:           pd2.lowerBinId,
-                  toBinId:             pd2.upperBinId,
-                  bps:                 new BN(10000),
+                  position: positionPubkey,
+                  user: wallet.publicKey,
+                  fromBinId: pd2.lowerBinId,
+                  toBinId: pd2.upperBinId,
+                  bps: new BN(10000),
                   shouldClaimAndClose: true,
                 });
                 const list = Array.isArray(cleanupTxs) ? cleanupTxs : [cleanupTxs];
@@ -941,7 +943,7 @@ export async function closePositionDLMM(poolAddress, positionAddress, pnlData = 
               if (!cleanupDone && typeof dlmmPool2.closePositionIfEmpty === 'function') {
                 try {
                   const cipeTx = await dlmmPool2.closePositionIfEmpty({
-                    owner:    wallet.publicKey,
+                    owner: wallet.publicKey,
                     position: livePos,
                   });
                   const list = Array.isArray(cipeTx) ? cipeTx : [cipeTx];
@@ -957,7 +959,7 @@ export async function closePositionDLMM(poolAddress, positionAddress, pnlData = 
               if (!cleanupDone) {
                 try {
                   const closeTx = await dlmmPool2.closePosition({
-                    owner:    wallet.publicKey,
+                    owner: wallet.publicKey,
                     position: livePos,
                   });
                   const list = Array.isArray(closeTx) ? closeTx : [closeTx];
@@ -1008,11 +1010,11 @@ export async function closePositionDLMM(poolAddress, positionAddress, pnlData = 
 
       // ── 7. Verified closed → update DB ──────────────────────
       await closePositionWithPnl(positionAddress, {
-        pnlUsd:      pnlData.pnlUsd   || 0,
-        pnlPct:      pnlData.pnlPct   || 0,
-        feesUsd:     pnlData.feeUsd   || 0,
-        pnlSol:      pnlData.pnlSol   || 0,
-        feesSol:     pnlData.feeSol   || 0,
+        pnlUsd: pnlData.pnlUsd || 0,
+        pnlPct: pnlData.pnlPct || 0,
+        feesUsd: pnlData.feeUsd || 0,
+        pnlSol: pnlData.pnlSol || 0,
+        feesSol: pnlData.feeSol || 0,
         closeReason: pnlData.closeReason || 'closed',
         lifecycleState: pnlData.lifecycleState || 'closed_pending_swap',
       });
@@ -1028,7 +1030,7 @@ export async function closePositionDLMM(poolAddress, positionAddress, pnlData = 
             const swapResult = await swapToSol(xMint, Math.floor(xBalance * Math.pow(10, xMeta.decimals)));
             if (swapResult) {
               const connection = getConnection();
-              const wallet     = getWallet();
+              const wallet = getWallet();
               const { VersionedTransaction } = await import('@solana/web3.js');
               const swapTx = VersionedTransaction.deserialize(Buffer.from(swapResult.swapTransaction, 'base64'));
               swapTx.sign([wallet]);
@@ -1061,9 +1063,9 @@ export async function claimFees(poolAddress, positionAddress) {
     return { dryRun: true, poolAddress, positionAddress };
   }
   const connection = getConnection();
-  const wallet     = getWallet();
+  const wallet = getWallet();
   const poolPubkey = new PublicKey(poolAddress);
-  const dlmmPool   = await DLMM.create(connection, poolPubkey);
+  const dlmmPool = await DLMM.create(connection, poolPubkey);
 
   const { userPositions } = await dlmmPool.getPositionsByUserAndLbPair(wallet.publicKey);
   const position = userPositions?.find(p => p.publicKey.toString() === positionAddress);
@@ -1128,26 +1130,26 @@ export async function getTopPools(limit = 5) {
 
   return pools.slice(0, limit).map(pool => {
     const fees24h = pool.fees?.['24h'] || 0;
-    const apr24h  = (pool.fee_tvl_ratio?.['24h'] || 0) * 100;
-    const tvl     = pool.tvl || 0;
-    const vol24h  = pool.volume?.['24h'] || 0;
+    const apr24h = (pool.fee_tvl_ratio?.['24h'] || 0) * 100;
+    const tvl = pool.tvl || 0;
+    const vol24h = pool.volume?.['24h'] || 0;
 
     return {
-      address:      pool.address,
-      name:         pool.name || 'Unknown',
-      apr:          apr24h.toFixed(2) + '%',
-      feeApr:       apr24h.toFixed(2) + '%',
+      address: pool.address,
+      name: pool.name || 'Unknown',
+      apr: apr24h.toFixed(2) + '%',
+      feeApr: apr24h.toFixed(2) + '%',
       tvl,
-      tvlStr:       tvl >= 1e6 ? '$' + (tvl / 1e6).toFixed(2) + 'M' : '$' + (tvl / 1e3).toFixed(1) + 'K',
-      fees24h:      fees24h >= 1e3 ? '$' + (fees24h / 1e3).toFixed(2) + 'K' : '$' + fees24h.toFixed(2),
-      volume24h:    vol24h >= 1e6 ? '$' + (vol24h / 1e6).toFixed(2) + 'M' : '$' + (vol24h / 1e3).toFixed(1) + 'K',
-      binStep:      pool.pool_config?.bin_step,
-      tokenX:       pool.token_x?.address,
-      tokenY:       pool.token_y?.address,
+      tvlStr: tvl >= 1e6 ? '$' + (tvl / 1e6).toFixed(2) + 'M' : '$' + (tvl / 1e3).toFixed(1) + 'K',
+      fees24h: fees24h >= 1e3 ? '$' + (fees24h / 1e3).toFixed(2) + 'K' : '$' + fees24h.toFixed(2),
+      volume24h: vol24h >= 1e6 ? '$' + (vol24h / 1e6).toFixed(2) + 'M' : '$' + (vol24h / 1e3).toFixed(1) + 'K',
+      binStep: pool.pool_config?.bin_step,
+      tokenX: pool.token_x?.address,
+      tokenY: pool.token_y?.address,
       liquidityRaw: tvl,
-      fees24hRaw:   fees24h,
+      fees24hRaw: fees24h,
       volume24hRaw: vol24h,
-      feeApr:       parseFloat(apr24h.toFixed(2)),
+      feeApr: parseFloat(apr24h.toFixed(2)),
     };
   });
 }

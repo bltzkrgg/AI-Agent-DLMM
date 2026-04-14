@@ -5,7 +5,7 @@ import { dirname, join } from 'path';
 import fs from 'fs';
 
 const __filename = fileURLToPath(import.meta.url);
-const __dirname  = dirname(__filename);
+const __dirname = dirname(__filename);
 
 // Path relatif ke strategy-library.json (Sekarang absolute via import.meta.url)
 const STRATEGIES_JSON_PATH = join(__dirname, '../../src/market/strategy-library.json');
@@ -40,7 +40,7 @@ const BASELINE_STRATEGIES = {
     },
     exit: {
       mode: 'supertrend_flip',
-      emergencyStopLossPct: 95, 
+      emergencyStopLossPct: 95,
       takeProfitPct: 20,
     },
   }
@@ -52,17 +52,19 @@ const BASELINE_STRATEGIES = {
 
 export function addStrategy(data) {
   const paramsStr = typeof data.parameters === 'object' ? JSON.stringify(data.parameters) : data.parameters;
-  const result = db.prepare(`
+  const _db = db || globalThis.db;
+  const result = _db.prepare(`
     INSERT INTO strategies (name, description, strategy_type, parameters, logic, created_by)
     VALUES (?, ?, ?, ?, ?, ?)
   `).run(data.name, data.description, data.strategyType, paramsStr, data.logic || null, data.createdBy || 'admin');
-  
+
   return { id: result.lastInsertRowid, ...data };
 }
 
 export function updateStrategy(name, data) {
   const paramsStr = typeof data.parameters === 'object' ? JSON.stringify(data.parameters) : data.parameters;
-  return db.prepare(`
+  const _db = db || globalThis.db;
+  return _db.prepare(`
     UPDATE strategies 
     SET description = ?, strategy_type = ?, parameters = ?, logic = ?, updated_at = CURRENT_TIMESTAMP
     WHERE name = ?
@@ -72,8 +74,9 @@ export function updateStrategy(name, data) {
 export function deleteStrategy(name) {
   // Prevent deleting baseline strategies
   if (BASELINE_STRATEGIES[name]) return false;
-  
-  const result = db.prepare(`DELETE FROM strategies WHERE name = ?`).run(name);
+
+  const _db = db || globalThis.db;
+  const result = _db.prepare(`DELETE FROM strategies WHERE name = ?`).run(name);
   return result.changes > 0;
 }
 
@@ -132,8 +135,8 @@ export function getStrategy(name) {
   // 1. Load from Baseline (Factory Presets)
   let base = BASELINE_STRATEGIES[name];
   if (!base) {
-    const baselineKey = Object.keys(BASELINE_STRATEGIES).find(k => 
-      slugify(k) === clean || 
+    const baselineKey = Object.keys(BASELINE_STRATEGIES).find(k =>
+      slugify(k) === clean ||
       k.toLowerCase() === name.toLowerCase().replace(/_/g, ' ')
     );
     if (baselineKey) base = BASELINE_STRATEGIES[baselineKey];
@@ -144,8 +147,8 @@ export function getStrategy(name) {
     if (fs.existsSync(STRATEGIES_JSON_PATH)) {
       const data = fs.readFileSync(STRATEGIES_JSON_PATH, 'utf8');
       const library = JSON.parse(data);
-      const jsonMatch = library.strategies?.find(s => 
-        slugify(s.name) === clean || 
+      const jsonMatch = library.strategies?.find(s =>
+        slugify(s.name) === clean ||
         s.id === clean
       );
       if (jsonMatch) {
@@ -160,7 +163,8 @@ export function getStrategy(name) {
   // 3. Load from Database (Persistent Overrides)
   if (!base || base.id) {
     const dbClean = base?.id || clean;
-    const row = db.prepare(`SELECT * FROM strategies WHERE LOWER(name) = ? OR id = ? AND is_active = 1`).get(dbClean.replace(/_/g, ' '), dbClean);
+    const _db = db || globalThis.db;
+    const row = _db.prepare(`SELECT * FROM strategies WHERE LOWER(name) = ? OR id = ? AND is_active = 1`).get(dbClean.replace(/_/g, ' '), dbClean);
     if (row) {
       const dbParams = JSON.parse(row.parameters || '{}');
       const dbBase = {
@@ -193,7 +197,8 @@ export function getAllStrategies() {
   const baselineList = Object.keys(BASELINE_STRATEGIES).map(name => getStrategy(name));
 
   // 2. Database
-  const dbRows = db.prepare(`SELECT name FROM strategies WHERE is_active = 1`).all();
+  const _db = db || globalThis.db;
+  const dbRows = _db.prepare(`SELECT name FROM strategies WHERE is_active = 1`).all();
   const dbList = dbRows
     .filter(row => !BASELINE_STRATEGIES[row.name])
     .map(row => getStrategy(row.name));
@@ -206,7 +211,7 @@ export function getAllStrategies() {
  */
 export function parseStrategyParameters(strategy) {
   if (!strategy) return { priceRangePercent: 10, strategyType: 0, tokenXWeight: 0, tokenYWeight: 100 };
-  
+
   return {
     ...(strategy.parameters || {}),
     priceRangePercent: strategy.deploy?.priceRangePct || 10,
