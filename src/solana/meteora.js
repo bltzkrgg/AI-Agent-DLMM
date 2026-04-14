@@ -699,44 +699,20 @@ async function _openPositionLogic(poolAddress, tokenXAmount, tokenYAmount, price
         console.log(`[meteora] PosKp pubkey: ${posKp.publicKey?.toString?.()}`);
         console.log(`[meteora] PosKp has secretKey: ${!!posKp.secretKey}`);
 
-        // For legacy transactions, we need both keypairs to be actual Keypair objects
-        if (isVersioned) {
-          tx.signatures = [];
-          try {
-            tx.sign([posKp, wallet]);
-            console.log(`[meteora] Signed VersionedTransaction - After: Signatures: ${tx.signatures?.length || 0}`);
-          } catch (sigErr) {
-            console.error(`[meteora] ERROR signing VersionedTransaction:`, sigErr.message);
-            throw sigErr;
+        // Sign transaction with fee payer (wallet) ONLY
+        // Note: posKp is marked as signer in instructions, doesn't sign the transaction itself
+        try {
+          if (isVersioned) {
+            tx.signatures = [];
+            tx.sign([wallet]);
+            console.log(`[meteora] Signed VersionedTransaction with wallet only - Signatures: ${tx.signatures?.length || 0}`);
+          } else {
+            tx.sign(wallet);
+            console.log(`[meteora] Signed Legacy Transaction with wallet only - Signatures: ${tx.signatures?.length || 0}`);
           }
-        } else {
-          // For legacy, do NOT clear signatures - let sign() handle it
-          // Order matters: fee payer (wallet) first, then other signers (posKp)
-          try {
-            console.log(`[meteora] About to sign legacy tx with wallet and posKp...`);
-            console.log(`[meteora] BEFORE signing - signatures array: ${JSON.stringify(tx.signatures)}`);
-            console.log(`[meteora] BEFORE signing - signatures[0]: ${JSON.stringify(tx.signatures[0])}`);
-
-            tx.sign(posKp, wallet);  // Try posKp first, then wallet (position keypair might be the primary signer)
-
-            console.log(`[meteora] AFTER signing - signatures array length: ${tx.signatures?.length || 0}`);
-            console.log(`[meteora] AFTER signing - full signatures: ${JSON.stringify(tx.signatures?.map(s => ({
-              type: typeof s,
-              isBuffer: Buffer.isBuffer(s),
-              keys: Object.keys(s || {}),
-              content: JSON.stringify(s)
-            })))}`);
-
-            if (tx.signatures[0]) {
-              console.log(`[meteora] Signature[0] type: ${typeof tx.signatures[0]}, isBuffer: ${Buffer.isBuffer(tx.signatures[0])}, length: ${tx.signatures[0]?.length}`);
-            }
-            if (tx.signatures[1]) {
-              console.log(`[meteora] Signature[1] type: ${typeof tx.signatures[1]}, isBuffer: ${Buffer.isBuffer(tx.signatures[1])}, length: ${tx.signatures[1]?.length}`);
-            }
-          } catch (sigErr) {
-            console.error(`[meteora] ERROR signing Legacy Transaction:`, sigErr.message);
-            throw sigErr;
-          }
+        } catch (sigErr) {
+          console.error(`[meteora] ERROR signing transaction:`, sigErr.message);
+          throw sigErr;
         }
 
         // Validate transaction before simulation
