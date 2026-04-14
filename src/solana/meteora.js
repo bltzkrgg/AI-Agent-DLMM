@@ -772,24 +772,29 @@ async function _openPositionLogic(poolAddress, tokenXAmount, tokenYAmount, price
         }
 
         try {
-          // Watchtower: Pre-flight simulation for Compute Units
+          // Watchtower: Pre-flight simulation for Compute Units (VersionedTransaction only)
+          // Legacy transactions: Skip simulation, use sendRawTransaction preflight instead
+          // (simulateTransaction with legacy + signature objects causes "Invalid arguments" error)
           let sim;
           if (isVersioned) {
-            sim = await connection.simulateTransaction(tx, { commitment: 'processed' });
-            console.log(`[meteora] VersionedTransaction simulation result: ${sim.value.err ? 'error' : 'success'}`);
-          } else {
-            sim = await connection.simulateTransaction(tx, { replaceRecentBlockhash: true, commitment: 'processed' });
-            console.log(`[meteora] Legacy Transaction simulation result: ${sim.value.err ? 'error' : 'success'}`);
-          }
-          if (sim.value.err) {
-            console.warn(`[meteora] Simulation Warning: ${stringify(sim.value.err)}`);
-            if (stringify(sim.value.err).includes('InstructionError')) {
-              throw new Error(`Simulation Failed: ${stringify(sim.value.err)}`);
+            try {
+              sim = await connection.simulateTransaction(tx, { commitment: 'processed' });
+              console.log(`[meteora] VersionedTransaction simulation result: ${sim.value.err ? 'error' : 'success'}`);
+              if (sim.value.err) {
+                console.warn(`[meteora] Simulation Warning: ${stringify(sim.value.err)}`);
+                if (stringify(sim.value.err).includes('InstructionError')) {
+                  throw new Error(`Simulation Failed: ${stringify(sim.value.err)}`);
+                }
+              }
+            } catch (simErr) {
+              console.warn(`[meteora] VersionedTransaction simulation failed: ${simErr.message}. Proceeding with send...`);
             }
+          } else {
+            console.log(`[meteora] Legacy Transaction: Skipping manual simulation (will use sendRawTransaction preflight)`);
           }
 
           const txHash = await connection.sendRawTransaction(tx.serialize(), {
-            skipPreflight: true, // we already simulated
+            skipPreflight: isVersioned, // Skip preflight if we already simulated (VersionedTransaction)
             preflightCommitment: 'confirmed',
             maxRetries: 1, // manual watchtower retry logic instead of RPC default
           });
