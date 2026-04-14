@@ -646,21 +646,38 @@ async function _openPositionLogic(poolAddress, tokenXAmount, tokenYAmount, price
       for (const tx of txList) {
         if (!tx) continue;
 
+        console.log(`[meteora] ========== EXAMINING TX OBJECT FROM SDK ==========`);
+        console.log(`[meteora] tx type: ${typeof tx}, constructor: ${tx?.constructor?.name}`);
+        console.log(`[meteora] tx instanceof Transaction: ${tx instanceof Transaction}`);
+        console.log(`[meteora] tx instanceof VersionedTransaction: ${tx instanceof VersionedTransaction}`);
+        console.log(`[meteora] tx.sign type: ${typeof tx.sign}`);
+        console.log(`[meteora] tx.serialize type: ${typeof tx.serialize}`);
+        console.log(`[meteora] tx.signatures type: ${typeof tx.signatures}, isArray: ${Array.isArray(tx.signatures)}`);
+        console.log(`[meteora] tx.instructions type: ${typeof tx.instructions}, isArray: ${Array.isArray(tx.instructions)}`);
+        console.log(`[meteora] tx.message type: ${typeof tx.message}, has recentBlockhash: ${!!tx.message?.recentBlockhash}`);
+        console.log(`[meteora] tx keys: ${Object.keys(tx || {}).join(', ')}`);
+
         const isVersioned = tx instanceof VersionedTransaction;
+        console.log(`[meteora] Processing transaction type: ${isVersioned ? 'VersionedTransaction' : 'Legacy Transaction'}`);
+        console.log(`[meteora] Pre-modification state - Signatures: ${tx.signatures?.length || 0}, Instructions: ${isVersioned ? tx.message.instructions?.length : tx.instructions?.length}`);
 
         // Ensure we always have a fresh blockhash for every chunk
         const { blockhash } = await connection.getLatestBlockhash('confirmed');
 
-        // KEY FIX: Set blockhash BEFORE signing, so message is built with correct blockhash
+        // Handle blockhash and feePayer based on transaction type
         if (isVersioned) {
           tx.message.recentBlockhash = blockhash;
+          // VersionedTransaction has feePayer in message header, no need to set separately
+          console.log(`[meteora] Set VersionedTransaction blockhash: ${blockhash}`);
         } else {
           tx.recentBlockhash = blockhash;
           tx.feePayer = wallet.publicKey;
+          console.log(`[meteora] Set Legacy Transaction blockhash: ${blockhash}, feePayer: ${wallet.publicKey.toString()}`);
         }
 
         // Priority fee — slightly higher for large bin deployments
         let microLamports = 250_000;
+        // Aegis: Increased compute budget for addLiquidityByWeight (more instructions)
         let computeUnits = totalBins > 50 ? 1_200_000 : 600_000;
         try {
           const recommended = await getRecommendedPriorityFee([poolAddress, xMint, yMint]);
@@ -668,24 +685,56 @@ async function _openPositionLogic(poolAddress, tokenXAmount, tokenYAmount, price
         } catch { /* fallback */ }
 
         injectPriorityFee(tx, { units: computeUnits, microLamports });
+        console.log(`[meteora] After injectPriorityFee - Instructions: ${isVersioned ? tx.message.instructions?.length : tx.instructions?.length}`);
 
-        // Sign transaction — this builds the message with current blockhash
+        // Sign with wallet and the single position keypair
+        console.log(`[meteora] Before signing - Signatures: ${tx.signatures?.length || 0}`);
+        console.log(`[meteora] Wallet type: ${typeof wallet}, constructor: ${wallet?.constructor?.name}`);
+        console.log(`[meteora] Wallet pubkey: ${wallet.publicKey?.toString?.()}`);
+        console.log(`[meteora] Wallet has secretKey: ${!!wallet.secretKey}`);
+        console.log(`[meteora] PosKp type: ${typeof posKp}, constructor: ${posKp?.constructor?.name}`);
+        console.log(`[meteora] PosKp pubkey: ${posKp.publicKey?.toString?.()}`);
+        console.log(`[meteora] PosKp has secretKey: ${!!posKp.secretKey}`);
+
+        // For legacy transactions, we need both keypairs to be actual Keypair objects
         if (isVersioned) {
-          tx.sign([posKp, wallet]);
-        } else {
-          tx.sign(posKp, wallet);
-        }
-
-        console.log(`[meteora] Chunk signed - type: ${isVersioned ? 'Versioned' : 'Legacy'}, signatures: ${tx.signatures?.length}, blockhash: ${blockhash}`);
-
-        try {
-          // Watchtower: Pre-flight simulation for Compute Units
-          let sim;
-          if (isVersioned) {
-            sim = await connection.simulateTransaction(tx, { commitment: 'processed' });
-          } else {
-            sim = await connection.simulateTransaction(tx, { replaceRecentBlockhash: true, commitment: 'processed' });
+          tx.signatures = [];
+          try {
+            tx.sign([posKp, wallet]);
+            console.log(`[meteora] Signed VersionedTransaction - After: Signatures: ${tx.signatures?.length || 0}`);
+          } catch (sigErr) {
+            console.error(`[meteora] ERROR signing VersionedTransaction:`, sigErr.message);
+            throw sigErr;
           }
+        } else {
+          // For legacy, do NOT clear signatures - let sign() handle it
+          // Order matters: fee payer (wallet) first, then other signers (posKp)
+          try {
+            console.log(`[meteora] About to sign legacy tx with wallet and posKp...`);
+            console.log(`[meteora] BEFORE signing - signatures array: ${JSON.stringify(tx.signatures)}`);
+            console.log(`[meteora] BEFORE signing - signatures[0]: ${JSON.stringify(tx.signatures[0])}`);
+
+            tx.sign(posKp, wallet);  // Try posKp first, then wallet (position keypair might be the primary signer)
+
+            console.log(`[meteora] AFTER signing - signatures array length: ${tx.signatures?.length || 0}`);
+            console.log(`[meteora] AFTER signing - full signatures: ${JSON.stringify(tx.signatures?.map(s => ({
+              type: typeof s,
+              isBuffer: Buffer.isBuffer(s),
+              keys: Object.keys(s || {}),
+              content: JSON.stringify(s)
+            })))}`);
+
+            if (tx.signatures[0]) {
+              console.log(`[meteora] Signature[0] type: ${typeof tx.signatures[0]}, isBuffer: ${Buffer.isBuffer(tx.signatures[0])}, length: ${tx.signatures[0]?.length}`);
+            }
+            if (tx.signatures[1]) {
+              console.log(`[meteora] Signature[1] type: ${typeof tx.signatures[1]}, isBuffer: ${Buffer.isBuffer(tx.signatures[1])}, length: ${tx.signatures[1]?.length}`);
+            }
+          } catch (sigErr) {
+            console.error(`[meteora] ERROR signing Legacy Transaction:`, sigErr.message);
+            throw sigErr;
+          }
+        }
 
         // Validate transaction before simulation
         console.log(`[meteora] Pre-simulation validation:`);
