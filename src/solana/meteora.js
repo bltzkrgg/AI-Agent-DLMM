@@ -466,12 +466,19 @@ async function _openPositionLogic(poolAddress, tokenXAmount, tokenYAmount, price
 
   const totalBins = (rangeMax - rangeMin) + 1;
 
-  // Meteora PositionV2 supports up to 1,400 bins. 
+  // Meteora PositionV2 supports up to 1,400 bins.
   // We chunk for Transaction Size Safety (Solana ~1232 byte limit).
   // Aegis: Increased safety margin to 50 bins per chunk.
-  const binChunks = totalBins <= 50
+  let binChunks = totalBins <= 50
     ? [{ lowerBinId: rangeMin, upperBinId: rangeMax }]
     : chunkBinRange(rangeMin, rangeMax);
+
+  // Sentinel v61.4: Guard against chunkBinRange returning null/undefined
+  // This can happen on edge case volatility pools. Fallback to single chunk deployment.
+  if (!Array.isArray(binChunks) || binChunks.length === 0) {
+    console.warn(`[meteora] chunkBinRange returned invalid (${typeof binChunks}), fallback to single chunk`);
+    binChunks = [{ lowerBinId: rangeMin, upperBinId: rangeMax }];
+  }
 
   // ── Unified deterministic position recovery ─────────────────────
   // Derived from: (wallet + pool + strategy) - Allows auto-discovery after crash.
