@@ -642,6 +642,7 @@ async function _openPositionLogic(poolAddress, tokenXAmount, tokenYAmount, price
 
         const isVersioned = tx instanceof VersionedTransaction;
         console.log(`[meteora] Processing transaction type: ${isVersioned ? 'VersionedTransaction' : 'Legacy Transaction'}`);
+        console.log(`[meteora] Pre-modification state - Signatures: ${tx.signatures?.length || 0}, Instructions: ${isVersioned ? tx.message.instructions?.length : tx.instructions?.length}`);
 
         // Ensure we always have a fresh blockhash for every chunk
         const { blockhash } = await connection.getLatestBlockhash('confirmed');
@@ -667,14 +668,25 @@ async function _openPositionLogic(poolAddress, tokenXAmount, tokenYAmount, price
         } catch { /* fallback */ }
 
         injectPriorityFee(tx, { units: computeUnits, microLamports });
+        console.log(`[meteora] After injectPriorityFee - Instructions: ${isVersioned ? tx.message.instructions?.length : tx.instructions?.length}`);
 
         // Sign with wallet and the single position keypair
+        console.log(`[meteora] Before signing - Signatures: ${tx.signatures?.length || 0}`);
+
+        // Clear signatures array before signing (in case SDK pre-signed)
         if (isVersioned) {
+          tx.signatures = [];
           tx.sign([posKp, wallet]);
-          console.log(`[meteora] Signed VersionedTransaction`);
+          console.log(`[meteora] Signed VersionedTransaction - After: Signatures: ${tx.signatures?.length || 0}`);
         } else {
+          // For legacy, verify we can sign properly
+          if (!tx.signatures) {
+            tx.signatures = [];
+          }
+          // Clear existing signatures that might be invalid
+          tx.signatures = [];
           tx.sign(wallet, posKp);
-          console.log(`[meteora] Signed Legacy Transaction`);
+          console.log(`[meteora] Signed Legacy Transaction - After: Signatures: ${tx.signatures?.length || 0}`);
         }
 
         // Validate transaction before simulation
@@ -682,7 +694,13 @@ async function _openPositionLogic(poolAddress, tokenXAmount, tokenYAmount, price
         console.log(`  - Transaction type: ${isVersioned ? 'Versioned' : 'Legacy'}`);
         console.log(`  - Blockhash: ${isVersioned ? tx.message.recentBlockhash : tx.recentBlockhash}`);
         console.log(`  - Signatures count: ${tx.signatures?.length || 0}`);
+        console.log(`  - Signatures detail: ${JSON.stringify(tx.signatures?.map((s, i) => ({ index: i, length: s.length })) || [])}`);
         console.log(`  - Instructions count: ${isVersioned ? tx.message.instructions?.length : tx.instructions?.length}`);
+
+        // Check for null/undefined signatures
+        if (!tx.signatures || tx.signatures.length === 0) {
+          console.error(`[meteora] ERROR: Transaction has no signatures!`);
+        }
 
         try {
           // Watchtower: Pre-flight simulation for Compute Units
