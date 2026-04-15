@@ -2,10 +2,10 @@
 
 import { createMessage, resolveModel } from '../agent/provider.js';
 import { getConfig, getThresholds, isDryRun } from '../config.js';
-import { getPositionInfo, closePositionDLMM, claimFees, getPoolInfo, getSolPriceUsd } from '../solana/meteora.js';
+import { getPositionInfo, closePositionDLMM, claimFees, getPoolInfo, getSolPriceUsd, getAllWalletPositions } from '../solana/meteora.js';
 import { getConnection, getWallet, getWalletBalance } from '../solana/wallet.js';
 import { PublicKey } from '@solana/web3.js';
-import { getOpenPositions, closePositionWithPnl, saveNotification, updatePositionLifecycle } from '../db/database.js';
+import { getOpenPositions, closePositionWithPnl, saveNotification, updatePositionLifecycle, savePosition } from '../db/database.js';
 import { getLessonsContext } from '../learn/lessons.js';
 import { checkStopLoss, checkMaxDrawdown, recordPnlUsd, getSafetyStatus } from '../safety/safetyManager.js';
 import { analyzeMarket } from '../market/analyst.js';
@@ -13,7 +13,7 @@ import { getInstinctsContext } from '../market/memory.js';
 import { getStrategyIntelligenceContext } from '../market/strategyPerformance.js';
 import { swapAllToSOL, SOL_MINT } from '../solana/jupiter.js';
 import { getMarketSnapshot, getOHLCV } from '../market/oracle.js';
-import { fetchWithTimeout, withExponentialBackoff } from '../utils/safeJson.js';
+import { fetchWithTimeout, withExponentialBackoff, stringify, getConservativeSlippage } from '../utils/safeJson.js';
 import { withRetry as executionRetry } from '../utils/retry.js';
 import { kv, hr, codeBlock, formatPnl, shortAddr, shortStrat } from '../utils/table.js';
 import { recordClose } from '../market/poolMemory.js';
@@ -24,7 +24,9 @@ import { clearPositionRuntimeState, getPositionRuntimeState, updatePositionRunti
 import { resolvePositionSnapshot } from '../app/positionSnapshot.js';
 import { getStrategy } from '../strategies/strategyManager.js';
 import { analyzeTradeResult } from '../learn/failureAnalysis.js';
-import { calculateRSI, calculateSupertrend } from '../utils/ta.js';
+import { calculateSupertrend } from '../utils/ta.js';
+import { getGmgnSecurity } from '../utils/gmgn.js';
+
 
 
 // Verifikasi apakah position account benar-benar tidak ada on-chain.
@@ -35,6 +37,67 @@ async function positionAccountExists(positionAddress) {
     return info !== null;
   } catch {
     return true; // gagal cek → asumsikan masih ada (safe default)
+  }
+}
+
+/**
+ * 👻 GHOST POSITION RECOVERY (Layer 7 Self-Healing)
+ * Memastikan database sinkron dengan data riil di blockchain.
+ */
+export async function runSelfHealingSync(notifyFn = null) {
+  console.log('🔍 [healer] Memulai audit Self-Healing (Blockchain vs Database)...');
+  
+  try {
+    const onChainPositions = await getAllWalletPositions();
+    if (!onChainPositions) {
+      console.warn('⚠️ [healer] Gagal fetch posisi on-chain, skip audit self-healing.');
+      return;
+    }
+
+    const dbPositions = await getOpenPositions();
+    const dbAddresses = new Set(dbPositions.map(p => p.position_address));
+
+    let reclaimedCount = 0;
+    for (const ocPos of onChainPositions) {
+      if (!ocPos.address) continue;
+      
+      if (!dbAddresses.has(ocPos.address)) {
+        console.log(`👻 [healer] GHOST DETECTED: ${ocPos.address.slice(0, 8)}... di pool ${ocPos.poolAddress.slice(0, 8)}...`);
+        
+        try {
+          const poolInfo = await getPoolInfo(ocPos.poolAddress);
+          
+          await savePosition({
+            pool_address: ocPos.poolAddress,
+            position_address: ocPos.address,
+            token_x: poolInfo.tokenX,
+            token_y: poolInfo.tokenY,
+            token_x_symbol: poolInfo.tokenXSymbol,
+            token_y_symbol: poolInfo.tokenYSymbol,
+            token_x_amount: '0', 
+            token_y_amount: '0',
+            deployed_sol: ocPos.currentValueSol, 
+            deployed_usd: 0, 
+            entry_price: poolInfo.displayPrice,
+            strategy_used: 'RECLAIMED_GHOST',
+            lifecycle_state: 'active'
+          });
+
+          reclaimedCount++;
+          await notifyFn?.(`👻 *GHOST POSITION RECLAIMED!*\n\n• Pool: \`${shortAddr(ocPos.poolAddress)}\`\n• Address: \`${shortAddr(ocPos.address)}\`\n• Value: ~${ocPos.currentValueSol.toFixed(4)} SOL\n\n_Bot berhasil mensinkronisasi ulang posisi gaib ke database._`);
+        } catch (err) {
+          console.error(`❌ [healer] Gagal reclaim posisi ${ocPos.address}:`, err.message);
+        }
+      }
+    }
+
+    if (reclaimedCount > 0) {
+      console.log(`✅ [healer] Audit selesai. Berhasil menjemput ${reclaimedCount} posisi gaib.`);
+    } else {
+      console.log('✅ [healer] Audit selesai. Database dan Blockchain sudah sinkron.');
+    }
+  } catch (error) {
+    console.error('❌ [healer] Self-Healing Sync Error:', error.message);
   }
 }
 
@@ -294,17 +357,15 @@ export async function executeTool(name, input, notifyFn = null) {
             const bearishThreshold  = cfg.proactiveExitBearishConfidence ?? 0.7;
             const proactiveEnabled  = cfg.proactiveExitEnabled !== false;
             
-            // ── Technical Sniper Exit (Evil Panda / Confluence) ──────
+            // ── Technical Sniper Exit (Evil Panda / Supertrend) ──────
             const taExit = analysis.snapshot?.ta?.['Evil Panda']?.exit || analysis.snapshot?.ta?.[pos.strategy_used]?.exit;
-            const preset = cfg.activePreset;
-            if (preset === 'rsi_plus_supertrend' || preset === 'rsi_reversal' || pos.strategy_used === 'Evil Panda') {
+            if (pos.strategy_used === 'Evil Panda') {
               // Sniper Technical Exit:
               // - Jika Trend Reversal (Bearish), WAJIB exit secepatnya untuk cut loss / lock profit.
-              // - Jika Overbought (RSI), exit kalau profit >= 0.1%.
               const isSupertrendBearish = stTrend === 'BEARISH';
               if (taExit?.triggered || isSupertrendBearish) {
                 const isReversal = isSupertrendBearish || taExit?.reason?.includes('Trend Flip') || taExit?.reason?.includes('Bearish');
-                if (isReversal || pnlPct >= 0.1) {
+                if (isReversal) {
                   proactiveCloseRecommended = true;
                   proactiveWarning = `🎯 TECHNICAL EXIT: ${taExit?.reason || 'Market Berubah Bearish'} (PnL: ${pnlPct.toFixed(2)}%).`;
                 }
@@ -418,11 +479,15 @@ export async function executeTool(name, input, notifyFn = null) {
       const swapErrors  = [];
       try {
         const poolInfo = await getPoolInfo(input.pool_address);
+        const snapshot = await getMarketSnapshot(input.token_mint, input.pool_address);
+        const vol      = snapshot?.price?.volatility24h || 0;
+        const slippage = getConservativeSlippage(vol);
+
         for (const mint of [poolInfo.tokenX, poolInfo.tokenY]) {
           if (mint && mint !== SOL_MINT) {
             try {
               const swapRes = await withExponentialBackoff(
-                () => swapAllToSOL(mint),
+                () => swapAllToSOL(mint, slippage),
                 { maxRetries: 3, baseDelay: 2000 }
               );
               if (swapRes.success) {
@@ -535,11 +600,15 @@ export async function executeTool(name, input, notifyFn = null) {
       let lifecycleState = 'closed_reconciled';
       try {
         const poolInfo = await getPoolInfo(input.pool_address);
+        const snapshot = await getMarketSnapshot(poolInfo.tokenX, input.pool_address);
+        const vol      = snapshot?.price?.volatility24h || 0;
+        const slippage = getConservativeSlippage(vol);
+
         for (const mint of [poolInfo.tokenX, poolInfo.tokenY]) {
           if (mint && mint !== SOL_MINT) {
             try {
               const swapRes = await withExponentialBackoff(
-                () => swapAllToSOL(mint),
+                () => swapAllToSOL(mint, slippage),
                 { maxRetries: 3, baseDelay: 2000 }
               );
               if (swapRes.success) {
@@ -687,20 +756,31 @@ export async function executeTool(name, input, notifyFn = null) {
       let lifecycleState = 'closed_reconciled';
       try {
         const poolInfo = await getPoolInfo(input.pool_address);
+        const snapshot = await getMarketSnapshot(poolInfo.tokenX, input.pool_address);
+        const vol      = snapshot?.price?.volatility24h || 0;
+        const slippage = getConservativeSlippage(vol);
+
         for (const mint of [poolInfo.tokenX, poolInfo.tokenY]) {
           if (!mint || mint === SOL_MINT) continue;
           try {
             const swapRes = await withExponentialBackoff(
-              () => swapAllToSOL(mint),
+              () => swapAllToSOL(mint, slippage),
               { maxRetries: 3, baseDelay: 2000 }
             );
             if (swapRes.success) {
               swapResults.push({ mint: mint.slice(0, 8), outSol: swapRes.outSol, txHash: swapRes.txHash });
+              // 🧹 THE BIG HARVEST: Tariq balik uang sewa
+              await closeTokenAccount(mint).catch(() => {});
             } else {
               swapResults.push({ mint: mint.slice(0, 8), skipped: swapRes.reason });
             }
           } catch (e) {
-            swapErrors.push({ mint: mint.slice(0, 8), error: e.message });
+            if (e.message.includes('LIQUIDITY_TRAP')) {
+              await notifyLiquidityTrap(mint, e.message, currentNotify);
+              swapErrors.push({ mint: mint.slice(0, 8), error: 'LIQUIDITY_TRAP' });
+            } else {
+              swapErrors.push({ mint: mint.slice(0, 8), error: e.message });
+            }
           }
         }
       } catch (e) {
@@ -760,6 +840,35 @@ export async function executeTool(name, input, notifyFn = null) {
     default:
       return 'Tool tidak dikenali';
   }
+}
+
+/**
+ * 🦅 GUARDIAN ANGEL: Notifikasi Deteksi Dumping
+ */
+async function notifyLiquidityDump(tokenMint, reason, notifyFn) {
+  const shortMint = tokenMint.slice(0, 8);
+  const msg = `🦅 *GUARDIAN ANGEL ALERT!* (Holder Dump Detected)\n\n` +
+             `• Token: \`${shortMint}\`...\n` +
+             `• Alasan: ${reason}\n\n` +
+             `⚠️ *Survival Protocol:* Zap Out otomatis dipicu!\n\n` +
+             `_Modal lu ditarik sebelum dev/whale selesai dumping._`;
+  
+  await notifyFn?.(msg);
+}
+
+/**
+ * 🛡️ LIQUIDITY TRAP: Notifikasi Intervensi Manual
+ * Memberikan link intervensi manual jika swap terhambat likuiditas tipis.
+ */
+async function notifyLiquidityTrap(mint, errorMsg, notifyFn) {
+  const manualLink = `https://jup.ag/swap/SOL-${mint}`;
+  const msg = `⚠️ *LIQUIDITY TRAP DETECTED*\n\n` +
+             `Bot membatalkan swap otomatis untuk melindungi modal lu.\n` +
+             `• Alasan: \`${errorMsg}\`\n\n` +
+             `👉 *Intervensi Manual:* [Swap di Jupiter](${manualLink})\n` +
+             `_Lu bisa pantau harganya dan close sendiri kalau udah membaik._`;
+  
+  if (notifyFn) await notifyFn(msg).catch(() => {});
 }
 
 // ─── Simpan notify function untuk dipakai di tool executor ───────
@@ -877,25 +986,13 @@ export async function runHealerAlpha(notifyFn) {
       };
       const tpHit   = pnlPct >= strategyTakeProfitPct;
 
-      const supportBreakForWave = pos.strategy_used === 'Wave Enjoyer' && !match.inRange;
-      const npcTooOld = pos.strategy_used === 'NPC'
-        && strategyProfile?.exit?.holdMaxMinutes
-        && positionAgeMin >= strategyProfile.exit.holdMaxMinutes;
-      const waveReadyForReview = pos.strategy_used === 'Wave Enjoyer'
-        && positionAgeMin >= (strategyProfile?.exit?.holdMinMinutes || 10);
-      const npcReadyForReview = pos.strategy_used === 'NPC'
-        && positionAgeMin >= (strategyProfile?.exit?.holdMinMinutes || 30);
-
-      const strategyTriggerHit = supportBreakForWave || npcTooOld;
-
       // Tidak ada trigger → flag apakah posisi ini butuh LLM, lalu skip
-      if (!trailingTpHit && !tpHit && !slCheck.triggered && !strategyTriggerHit) {
-        // Posisi butuh LLM jika: out of range, fees tinggi, atau mendekati SL
+      if (!trailingTpHit && !tpHit && !slCheck.triggered) {
+        // Posisi butuh LLM jika: out of range, fees tinggi, atau mencapai threshold SL
         if (!match?.inRange) _healerNeedsLLM = true;
         const feePct = (match?.feeCollectedSol || 0) / (pos.deployed_sol || 0.001);
         if (feePct >= 0.03) _healerNeedsLLM = true;
         if (pnlPct <= -(thresholds.stopLossPct * 0.6)) _healerNeedsLLM = true;
-        if (waveReadyForReview || npcReadyForReview) _healerNeedsLLM = true;
         continue;
       }
 
@@ -920,14 +1017,6 @@ export async function runHealerAlpha(notifyFn) {
       if (exitMode === 'evil_panda_confluence' && sig === 'BULLISH' && conf >= 0.5) {
         decision = 'HOLD';
         holdReason = 'Evil Panda menunggu konfirmasi bearish sebelum exit.';
-      }
-
-      if (exitMode === 'retracement_scalp' && supportBreakForWave) {
-        decision = 'CLOSE';
-      }
-
-      if (exitMode === 'post_spike_consolidation' && npcTooOld) {
-        decision = 'CLOSE';
       }
 
       if (trailingTpHit) {
@@ -967,21 +1056,13 @@ export async function runHealerAlpha(notifyFn) {
       }
 
       // Tentukan label + emoji
-      const triggerLabel = supportBreakForWave               ? 'Wave Support Break'
-        : npcTooOld                         ? 'NPC Time Exit'
-        : trailingTpHit                     ? 'Trailing Take Profit'
+      const triggerLabel = trailingTpHit                     ? 'Trailing Take Profit'
         : tpHit                             ? 'Take Profit'
         : 'Stop-Loss';
-      const triggerEmoji = supportBreakForWave               ? '🌊'
-        : npcTooOld                         ? '🧠'
-        : trailingTpHit                     ? '🎯'
+      const triggerEmoji = trailingTpHit                     ? '🎯'
         : tpHit                             ? '💰'
         : '🛑';
-      const triggerReason = supportBreakForWave
-        ? `Wave Enjoyer support invalidated setelah ${positionAgeMin}m`
-        : npcTooOld
-        ? `NPC telah melewati hold window ${strategyProfile?.exit?.holdMaxMinutes}m`
-        : trailingTpHit
+      const triggerReason = trailingTpHit
         ? `PnL turun dari peak ${tracker.peakPnl.toFixed(2)}% ke ${pnlPct.toFixed(2)}%`
         : tpHit
         ? `PnL ${pnlPct.toFixed(2)}% ≥ target ${strategyTakeProfitPct}%`
@@ -1074,7 +1155,7 @@ export async function runHealerAlpha(notifyFn) {
       try {
         const solPriceUsd = await getSolPriceUsd().catch(() => 150);
         const realizedPnlUsd = parseFloat((pnlSol * solPriceUsd).toFixed(2));
-        const realizedFeesUsd = parseFloat((((match.feeCollectedSol || 0) * solPriceUsd)).toFixed(2));
+        const realizedFeesUsd = parseFloat((((match.feeCollectedSol ?? 0) * solPriceUsd)).toFixed(2));
         await updatePositionLifecycle(addr, 'closing');
         await closePositionDLMM(pos.pool_address, addr, {
           pnlUsd:      realizedPnlUsd,
@@ -1110,8 +1191,10 @@ export async function runHealerAlpha(notifyFn) {
             if (mint && mint !== SOL_MINT) {
               try {
                 const swapRes = await executionRetry(async () => {
-                  const isPanic = getSafetyStatus().drawdownPct > 10;
-                  return await swapAllToSOL(mint, isPanic ? 500 : 100);
+                  const snapshot = await getMarketSnapshot(pos.token_mint, pos.pool_address);
+                  const vol      = snapshot?.price?.volatility24h || 0;
+                  const slippage = getConservativeSlippage(vol);
+                  return await swapAllToSOL(mint, slippage);
                 }, { 
                   maxRetries: 3, 
                   delayMs: 2000, 
@@ -1121,13 +1204,20 @@ export async function runHealerAlpha(notifyFn) {
                 if (swapRes && swapRes.success) {
                   swapMsgs.push(`+${swapRes.outSol.toFixed(4)}◎`);
                   totalSwappedSol += swapRes.outSol;
+                  // 🧹 THE BIG HARVEST: Tariq balik uang sewa
+                  await closeTokenAccount(mint).catch(() => {});
                 } else if (swapRes && !swapRes.success) {
                   swapFails.push(swapRes.error || 'Unknown swap error');
                 }
               } catch (e) {
-                console.error(`[healer] Final cleanup failed for ${pos.symbol}:`, e.message);
-                swapFails.push(e.message);
-                await notify(`🚨 *ZAP OUT FAILED* (Retries Exhausted)\n\nPosition: \`${pos.symbol}\`\nMint: \`${pos.token_mint}\`\nError: ${e.message}\n\n_Manual swap recommended to recover SOL._`).catch(() => {});
+                if (e.message.includes('LIQUIDITY_TRAP')) {
+                  await notifyLiquidityTrap(mint, e.message, notifyFn);
+                  swapFails.push('LIQUIDITY_TRAP');
+                } else {
+                  console.error(`[healer] Final cleanup failed for ${pos.symbol}:`, e.message);
+                  swapFails.push(e.message);
+                  await notify(`🚨 *ZAP OUT FAILED* (Retries Exhausted)\n\nPosition: \`${pos.symbol}\`\nMint: \`${pos.token_mint}\`\nError: ${e.message}\n\n_Manual swap recommended to recover SOL._`).catch(() => {});
+                }
               }
             }
           }
@@ -1189,7 +1279,6 @@ export async function runHealerAlpha(notifyFn) {
 
   // ── 7. Aegis Phase 4: Automatic Technical Sweep ─────────
   // Obelisk: Parallelized sweep for near-instant reaction time
-  // Obelisk: Parallelized sweep for near-instant reaction time
   const openPositionsRel = getOpenPositions();
   if (openPositionsRel.length > 0) {
     await Promise.all(openPositionsRel.map(async (pos) => {
@@ -1239,7 +1328,8 @@ DUA MODE CLOSE:
      - User minta "zap out" atau "keluar bersih"
      - Exit darurat (SL agresif, proactive BEARISH tinggi)
      - Konfirmasi bahwa close_position sebelumnya gagal swap
-   Jangan panggil swap_to_sol secara terpisah setelah close_position atau zap_out — sudah ditangani otomatis.
+    Pelaporan tindakan: Jika kamu panggil close_position atau zap_out, jelaskan alasannya di akhir laporan.
+    Jangan panggil swap_to_sol secara terpisah — semua proses penutupan posisi (close/zap) sudah otomatis melakukan "Zero Dust" (swap sisa ke SOL).
 
 DLMM EXIT STRATEGY FRAMEWORK:
 Setiap posisi memiliki exitContext (dari pre-flight) — gunakan ini untuk menentukan agresivitas exit:
@@ -1250,7 +1340,6 @@ Setiap posisi memiliki exitContext (dari pre-flight) — gunakan ini untuk menen
 
   LATE_ENTRY: Entered setelah rally, harga masih tinggi tapi momentum melemah.
     → Exit saat first sign of weakness. Trailing TP lebih ketat dari biasanya.
-    → Jika RSI > 70 + volume turun → close, jangan tunggu konfirmasi penuh.
 
   POST_DUMP_SIDEWAYS: Harga sudah dump dari entry, sekarang konsolidasi.
     → Tunggu bounce ke Fibonacci resistance terdekat untuk exit dengan PnL less-bad.
@@ -1286,24 +1375,18 @@ ALUR KERJA:
     ALGORITMA ADAPTIF (PnL vs Fees):
     - Jika PnL Negatif (-1 s/d -5%) tapi Fee Velocity "meningkat" → BERTAHAN (Fees akan menutup kerugian).
     - Jika PnL Negatif dan Fee Velocity "menurun" → CUT LOSS (Meninggalkan kolam yang mati).
-    - Jika PnL Positif (>5%) dan RSI2 < 80 → BERTAHAN (Let the profit run).
+    - Jika PnL Positif (>5%) → BERTAHAN (Let the profit run).
 
-   STOP LOSS TAMBAHAN (jika pre-flight gagal):
-   - pnlPct < -${safety.stopLossPct}% DAN BEARISH → close_position, lalu swap_to_sol
-   - pnlPct < -${safety.stopLossPct}% DAN BULLISH confidence > 0.6 → HOLD, tunggu recovery
+   STOP LOSS TAMBAHAN (Surgical Safety):
+    - pnlPct < -${safety.stopLossPct}% DAN BEARISH → zap_out SEGERA (Safe Exit).
+    - pnlPct < -${safety.stopLossPct}% DAN BULLISH confidence > 0.6 → HOLD, tunggu recovery (Volatile pullback).
 
    EVIL PANDA EXIT — khusus posisi dengan strategi Evil Panda:
    Satu-satunya sinyal exit yang valid:
    • poolTaSignals.evilPandaExit.triggered = true → EXIT SEGERA (Supertrend 15m flip merah)
-   • poolTaSignals.rsi2 > 90 + evilPandaExit.triggered → EXIT (konfirmasi ganda)
-   Harus ada CONFLUENCE ≥2 sinyal untuk exit. Jika hanya 1 sinyal → HOLD.
-   feeVelocity dari pool: "increasing" → hold lebih lama, "decreasing" → pertimbangkan exit lebih cepat.
+    feeVelocity dari pool: "increasing" → hold lebih lama, "decreasing" → pertimbangkan exit lebih cepat.
    Jika poolTaSignals = null → gunakan TP normal (+${safety.stopLossPct}% fee APR).
 
-   CLAIM FEES:
-   - shouldClaimFeeUrgent = true (fee >= 5% deployed capital) → claim_fees SEGERA
-   - shouldClaimFee = true (fee >= 3% deployed capital) → claim_fees
-   - Keduanya false → jangan claim, biarkan akumulasi
 
    NORMAL → STAY
 
@@ -1415,12 +1498,10 @@ export async function runPanicWatchdog(notifyFn) {
   const openPositions = getOpenPositions();
   if (openPositions.length === 0) return;
 
-  // Audit silently without logs unless action is taken or error occurs
   const lpPnlMap = await getLpPnlMap();
 
   for (const pos of openPositions) {
     try {
-      // 1. Ambil data teknikal & on-chain real-time
       const snapshot = await getMarketSnapshot(pos.token_mint, pos.pool_address);
       const onChain = await getPositionInfo(pos.pool_address);
       const match = onChain?.find(p => p.address === pos.position_address);
@@ -1433,17 +1514,253 @@ export async function runPanicWatchdog(notifyFn) {
         providerPnlPct: lpPnlMap.get(pos.position_address),
       });
 
-      // 🏛️ LOGIKA TACTICAL PANDA (Option B+):
-      // Kita kabur kalau:
-      // A. Trend 15m BEARISH (Sudah mulai dump)
-      // B. DAN Harga keluar jaring di bawah (Price < Lower Range)
+      const isTrendBullish = snapshot.supertrend?.trend === 'BULLISH' || snapshot.indicators?.supertrend?.trend === 'BULLISH';
+      const isTrendBearish = snapshot.supertrend?.trend === 'BEARISH' || snapshot.indicators?.supertrend?.trend === 'BEARISH';
       
-      const isBearish = snapshot.indicators?.supertrend?.trend === 'BEARISH';
-      const isOORLower = !match.inRange && match.currentPrice < match.lowerPrice;
       const pnlPct = posSnapshot.pnlPct;
+      const addr   = pos.position_address;
+      const runtimeState = getPositionRuntimeState(addr);
+      
+      const strategyProfile = getStrategy(pos.strategy_used);
+      const feeSol = match.feeCollectedSol || 0;
+      const feeRatio = feeSol / (pos.deployed_sol || 0.001);
 
-      // Skenario 1: CRITICAL DUMP (Bearish + Jebol Jaring)
-      if (isBearish && isOORLower) {
+      const now = Date.now();
+      const posAgeMin = getPositionAgeMinutes(pos);
+      const vol24h = snapshot.volume24h || snapshot.stats?.v24h || 0;
+      
+      if (!runtimeState.feeTracker) {
+        runtimeState.feeTracker = { lastFee: feeSol, lastTimestamp: now };
+      }
+
+      const oneHourMs = 60 * 60 * 1000;
+      let isZombieFee = false;
+      if (posAgeMin > 120 && (now - runtimeState.feeTracker.lastTimestamp) >= oneHourMs) {
+        const feeDelta = feeSol - runtimeState.feeTracker.lastFee;
+        if (feeDelta < 0.0005) {
+          isZombieFee = true;
+        } else {
+          runtimeState.feeTracker = { lastFee: feeSol, lastTimestamp: now };
+        }
+      }
+
+      // 🦅 LAYER 14: GUARDIAN ANGEL (Live Holder Monitor)
+      const guardianInterval = 15 * 60 * 1000; // 15 Menit
+      if (!runtimeState.lastSecurityCheck || (now - runtimeState.lastSecurityCheck) >= guardianInterval) {
+        console.log(`🦅 [guardian] Re-scanning holder security for ${pos.token_mint.slice(0, 8)}...`);
+        const secData = await getGmgnSecurity(pos.token_mint);
+        
+        if (secData) {
+          const currentTop10Rate = parseFloat(secData.top_10_holder_rate || 0);
+          const currentInsiderRate = parseFloat(secData.suspected_insider_hold_rate || 0);
+          const lastTop10 = runtimeState.lastTop10Rate ?? currentTop10Rate;
+          const lastInsider = runtimeState.lastInsiderRate ?? currentInsiderRate;
+
+          // 🚨 DUMP DETECTION: Jika holder rate turun > 5% mendadak
+          const top10Drop = lastTop10 - currentTop10Rate;
+          const insiderDrop = lastInsider - currentInsiderRate;
+
+          if (top10Drop > 0.05 || insiderDrop > 0.05) {
+            const reason = top10Drop > 0.05 
+              ? `Top 10 Holders dumping! (Drop: ${(top10Drop * 100).toFixed(1)}%)`
+              : `Insiders/Shadow Wallets dumping! (Drop: ${(insiderDrop * 100).toFixed(1)}%)`;
+
+            await notifyLiquidityDump(pos.token_mint, reason, notifyFn);
+            
+            // 🔥 Zap Out Instan (Survival Override)
+            await closePositionDLMM(pos.pool_address, pos.position_address, {
+              pnlUsd: posSnapshot.pnlUsd, pnlPct: posSnapshot.pnlPct, feesUsd: posSnapshot.feesUsd,
+              closeReason: 'GUARDIAN_ANGEL_DUMP_EXIT', lifecycleState: 'closed_panic'
+            }, { isUrgent: true });
+
+            if (!isDryRun()) {
+               await new Promise(r => setTimeout(r, 2000));
+               try {
+                 const snapshot = await getMarketSnapshot(pos.token_mint, pos.pool_address);
+                 const vol      = snapshot?.price?.volatility24h || 0;
+                 const slippage = getConservativeSlippage(vol);
+                 await swapAllToSOL(pos.token_mint, slippage, { isUrgent: true });
+                 await closeTokenAccount(pos.token_mint).catch(() => {});
+               } catch (e) {
+                 if (e.message.includes('LIQUIDITY_TRAP')) {
+                   await notifyLiquidityTrap(pos.token_mint, e.message, notifyFn);
+                 }
+               }
+            }
+            continue; // Posisi ditutup, lanjut ke loop berikutnya
+          }
+
+          // Update state untuk pemantauan berikutnya
+          updatePositionRuntimeState(addr, { 
+            lastSecurityCheck: now,
+            lastTop10Rate: currentTop10Rate,
+            lastInsiderRate: currentInsiderRate
+          });
+        }
+      }
+
+      const isZombieVol = vol24h > 0 && vol24h < 400000;
+
+      if (isZombieFee || isZombieVol) {
+        const reason = isZombieFee ? "FEE_STAGNATION" : "LOW_VOLUME_FLOOR";
+        const msg = `🧟 *ZOMBIE POOL EXTERMINATED!*\n\n` +
+                   `• Posisi: \`${shortAddr(pos.position_address)}\`\n` +
+                   `• Alasan: ${reason === "FEE_STAGNATION" ? "Mati Suri (1 jam tanpa fee)" : "Volume Drop (< $400k)"}\n` +
+                   `• PnL: ${pnlPct.toFixed(2)}%\n\n` +
+                   `_Modal dilepas untuk mencari pool baru._`;
+        
+        await notifyFn?.(msg);
+        await closePositionDLMM(pos.pool_address, pos.position_address, {
+          pnlUsd: posSnapshot.pnlUsd, pnlPct: posSnapshot.pnlPct, feesUsd: posSnapshot.feesUsd,
+          closeReason: `ZOMBIE_EXIT_${reason}`, lifecycleState: 'closed_zombie'
+        }, { isUrgent: true });
+        if (!isDryRun()) {
+          await new Promise(r => setTimeout(r, 2000));
+          try {
+            const snapshot = await getMarketSnapshot(pos.token_mint, pos.pool_address);
+            const vol      = snapshot?.price?.volatility24h || 0;
+            const slippage = getConservativeSlippage(vol);
+            await swapAllToSOL(pos.token_mint, slippage, { isUrgent: true });
+            await closeTokenAccount(pos.token_mint).catch(() => {});
+          } catch (e) {
+            if (e.message.includes('LIQUIDITY_TRAP')) {
+              await notifyLiquidityTrap(pos.token_mint, e.message, notifyFn);
+            }
+          }
+        }
+        continue;
+      }
+
+      let zone = "NONE";
+      let triggerPct = 1.0;
+      let retracementCap = 1.5;
+      let isLPerPatienceEnabled = false;
+
+      if (pnlPct < 10) {
+        zone = "ZONE 1 (Sniper)";
+        retracementCap = 1.5;
+        isLPerPatienceEnabled = false;
+      } else if (pnlPct < 30) {
+        zone = "ZONE 2 (Runner)";
+        retracementCap = 3.5;
+        isLPerPatienceEnabled = true;
+      } else {
+        zone = "ZONE 3 (Moonshot)";
+        retracementCap = 7.0;
+        isLPerPatienceEnabled = true;
+      }
+
+      if (feeRatio >= 0.03) retracementCap += 2.0;
+
+      let peak = runtimeState.peakPnlPct ?? pnlPct;
+      if (pnlPct > peak) peak = pnlPct;
+      
+      const trailingActive = runtimeState.trailingActive || pnlPct >= triggerPct;
+      const retracementDrop = peak - pnlPct;
+      const trailingTpHit  = trailingActive && retracementDrop >= 1.5; 
+
+      updatePositionRuntimeState(addr, { peakPnlPct: peak, trailingActive: trailingActive });
+
+      if (trailingTpHit) {
+        if (retracementDrop >= retracementCap) {
+          const msg = `🚨 *PANIC EXIT!* (${zone})\n\n` +
+                     `• Posisi: \`${shortAddr(pos.position_address)}\`\n` +
+                     `• Peak PnL: +${peak.toFixed(2)}%\n` +
+                     `• Exit @ PnL: +${pnlPct.toFixed(2)}% (Drop: ${retracementDrop.toFixed(2)}%)\n\n` +
+                     `_Retracement cap ${retracementCap}% tercapai._`;
+          
+          await notifyFn?.(msg);
+          await closePositionDLMM(pos.pool_address, pos.position_address, {
+            pnlUsd: posSnapshot.pnlUsd, pnlPct: posSnapshot.pnlPct, feesUsd: posSnapshot.feesUsd,
+            closeReason: `TAE_WATCHDOG_EXIT_${zone.replace(/ /g, '_')}`, lifecycleState: 'closed_panic'
+          }, { isUrgent: true });
+          if (!isDryRun()) {
+            await new Promise(r => setTimeout(r, 2000));
+            try {
+                const snapshot = await getMarketSnapshot(pos.token_mint, pos.pool_address);
+                const vol      = snapshot?.price?.volatility24h || 0;
+                const slippage = getConservativeSlippage(vol);
+                await swapAllToSOL(pos.token_mint, slippage, { isUrgent: true });
+              await closeTokenAccount(pos.token_mint).catch(() => {});
+            } catch (e) {
+              if (e.message.includes('LIQUIDITY_TRAP')) {
+                await notifyLiquidityTrap(pos.token_mint, e.message, notifyFn);
+              }
+            }
+          }
+          continue;
+        }
+
+        if (isLPerPatienceEnabled && isTrendBullish) {
+          console.log(`[watchdog] Trailing hit in ${zone} (+${pnlPct.toFixed(2)}%), but holding because TREND is BULLISH.`);
+        } else if (!isTrendBullish) {
+          const msg = `🎯 *ADAPTIVE ZAP OUT!* (${zone})\n\n` +
+                     `• Exit @ PnL: +${pnlPct.toFixed(2)}%\n` +
+                     `• Trend: ${isTrendBearish ? 'BEARISH' : 'NEUTRAL'}\n\n` +
+                     `_Profit dikunci sesuai momentum._`;
+          
+          await notifyFn?.(msg);
+          await closePositionDLMM(pos.pool_address, pos.position_address, {
+            pnlUsd: posSnapshot.pnlUsd, pnlPct: posSnapshot.pnlPct, feesUsd: posSnapshot.feesUsd,
+            closeReason: `TAE_WATCHDOG_MOMENTUM_EXIT_${zone.replace(/ /g, '_')}`, lifecycleState: 'closed_profit'
+          }, { isUrgent: true });
+          if (!isDryRun()) {
+            await new Promise(r => setTimeout(r, 2000));
+            try {
+                const snapshot = await getMarketSnapshot(pos.token_mint, pos.pool_address);
+                const vol      = snapshot?.price?.volatility24h || 0;
+                const slippage = getConservativeSlippage(vol);
+                await swapAllToSOL(pos.token_mint, slippage, { isUrgent: true });
+              await closeTokenAccount(pos.token_mint).catch(() => {});
+            } catch (e) {
+              if (e.message.includes('LIQUIDITY_TRAP')) {
+                await notifyLiquidityTrap(pos.token_mint, e.message, notifyFn);
+              }
+            }
+          }
+          continue;
+        }
+      }
+
+      const isOORLower = !match.inRange && match.currentPrice < match.lowerPrice;
+      const trackedOorAt = runtimeState.oorSince;
+      const oorMinutes = trackedOorAt ? Math.floor((Date.now() - trackedOorAt) / 60000) : 0;
+      
+      if (isOORLower && oorMinutes >= 15) {
+        const msg = `🛑 *OOR HARD EXIT!* (Efficiency Guard)\n\n` +
+                   `• Posisi: \`${shortAddr(pos.position_address)}\`\n` +
+                   `• Status: Out of Range > 15 Menit\n` +
+                   `• PnL: ${pnlPct.toFixed(2)}%\n\n` +
+                   `_Modal dibebaskan untuk mencari pool baru yang produktif._`;
+        
+        await notifyFn?.(msg);
+        await closePositionDLMM(pos.pool_address, pos.position_address, {
+          pnlUsd: posSnapshot.pnlUsd,
+          pnlPct: posSnapshot.pnlPct,
+          feesUsd: posSnapshot.feesUsd,
+          closeReason: 'OOR_HARD_EXIT_WATCHDOG',
+          lifecycleState: 'closed_oor'
+        }, { isUrgent: true });
+        
+        if (!isDryRun()) {
+          await new Promise(r => setTimeout(r, 2000));
+          try {
+            const snapshot = await getMarketSnapshot(pos.token_mint, pos.pool_address);
+            const vol      = snapshot?.price?.volatility24h || 0;
+            const slippage = getConservativeSlippage(vol);
+            await swapAllToSOL(pos.token_mint, slippage);
+            await closeTokenAccount(pos.token_mint).catch(() => {});
+          } catch (e) {
+            if (e.message.includes('LIQUIDITY_TRAP')) {
+              await notifyLiquidityTrap(pos.token_mint, e.message, notifyFn);
+            }
+          }
+        }
+        continue;
+      }
+
+      // Skenario 4: CRITICAL DUMP (Bearish + Jebol Jaring)
+      if (isTrendBearish && isOORLower) {
         const msg = `🚨 *PANIC EXIT EXECUTED!* (Critical Dump)\n\n` +
                    `• Posisi: \`${shortAddr(pos.position_address)}\`\n` +
                    `• Pool: \`${shortAddr(pos.pool_address)}\`\n` +
@@ -1463,11 +1780,21 @@ export async function runPanicWatchdog(notifyFn) {
         // 🛡️ ZERO DUST PROTOCOL: Instan Swap Balik ke SOL
         if (closeResult && !isDryRun()) {
           await new Promise(r => setTimeout(r, 2000)); // Tunggu RPC propagasi
-          const swapRes = await swapAllToSOL(pos.token_mint);
-          if (swapRes.success) {
-            await notifyFn?.(`🔄 *Zero Dust:* Berhasil swap balik ke \`${swapRes.outSol}\` SOL.`);
-          } else if (swapRes.reason !== 'ZERO_BALANCE') {
-            await notifyFn?.(`⚠️ *Zero Dust Gagal:* Token masih di wallet. Lakukan swap manual!`);
+          try {
+            const snapshot = await getMarketSnapshot(pos.token_mint, pos.pool_address);
+            const vol      = snapshot?.price?.volatility24h || 0;
+            const slippage = getConservativeSlippage(vol);
+            const swapRes = await swapAllToSOL(pos.token_mint, slippage);
+            await closeTokenAccount(pos.token_mint).catch(() => {});
+            if (swapRes.success) {
+              await notifyFn?.(`🔄 *Zero Dust:* Berhasil swap balik ke \`${swapRes.outSol}\` SOL.`);
+            } else if (swapRes.reason !== 'ZERO_BALANCE') {
+              await notifyFn?.(`⚠️ *Zero Dust Gagal:* Token masih di wallet. Lakukan swap manual!`);
+            }
+          } catch (e) {
+            if (e.message.includes('LIQUIDITY_TRAP')) {
+              await notifyLiquidityTrap(pos.token_mint, e.message, notifyFn);
+            }
           }
         }
         continue;
@@ -1494,8 +1821,12 @@ export async function runPanicWatchdog(notifyFn) {
         // 🛡️ ZERO DUST PROTOCOL: Instan Swap Balik ke SOL
         if (closeResult && !isDryRun()) {
           await new Promise(r => setTimeout(r, 2000));
-          const swapRes = await swapAllToSOL(pos.token_mint);
+          const snapshot = await getMarketSnapshot(pos.token_mint, pos.pool_address);
+          const vol      = snapshot?.price?.volatility24h || 0;
+          const slippage = getConservativeSlippage(vol);
+          const swapRes = await swapAllToSOL(pos.token_mint, slippage);
           if (swapRes.success) {
+            await closeTokenAccount(pos.token_mint).catch(() => {});
             await notifyFn?.(`🔄 *Zero Dust:* Profit dikunci & dikonversi ke SOL.`);
           }
         }

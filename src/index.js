@@ -5,11 +5,11 @@ import { PublicKey } from '@solana/web3.js';
 import { writeFileSync, readFileSync, existsSync, unlinkSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
-import { initSolana, getConnection, getWallet, getWalletBalance } from './solana/wallet.js';
+import { initSolana, getConnection, getWallet, getWalletBalance, runMidnightSweeper } from './solana/wallet.js';
 import { processMessage } from './agent/claude.js';
 import { handleStrategyCommand, isInStrategySession } from './strategies/strategyHandler.js';
 import { runHunterAlpha, getCandidates } from './agents/hunterAlpha.js';
-import { runHealerAlpha, runPanicWatchdog, executeTool } from './agents/healerAlpha.js';
+import { runHealerAlpha, runPanicWatchdog, executeTool, runSelfHealingSync } from './agents/healerAlpha.js';
 import { learnFromPool, learnFromMultiplePools, loadLessons, pinLesson, unpinLesson, deleteLesson, clearAllLessons, formatLessonsList, getBrainSummary } from './learn/lessons.js';
 import { getConfig, getThresholds, updateConfig, isConfigKeySupported } from './config.js';
 import { handleConfirmationReply, getSafetyStatus, setStartingBalanceUsd } from './safety/safetyManager.js';
@@ -203,6 +203,7 @@ async function syncPositionStates() {
 }
 
 await syncPositionStates();
+await runSelfHealingSync(notify);
 
 async function getLpPnlMap() {
   const pnlMap = new Map();
@@ -306,6 +307,16 @@ cron.schedule('*/5 * * * *', async () => {
   }
 });
 
+// ─── Hourly Position Recovery (Layer 7 Self-Healing) ────────────
+cron.schedule('0 * * * *', async () => {
+  if (!solanaReady) return;
+  try {
+    await runSelfHealingSync(notify);
+  } catch (e) {
+    console.error('Hourly self-healing error:', e.message);
+  }
+});
+
 // ─── Cron jobs ───────────────────────────────────────────────────
 // Semua cron jalan setiap menit dan cek interval live dari config.
 // Ini memungkinkan perubahan interval via /setconfig TANPA restart bot.
@@ -350,8 +361,28 @@ async function runAutoScreening() {
   const isHunterBusy = _hunterBusy && (now - _hunterBusy < LOCK_TIMEOUT_MS);
   const isScreeningBusy = _screeningBusy && (now - _screeningBusy < LOCK_TIMEOUT_MS);
   if (isScreeningBusy || isHunterBusy) return;
+
   const liveCfg = getConfig();
   if (!liveCfg.autoScreeningEnabled) return;
+
+  // ─── Daily Circuit Breaker Check ─────────────────────────────
+  // Jika PnL hari ini ditutup minus lebih dari dailyLossLimitUsd ($5), Hunter istirahat.
+  const today = getTodayResults();
+  const dailyPnl = today.totalPnlUsd + today.totalFeesUsd; // Net harian $
+  if (dailyPnl < -liveCfg.dailyLossLimitUsd) {
+    const isFirstAlert = Date.now() - _lastBalanceWarningAt > 12 * 60 * 60 * 1000;
+    if (isFirstAlert) {
+      _lastBalanceWarningAt = Date.now();
+      urgentNotify(
+        `🛡️ *DAILY CIRCUIT BREAKER ACTIVE*\n\n` +
+        `Net PnL Hari Ini: \`$${dailyPnl.toFixed(2)}\`\n` +
+        `Limit Kerugian: \`$${liveCfg.dailyLossLimitUsd.toFixed(2)}\`\n\n` +
+        `_Batas kerugian harian tercapai. Hunter dipaksa istirahat demi keamanan modal lu, Bos!_`
+      ).catch(() => {});
+    }
+    console.log(`[index] Daily Circuit Breaker: Skip screening (Daily PnL: $${dailyPnl.toFixed(2)})`);
+    return;
+  }
 
   const openPos = getOpenPositions();
   if (openPos.length >= liveCfg.maxPositions) {
@@ -366,14 +397,8 @@ async function runAutoScreening() {
     const balNum = safeNum(balance).toFixed(4);
     console.log(`⏭ Hunter skip — saldo low (${balNum} < ${needed.toFixed(2)})`);
     
-    // Kirim notifikasi Telegram cuma sekali tiap 6 jam agar tidak spam
-    if (Date.now() - _lastBalanceWarningAt > 6 * 60 * 60 * 1000) {
-      _lastBalanceWarningAt = Date.now();
-      notify(`⚠️ *Hunter Terhenti: Saldo Low!*\n\n` +
-             `💰 Saldo: \`${balNum} SOL\`\n` +
-             `🎯 Butuh: \`${needed.toFixed(2)} SOL\` (Deploy: ${liveCfg.deployAmountSol} + Gas: ${liveCfg.gasReserve || 0.02})\n\n` +
-             `_Hunter tidak bisa mencari koin baru. Harap top-up SOL ke wallet bot._`).catch(() => {});
-    }
+    // Log internal & skip (notifikasi sudah ditangani oleh Global Low Gas Alert per jam)
+    console.log(`⏭ Hunter skip — saldo low (${balNum} < ${needed.toFixed(2)})`);
     return;
   }
 
@@ -428,14 +453,34 @@ cron.schedule('0 21 * * *', async () => {
 });
 
 // ─── Opportunity Scanner — setiap 15 menit ───────────────────────
-// Scan top 25 pools untuk semua strategi: Evil Panda, Wave Enjoyer, NPC, Fee Sniper
+// Scan top 25 pools untuk strategi: Evil Panda Master
 // Alert dikirim regardless posisi terbuka / balance / status deploy
 // KOMENTAR: Dimatikan atas permintaan user untuk mengurangi noise notifikasi.
-// cron.schedule('*/15 * * * *', async () => {
-//   try {
-//     await runOpportunityScanner(notify);
-//   } catch (e) { console.error('Opportunity scanner error:', e.message); }
-// });
+// ─── Global Low Gas Alert — setiap jam ──────────────────────────
+// Memastikan bot selalu punya SOL untuk gas (Healer/Rescue)
+cron.schedule('0 * * * *', async () => {
+  if (!solanaReady) return;
+  try {
+    const balance = await getWalletBalance();
+    const balNum = safeNum(balance);
+    if (balNum < 0.05) {
+      const walletAddr = getWallet().publicKey.toString();
+      await urgentNotify(
+        `⛽ *URGENT: Saldo SOL Kritis!*\n\n` +
+        `Sisa saldo: \`${balNum.toFixed(4)} SOL\`\n` +
+        `Target wallet: \`${walletAddr}\`\n\n` +
+        `_Segera isi bensin biar si Healer gak mogok pas mau nyelametin modal lu, Bos!_`
+      );
+    }
+  } catch (e) { console.error('Low Gas Alert error:', e.message); }
+});
+
+// ─── Midnight Sweeper — setiap hari jam 1 pagi ──────────────────
+cron.schedule('0 1 * * *', async () => {
+  try {
+    await runMidnightSweeper(notify);
+  } catch (e) { console.error('Midnight sweeper error:', e.message); }
+});
 
 // ─── Daily Briefing jam 7 pagi ───────────────────────────────────
 cron.schedule('0 7 * * *', async () => {
@@ -585,10 +630,12 @@ bot.onText(/\/start/, (msg) => {
     `/pos — Fast REST summary\n` +
     `/results — Daily PnL report\n\n` +
     `*Control:*\n` +
-    `/autoscreen on|off — Toggle autonomy\n` +
-    `/dryrun on|off — Toggle simulation mode\n` +
-    `/zap <addr> — 🆘 Emergency Exit\n` +
-    `/check <mint> — Custom RugCheck\n\n` +
+    `/hunting — 🦅 Trigger Hunter Alpha (Sniper)\n` +
+    `/heal — 🩺 Trigger Healer Alpha (Position Mgmt)\n` +
+    `/zap <addr> — 🆘 Emergency Exit & Swap to SOL\n` +
+    `/check <mint> — 🔍 Custom RugCheck\n` +
+    `/autoscreen on|off — Toggle Autonomy\n` +
+    `/dryrun on|off — Toggle Simulation Mode\n\n` +
     `*Brain & Evolution:*\n` +
     `/brain /lessons /evolve /poolmemory\n\n` +
     `*Admin:*\n` +
@@ -884,7 +931,7 @@ bot.onText(/\/pools/, async (msg) => {
   await handleMessage(msg, 'Analisa dan tampilkan 5 pool DLMM terbaik berdasarkan fee APR saat ini');
 });
 
-bot.onText(/\/hunt/, async (msg) => {
+bot.onText(/\/(hunt|hunting)/, async (msg) => {
   if (msg.from.id !== ALLOWED_ID) return;
   const now = Date.now();
   const isHunterBusy = _hunterBusy && (now - _hunterBusy < LOCK_TIMEOUT_MS);
@@ -1435,11 +1482,16 @@ setTimeout(async () => {
     await initializeModelDiscovery();
 
     const balance = await getWalletBalance();
+    const today = getTodayResults();
+    const dailyPnl = today.totalPnlUsd + today.totalFeesUsd;
+    const cbStatus = dailyPnl < -cfg.dailyLossLimitUsd ? '🛑 LOCKED (Loss Limit)' : '✅ READY';
+
     await notify(
       `🚀 *Bot Started!*\n\n` +
-      `💰 Balance: ${balance} SOL | Mode: ${getConfig().dryRun ? '🟡 DRY RUN' : '🔴 LIVE'}\n` +
-      `🦅 Hunter: ${getConfig().autoScreeningEnabled ? '🤖 auto-screen ON' : '⏸ auto-screen OFF'} | 🩺 Healer: ${cfg.managementIntervalMin}min | 📡 Scanner: 15min\n\n` +
-      `/autoscreen on untuk mulai auto-deploy | /start untuk semua commands`
+      `💰 Balance: ${balance} SOL | 📊 Daily PnL: \`$${dailyPnl.toFixed(2)}\`\n` +
+      `🛡️ Circuit Breaker: *${cbStatus}*\n` +
+      `🦅 Hunter: ${cfg.autoScreeningEnabled ? '🤖 auto-screen ON' : '⏸ auto-screen OFF'} | 🩺 Healer: ON\n\n` +
+      `/status untuk cek posisi | /start untuk semua commands`
     );
     await runStartupModelCheck(notify);
   } catch (e) { console.error('Startup error:', e.message); }

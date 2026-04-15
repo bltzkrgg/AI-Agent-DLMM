@@ -7,7 +7,7 @@
 
 import { VersionedTransaction, PublicKey } from '@solana/web3.js';
 import { getConnection, getWallet } from './wallet.js';
-import { fetchWithTimeout, withRetry, withExponentialBackoff } from '../utils/safeJson.js';
+import { fetchWithTimeout, withRetry, withExponentialBackoff, stringify } from '../utils/safeJson.js';
 import { getRecommendedPriorityFee } from '../utils/helius.js';
 import { isDryRun } from '../config.js';
 
@@ -155,7 +155,10 @@ export async function getJupiterQuote(inputMint, outputMint, amountRaw, slippage
 
 // ─── Swap token → SOL ─────────────────────────────────────────────
 
-export async function swapToSOL(inputMint, amountRaw, slippageBps = 100) {
+export async function swapToSOL(inputMint, amountRaw, slippageBps = 100, options = {}) {
+  const { isUrgent = false } = options;
+  const effectiveSlippage = isUrgent ? 500 : slippageBps;
+
   if (!inputMint || inputMint === SOL_MINT) {
     return { skipped: true, reason: 'Already SOL or no mint provided' };
   }
@@ -163,7 +166,7 @@ export async function swapToSOL(inputMint, amountRaw, slippageBps = 100) {
     return { skipped: true, reason: 'Amount is zero' };
   }
   if (isDryRun()) {
-    console.log(`[DRY RUN] swapToSOL skipped: mint=${inputMint} amount=${amountRaw}`);
+    console.log(`[DRY RUN] swapToSOL skipped: mint=${inputMint} amount=${amountRaw} urgent=${isUrgent}`);
     return { dryRun: true, skipped: true, reason: 'Dry run mode — TX not executed' };
   }
 
@@ -171,26 +174,36 @@ export async function swapToSOL(inputMint, amountRaw, slippageBps = 100) {
   const connection = getConnection();
 
   // 1. Get quote
-  const quote = await getJupiterQuote(inputMint, SOL_MINT, amountRaw, slippageBps);
+  const quote = await getJupiterQuote(inputMint, SOL_MINT, amountRaw, effectiveSlippage);
   const outSol = parseInt(quote.outAmount) / 1e9;
+  
+  // 🛡️ SURGICAL IMPACT GUARD: Pelindung Modal dari Liquiditas Ampas
+  const impact = parseFloat(quote.priceImpactPct || 0);
+  const maxAllowedImpact = isUrgent ? 10.0 : 5.0; // Pelit mode: 5% normal, 10% darurat
+  
+  if (impact > maxAllowedImpact) {
+    const errorMsg = `LIQUIDITY_TRAP: Price impact too high (${impact.toFixed(2)}% > ${maxAllowedImpact}%). ` +
+                     `Swap aborted to protect capital. Manual intervention required.`;
+    console.warn(`🛑 [jupiter] ${errorMsg}`);
+    throw new Error(errorMsg);
+  }
 
-  // 1.1 Dust protection — avoid swapping if expected return is too small (< 0.0001 SOL)
-  // Prevents "minimum output not met" or "insufficient funds for rent" on tiny amounts.
   if (outSol < 0.0001) {
     return { skipped: true, reason: `Dust amount: expected return ${outSol.toFixed(7)} SOL is too small` };
   }
 
   // 2. Get Helius priority fee recommendation (best-effort)
-  let priorityFeeLamports = 50000; // default 0.00005 SOL
+  let priorityFeeLamports = isUrgent ? 250000 : 50000;
   try {
-    priorityFeeLamports = await getRecommendedPriorityFee([inputMint, SOL_MINT]);
+    const recommended = await getRecommendedPriorityFee([inputMint, SOL_MINT]);
+    priorityFeeLamports = Math.max(priorityFeeLamports, recommended);
   } catch { /* pakai default */ }
 
   // 3. Get swap transaction
   const swapRes = await fetchJupiter('/swap/v1/swap', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
+    body: stringify({
       quoteResponse: quote,
       userPublicKey: wallet.publicKey.toString(),
       wrapAndUnwrapSol: true,
@@ -206,19 +219,54 @@ export async function swapToSOL(inputMint, amountRaw, slippageBps = 100) {
 
   const { swapTransaction } = await swapRes.json();
 
-  // 3. Deserialize → sign → send
-  const txBuf = Buffer.from(swapTransaction, 'base64');
-  const tx = VersionedTransaction.deserialize(txBuf);
-  tx.sign([wallet]);
+  // 4. Deserialize → (optional Jito) → sign → send
+  let finalTx;
+  try {
+    const txBuf = Buffer.from(swapTransaction, 'base64');
+    const versionedTx = VersionedTransaction.deserialize(txBuf);
+    
+    if (isUrgent) {
+      const tipAmount = 1000000; // 0.001 SOL Jito Tip
+      const tipAddr = JITO_TIP_ADDRESSES[Math.floor(Math.random() * JITO_TIP_ADDRESSES.length)];
+      
+      const tipIx = SystemProgram.transfer({
+        fromPubkey: wallet.publicKey,
+        toPubkey: new PublicKey(tipAddr),
+        lamports: tipAmount,
+      });
+
+      const addressLookupTableAccounts = await Promise.all(
+        versionedTx.message.addressTableLookups.map(async (lookup) => {
+          return (await connection.getAddressLookupTable(lookup.accountKey)).value;
+        })
+      );
+
+      const message = TransactionMessage.decompile(versionedTx.message, {
+        addressLookupTableAccounts,
+      });
+
+      message.instructions.push(tipIx);
+      versionedTx.message = message.compileToV0Message(addressLookupTableAccounts);
+      console.log(`🛡️ Jito Anti-MEV Enabled: Tip ${tipAmount/1e9} SOL added to ${tipAddr.slice(0, 8)}...`);
+    }
+
+    versionedTx.sign([wallet]);
+    finalTx = versionedTx;
+  } catch (err) {
+    console.warn(`⚠️ Gagal menyuntikkan Jito Tip, lanjut tanpa tip: ${err.message}`);
+    const txBuf = Buffer.from(swapTransaction, 'base64');
+    const fallbackTx = VersionedTransaction.deserialize(txBuf);
+    fallbackTx.sign([wallet]);
+    finalTx = fallbackTx;
+  }
+
   let txHash = null;
   try {
-    txHash = await connection.sendRawTransaction(tx.serialize(), {
+    txHash = await connection.sendRawTransaction(finalTx.serialize(), {
       skipPreflight: false,
       maxRetries: 3,
     });
 
-    // Pakai polling confirm (sama dengan meteora.js) — lebih reliable dari websocket confirmTransaction
-    // yang sering timeout di public RPC tanpa berarti TX gagal.
     const start = Date.now();
     const maxWaitMs = 60000;
     while (Date.now() - start < maxWaitMs) {
@@ -242,9 +290,9 @@ export async function swapToSOL(inputMint, amountRaw, slippageBps = 100) {
       outAmountLamports: quote.outAmount,
       outSol:     parseFloat(outSol.toFixed(6)),
       priceImpactPct: quote.priceImpactPct || 0,
+      urgent:     isUrgent
     };
   } catch (error) {
-    // Standardized connection access via closure or explicit getter
     const likelySuccess = await detectLikelySwapSuccess({
       connection: getConnection(),
       wallet,
@@ -261,6 +309,7 @@ export async function swapToSOL(inputMint, amountRaw, slippageBps = 100) {
         inAmount: amountRaw,
         outAmountLamports: quote.outAmount,
         priceImpactPct: quote.priceImpactPct || 0,
+        urgent: isUrgent
       };
     }
     throw error;
@@ -269,12 +318,12 @@ export async function swapToSOL(inputMint, amountRaw, slippageBps = 100) {
 
 // ─── Swap all non-SOL balance of a token to SOL ───────────────────
 
-export async function swapAllToSOL(tokenMint, slippageBps = 100) {
+export async function swapAllToSOL(tokenMint, slippageBps = 100, options = {}) {
   const wallet = getWallet();
   const balance = await getTokenBalance(wallet.publicKey, tokenMint);
   const amount  = typeof balance === 'string' ? balance : balance.toString();
   if (!amount || amount === '0') {
     return { skipped: true, reason: `No balance for ${tokenMint.slice(0, 8)}...` };
   }
-  return swapToSOL(tokenMint, amount, slippageBps);
+  return swapToSOL(tokenMint, amount, slippageBps, options);
 }

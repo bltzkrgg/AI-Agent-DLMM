@@ -1,6 +1,7 @@
 import { readFileSync, existsSync, writeFileSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
+import { stringify } from './utils/safeJson.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const CONFIG_PATH = process.env.BOT_CONFIG_PATH || join(__dirname, '../user-config.json');
@@ -11,6 +12,7 @@ const DEFAULTS = {
   maxPositions: 10,
   minSolToOpen: 0.07,
   gasReserve: 0.02, // SOL yang disisakan untuk tx fees + account rent
+  dailyLossLimitUsd: 5.0, // Batas kerugian harian ($) sebelum Hunter istirahat
 
   // Agent intervals (minutes)
   managementIntervalMin: 15,
@@ -62,8 +64,7 @@ const DEFAULTS = {
   proactiveExitBearishConfidence: 0.7,
   maxPriceImpactPct: 2.5,     // Maksimal price impact (%) yang diijinkan saat simulasi swap (0.5 SOL)
   maxBinsPerPosition: 125,   // Kapasitas bin maksimal sesuai skema (80-125)
-  activePreset: 'rsi_plus_supertrend', // Mode keputusan: supertrend_break, rsi_reversal, rsi_plus_supertrend
-  rsi2Threshold: 90,         // Hard scale range width based on Volatility + Capitulation
+  activePreset: 'supertrend_only', // Mode keputusan: supertrend_only
   targetRangePct: 90.0,      // Goal: Deep Jaring 90% Range (Hukum 2)
 
   // Darwinian Signal Weighting — dari 263 closed positions
@@ -148,7 +149,8 @@ const CONFIG_BOUNDS = {
   maxPriceImpactPct: { min: 0.1, max: 5 },
   maxBinsPerPosition: { min: 20, max: 150 },
   minTokenAgeMinutes: { min: 0, max: 1440 },
-  rsi2Threshold: { min: 50, max: 98 },
+  dailyLossLimitUsd: { min: 0, max: 1000 },
+
   lastEvolutionTradeCount: { min: 0, max: 1000000 },
   maxVolumeTvlRatio: { min: 1, max: 1000 },
   minTokenFeesSol: { min: 0, max: 10000 },
@@ -269,7 +271,7 @@ export function updateConfig(updates) {
       ...validated.strategyOverrides,
     };
   }
-  writeFileSync(CONFIG_PATH, JSON.stringify(merged, null, 2));
+  writeFileSync(CONFIG_PATH, stringify(merged, 2));
   console.log('✅ Config updated:', Object.keys(validated).join(', '));
   return getConfig();
 }

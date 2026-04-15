@@ -4,7 +4,7 @@ import BN from 'bn.js';
 import { getConnection, getWallet } from './wallet.js';
 import db, { savePosition, closePositionWithPnl, enqueueReconcileIssue, updatePositionLifecycle, runInQueue } from '../db/database.js';
 import { updatePositionRuntimeState } from '../app/positionRuntimeState.js';
-import { fetchWithTimeout, safeNum, withRetry, withExponentialBackoff, stringify } from '../utils/safeJson.js';
+import { fetchWithTimeout, safeNum, withRetry, withExponentialBackoff, stringify, getConservativeSlippage } from '../utils/safeJson.js';
 import { toLamports, fromLamports, sumBigInts } from '../utils/units.js';
 import { resolveTokens, WSOL_MINT } from '../utils/tokenMeta.js';
 import { getRecommendedPriorityFee } from '../utils/helius.js';
@@ -12,6 +12,7 @@ import { isDryRun } from '../config.js';
 import { getWalletPositions as getLPAgentPositions, isLPAgentEnabled } from '../market/lpAgent.js';
 import { swapToSol } from '../utils/jupiter.js';
 import { getTokenBalance } from './wallet.js';
+import { getMarketSnapshot } from '../market/oracle.js';
 import crypto from 'crypto';
 
 const METEORA_DLMM_API = 'https://dlmm-api.meteora.ag';
@@ -59,7 +60,7 @@ async function pollTxConfirm(connection, txHash, maxWaitMs = 60000) {
     try {
       const status = await connection.getSignatureStatus(txHash, { searchTransactionHistory: true });
       const val = status?.value;
-      if (val?.err) throw new Error(`TX gagal on-chain: ${JSON.stringify(val.err)}`);
+      if (val?.err) throw new Error(`TX gagal on-chain: ${stringify(val.err)}`);
       if (val?.confirmationStatus === 'confirmed' || val?.confirmationStatus === 'finalized') {
         return txHash;
       }
@@ -204,6 +205,52 @@ async function getPositionInfoFromMeteoraAPI(poolAddress) {
 // Returns null on failure (caller should fall back gracefully).
 export async function getPositionInfoLight(poolAddress) {
   return getPositionInfoFromMeteoraAPI(poolAddress);
+}
+
+// ─── Global Position Sync (Sensus Penduduk) ──────────────────────
+// Memanggil semua posisi aktif untuk wallet ini di seluruh Meteora DLMM.
+// Digunakan untuk "Self-Healing" (menemukan posisi gaib yang tidak ada di DB).
+export async function getAllWalletPositions() {
+  try {
+    const wallet = getWallet();
+    const owner = wallet.publicKey.toString();
+
+    const url = `${METEORA_DLMM_API}/position/list_by_user?user=${owner}`;
+    const res = await fetchWithTimeout(url, {}, 10000);
+    if (!res.ok) return null;
+
+    const raw = await res.json();
+    const rows = Array.isArray(raw) ? raw : (raw.userPositions ?? raw.positions ?? raw.data ?? []);
+    
+    if (!rows.length) return [];
+
+    return rows.map(p => {
+      const xAmt = parseFloat(p.totalXAmount ?? p.total_x_amount ?? 0);
+      const yAmt = parseFloat(p.totalYAmount ?? p.total_y_amount ?? 0);
+      const feeX = parseFloat(p.feeX ?? p.fee_x ?? p.unclaimed_fee_x ?? 0);
+      const feeY = parseFloat(p.feeY ?? p.fee_y ?? p.unclaimed_fee_y ?? 0);
+      const price = parseFloat(p.currentPrice ?? p.active_bin_price ?? 0);
+      const valSol = yAmt + feeY + (xAmt + feeX) * price;
+      const feeSol = feeY + feeX * price;
+
+      return {
+        address: p.address ?? p.pubkey ?? p.positionAddress ?? '',
+        poolAddress: p.pool_address ?? p.lbPair ?? p.lbPairAddress ?? '',
+        currentValueSol: parseFloat(valSol.toFixed(9)),
+        feeCollectedSol: parseFloat(feeSol.toFixed(9)),
+        inRange: p.inRange ?? p.is_in_range ?? true,
+        lowerBinId: p.lowerBinId ?? p.lower_bin_id ?? 0,
+        upperBinId: p.upperBinId ?? p.upper_bin_id ?? 0,
+        activeBinId: p.activeBinId ?? p.active_bin_id ?? 0,
+        binStep: p.binStep ?? p.bin_step ?? 0,
+        currentPrice: price,
+        fromAPI: true,
+      };
+    });
+  } catch (e) {
+    console.warn('[meteora global sync]:', e.message);
+    return null;
+  }
 }
 
 // ─── Position Info ───────────────────────────────────────────────
@@ -485,8 +532,8 @@ async function _openPositionLogic(poolAddress, tokenXAmount, tokenYAmount, price
 
   // Meteora PositionV2 supports up to 1,400 bins.
   // We chunk for Transaction Size Safety (Solana ~1232 byte limit).
-  // Aegis: Increased safety margin to 50 bins per chunk.
-  let binChunks = totalBins <= 50
+  // Aegis: Balanced safety margin to 100 bins per chunk (Efficiency over fragmentation)
+  let binChunks = totalBins <= 100
     ? [{ lowerBinId: rangeMin, upperBinId: rangeMax }]
     : chunkBinRange(rangeMin, rangeMax);
 
@@ -590,7 +637,7 @@ async function _openPositionLogic(poolAddress, tokenXAmount, tokenYAmount, price
             strategy: { maxBinId: chunk.upperBinId, minBinId: chunk.lowerBinId, strategyType: 0 },
           });
         } else {
-          // Normal Deployment (e.g. Wave Enjoyer with X+Y)
+          // Standard Deployment (e.g. Single-side SOL)
           console.log(`[meteora] case A normal: range [${chunk.lowerBinId}, ${chunk.upperBinId}], totalX=${chunkTotalX.toString()}, totalY=${chunkTotalY.toString()}`);
 
           txs = await dlmmPool.initializePositionAndAddLiquidityByStrategy({
@@ -638,10 +685,10 @@ async function _openPositionLogic(poolAddress, tokenXAmount, tokenYAmount, price
 
           // Sentinel: Validate weights before passing to SDK
           if (!Array.isArray(weights) || weights.length === 0 || weights.some(w => !Number.isFinite(w) || w < 0)) {
-            throw new Error(`Invalid weights array in case B: ${JSON.stringify(weights)}`);
+            throw new Error(`Invalid weights array in case B: ${stringify(weights)}`);
           }
 
-          console.log(`[meteora] case B normal add: binIds=${JSON.stringify(binIds)}, weights=${JSON.stringify(weights)}, totalXAmount=${chunkTotalX.toString()}, totalYAmount=${chunkTotalY.toString()}`);
+          console.log(`[meteora] case B normal add: binIds=${stringify(binIds)}, weights=${stringify(weights)}, totalXAmount=${chunkTotalX.toString()}, totalYAmount=${chunkTotalY.toString()}`);
 
           txs = await dlmmPool.addLiquidityByWeight({
             positionPubKey: posKp.publicKey,
@@ -746,10 +793,10 @@ async function _openPositionLogic(poolAddress, tokenXAmount, tokenYAmount, price
         // Detailed signature validation
         if (tx.signatures && tx.signatures.length > 0) {
           console.log(`  - Signature 0 type: ${typeof tx.signatures[0]}, constructor: ${tx.signatures[0]?.constructor?.name}`);
-          console.log(`  - Signature 0 value: ${tx.signatures[0]?.toString?.() || JSON.stringify(tx.signatures[0])}`);
+          console.log(`  - Signature 0 value: ${tx.signatures[0]?.toString?.() || stringify(tx.signatures[0])}`);
           if (tx.signatures[1]) {
             console.log(`  - Signature 1 type: ${typeof tx.signatures[1]}, constructor: ${tx.signatures[1]?.constructor?.name}`);
-            console.log(`  - Signature 1 value: ${tx.signatures[1]?.toString?.() || JSON.stringify(tx.signatures[1])}`);
+            console.log(`  - Signature 1 value: ${tx.signatures[1]?.toString?.() || stringify(tx.signatures[1])}`);
           }
         }
 
@@ -1220,8 +1267,15 @@ export async function closePositionDLMM(poolAddress, positionAddress, pnlData = 
           if (xBalance > 0) {
             // Small threshold check: only swap if value is worth the gas (> ~$0.20 approx)
             // But for 0.5 SOL test, we swap everything to keep it clean
-            console.log(`[closePositionDLMM] Auto-Swap: Converting ${xBalance} Token X back to SOL...`);
-            const swapResult = await swapToSol(xMint, Math.floor(xBalance * Math.pow(10, xMeta.decimals)));
+            // Logika Irit: Hitung slippage dinamis biar gak rugi price impact
+            let slippage = 100; // default 1.0%
+            try {
+              const snapshot = await getMarketSnapshot(xMint, poolAddress);
+              slippage = getConservativeSlippage(snapshot?.price?.volatility24h || 0);
+            } catch { /* pakai default 1% jika gagal fetch snapshot */ }
+
+            console.log(`[closePositionDLMM] Auto-Swap: Converting ${xBalance} Token X back to SOL (Slippage: ${slippage/100}%)...`);
+            const swapResult = await swapToSol(xMint, Math.floor(xBalance * Math.pow(10, xMeta.decimals)), slippage);
             if (swapResult) {
               const connection = getConnection();
               const wallet = getWallet();

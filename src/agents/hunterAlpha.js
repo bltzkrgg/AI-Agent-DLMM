@@ -18,7 +18,7 @@ import { getSocialSignals, getTokenSocialScore } from '../market/socialScanner.j
 import { getInstinctsContext } from '../market/memory.js';
 import { getStrategyIntelligenceContext } from '../market/strategyPerformance.js';
 import { screenToken, formatScreenResult } from '../market/coinfilter.js';
-import { parseTvl, safeNum } from '../utils/safeJson.js';
+import { parseTvl, safeNum, stringify } from '../utils/safeJson.js';
 import { kv, hr, codeBlock, shortAddr } from '../utils/table.js';
 import { getDarwinWeights, captureSignals } from '../market/signalWeights.js';
 import { isOnCooldown, getPoolMemoryContext, recordDeployment } from '../market/poolMemory.js';
@@ -59,7 +59,7 @@ function calculateDarwinScore(pool, weightsOverride, sentiment = 'NEUTRAL') {
   if (tvl > 0 && fees > 0) {
     const ratio = fees / tvl;
     const ratioScore = Math.min(ratio / 0.05, 2.0) / 2.0; // 5% ratio = max 1.0
-    score += ratioScore * (w.feeActiveTvlRatio || 2.3);
+    score += ratioScore * (w.feeActiveTvlRatio || 3.5);
   }
 
   // volume — near floor, de-emphasize
@@ -286,7 +286,22 @@ async function executeTool(name, input) {
         };
       }));
 
-      const filtered = enriched
+      // ─── Efficiency Scorer & Deduplication (Layer 7) ──────────
+      // Jika koin yang sama punya > 1 pool (misal 100 vs 125), 
+      // ambil yang rasionya paling "Gacor" (Volume/TVL tertinggi).
+      const tokenMap = new Map(); // tokenMint -> bestPool
+      for (const p of enriched) {
+        const mint = p.tokenX || p.tokenY;
+        const currentRatio = parseFloat(p.feeToTvlRatio);
+        const existing = tokenMap.get(mint);
+        
+        if (!existing || currentRatio > parseFloat(existing.feeToTvlRatio)) {
+          tokenMap.set(mint, p);
+        }
+      }
+
+      // Re-sort berdasarkan Darwin Score (yang sudah include TVL/Fee logic)
+      const filtered = Array.from(tokenMap.values())
         .sort((a, b) => b.darwinScore - a.darwinScore)
         .slice(0, limit);
 
@@ -408,7 +423,7 @@ async function executeTool(name, input) {
         action: result.verdict === 'AVOID'
           ? 'SKIP — cari kandidat lain'
           : 'LANJUT DEPLOY — jumlah token dihitung otomatis',
-      }, null, 2);
+      }, 2);
     }
 
     case 'get_wallet_status': {
@@ -419,27 +434,27 @@ async function executeTool(name, input) {
       const effectiveMax = _hunterTargetCount != null
         ? openPos.length + _hunterTargetCount
         : cfg.maxPositions;
-      return JSON.stringify({
+      return stringify({
         solBalance: balance,
         openPositions: openPos.length,
         maxPositions: effectiveMax,
         targetCount: _hunterTargetCount,
         canOpen: safeNum(balance) >= (cfg.deployAmountSol + (cfg.gasReserve ?? 0.02)) && openPos.length < effectiveMax,
         requiredSol: safeNum((cfg.deployAmountSol + (cfg.gasReserve ?? 0.02)).toFixed(4)),
-      }, null, 2);
+      }, 2);
     }
 
     case 'get_pool_memory': {
       const stats = getPoolStats(input.pool_address);
       if (!stats) {
-        return JSON.stringify({ firstTime: true, message: 'Belum pernah deploy ke pool ini.' }, null, 2);
+        return stringify({ firstTime: true, message: 'Belum pernah deploy ke pool ini.' }, 2);
       }
       const verdict = stats.winRate < 40
         ? 'HINDARI — win rate rendah, histori buruk di pool ini'
         : stats.winRate < 60
           ? 'HATI-HATI — win rate di bawah rata-rata'
           : 'OK — histori positif di pool ini';
-      return JSON.stringify({ ...stats, verdict }, null, 2);
+      return stringify({ ...stats, verdict }, 2);
     }
 
     case 'deploy_position': {
@@ -508,7 +523,7 @@ async function executeTool(name, input) {
       // Safety: max drawdown (sinkron — cek dulu sebelum fetch API)
       const drawdown = checkMaxDrawdown();
       if (drawdown.triggered) {
-        return JSON.stringify({ blocked: true, reason: drawdown.reason }, null, 2);
+        return stringify({ blocked: true, reason: drawdown.reason }, 2);
       }
 
       // ── Auto-calculate position sizing ──────────────────────────
@@ -629,7 +644,7 @@ async function executeTool(name, input) {
           if (hunterNotifyFn) {
             await hunterNotifyFn(`❌ *Deploy Dibatalkan*\n\nUser tidak menyetujui deploy ke pool \`${input.pool_address.slice(0, 8)}...\``).catch(() => { });
           }
-          return JSON.stringify({ blocked: true, reason: 'Ditolak oleh user.' }, null, 2);
+          return stringify({ blocked: true, reason: 'Ditolak oleh user.' }, 2);
         }
       }
 
@@ -725,25 +740,25 @@ async function executeTool(name, input) {
         console.warn('[hunter] Post-deploy notification failed:', notifErr.message);
       }
 
-      return JSON.stringify({ ...result, strategyUsed: strategy?.name, reasoning: input.reasoning }, null, 2);
+      return stringify({ ...result, strategyUsed: strategy?.name, reasoning: input.reasoning }, 2);
     }
 
     case 'get_social_signals': {
       const signals = await getSocialSignals();
-      return JSON.stringify({
+      return stringify({
         source: 'Meridian Social Hivemind',
         signals: signals.slice(0, 15),
         note: 'Gunakan mint address ini untuk memanggil screen_token jika belum ada di screen_pools.'
-      }, null, 2);
+      }, 2);
     }
 
     case 'run_evolution': {
       const updates = await runEvolutionCycle();
-      return JSON.stringify({
+      return stringify({
         success: !!updates,
         appliedUpdates: updates || 'No updates needed at this cycle (performance stable).',
         summary: updates ? 'Thresholds adjusted based on recent trade performance.' : 'Current thresholds are optimal.'
-      }, null, 2);
+      }, 2);
     }
 
     default:
@@ -819,8 +834,12 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null, opt
         const fees = p.fees24hRaw || 0;
         const feeRatio = tvl > 0 ? fees / tvl : 0;
         const binStep = p.binStep || 0;
+        
+        // Evil Panda baseline steps (Hukum 3)
+        const isPandaStep = [100, 125].includes(binStep);
+
         return (
-          binStep > 0 && binStep <= 250 &&
+          isPandaStep &&
           tvl >= thresholds.minTvl &&
           tvl <= thresholds.maxTvl &&
           feeRatio >= thresholds.minFeeActiveTvlRatio &&
@@ -909,10 +928,21 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null, opt
     }));
 
     // --- Filter obvious rejects & Technical Hard-Gate ---
+    const rawTotal = rawPools.length;
+    const basicFilteredCount = filtered.length;
     const finalEnriched = enriched.filter(p => p !== null);
+    const trendRejectedCount = basicFilteredCount - finalEnriched.length;
     
     if (finalEnriched.length === 0) {
-      if (notifyFn) await notifyFn(`⚠️ *Discovery:* Gagal menemukan kandidat dengan konformasi BULLISH 15m dari Top 100.`);
+      if (notifyFn) {
+        await notifyFn(
+          `⚠️ *Discovery Result:* 0/${rawTotal} candidates matched.\n\n` +
+          `• Basic Filters (TVL/BinStep): ${rawTotal - basicFilteredCount} rejected\n` +
+          `• Technical Hard-Gate (Trend): ${trendRejectedCount} non-Bullish\n` +
+          `• API/Data Status: ${trendRejectedCount === 0 && basicFilteredCount > 0 ? '❌ All APIs Failed' : '✅ APIs Linked'}\n\n` +
+          `_Market sepertinya sedang sideways/bearish. Sniper tetap disiplin._`
+        );
+      }
       return null;
     }
 
@@ -957,7 +987,7 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null, opt
       `Pool Memory, OKX, Multi-TF, dan Smart Wallet sudah diambil. JANGAN fetch ulang.\n` +
       `Langsung: (1) get_pool_detail top kandidat → (2) screen_token → (3) deploy_position\n\n` +
       `Kandidat viable (${display.length} pool, urut darwinScore):\n` +
-      JSON.stringify(display, null, 2);
+      stringify(display, 2);
   } catch (e) {
     console.error('Hunter pre-compute failed:', e.message);
     preComputedContext = '\n\nCatatan: Pre-screening gagal. Gunakan screen_pools untuk ambil kandidat.';
@@ -988,7 +1018,7 @@ WORKFLOW:
    a. get_pool_detail: Verify momentumM5 spike and feeApr.
    b. screen_token: Security audit (Mint/Freeze/PriceImpact). 
    c. MEMORY AUDIT: Cross-reference lessonsCtx and instincts for past failure patterns.
-4. deploy_position: Apply the "Warp Panda" strategy logic.
+4. deploy_position: Apply the "Evil Panda Master" strategy logic.
 
 ERROR HANDLING:
 - If a tool returns "NETWORK_ERROR" or "Fetch failed": This is a technical connectivity issue with the infrastructure (Jupiter/RPC).
