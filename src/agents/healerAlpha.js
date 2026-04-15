@@ -2,7 +2,7 @@
 
 import { createMessage, resolveModel } from '../agent/provider.js';
 import { getConfig, getThresholds } from '../config.js';
-import { getPositionInfo, closePositionDLMM, claimFees, getPoolInfo, getSolPriceUsd } from '../solana/meteora.js';
+import { getPositionInfo, closePositionDLMM, claimFees, getPoolInfo, getSolPriceUsd, isDryRun } from '../solana/meteora.js';
 import { getConnection, getWallet, getWalletBalance } from '../solana/wallet.js';
 import { PublicKey } from '@solana/web3.js';
 import { getOpenPositions, closePositionWithPnl, saveNotification, updatePositionLifecycle } from '../db/database.js';
@@ -490,10 +490,14 @@ export async function executeTool(name, input, notifyFn = null) {
           entityId: input.position_address,
           payload: { ...input, pnlData },
           metadata: { source: 'healer_tool', poolAddress: input.pool_address },
-          execute: () => closePositionDLMM(input.pool_address, input.position_address, {
-            ...pnlData,
-            lifecycleState: 'closed_pending_swap',
-          }),
+          execute: () => {
+            const reason = pnlData.closeReason || '';
+            const isUrgentClose = reason.includes('STOP_LOSS') || reason.includes('PANIC') || reason.includes('EMERGENCY');
+            return closePositionDLMM(input.pool_address, input.position_address, {
+              ...pnlData,
+              lifecycleState: 'closed_pending_swap',
+            }, { isUrgent: isUrgentClose });
+          },
         }));
       } catch (error) {
         if (getOpenPositions().some(p => p.position_address === input.position_address)) {
@@ -646,7 +650,7 @@ export async function executeTool(name, input, notifyFn = null) {
           execute: () => closePositionDLMM(input.pool_address, input.position_address, {
             ...zapPnlData,
             lifecycleState: 'closed_pending_swap',
-          }),
+          }, { isUrgent: true }),
         }));
       } catch (error) {
         if (getOpenPositions().some(p => p.position_address === input.position_address)) {
@@ -1401,4 +1405,104 @@ Gunakan Bahasa Indonesia. Selalu explain kenapa HOLD atau CLOSE.`;
   }
 
   return report;
+}
+
+/**
+ * High-Frequency Technical Heartbeat (Panic Watchdog)
+ * Tanpa LLM, tanpa biaya, fokus murni pada keselamatan modal (Option B+).
+ */
+export async function runPanicWatchdog(notifyFn) {
+  const openPositions = getOpenPositions();
+  if (openPositions.length === 0) return;
+
+  // Audit silently without logs unless action is taken or error occurs
+  const lpPnlMap = await getLpPnlMap();
+
+  for (const pos of openPositions) {
+    try {
+      // 1. Ambil data teknikal & on-chain real-time
+      const snapshot = await getMarketSnapshot(pos.token_mint, pos.pool_address);
+      const onChain = await getPositionInfo(pos.pool_address);
+      const match = onChain?.find(p => p.address === pos.position_address);
+
+      if (!match || !snapshot) continue;
+
+      const posSnapshot = resolvePositionSnapshot({
+        dbPosition: pos,
+        livePosition: match,
+        providerPnlPct: lpPnlMap.get(pos.position_address),
+      });
+
+      // 🏛️ LOGIKA TACTICAL PANDA (Option B+):
+      // Kita kabur kalau:
+      // A. Trend 15m BEARISH (Sudah mulai dump)
+      // B. DAN Harga keluar jaring di bawah (Price < Lower Range)
+      
+      const isBearish = snapshot.indicators?.supertrend?.trend === 'BEARISH';
+      const isOORLower = !match.inRange && match.currentPrice < match.lowerPrice;
+      const pnlPct = posSnapshot.pnlPct;
+
+      // Skenario 1: CRITICAL DUMP (Bearish + Jebol Jaring)
+      if (isBearish && isOORLower) {
+        const msg = `🚨 *PANIC EXIT EXECUTED!* (Critical Dump)\n\n` +
+                   `• Posisi: \`${shortAddr(pos.position_address)}\`\n` +
+                   `• Pool: \`${shortAddr(pos.pool_address)}\`\n` +
+                   `• Alasan: Trend 15m BEARISH & Price < Lower Range\n` +
+                   `• PnL: ${pnlPct > 0 ? '+' : ''}${pnlPct.toFixed(2)}%\n\n` +
+                   `⚠️ _Sistem menutup posisi secara otomatis untuk mengamankan sisa SOL._`;
+        
+        await notifyFn?.(msg);
+        const closeResult = await closePositionDLMM(pos.pool_address, pos.position_address, {
+          pnlUsd: posSnapshot.pnlUsd,
+          pnlPct: posSnapshot.pnlPct,
+          feesUsd: posSnapshot.feesUsd,
+          closeReason: 'PANIC_EXIT_BEARISH_OOR',
+          lifecycleState: 'closed_panic'
+        }, { isUrgent: true });
+
+        // 🛡️ ZERO DUST PROTOCOL: Instan Swap Balik ke SOL
+        if (closeResult && !isDryRun()) {
+          await new Promise(r => setTimeout(r, 2000)); // Tunggu RPC propagasi
+          const swapRes = await swapAllToSOL(pos.token_mint);
+          if (swapRes.success) {
+            await notifyFn?.(`🔄 *Zero Dust:* Berhasil swap balik ke \`${swapRes.outSol}\` SOL.`);
+          } else if (swapRes.reason !== 'ZERO_BALANCE') {
+            await notifyFn?.(`⚠️ *Zero Dust Gagal:* Token masih di wallet. Lakukan swap manual!`);
+          }
+        }
+        continue;
+      }
+
+      // Skenario 2: PROFIT PROTECTION (Profit + Trend Bearish)
+      // Kalau lu udah profit biarpun dikit, tapi trend-nya flip, mending bungkus.
+      if (isBearish && pnlPct >= 0.5) {
+        const msg = `🛡️ *PROFIT PROTECTION:* (Trend Flip)\n\n` +
+                   `• Posisi: \`${shortAddr(pos.position_address)}\`\n` +
+                   `• Alasan: Trend Bearish detected while in profit.\n` +
+                   `• PnL: +${pnlPct.toFixed(2)}%\n\n` +
+                   `_Mengunci profit sebelum dimakan dump._`;
+        
+        await notifyFn?.(msg);
+        const closeResult = await closePositionDLMM(pos.pool_address, pos.position_address, {
+          pnlUsd: posSnapshot.pnlUsd,
+          pnlPct: posSnapshot.pnlPct,
+          feesUsd: posSnapshot.feesUsd,
+          closeReason: 'PROFIT_PROTECTION_BEARISH',
+          lifecycleState: 'closed_profit_protection'
+        }, { isUrgent: true });
+
+        // 🛡️ ZERO DUST PROTOCOL: Instan Swap Balik ke SOL
+        if (closeResult && !isDryRun()) {
+          await new Promise(r => setTimeout(r, 2000));
+          const swapRes = await swapAllToSOL(pos.token_mint);
+          if (swapRes.success) {
+            await notifyFn?.(`🔄 *Zero Dust:* Profit dikunci & dikonversi ke SOL.`);
+          }
+        }
+      }
+
+    } catch (e) {
+      console.error(`[watchdog] Failed checking ${pos.position_address}:`, e.message);
+    }
+  }
 }

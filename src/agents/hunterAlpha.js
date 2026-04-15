@@ -809,7 +809,7 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null, opt
     const thresholds = getThresholds();
     const weights = getDarwinWeights(); // adaptive weights dari data nyata
     const [rawPools, socialSignals] = await Promise.all([
-      getTopPools(25),
+      getTopPools(100),
       getSocialSignals().catch(() => [])
     ]);
 
@@ -835,18 +835,27 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null, opt
 
     // Fetch pool memory + multi-TF + smart wallets + sentiment in parallel
     const enriched = await Promise.all(filtered.map(async (p) => {
-      const [memResult, mtfResult, swResult, sentResult] = await Promise.allSettled([
+      const [memResult, ohlcvResult, swResult, sentResult] = await Promise.allSettled([
         Promise.resolve(getPoolStats(p.address)),
-        getMultiTFScore(p.tokenX, p.address),
+        getOHLCV(p.tokenX || p.tokenY, p.address),
         checkSmartWalletsOnPool(p.address),
         getSentiment(p.tokenX || p.tokenY)
       ]);
 
       const mem = memResult.status === 'fulfilled' ? memResult.value : null;
-      const mtf = mtfResult.status === 'fulfilled' ? mtfResult.value : null;
+      const ohlcv = ohlcvResult.status === 'fulfilled' ? ohlcvResult.value : null;
       const sw = swResult.status === 'fulfilled' ? swResult.value : null;
       const sent = sentResult.status === 'fulfilled' ? sentResult.value : null;
+
       const marketSent = sent?.sentiment || 'NEUTRAL';
+      const trend = ohlcv?.ta?.supertrend?.trend || 'NEUTRAL';
+
+      // ─── Phase 2.0: Technical Hard-Gate ─────────────────────────
+      // Sesuai filosofi Evil Panda: Jangan pernah entry kalau 15m Bearish.
+      if (trend !== 'BULLISH') {
+        if (process.env.HUNTER_DEBUG) console.log(`[hunter] Skipping ${p.name} - Supertrend 15m is ${trend}`);
+        return null;
+      }
 
       // ─── Phase 2.1: LLM Cost Guard (Static Security Filter) ─────
       // Run full audit for top candidates BEFORE sending to LLM.
@@ -859,11 +868,8 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null, opt
       }
 
 
-      // Update darwinScore dengan multiTFScore & Sentiment
-      if (mtf?.score > 0) {
-        p.multiTFScore = mtf.score;
-        p.darwinScore = calculateDarwinScore({ ...p, multiTFScore: mtf.score }, weights, marketSent);
-      }
+      // Update darwinScore dengan Sentiment & TA
+      p.darwinScore = calculateDarwinScore(p, weights, marketSent);
 
       const memVerdict = !mem
         ? 'firstTime'
@@ -891,11 +897,10 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null, opt
         poolMemory: mem
           ? { winRate: mem.winRate, totalTrades: mem.totalTrades, verdict: memVerdict }
           : { verdict: 'firstTime' },
-        multiTF: mtf ? {
-          score: mtf.score,
-          bullishTFs: `${mtf.bullishCount}/${mtf.validCount}`,
-          breakdown: Object.entries(mtf.breakdown || {})
-            .map(([tf, d]) => `${tf}:${d.bullish ? '✅' : '❌'}`).join(' '),
+        multiTF: ohlcv?.ta ? {
+          score: (ohlcv.ta.supertrend?.trend === 'BULLISH' ? 0.7 : 0.3),
+          bullishTFs: ohlcv.ta.supertrend?.trend === 'BULLISH' ? '1/1' : '0/1',
+          breakdown: `15m:${ohlcv.ta.supertrend?.trend === 'BULLISH' ? '✅' : '❌'}`
         } : null,
         smartWallet: sw?.found
           ? { wallets: sw.matches.map(m => m.label), confidence: sw.confidence }
@@ -903,15 +908,22 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null, opt
       };
     }));
 
-    // --- Filter obvious rejects & LLM Cost Guard ---
-    const viable = enriched.filter(p => 
+    // --- Filter obvious rejects & Technical Hard-Gate ---
+    const finalEnriched = enriched.filter(p => p !== null);
+    
+    if (finalEnriched.length === 0) {
+      if (notifyFn) await notifyFn(`⚠️ *Discovery:* Gagal menemukan kandidat dengan konformasi BULLISH 15m dari Top 100.`);
+      return null;
+    }
+
+    const viable = finalEnriched.filter(p => 
       p.poolMemory.verdict !== 'HINDARI' && 
-      p.security.verdict !== 'AVOID' // Skip obvious rugs/low liquidity
+      p.security.verdict !== 'AVOID'
     );
-    const skipped = enriched.length - viable.length;
+    const skipped = finalEnriched.length - viable.length;
 
     // Send brief rejection report for transparency
-    const rejected = enriched.filter(p => p.security.verdict === 'AVOID');
+    const rejected = finalEnriched.filter(p => p.security.verdict === 'AVOID');
     if (rejected.length > 0 && notifyFn) {
       let rejMsg = `🛡️ *Quick Filter: Removed ${rejected.length} risky/low-liq coins (Saved LLM cost):*\n`;
       rejected.forEach(p => rejMsg += `• ${p.name}: ${p.security.highFlags[0] || 'Unknown risk'}\n`);
@@ -919,8 +931,8 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null, opt
     }
 
     if (notifyFn) {
-      const smartWalletHits = enriched.filter(p => p.smartWallet?.wallets?.length > 0).length;
-      const highTFAlign = enriched.filter(p => (p.multiTF?.score || 0) >= 0.67).length;
+      const smartWalletHits = finalEnriched.filter(p => p.smartWallet?.wallets?.length > 0).length;
+      const highTFAlign = finalEnriched.filter(p => (p.multiTF?.score || 0) >= 0.67).length;
       await notifyFn(
         `📊 *Pre-screening selesai*\n` +
         `✅ Viable: ${viable.length}  ❌ Filtered: ${skipped}\n` +
