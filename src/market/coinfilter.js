@@ -219,13 +219,24 @@ function step7_organicScore(dex, jup, thresholds) {
 
     if ((dex.buys24h + dex.sells24h) >= 500) score += 20; // Pool super aktif
     else if ((dex.buys24h + dex.sells24h) >= 100) score += 10;
+
+    // --- UPGRADE: Volume-to-TVL Ratio Penalty (Anti-Wash Trading) ---
+    if (dex.volume24h > 0 && dex.liquidityUsd > 0) {
+      const ratio = dex.volume24h / dex.liquidityUsd;
+      const maxRatio = thresholds.maxVolumeTvlRatio || 70;
+      if (ratio > maxRatio) {
+        score -= 50; // Penalti berat jika sudah lewat batas aman
+      } else if (ratio > (maxRatio / 2)) {
+        score -= 25; // Penalti menengah jika rasio mulai tidak wajar
+      }
+    }
   }
 
   if (dex) {
     if (dex.priceChange1h >= -10) score += 15;
   }
 
-  score = Math.min(100, score);
+  score = Math.max(0, Math.min(100, score));
 
   if (score < minOrganic)
     rejects.push({ rule: 'LOW_ORGANIC_SCORE', msg: `Organic score: ${score}/100 (<${minOrganic})` });
@@ -312,7 +323,7 @@ async function getSlippageSimulation(tokenMint, amountSol) {
     const buyData = await withExponentialBackoff(async () => {
       try {
         const res = await fetchWithTimeout(
-          `https://quote-api.jup.ag/v6/quote?inputMint=${WSOL}&outputMint=${tokenMint}&amount=${amountLamports}&slippageBps=50`,
+          `https://quote-api.jup.ag/v6/quote?inputMint=${WSOL}&outputMint=${tokenMint}&amount=${amountLamports}&slippageBps=100`,
           {}, 15000
         );
         if (!res.ok) throw new Error(`BUY_HTTP_${res.status}`);
@@ -329,7 +340,7 @@ async function getSlippageSimulation(tokenMint, amountSol) {
     const sellData = await withExponentialBackoff(async () => {
       try {
         const res = await fetchWithTimeout(
-          `https://quote-api.jup.ag/v6/quote?inputMint=${tokenMint}&outputMint=${WSOL}&amount=${buyData.outAmount}&slippageBps=50`,
+          `https://quote-api.jup.ag/v6/quote?inputMint=${tokenMint}&outputMint=${WSOL}&amount=${buyData.outAmount}&slippageBps=100`,
           {}, 15000
         );
         if (!res.ok) {
@@ -381,7 +392,7 @@ function step10_authorityCheck(auth) {
   return rejects;
 }
 
-function step11_slippageCheck(sim, maxImpact = 0.5) {
+function step11_slippageCheck(sim, maxImpact = 2.5) {
   const rejects = [];
   const warnings = [];
   if (!sim) {
@@ -404,6 +415,38 @@ function step11_slippageCheck(sim, maxImpact = 0.5) {
   }
 
   return { rejects, warnings };
+}
+
+function step13_volumeTurnoverRatio(dex, thresholds) {
+  const rejects = [];
+  const maxRatio = thresholds.maxVolumeTvlRatio || 70;
+
+  if (dex && dex.volume24h && dex.liquidityUsd > 0) {
+    const ratio = dex.volume24h / dex.liquidityUsd;
+    if (ratio > maxRatio) {
+      rejects.push({
+        rule: 'VOLUME_TO_TVL_ANOMALY',
+        msg: `Rasio Vol/TVL tidak wajar (${ratio.toFixed(1)}x > ${maxRatio}x) — Indikasi kuat bot wash trading / thin liquidity trap`
+      });
+    }
+  }
+  return rejects;
+}
+
+function step14_feeIntegrity(dex, solPrice, thresholds) {
+  const rejects = [];
+  const minFeesSol = thresholds.minTokenFeesSol || 0;
+
+  if (minFeesSol > 0 && dex && dex.fees24h && solPrice > 0) {
+    const feesSol = dex.fees24h / solPrice;
+    if (feesSol < minFeesSol) {
+      rejects.push({
+        rule: 'FEE_VOLUME_INSUFFICIENT',
+        msg: `Total Fee 24 jam rendah (${feesSol.toFixed(2)} SOL < ${minFeesSol} SOL) — Volume terdeteksi kurang organik`
+      });
+    }
+  }
+  return rejects;
 }
 
 // ─── Step 12: GMGN On-Chain Security ─────────────────────────────
@@ -507,23 +550,27 @@ export async function screenToken(tokenMint, tokenName = '', tokenSymbol = '', o
     minVolume24h: cfg.minVolume24h,
     minOrganic: cfg.minOrganic,
     maxImpact: cfg.maxPriceImpactPct,
+    maxVolumeTvlRatio: cfg.maxVolumeTvlRatio,
+    minTokenFeesSol: cfg.minTokenFeesSol,
   };
 
   const deployAmount = cfg.deployAmountSol || 0.1;
 
-  const [dexResult, jupResult, authResult, simResult, gmgnInfoResult, gmgnSecResult] = await Promise.allSettled([
+  const [dexResult, jupResult, authResult, simResult, gmgnInfoResult, gmgnSecResult, solPriceResult] = await Promise.allSettled([
     getDexScreenerInfo(tokenMint),
     getJupiterData(tokenMint),
     getOnChainAuthority(tokenMint),
     getSlippageSimulation(tokenMint, deployAmount),
     getGmgnTokenInfo(tokenMint),
     getGmgnSecurity(tokenMint),
+    getJupiterPrice('So11111111111111111111111111111111111111112'),
   ]);
 
   const dex  = dexResult.status  === 'fulfilled' ? dexResult.value  : null;
   const jup  = jupResult.status  === 'fulfilled' ? jupResult.value  : null;
   const auth = authResult.status === 'fulfilled' ? authResult.value : { mintAuthority: true, freezeAuthority: true };
   const sim  = simResult.status  === 'fulfilled' ? simResult.value  : null;
+  const solPrice = solPriceResult.status === 'fulfilled' ? solPriceResult.value : 0;
 
   // ─── GMGN API Health Logic ────────────────────────────────────
   const hasGmgnKey = !!process.env.GMGN_API_KEY;
@@ -551,6 +598,8 @@ export async function screenToken(tokenMint, tokenName = '', tokenSymbol = '', o
   const s6  = step6_tokenSafety(jup);
   const s7  = step7_organicScore(dex, jup, thresholds);
   const s12 = step12_gmgnSecurity(gmgnInfo, gmgnSec);
+  const s13 = step13_volumeTurnoverRatio(dex, thresholds);
+  const s14 = step14_feeIntegrity(dex, solPrice, thresholds);
 
   // Obelisk Handle: Manual MCAP calculation if DexScreener is lagging
   let mcap = dex?.fdv || null;
@@ -569,7 +618,7 @@ export async function screenToken(tokenMint, tokenName = '', tokenSymbol = '', o
   const allRejects = [
     ...s1.rejects,  ...s2,          ...s3.rejects,  ...s4.rejects,
     ...s5.rejects,  ...s6.rejects,  ...s7.rejects,  ...s9.rejects,
-    ...s10,         ...s11.rejects, ...s12.rejects,
+    ...s10,         ...s11.rejects, ...s12.rejects, ...s13, ...s14,
   ];
   const allWarnings = [
     ...s1.warnings, ...s3.warnings, ...s5.warnings, ...s6.warnings, ...s11.warnings, ...s12.warnings,

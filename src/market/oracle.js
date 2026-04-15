@@ -243,7 +243,7 @@ async function getHistoryOHLCV(poolAddress) {
     // DexScreener V1 OHLCV API (Solana) 
     // Format: https://api.dexscreener.com/ohlcv/latest/v1/solana/{poolAddress}
     const res = await fetchWithTimeout(
-      `https://api.dexscreener.com/ohlcv/latest/v1/solana/${poolAddress}`,
+      `https://api.dexscreener.com/ohlcv/latest/v1/solana/${poolAddress}?timeframe=15`,
       {},
       8000
     );
