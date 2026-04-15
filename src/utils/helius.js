@@ -189,9 +189,10 @@ export async function getRecommendedPriorityFee(accountKeys = []) {
     try {
       // Native Solana Fallback: Tanya langsung ke jaringan
       const { getConnection } = await import('../solana/wallet.js');
+      const { PublicKey } = await import('@solana/web3.js');
       const connection = getConnection();
       const nativeFees = await connection.getRecentPrioritizationFees(
-        accountKeys.map(k => new (await import('@solana/web3.js')).PublicKey(k))
+        accountKeys.map(k => new PublicKey(k))
       );
       
       if (Array.isArray(nativeFees) && nativeFees.length > 0) {
