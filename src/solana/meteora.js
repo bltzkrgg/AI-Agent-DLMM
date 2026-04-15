@@ -211,44 +211,79 @@ export async function getPositionInfoLight(poolAddress) {
 // Memanggil semua posisi aktif untuk wallet ini di seluruh Meteora DLMM.
 // Digunakan untuk "Self-Healing" (menemukan posisi gaib yang tidak ada di DB).
 export async function getAllWalletPositions() {
+  const wallet = getWallet();
+  const owner = wallet.publicKey.toString();
+
+  // Tier 1: Meteora API (Utama)
   try {
-    const wallet = getWallet();
-    const owner = wallet.publicKey.toString();
-
     const url = `${METEORA_DLMM_API}/position/list_by_user?user=${owner}`;
-    const res = await fetchWithTimeout(url, {}, 10000);
-    if (!res.ok) return null;
+    const res = await fetchWithTimeout(url, {}, 8000);
+    if (res.ok) {
+      const raw = await res.json();
+      const rows = Array.isArray(raw) ? raw : (raw.userPositions ?? raw.positions ?? raw.data ?? []);
+      if (rows.length > 0 || res.status === 200) {
+        return rows.map(p => ({
+          address: p.address ?? p.pubkey ?? p.positionAddress ?? '',
+          poolAddress: p.pool_address ?? p.lbPair ?? p.lbPairAddress ?? '',
+          currentValueSol: parseFloat((p.totalYAmount ?? p.total_y_amount ?? 0) + (p.totalXAmount ?? p.total_x_amount ?? 0) * (p.currentPrice ?? 0)),
+          feeCollectedSol: parseFloat((p.feeY ?? p.unclaimed_fee_y ?? 0) + (p.feeX ?? p.unclaimed_fee_x ?? 0) * (p.currentPrice ?? 0)),
+          inRange: p.inRange ?? p.is_in_range ?? true,
+          lowerBinId: p.lowerBinId ?? p.lower_bin_id ?? 0,
+          upperBinId: p.upperBinId ?? p.upper_bin_id ?? 0,
+          currentPrice: p.currentPrice ?? 0,
+          fromAPI: true,
+        }));
+      }
+    }
+  } catch (e) {
+    console.warn(`⚠️ [meteora] Meteora API failed: ${e.message}. Falling back...`);
+  }
 
-    const raw = await res.json();
-    const rows = Array.isArray(raw) ? raw : (raw.userPositions ?? raw.positions ?? raw.data ?? []);
+  // Tier 2: LP Agent API (Cadangan 1)
+  try {
+    if (isLPAgentEnabled()) {
+      const lpPos = await getLPAgentPositions(owner);
+      if (lpPos && lpPos.length > 0) {
+        console.log(`📡 [meteora] Recovered ${lpPos.length} positions via LP Agent.`);
+        return lpPos;
+      }
+    }
+  } catch (e) {
+    console.warn(`⚠️ [meteora] LP Agent fallback failed: ${e.message}`);
+  }
+
+  // Tier 3: Direct Blockchain RPC Scan (Garda Terakhir)
+  try {
+    console.log(`🔍 [meteora] API failed, falling back to direct Blockchain RPC scan...`);
+    const connection = getConnection();
+    // Program ID Meteora DLMM: LBUZKh7B3LTayvS4ipSccvB6S7zP26syG9Y3u28Hn3F
+    const accounts = await connection.getProgramAccounts(
+      new PublicKey('LBUZKh7B3LTayvS4ipSccvB6S7zP26syG9Y3u28Hn3F'),
+      {
+        filters: [
+          { dataSize: 1040 }, // Ukuran akun Position di DLMM
+          { memcmp: { offset: 40, bytes: owner } } // Owner pubkey ada di offset 40
+        ]
+      }
+    );
+
+    if (accounts.length === 0) return [];
     
-    if (!rows.length) return [];
-
-    return rows.map(p => {
-      const xAmt = parseFloat(p.totalXAmount ?? p.total_x_amount ?? 0);
-      const yAmt = parseFloat(p.totalYAmount ?? p.total_y_amount ?? 0);
-      const feeX = parseFloat(p.feeX ?? p.fee_x ?? p.unclaimed_fee_x ?? 0);
-      const feeY = parseFloat(p.feeY ?? p.fee_y ?? p.unclaimed_fee_y ?? 0);
-      const price = parseFloat(p.currentPrice ?? p.active_bin_price ?? 0);
-      const valSol = yAmt + feeY + (xAmt + feeX) * price;
-      const feeSol = feeY + feeX * price;
-
+    console.log(`🟢 [meteora] Direct scan detected ${accounts.length} positions on-chain.`);
+    return accounts.map(({ pubkey, account }) => {
+      // Data parsing dasar: lbPair (8-40), owner (40-72)
+      const lbPair = new PublicKey(account.data.slice(8, 40)).toString();
       return {
-        address: p.address ?? p.pubkey ?? p.positionAddress ?? '',
-        poolAddress: p.pool_address ?? p.lbPair ?? p.lbPairAddress ?? '',
-        currentValueSol: parseFloat(valSol.toFixed(9)),
-        feeCollectedSol: parseFloat(feeSol.toFixed(9)),
-        inRange: p.inRange ?? p.is_in_range ?? true,
-        lowerBinId: p.lowerBinId ?? p.lower_bin_id ?? 0,
-        upperBinId: p.upperBinId ?? p.upper_bin_id ?? 0,
-        activeBinId: p.activeBinId ?? p.active_bin_id ?? 0,
-        binStep: p.binStep ?? p.bin_step ?? 0,
-        currentPrice: price,
-        fromAPI: true,
+        address: pubkey.toString(),
+        poolAddress: lbPair,
+        currentValueSol: 0, // RPC scan tidak memberikan real-time value tanpa fetch pool (mahal)
+        feeCollectedSol: 0, // Cukup berikan info alamat agar Healer bisa audit & fetch detail per koin
+        inRange: true,
+        fromRPC: true,
       };
     });
   } catch (e) {
-    console.warn('[meteora global sync]:', e.message);
+    console.error(`❌ [meteora] CRITICAL: All position fetch channels failed:`, e.message);
     return null;
   }
 }
