@@ -1,8 +1,8 @@
 'use strict';
 
 import { createMessage, resolveModel } from '../agent/provider.js';
-import { getConfig, getThresholds } from '../config.js';
-import { getPositionInfo, closePositionDLMM, claimFees, getPoolInfo, getSolPriceUsd, isDryRun } from '../solana/meteora.js';
+import { getConfig, getThresholds, isDryRun } from '../config.js';
+import { getPositionInfo, closePositionDLMM, claimFees, getPoolInfo, getSolPriceUsd } from '../solana/meteora.js';
 import { getConnection, getWallet, getWalletBalance } from '../solana/wallet.js';
 import { PublicKey } from '@solana/web3.js';
 import { getOpenPositions, closePositionWithPnl, saveNotification, updatePositionLifecycle } from '../db/database.js';
