@@ -2,7 +2,7 @@
  * Technical Analysis Utility
  * 
  * Lightweight implementation of indicators for micin tokens.
- * Focus: RSI(2), Supertrend, Bollinger Bands, MACD.
+ * Focus: RSI, Supertrend.
  */
 
 // ─── Basic Math ──────────────────────────────────────────────────
@@ -58,53 +58,6 @@ export function calculateRSI(prices, period = 14) {
   if (avgLoss === 0) return 100;
   const rs = avgGain / avgLoss;
   return 100 - (100 / (1 + rs));
-}
-
-/**
- * Bollinger Bands (BB)
- */
-export function calculateBB(prices, period = 20, multiplier = 2) {
-  const middle = sma(prices, period);
-  if (middle === null) return { upper: 0, middle: 0, lower: 0 };
-  const sd = stdDev(prices, period);
-  return {
-    upper: middle + multiplier * sd,
-    middle: middle,
-    lower: middle - multiplier * sd,
-  };
-}
-
-/**
- * MACD
- */
-export function calculateMACD(prices, fast = 12, slow = 26, signal = 9) {
-  if (prices.length < slow + signal) return { macd: 0, signal: 0, histogram: 0 };
-  
-  // Calculate EMA series manually for MACD
-  const getEmas = (p, len) => {
-    const res = [];
-    const k = 2 / (len + 1);
-    let val = p[0];
-    for (let i = 0; i < p.length; i++) {
-      val = p[i] * k + val * (1 - k);
-      res.push(val);
-    }
-    return res;
-  };
-  
-  const fastEmas = getEmas(prices, fast);
-  const slowEmas = getEmas(prices, slow);
-  const macdLine = fastEmas.map((f, i) => f - slowEmas[i]);
-  
-  const signalLine = getEmas(macdLine, signal);
-  const lastMacd = macdLine[macdLine.length - 1];
-  const lastSignal = signalLine[signalLine.length - 1];
-  
-  return {
-    macd: lastMacd,
-    signal: lastSignal,
-    histogram: lastMacd - lastSignal,
-  };
 }
 
 /**

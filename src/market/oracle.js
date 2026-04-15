@@ -9,7 +9,7 @@ const METEORA_DATAPI = 'https://dlmm-api.meteora.ag';
 
 // ─── 1. OHLCV — Price Snapshot (DexScreener) ────────────────────
 // Rerouted to DexScreener as the primary source for price/volatility logic.
-// Advanced TA (MACD/RSI) is removed as it required historical candles from GeckoTerminal.
+// Oracle: OHLCV + TA dari DexScreener untuk Evil Panda entry/exit.
 
 export async function getOHLCV(tokenMint, poolAddress = null) {
   return buildOHLCVFromDexScreener(tokenMint);
@@ -137,26 +137,21 @@ async function buildOHLCVFromDexScreener(tokenMint, poolAddress = null) {
         getJupiterPrice(tokenMint)
       ]);
 
-      if (history && history.length >= 26) {
-        // SNIPER REBIRTH: Ignore the last (live/partial) candle to prevent flickering signals.
-        // We only calculate TA based on COMPLETED 15m candles.
+      // ─── TA Gate: min. 11 candle (10 closed) × 15m = 2.75 jam ──────────
+      // Satu-satunya indikator yang dipakai: Supertrend (entry gate) + RSI2 (konteks).
+      // RSI14, BB, MACD telah dihapus — tidak relevan untuk memecoin DLMM.
+      if (history && history.length >= 11) {
         const closedHistory = history.slice(0, -1);
         const closes = closedHistory.map(c => c.close);
 
-        const rsi2 = ta.calculateRSI(closes, 2);
-        const rsi14 = ta.calculateRSI(closes, 14);
-        const bb = ta.calculateBB(closes, 20, 2);
-        const macd = ta.calculateMACD(closes);
-        const st = ta.calculateSupertrend(closedHistory, 10, 3);
+        const st   = ta.calculateSupertrend(closedHistory, 10, 3);
+        const rsi2 = parseFloat(ta.calculateRSI(closes, 2).toFixed(2));
 
         taData = {
-          rsi2: parseFloat(rsi2.toFixed(2)),
-          rsi14: parseFloat(rsi14.toFixed(2)),
-          bb,
-          macd,
+          rsi2,
           supertrend: st,
-          atr: st.atr, // Expose raw ATR for adaptive range logic
-          // Strategy-specific triggers (Normalized keys)
+          atr: st.atr,
+          candleCount: closedHistory.length,
           "Evil Panda": {
             entry: {
               triggered: st && st.trend === 'BULLISH',

@@ -144,14 +144,22 @@ function step4_tokenAge(dex, minAgeMinutes = 60) {
   const ageMs = Date.now() - dex.pairCreatedAt;
   const ageMinutes = Math.floor(ageMs / (1000 * 60));
 
+  // Format tampilan yang mudah dibaca (jam + menit)
+  const fmtDuration = (mins) => {
+    if (mins < 60) return `${mins} menit`;
+    const h = Math.floor(mins / 60);
+    const m = mins % 60;
+    return m > 0 ? `${h} jam ${m} menit` : `${h} jam`;
+  };
+
   if (ageMinutes < minAgeMinutes) {
     rejects.push({
       rule: 'TOKEN_TOO_NEW',
-      msg: `Token baru ${ageMinutes} menit sejak launch — tunggu minimal ${minAgeMinutes} menit agar distribusi awal stabil`,
+      msg: `Token baru ${fmtDuration(ageMinutes)} sejak launch — minimal ${fmtDuration(minAgeMinutes)} setelah launch`,
     });
   }
 
-  return { rejects };
+  return { rejects, ageMinutes };
 }
 
 function step5_txnAnalysis(dex) {
@@ -516,6 +524,19 @@ export async function screenToken(tokenMint, tokenName = '', tokenSymbol = '', o
   const jup  = jupResult.status  === 'fulfilled' ? jupResult.value  : null;
   const auth = authResult.status === 'fulfilled' ? authResult.value : { mintAuthority: true, freezeAuthority: true };
   const sim  = simResult.status  === 'fulfilled' ? simResult.value  : null;
+
+  // ─── GMGN API Health Logic ────────────────────────────────────
+  const hasGmgnKey = !!process.env.GMGN_API_KEY;
+  let gmgnStatus = 'ACTIVE';
+
+  if (!hasGmgnKey) {
+    gmgnStatus = 'DISABLED';
+  } else if (gmgnInfoResult.status === 'rejected' || gmgnSecResult.status === 'rejected') {
+    gmgnStatus = 'ERROR';
+  } else if (!gmgnInfoResult.value && !gmgnSecResult.value) {
+    gmgnStatus = 'UNKNOWN';
+  }
+
   const gmgnInfo = gmgnInfoResult.status === 'fulfilled' ? gmgnInfoResult.value : null;
   const gmgnSec  = gmgnSecResult.status  === 'fulfilled' ? gmgnSecResult.value  : null;
 
@@ -560,32 +581,74 @@ export async function screenToken(tokenMint, tokenName = '', tokenSymbol = '', o
     tokenMint, name, symbol, verdict, eligible: allRejects.length === 0,
     highFlags: allRejects, mediumFlags: allWarnings,
     organicScore: s7.score, mcap: s9.mcap,
+    tokenAgeMinutes: s4.ageMinutes ?? null,
     priceImpact: sim?.priceImpactBuy,
     priceImpactSell: sim?.priceImpactSell,
+    gmgnStatus, // ACTIVE, DISABLED, ERROR, UNKNOWN
+    gmgnRejects: s12.rejects,
+    gmgnWarnings: s12.warnings,
     sources: {
       dexscreener: !!dex,
       jupiter: !!(jup?.found),
       helius: (authResult.status === 'fulfilled'),
-      gmgn: !!(gmgnInfo || gmgnSec),
+      gmgn: (gmgnStatus === 'ACTIVE'),
     },
   };
 }
 
 export function formatScreenResult(result) {
+  const fmtDuration = (mins) => {
+    if (mins == null) return 'N/A';
+    if (mins < 60) return `${mins} menit`;
+    const h = Math.floor(mins / 60);
+    const m = mins % 60;
+    return m > 0 ? `${h} jam ${m} menit` : `${h} jam`;
+  };
+
   const emoji = { AVOID: '🚫', CAUTION: '👀', PASS: '✅' }[result.verdict] || '❓';
-  let text = `${emoji} *${result.name}* — ${result.eligible ? 'ELIGIBLE' : 'AVOID'}\n`;
+  let text = `${emoji} *${result.name}* (${result.symbol}) — ${result.eligible ? 'ELIGIBLE' : 'AVOID'}\n`;
   text += `📊 Organic score: *${result.organicScore}/100*\n`;
   if (result.mcap) text += `💰 Mcap: $${result.mcap.toLocaleString()}\n`;
+  if (result.tokenAgeMinutes != null) text += `⏱ Usia token: ${fmtDuration(result.tokenAgeMinutes)}\n`;
 
-  if (result.highFlags && result.highFlags.length > 0) {
-    text += `\n🔴 *Ditolak (${result.highFlags.length}):*\n`;
-    result.highFlags.forEach(f => text += `• ${f.msg}\n`);
+  // ─── GMGN Security Block ──────────────────────────────────────
+  if (result.gmgnStatus === 'DISABLED') {
+    text += `\n🛡️ *GMGN Security: 🔌 Disabled*\n`;
+    text += `_API key tidak ditemukan. Set GMGN_API_KEY di .env._\n`;
+  } else if (result.gmgnStatus === 'ERROR') {
+    text += `\n🛡️ *GMGN Security: ⚠️ API Error*\n`;
+    text += `_Request ke GMGN gagal (timeout/down)._\n`;
+  } else if (result.gmgnStatus === 'UNKNOWN') {
+    text += `\n🛡️ *GMGN Security: ❓ Unknown*\n`;
+    text += `_Koin tidak ditemukan di database GMGN._\n`;
+  } else if (result.gmgnRejects?.length > 0) {
+    text += `\n🛡️ *GMGN Security: ⛔ Ditolak (${result.gmgnRejects.length} masalah):*\n`;
+    result.gmgnRejects.forEach(f => text += `• ${f.msg}\n`);
+    if (result.gmgnWarnings?.length > 0) {
+      text += `🛡️ *GMGN Peringatan:*\n`;
+      result.gmgnWarnings.forEach(f => text += `• ${f.msg}\n`);
+    }
+  } else if (result.gmgnWarnings?.length > 0) {
+    text += `\n🛡️ *GMGN Security: ⚠️ Peringatan (${result.gmgnWarnings.length}):*\n`;
+    result.gmgnWarnings.forEach(f => text += `• ${f.msg}\n`);
+  } else {
+    text += `\n🛡️ *GMGN Security: 🛡️ Active (Clean)*\n`;
   }
-  if (result.mediumFlags && result.mediumFlags.length > 0) {
-    text += `\n🟡 *Peringatan (${result.mediumFlags.length}):*\n`;
-    result.mediumFlags.forEach(f => text += `• ${f.msg}\n`);
+
+  // ─── Reject & Warning Flags (non-GMGN) ───────────────────────
+  const nonGmgnRejects = (result.highFlags || []).filter(f => !f.rule?.startsWith('GMGN_'));
+  const nonGmgnWarnings = (result.mediumFlags || []).filter(f => !f.rule?.startsWith('GMGN_'));
+
+  if (nonGmgnRejects.length > 0) {
+    text += `\n🔴 *Ditolak (${nonGmgnRejects.length}):*\n`;
+    nonGmgnRejects.forEach(f => text += `• ${f.msg}\n`);
   }
-  if (result.eligible) text += `\n✅ Lolos filter — Eligible for DLMM.`;
+  if (nonGmgnWarnings.length > 0) {
+    text += `\n🟡 *Peringatan (${nonGmgnWarnings.length}):*\n`;
+    nonGmgnWarnings.forEach(f => text += `• ${f.msg}\n`);
+  }
+
+  if (result.eligible) text += `\n✅ Lolos semua filter — Eligible for DLMM.`;
 
   if (result.sources) {
     const srcList = Object.entries(result.sources).filter(([, v]) => v).map(([k]) => k).join(', ');
