@@ -37,7 +37,7 @@ const DEFAULTS = {
   minOrganic: 55,
   minBinStep: 100,            // Minimal 100 bin step (Hukum 3)
   minTokenFeesSol: 0,        // Min total fees SOL untuk pool (0 = disabled)
-  minTokenAgeMinutes: 60,    // Token harus sudah berumur minimal N menit sejak launch
+  minTokenAgeMinutes: 0,     // Min usia token sejak launch (0 = disabled) — Supertrend sudah jadi gate alami
 
   // Position management
   takeProfitFeePct: 5,
