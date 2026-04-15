@@ -13,7 +13,8 @@ import { getInstinctsContext } from '../market/memory.js';
 import { getStrategyIntelligenceContext } from '../market/strategyPerformance.js';
 import { swapAllToSOL, SOL_MINT } from '../solana/jupiter.js';
 import { getMarketSnapshot, getOHLCV } from '../market/oracle.js';
-import { fetchWithTimeout, withRetry, withExponentialBackoff } from '../utils/safeJson.js';
+import { fetchWithTimeout, withExponentialBackoff } from '../utils/safeJson.js';
+import { withRetry as executionRetry } from '../utils/retry.js';
 import { kv, hr, codeBlock, formatPnl, shortAddr, shortStrat } from '../utils/table.js';
 import { recordClose } from '../market/poolMemory.js';
 import { executeControlledOperation } from '../app/executionService.js';
@@ -24,6 +25,7 @@ import { resolvePositionSnapshot } from '../app/positionSnapshot.js';
 import { getStrategy } from '../strategies/strategyManager.js';
 import { analyzeTradeResult } from '../learn/failureAnalysis.js';
 import { calculateRSI, calculateSupertrend } from '../utils/ta.js';
+
 
 // Verifikasi apakah position account benar-benar tidak ada on-chain.
 // Dipakai sebelum mark MANUAL_CLOSE — cegah false positive dari RPC glitch.
@@ -1102,18 +1104,26 @@ export async function runHealerAlpha(notifyFn) {
           const poolInfo = await getPoolInfo(pos.pool_address);
           for (const mint of [poolInfo.tokenX, poolInfo.tokenY]) {
             if (mint && mint !== SOL_MINT) {
-              for (let swapAttempt = 1; swapAttempt <= 3; swapAttempt++) {
-                try {
-                  const isPanic = getSafetyStatus().drawdownPct > 10; const swapRes = await swapAllToSOL(mint, isPanic ? 500 : 100);
-                  if (swapRes.success) {
-                    swapMsgs.push(`+${swapRes.outSol.toFixed(4)}◎`);
-                    totalSwappedSol += swapRes.outSol;
-                  }
-                  break;
-                } catch (e) {
-                  if (swapAttempt === 3) swapFails.push(e.message);
-                  else await new Promise(r => setTimeout(r, 2000 * swapAttempt));
+              try {
+                const swapRes = await executionRetry(async () => {
+                  const isPanic = getSafetyStatus().drawdownPct > 10;
+                  return await swapAllToSOL(mint, isPanic ? 500 : 100);
+                }, { 
+                  maxRetries: 3, 
+                  delayMs: 2000, 
+                  taskName: `ZapOut Swap (${pos.symbol})` 
+                });
+
+                if (swapRes && swapRes.success) {
+                  swapMsgs.push(`+${swapRes.outSol.toFixed(4)}◎`);
+                  totalSwappedSol += swapRes.outSol;
+                } else if (swapRes && !swapRes.success) {
+                  swapFails.push(swapRes.error || 'Unknown swap error');
                 }
+              } catch (e) {
+                console.error(`[healer] Final cleanup failed for ${pos.symbol}:`, e.message);
+                swapFails.push(e.message);
+                await notify(`🚨 *ZAP OUT FAILED* (Retries Exhausted)\n\nPosition: \`${pos.symbol}\`\nMint: \`${pos.token_mint}\`\nError: ${e.message}\n\n_Manual swap recommended to recover SOL._`).catch(() => {});
               }
             }
           }
@@ -1145,23 +1155,22 @@ export async function runHealerAlpha(notifyFn) {
         ];
         await notifyFn?.(`✅ *Posisi Ditutup*\n\n${codeBlock(closedLines)}`);
 
-        // ── Post-close opportunity scan — apakah pool ini masih layak re-entry? ──
+        // ── Post-close opportunity scan ────────────────────────────
+        // Cek apakah pool masih layak re-entry berdasarkan Supertrend saja.
         try {
           const epCandles = await fetchCandles(pos.token_x, '15m', 100, pos.pool_address);
-          if (epCandles && epCandles.length >= 35) {
-            const closes   = epCandles.map(c => c.c);
-            const highs    = epCandles.map(c => c.h);
-            const lows     = epCandles.map(c => c.l);
-            const st       = calculateSupertrend(highs, lows, closes, 10, 3);
-            const rsi14Val = calculateRSI(closes, 14);
-            const last96   = epCandles.slice(-96);
-            const low24h   = Math.min(...last96.map(c => c.l));
+          if (epCandles && epCandles.length >= 11) {
+            const closes = epCandles.map(c => c.c);
+            const highs  = epCandles.map(c => c.h);
+            const lows   = epCandles.map(c => c.l);
+            const st     = calculateSupertrend(highs, lows, closes, 10, 3);
+            const last96 = epCandles.slice(-96);
+            const low24h = Math.min(...last96.map(c => c.l));
             const curPrice = closes[closes.length - 1];
             const distPct  = low24h > 0 ? ((curPrice - low24h) / low24h) * 100 : 99;
-
-            // Check re-entry conditions
-            if (st?.isBullish && distPct >= 0 && distPct <= 12 && rsi14Val >= 35 && rsi14Val <= 65) {
-              // Strategy alert silenced (Supertrend Bullish info available in logs)
+            // Re-entry hanya jika Supertrend bullish dan harga dekat low 24h
+            if (st?.isBullish && distPct >= 0 && distPct <= 12) {
+              // Strategy alert silenced (info tersedia di logs)
             }
           }
         } catch { /* best-effort, jangan crash */ }
@@ -1280,10 +1289,9 @@ ALUR KERJA:
    - pnlPct < -${safety.stopLossPct}% DAN BULLISH confidence > 0.6 → HOLD, tunggu recovery
 
    EVIL PANDA EXIT — khusus posisi dengan strategi Evil Panda:
-   Data tersedia di poolTaSignals — gunakan ini untuk keputusan exit:
-   • poolTaSignals.evilPandaExit.triggered = true → EXIT SEGERA (pre-built signal)
-   • poolTaSignals.rsi2 > 90 + poolTaSignals.bb.aboveUpper = true → EXIT
-   • poolTaSignals.rsi2 > 90 + poolTaSignals.macd.firstGreenAfterRed = true → EXIT
+   Satu-satunya sinyal exit yang valid:
+   • poolTaSignals.evilPandaExit.triggered = true → EXIT SEGERA (Supertrend 15m flip merah)
+   • poolTaSignals.rsi2 > 90 + evilPandaExit.triggered → EXIT (konfirmasi ganda)
    Harus ada CONFLUENCE ≥2 sinyal untuk exit. Jika hanya 1 sinyal → HOLD.
    feeVelocity dari pool: "increasing" → hold lebih lama, "decreasing" → pertimbangkan exit lebih cepat.
    Jika poolTaSignals = null → gunakan TP normal (+${safety.stopLossPct}% fee APR).

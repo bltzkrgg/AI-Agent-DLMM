@@ -378,22 +378,36 @@ async function executeTool(name, input) {
         input.token_name || '',
         input.token_symbol || ''
       );
-      if (result.verdict === 'AVOID' && hunterNotifyFn) {
-        await hunterNotifyFn(`🚫 *Token Ditolak Coin Filter*\n\n${formatScreenResult(result)}`);
-      }
 
-      const action = result.verdict === 'AVOID'
-        ? 'SKIP — cari kandidat lain'
-        : 'LANJUT DEPLOY — jumlah token dihitung otomatis';
+      // Kirim hasil ke user untuk semua verdict:
+      // - AVOID  → user perlu tahu kenapa ditolak
+      // - CAUTION → user perlu tahu warning sebelum deploy
+      // - PASS   → user perlu konfirmasi GMGN clean sebelum deploy
+      if (hunterNotifyFn) {
+        const prefix = result.verdict === 'AVOID'
+          ? '🚫 *Token Ditolak*'
+          : result.verdict === 'CAUTION'
+            ? '⚠️ *Token CAUTION*'
+            : '✅ *Token Lolos Screening*';
+        await hunterNotifyFn(`${prefix}\n\n${formatScreenResult(result)}`);
+      }
 
       return JSON.stringify({
         verdict: result.verdict,
         eligible: result.eligible,
         highFlags: (result.highFlags || []).map(f => f.msg),
         mediumFlags: (result.mediumFlags || []).map(f => f.msg),
+        gmgnActive: result.gmgnActive,
+        gmgnStatus: result.gmgnActive
+          ? (result.gmgnRejects?.length > 0 ? 'FLAGGED' : 'CLEAN')
+          : 'INACTIVE',
+        gmgnIssues: (result.gmgnRejects || []).map(f => f.msg),
+        tokenAgeMinutes: result.tokenAgeMinutes,
         priceImpact: result.priceImpact,
         sources: result.sources,
-        action,
+        action: result.verdict === 'AVOID'
+          ? 'SKIP — cari kandidat lain'
+          : 'LANJUT DEPLOY — jumlah token dihitung otomatis',
       }, null, 2);
     }
 
@@ -834,6 +848,17 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null, opt
       const sent = sentResult.status === 'fulfilled' ? sentResult.value : null;
       const marketSent = sent?.sentiment || 'NEUTRAL';
 
+      // ─── Phase 2.1: LLM Cost Guard (Static Security Filter) ─────
+      // Run full audit for top candidates BEFORE sending to LLM.
+      // This saves 10k-50k tokens by rejecting rugs during pre-screening.
+      let security = null;
+      try {
+        security = await screenToken(p.tokenX || p.tokenY, p.name);
+      } catch (e) {
+        console.warn(`[cost-guard] Security check failed for ${p.name}:`, e.message);
+      }
+
+
       // Update darwinScore dengan multiTFScore & Sentiment
       if (mtf?.score > 0) {
         p.multiTFScore = mtf.score;
@@ -853,6 +878,12 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null, opt
         darwinScore: p.darwinScore,
         tvl: tvl.toFixed(0),
         fees24h: (p.fees24hRaw || 0).toFixed(2),
+        security: security ? {
+          verdict: security.verdict,
+          eligible: security.eligible,
+          gmgnStatus: security.gmgnStatus,
+          highFlags: (security.highFlags || []).map(f => f.msg)
+        } : { verdict: 'UNKNOWN' },
         socialHype: p.socialSignal ? `🔥 Discord Impact: ${p.socialSignal.intensity}/10` : 'Neutral',
         feeToTvlPct: tvl > 0 ? ((p.fees24hRaw || 0) / tvl * 100).toFixed(2) + '%' : '0%',
         binStep: p.binStep,
@@ -872,9 +903,20 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null, opt
       };
     }));
 
-    // Filter obvious rejects sebelum dikirim ke LLM
-    const viable = enriched.filter(p => p.poolMemory.verdict !== 'HINDARI');
+    // --- Filter obvious rejects & LLM Cost Guard ---
+    const viable = enriched.filter(p => 
+      p.poolMemory.verdict !== 'HINDARI' && 
+      p.security.verdict !== 'AVOID' // Skip obvious rugs/low liquidity
+    );
     const skipped = enriched.length - viable.length;
+
+    // Send brief rejection report for transparency
+    const rejected = enriched.filter(p => p.security.verdict === 'AVOID');
+    if (rejected.length > 0 && notifyFn) {
+      let rejMsg = `🛡️ *Quick Filter: Removed ${rejected.length} risky/low-liq coins (Saved LLM cost):*\n`;
+      rejected.forEach(p => rejMsg += `• ${p.name}: ${p.security.highFlags[0] || 'Unknown risk'}\n`);
+      await notifyFn(rejMsg);
+    }
 
     if (notifyFn) {
       const smartWalletHits = enriched.filter(p => p.smartWallet?.wallets?.length > 0).length;
@@ -917,7 +959,7 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null, opt
   const libraryStats = getLibraryStats();
 
   const systemPrompt = `You are the Meteora Strategic Execution Engine — a technical data processor for personal DLMM portfolio management.
-This system uses technical confluence (ATR, Bollinger, Supertrend) to optimize liquidity provision.
+This system uses technical confluence (ATR, Supertrend) to optimize liquidity provision.
 
 ╔══════════════════════════════════════════════════════════════╗
 ║  TECHNICAL MODE — PERSONAL INFRASTRUCTURE                   ║

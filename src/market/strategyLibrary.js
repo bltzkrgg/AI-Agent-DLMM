@@ -91,8 +91,6 @@ export function matchStrategyToMarket(marketSnapshot) {
   const currentPrice = ohlcv?.currentPrice ?? 0;
   const support     = ohlcv?.support       ?? 0;
   const ta          = marketSnapshot.ta    ?? {};
-  const rsi14       = ta.rsi14            ?? 50;
-  const bb          = ta.bb;
   const feeApr      = marketSnapshot.pool?.feeApr ?? 0;
 
   // Price proximity to support (Wave Enjoyer signal)
@@ -250,12 +248,13 @@ export async function evaluateStrategyReadiness({ strategyName, snapshot, binSte
         notes: 'Evil Panda Master requires Price > Supertrend on 15m timeframe.',
       };
     } else if (!st) {
-      // Koin terlalu baru — Supertrend butuh minimal 10-15 candle 15m (~2.5 jam data).
-      // Evil Panda tidak deploy tanpa konfirmasi TA. Tunggu sampai data tersedia.
+      // Data Supertrend 15m belum tersedia — koin terlalu baru secara teknikal.
+      // Supertrend butuh min. 10 candle × 15m = 150 menit (~2.5 jam) untuk initialize.
+      // [Berbeda dari safety filter 1 jam di coinfilter — ini murni syarat data TA.]
       return {
         ok: false,
-        blockers: ['Data TA Supertrend belum tersedia — koin terlalu baru'],
-        notes: 'Evil Panda membutuhkan konfirmasi Supertrend 15m. Coba lagi setelah ~2.5 jam dari peluncuran.',
+        blockers: ['Data TA Supertrend 15m belum tersedia — koin perlu ~2.5 jam data candle'],
+        notes: 'Evil Panda butuh konfirmasi Supertrend 15m (min. 10 candle = ~150 menit). Safety filter coinfilter = 1 jam; TA data filter = ~2.5 jam — keduanya INDEPENDENT.',
       };
     }
 

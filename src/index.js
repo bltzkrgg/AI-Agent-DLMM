@@ -131,9 +131,12 @@ const _dryRun = cfg.dryRun;
 console.log(`🦞 Meteora DLMM Bot started! Mode: ${_dryRun ? 'DRY RUN' : 'LIVE'}`);
 
 // Kirim sinyal standby pas bot nyala
-const bootMsg = `🚀 *Bot Started!* (Mode: Survivalist)\n\n` +
-               `🛡️ Hunter: *ON* (Standby ⏳)\n` +
-               `🩺 Healer: *ON* (Standby ⏳)\n\n` +
+const bootStatus = solanaReady ? '🚀 *Bot Started!*' : '⚠️ *Bot Started (DEGRADED)*';
+const walletNote = solanaReady ? '' : '\n_Wallet/RPC gagal inisialisasi. Fitur trading dipause._';
+
+const bootMsg = `${bootStatus} (Mode: Survivalist)\n\n` +
+               `🛡️ Hunter: *${solanaReady ? 'ON' : 'OFF'}* (Standby ⏳)\n` +
+               `🩺 Healer: *${solanaReady ? 'ON' : 'OFF'}* (Standby ⏳)\n${walletNote}\n\n` +
                `_Sesuai jadwal, bot akan mulai bekerja dalam ${cfg.managementIntervalMin} - ${cfg.screeningIntervalMin} menit._`;
 bot.sendMessage(ALLOWED_ID, bootMsg, { parse_mode: 'Markdown' }).catch(() => {});
 
@@ -290,6 +293,7 @@ let _lastScreeningRun = Date.now();
 let _lastBalanceWarningAt = 0; // cooldown notif saldo low
 
 cron.schedule('* * * * *', async () => {
+  if (!solanaReady) return; // Prevent management spam if no wallet
   const liveCfg = getConfig();
   const now     = Date.now();
   if (now - _lastHealerRun < liveCfg.managementIntervalMin * 60 * 1000) return;
@@ -368,6 +372,7 @@ async function runAutoScreening() {
 }
 
 cron.schedule('* * * * *', async () => {
+  if (!solanaReady) return; // Prevent screening spam if no wallet
   const liveCfg = getConfig();
   const now     = Date.now();
   if (now - _lastScreeningRun < liveCfg.screeningIntervalMin * 60 * 1000) return;
