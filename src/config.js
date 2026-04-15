@@ -37,6 +37,7 @@ const DEFAULTS = {
   minOrganic: 55,
   minBinStep: 100,            // Minimal 100 bin step (Hukum 3)
   minTokenFeesSol: 0,        // Min total fees SOL untuk pool (0 = disabled)
+  minTokenAgeMinutes: 60,    // Token harus sudah berumur minimal N menit sejak launch
 
   // Position management
   takeProfitFeePct: 5,
@@ -143,6 +144,7 @@ const CONFIG_BOUNDS = {
   minSmartMoneyOverlap: { min: 0, max: 10 },
   maxPriceImpactPct: { min: 0.1, max: 5 },
   maxBinsPerPosition: { min: 20, max: 150 },
+  minTokenAgeMinutes: { min: 0, max: 1440 },
   rsi2Threshold: { min: 50, max: 98 },
   lastEvolutionTradeCount: { min: 0, max: 1000000 },
 };

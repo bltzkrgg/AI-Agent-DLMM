@@ -230,8 +230,7 @@ async function executeTool(name, input) {
         ? await lpAgentEnrichPools(allAddresses).catch(() => ({}))
         : {};
 
-      // Filter dasar
-      const minBinStep = cfg.minBinStep;
+      // Filter dasar — binStep difilter via exact allowlist [100, 125]
       const minTokenFeesSol = cfg.minTokenFeesSol;
       const preFiltered = combined.filter(p => {
         const tvl = parseTvl(p.tvlStr || p.tvl || 0);

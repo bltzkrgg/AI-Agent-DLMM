@@ -134,6 +134,26 @@ function step3_priceHealth(dex, thresholds = {}) {
   return { rejects, warnings };
 }
 
+// ─── Step 4: Token Minimum Age ──────────────────────────────────
+// Reject tokens that are too new — early minutes have extreme dump risk from
+// bundlers/insiders who bought before launch. Wait for initial distribution to settle.
+function step4_tokenAge(dex, minAgeMinutes = 60) {
+  const rejects = [];
+  if (!dex?.pairCreatedAt) return { rejects }; // Data tidak tersedia → skip
+
+  const ageMs = Date.now() - dex.pairCreatedAt;
+  const ageMinutes = Math.floor(ageMs / (1000 * 60));
+
+  if (ageMinutes < minAgeMinutes) {
+    rejects.push({
+      rule: 'TOKEN_TOO_NEW',
+      msg: `Token baru ${ageMinutes} menit sejak launch — tunggu minimal ${minAgeMinutes} menit agar distribusi awal stabil`,
+    });
+  }
+
+  return { rejects };
+}
+
 function step5_txnAnalysis(dex) {
   const rejects = [];
   const warnings = [];
@@ -505,6 +525,7 @@ export async function screenToken(tokenMint, tokenName = '', tokenSymbol = '', o
   const s1  = step1_basicValidation(dex, jup);
   const s2  = step2_narrativeFilter(name, symbol);
   const s3  = step3_priceHealth(dex, thresholds);
+  const s4  = step4_tokenAge(dex, cfg.minTokenAgeMinutes || 60);
   const s5  = step5_txnAnalysis(dex);
   const s6  = step6_tokenSafety(jup);
   const s7  = step7_organicScore(dex, jup, thresholds);
@@ -525,12 +546,12 @@ export async function screenToken(tokenMint, tokenName = '', tokenSymbol = '', o
   const s11 = step11_slippageCheck(sim, thresholds.maxImpact);
 
   const allRejects = [
-    ...s1.rejects,  ...s2,          ...s3.rejects,
+    ...s1.rejects,  ...s2,          ...s3.rejects,  ...s4.rejects,
     ...s5.rejects,  ...s6.rejects,  ...s7.rejects,  ...s9.rejects,
     ...s10,         ...s11.rejects, ...s12.rejects,
   ];
   const allWarnings = [
-    ...s1.warnings, ...s3.warnings, ...s6.warnings, ...s11.warnings, ...s12.warnings,
+    ...s1.warnings, ...s3.warnings, ...s5.warnings, ...s6.warnings, ...s11.warnings, ...s12.warnings,
   ];
 
   let verdict = allRejects.length > 0 ? 'AVOID' : (allWarnings.length > 0 ? 'CAUTION' : 'PASS');

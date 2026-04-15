@@ -90,8 +90,8 @@ function toDisplayPrice(rawPrice, isSOLPair) {
 
 export async function getPoolInfo(poolAddress) {
   // Validate pool address format before attempting SDK calls
-  if (!poolAddress || typeof poolAddress !== 'string' || poolAddress.length !== 44) {
-    const errorMsg = `Invalid pool address format: "${poolAddress}" (must be 44 chars, got ${poolAddress?.length || 0})`;
+  if (!poolAddress || typeof poolAddress !== 'string' || (poolAddress.length !== 43 && poolAddress.length !== 44)) {
+    const errorMsg = `Invalid pool address format: "${poolAddress}" (must be 43 or 44 chars, got ${poolAddress?.length || 0})`;
     console.error(`[meteora] ${errorMsg}`);
     throw new Error(errorMsg);
   }
@@ -214,8 +214,8 @@ export async function getPositionInfoLight(poolAddress) {
 
 export async function getPositionInfo(poolAddress) {
   // Validate pool address format before attempting SDK calls
-  if (!poolAddress || typeof poolAddress !== 'string' || poolAddress.length !== 44) {
-    const errorMsg = `Invalid pool address format: "${poolAddress}" (must be 44 chars, got ${poolAddress?.length || 0})`;
+  if (!poolAddress || typeof poolAddress !== 'string' || (poolAddress.length !== 43 && poolAddress.length !== 44)) {
+    const errorMsg = `Invalid pool address format: "${poolAddress}" (must be 43 or 44 chars, got ${poolAddress?.length || 0})`;
     console.error(`[meteora] ${errorMsg}`);
     throw new Error(errorMsg);
   }
@@ -371,8 +371,8 @@ export async function openPosition(poolAddress, tokenXAmount, tokenYAmount, pric
 
 async function _openPositionLogic(poolAddress, tokenXAmount, tokenYAmount, priceRangePercent = 5, strategyName = null, deployOptions = {}) {
   // Validate pool address format before attempting deployment
-  if (!poolAddress || typeof poolAddress !== 'string' || poolAddress.length !== 44) {
-    const errorMsg = `Invalid pool address format: "${poolAddress}" (must be 44 chars, got ${poolAddress?.length || 0})`;
+  if (!poolAddress || typeof poolAddress !== 'string' || (poolAddress.length !== 43 && poolAddress.length !== 44)) {
+    const errorMsg = `Invalid pool address format: "${poolAddress}" (must be 43 or 44 chars, got ${poolAddress?.length || 0})`;
     console.error(`[meteora] ${errorMsg}`);
     throw new Error(errorMsg);
   }
