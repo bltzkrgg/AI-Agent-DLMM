@@ -196,7 +196,6 @@ function buildDLMMContext(snapshot, position) {
     const st = ta.supertrend || { trend: 'NEUTRAL', value: 0 };
 
     parts.push(`🔍 TECHNICAL ANALYSIS (15m):
-- RSI(2): ${ta.rsi2 ?? 'N/A'}
 - Supertrend: ${st.trend} (Value: $${st.value.toFixed(8)})
 - Candles: ${ta.candleCount ?? 'N/A'} × 15m tersedia
 - Result: ${o.historySuccess ? '✅ Data Histori Valid' : '⚠️ Snapshot Mode (No History)'}`);

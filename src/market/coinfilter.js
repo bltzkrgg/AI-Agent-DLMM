@@ -419,7 +419,7 @@ function step11_slippageCheck(sim, maxImpact = 2.5) {
 
 function step13_volumeTurnoverRatio(dex, thresholds) {
   const rejects = [];
-  const maxRatio = thresholds.maxVolumeTvlRatio || 70;
+  const maxRatio = thresholds.maxVolumeTvlRatio || 150; // Increased from 70 to 150 for Hyper-Active pools
 
   if (dex && dex.volume24h && dex.liquidityUsd > 0) {
     const ratio = dex.volume24h / dex.liquidityUsd;
@@ -462,9 +462,9 @@ function step12_gmgnSecurity(info, sec) {
 
   // ─── From token info ─────────────────────────────────────────
   if (info) {
-    // CTO Coin (Community Takeover) — original dev abandoned, new dev unknown
+    // CTO Coin (Community Takeover) — original dev abandoned, risky in early phase
     if (info.dev?.cto_flag === 1) {
-      rejects.push({ rule: 'GMGN_CTO_COIN', msg: 'CTO Coin (dev.cto_flag=1) — dev original kabur, dev baru tidak dikenal' });
+      rejects.push({ rule: 'GMGN_CTO_COIN', msg: 'CTO Coin (dev.cto_flag=1) — dev original kabur, risiko manipulasi oleh komunitas/dev baru' });
     }
 
     // Phishing / Entrapment trader pattern
@@ -473,67 +473,75 @@ function step12_gmgnSecurity(info, sec) {
       rejects.push({ rule: 'GMGN_PHISHING_RISK', msg: `Entrapment traders ${(entrapment * 100).toFixed(1)}% > 30% — pola jebakan terorganisir` });
     }
 
-    // Top 10 concentration — only use info.stat if security data unavailable
-    if (!sec) {
-      const top10 = info.stat?.top_10_holder_rate;
-      if (top10 != null && top10 > 0.30) {
-        rejects.push({ rule: 'GMGN_TOP10_CONCENTRATED', msg: `Top 10 holders ${(top10 * 100).toFixed(1)}% > 30% — risiko whale dump` });
-      }
+    // Top 10 concentration
+    const top10 = info.stat?.top_10_holder_rate;
+    if (top10 != null && top10 > 0.35) {
+      rejects.push({ rule: 'GMGN_TOP10_CONCENTRATED', msg: `Top 10 holders ${(top10 * 100).toFixed(1)}% > 35% — risiko whale dump` });
     }
   }
 
   // ─── From token security ──────────────────────────────────────
   if (sec) {
-    // SOL-specific: Mint authority not renounced
+    // Mint authority not renounced (GMGN Signal)
     if (sec.renounced_mint === false) {
-      rejects.push({ rule: 'GMGN_MINT_NOT_RENOUNCED', msg: 'Mint authority belum direnounce (GMGN) — dev bisa cetak supply baru' });
+      rejects.push({ rule: 'GMGN_MINT_NOT_RENOUNCED', msg: 'Mint authority aktif (Honeypot Risk) — dev bisa cetak supply baru' });
     }
 
-    // SOL-specific: Freeze authority not renounced
+    // Freeze authority not renounced (GMGN Signal)
     if (sec.renounced_freeze_account === false) {
-      rejects.push({ rule: 'GMGN_FREEZE_NOT_RENOUNCED', msg: 'Freeze authority belum direnounce (GMGN) — dev bisa freeze wallet' });
+      rejects.push({ rule: 'GMGN_FREEZE_NOT_RENOUNCED', msg: 'Freeze authority aktif (Honeytrap Risk) — wallet bisa di-lock dev' });
     }
 
-    // Top 10 holder concentration
-    const top10 = sec.top_10_holder_rate;
-    if (top10 != null && top10 > 0.30) {
-      rejects.push({ rule: 'GMGN_TOP10_CONCENTRATED', msg: `Top 10 holders ${(top10 * 100).toFixed(1)}% > 30% — risiko whale dump` });
+    // Shadow Wallets / Suspected Insiders (HARD REJECT L6)
+    const suspectedInsider = sec.suspected_insider_hold_rate;
+    if (suspectedInsider != null && suspectedInsider > 0.15) {
+      rejects.push({ rule: 'GMGN_SHADOW_WALLETS', msg: `Shadow Wallets (Insiders) memegang ${(suspectedInsider * 100).toFixed(1)}% supply — REJECT` });
     }
 
-    // Dev / Creator supply
-    const creatorRate = sec.creator_balance_rate;
-    if (creatorRate != null && creatorRate > 0.01) {
-      rejects.push({ rule: 'GMGN_DEV_SUPPLY_HIGH', msg: `Dev masih pegang ${(creatorRate * 100).toFixed(2)}% > 1% — risiko dump kapanpun` });
-    }
-
-    // Insider / rat trader volume
+    // Rat Traders / Insider Front-running (HARD REJECT L6)
     const insiderRate = sec.rat_trader_amount_rate;
     if (insiderRate != null && insiderRate > 0) {
-      rejects.push({ rule: 'GMGN_INSIDER_DETECTED', msg: `Insider/rat trader ${(insiderRate * 100).toFixed(1)}% terdeteksi di volume` });
+      rejects.push({ rule: 'GMGN_INSIDER_DETECTED', msg: `Insider/rat trader terdeteksi di volume (${(insiderRate * 100).toFixed(1)}%) — REJECT` });
     }
 
-    // Suspected insider holders (softer signal → warning only)
-    const suspectedInsider = sec.suspected_insider_hold_rate;
-    if (suspectedInsider != null && suspectedInsider > 0) {
-      warnings.push({ rule: 'GMGN_SUSPECTED_INSIDER', msg: `Suspected insider hold ${(suspectedInsider * 100).toFixed(1)}% supply` });
-    }
-
-    // Bundling > 60%
+    // Bundling (Tighter threshold 50%)
     const bundlerRate = sec.bundler_trader_amount_rate;
-    if (bundlerRate != null && bundlerRate > 0.60) {
-      rejects.push({ rule: 'GMGN_BUNDLED', msg: `Bundling ${(bundlerRate * 100).toFixed(1)}% > 60% — volume bootstrap palsu` });
+    if (bundlerRate != null && bundlerRate > 0.50) {
+      rejects.push({ rule: 'GMGN_BUNDLED', msg: `Bundling ${(bundlerRate * 100).toFixed(1)}% > 50% — dominasi gerombolan tertentu` });
     }
 
-    // LP burn status — only reject if explicitly NOT burned
-    // burn_status == "burn" → safe, "" → unknown (proceed), anything else → reject
+    // LP burn status
     if (sec.burn_status != null && sec.burn_status !== '' && sec.burn_status !== 'burn') {
-      rejects.push({ rule: 'GMGN_LP_NOT_BURNED', msg: `LP tidak dibakar (status: "${sec.burn_status}") — dev bisa tarik likuiditas kapanpun` });
+      rejects.push({ rule: 'GMGN_LP_NOT_BURNED', msg: `LP tidak dibakar (status: "${sec.burn_status}") — risiko tarik likuiditas (Rug)` });
     }
 
     // Rug risk score
     const rugRatio = sec.rug_ratio;
     if (rugRatio != null && rugRatio > 0.30) {
       rejects.push({ rule: 'GMGN_RUG_HISTORY', msg: `Rug risk score ${rugRatio.toFixed(2)} > 0.30 — deployer mencurigakan` });
+    }
+
+    // 🎭 METADATA SECURITY: Anti-Bunglon (Hard Reject)
+    if (sec.is_mutable_metadata === true) {
+      rejects.push({ rule: 'GMGN_MUTABLE_METADATA', msg: 'Metadata koin masih bisa diubah (Mutable) — risiko ganti nama/logo/symbol di tengah jalan' });
+    }
+
+    // 💸 ZERO TAX SHIELD: Anti-Pajak Siluman (Irit Mode Level Max)
+    const buyTax = parseFloat(sec.buy_tax || 0);
+    const sellTax = parseFloat(sec.sell_tax || 0);
+    if (buyTax > 0 || sellTax > 0) {
+      rejects.push({ rule: 'GMGN_TAX_DETECTED', msg: `Pajak terdeteksi (Beli: ${buyTax}%, Jual: ${sellTax}%) — Gak Irit, skip!` });
+    }
+
+    // 🍯 HONEYPOT GUARD: Anti-Jebakan (Hard Reject)
+    if (sec.is_honeypot === true) {
+      rejects.push({ rule: 'GMGN_HONEYPOT', msg: 'Honeypot terdeteksi! Koin tidak bisa dijual — REJECT' });
+    }
+
+    // 🎭 WASH-TRADE GUARD: Anti-Volume Palsu
+    const washRate = parseFloat(sec.wash_trading_percentage || 0);
+    if (washRate > 35) {
+      rejects.push({ rule: 'GMGN_WASH_TRADE', msg: `Wash trading tinggi (${washRate.toFixed(1)}%) — manipulasi volume oleh dev` });
     }
   }
 
@@ -616,12 +624,28 @@ export async function screenToken(tokenMint, tokenName = '', tokenSymbol = '', o
   const s11 = step11_slippageCheck(sim, thresholds.maxImpact);
 
   const allRejects = [
-    ...s1.rejects,  ...s2,          ...s3.rejects,  ...s4.rejects,
-    ...s5.rejects,  ...s6.rejects,  ...s7.rejects,  ...s9.rejects,
-    ...s10,         ...s11.rejects, ...s12.rejects, ...s13, ...s14,
+    ...s1.rejects,  // Logo filter REINSTATED as Hard Reject
+    ...s2,          
+    ...s3.rejects,  
+    ...s4.rejects,
+    ...s5.rejects,  
+    ...s6.rejects,  
+    ...s7.rejects,  
+    ...s9.rejects,
+    ...s10,         
+    ...s11.rejects, 
+    // ...s12.rejects, <-- GMGN Security stays as Warning (Fees = Security)
+    ...s13, 
+    ...s14, // minTokenFeesSol Gate
   ];
   const allWarnings = [
-    ...s1.warnings, ...s3.warnings, ...s5.warnings, ...s6.warnings, ...s11.warnings, ...s12.warnings,
+    ...s1.warnings, 
+    ...s3.warnings, 
+    ...s5.warnings, 
+    ...s6.warnings, 
+    ...s11.warnings, 
+    ...s12.warnings, 
+    ...s12.rejects,  // GMGN security stays here
   ];
 
   let verdict = allRejects.length > 0 ? 'AVOID' : (allWarnings.length > 0 ? 'CAUTION' : 'PASS');

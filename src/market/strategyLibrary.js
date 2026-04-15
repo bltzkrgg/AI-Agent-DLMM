@@ -93,17 +93,7 @@ export function matchStrategyToMarket(marketSnapshot) {
   const ta          = marketSnapshot.ta    ?? {};
   const feeApr      = marketSnapshot.pool?.feeApr ?? 0;
 
-  // Price proximity to support (Wave Enjoyer signal)
-  const priceVsSupportPct = Number.isFinite(support) && support > 0 && Number.isFinite(currentPrice) && currentPrice > 0
-    ? ((currentPrice - support) / support) * 100 : null;
-  const priceNearSupport = priceVsSupportPct !== null
-    && priceVsSupportPct >= 0 && priceVsSupportPct <= 8;
-
-  // Post-breakout consolidation (NPC signal)
-  const postBreakout  = range24h >= 15;
-  const consolidating = Number.isFinite(atrPct) && atrPct > 0 && atrPct < range24h * 0.12;
-
-  // High fee (Fee Sniper signal)
+  // High fee potential
   const highFeeApr = feeApr > 200;
 
   const currentConditions = {
@@ -112,7 +102,6 @@ export function matchStrategyToMarket(marketSnapshot) {
     sentiment: sentiment?.sentiment || 'NEUTRAL',
     volumeVsAvg: parseFloat(ohlcv?.volumeVsAvg || 1.0),
     buyPressure,
-    // Fee Sniper
     highFeeApr,
   };
 
@@ -199,33 +188,6 @@ function scoreStrategy(strategy, conditions) {
     }
   }
 
-  // Wave Enjoyer — price near support
-  if (strategy.id === 'wave_enjoyer') {
-    if (conditions.priceNearSupport) {
-      score += 0.35;
-    } else {
-      score -= 0.40;
-    }
-  }
-
-  // NPC — consolidation
-  if (strategy.id === 'npc') {
-    if (conditions.postBreakout && conditions.consolidating) {
-      score += 0.40;
-    } else {
-      score -= 0.35;
-    }
-  }
-
-  // Fee Sniper — high fee APR
-  if (strategy.id === 'fee_sniper') {
-    if (conditions.highFeeApr) {
-      score += 0.45;
-    } else {
-      score -= 0.35;
-    }
-  }
-
   return Math.max(0, Math.min(1, score));
 }
 
@@ -281,7 +243,7 @@ export async function evaluateStrategyReadiness({ strategyName, snapshot, binSte
     };
   }
 
-  return { ok: false, blockers: [`Strategy ${strategyName} is currently disabled in Master Mode.`] };
+  return { ok: false, blockers: [`Strategy ${strategyName} is currently disabled or unrecognized.`] };
 }
 
 export function getRecommendedStrategies(snapshot) {

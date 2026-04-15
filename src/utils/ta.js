@@ -2,7 +2,7 @@
  * Technical Analysis Utility
  * 
  * Lightweight implementation of indicators for micin tokens.
- * Focus: RSI, Supertrend.
+ * Focus: Supertrend.
  */
 
 // ─── Basic Math ──────────────────────────────────────────────────
@@ -23,42 +23,11 @@ function ema(prices, period) {
   return emaVal;
 }
 
-function stdDev(prices, period) {
-  if (prices.length < period) return 0;
-  const mean = sma(prices, period);
-  const variance = prices.slice(-period).reduce((a, b) => a + Math.pow(b - mean, 2), 0) / period;
-  return Math.sqrt(variance);
-}
+
 
 // ─── Indicators ──────────────────────────────────────────────────
 
-/**
- * Relative Strength Index (RSI)
- */
-export function calculateRSI(prices, period = 14) {
-  if (prices.length <= period) return 50;
-  
-  let gains = [];
-  let losses = [];
-  
-  for (let i = 1; i < prices.length; i++) {
-    const diff = prices[i] - prices[i - 1];
-    gains.push(Math.max(0, diff));
-    losses.push(Math.max(0, -diff));
-  }
-  
-  let avgGain = sma(gains.slice(0, period), period);
-  let avgLoss = sma(losses.slice(0, period), period);
-  
-  for (let i = period; i < gains.length; i++) {
-    avgGain = (avgGain * (period - 1) + gains[i]) / period;
-    avgLoss = (avgLoss * (period - 1) + losses[i]) / period;
-  }
-  
-  if (avgLoss === 0) return 100;
-  const rs = avgGain / avgLoss;
-  return 100 - (100 / (1 + rs));
-}
+
 
 /**
  * Supertrend

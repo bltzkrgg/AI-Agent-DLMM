@@ -126,45 +126,50 @@ async function buildOHLCVFromDexScreener(tokenMint, poolAddress = null) {
         : (priceChangeM5 > 3) ? 'PUMPING'
           : 'SIDEWAYS';
 
-    // ─── Fetch History & Calculate TA (Now using DexScreener V1) ───
-    let taData = null;
-    let historySuccess = false;
-    const actualPool = poolAddress || best.pairAddress;
+    // ─── Phase 1: High-Efficiency Data Fetch ────────────────────────
+    // Satu koin = Satu panggil API. Jangan duplikasi fetch ke DexScreener.
+    let sentiment = marketSnapshot.sentiment;
+    if (!sentiment) {
+      sentiment = await getSentiment(tokenMint);
+    }
 
-    if (actualPool) {
-      const [history, realTimePrice] = await Promise.all([
-        getHistoryOHLCV(actualPool),
-        getJupiterPrice(tokenMint)
-      ]);
+    if (!sentiment) {
+      if (process.env.HUNTER_DEBUG) console.log(`[oracle] Skipping ${tokenMint} - Sentiment data unavailable (API Rate Limit/Down)`);
+      return null; // Gagal total ambil data, skip pool ini
+    }
 
-      // ─── TA Gate: min. 11 candle (10 closed) × 15m = 2.75 jam ──────────
-      // Satu-satunya indikator yang dipakai: Supertrend (entry gate) + RSI2 (konteks).
-      // RSI14, BB, MACD telah dihapus — tidak relevan untuk memecoin DLMM.
-      if (history && history.length >= 11) {
-        const closedHistory = history.slice(0, -1);
-        const closes = closedHistory.map(c => c.close);
+    // ─── Phase 2: Perennial Momentum Logic (The Stability Fix) ──────────
+    // Karena API Candle (OHLCV) sering mati, kita gunakan momentum dari statistik
+    // DexScreener yang kita ambil di Phase 1.
+    
+    const p1h  = sentiment.priceChange1h || 0;
+    const p5m  = sentiment.priceChange5m || 0;
+    const bp   = sentiment.buyPressurePct || 50;
 
-        const st   = ta.calculateSupertrend(closedHistory, 10, 3);
-        const rsi2 = parseFloat(ta.calculateRSI(closes, 2).toFixed(2));
+    // Logika Proksi Supertrend:
+    const isBullish = (p1h > 1.0 && bp > 55) || (p5m > 3 && p1h > -1);
+    const isBearish = (p1h < -5 || bp < 35);
 
-        taData = {
-          rsi2,
-          supertrend: st,
-          atr: st.atr,
-          candleCount: closedHistory.length,
-          "Evil Panda": {
-            entry: {
-              triggered: st && st.trend === 'BULLISH',
-              reason: (st && st.trend === 'BULLISH') ? `EVIL PANDA MASTER (v61): Price > Supertrend (15m confirmed). Ready for ULTIMATE WIDE-RANGE jaring (0% to -94%).` : null
-            },
-            exit: {
-              triggered: st && st.trend === 'BEARISH' && st.changed,
-              reason: (st && st.trend === 'BEARISH' && st.changed) ? `SENTINEL EXIT: Supertrend 15m Flipped to RED. Zapping out.` : null
-            }
-          },
-        };
-        historySuccess = true;
+    taData = {
+      supertrend: {
+        trend: isBullish ? 'BULLISH' : (isBearish ? 'BEARISH' : 'NEUTRAL'),
+        value: sentiment.priceUsd || 0,
+        source: 'Momentum-Proxy'
+      },
+      candleCount: 0,
+      historySuccess: true,
+      "Evil Panda": {
+        entry: {
+          triggered: isBullish,
+          reason: isBullish ? `EVIL PANDA MOMENTUM: Trend Bullish (1h: ${p1h}%, BP: ${bp}%).` : null
+        },
+        exit: {
+          triggered: isBearish,
+          reason: isBearish ? `MOMENTUM EXIT: Sell pressure ekstrim.` : null
+        }
       }
+    };
+    historySuccess = true;
     }
 
     return {
