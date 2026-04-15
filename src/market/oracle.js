@@ -170,6 +170,9 @@ async function buildOHLCVFromDexScreener(tokenMint, poolAddress = null) {
       }
     };
     historySuccess = true;
+    } catch (err) {
+      if (process.env.HUNTER_DEBUG) console.error(`[oracle] Market snap failed for ${tokenMint}:`, err.message);
+      return null;
     }
 
     return {
