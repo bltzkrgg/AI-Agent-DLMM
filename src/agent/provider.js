@@ -2,6 +2,7 @@ import Anthropic from '@anthropic-ai/sdk';
 import OpenAI from 'openai';
 import { getConfig } from '../config.js';
 import { globalRateLimiter } from '../utils/rateLimiter.js';
+import { stringify } from '../utils/safeJson.js';
 import {
   discoverAllModels,
   getBestModel,
@@ -216,12 +217,12 @@ function toOAIMessages(system, messages) {
             result.push({
               role: 'tool',
               tool_call_id: tr.tool_use_id,
-              content: typeof tr.content === 'string' ? tr.content : JSON.stringify(tr.content),
+              content: typeof tr.content === 'string' ? tr.content : stringify(tr.content),
             });
           }
         } else {
           const text = msg.content.filter(b => b.type === 'text').map(b => b.text).join('\n');
-          result.push({ role: 'user', content: text || JSON.stringify(msg.content) });
+          result.push({ role: 'user', content: text || stringify(msg.content) });
         }
       }
     } else if (msg.role === 'assistant') {
@@ -238,7 +239,7 @@ function toOAIMessages(system, messages) {
           assistantMsg.tool_calls = toolUseBlocks.map(b => ({
             id: b.id,
             type: 'function',
-            function: { name: b.name, arguments: JSON.stringify(b.input) },
+            function: { name: b.name, arguments: stringify(b.input) },
           }));
         }
         result.push(assistantMsg);

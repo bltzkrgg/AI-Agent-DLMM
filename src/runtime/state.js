@@ -1,6 +1,7 @@
 import { existsSync, readFileSync, promises as fs, renameSync } from 'fs';
 import { dirname, join } from 'path';
 import { fileURLToPath } from 'url';
+import { stringify } from '../utils/safeJson.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const STATE_PATH = process.env.BOT_RUNTIME_STATE_PATH || join(__dirname, '../../runtime-state.json');
@@ -39,7 +40,7 @@ async function persistState() {
 
   const tmpPath = `${STATE_PATH}.tmp`;
   try {
-    const data = JSON.stringify(_cachedState, null, 2);
+    const data = stringify(_cachedState, 2);
     await fs.writeFile(tmpPath, data, 'utf-8');
     // Atomic swap
     renameSync(tmpPath, STATE_PATH);

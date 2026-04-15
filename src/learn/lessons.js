@@ -3,7 +3,7 @@ import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { createMessage, resolveModel, extractText } from '../agent/provider.js';
 import { getConfig } from '../config.js';
-import { safeParseAI } from '../utils/safeJson.js';
+import { safeParseAI, stringify } from '../utils/safeJson.js';
 import { kv, codeBlock } from '../utils/table.js';
 import { getMemoryStats } from '../market/memory.js';
 
@@ -22,7 +22,7 @@ export function loadLessons() {
 
 export function saveLessons(lessons) {
   try {
-    writeFileSync(LESSONS_PATH, JSON.stringify(lessons, null, 2));
+    writeFileSync(LESSONS_PATH, stringify(lessons, 2));
   } catch (e) {
     console.error('⚠️ Failed to save lessons.json:', e.message);
   }
@@ -178,7 +178,7 @@ export async function learnFromPool(poolAddress) {
   const prompt = `Kamu adalah AI analyst untuk Meteora DLMM liquidity providing.
 
 Analisa data top LPers berikut dari pool ${poolAddress}:
-${JSON.stringify(topLpers, null, 2)}
+${stringify(topLpers, 2)}
 
 Tugas kamu:
 1. Identifikasi pola behavior yang membuat LPer ini sukses

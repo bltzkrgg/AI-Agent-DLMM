@@ -6,6 +6,7 @@ import { getAllStrategies, getStrategyByName, parseStrategyParameters } from '..
 import { getConfig } from '../config.js';
 import { swapAllToSOL, SOL_MINT } from '../solana/jupiter.js';
 import { executeControlledOperation } from '../app/executionService.js';
+import { stringify, scrubSensitiveText } from '../utils/safeJson.js';
 
 const tools = [
   {
@@ -349,12 +350,17 @@ async function executeTool(toolName, toolInput) {
 
 export async function processMessage(userMessage) {
   const cfg = getConfig();
-  const history = getConversationHistory();
-  addToHistory('user', userMessage);
+  const history = getConversationHistory().map(h => ({
+    ...h,
+    content: scrubSensitiveText(h.content)
+  }));
+  
+  const scrubbedUserMsg = scrubSensitiveText(userMessage);
+  addToHistory('user', scrubbedUserMsg);
 
   const messages = [
     ...history,
-    { role: 'user', content: userMessage },
+    { role: 'user', content: scrubbedUserMsg },
   ];
 
   const systemPrompt = `Kamu adalah Meteora DLMM Execution Engine — lapisan intelijensi otonom untuk trading di Solana.
