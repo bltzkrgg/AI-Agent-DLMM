@@ -882,9 +882,11 @@ async function _openPositionLogic(poolAddress, tokenXAmount, tokenYAmount, price
 //   6. Verifikasi on-chain: posisi benar-benar tidak ada lagi
 //   7. Baru update DB
 
-export async function closePositionDLMM(poolAddress, positionAddress, pnlData = {}) {
+export async function closePositionDLMM(poolAddress, positionAddress, pnlData = {}, options = {}) {
+  const isUrgent = options.isUrgent === true;
   if (isDryRun()) {
-    console.log(`[DRY RUN] closePositionDLMM skipped: pool=${poolAddress} pos=${positionAddress}`);
+    const urgentFlag = isUrgent ? ' [URGENT]' : '';
+    console.log(`[DRY RUN] closePositionDLMM skipped${urgentFlag}: pool=${poolAddress} pos=${positionAddress}`);
     return { dryRun: true, poolAddress, positionAddress, pnlData };
   }
   const connection = getConnection();
@@ -955,12 +957,17 @@ export async function closePositionDLMM(poolAddress, positionAddress, pnlData = 
           tx.feePayer = wallet.publicKey;
         }
 
-        let microLamports = 250_000;
+        let microLamports = isUrgent ? 1_000_000 : 250_000;
         try {
           // Dynamic Exit Fee: Royal priority during dumps
           const rec = await getRecommendedPriorityFee([poolAddress]);
-          if (rec > 0) microLamports = Math.floor(rec * 1.5);
-        } catch { /* fallback */ }
+          if (rec > 0) {
+            // TURBO EXIT: 2.5x multiplier for Panic Watchdog closures
+            // STANDARD EXIT: 1.5x multiplier for normal rebalances
+            const multiplier = isUrgent ? 2.5 : 1.5;
+            microLamports = Math.floor(rec * multiplier);
+          }
+        } catch { /* fallback already set higher for urgent */ }
 
         injectPriorityFee(tx, { units: 400_000, microLamports });
 

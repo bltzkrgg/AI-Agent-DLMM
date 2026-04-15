@@ -2,6 +2,8 @@ import { fetchWithTimeout } from './safeJson.js';
 import { getWallet } from '../solana/wallet.js';
 import { Transaction, VersionedTransaction } from '@solana/web3.js';
 
+import { getConfig } from '../config.js';
+
 const JUPITER_QUOTE_API = 'https://quote-api.jup.ag/v6/quote';
 const JUPITER_SWAP_API  = 'https://quote-api.jup.ag/v6/swap';
 
@@ -10,14 +12,16 @@ const JUPITER_SWAP_API  = 'https://quote-api.jup.ag/v6/swap';
  */
 export async function swapToSol(tokenMint, amount) {
   const wallet = getWallet();
+  const cfg    = getConfig();
   const WSOL   = 'So11111111111111111111111111111111111111112';
 
   if (!amount || amount <= 0) return null;
 
   try {
     // 1. Get Quote
+    const slippage = cfg.slippageBps || 100; // default 1%
     const quoteRes = await fetchWithTimeout(
-      `${JUPITER_QUOTE_API}?inputMint=${tokenMint}&outputMint=${WSOL}&amount=${amount}&slippageBps=100`, // 1% slippage
+      `${JUPITER_QUOTE_API}?inputMint=${tokenMint}&outputMint=${WSOL}&amount=${amount}&slippageBps=${slippage}`,
       {},
       8000
     );
@@ -51,12 +55,36 @@ export async function swapToSol(tokenMint, amount) {
   }
 }
 
+export async function swapAllToSOL(tokenMint) {
+  try {
+    const { getTokenBalance } = await import('../solana/wallet.js');
+    const balanceInfo = await getTokenBalance(tokenMint);
+    
+    // balanceInfo format: { amount: "1000000", decimals: 6, uiAmount: 1.0 }
+    if (!balanceInfo || !balanceInfo.amount || parseFloat(balanceInfo.amount) <= 0) {
+      return { success: false, reason: 'ZERO_BALANCE' };
+    }
+
+    const swapRes = await swapToSol(tokenMint, balanceInfo.amount);
+    if (swapRes) {
+      // mapping outAmount ke outSol untuk konsistensi di healerAlpha
+      const outSol = parseFloat(swapRes.outAmount) / 1e9;
+      return { success: true, outSol };
+    }
+    return { success: false, reason: 'SWAP_FAILED' };
+  } catch (e) {
+    console.error(`[jupiter] swapAllToSOL failed for ${tokenMint}:`, e.message);
+    return { success: false, error: e.message };
+  }
+}
+
 export async function getJupiterPrice(tokenMint) {
   try {
     const res = await fetchWithTimeout(`https://api.jup.ag/price/v2?ids=${tokenMint}`, {}, 5000);
     if (!res.ok) return null;
     const data = await res.json();
-    return safeNum(data.data[tokenMint]?.price);
+    const rawPrice = data.data[tokenMint]?.price;
+    return rawPrice ? parseFloat(rawPrice) : null;
   } catch {
     return null;
   }
