@@ -744,7 +744,13 @@ async function executeTool(name, input) {
 // ─── Main agent loop ─────────────────────────────────────────────
 
 export async function runHunterAlpha(notifyFn, bot = null, allowedId = null, options = {}) {
-  hunterNotifyFn = notifyFn;
+  // Bungkus notifyFn agar error Telegram (EFATAL/terminated) tidak crash loop screening.
+  // Error "terminated" terjadi saat polling Telegram putus ditengah eksekusi.
+  hunterNotifyFn = notifyFn
+    ? (msg) => notifyFn(msg).catch(err => {
+        if (process.env.HUNTER_DEBUG) console.warn('[hunter] notify swallowed:', err?.message);
+      })
+    : null;
   hunterBotRef = bot;
   hunterAllowedId = allowedId;
   _hunterTargetCount = options.targetCount ?? null;
