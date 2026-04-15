@@ -9,7 +9,7 @@ import { initSolana, getConnection, getWallet, getWalletBalance } from './solana
 import { processMessage } from './agent/claude.js';
 import { handleStrategyCommand, isInStrategySession } from './strategies/strategyHandler.js';
 import { runHunterAlpha, getCandidates } from './agents/hunterAlpha.js';
-import { runHealerAlpha, executeTool } from './agents/healerAlpha.js';
+import { runHealerAlpha, runPanicWatchdog, executeTool } from './agents/healerAlpha.js';
 import { learnFromPool, learnFromMultiplePools, loadLessons, pinLesson, unpinLesson, deleteLesson, clearAllLessons, formatLessonsList, getBrainSummary } from './learn/lessons.js';
 import { getConfig, getThresholds, updateConfig, isConfigKeySupported } from './config.js';
 import { handleConfirmationReply, getSafetyStatus, setStartingBalanceUsd } from './safety/safetyManager.js';
@@ -283,6 +283,28 @@ async function runHealerWithReopenCheck() {
   }
   await runHealerAlpha(notify);
 }
+
+
+// ─── High-Frequency Watchdog (Panic Exit) ───────────────────────
+// Berjalan tiap 5 menit untuk nangkis dump cepat (Supertrend + OOR) tanpa LLM.
+cron.schedule('*/5 * * * *', async () => {
+  if (!solanaReady) return;
+  
+  // SHARED LOCK: Jangan jalan kalau Healer utama lagi kerja
+  if (_healerBusy && (Date.now() - _healerBusy < LOCK_TIMEOUT_MS)) {
+    console.log('⏭ Watchdog skip — Healer loop sedang berjalan');
+    return;
+  }
+  
+  _healerBusy = Date.now(); // Kunci posisi biar nggak diganggu Healer
+  try {
+    await runPanicWatchdog(notify);
+  } catch (e) {
+    console.error('Watchdog error:', e.message);
+  } finally {
+    _healerBusy = 0; // Lepas kunci
+  }
+});
 
 // ─── Cron jobs ───────────────────────────────────────────────────
 // Semua cron jalan setiap menit dan cek interval live dari config.

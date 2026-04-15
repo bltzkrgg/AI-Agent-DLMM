@@ -60,7 +60,7 @@ const DEFAULTS = {
   proactiveExitEnabled: true,
   proactiveExitMinProfitPct: 1.0,
   proactiveExitBearishConfidence: 0.7,
-  maxPriceImpactPct: 0.5,     // Maksimal price impact (%) yang diijinkan saat simulasi swap
+  maxPriceImpactPct: 2.5,     // Maksimal price impact (%) yang diijinkan saat simulasi swap (0.5 SOL)
   maxBinsPerPosition: 125,   // Kapasitas bin maksimal sesuai skema (80-125)
   activePreset: 'rsi_plus_supertrend', // Mode keputusan: supertrend_break, rsi_reversal, rsi_plus_supertrend
   rsi2Threshold: 90,         // Hard scale range width based on Volatility + Capitulation
@@ -103,6 +103,9 @@ const DEFAULTS = {
   lpAgentRelayEnabled: true,
   publicApiKey: 'bWVyaWRpYW4taXMtdGhlLWJlc3QtYWdlbnRz',
   agentMeridianApiUrl: 'https://api.agentmeridian.xyz/api',
+  maxVolumeTvlRatio: 70,       // Rasio Volume/TVL maksimal (Safety against wash-trade)
+  minTokenFeesSol: 30,         // Minimal fee 24 jam dalam satuan SOL
+  slippageBps: 100,            // Slippage tolerance dalam basis points (100 = 1%)
 };
 
 const KNOWN_CONFIG_KEYS = new Set(Object.keys(DEFAULTS));
@@ -147,6 +150,11 @@ const CONFIG_BOUNDS = {
   minTokenAgeMinutes: { min: 0, max: 1440 },
   rsi2Threshold: { min: 50, max: 98 },
   lastEvolutionTradeCount: { min: 0, max: 1000000 },
+  maxVolumeTvlRatio: { min: 1, max: 1000 },
+  minTokenFeesSol: { min: 0, max: 10000 },
+  slippageBps: { min: 10, max: 1000 },
+  managementModel: { type: 'string' },
+  hunterModel: { type: 'string' },
 };
 
 function safeParseJSON(raw) {
