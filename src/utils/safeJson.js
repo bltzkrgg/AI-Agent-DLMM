@@ -1,6 +1,21 @@
 /**
  * Safe utilities — used across all modules
  */
+const SENSITIVE_PARAMS = ['api-key', 'apiKey', 'token', 'timestamp', 'client_id'];
+
+function maskUrl(url) {
+  try {
+    const urlObj = new URL(url);
+    SENSITIVE_PARAMS.forEach(param => {
+      if (urlObj.searchParams.has(param)) {
+        urlObj.searchParams.set(param, '[REDACTED]');
+      }
+    });
+    return urlObj.toString();
+  } catch {
+    return url;
+  }
+}
 
 import { globalRateLimiter } from './rateLimiter.js';
 import { safeStringify } from './serializer.js';
@@ -74,9 +89,10 @@ export async function fetchWithTimeout(url, options = {}, timeoutMs = 10000) {
     return res;
   } catch (e) {
     clearTimeout(timer);
-    if (e.name === 'AbortError') throw new Error(`Timeout (${timeoutMs}ms): ${url}`);
+    const masked = maskUrl(url);
+    if (e.name === 'AbortError') throw new Error(`Timeout (${timeoutMs}ms): ${masked}`);
     const cause = e?.cause?.code || e?.cause?.message || e?.message || 'unknown fetch error';
-    throw new Error(`Fetch failed for ${url}: ${cause}`);
+    throw new Error(`Fetch failed for ${masked}: ${cause}`);
   }
 }
 
@@ -146,4 +162,45 @@ export function safeNum(val, def = 0) {
  */
 export function stringify(obj, space = 0) {
   return safeStringify(obj, space);
+}
+
+/**
+ * Logika Slippage Konservatif (Irit Execution)
+ * Menyesuaikan toleransi berdasarkan volatilitas market, tapi dibatasi secara ketat.
+ * @param {number} volatility24h - Persentase rentang harga 24 jam (0-100+)
+ * @returns {number} Slippage dalam BPS (100 = 1%)
+ */
+export function getConservativeSlippage(volatility24h = 0) {
+  const baseSlippage = 100; // 1.0%
+  const volFactor = 1.2;
+  const dynamic = Math.round((volatility24h || 0) * volFactor);
+  
+  // Cap ketat di 200 BPS (2.0%) sesuai request user "gak mau kena pajak max 5%"
+  const finalSlippage = Math.min(200, baseSlippage + dynamic);
+  return finalSlippage;
+}
+
+/**
+ * Global Text Scrubber — Mencari dan menyensor data sensitif di dalam teks mentah.
+ * Berguna untuk membersihkan history chat sebelum dikirim ke AI.
+ */
+export function scrubSensitiveText(text) {
+  if (!text || typeof text !== 'string') return text;
+  
+  let clean = text;
+
+  // 1. Sensor Mnemonics (12-24 kata umum)
+  // Pola sederhana: kata-kata spasi kata-kata (minimal 12 kata)
+  const mnemonicPattern = /\b([a-z]{3,}\s){11,}[a-z]{3,}\b/gi;
+  clean = clean.replace(mnemonicPattern, '[REDACTED_MNEMONIC]');
+
+  // 2. Sensor Solana Private Keys (Base58, ~88 chars)
+  const solPrivKeyPattern = /\b[1-9A-HJ-NP-Za-km-z]{80,90}\b/g;
+  clean = clean.replace(solPrivKeyPattern, '[REDACTED_PRIVKEY]');
+
+  // 3. Sensor API Keys di URL atau string assignment
+  const apiKeyPattern = /(api-key|apiKey|token|secret)=([a-zA-Z0-9_-]+)/gi;
+  clean = clean.replace(apiKeyPattern, '$1=[REDACTED]');
+
+  return clean;
 }

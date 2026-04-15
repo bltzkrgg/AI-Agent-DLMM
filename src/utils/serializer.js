@@ -3,7 +3,12 @@
  * Prevents "TypeError: Do not know how to serialize a BigInt"
  */
 
+const SENSITIVE_KEYS = new Set([
+  'privateKey', 'private_key', 'secret', 'api_key', 'apiKey', 'mnemonic', 'seed', 'password', 'token'
+]);
+
 export function bigIntReplacer(key, value) {
+  if (SENSITIVE_KEYS.has(key)) return '[REDACTED]';
   return typeof value === 'bigint' ? value.toString() : value;
 }
 

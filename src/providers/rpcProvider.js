@@ -4,7 +4,7 @@
  */
 
 import { Connection } from '@solana/web3.js';
-import { fetchWithTimeout } from '../utils/safeJson.js';
+import { fetchWithTimeout, stringify } from '../utils/safeJson.js';
 
 const logger = console; // Use console for logging
 
@@ -41,7 +41,7 @@ class RpcProvider {
       const res = await fetchWithTimeout(this.url, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
+        body: stringify({
           jsonrpc: '2.0',
           id: Date.now(),
           method,
@@ -55,7 +55,7 @@ class RpcProvider {
 
       const data = await res.json();
       if (data.error) {
-        throw new Error(`RPC error: ${JSON.stringify(data.error)}`);
+        throw new Error(`RPC error: ${stringify(data.error)}`);
       }
 
       const latencyMs = Date.now() - startTime;
@@ -193,7 +193,7 @@ export class RpcManager {
   async call(method, params = [], timeoutMs = 10000) {
     // Skip cache for real-time methods
     const bypassCache = ['getSlot', 'getRecentPrioritizationFees', 'getLatestBlockhash', 'getSignatureStatuses'];
-    const cacheKey = bypassCache.includes(method) ? null : `${method}:${JSON.stringify(params)}`;
+    const cacheKey = bypassCache.includes(method) ? null : `${method}:${stringify(params)}`;
     
     if (cacheKey) {
       const cached = this.cache.get(cacheKey);

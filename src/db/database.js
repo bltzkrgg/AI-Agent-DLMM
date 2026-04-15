@@ -416,7 +416,7 @@ export async function enqueueReconcileIssue({ issueType, entityId, payload = nul
   `).run(
     issueType,
     entityId,
-    payload ? JSON.stringify(payload) : null,
+    payload ? safeStringify(payload) : null,
     notes,
   ));
 }
@@ -451,10 +451,10 @@ export function updateOperationLog(id, { status, result, metadata, errorMessage,
     WHERE id = ?
   `).run(
     status ?? null,
-    result !== undefined ? JSON.stringify(result) : null,
-    metadata !== undefined ? JSON.stringify(metadata) : null,
+    result !== undefined ? safeStringify(result) : null,
+    metadata !== undefined ? safeStringify(metadata) : null,
     errorMessage ?? null,
-    txHashes !== undefined ? JSON.stringify(txHashes) : null,
+    txHashes !== undefined ? safeStringify(txHashes) : null,
     id,
   ));
 }
@@ -463,7 +463,7 @@ export function setPendingApproval(key, type, payload = null, expiryMinutes = 60
   return runInQueue(() => db.prepare(`
     INSERT OR REPLACE INTO pending_approvals (key, type, payload, expires_at)
     VALUES (?, ?, ?, datetime('now', ?))
-  `).run(key, type, payload ? JSON.stringify(payload) : null, `+${expiryMinutes} minutes`));
+  `).run(key, type, payload ? safeStringify(payload) : null, `+${expiryMinutes} minutes`));
 }
 
 export function getPendingApproval(key) {

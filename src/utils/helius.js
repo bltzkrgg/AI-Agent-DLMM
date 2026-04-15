@@ -18,7 +18,7 @@
  *   QUICKNODE_API_KEY — opsional fallback
  */
 
-import { fetchWithTimeout } from './safeJson.js';
+import { fetchWithTimeout, stringify } from './safeJson.js';
 import { RpcManager } from '../providers/rpcProvider.js';
 
 // ─── URL helpers ──────────────────────────────────────────────────
@@ -91,7 +91,7 @@ export async function heliusRpc(method, params = [], timeoutMs = 10000) {
   const res = await fetchWithTimeout(url, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
+    body: stringify({
       jsonrpc: '2.0',
       id: ++_rpcCallId,
       method,
@@ -101,7 +101,7 @@ export async function heliusRpc(method, params = [], timeoutMs = 10000) {
 
   if (!res.ok) throw new Error(`Helius RPC ${method} HTTP ${res.status}`);
   const data = await res.json();
-  if (data.error) throw new Error(`Helius RPC error: ${JSON.stringify(data.error)}`);
+  if (data.error) throw new Error(`Helius RPC error: ${stringify(data.error)}`);
   return data.result;
 }
 
@@ -184,8 +184,34 @@ export async function getRecommendedPriorityFee(accountKeys = []) {
 
     // Clamp: min 5000 (0.000005 SOL), max 500000 (0.0005 SOL)
     return Math.max(5000, Math.min(500000, p75));
-  } catch {
-    return 50000; // fallback default
+  } catch (err) {
+    console.warn(`⚠️ [helius] Helius fee API failed, trying native fallback...`);
+    try {
+      // Native Solana Fallback: Tanya langsung ke jaringan
+      const { getConnection } = await import('../solana/wallet.js');
+      const connection = getConnection();
+      const nativeFees = await connection.getRecentPrioritizationFees(
+        accountKeys.map(k => new (await import('@solana/web3.js')).PublicKey(k))
+      );
+      
+      if (Array.isArray(nativeFees) && nativeFees.length > 0) {
+        const sorted = nativeFees
+          .map(f => f.prioritizationFee || 0)
+          .filter(f => f > 0)
+          .sort((a, b) => a - b);
+        
+        if (sorted.length > 0) {
+          const p75idx = Math.floor(sorted.length * 0.75);
+          const p75 = sorted[Math.min(p75idx, sorted.length - 1)];
+          console.log(`✅ [helius] Native fallback success: ${p75} micro-lamports`);
+          return Math.max(5000, Math.min(500000, p75));
+        }
+      }
+    } catch (fallbackErr) {
+      console.warn(`❌ [helius] Native fallback also failed: ${fallbackErr.message}`);
+    }
+    
+    return 50000; // fallback final
   }
 }
 
@@ -203,7 +229,7 @@ export async function getTokenMetadataBatch(mintAddresses) {
       {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ mintAccounts: mintAddresses }),
+        body: stringify({ mintAccounts: mintAddresses }),
       },
       12000
     );
