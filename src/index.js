@@ -893,6 +893,13 @@ bot.onText(/\/pos$/, async (msg) => {
           ? `${isSOLP ? (1/rawPrice).toFixed(4) : rawPrice.toFixed(8)} ${isSOLP ? `${symbol}/SOL` : ''}`
           : '';
 
+      text +=
+        `${rangeIcon} <code>${pos.pool_address.slice(0, 8)}...</code> <b>${symbol}/SOL</b>${strat}${oorLabel}\n` +
+        `  PnL: <code>${pnlSign}${pnlPct}%</code>  Fees: <code>${feesStr}</code>  Deploy: <code>${deploySol.toFixed(4)} SOL</code>\n` +
+        (snapshot?.lifecycleState ? `  State: <code>${snapshot.lifecycleState}</code>\n` : '') +
+        (priceDisp ? `  Harga: <code>${priceDisp}</code>\n` : '');
+    }
+
     text += `\n<i>Data via Meteora API — gunakan /status untuk data on-chain penuh.</i>`;
     await sendLong(chatId, text, { parse_mode: 'HTML' });
   } catch (e) {
@@ -1014,18 +1021,20 @@ bot.onText(/\/system_update/, (msg) => {
         const gitResult = await performGitPull();
         bot.sendMessage(chatId, `✅ <b>Git Pull Success:</b>\n<pre><code>${gitResult}</code></pre>`, { parse_mode: 'HTML' });
 
-        // Step 2: NPM Install (Opsional tapi disarankan)
+        // Step 2: NPM Install
+        bot.sendMessage(chatId, '📦 <code>npm install</code> dalam proses (Mungkin agak lama)...', { parse_mode: 'HTML' });
+        await performNpmInstall();
         bot.sendMessage(chatId, '✅ <b>NPM Install Success.</b>', { parse_mode: 'HTML' });
 
         // Step 3: Restart
-        bot.sendMessage(chatId, '🚀 *Memicu Restart Sistem...* Bot akan offline sebentar.');
+        bot.sendMessage(chatId, '🚀 <b>Memicu Restart Sistem...</b> Bot akan offline sebentar.', { parse_mode: 'HTML' });
         
         setTimeout(() => {
           process.exit(0); // Trigger PM2 Restart
         }, 1000);
 
       } catch (err) {
-        bot.sendMessage(chatId, `❌ *Update Gagal:*\n\n${err.message}`);
+        bot.sendMessage(chatId, `❌ <b>Update Gagal:</b>\n\n${err.message}`, { parse_mode: 'HTML' });
       }
     } else if (cMsg.from.id === ALLOWED_ID && cMsg.chat.id === chatId && cMsg.text !== 'GAS UPDATE' && !cMsg.text.startsWith('/')) {
        bot.removeListener('message', updateHandler);
@@ -1046,7 +1055,6 @@ bot.onText(/\/library/, (msg) => {
     join(ROOT, 'strategyPerformance.json'),
     join(__dirname, 'strategy-library.json'),
   ];
-  const stats = getLibraryStats();
   const stats = getLibraryStats();
   let text = `📚 <b>Strategy Library</b>\n\n`;
   text += `Total: ${stats.totalStrategies} | Built-in: ${stats.builtinCount} | Research: ${stats.researchedCount}\n`;
@@ -1148,7 +1156,7 @@ bot.onText(/\/learn(?:\s+(.+))?/, async (msg, match) => {
 
 bot.onText(/\/lessons/, (msg) => {
   if (msg.from.id !== ALLOWED_ID) return;
-  sendLong(msg.chat.id, formatLessonsList(), { parse_mode: 'Markdown' }).catch(() => {});
+  sendLong(msg.chat.id, formatLessonsList(), { parse_mode: 'HTML' }).catch(() => {});
 });
 
 // /pinlesson <index> — pin lesson ke tier 1 (selalu masuk prompt)
