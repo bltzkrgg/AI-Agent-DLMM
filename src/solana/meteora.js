@@ -916,61 +916,63 @@ async function _openPositionLogic(poolAddress, tokenXAmount, tokenYAmount, price
           console.error(`[meteora] ERROR: Transaction has empty/null signatures!`);
         }
 
-        try {
-          // Watchtower: Pre-flight simulation for Compute Units (VersionedTransaction only)
-          // Legacy transactions: Skip simulation, use sendRawTransaction preflight instead
-          // (simulateTransaction with legacy + signature objects causes "Invalid arguments" error)
-          let sim;
-          if (isVersioned) {
-            try {
-              sim = await connection.simulateTransaction(tx, { commitment: 'processed' });
-              console.log(`[meteora] VersionedTransaction simulation result: ${sim.value.err ? 'error' : 'success'}`);
-              if (sim.value.err) {
-                console.warn(`[meteora] Simulation Warning: ${stringify(sim.value.err)}`);
-                if (stringify(sim.value.err).includes('InstructionError')) {
-                  throw new Error(`Simulation Failed: ${stringify(sim.value.err)}`);
+          try {
+            // Watchtower: Pre-flight simulation for Compute Units (VersionedTransaction only)
+            // Legacy transactions: Skip simulation, use sendRawTransaction preflight instead
+            let sim;
+            if (isVersioned) {
+              try {
+                sim = await connection.simulateTransaction(tx, { commitment: 'processed' });
+                console.log(`[meteora] VersionedTransaction simulation result: ${sim.value.err ? 'error' : 'success'}`);
+                if (sim.value.err) {
+                  console.warn(`[meteora] Simulation Warning: ${stringify(sim.value.err)}`);
+                  if (stringify(sim.value.err).includes('InstructionError')) {
+                    throw new Error(`Simulation Failed: ${stringify(sim.value.err)}`);
+                  }
                 }
+              } catch (simErr) {
+                console.warn(`[meteora] VersionedTransaction simulation failed: ${simErr.message}. Proceeding with send...`);
               }
-            } catch (simErr) {
-              console.warn(`[meteora] VersionedTransaction simulation failed: ${simErr.message}. Proceeding with send...`);
+            } else {
+              console.log(`[meteora] Legacy Transaction: Skipping manual simulation (will use sendRawTransaction preflight)`);
             }
-          } else {
-            console.log(`[meteora] Legacy Transaction: Skipping manual simulation (will use sendRawTransaction preflight)`);
+
+            const txHash = await connection.sendRawTransaction(tx.serialize(), {
+              skipPreflight: isVersioned, // Skip preflight if we already simulated (VersionedTransaction)
+              preflightCommitment: 'confirmed',
+              maxRetries: 1, // manual watchtower retry logic instead of RPC default
+            });
+
+            await pollTxConfirm(connection, txHash);
+            allTxHashes.push(txHash);
+
+            // Accurate Lamports conversion for DB
+            const chunkYSol = parseFloat(fromLamports(chunkTotalY.toString(), yDecimals));
+            totalSucceededSol += chunkYSol;
+
+            // Aegis: Update DB setiap kali chunk berhasil (Incremental Save)
+            const solPriceUsd = await getSolPriceUsd();
+            const currentUsd = parseFloat((totalSucceededSol * solPriceUsd).toFixed(2));
+            updatePositionRuntimeState(posKp.publicKey.toString(), {
+              totalSucceededSol,
+              status: totalSucceededSol >= tokenYAmount ? 'fully_deployed' : 'partially_deployed'
+            });
+
+            // Update database utama
+            const _db = db || globalThis.db;
+            await runInQueue(() => _db.prepare(`
+              UPDATE positions SET 
+                token_y_amount = ?, 
+                deployed_sol = ?, 
+                deployed_usd = ?,
+                lifecycle_state = 'open'
+              WHERE position_address = ?
+            `).run(totalSucceededSol, totalSucceededSol, currentUsd, posKp.publicKey.toString()));
+          } catch (innerErr) {
+            console.warn(`[meteora] Simulation/Send for chunk failed: ${innerErr.message}`);
+            // Kita throw lagi agar catch luar (line 849/974) menangkap error fatal
+            throw innerErr;
           }
-
-          const txHash = await connection.sendRawTransaction(tx.serialize(), {
-            skipPreflight: isVersioned, // Skip preflight if we already simulated (VersionedTransaction)
-            preflightCommitment: 'confirmed',
-            maxRetries: 1, // manual watchtower retry logic instead of RPC default
-          });
-
-          await pollTxConfirm(connection, txHash);
-          allTxHashes.push(txHash);
-
-          // Accurate Lamports conversion for DB
-          const chunkYSol = parseFloat(fromLamports(chunkTotalY.toString(), yDecimals));
-          totalSucceededSol += chunkYSol;
-
-          // Aegis: Update DB setiap kali chunk berhasil (Incremental Save)
-          // Jika chunk berikutnya gagal, kita tetep punya rekam jejak jumlah SOL yang masuk.
-          const solPriceUsd = await getSolPriceUsd();
-          const currentUsd = parseFloat((totalSucceededSol * solPriceUsd).toFixed(2));
-          updatePositionRuntimeState(posKp.publicKey.toString(), {
-            totalSucceededSol,
-            status: totalSucceededSol >= tokenYAmount ? 'fully_deployed' : 'partially_deployed'
-          });
-
-          // Update database utama
-          const _db = db || globalThis.db;
-          await runInQueue(() => _db.prepare(`
-          UPDATE positions SET 
-            token_y_amount = ?, 
-            deployed_sol = ?, 
-            deployed_usd = ?,
-            lifecycle_state = 'open'
-          WHERE position_address = ?
-        `).run(totalSucceededSol, totalSucceededSol, currentUsd, posKp.publicKey.toString()));
-
         } catch (e) {
           // Aegis: Log program logs on simulation failure
           if (e.logs) {
@@ -1251,19 +1253,6 @@ export async function closePositionDLMM(poolAddress, positionAddress, pnlData = 
         console.warn(`⚠️ [meteora] Cleanup gagal (non-kritis): ${err.message}`);
       }
 
-      return { success: true };
-
-        if (!emptyCloseOk) {
-          await updatePositionLifecycle(positionAddress, 'manual_review');
-          await enqueueReconcileIssue({
-            issueType: 'EMPTY_POSITION_CLOSE_FAILED',
-            entityId: positionAddress,
-            payload: { poolAddress, positionAddress, pnlData },
-            notes: 'All close methods failed on empty position. Keep tracking and reconcile manually.',
-          });
-          throw new Error('Posisi kosong gagal ditutup oleh semua metode. Lifecycle diubah ke manual_review untuk rekonsiliasi.');
-        }
-      }
 
       // ── 5. Kirim & konfirmasi setiap TX ─────────────────────
       const txList = Array.isArray(removeLiqTx) ? removeLiqTx : [removeLiqTx];
