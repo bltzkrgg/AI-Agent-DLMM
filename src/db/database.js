@@ -127,6 +127,7 @@ db.exec(`
     pnl_sol REAL DEFAULT 0,
     fees_collected_sol REAL DEFAULT 0,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     closed_at DATETIME,
     status TEXT DEFAULT 'open'
   );
@@ -208,6 +209,7 @@ const migrations = [
   'ALTER TABLE positions ADD COLUMN pnl_sol REAL DEFAULT 0',
   'ALTER TABLE positions ADD COLUMN fees_collected_sol REAL DEFAULT 0',
   'ALTER TABLE positions ADD COLUMN dev_address TEXT',
+  'ALTER TABLE positions ADD COLUMN updated_at DATETIME DEFAULT CURRENT_TIMESTAMP',
 ];
 for (const sql of migrations) {
   try { db.exec(sql); } catch { /* kolom sudah ada, skip */ }

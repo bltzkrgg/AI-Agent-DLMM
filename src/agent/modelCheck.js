@@ -118,25 +118,25 @@ export function formatModelStatus() {
   const envModel     = process.env.AI_MODEL;
   const sessionModel = cfg.activeModel;
 
-  let text = `🤖 *Model Status*\n\n`;
-  text += `Provider : \`${PROVIDER}\`\n`;
-  text += `Aktif    : \`${activeModel}\`\n\n`;
+  let text = `🤖 <b>Model Status</b>\n\n`;
+  text += `Provider : <code>${PROVIDER}</code>\n`;
+  text += `Aktif    : <code>${activeModel}</code>\n\n`;
 
   if (envModel) {
-    text += `📌 \`AI_MODEL\` env: \`${envModel}\` _(tertinggi)_\n`;
+    text += `📌 <code>AI_MODEL</code> env: <code>${envModel}</code> <i>(tertinggi)</i>\n`;
   }
   if (sessionModel) {
-    text += `🎮 Session \`/model\`: \`${sessionModel}\`${envModel ? ' _(diabaikan karena AI\\_MODEL di env)_' : ''}\n`;
+    text += `🎮 Session <code>/model</code>: <code>${sessionModel}</code>${envModel ? ' <i>(diabaikan karena AI_MODEL di env)</i>' : ''}\n`;
   }
 
-  text += `\n*Slot model:*\n`;
-  text += `• General  : \`${cfg.generalModel}\`\n`;
-  text += `• Screening: \`${cfg.screeningModel}\`\n`;
-  text += `• Mgmt     : \`${cfg.managementModel}\`\n`;
+  text += `\n<b>Slot model:</b>\n`;
+  text += `• General  : <code>${cfg.generalModel}</code>\n`;
+  text += `• Screening: <code>${cfg.screeningModel}</code>\n`;
+  text += `• Mgmt     : <code>${cfg.managementModel}</code>\n`;
 
-  text += `\n_Gunakan \`/testmodel\` untuk test koneksi API._\n`;
-  text += `_Ganti model: \`/model <model\\_id>\` atau set \`AI\\_MODEL\` di .env_\n`;
-  text += `_Reset session: \`/model reset\`_`;
+  text += `\n<i>Gunakan <code>/testmodel</code> untuk test koneksi API.</i>\n`;
+  text += `<i>Ganti model: <code>/model &lt;model_id&gt;</code> atau set <code>AI_MODEL</code> di .env</i>\n`;
+  text += `<i>Reset session: <code>/model reset</code></i>`;
 
   return text;
 }
@@ -148,11 +148,11 @@ export async function runStartupModelCheck(notifyFn) {
     const result = await testCurrentModel();
     if (!result.ok) {
       const freeModels = await fetchFreeModels();
-      let msg = `⚠️ *Model tidak bisa dipakai!*\n\nModel: \`${result.model}\`\nError: ${result.error}\n`;
+      let msg = `⚠️ <b>Model tidak bisa dipakai!</b>\n\nModel: <code>${result.model}</code>\nError: ${result.error}\n`;
       if (freeModels.length > 0) {
-        msg += `\n*Ganti model tanpa restart:*\n`;
-        freeModels.slice(0, 5).forEach(m => { msg += `• \`/model ${m}\`\n`; });
-        msg += `\nAtau set \`AI_MODEL\` di .env lalu restart.`;
+        msg += `\n<b>Ganti model tanpa restart:</b>\n`;
+        freeModels.slice(0, 5).forEach(m => { msg += `• <code>/model ${m}</code>\n`; });
+        msg += `\nAtau set <code>AI_MODEL</code> di .env lalu restart.`;
       }
       await notifyFn(msg);
     } else {

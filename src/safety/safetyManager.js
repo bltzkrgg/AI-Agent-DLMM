@@ -200,11 +200,11 @@ export function requestConfirmation(notifyFn, bot, allowedId, message, timeoutMs
 
     // Kirim pesan konfirmasi
     notifyFn(
-      `🔔 *Konfirmasi Diperlukan* (ID: ${id})\n\n${message}\n\n` +
+      `🔔 <b>Konfirmasi Diperlukan</b> (ID: ${id})\n\n${message}\n\n` +
       `Balas dengan:\n` +
-      `✅ \`ya ${id}\` — untuk konfirmasi\n` +
-      `❌ \`tidak ${id}\` — untuk batalkan\n\n` +
-      `_Timeout dalam 5 menit_`
+      `✅ <code>ya ${id}</code> — untuk konfirmasi\n` +
+      `❌ <code>tidak ${id}</code> — untuk batalkan\n\n` +
+      `<i>Timeout dalam 5 menit</i>`
     );
 
     // Set timeout

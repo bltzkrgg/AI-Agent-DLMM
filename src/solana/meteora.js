@@ -966,7 +966,8 @@ async function _openPositionLogic(poolAddress, tokenXAmount, tokenYAmount, price
                 token_y_amount = ?, 
                 deployed_sol = ?, 
                 deployed_usd = ?,
-                lifecycle_state = 'open'
+                lifecycle_state = 'open',
+                updated_at = CURRENT_TIMESTAMP
               WHERE position_address = ?
             `).run(totalSucceededSol, totalSucceededSol, currentUsd, posKp.publicKey.toString()));
           } catch (innerErr) {

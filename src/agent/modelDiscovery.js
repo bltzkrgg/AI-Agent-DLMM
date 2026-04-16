@@ -432,15 +432,15 @@ export function formatModelList(models = null) {
     byProvider[model.provider].push(model);
   }
 
-  let text = `📊 *Available Models* (${list.length} total)\n\n`;
+  let text = `📊 <b>Available Models</b> (${list.length} total)\n\n`;
 
   for (const [provider, models] of Object.entries(byProvider)) {
-    text += `*${provider.toUpperCase()}* (${models.length})\n`;
+    text += `<b>${provider.toUpperCase()}</b> (${models.length})\n`;
     models.slice(0, 5).forEach(m => {
       const status = getModelStatus(m.id);
       const statusIcon = status.ok === true ? '✅' : status.ok === false ? '❌' : '❓';
       const freeIcon = m.isFree ? '🆓' : '💰';
-      text += `${statusIcon} ${freeIcon} \`${m.id}\`\n`;
+      text += `${statusIcon} ${freeIcon} <code>${m.id}</code>\n`;
     });
     if (models.length > 5) {
       text += `   ... and ${models.length - 5} more\n`;

@@ -34,15 +34,15 @@ export function handleStrategyCommand(bot, msg, allowedUserId) {
       return;
     }
 
-    let message = '📋 *Daftar Strategi DLMM:*\n\n';
+    let message = '📋 <b>Daftar Strategi DLMM:</b>\n\n';
     strategies.forEach((s, i) => {
       // Aegis Fix: Parameters is already an object from unified strategyManager
       const params = s.parameters || {};
       const deploy = s.deploy || {};
       
-      message += `*${i + 1}. ${s.name}*\n`;
+      message += `${i + 1}. <b>${s.name}</b>\n`;
       if (s.description) message += `📝 ${s.description}\n`;
-      message += `⚙️ Type: \`${s.type || s.strategy_type || 'spot'}\`\n`;
+      message += `⚙️ Type: <code>${s.type || s.strategy_type || 'spot'}</code>\n`;
       
       const range = deploy.priceRangePct || params.priceRangePercent || 'Auto';
       const step  = params.binStep || 'Auto';
@@ -53,8 +53,8 @@ export function handleStrategyCommand(bot, msg, allowedUserId) {
       message += '\n';
     });
 
-    message += `_Gunakan nama strategi saat buka posisi, contoh: "Buka posisi pakai strategi Spot Balanced di pool xxx"_`;
-    bot.sendMessage(chatId, message, { parse_mode: 'Markdown' });
+    message += `<i>Gunakan nama strategi saat buka posisi, contoh: "Buka posisi pakai strategi Spot Balanced di pool xxx"</i>`;
+    bot.sendMessage(chatId, message, { parse_mode: 'HTML' });
     return;
   }
 
@@ -64,7 +64,7 @@ export function handleStrategyCommand(bot, msg, allowedUserId) {
     const password = parts[1];
 
     if (!password) {
-      bot.sendMessage(chatId, '🔐 Format: `/addstrategy <password>`', { parse_mode: 'Markdown' });
+      bot.sendMessage(chatId, '🔐 Format: <code>/addstrategy &lt;password&gt;</code>', { parse_mode: 'HTML' });
       return;
     }
 
@@ -76,10 +76,10 @@ export function handleStrategyCommand(bot, msg, allowedUserId) {
     // Mulai sesi tambah strategi
     pendingSessions.set(userId, { step: 'name', data: {}, action: 'add' });
     bot.sendMessage(chatId,
-      '✅ *Password benar! Mode Admin aktif.*\n\n' +
+      '✅ <b>Password benar! Mode Admin aktif.</b>\n\n' +
       '📝 Mari tambah strategi baru.\n\n' +
-      '*Langkah 1/5:* Masukkan nama strategi:\n_(contoh: "Spot Aggressive", "Curve Conservative")_',
-      { parse_mode: 'Markdown' }
+      '<b>Langkah 1/5:</b> Masukkan nama strategi:\n<i>(contoh: "Spot Aggressive", "Curve Conservative")</i>',
+      { parse_mode: 'HTML' }
     );
     return;
   }
@@ -91,7 +91,7 @@ export function handleStrategyCommand(bot, msg, allowedUserId) {
     const name = parts.slice(2).join(' ');
 
     if (!password || !name) {
-      bot.sendMessage(chatId, '🔐 Format: `/deletestrategy <password> <nama strategi>`', { parse_mode: 'Markdown' });
+      bot.sendMessage(chatId, '🔐 Format: <code>/deletestrategy &lt;password&gt; &lt;nama strategi&gt;</code>', { parse_mode: 'HTML' });
       return;
     }
 
@@ -102,9 +102,9 @@ export function handleStrategyCommand(bot, msg, allowedUserId) {
 
     const deleted = deleteStrategy(name);
     if (deleted) {
-      bot.sendMessage(chatId, `✅ Strategi *"${name}"* berhasil dihapus.`, { parse_mode: 'Markdown' });
+      bot.sendMessage(chatId, `✅ Strategi <b>"${name}"</b> berhasil dihapus.`, { parse_mode: 'HTML' });
     } else {
-      bot.sendMessage(chatId, `❌ Strategi *"${name}"* tidak ditemukan atau tidak bisa dihapus (strategi bawaan sistem tidak bisa dihapus).`, { parse_mode: 'Markdown' });
+      bot.sendMessage(chatId, `❌ Strategi <b>"${name}"</b> tidak ditemukan atau tidak bisa dihapus (strategi bawaan sistem tidak bisa dihapus).`, { parse_mode: 'HTML' });
     }
     return;
   }
@@ -128,14 +128,14 @@ function handleStrategySteps(bot, chatId, userId, text, session) {
       }
       // Cek duplikat
       if (getStrategyByName(text)) {
-        bot.sendMessage(chatId, `⚠️ Strategi dengan nama *"${text}"* sudah ada. Gunakan nama lain:`, { parse_mode: 'Markdown' });
+        bot.sendMessage(chatId, `⚠️ Strategi dengan nama <b>"${text}"</b> sudah ada. Gunakan nama lain:`, { parse_mode: 'HTML' });
         return;
       }
       data.name = text;
       session.step = 'description';
       bot.sendMessage(chatId,
-        `✅ Nama: *${text}*\n\n*Langkah 2/5:* Masukkan deskripsi strategi:\n_(contoh: "Cocok untuk market sideways dengan volatilitas rendah")_`,
-        { parse_mode: 'Markdown' }
+        `✅ Nama: <b>${text}</b>\n\n<b>Langkah 2/5:</b> Masukkan deskripsi strategi:\n<i>(contoh: "Cocok untuk market sideways dengan volatilitas rendah")</i>`,
+        { parse_mode: 'HTML' }
       );
       break;
     }
@@ -144,12 +144,12 @@ function handleStrategySteps(bot, chatId, userId, text, session) {
       data.description = text;
       session.step = 'type';
       bot.sendMessage(chatId,
-        `✅ Deskripsi tersimpan.\n\n*Langkah 3/5:* Pilih tipe strategi:\n\n` +
-        `• \`spot\` — distribusi merata\n` +
-        `• \`curve\` — terkonsentrasi di tengah\n` +
-        `• \`bid_ask\` — spread lebar dua sisi\n\n` +
+        `✅ Deskripsi tersimpan.\n\n<b>Langkah 3/5:</b> Pilih tipe strategi:\n\n` +
+        `• <code>spot</code> — distribusi merata\n` +
+        `• <code>curve</code> — terkonsentrasi di tengah\n` +
+        `• <code>bid_ask</code> — spread lebar dua sisi\n\n` +
         `Ketik salah satu tipe di atas:`,
-        { parse_mode: 'Markdown' }
+        { parse_mode: 'HTML' }
       );
       break;
     }
@@ -157,20 +157,20 @@ function handleStrategySteps(bot, chatId, userId, text, session) {
     case 'type': {
       const validTypes = ['spot', 'curve', 'bid_ask'];
       if (!validTypes.includes(text.toLowerCase())) {
-        bot.sendMessage(chatId, '⚠️ Tipe tidak valid. Pilih: `spot`, `curve`, atau `bid_ask`', { parse_mode: 'Markdown' });
+        bot.sendMessage(chatId, '⚠️ Tipe tidak valid. Pilih: <code>spot</code>, <code>curve</code>, atau <code>bid_ask</code>', { parse_mode: 'HTML' });
         return;
       }
       data.strategyType = text.toLowerCase();
       session.step = 'parameters';
       bot.sendMessage(chatId,
-        `✅ Tipe: *${text}*\n\n*Langkah 4/5:* Masukkan parameter dalam format JSON:\n\n` +
-        `Contoh:\n\`\`\`\n{"priceRangePercent": 5, "binStep": 10}\n\`\`\`\n\n` +
+        `✅ Tipe: <b>${text}</b>\n\n<b>Langkah 4/5:</b> Masukkan parameter dalam format JSON:\n\n` +
+        `<pre><code>{"priceRangePercent": 5, "binStep": 10}</code></pre>\n\n` +
         `Parameter yang tersedia:\n` +
-        `• \`priceRangePercent\` — range harga dalam % (contoh: 5)\n` +
-        `• \`binStep\` — ukuran bin (contoh: 10)\n` +
-        `• \`maxActiveBinSlippage\` — slippage tolerance (contoh: 3)\n` +
+        `• <code>priceRangePercent</code> — range harga dalam % (contoh: 5)\n` +
+        `• <code>binStep</code> — ukuran bin (contoh: 10)\n` +
+        `• <code>maxActiveBinSlippage</code> — slippage tolerance (contoh: 3)\n` +
         `• Parameter custom lainnya sesuai kebutuhan`,
-        { parse_mode: 'Markdown' }
+        { parse_mode: 'HTML' }
       );
       break;
     }
@@ -179,20 +179,20 @@ function handleStrategySteps(bot, chatId, userId, text, session) {
       try {
         const params = JSON.parse(text);
         if (!params.priceRangePercent || !params.binStep) {
-          bot.sendMessage(chatId, '⚠️ Parameter harus mengandung minimal `priceRangePercent` dan `binStep`. Coba lagi:', { parse_mode: 'Markdown' });
+          bot.sendMessage(chatId, '⚠️ Parameter harus mengandung minimal <code>priceRangePercent</code> dan <code>binStep</code>. Coba lagi:', { parse_mode: 'HTML' });
           return;
         }
         data.parameters = params;
         session.step = 'logic';
         bot.sendMessage(chatId,
-          `✅ Parameter tersimpan.\n\n*Langkah 5/5 (Opsional):* Masukkan custom logic dalam JavaScript:\n\n` +
+          `✅ Parameter tersimpan.\n\n<b>Langkah 5/5 (Opsional):</b> Masukkan custom logic dalam JavaScript:\n\n` +
           `Ini untuk mendefinisikan behavior khusus strategi, misalnya kondisi kapan auto-close.\n\n` +
-          `Contoh:\n\`\`\`\n// Auto close kalau price drop > 10%\nif (currentPrice < entryPrice * 0.9) { return 'close'; }\n\`\`\`\n\n` +
-          `Atau ketik \`skip\` kalau tidak ada custom logic.`,
-          { parse_mode: 'Markdown' }
+          `Contoh:\n<pre><code>// Auto close kalau price drop &gt; 10%\nif (currentPrice &lt; entryPrice * 0.9) { return 'close'; }</code></pre>\n\n` +
+          `Atau ketik <code>skip</code> kalau tidak ada custom logic.`,
+          { parse_mode: 'HTML' }
         );
       } catch (e) {
-        bot.sendMessage(chatId, '⚠️ Format JSON tidak valid. Contoh yang benar:\n`{"priceRangePercent": 5, "binStep": 10}`\n\nCoba lagi:', { parse_mode: 'Markdown' });
+        bot.sendMessage(chatId, '⚠️ Format JSON tidak valid. Contoh yang benar:\n<code>{"priceRangePercent": 5, "binStep": 10}</code>\n\nCoba lagi:', { parse_mode: 'HTML' });
       }
       break;
     }
@@ -202,15 +202,15 @@ function handleStrategySteps(bot, chatId, userId, text, session) {
       session.step = 'confirm';
 
       const params = data.parameters;
-      let summary = `📋 *Konfirmasi Strategi Baru:*\n\n`;
-      summary += `📌 Nama: *${data.name}*\n`;
+      let summary = `📋 <b>Konfirmasi Strategi Baru:</b>\n\n`;
+      summary += `📌 Nama: <b>${data.name}</b>\n`;
       summary += `📝 Deskripsi: ${data.description}\n`;
-      summary += `⚙️ Tipe: \`${data.strategyType}\`\n`;
+      summary += `⚙️ Tipe: <code>${data.strategyType}</code>\n`;
       summary += `📊 Range: ${params.priceRangePercent}% | Bin Step: ${params.binStep}\n`;
       summary += `🔧 Custom logic: ${data.logic ? 'Ya' : 'Tidak'}\n\n`;
-      summary += `Ketik \`ya\` untuk simpan atau \`batal\` untuk membatalkan.`;
+      summary += `Ketik <code>ya</code> untuk simpan atau <code>batal</code> untuk membatalkan.`;
 
-      bot.sendMessage(chatId, summary, { parse_mode: 'Markdown' });
+      bot.sendMessage(chatId, summary, { parse_mode: 'HTML' });
       break;
     }
 
@@ -228,11 +228,11 @@ function handleStrategySteps(bot, chatId, userId, text, session) {
 
           pendingSessions.delete(userId);
           bot.sendMessage(chatId,
-            `🎉 *Strategi "${data.name}" berhasil ditambahkan!*\n\n` +
+            `🎉 <b>Strategi "${data.name}" berhasil ditambahkan!</b>\n\n` +
             `ID: ${result.id}\n\n` +
             `Strategi ini sekarang bisa dipakai dengan mengetik:\n` +
-            `_"Buka posisi pakai strategi ${data.name} di pool [alamat pool]"_`,
-            { parse_mode: 'Markdown' }
+            `<i>"Buka posisi pakai strategi ${data.name} di pool [alamat pool]"</i>`,
+            { parse_mode: 'HTML' }
           );
         } catch (e) {
           bot.sendMessage(chatId, `❌ Gagal simpan strategi: ${e.message}`);
@@ -241,7 +241,7 @@ function handleStrategySteps(bot, chatId, userId, text, session) {
         pendingSessions.delete(userId);
         bot.sendMessage(chatId, '❌ Penambahan strategi dibatalkan.');
       } else {
-        bot.sendMessage(chatId, 'Ketik `ya` untuk simpan atau `batal` untuk membatalkan.', { parse_mode: 'Markdown' });
+        bot.sendMessage(chatId, 'Ketik <code>ya</code> untuk simpan atau <code>batal</code> untuk membatalkan.', { parse_mode: 'HTML' });
       }
       break;
     }

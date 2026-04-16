@@ -24,13 +24,20 @@ function splitText(text) {
 export function createMessageTransport(bot, allowedId) {
   async function sendLong(chatId, text, opts = {}) {
     const chunks = splitText(String(text));
+    const finalOpts = {
+      parse_mode: 'HTML',
+      disable_web_page_preview: true,
+      ...opts
+    };
+
     for (const chunk of chunks) {
       try {
-        await bot.sendMessage(chatId, chunk, opts);
+        await bot.sendMessage(chatId, chunk, finalOpts);
       } catch (e) {
+        // Fallback: Jika HTML rusak (karena data dinamis/AI), kirim sebagai teks polos
         if (e.message?.includes('parse') || e.message?.includes('Bad Request')) {
           try {
-            const plainOpts = { ...opts };
+            const plainOpts = { ...finalOpts };
             delete plainOpts.parse_mode;
             await bot.sendMessage(chatId, chunk, plainOpts);
           } catch (e2) {
@@ -43,11 +50,8 @@ export function createMessageTransport(bot, allowedId) {
     }
   }
 
-  async function notify(text) {
-    return sendLong(allowedId, String(text), {
-      parse_mode: 'Markdown',
-      disable_web_page_preview: true,
-    });
+  async function notify(text, opts = {}) {
+    return sendLong(allowedId, text, opts);
   }
 
   return { sendLong, notify };

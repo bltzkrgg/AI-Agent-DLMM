@@ -208,3 +208,13 @@ export function scrubSensitiveText(text) {
 
   return clean;
 }
+/**
+ * Escape HTML characters to prevent breaking Telegram HTML parsing
+ */
+export function escapeHTML(text) {
+  if (!text || typeof text !== 'string') return '';
+  return text
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+}

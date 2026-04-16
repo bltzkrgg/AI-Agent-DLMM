@@ -84,7 +84,7 @@ export async function runSelfHealingSync(notifyFn = null) {
           });
 
           reclaimedCount++;
-          await notifyFn?.(`👻 *GHOST POSITION RECLAIMED!*\n\n• Pool: \`${shortAddr(ocPos.poolAddress)}\`\n• Address: \`${shortAddr(ocPos.address)}\`\n• Value: ~${ocPos.currentValueSol.toFixed(4)} SOL\n\n_Bot berhasil mensinkronisasi ulang posisi gaib ke database._`);
+          await notifyFn?.(`👻 <b>GHOST POSITION RECLAIMED!</b>\n\n• Pool: <code>${shortAddr(ocPos.poolAddress)}</code>\n• Address: <code>${shortAddr(ocPos.address)}</code>\n• Value: ~${ocPos.currentValueSol.toFixed(4)} SOL\n\n<i>Bot berhasil mensinkronisasi ulang posisi gaib ke database.</i>`);
         } catch (err) {
           console.error(`❌ [healer] Gagal reclaim posisi ${ocPos.address}:`, err.message);
         }
@@ -899,11 +899,11 @@ export async function executeTool(name, input, notifyFn = null) {
  */
 async function notifyLiquidityDump(tokenMint, reason, notifyFn) {
   const shortMint = tokenMint.slice(0, 8);
-  const msg = `🦅 *GUARDIAN ANGEL ALERT!* (Holder Dump Detected)\n\n` +
-             `• Token: \`${shortMint}\`...\n` +
+  const msg = `🦅 <b>GUARDIAN ANGEL ALERT!</b> (Holder Dump Detected)\n\n` +
+             `• Token: <code>${shortMint}</code>...\n` +
              `• Alasan: ${reason}\n\n` +
-             `⚠️ *Survival Protocol:* Zap Out otomatis dipicu!\n\n` +
-             `_Modal lu ditarik sebelum dev/whale selesai dumping._`;
+             `⚠️ <b>Survival Protocol:</b> Zap Out otomatis dipicu!\n\n` +
+             `<i>Modal lu ditarik sebelum dev/whale selesai dumping.</i>`;
   
   await notifyFn?.(msg);
 }
@@ -914,11 +914,11 @@ async function notifyLiquidityDump(tokenMint, reason, notifyFn) {
  */
 async function notifyLiquidityTrap(mint, errorMsg, notifyFn) {
   const manualLink = `https://jup.ag/swap/SOL-${mint}`;
-  const msg = `⚠️ *LIQUIDITY TRAP DETECTED*\n\n` +
+  const msg = `⚠️ <b>LIQUIDITY TRAP DETECTED</b>\n\n` +
              `Bot membatalkan swap otomatis untuk melindungi modal lu.\n` +
-             `• Alasan: \`${errorMsg}\`\n\n` +
-             `👉 *Intervensi Manual:* [Swap di Jupiter](${manualLink})\n` +
-             `_Lu bisa pantau harganya dan close sendiri kalau udah membaik._`;
+             `• Alasan: <code>${errorMsg}</code>\n\n` +
+             `👉 <b>Intervensi Manual:</b> <a href="${manualLink}">Swap di Jupiter</a>\n` +
+             `<i>Lu bisa pantau harganya dan close sendiri kalau udah membaik.</i>`;
   
   if (notifyFn) await notifyFn(msg).catch(() => {});
 }
@@ -1345,7 +1345,7 @@ export async function runHealerAlpha(notifyFn) {
           const triggerLabel = ta.exit.shadowExit ? 'SHADOW EXIT' : 'TECHNICAL EXIT';
           const triggerReason = ta.exit.reason || 'Confluence reached';
 
-          await notifyFn?.(`🦅 *AEGIS GUARD* — ${triggerLabel}\n\nPosition: \`${addr.slice(0, 8)}\`\nReason: ${triggerReason}\n_Executing immediate liquidation..._`);
+          await notifyFn?.(`🦅 <b>AEGIS GUARD</b> — ${triggerLabel}\n\nPosition: <code>${addr.slice(0, 8)}</code>\nReason: ${triggerReason}\n<i>Executing immediate liquidation...</i>`);
           
           await closePositionDLMM(pos.pool_address, addr, {
             closeReason: triggerLabel,
@@ -1513,7 +1513,7 @@ Gunakan Bahasa Indonesia. Selalu explain kenapa HOLD atau CLOSE.`;
   }
 
   if (rounds >= MAX_ROUNDS && notifyFn) {
-    await notifyFn(`⚠️ *Healer Alpha* — batas ${MAX_ROUNDS} putaran tercapai, loop dihentikan paksa.`);
+    await notifyFn(`⚠️ <b>Healer Alpha</b> — batas ${MAX_ROUNDS} putaran tercapai, loop dihentikan paksa.`);
   }
 
   const report = response.content.filter(b => b.type === 'text').map(b => b.text).join('\n');
@@ -1522,7 +1522,7 @@ Gunakan Bahasa Indonesia. Selalu explain kenapa HOLD atau CLOSE.`;
   // Kirim LLM report HANYA jika ada tindakan nyata (close/zap/claim) yang diambil
   // Saat semua posisi HOLD — tidak ada notif, healer tetap diam
   if (actionsCalled.size > 0 && notifyFn) {
-    await notifyFn(`🩺 *Healer Alpha*\n\n${report}`);
+    await notifyFn(`🩺 <b>Healer Alpha</b>\n\n${report}`);
   }
 
   return report;

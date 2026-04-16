@@ -78,10 +78,10 @@ export async function runEvilPandaScanner(notifyFn) {
       ];
 
       const alertMsg =
-        `🐼 *EVIL PANDA MOMENTUM ALERT*\n\n` +
-        codeBlock(chartLines) + '\n\n' +
-        `💭 _Terdeteksi bullish momentum kuat: Trend ${ohlcv.trend} dengan kenaikan ${ohlcv.priceChange?.toFixed(1)}% dalam 1 jam._\n\n` +
-        `👉 Ketik /hunt untuk deploy sekarang`;
+        `🐼 <b>EVIL PANDA MOMENTUM ALERT</b>\n\n` +
+        `<pre><code>${chartLines.join('\n')}</code></pre>\n\n` +
+        `💭 <i>Terdeteksi bullish momentum kuat: Trend ${ohlcv.trend} dengan kenaikan ${ohlcv.priceChange?.toFixed(1)}% dalam 1 jam.</i>\n\n` +
+        `👉 Ketik <code>/hunting</code> untuk deploy sekarang`;
 
       await notifyFn(alertMsg);
 

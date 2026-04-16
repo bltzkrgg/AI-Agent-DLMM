@@ -19,7 +19,7 @@ import { getSocialSignals, getTokenSocialScore } from '../market/socialScanner.j
 import { getInstinctsContext } from '../market/memory.js';
 import { getStrategyIntelligenceContext } from '../market/strategyPerformance.js';
 import { screenToken, formatScreenResult } from '../market/coinfilter.js';
-import { parseTvl, safeNum, stringify } from '../utils/safeJson.js';
+import { parseTvl, safeNum, stringify, escapeHTML } from '../utils/safeJson.js';
 import { kv, hr, codeBlock, shortAddr } from '../utils/table.js';
 import { getDarwinWeights, captureSignals } from '../market/signalWeights.js';
 import { isOnCooldown, getPoolMemoryContext, recordDeployment } from '../market/poolMemory.js';
@@ -848,7 +848,7 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null, opt
   // ── PRE-COMPUTE: parallelkan pool screening sebelum LLM loop ─
   // Mengurangi LLM round trips dari 40+ menjadi ~6-8.
   // getTopPools + pool memory + OKX dijalankan sekaligus, bukan satu per satu oleh LLM.
-  if (notifyFn) await notifyFn(`🔍 *Screening kandidat pool...*`);
+  if (notifyFn) await notifyFn(`🔍 <b>Screening kandidat pool...</b>`);
 
   let preComputedContext = '';
   try {
@@ -1006,11 +1006,11 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null, opt
     if (finalEnriched.length === 0) {
       if (notifyFn) {
         await notifyFn(
-          `⚠️ *Discovery Result:* 0/${rawTotal} candidates matched.\n\n` +
+          `⚠️ <b>Discovery Result:</b> 0/${rawTotal} candidates matched.\n\n` +
           `• Basic Filters (TVL/BinStep): ${rawTotal - basicFilteredCount} rejected\n` +
           `• Technical Hard-Gate (Trend): ${trendRejectedCount} non-Bullish\n` +
           `• API/Data Status: ${trendRejectedCount === 0 && basicFilteredCount > 0 ? '❌ All APIs Failed' : '✅ APIs Linked'}\n\n` +
-          `_Market sepertinya sedang sideways/bearish. Sniper tetap disiplin._`
+          `<i>Market sepertinya sedang sideways/bearish. Sniper tetap disiplin.</i>`
         );
       }
       return null;
@@ -1025,7 +1025,7 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null, opt
     // Send brief rejection report for transparency
     const rejected = finalEnriched.filter(p => p.security.verdict === 'AVOID');
     if (rejected.length > 0 && notifyFn) {
-      let rejMsg = `🛡️ *Quick Filter: Removed ${rejected.length} risky/low-liq coins (Saved LLM cost):*\n`;
+      let rejMsg = `🛡️ <b>Quick Filter: Removed ${rejected.length} risky/low-liq coins (Saved LLM cost):</b>\n`;
       rejected.forEach(p => rejMsg += `• ${p.name}: ${p.security.highFlags[0] || 'Unknown risk'}\n`);
       await notifyFn(rejMsg);
     }
@@ -1034,11 +1034,11 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null, opt
       const smartWalletHits = finalEnriched.filter(p => p.smartWallet?.wallets?.length > 0).length;
       const highTFAlign = finalEnriched.filter(p => (p.multiTF?.score || 0) >= 0.67).length;
       await notifyFn(
-        `📊 *Pre-screening selesai*\n` +
+        `📊 <b>Pre-screening selesai</b>\n` +
         `✅ Viable: ${viable.length}  ❌ Filtered: ${skipped}\n` +
         (highTFAlign > 0 ? `📈 Multi-TF kuat (≥4 TF): ${highTFAlign} pool\n` : '') +
         (smartWalletHits > 0 ? `🎯 Smart wallet detected: ${smartWalletHits} pool\n` : '') +
-        (viable.length === 0 ? `🛑 _Skipping AI: Tidak ada kandidat sehat untuk dianalisis._` : `_Menjalankan analisis mendalam (Top ${Math.min(10, viable.length)})..._`)
+        (viable.length === 0 ? `🛑 <i>Skipping AI: Tidak ada kandidat sehat untuk dianalisis.</i>` : `<i>Menjalankan analisis mendalam (Top ${Math.min(10, viable.length)})...</i>`)
       );
     }
 
@@ -1166,7 +1166,7 @@ Use Indonesian for reasoning. Stay technical, precise, and fast.`;
   }
 
   if (rounds >= MAX_ROUNDS && notifyFn) {
-    await notifyFn(`⚠️ *Hunter Alpha* — batas ${MAX_ROUNDS} putaran tercapai, loop dihentikan paksa.`);
+    await notifyFn(`⚠️ <b>Hunter Alpha</b> — batas ${MAX_ROUNDS} putaran tercapai, loop dihentikan paksa.`);
   }
 
   const report = response.content.filter(b => b.type === 'text').map(b => b.text).join('\n');
@@ -1192,7 +1192,7 @@ Use Indonesian for reasoning. Stay technical, precise, and fast.`;
   );
 
   if (notifyFn && !reportIsNoise && !reportIsRefusal) {
-    await notifyFn(`🦅 *Hunter Alpha Report*\n\n${report}`);
+    await notifyFn(`🦅 <b>Hunter Alpha Report</b>\n\n${escapeHTML(report)}`);
   } else if (reportIsRefusal) {
     console.warn('[hunter] Hallucinated/Refusal report detected and suppressed:', report);
   }

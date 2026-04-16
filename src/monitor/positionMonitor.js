@@ -99,14 +99,14 @@ async function checkOutOfRange() {
           const shouldAlert = (Date.now() - lastAlert) >= (cfg.oorAlertIntervalMin || 30) * 60 * 1000;
 
           if (shouldAlert) {
-            const message = `🔴 *POSITION OUT OF RANGE*\n\n` +
-              `Pool: \`${pos.pool_address.slice(0, 12)}...\`\n` +
+            const message = `🔴 <b>POSITION OUT OF RANGE</b>\n\n` +
+              `Pool: <code>${pos.pool_address.slice(0, 12)}...</code>\n` +
               `Range: ${pos.rangeMin} - ${pos.rangeMax}\n` +
               `Active: ${pos.activeBin}\n` +
               `Distance: ${pos.outOfRangeBins || 0} bins\n\n` +
-              `_Bot monitor lebih ketat (1m) sampai posisi kembali in-range atau ditutup._`;
+              `<i>Bot monitor lebih ketat (1m) sampai posisi kembali in-range atau ditutup.</i>`;
 
-            await bot.sendMessage(allowedUserId, message, { parse_mode: 'Markdown' });
+            await bot.sendMessage(allowedUserId, message, { parse_mode: 'HTML' });
             await saveNotification('out_of_range', message);
           }
           
@@ -227,9 +227,9 @@ async function sendPositionStatus() {
           : '-';
 
       lines.push(
-        `${rangeIcon} *${symbol}/SOL*${oorLabel}${oorDur}\n` +
-        `  PnL: \`${snapshot.pnlPct >= 0 ? '+' : ''}${snapshot.pnlPct.toFixed(2)}%\`  Fees: \`${(pos.feeCollectedSol || 0).toFixed(4)} SOL\`\n` +
-        `  Harga: \`${priceStr}\`  Range: \`${rangeStr}\``
+        `${rangeIcon} <b>${symbol}/SOL</b>${oorLabel}${oorDur}\n` +
+        `  PnL: <code>${snapshot.pnlPct >= 0 ? '+' : ''}${snapshot.pnlPct.toFixed(2)}%</code>  Fees: <code>${(pos.feeCollectedSol || 0).toFixed(4)} SOL</code>\n` +
+        `  Harga: <code>${priceStr}</code>  Range: <code>${rangeStr}</code>`
       );
     }
   }
@@ -239,11 +239,11 @@ async function sendPositionStatus() {
   const time = new Date().toLocaleTimeString('id-ID', {
     hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Jakarta',
   });
-  const msg = `📊 *Position Update — ${time} WIB*\n\n` + lines.join('\n\n');
+  const msg = `📊 <b>Position Update — ${time} WIB</b>\n\n` + lines.join('\n\n');
 
   try {
     await bot.sendMessage(allowedUserId, msg, {
-      parse_mode: 'Markdown',
+      parse_mode: 'HTML',
       disable_web_page_preview: true,
     });
   } catch (e) {

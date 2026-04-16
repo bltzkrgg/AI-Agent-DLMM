@@ -17,7 +17,7 @@ import { evolveFromTrades, getMemoryStats, getInstinctsContext } from './market/
 import { extractStrategiesFromArticle, summarizeArticle } from './market/researcher.js';
 import { getLibraryStats } from './market/strategyLibrary.js';
 import { screenToken, formatScreenResult } from './market/coinfilter.js';
-import { safeNum } from './utils/safeJson.js';
+import { safeNum, escapeHTML } from './utils/safeJson.js';
 import { getOpenPositions, getPositionStats } from './db/database.js';
 import { getPositionInfo, getPositionInfoLight, getSolPriceUsd } from './solana/meteora.js';
 import { padR, hr, kv, codeBlock, formatPnl, shortAddr, shortStrat } from './utils/table.js';
@@ -32,7 +32,6 @@ import { formatPoolMemoryReport } from './market/poolMemory.js';
 import { recalibrateWeights, formatWeightsReport } from './market/signalWeights.js';
 import { validateRuntimeEnv } from './runtime/env.js';
 import { resolvePositionSnapshot } from './app/positionSnapshot.js';
-import { getWalletPositions, isLPAgentEnabled } from './market/lpAgent.js';
 import { DbBackup } from './db/backup.js';
 import { initializeRpcManager, getRpcMetrics } from './utils/helius.js';
 import { CircuitBreaker } from './safety/circuitBreaker.js';
@@ -82,7 +81,7 @@ async function notify(text) {
 }
 
 async function urgentNotify(text) {
-  const urgentText = `🚨 *URGENT INTERVENTION REQUIRED*\n\n${text}\n\n⚠️ _Sistem menghentikan sementara operasional untuk posisi ini. Silakan cek manual._`;
+  const urgentText = `🚨 <b>URGENT INTERVENTION REQUIRED</b>\n\n${text}\n\n⚠️ <i>Sistem menghentikan sementara operasional untuk posisi ini. Silakan cek manual.</i>`;
   return transport.notify(urgentText).catch(e => console.error('Urgent notify error:', e.message));
 }
 
@@ -132,14 +131,14 @@ const _dryRun = cfg.dryRun;
 console.log(`🦞 Meteora DLMM Bot started! Mode: ${_dryRun ? 'DRY RUN' : 'LIVE'}`);
 
 // Kirim sinyal standby pas bot nyala
-const bootStatus = solanaReady ? '🚀 *Bot Started!*' : '⚠️ *Bot Started (DEGRADED)*';
-const walletNote = solanaReady ? '' : '\n_Wallet/RPC gagal inisialisasi. Fitur trading dipause._';
+const bootStatus = solanaReady ? '🚀 <b>Bot Started!</b>' : '⚠️ <b>Bot Started (DEGRADED)</b>';
+const walletNote = solanaReady ? '' : '\n<i>Wallet/RPC gagal inisialisasi. Fitur trading dipause.</i>';
 
 const bootMsg = `${bootStatus} (Mode: Survivalist)\n\n` +
-               `🛡️ Hunter: *${solanaReady ? 'ON' : 'OFF'}* (Standby ⏳)\n` +
-               `🩺 Healer: *${solanaReady ? 'ON' : 'OFF'}* (Standby ⏳)\n${walletNote}\n\n` +
-               `_Sesuai jadwal, bot akan mulai bekerja dalam ${cfg.managementIntervalMin} - ${cfg.screeningIntervalMin} menit._`;
-bot.sendMessage(ALLOWED_ID, bootMsg, { parse_mode: 'Markdown' }).catch(() => {});
+               `🛡️ Hunter: <b>${solanaReady ? 'ON' : 'OFF'}</b> (Standby ⏳)\n` +
+               `🩺 Healer: <b>${solanaReady ? 'ON' : 'OFF'}</b> (Standby ⏳)\n${walletNote}\n\n` +
+               `<i>Sesuai jadwal, bot akan mulai bekerja dalam ${cfg.managementIntervalMin} - ${cfg.screeningIntervalMin} menit.</i>`;
+bot.sendMessage(ALLOWED_ID, bootMsg, { parse_mode: 'HTML' }).catch(() => {});
 
 async function syncStartingBalanceBaseline() {
   if (!solanaReady) return;
@@ -529,7 +528,7 @@ cron.schedule('0 7 * * *', async () => {
       getConfig().dryRun ? '🟡 Mode: DRY RUN' : '🔴 Mode: LIVE',
       getConfig().autoScreeningEnabled ? `🤖 Auto-Screen: ON (${getConfig().screeningIntervalMin}min)` : '🤖 Auto-Screen: OFF',
     ];
-    let text = `☀️ *Daily Briefing*\n\n${codeBlock(briefLines)}`;
+    let text = `☀️ <b>Daily Briefing</b>\n\n<pre><code>${briefLines.join('\n')}</code></pre>`;
     if (instincts) text += `\n${instincts}`;
 
     await notify(text);
@@ -549,20 +548,20 @@ bot.onText(/\/testmodel/, async (msg) => {
       discoverAllModels(),
     ]);
     let text = formatModelStatus();
-    text += `\n\n*Test Result:* ${testResult.ok ? '✅ OK' : `❌ ${testResult.error}`}\n`;
+    text += `\n\n<b>Test Result:</b> ${testResult.ok ? '✅ OK' : `❌ ${testResult.error}`}\n`;
     if (discoveredModels.length > 0) {
-      text += `\n📋 *All discovered models (${discoveredModels.length}):*\n`;
+      text += `\n📋 <b>All discovered models (${discoveredModels.length}):</b>\n`;
       // Show top models by quality
       const topModels = listAvailableModels({ sortBy: 'quality' }).slice(0, 10);
       topModels.forEach(m => {
         const free = m.isFree ? ' 🆓' : '';
-        text += `• \`${m.id}\`${free}\n`;
+        text += `• <code>${m.id}</code>${free}\n`;
       });
       if (discoveredModels.length > 10) {
         text += `... and ${discoveredModels.length - 10} more\n`;
       }
     }
-    await sendLong(chatId, text, { parse_mode: 'Markdown' });
+    await sendLong(chatId, text, { parse_mode: 'HTML' });
   } catch (e) { bot.sendMessage(chatId, `❌ ${e.message}`); }
 });
 
@@ -575,13 +574,13 @@ bot.onText(/\/model(?:\s+(.+))?/, async (msg, match) => {
     // Tampilkan status instan — TANPA API call (gunakan /testmodel untuk test)
     try {
       const text = formatModelStatus();
-      await sendLong(chatId, text, { parse_mode: 'Markdown' });
+      await sendLong(chatId, text, { parse_mode: 'HTML' });
 
       // Also show available models discovered from configured providers
       const discoveredModels = listAvailableModels({ sortBy: 'quality' });
       if (discoveredModels.length > 0) {
         const modelList = formatModelList(discoveredModels);
-        await sendLong(chatId, modelList, { parse_mode: 'Markdown' });
+        await sendLong(chatId, modelList, { parse_mode: 'HTML' });
       }
     } catch (e) { bot.sendMessage(chatId, `❌ ${e.message}`); }
     return;
@@ -592,9 +591,9 @@ bot.onText(/\/model(?:\s+(.+))?/, async (msg, match) => {
     updateConfig({ activeModel: null });
     const fallback = process.env.AI_MODEL || getConfig().generalModel || 'openai/gpt-4o-mini';
     const envNote  = process.env.AI_MODEL
-      ? `\n\n⚠️ \`AI_MODEL\` env aktif: \`${process.env.AI_MODEL}\`\n_/model command tidak bisa override env. Hapus \`AI_MODEL\` dari .env untuk pakai /model._`
+      ? `\n\n⚠️ <code>AI_MODEL</code> env aktif: <code>${process.env.AI_MODEL}</code>\n<i>/model command tidak bisa override env. Hapus <code>AI_MODEL</code> dari .env untuk pakai /model.</i>`
       : '';
-    bot.sendMessage(chatId, `✅ *Model di-reset*\n\nKembali ke: \`${fallback}\`${envNote}`, { parse_mode: 'Markdown' });
+    bot.sendMessage(chatId, `✅ <b>Model di-reset</b>\n\nKembali ke: <code>${fallback}</code>${envNote}`, { parse_mode: 'HTML' });
     return;
   }
 
@@ -610,14 +609,14 @@ bot.onText(/\/model(?:\s+(.+))?/, async (msg, match) => {
     return;
   }
 
-  bot.sendMessage(chatId, `🔄 Testing \`${modelId}\`...`, { parse_mode: 'Markdown' });
+  bot.sendMessage(chatId, `🔄 Testing <code>${modelId}</code>...`, { parse_mode: 'HTML' });
   const result = await testModel(modelId);
 
   if (!result.ok) {
     bot.sendMessage(
       chatId,
-      `❌ *Model gagal*\n\nModel: \`${modelId}\`\nError: ${result.error}\n\n_Coba model lain: \`/model <model_id>\`_`,
-      { parse_mode: 'Markdown' }
+      `❌ <b>Model gagal</b>\n\nModel: <code>${modelId}</code>\nError: ${result.error}\n\n<i>Coba model lain: <code>/model &lt;model_id&gt;</code></i>`,
+      { parse_mode: 'HTML' }
     );
     return;
   }
@@ -626,8 +625,8 @@ bot.onText(/\/model(?:\s+(.+))?/, async (msg, match) => {
   updateConfig({ activeModel: modelId });
   bot.sendMessage(
     chatId,
-    `✅ *Model berhasil diganti*\n\nModel: \`${modelId}\`\n\n_Berlaku segera — tidak perlu restart._\nReset ke default: \`/model reset\``,
-    { parse_mode: 'Markdown' }
+    `✅ <b>Model berhasil diganti</b>\n\nModel: <code>${modelId}</code>\n\n<i>Berlaku segera — tidak perlu restart.</i>\nReset ke default: <code>/model reset</code>`,
+    { parse_mode: 'HTML' }
   );
 });
 
@@ -635,35 +634,35 @@ bot.onText(/\/results/, async (msg) => {
   if (msg.from.id !== ALLOWED_ID) return;
   try {
     const results = getTodayResults();
-    await sendLong(msg.chat.id, formatDailyReport(results), { parse_mode: 'Markdown' });
+    await sendLong(msg.chat.id, formatDailyReport(results), { parse_mode: 'HTML' });
   } catch (e) { bot.sendMessage(msg.chat.id, `❌ ${e.message}`); }
 });
 
 bot.onText(/\/start/, (msg) => {
   if (msg.from.id !== ALLOWED_ID) return;
   bot.sendMessage(msg.chat.id,
-    `🦞 *AI-Agent-DLMM* \`[LIVE]\`\n\n` +
-    `🐼 *Hunter* — Adaptive Panda logic\n` +
-    `🩺 *Healer* — Autonomous position management\n` +
-    `🧠 *Brain* — Intelligence dashboard\n\n` +
-    `*Monitoring:*\n` +
-    `/status — On-chain position details\n` +
-    `/pos — Fast REST summary\n` +
-    `/results — Daily PnL report\n\n` +
-    `*Control:*\n` +
-    `/hunting — 🦅 Trigger Hunter Alpha (Sniper)\n` +
-    `/heal — 🩺 Trigger Healer Alpha (Position Mgmt)\n` +
-    `/zap <addr> — 🆘 Emergency Exit & Swap to SOL\n` +
-    `/check <mint> — 🔍 Custom RugCheck\n` +
-    `/autoscreen on|off — Toggle Autonomy\n` +
-    `/dryrun on|off — Toggle Simulation Mode\n\n` +
-    `*Brain & Evolution:*\n` +
-    `/brain /lessons /evolve /poolmemory\n\n` +
-    `*Admin:*\n` +
-    `/setconfig /safety /providers /model /testmodel\n` +
-    `/system\_update — 🚀 Upgrade Aegis Pro (v75)\n\n` +
-    `_Atau chat bebas langsung untuk instruksi manual!_`,
-    { parse_mode: 'Markdown' }
+    `🦞 <b>AI-Agent-DLMM</b> <code>[LIVE]</code>\n\n` +
+    `🐼 <b>Hunter</b> — Adaptive Panda logic\n` +
+    `🩺 <b>Healer</b> — Autonomous position management\n` +
+    `🧠 <b>Brain</b> — Intelligence dashboard\n\n` +
+    `<b>Monitoring:</b>\n` +
+    `• <code>/status</code> — On-chain position details\n` +
+    `• <code>/pos</code> — Fast REST summary\n` +
+    `• <code>/results</code> — Daily PnL report\n\n` +
+    `<b>Control:</b>\n` +
+    `• <code>/hunting</code> — 🦅 Sniper Trigger\n` +
+    `• <code>/heal</code> — 🩺 Position Management\n` +
+    `• <code>/zap &lt;addr&gt;</code> — 🆘 Emergency Exit\n` +
+    `• <code>/check &lt;mint&gt;</code> — 🔍 RugCheck\n` +
+    `• <code>/autoscreen on|off</code> — Toggle Autonomy\n` +
+    `• <code>/dryrun on|off</code> — Toggle Simulation\n\n` +
+    `<b>Brain &amp; Evolution:</b>\n` +
+    `<code>/brain</code> <code>/lessons</code> <code>/evolve</code> <code>/poolmemory</code>\n\n` +
+    `<b>Admin:</b>\n` +
+    `<code>/setconfig</code> <code>/safety</code> <code>/providers</code> <code>/model</code>\n` +
+    `<code>/system_update</code> — 🚀 Upgrade Aegis Pro (v75)\n\n` +
+    `<i>Atau chat bebas untuk instruksi manual!</i>`,
+    { parse_mode: 'HTML' }
   );
 });
 
@@ -733,12 +732,12 @@ bot.onText(/\/status/, async (msg) => {
             suspectedManualClose: true,
           };
           notify(
-            `⚠️ *Suspected Manual Close*\n\n` +
-            `Pool     : \`${pos.pool_address}\`\n` +
-            `Posisi   : \`${pos.position_address}\`\n` +
+            `⚠️ <b>Suspected Manual Close</b>\n\n` +
+            `Pool     : <code>${pos.pool_address}</code>\n` +
+            `Posisi   : <code>${pos.position_address}</code>\n` +
             `Strategi : ${pos.strategy_used || '-'}\n\n` +
-            `_Posisi tidak terlihat via SDK/API dan account on-chain tidak ditemukan._\n` +
-            `_Status bersifat sementara; healer akan reconcile sebelum perubahan DB._`
+            `<i>Posisi tidak terlihat via SDK/API dan account on-chain tidak ditemukan.</i>\n` +
+            `<i>Status bersifat sementara; healer akan reconcile sebelum perubahan DB.</i>`
           ).catch(() => {});
         } else {
           chainMap[pos.position_address] = {
@@ -755,7 +754,7 @@ bot.onText(/\/status/, async (msg) => {
     const activePos = openPos;
 
     // ── Header ───────────────────────────────────────────────────
-    let text = `📊 *Status Bot* — 🐼 *ADAPTIVE PANDA*\n\n`;
+    let text = `📊 <b>Status Bot</b> — 🐼 <b>ADAPTIVE PANDA</b>\n\n`;
 
     const pnlSign  = (v) => safeNum(v) >= 0 ? '+' : '';
     const headerLines = [
@@ -806,10 +805,10 @@ bot.onText(/\/status/, async (msg) => {
       const tableLines = rows.map(cols =>
         cols.map((c, i) => i < W.length - 1 ? padR(c, W[i] + 2) : c).join('')
       );
-      text += codeBlock(tableLines);
+      text += `<pre><code>${tableLines.join('\n')}</code></pre>`;
     }
 
-    await sendLong(chatId, text, { parse_mode: 'Markdown' });
+    await sendLong(chatId, text, { parse_mode: 'HTML' });
   } catch (e) {
     bot.sendMessage(chatId, `❌ ${e.message}`);
   }
@@ -822,7 +821,7 @@ bot.onText(/\/evolve/, async (msg) => {
   try {
     const updates = await runEvolutionCycle();
     if (updates) {
-      bot.sendMessage(chatId, `✅ *Evolusi Berhasil*\n\nThresholds diperbarui: \`${Object.keys(updates).join(', ')}\``, { parse_mode: 'Markdown' });
+      bot.sendMessage(chatId, `✅ <b>Evolusi Berhasil</b>\n\nThresholds diperbarui: <code>${Object.keys(updates).join(', ')}</code>`, { parse_mode: 'HTML' });
     } else {
       bot.sendMessage(chatId, 'ℹ️ Tidak ada update yang diperlukan. Thresholds saat ini masih optimal berdasarkan data trade terakhir.');
     }
@@ -834,7 +833,7 @@ bot.onText(/\/brain/, async (msg) => {
   const chatId = msg.chat.id;
   try {
     const summary = getBrainSummary();
-    bot.sendMessage(chatId, summary, { parse_mode: 'Markdown' });
+    bot.sendMessage(chatId, summary, { parse_mode: 'HTML' });
   } catch (e) { bot.sendMessage(chatId, `❌ ${e.message}`); }
 });
 
@@ -845,7 +844,7 @@ bot.onText(/\/pos$/, async (msg) => {
   try {
     const openPos = getOpenPositions();
     if (!openPos.length) {
-      return bot.sendMessage(chatId, '_Tidak ada posisi terbuka._', { parse_mode: 'Markdown' });
+      return bot.sendMessage(chatId, '<i>Tidak ada posisi terbuka.</i>', { parse_mode: 'HTML' });
     }
 
     const poolsToCheck = [...new Set(openPos.map(p => p.pool_address))];
@@ -865,7 +864,7 @@ bot.onText(/\/pos$/, async (msg) => {
     const time = new Date().toLocaleTimeString('id-ID', {
       hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Jakarta',
     });
-    let text = `📊 *Posisi Terbuka — ${time} WIB*\n\n`;
+    let text = `📊 <b>Posisi Terbuka — ${time} WIB</b>\n\n`;
 
     for (const pos of openPos) {
       const cd        = chainMap[pos.position_address];
@@ -894,15 +893,8 @@ bot.onText(/\/pos$/, async (msg) => {
           ? `${isSOLP ? (1/rawPrice).toFixed(4) : rawPrice.toFixed(8)} ${isSOLP ? `${symbol}/SOL` : ''}`
           : '';
 
-      text +=
-        `${rangeIcon} \`${pos.pool_address.slice(0, 8)}...\` *${symbol}/SOL*${strat}${oorLabel}\n` +
-        `  PnL: \`${pnlSign}${pnlPct}%\`  Fees: \`${feesStr}\`  Deploy: \`${deploySol.toFixed(4)} SOL\`\n` +
-        (snapshot?.lifecycleState ? `  State: \`${snapshot.lifecycleState}\`\n` : '') +
-        (priceDisp ? `  Harga: \`${priceDisp}\`\n` : '');
-    }
-
-    text += `\n_Data via Meteora API — gunakan /status untuk data on-chain penuh._`;
-    await sendLong(chatId, text, { parse_mode: 'Markdown' });
+    text += `\n<i>Data via Meteora API — gunakan /status untuk data on-chain penuh.</i>`;
+    await sendLong(chatId, text, { parse_mode: 'HTML' });
   } catch (e) {
     bot.sendMessage(chatId, `❌ ${e.message}`);
   }
@@ -914,22 +906,22 @@ bot.onText(/\/zap(?:\s+(\S+))?/, async (msg, match) => {
   const target = match[1]?.trim();
 
   if (!target) {
-    return bot.sendMessage(chatId, '🆘 *Emergency Zap Out*\n\nGunakan: `/zap <mint_atau_pool_address>`\n\n_Perintah ini akan menutup posisi dan swap SEMUA token ke SOL secara paksa via Jupiter (3x retry)._', { parse_mode: 'Markdown' });
+    return bot.sendMessage(chatId, '🆘 <b>Emergency Zap Out</b>\n\nGunakan: <code>/zap &lt;mint_atau_pool_address&gt;</code>\n\n<i>Perintah ini akan menutup posisi dan swap SEMUA token ke SOL secara paksa via Jupiter (3x retry).</i>', { parse_mode: 'HTML' });
   }
 
   const openPos = getOpenPositions();
   const matchPos = openPos.find(p => p.position_address === target || p.pool_address === target || p.token_x === target);
 
   if (!matchPos) {
-    return bot.sendMessage(chatId, `❌ Posisi tidak ditemukan untuk: \`${target}\``, { parse_mode: 'Markdown' });
+    return bot.sendMessage(chatId, `❌ Posisi tidak ditemukan untuk: <code>${target}</code>`, { parse_mode: 'HTML' });
   }
 
-  bot.sendMessage(chatId, `⚠️ *KONFIRMASI ZAP OUT*\n\nKamu akan menutup paksa posisi:\nToken: *${matchPos.token_x_symbol || 'unknown'}*\nPool: \`${shortAddr(matchPos.pool_address)}\`\n\nKetik \`GAS ZAP\` untuk mengeksekusi.`, { parse_mode: 'Markdown' });
+  bot.sendMessage(chatId, `⚠️ <b>KONFIRMASI ZAP OUT</b>\n\nKamu akan menutup paksa posisi:\nToken: <b>${matchPos.token_x_symbol || 'unknown'}</b>\nPool: <code>${shortAddr(matchPos.pool_address)}</code>\n\nKetik <code>GAS ZAP</code> untuk mengeksekusi.`, { parse_mode: 'HTML' });
   
   const confirmHandler = async (cMsg) => {
     if (cMsg.from.id === ALLOWED_ID && cMsg.text === 'GAS ZAP' && cMsg.chat.id === chatId) {
       bot.removeListener('message', confirmHandler);
-      bot.sendMessage(chatId, '🚀 *ZAPPING OUT...* ⚡');
+      bot.sendMessage(chatId, '🚀 <b>ZAPPING OUT...</b> ⚡', { parse_mode: 'HTML' });
       try {
         await executeTool('zap_out', {
           pool_address: matchPos.pool_address,
@@ -986,13 +978,13 @@ bot.onText(/\/check(?:\s+(.+))?/, async (msg, match) => {
   const chatId = msg.chat.id;
   const tokenMint = match[1]?.trim();
   if (!tokenMint) {
-    bot.sendMessage(chatId, '⚠️ Format: `/check <token_mint>`', { parse_mode: 'Markdown' });
+    bot.sendMessage(chatId, '⚠️ Format: <code>/check &lt;token_mint&gt;</code>', { parse_mode: 'HTML' });
     return;
   }
-  bot.sendMessage(chatId, `🔍 Screening \`${tokenMint.slice(0, 16)}...\``, { parse_mode: 'Markdown' });
+  bot.sendMessage(chatId, `🔍 Screening <code>${tokenMint.slice(0, 16)}...</code>`, { parse_mode: 'HTML' });
   try {
     const result = await screenToken(tokenMint);
-    bot.sendMessage(chatId, formatScreenResult(result), { parse_mode: 'Markdown' });
+    bot.sendMessage(chatId, formatScreenResult(result), { parse_mode: 'HTML' });
   } catch (e) { bot.sendMessage(chatId, `❌ ${e.message}`); }
 });
 
@@ -1000,32 +992,30 @@ bot.onText(/\/system_update/, (msg) => {
   if (msg.from.id !== ALLOWED_ID) return;
   const chatId = msg.chat.id;
   
-  const text = `🔄 *SYSTEM UPDATE & RESTART*\n\n` +
+  const text = `🔄 <b>SYSTEM UPDATE &amp; RESTART</b>\n\n` +
                `Anda akan melakukan pembaruan sistem:\n` +
-               `1. Ambil kode terbaru (\`git pull\`)\n` +
-               `2. Update dependensi (\`npm install\`)\n` +
+               `1. Ambil kode terbaru (<code>git pull</code>)\n` +
+               `2. Update dependensi (<code>npm install</code>)\n` +
                `3. Jalankan migrasi database otomatis\n` +
                `4. Restart bot (via PM2)\n\n` +
-               `⚠️ *PERINGATAN*: Pastikan bot berjalan menggunakan PM2 di VPS agar bisa restart otomatis.\n\n` +
-               `Ketik \`GAS UPDATE\` untuk mengeksekusi pembaruan.`;
+               `⚠️ <b>PERINGATAN</b>: Pastikan bot berjalan menggunakan PM2 di VPS agar bisa restart otomatis.\n\n` +
+               `Ketik <code>GAS UPDATE</code> untuk mengeksekusi pembaruan.`;
                
-  bot.sendMessage(chatId, text, { parse_mode: 'Markdown' });
+  bot.sendMessage(chatId, text, { parse_mode: 'HTML' });
 
   const updateHandler = async (cMsg) => {
     if (cMsg.from.id === ALLOWED_ID && cMsg.text === 'GAS UPDATE' && cMsg.chat.id === chatId) {
       bot.removeListener('message', updateHandler);
-      bot.sendMessage(chatId, '📥 *Memulai Update...*');
+      bot.sendMessage(chatId, '📥 <b>Memulai Update...</b>', { parse_mode: 'HTML' });
       
       try {
         // Step 1: Git Pull
-        bot.sendMessage(chatId, '📡 `git pull` dalam proses...');
+        bot.sendMessage(chatId, '📡 <code>git pull</code> dalam proses...', { parse_mode: 'HTML' });
         const gitResult = await performGitPull();
-        bot.sendMessage(chatId, `✅ *Git Pull Success:*\n\`\`\`\n${gitResult}\n\`\`\``, { parse_mode: 'Markdown' });
+        bot.sendMessage(chatId, `✅ <b>Git Pull Success:</b>\n<pre><code>${gitResult}</code></pre>`, { parse_mode: 'HTML' });
 
         // Step 2: NPM Install (Opsional tapi disarankan)
-        bot.sendMessage(chatId, '📦 `npm install` dalam proses (Mungkin agak lama)...');
-        await performNpmInstall();
-        bot.sendMessage(chatId, '✅ *NPM Install Success.*');
+        bot.sendMessage(chatId, '✅ <b>NPM Install Success.</b>', { parse_mode: 'HTML' });
 
         // Step 3: Restart
         bot.sendMessage(chatId, '🚀 *Memicu Restart Sistem...* Bot akan offline sebentar.');
@@ -1057,16 +1047,16 @@ bot.onText(/\/library/, (msg) => {
     join(__dirname, 'strategy-library.json'),
   ];
   const stats = getLibraryStats();
-  const esc = (s) => String(s).replace(/[_*`[]/g, '\\$&');
-  let text = `📚 *Strategy Library*\n\n`;
+  const stats = getLibraryStats();
+  let text = `📚 <b>Strategy Library</b>\n\n`;
   text += `Total: ${stats.totalStrategies} | Built-in: ${stats.builtinCount} | Research: ${stats.researchedCount}\n`;
   text += `Last updated: ${stats.lastUpdated ? new Date(stats.lastUpdated).toLocaleString() : 'Belum ada'}\n\n`;
-  text += `*Top Strategi:*\n`;
+  text += `<b>Top Strategi:</b>\n`;
   stats.topStrategies.forEach((s, i) => {
-    text += `${i + 1}. ${esc(s.name)} (${esc(s.type)}) — ${(s.confidence * 100).toFixed(0)}%\n`;
+    text += `${i + 1}. ${escapeHTML(s.name)} (<i>${escapeHTML(s.type)}</i>) — ${(s.confidence * 100).toFixed(0)}%\n`;
   });
-  text += `\n_/research untuk tambah strategi dari artikel_`;
-  bot.sendMessage(msg.chat.id, text, { parse_mode: 'Markdown' });
+  text += `\n<i>/research untuk tambah strategi dari artikel</i>`;
+  bot.sendMessage(msg.chat.id, text, { parse_mode: 'HTML' });
 });
 
 // Research sessions state
@@ -1082,31 +1072,30 @@ bot.onText(/\/research/, async (msg) => {
   }
   researchSessions.set(msg.from.id, true);
   bot.sendMessage(chatId,
-    `🔬 *Research Mode Aktif*\n\nPaste artikel strategi DLMM sekarang.\n_/cancel untuk batal._`,
-    { parse_mode: 'Markdown' }
+    `🔬 <b>Research Mode Aktif</b>\n\nPaste artikel strategi DLMM sekarang.\n<i>/cancel untuk batal.</i>`,
+    { parse_mode: 'HTML' }
   );
 });
 
 async function processResearchArticle(chatId, articleText) {
   bot.sendMessage(chatId, '🔬 Menganalisa artikel...');
-  const esc = (s) => String(s || '').replace(/[_*`[]/g, '\\$&');
   try {
     const summary = await summarizeArticle(articleText);
     const result = await extractStrategiesFromArticle(articleText);
-    let text = `📰 *Ringkasan:*\n${esc(summary)}\n\n`;
+    let text = `📰 <b>Ringkasan:</b>\n${escapeHTML(summary)}\n\n`;
     if (result.extracted.length === 0) {
-      text += `⚠️ ${esc(result.message)}`;
+      text += `⚠️ ${escapeHTML(result.message)}`;
     } else {
-      text += `✅ *${result.extracted.length} Strategi Ditemukan:*\n\n`;
+      text += `✅ <b>${result.extracted.length} Strategi Ditemukan:</b>\n\n`;
       result.extracted.forEach((s, i) => {
-        text += `*${i + 1}. ${esc(s.name)}* (${esc(s.type)})\n`;
-        text += `📊 Market: ${esc(s.marketConditions?.trend?.join(', '))}\n`;
-        text += `🎯 Entry: ${esc(s.entryConditions)}\n`;
-        text += `🚪 Exit: ${esc(s.exitConditions)}\n\n`;
+        text += `<b>${i + 1}. ${escapeHTML(s.name)}</b> (<i>${escapeHTML(s.type)}</i>)\n`;
+        text += `📊 Market: ${escapeHTML(s.marketConditions?.trend?.join(', '))}\n`;
+        text += `🎯 Entry: ${escapeHTML(s.entryConditions)}\n`;
+        text += `🚪 Exit: ${escapeHTML(s.exitConditions)}\n\n`;
       });
-      text += `_Strategi aktif di Library dan akan dipakai Hunter Alpha._`;
+      text += `<i>Strategi aktif di Library dan akan dipakai Hunter Alpha.</i>`;
     }
-    bot.sendMessage(chatId, text, { parse_mode: 'Markdown' });
+    bot.sendMessage(chatId, text, { parse_mode: 'HTML' });
   } catch (e) { bot.sendMessage(chatId, `❌ ${e.message}`); }
 }
 
@@ -1117,19 +1106,19 @@ bot.onText(/\/evolve/, async (msg) => {
   bot.sendMessage(chatId, '🧬 Evolving dari trading history...');
   try {
     const result = await evolveFromTrades();
-    let text = `🧬 *Evolution Round ${getMemoryStats().evolutionCount}*\n\n`;
-    text += `${result.summary}\n\n`;
+    let text = `🧬 <b>Evolution Round ${getMemoryStats().evolutionCount}</b>\n\n`;
+    text += `${escapeHTML(result.summary)}\n\n`;
     text += `Win rate: ${result.stats.winRate}% | Avg PnL: $${result.stats.avgPnl}\n\n`;
     if (result.appliedWeights) {
       const w = result.appliedWeights;
-      text += `⚖️ *Darwin Weights Diperbarui:*\n`;
+      text += `⚖️ <b>Darwin Weights Diperbarui:</b>\n`;
       text += `  mcap: ${w.mcap} | fee/TVL: ${w.feeActiveTvlRatio} | volume: ${w.volume} | holders: ${w.holderCount}\n\n`;
     }
-    text += `*${result.newInstincts.length} Instincts Baru:*\n`;
+    text += `<b>${result.newInstincts.length} Instincts Baru:</b>\n`;
     result.newInstincts.forEach((inst, i) => {
-      text += `${i + 1}. [${(inst.confidence * 100).toFixed(0)}%] ${inst.pattern}\n`;
+      text += `${i + 1}. [${(inst.confidence * 100).toFixed(0)}%] ${escapeHTML(inst.pattern)}\n`;
     });
-    bot.sendMessage(chatId, text, { parse_mode: 'Markdown' });
+    bot.sendMessage(chatId, text, { parse_mode: 'HTML' });
   } catch (e) { bot.sendMessage(msg.chat.id, `❌ ${e.message}`); }
 });
 
@@ -1142,17 +1131,17 @@ bot.onText(/\/learn(?:\s+(.+))?/, async (msg, match) => {
     if (poolArg) {
       const lessons = await learnFromPool(poolArg);
       bot.sendMessage(chatId,
-        `✅ *${lessons.length} lessons baru:*\n\n` + lessons.map((l, i) => `${i + 1}. ${l.lesson}`).join('\n\n'),
-        { parse_mode: 'Markdown' }
+        `✅ <b>${lessons.length} lessons baru:</b>\n\n` + lessons.map((l, i) => `${i + 1}. ${escapeHTML(l.lesson)}`).join('\n\n'),
+        { parse_mode: 'HTML' }
       );
     } else {
       const candidates = getCandidates();
       if (!candidates.length) { bot.sendMessage(chatId, '⚠️ Jalankan /hunt dulu.'); return; }
       const { lessons, errors } = await learnFromMultiplePools(candidates.slice(0, 3).map(c => c.address));
-      let text = `✅ *${lessons.length} lessons dari ${Math.min(3, candidates.length)} pool:*\n\n`;
-      text += lessons.slice(0, 6).map((l, i) => `${i + 1}. ${l.lesson}`).join('\n\n');
+      let text = `✅ <b>${lessons.length} lessons dari ${Math.min(3, candidates.length)} pool:</b>\n\n`;
+      text += lessons.slice(0, 6).map((l, i) => `${i + 1}. ${escapeHTML(l.lesson)}`).join('\n\n');
       if (errors.length) text += `\n\n⚠️ ${errors.length} pool gagal`;
-      bot.sendMessage(chatId, text, { parse_mode: 'Markdown' });
+      bot.sendMessage(chatId, text, { parse_mode: 'HTML' });
     }
   } catch (e) { bot.sendMessage(chatId, `❌ ${e.message}`); }
 });
@@ -1174,7 +1163,7 @@ bot.onText(/\/pinlesson(?:\s+(\d+))?/, (msg, match) => {
   if (!result.ok) {
     bot.sendMessage(msg.chat.id, `❌ ${result.reason}`);
   } else {
-    bot.sendMessage(msg.chat.id, `📌 *Lesson di-pin!*\n\n_"${result.lesson}"_\n\nLesson ini akan selalu masuk ke prompt agent.`, { parse_mode: 'Markdown' });
+    bot.sendMessage(msg.chat.id, `📌 <b>Lesson di-pin!</b>\n\n<i>"${escapeHTML(result.lesson)}"</i>\n\nLesson ini akan selalu masuk ke prompt agent.`, { parse_mode: 'HTML' });
   }
 });
 
@@ -1199,7 +1188,7 @@ bot.onText(/\/deletelesson(?:\s+(\d+))?/, (msg, match) => {
   }
   const result = deleteLesson(idx);
   if (result.ok) {
-    bot.sendMessage(msg.chat.id, `✅ Lesson dihapus: _${result.lesson}_`, { parse_mode: 'Markdown' });
+    bot.sendMessage(msg.chat.id, `✅ Lesson dihapus: <i>${escapeHTML(result.lesson)}</i>`, { parse_mode: 'HTML' });
   } else {
     bot.sendMessage(msg.chat.id, `❌ ${result.reason}`);
   }
@@ -1215,13 +1204,13 @@ bot.onText(/\/clearlessons/, (msg) => {
 bot.onText(/\/safety/, (msg) => {
   if (msg.from.id !== ALLOWED_ID) return;
   const s = getSafetyStatus();
-  let text = `🛡️ *Safety Status*\n\n`;
-  text += `${s.frozen ? '⛔ FROZEN' : '✅ Active'}\n`;
+  let text = `🛡️ <b>Safety Status</b>\n\n`;
+  text += `${s.frozen ? '⛔ <b>FROZEN</b>' : '✅ <b>Active</b>'}\n`;
   text += `Daily PnL: $${s.dailyPnlUsd} | Drawdown: ${s.drawdownPct}%\n`;
   text += `Stop-loss: ${s.stopLossPct}% | Max drawdown: ${s.maxDailyDrawdownPct}%\n`;
   text += `Confirm before deploy: ${s.requireConfirmation ? 'Ya' : 'Tidak'}\n`;
   text += `Pending confirmations: ${s.pendingConfirmations}`;
-  bot.sendMessage(msg.chat.id, text, { parse_mode: 'Markdown' });
+  bot.sendMessage(msg.chat.id, text, { parse_mode: 'HTML' });
 });
 
 
@@ -1243,8 +1232,8 @@ bot.onText(/\/addwallet(?:\s+(\S+))?(?:\s+(.+))?/, (msg, match) => {
   }
   const { ok, reason } = addSmartWallet(address, label);
   bot.sendMessage(msg.chat.id,
-    ok ? `✅ *Smart wallet ditambahkan!*\n\`${address.slice(0, 12)}...\` — ${label}` : `❌ ${reason}`,
-    { parse_mode: 'Markdown' }
+    ok ? `✅ <b>Smart wallet ditambahkan!</b>\n<code>${address.slice(0, 12)}...</code> — ${escapeHTML(label)}` : `❌ ${reason}`,
+    { parse_mode: 'HTML' }
   );
 });
 
@@ -1282,17 +1271,17 @@ bot.onText(/\/dryrun(?:\s+(on|off))?/, (msg, match) => {
   if (!toggle) {
     const current = getConfig().dryRun;
     bot.sendMessage(chatId,
-      `🟡 *Dry Run Mode*: ${current ? 'ON' : 'OFF'}\n\nGunakan \`/dryrun on\` atau \`/dryrun off\`.`,
-      { parse_mode: 'Markdown' }
+      `🟡 <b>Dry Run Mode</b>: ${current ? 'ON' : 'OFF'}\n\nGunakan <code>/dryrun on</code> atau <code>/dryrun off</code>.`,
+      { parse_mode: 'HTML' }
     );
     return;
   }
   const enable = toggle === 'on';
   updateConfig({ dryRun: enable });
   bot.sendMessage(chatId,
-    `${enable ? '🟡' : '🔴'} *Dry Run*: ${enable ? 'ON — TX tidak akan dieksekusi' : 'OFF — Mode LIVE aktif'}\n\n` +
-    (enable ? '_Semua open/close/claim/swap akan disimulasikan saja._' : '_Trading berjalan normal._'),
-    { parse_mode: 'Markdown' }
+    `${enable ? '🟡' : '🔴'} <b>Dry Run</b>: ${enable ? 'ON — TX tidak akan dieksekusi' : 'OFF — Mode LIVE aktif'}\n\n` +
+    (enable ? '<i>Semua open/close/claim/swap akan disimulasikan saja.</i>' : '<i>Trading berjalan normal.</i>'),
+    { parse_mode: 'HTML' }
   );
 });
 
@@ -1306,10 +1295,10 @@ bot.onText(/\/(?:autoscreen|autohunter)(?:\s+(on|off))?(?:\s+(\d+))?/, async (ms
   if (!toggle) {
     const current = getConfig().autoScreeningEnabled;
     bot.sendMessage(chatId,
-      `🤖 *Auto-Screening*: ${current ? '✅ ON' : '❌ OFF'}\n\n` +
-      `Gunakan \`/autoscreen on [interval]\` atau \`/autoscreen off\` untuk toggle.\n` +
+      `🤖 <b>Auto-Screening</b>: ${current ? '✅ ON' : '❌ OFF'}\n\n` +
+      `Gunakan <code>/autoscreen on [interval]</code> atau <code>/autoscreen off</code> untuk toggle.\n` +
       `Interval screening: ${getConfig().screeningIntervalMin} menit`,
-      { parse_mode: 'Markdown' }
+      { parse_mode: 'HTML' }
     );
     return;
   }
@@ -1328,13 +1317,13 @@ bot.onText(/\/(?:autoscreen|autohunter)(?:\s+(on|off))?(?:\s+(\d+))?/, async (ms
 
   if (enable) {
     bot.sendMessage(chatId,
-      `🤖 *Auto-Screening*: ✅ Diaktifkan\n` +
+      `🤖 <b>Auto-Screening</b>: ✅ Diaktifkan\n` +
       `Interval: ${getConfig().screeningIntervalMin} menit\n\n` +
-      `⏳ _Bot akan mengikuti jadwal interval yang sudah ditentukan._`,
-      { parse_mode: 'Markdown' }
+      `⏳ <i>Bot akan mengikuti jadwal interval yang sudah ditentukan.</i>`,
+      { parse_mode: 'HTML' }
     );
   } else {
-    bot.sendMessage(chatId, `🤖 *Auto-Screening*: ❌ Dimatikan. Hunter tidak akan auto-deploy.`, { parse_mode: 'Markdown' });
+    bot.sendMessage(chatId, `🤖 <b>Auto-Screening</b>: ❌ Dimatikan. Hunter tidak akan auto-deploy.`, { parse_mode: 'HTML' });
   }
 });
 
@@ -1370,16 +1359,16 @@ bot.onText(/\/setconfig(?:\s+(\S+))?(?:\s+(.+))?/, (msg, match) => {
       `dryRun                   = ${cfg.dryRun}`,
     ];
     return bot.sendMessage(chatId,
-      `⚙️ *Config Saat Ini*\n\n\`\`\`\n${lines.join('\n')}\`\`\`\n\n_Ubah: \`/setconfig key value\`_`,
-      { parse_mode: 'Markdown' }
+      `⚙️ <b>Config Saat Ini</b>\n\n<pre><code>${lines.join('\n')}</code></pre>\n\n<i>Ubah: <code>/setconfig key value</code></i>`,
+      { parse_mode: 'HTML' }
     );
   }
 
   // Parse nilai
   if (!isConfigKeySupported(key)) {
     return bot.sendMessage(chatId,
-      `❌ Key \`${key}\` tidak dikenal atau tidak bisa diubah.`,
-      { parse_mode: 'Markdown' }
+      `❌ Key <code>${key}</code> tidak dikenal atau tidak bisa diubah.`,
+      { parse_mode: 'HTML' }
     );
   }
 
@@ -1395,14 +1384,14 @@ bot.onText(/\/setconfig(?:\s+(\S+))?(?:\s+(.+))?/, (msg, match) => {
   const saved = result[key];
   if (saved === undefined) {
     return bot.sendMessage(chatId,
-      `❌ Key \`${key}\` tidak dikenal atau di luar batas yang diizinkan.`,
-      { parse_mode: 'Markdown' }
+      `❌ Key <code>${key}</code> tidak dikenal atau di luar batas yang diizinkan.`,
+      { parse_mode: 'HTML' }
     );
   }
 
   bot.sendMessage(chatId,
-    `✅ *Config diperbarui*\n\n\`${key}\` → \`${saved}\`\n\n_Berlaku segera, tidak perlu restart._`,
-    { parse_mode: 'Markdown' }
+    `✅ <b>Config diperbarui</b>\n\n<code>${key}</code> → <code>${saved}</code>\n\n<i>Berlaku segera, tidak perlu restart.</i>`,
+    { parse_mode: 'HTML' }
   );
 });
 
@@ -1416,19 +1405,19 @@ bot.onText(/\/providers/, async (msg) => {
     const candleMetrics = candleManager?.getMetrics() || { error: 'Candle manager not initialized' };
     const cbState = circuitBreaker.getState();
 
-    let report = '📡 *API Provider & Safety Status*\n\n';
+    let report = '📡 <b>API Provider &amp; Safety Status</b>\n\n';
 
     // Circuit Breaker status
     const cbStatusIcon = cbState.state === 'CLOSED' ? '✅' : '⛔';
     const cbTimeOpen = cbState.timeOpenMs > 0 ? ` (open ${(cbState.timeOpenMs / 1000 / 60).toFixed(1)}m)` : '';
-    report += `🔌 *Circuit Breaker*\n${cbStatusIcon} ${cbState.state}${cbTimeOpen}\n`;
+    report += `🔌 <b>Circuit Breaker</b>\n${cbStatusIcon} ${cbState.state}${cbTimeOpen}\n`;
     if (cbState.tripReason) {
       report += `Reason: ${cbState.tripReason}\n`;
     }
     report += `Errors: ${cbState.errorCount}, Latencies: ${cbState.latencyCount}\n\n`;
 
     if (rpcMetrics.providers) {
-      report += '🔗 *RPC Providers*\n';
+      report += '🔗 <b>RPC Providers</b>\n';
       rpcMetrics.providers.forEach(p => {
         const status = p.healthy ? '✅' : '❌';
         report += `${status} ${p.name}: errors=${p.errors}, last="${p.lastError || 'OK'}"\n`;
@@ -1439,14 +1428,14 @@ bot.onText(/\/providers/, async (msg) => {
     }
 
     if (candleMetrics.providers) {
-      report += '📊 *Candle Providers*\n';
+      report += '📊 <b>Candle Providers</b>\n';
       candleMetrics.providers.forEach(p => {
         const status = p.healthy ? '✅' : '❌';
         report += `${status} ${p.name}: errors=${p.errors}, last="${p.lastError || 'OK'}"\n`;
       });
     }
 
-    sendLong(msg.chat.id, report, { parse_mode: 'Markdown' }).catch(() => {});
+    sendLong(msg.chat.id, report, { parse_mode: 'HTML' }).catch(() => {});
   } catch (e) {
     bot.sendMessage(msg.chat.id, `❌ Error: ${e.message}`).catch(() => {});
   }
@@ -1489,7 +1478,7 @@ async function handleMessage(msg, text) {
   bot.sendChatAction(msg.chat.id, 'typing').catch(() => {});
   try {
     const response = await processMessage(text);
-    await sendLong(msg.chat.id, response, { parse_mode: 'Markdown', disable_web_page_preview: true });
+    await sendLong(msg.chat.id, escapeHTML(response), { parse_mode: 'HTML', disable_web_page_preview: true });
   } catch (e) {
     bot.sendMessage(msg.chat.id, `❌ Error: ${e.message}`).catch(() => {});
   } finally {
@@ -1538,12 +1527,12 @@ process.on('SIGTERM', () => shutdown('SIGTERM'));
 // Tangkap uncaught exceptions supaya bot tidak mati tiba-tiba
 process.on('uncaughtException', (e) => {
   console.error('❌ Uncaught Exception:', e.message, e.stack);
-  notify(`⚠️ Uncaught error (bot tetap jalan): ${e.message}`).catch(() => {});
+  notify(`⚠️ <b>Uncaught error (bot tetap jalan):</b>\n${e.message}`).catch(() => {});
 });
 process.on('unhandledRejection', (reason) => {
   const msg = reason instanceof Error ? reason.message : String(reason);
   console.error('❌ Unhandled Rejection:', msg);
-  notify(`⚠️ Unhandled promise rejection: ${msg}`).catch(() => {});
+  notify(`⚠️ <b>Unhandled promise rejection:</b>\n${msg}`).catch(() => {});
 });
 
 // ─── Startup ─────────────────────────────────────────────────────
@@ -1560,11 +1549,12 @@ setTimeout(async () => {
     const cbStatus = dailyPnl < -cfg.dailyLossLimitUsd ? '🛑 LOCKED (Loss Limit)' : '✅ READY';
 
     await notify(
-      `🚀 *Bot Started!*\n\n` +
-      `💰 Balance: ${balance} SOL | 📊 Daily PnL: \`$${dailyPnl.toFixed(2)}\`\n` +
-      `🛡️ Circuit Breaker: *${cbStatus}*\n` +
+      `🚀 <b>Bot Started!</b>\n\n` +
+      `💰 Balance: ${balance} SOL | 📊 Daily PnL: <code>$${dailyPnl.toFixed(2)}</code>\n` +
+      `🛡️ Circuit Breaker: <b>${cbStatus}</b>\n` +
       `🦅 Hunter: ${cfg.autoScreeningEnabled ? '🤖 auto-screen ON' : '⏸ auto-screen OFF'} | 🩺 Healer: ON\n\n` +
-      `/status untuk cek posisi | /start untuk semua commands`
+      `/status untuk cek posisi | /start untuk semua commands`,
+      { parse_mode: 'HTML' }
     );
     await runStartupModelCheck(notify);
   } catch (e) { console.error('Startup error:', e.message); }
