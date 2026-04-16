@@ -1515,8 +1515,10 @@ bot.on('polling_error', (e) => {
         await bot.stopPolling();
         await bot.startPolling();
         console.log('✅ Polling Telegram berhasil di-restart.');
-        _pollingRestartCount = 0; // reset counter saat berhasil
-      }).catch(err => console.error('❌ Polling restart gagal:', err.message));
+        _pollingRestartCount = 0; 
+      } catch (err) {
+        console.error('❌ Polling restart gagal:', err.message);
+      }
     }, delay);
   }
 });
