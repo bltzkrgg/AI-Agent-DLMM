@@ -1558,7 +1558,7 @@ export async function getTopPools(limit = 10, sortBy = 'fee_24h:desc') {
       volume24hRaw: vol24h,
       feeApr: parseFloat(apr24h.toFixed(2)),
       createdAt: pool.pool_created_at,
-      mcap: pool.base_token_market_cap || pool.quote_token_market_cap || 0,
+      mcap: pool.base_token_market_cap || pool.quote_token_market_cap || pool.token_x?.market_cap || (tvl * 1.5), // Sultan Fallback: Use token context or TVL proxy
       feeTvlRatio: pool.fee_tvl_ratio?.['24h'] || 0
     };
   });

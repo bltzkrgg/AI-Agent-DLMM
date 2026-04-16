@@ -69,6 +69,7 @@ if (isNaN(ALLOWED_ID)) {
 }
 
 const bot = new TelegramBot(process.env.TELEGRAM_BOT_TOKEN, {
+  filepath: false, // Sultan Final Sync: Silence deprecation warnings for cleaner terminal output
   polling: {
     interval: 2000,
     autoStart: true,
@@ -672,7 +673,7 @@ bot.onText(/\/start/, (msg) => {
     `<code>/brain</code> <code>/lessons</code> <code>/evolve</code> <code>/poolmemory</code>\n\n` +
     `<b>Admin:</b>\n` +
     `<code>/setconfig</code> <code>/safety</code> <code>/providers</code> <code>/model</code>\n` +
-    `<code>/system_update</code> — 🚀 Upgrade Aegis Pro (v75.2)\n\n` +
+    `<code>/system_update</code> — 🚀 Upgrade Aegis Supreme (v75.9)\n\n` +
     `<i>Atau chat bebas untuk instruksi manual!</i>`,
     { parse_mode: 'HTML' }
   );

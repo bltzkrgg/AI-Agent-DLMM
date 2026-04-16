@@ -203,7 +203,10 @@
                             <span class="badge ${p.isMatched ? 'match' : 'veto'}">${p.isMatched ? 'MATCHED' : 'VETOED'}</span>
                         </div>
                         <div class="metrics">
-                            <div class="metric"><label>MCAP</label><span>$${(p.mcap/1000).toFixed(1)}K</span></div>
+                            <div class="metric">
+                                <label>MCAP</label>
+                                <span>$${p.mcap >= 1e6 ? (p.mcap/1e6).toFixed(1) + 'M' : (p.mcap/1e3).toFixed(1) + 'K'}</span>
+                            </div>
                             <div class="metric"><label>VOL 24H</label><span>$${(p.vol24h/1000).toFixed(1)}K</span></div>
                             <div class="metric"><label>LIQUIDITY</label><span>$${(p.tvl/1000).toFixed(1)}K</span></div>
                             <div class="metric"><label>BIN STEP</label><span>${p.binStep}</span></div>
