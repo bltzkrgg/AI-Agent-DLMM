@@ -400,7 +400,7 @@ async function executeTool(name, input) {
     case 'screen_token': {
       if (hunterNotifyFn) {
         const label = input.token_symbol || input.token_name || input.token_mint.slice(0, 8);
-        await hunterNotifyFn(`🔬 *Coin Filter*: Screening \`${label}\`...`);
+        await hunterNotifyFn(`🔬 <b>Coin Filter</b>: Screening <code>${escapeHTML(label)}</code>...`);
       }
       const result = await screenToken(
         input.token_mint,
@@ -414,10 +414,10 @@ async function executeTool(name, input) {
       // - PASS   → user perlu konfirmasi GMGN clean sebelum deploy
       if (hunterNotifyFn) {
         const prefix = result.verdict === 'AVOID'
-          ? '🚫 *Token Ditolak*'
+          ? '🚫 <b>Token Ditolak</b>'
           : result.verdict === 'CAUTION'
-            ? '⚠️ *Token CAUTION*'
-            : '✅ *Token Lolos Screening*';
+            ? '⚠️ <b>Token CAUTION</b>'
+            : '✅ <b>Token Lolos Screening</b>';
         await hunterNotifyFn(`${prefix}\n\n${formatScreenResult(result)}`);
       }
 
@@ -640,7 +640,7 @@ async function executeTool(name, input) {
       try {
         const validation = validateStrategyForMarket(strategyType, poolInfo);
         if (!validation.valid && hunterNotifyFn) {
-          await hunterNotifyFn(`⚠️ *Strategy Warning*\n\n${validation.warning}`);
+          await hunterNotifyFn(`⚠️ <b>Strategy Warning</b>\n\n${escapeHTML(validation.warning)}`);
         }
       } catch { /* skip */ }
 
@@ -648,11 +648,11 @@ async function executeTool(name, input) {
 
       if (hunterNotifyFn) {
         await hunterNotifyFn(
-          `⚡ *Deploying...*\n` +
-          `Pool: \`${input.pool_address.slice(0, 8)}...\`\n` +
-          `Strategi: ${strategy.name}\n` +
+          `⚡ <b>Deploying...</b>\n` +
+          `Pool: <code>${escapeHTML(input.pool_address.slice(0, 8))}...</code>\n` +
+          `Strategi: <b>${escapeHTML(strategy.name)}</b>\n` +
           `Range: ${targetPriceRangePct.toFixed(1)}%\n` +
-          `_${(deployOptions.technicalReasoning || input.reasoning || '').slice(0, 150)}_`
+          `<i>${escapeHTML((deployOptions.technicalReasoning || input.reasoning || '').slice(0, 150))}</i>`
         );
       }
 
@@ -663,17 +663,17 @@ async function executeTool(name, input) {
           hunterNotifyFn,
           hunterBotRef,
           hunterAllowedId,
-          `🚀 *Hunter Alpha ingin deploy:*\n\n` +
-          `📍 Pool: \`${input.pool_address.slice(0, 8)}...\`\n` +
-          `📊 Strategi: ${strategy.name} (${targetPriceRangePct.toFixed(1)}%)\n` +
+          `🚀 <b>Hunter Alpha ingin deploy:</b>\n\n` +
+          `📍 Pool: <code>${escapeHTML(input.pool_address.slice(0, 8))}...</code>\n` +
+          `📊 Strategi: <b>${escapeHTML(strategy.name)}</b> (${targetPriceRangePct.toFixed(1)}%)\n` +
           `💰 Deploy: ${deployAmountSol} SOL (Single-Side SOL)\n` +
           `  tokenX: 0 | tokenY: ${tokenYAmount.toFixed(4)} SOL\n\n` +
-          `💭 ${deployOptions.technicalReasoning || input.reasoning}`
+          `💭 ${escapeHTML(deployOptions.technicalReasoning || input.reasoning)}`
         );
         if (!confirmed) {
           // Kirim notif batal agar user tidak bingung kenapa "Deploying..." tanpa follow-up
           if (hunterNotifyFn) {
-            await hunterNotifyFn(`❌ *Deploy Dibatalkan*\n\nUser tidak menyetujui deploy ke pool \`${input.pool_address.slice(0, 8)}...\``).catch(() => { });
+            await hunterNotifyFn(`❌ <b>Deploy Dibatalkan</b>\n\nUser tidak menyetujui deploy ke pool <code>${escapeHTML(input.pool_address.slice(0, 8))}...</code>`).catch(() => { });
           }
           return stringify({ blocked: true, reason: 'Ditolak oleh user.' }, 2);
         }
@@ -707,10 +707,10 @@ async function executeTool(name, input) {
         // Kirim notif gagal supaya user tidak stuck di "Deploying..." tanpa follow-up
         if (hunterNotifyFn) {
           hunterNotifyFn(
-            `❌ *Deploy Gagal*\n\n` +
-            `Pool: \`${input.pool_address.slice(0, 8)}...\`\n` +
-            `Error: ${deployErr.message}\n` +
-            `_Cek wallet balance dan Meteora UI untuk memastikan posisi tidak terbuat._`
+            `❌ <b>Deploy Gagal</b>\n\n` +
+            `Pool: <code>${escapeHTML(input.pool_address.slice(0, 8))}...</code>\n` +
+            `Error: <code>${escapeHTML(deployErr.message)}</code>\n\n` +
+            `<i>Cek wallet balance dan Meteora UI untuk memastikan posisi tidak terbuat.</i>`
           ).catch(() => { });
         }
         throw deployErr; // re-throw agar AI tahu dan bisa report
@@ -751,9 +751,9 @@ async function executeTool(name, input) {
             .join(' · ');
 
           const openMsg =
-            `🚀 *Posisi Dibuka${nPos > 1 ? ` (${nPos} Chunks)` : ''}*\n\n` +
+            `🚀 <b>Posisi Dibuka${nPos > 1 ? ` (${nPos} Chunks)` : ''}</b>\n\n` +
             codeBlock(details) + '\n' +
-            `💭 _${input.reasoning}_\n\n` +
+            `💭 <i>${escapeHTML(input.reasoning)}</i>\n\n` +
             `🔗 ${txLinks}`;
 
           await hunterNotifyFn(openMsg);

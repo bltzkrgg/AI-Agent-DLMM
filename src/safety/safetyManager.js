@@ -211,7 +211,7 @@ export function requestConfirmation(notifyFn, bot, allowedId, message, timeoutMs
     const timeout = setTimeout(() => {
       if (pendingConfirmations.has(confirmId)) {
         pendingConfirmations.delete(confirmId);
-        notifyFn(`⏰ Konfirmasi ID ${id} timeout — aksi dibatalkan.`);
+        notifyFn(`⏰ <b>Konfirmasi ID ${id} timeout</b> — <i>aksi dibatalkan otomatis.</i>`, { parse_mode: 'HTML' });
         resolve(false);
       }
     }, timeoutMs);

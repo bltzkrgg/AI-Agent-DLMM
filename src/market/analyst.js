@@ -98,7 +98,9 @@ Jika currentPosition.inRange === false:
    - Jika Confidence > 0.8: Trigger PANIC EXIT (Action: CLOSE, Urgency: immediate).
    - Jika Confidence < 0.6: HOLD sebentar (monitor retrace) s/d timer habis.
 
-Respond HANYA dalam JSON:
+Respond HANYA dalam JSON.
+PENTING: JANGAN gunakan formatting Markdown (seperti **bintang** atau _underscore_) pada field teks. Gunakan teks bersih.
+
 {
   "signal": "BULLISH" | "BEARISH" | "NEUTRAL",
   "confidence": 0.0-1.0,

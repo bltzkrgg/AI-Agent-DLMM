@@ -218,8 +218,8 @@ for (const sql of migrations) {
 export function savePosition(data) {
   return runInQueue(() => db.prepare(`
     INSERT OR IGNORE INTO positions
-    (pool_address, position_address, token_x, token_y, token_x_amount, token_y_amount, deployed_sol, entry_price, deployed_usd, strategy_used, token_x_symbol, lifecycle_state)
-    VALUES (@pool_address, @position_address, @token_x, @token_y, @token_x_amount, @token_y_amount, @deployed_sol, @entry_price, @deployed_usd, @strategy_used, @token_x_symbol, @lifecycle_state)
+    (pool_address, position_address, token_x, token_y, token_x_amount, token_y_amount, deployed_sol, entry_price, deployed_usd, strategy_used, token_x_symbol, lifecycle_state, pnl_sol, fees_collected_sol)
+    VALUES (@pool_address, @position_address, @token_x, @token_y, @token_x_amount, @token_y_amount, @deployed_sol, @entry_price, @deployed_usd, @strategy_used, @token_x_symbol, @lifecycle_state, @pnl_sol, @fees_collected_sol)
   `).run({
     pool_address: data.pool_address,
     position_address: data.position_address,
@@ -233,6 +233,8 @@ export function savePosition(data) {
     strategy_used: data.strategy_used || null,
     token_x_symbol: data.token_x_symbol || null,
     lifecycle_state: data.lifecycle_state || 'open',
+    pnl_sol: data.pnl_sol || 0,
+    fees_collected_sol: data.fees_collected_sol || 0,
   }));
 }
 
@@ -242,7 +244,7 @@ export function getOpenPositions() {
 
 export function closePosition(positionAddress) {
   return runInQueue(() => db.prepare(`
-    UPDATE positions SET status = 'closed', lifecycle_state = 'closed_reconciled', closed_at = CURRENT_TIMESTAMP
+    UPDATE positions SET status = 'closed', lifecycle_state = 'closed_reconciled', closed_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
     WHERE position_address = ?
   `).run(positionAddress));
 }
@@ -267,7 +269,8 @@ export function closePositionWithPnl(positionAddress, { pnlUsd, pnlPct, feesUsd,
       fees_collected_sol = ?,
       close_reason = ?,
       range_efficiency_pct = ?,
-      lifecycle_state = ?
+      lifecycle_state = ?,
+      updated_at = CURRENT_TIMESTAMP
     WHERE position_address = ?
   `).run(
     pnlUsd || 0,
@@ -283,13 +286,13 @@ export function closePositionWithPnl(positionAddress, { pnlUsd, pnlPct, feesUsd,
 }
 
 export function updatePositionStatus(positionAddress, status) {
-  return runInQueue(() => db.prepare(`UPDATE positions SET status = ? WHERE position_address = ?`).run(status, positionAddress));
+  return runInQueue(() => db.prepare(`UPDATE positions SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE position_address = ?`).run(status, positionAddress));
 }
 
 export async function updatePositionLifecycle(positionAddress, lifecycleState) {
   return runInQueue(() => db.prepare(`
     UPDATE positions
-    SET lifecycle_state = ?
+    SET lifecycle_state = ?, updated_at = CURRENT_TIMESTAMP
     WHERE position_address = ?
   `).run(lifecycleState, positionAddress));
 }

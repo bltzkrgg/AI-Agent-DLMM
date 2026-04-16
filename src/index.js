@@ -353,7 +353,7 @@ cron.schedule('* * * * *', async () => {
     savePerformanceSnapshot();
   }
   catch (e) { 
-    await urgentNotify(`🩺 *Healer Panic*\nReason: ${e.message}\n_Check Solscan for hanging transactions._`);
+    await urgentNotify(`🩺 <b>Healer Panic</b>\nReason: <code>${escapeHTML(e.message)}</code>\n\n<i>Check Solscan for hanging transactions.</i>`);
     console.error(`Healer Critical Failure:`, e);
   }
   finally { _healerBusy = 0; }
@@ -570,7 +570,7 @@ bot.onText(/\/testmodel/, async (msg) => {
       }
     }
     await sendLong(chatId, text, { parse_mode: 'HTML' });
-  } catch (e) { bot.sendMessage(chatId, `❌ ${e.message}`); }
+  } catch (e) { bot.sendMessage(chatId, `❌ <code>${escapeHTML(e.message)}</code>`, { parse_mode: 'HTML' }); }
 });
 
 bot.onText(/\/model(?:\s+(.+))?/, async (msg, match) => {
@@ -590,7 +590,7 @@ bot.onText(/\/model(?:\s+(.+))?/, async (msg, match) => {
         const modelList = formatModelList(discoveredModels);
         await sendLong(chatId, modelList, { parse_mode: 'HTML' });
       }
-    } catch (e) { bot.sendMessage(chatId, `❌ ${e.message}`); }
+    } catch (e) { bot.sendMessage(chatId, `❌ <code>${escapeHTML(e.message)}</code>`, { parse_mode: 'HTML' }); }
     return;
   }
 
@@ -609,10 +609,10 @@ bot.onText(/\/model(?:\s+(.+))?/, async (msg, match) => {
   if (process.env.AI_MODEL) {
     bot.sendMessage(
       chatId,
-      `⚠️ *AI\\_MODEL env aktif*\n\nEnv: \`${process.env.AI_MODEL}\`\n\n` +
-      `\`/model\` command tidak bisa override env var.\n` +
-      `Hapus atau ubah \`AI_MODEL\` di file \`.env\` lalu restart bot untuk ganti model.`,
-      { parse_mode: 'Markdown' }
+      `⚠️ <b>AI_MODEL env aktif</b>\n\nEnv: <code>${escapeHTML(process.env.AI_MODEL)}</code>\n\n` +
+      `<code>/model</code> command tidak bisa override env var.\n` +
+      `Hapus atau ubah <code>AI_MODEL</code> di file <code>.env</code> lalu restart bot untuk ganti model.`,
+      { parse_mode: 'HTML' }
     );
     return;
   }
@@ -623,7 +623,7 @@ bot.onText(/\/model(?:\s+(.+))?/, async (msg, match) => {
   if (!result.ok) {
     bot.sendMessage(
       chatId,
-      `❌ <b>Model gagal</b>\n\nModel: <code>${modelId}</code>\nError: ${result.error}\n\n<i>Coba model lain: <code>/model &lt;model_id&gt;</code></i>`,
+      `❌ <b>Model gagal</b>\n\nModel: <code>${escapeHTML(modelId)}</code>\nError: <code>${escapeHTML(result.error)}</code>\n\n<i>Coba model lain: <code>/model &lt;model_id&gt;</code></i>`,
       { parse_mode: 'HTML' }
     );
     return;
@@ -633,7 +633,7 @@ bot.onText(/\/model(?:\s+(.+))?/, async (msg, match) => {
   updateConfig({ activeModel: modelId });
   bot.sendMessage(
     chatId,
-    `✅ <b>Model berhasil diganti</b>\n\nModel: <code>${modelId}</code>\n\n<i>Berlaku segera — tidak perlu restart.</i>\nReset ke default: <code>/model reset</code>`,
+    `✅ <b>Model berhasil diganti</b>\n\nModel: <code>${escapeHTML(modelId)}</code>\n\n<i>Berlaku segera — tidak perlu restart.</i>\nReset ke default: <code>/model reset</code>`,
     { parse_mode: 'HTML' }
   );
 });
@@ -643,7 +643,7 @@ bot.onText(/\/results/, async (msg) => {
   try {
     const results = getTodayResults();
     await sendLong(msg.chat.id, formatDailyReport(results), { parse_mode: 'HTML' });
-  } catch (e) { bot.sendMessage(msg.chat.id, `❌ ${e.message}`); }
+  } catch (e) { bot.sendMessage(msg.chat.id, `❌ <code>${escapeHTML(e.message)}</code>`, { parse_mode: 'HTML' }); }
 });
 
 bot.onText(/\/start/, (msg) => {
@@ -818,7 +818,7 @@ bot.onText(/\/status/, async (msg) => {
 
     await sendLong(chatId, text, { parse_mode: 'HTML' });
   } catch (e) {
-    bot.sendMessage(chatId, `❌ ${e.message}`);
+    bot.sendMessage(chatId, `❌ <code>${escapeHTML(e.message)}</code>`, { parse_mode: 'HTML' });
   }
 });
 
@@ -833,7 +833,7 @@ bot.onText(/\/evolve/, async (msg) => {
     } else {
       bot.sendMessage(chatId, 'ℹ️ Tidak ada update yang diperlukan. Thresholds saat ini masih optimal berdasarkan data trade terakhir.');
     }
-  } catch (e) { bot.sendMessage(chatId, `❌ ${e.message}`); }
+  } catch (e) { bot.sendMessage(chatId, `❌ <code>${escapeHTML(e.message)}</code>`, { parse_mode: 'HTML' }); }
 });
 
 bot.onText(/\/brain/, async (msg) => {
@@ -842,7 +842,7 @@ bot.onText(/\/brain/, async (msg) => {
   try {
     const summary = getBrainSummary();
     bot.sendMessage(chatId, summary, { parse_mode: 'HTML' });
-  } catch (e) { bot.sendMessage(chatId, `❌ ${e.message}`); }
+  } catch (e) { bot.sendMessage(chatId, `❌ <code>${escapeHTML(e.message)}</code>`, { parse_mode: 'HTML' }); }
 });
 
 // /pos — snapshot posisi cepat via REST API (tanpa LLM, tanpa on-chain RPC)
@@ -911,7 +911,7 @@ bot.onText(/\/pos$/, async (msg) => {
     text += `\n<i>Data via Meteora API — gunakan /status untuk data on-chain penuh.</i>`;
     await sendLong(chatId, text, { parse_mode: 'HTML' });
   } catch (e) {
-    bot.sendMessage(chatId, `❌ ${e.message}`);
+    bot.sendMessage(chatId, `❌ <code>${escapeHTML(e.message)}</code>`, { parse_mode: 'HTML' });
   }
 });
 
@@ -928,7 +928,7 @@ bot.onText(/\/zap(?:\s+(\S+))?/, async (msg, match) => {
   const matchPos = openPos.find(p => p.position_address === target || p.pool_address === target || p.token_x === target);
 
   if (!matchPos) {
-    return bot.sendMessage(chatId, `❌ Posisi tidak ditemukan untuk: <code>${target}</code>`, { parse_mode: 'HTML' });
+    return bot.sendMessage(chatId, `❌ Posisi tidak ditemukan untuk: <code>${escapeHTML(target)}</code>`, { parse_mode: 'HTML' });
   }
 
   bot.sendMessage(chatId, `⚠️ <b>KONFIRMASI ZAP OUT</b>\n\nKamu akan menutup paksa posisi:\nToken: <b>${matchPos.token_x_symbol || 'unknown'}</b>\nPool: <code>${shortAddr(matchPos.pool_address)}</code>\n\nKetik <code>GAS ZAP</code> untuk mengeksekusi.`, { parse_mode: 'HTML' });
@@ -944,7 +944,7 @@ bot.onText(/\/zap(?:\s+(\S+))?/, async (msg, match) => {
           reasoning: 'MANUAL_ZAP_EMERGENCY'
         }, notify);
       } catch (e) {
-        bot.sendMessage(chatId, `❌ Zap failed: ${e.message}`);
+        bot.sendMessage(chatId, `❌ Zap failed: <code>${escapeHTML(e.message)}</code>`, { parse_mode: 'HTML' });
       }
     } else if (cMsg.from.id === ALLOWED_ID && cMsg.chat.id === chatId && cMsg.text !== 'GAS ZAP' && !cMsg.text.startsWith('/')) {
        bot.removeListener('message', confirmHandler);
@@ -971,7 +971,7 @@ bot.onText(/\/(hunt|hunting)/, async (msg) => {
   }
   bot.sendMessage(msg.chat.id, '🦅 Menjalankan Hunter Alpha...');
   try { await triggerHunter(); }
-  catch (e) { bot.sendMessage(msg.chat.id, `❌ ${e.message}`); }
+  catch (e) { bot.sendMessage(msg.chat.id, `❌ <code>${escapeHTML(e.message)}</code>`, { parse_mode: 'HTML' }); }
 });
 
 bot.onText(/\/heal/, async (msg) => {
@@ -983,7 +983,7 @@ bot.onText(/\/heal/, async (msg) => {
   bot.sendMessage(msg.chat.id, '🩺 Menjalankan Healer Alpha...');
   _healerBusy = Date.now();
   try { await runHealerWithReopenCheck(); }
-  catch (e) { bot.sendMessage(msg.chat.id, `❌ ${e.message}`); }
+  catch (e) { bot.sendMessage(msg.chat.id, `❌ <code>${escapeHTML(e.message)}</code>`, { parse_mode: 'HTML' }); }
   finally { _healerBusy = 0; }
 });
 
@@ -1000,7 +1000,7 @@ bot.onText(/\/check(?:\s+(.+))?/, async (msg, match) => {
   try {
     const result = await screenToken(tokenMint);
     bot.sendMessage(chatId, formatScreenResult(result), { parse_mode: 'HTML' });
-  } catch (e) { bot.sendMessage(chatId, `❌ ${e.message}`); }
+  } catch (e) { bot.sendMessage(chatId, `❌ <code>${escapeHTML(e.message)}</code>`, { parse_mode: 'HTML' }); }
 });
 
 bot.onText(/\/system_update/, (msg) => {
@@ -1042,7 +1042,7 @@ bot.onText(/\/system_update/, (msg) => {
         }, 1000);
 
       } catch (err) {
-        bot.sendMessage(chatId, `❌ <b>Update Gagal:</b>\n\n${err.message}`, { parse_mode: 'HTML' });
+        bot.sendMessage(chatId, `❌ <b>Update Gagal:</b>\n\n<code>${escapeHTML(err.message)}</code>`, { parse_mode: 'HTML' });
       }
     } else if (cMsg.from.id === ALLOWED_ID && cMsg.chat.id === chatId && cMsg.text !== 'GAS UPDATE' && !cMsg.text.startsWith('/')) {
        bot.removeListener('message', updateHandler);
@@ -1112,7 +1112,7 @@ async function processResearchArticle(chatId, articleText) {
       text += `<i>Strategi aktif di Library dan akan dipakai Hunter Alpha.</i>`;
     }
     bot.sendMessage(chatId, text, { parse_mode: 'HTML' });
-  } catch (e) { bot.sendMessage(chatId, `❌ ${e.message}`); }
+  } catch (e) { bot.sendMessage(chatId, `❌ <code>${escapeHTML(e.message)}</code>`, { parse_mode: 'HTML' }); }
 }
 
 
@@ -1135,7 +1135,7 @@ bot.onText(/\/evolve/, async (msg) => {
       text += `${i + 1}. [${(inst.confidence * 100).toFixed(0)}%] ${escapeHTML(inst.pattern)}\n`;
     });
     bot.sendMessage(chatId, text, { parse_mode: 'HTML' });
-  } catch (e) { bot.sendMessage(msg.chat.id, `❌ ${e.message}`); }
+  } catch (e) { bot.sendMessage(msg.chat.id, `❌ <code>${escapeHTML(e.message)}</code>`, { parse_mode: 'HTML' }); }
 });
 
 bot.onText(/\/learn(?:\s+(.+))?/, async (msg, match) => {
@@ -1159,7 +1159,7 @@ bot.onText(/\/learn(?:\s+(.+))?/, async (msg, match) => {
       if (errors.length) text += `\n\n⚠️ ${errors.length} pool gagal`;
       bot.sendMessage(chatId, text, { parse_mode: 'HTML' });
     }
-  } catch (e) { bot.sendMessage(chatId, `❌ ${e.message}`); }
+  } catch (e) { bot.sendMessage(chatId, `❌ <code>${escapeHTML(e.message)}</code>`, { parse_mode: 'HTML' }); }
 });
 
 bot.onText(/\/lessons/, (msg) => {
@@ -1177,7 +1177,7 @@ bot.onText(/\/pinlesson(?:\s+(\d+))?/, (msg, match) => {
   }
   const result = pinLesson(idx);
   if (!result.ok) {
-    bot.sendMessage(msg.chat.id, `❌ ${result.reason}`);
+    bot.sendMessage(msg.chat.id, `❌ <code>${escapeHTML(result.reason)}</code>`, { parse_mode: 'HTML' });
   } else {
     bot.sendMessage(msg.chat.id, `📌 <b>Lesson di-pin!</b>\n\n<i>"${escapeHTML(result.lesson)}"</i>\n\nLesson ini akan selalu masuk ke prompt agent.`, { parse_mode: 'HTML' });
   }
@@ -1192,7 +1192,7 @@ bot.onText(/\/unpinlesson(?:\s+(\d+))?/, (msg, match) => {
     return;
   }
   const result = unpinLesson(idx);
-  bot.sendMessage(msg.chat.id, result.ok ? '✅ Lesson di-unpin.' : `❌ ${result.reason}`);
+  bot.sendMessage(msg.chat.id, result.ok ? '✅ <b>Lesson di-unpin.</b>' : `❌ <code>${escapeHTML(result.reason)}</code>`, { parse_mode: 'HTML' });
 });
 
 bot.onText(/\/deletelesson(?:\s+(\d+))?/, (msg, match) => {
@@ -1206,14 +1206,14 @@ bot.onText(/\/deletelesson(?:\s+(\d+))?/, (msg, match) => {
   if (result.ok) {
     bot.sendMessage(msg.chat.id, `✅ Lesson dihapus: <i>${escapeHTML(result.lesson)}</i>`, { parse_mode: 'HTML' });
   } else {
-    bot.sendMessage(msg.chat.id, `❌ ${result.reason}`);
+    bot.sendMessage(msg.chat.id, `❌ <code>${escapeHTML(result.reason)}</code>`, { parse_mode: 'HTML' });
   }
 });
 
 bot.onText(/\/clearlessons/, (msg) => {
   if (msg.from.id !== ALLOWED_ID) return;
   const result = clearAllLessons();
-  bot.sendMessage(msg.chat.id, result.ok ? '🗑️ Semua lessons telah dihapus.' : '❌ Gagal menghapus lessons.');
+  bot.sendMessage(msg.chat.id, result.ok ? '🗑️ <b>Semua lessons telah dihapus.</b>' : `❌ <code>${escapeHTML(result.reason || 'Gagal menghapus lessons.')}</code>`, { parse_mode: 'HTML' });
 });
 
 
@@ -1248,7 +1248,7 @@ bot.onText(/\/addwallet(?:\s+(\S+))?(?:\s+(.+))?/, (msg, match) => {
   }
   const { ok, reason } = addSmartWallet(address, label);
   bot.sendMessage(msg.chat.id,
-    ok ? `✅ <b>Smart wallet ditambahkan!</b>\n<code>${address.slice(0, 12)}...</code> — ${escapeHTML(label)}` : `❌ ${reason}`,
+    ok ? `✅ <b>Smart wallet ditambahkan!</b>\n<code>${escapeHTML(address.slice(0, 16))}...</code> — ${escapeHTML(label)}` : `❌ <code>${escapeHTML(reason)}</code>`,
     { parse_mode: 'HTML' }
   );
 });
@@ -1262,7 +1262,7 @@ bot.onText(/\/removewallet(?:\s+(\S+))?/, (msg, match) => {
     return;
   }
   const { ok, reason } = removeSmartWallet(address);
-  bot.sendMessage(msg.chat.id, ok ? '✅ Wallet dihapus dari list.' : `❌ ${reason}`);
+  bot.sendMessage(msg.chat.id, ok ? '✅ <b>Wallet dihapus dari list.</b>' : `❌ <code>${escapeHTML(reason)}</code>`, { parse_mode: 'HTML' });
 });
 
 // /listwallet
@@ -1453,7 +1453,7 @@ bot.onText(/\/providers/, async (msg) => {
 
     sendLong(msg.chat.id, report, { parse_mode: 'HTML' }).catch(() => {});
   } catch (e) {
-    bot.sendMessage(msg.chat.id, `❌ Error: ${e.message}`).catch(() => {});
+    bot.sendMessage(msg.chat.id, `❌ Error: <code>${escapeHTML(e.message)}</code>`, { parse_mode: 'HTML' }).catch(() => {});
   }
 });
 
@@ -1496,7 +1496,7 @@ async function handleMessage(msg, text) {
     const response = await processMessage(text);
     await sendLong(msg.chat.id, escapeHTML(response), { parse_mode: 'HTML', disable_web_page_preview: true });
   } catch (e) {
-    bot.sendMessage(msg.chat.id, `❌ Error: ${e.message}`).catch(() => {});
+    bot.sendMessage(msg.chat.id, `❌ Error: <code>${escapeHTML(e.message)}</code>`, { parse_mode: 'HTML' }).catch(() => {});
   } finally {
     _chatBusy = false;
   }
@@ -1555,12 +1555,12 @@ process.on('SIGTERM', () => shutdown('SIGTERM'));
 // Tangkap uncaught exceptions supaya bot tidak mati tiba-tiba
 process.on('uncaughtException', (e) => {
   console.error('❌ Uncaught Exception:', e.message, e.stack);
-  notify(`⚠️ <b>Uncaught error (bot tetap jalan):</b>\n${e.message}`).catch(() => {});
+  notify(`⚠️ <b>Uncaught error (bot tetap jalan):</b>\n<code>${escapeHTML(e.message)}</code>`, { parse_mode: 'HTML' }).catch(() => {});
 });
 process.on('unhandledRejection', (reason) => {
   const msg = reason instanceof Error ? reason.message : String(reason);
   console.error('❌ Unhandled Rejection:', msg);
-  notify(`⚠️ <b>Unhandled promise rejection:</b>\n${msg}`).catch(() => {});
+  notify(`⚠️ <b>Unhandled promise rejection:</b>\n<code>${escapeHTML(msg)}</code>`, { parse_mode: 'HTML' }).catch(() => {});
 });
 
 // ─── Startup ─────────────────────────────────────────────────────

@@ -161,29 +161,29 @@ export function formatDailyReport(results) {
   const totalNetSol = results.totalFeesSol + results.totalPnlSol;
   const netEmoji = totalNetSol >= 0 ? '🟢' : '🔴';
 
-  let text = `📊 *Hasil Hari Ini — ${results.date}*\n\n`;
-  text += `${netEmoji} Net: ◎${totalNetSol.toFixed(4)} (Fees: ◎${results.totalFeesSol.toFixed(4)} | PnL: ◎${results.totalPnlSol.toFixed(4)})\n`;
-  text += `💰 Value: $${(results.totalFeesUsd + results.totalPnlUsd).toFixed(2)}\n`;
-  text += `📍 Posisi ditutup: ${results.count} | ✅ Win: ${results.wins} | ❌ Loss: ${results.losses} | Win rate: ${results.winRate}%\n\n`;
+  let text = `📊 <b>Hasil Hari Ini — ${results.date}</b>\n\n`;
+  text += `${netEmoji} Net: <code>◎${totalNetSol.toFixed(4)}</code> (Fees: <code>◎${results.totalFeesSol.toFixed(4)}</code> | PnL: <code>◎${results.totalPnlSol.toFixed(4)}</code>)\n`;
+  text += `💰 Value: <code>$${(results.totalFeesUsd + results.totalPnlUsd).toFixed(2)}</code>\n`;
+  text += `📍 Posisi ditutup: <b>${results.count}</b> | ✅ Win: <b>${results.wins}</b> | ❌ Loss: <b>${results.losses}</b> | Win rate: <b>${results.winRate}%</b>\n\n`;
 
   // Per strategi
   const strategies = Object.entries(results.byStrategy).sort((a, b) => b[1].feesSol - a[1].feesSol);
 
   if (strategies.length > 0) {
-    text += `*Performa per Strategi:*\n`;
+    text += `<b>Performa per Strategi:</b>\n`;
     for (const [name, s] of strategies) {
       const netSol = s.feesSol + s.pnlSol;
       const emoji = netSol >= 0 ? '✅' : '❌';
-      text += `\n${emoji} *${name}* (${s.count}x)\n`;
-      text += `   Fees: ◎${s.feesSol.toFixed(4)} | PnL: ◎${s.pnlSol.toFixed(4)}\n`;
-      text += `   Win: ${s.wins} Loss: ${s.losses}\n`;
+      text += `\n${emoji} <b>${escapeHTML(name)}</b> (<i>${s.count}x</i>)\n`;
+      text += `   Fees: <code>◎${s.feesSol.toFixed(4)}</code> | PnL: <code>◎${s.pnlSol.toFixed(4)}</code>\n`;
+      text += `   Win: <b>${s.wins}</b> Loss: <b>${s.losses}</b>\n`;
     }
   }
 
   // Rekomendasi otomatis
   const rec = generateRecommendations(results.byStrategy);
   if (rec.length > 0) {
-    text += `\n💡 *Auto-Insight untuk Trade Berikutnya:*\n`;
+    text += `\n💡 <b>Auto-Insight untuk Trade Berikutnya:</b>\n`;
     for (const r of rec) text += `• ${r}\n`;
   }
 
@@ -206,10 +206,10 @@ function generateRecommendations(byStrategy) {
   const losers  = best.filter(s => s.net < 0);
 
   if (winners.length > 0) {
-    recs.push(`Prioritaskan *${winners[0].name}* — net ◎${winners[0].net.toFixed(4)} hari ini`);
+    recs.push(`Prioritaskan <b>${escapeHTML(winners[0].name)}</b> — net <code>◎${winners[0].net.toFixed(4)}</code> hari ini`);
   }
   if (losers.length > 0) {
-    recs.push(`Hindari *${losers[losers.length - 1].name}* dulu — net ◎${losers[losers.length - 1].net.toFixed(4)} hari ini`);
+    recs.push(`Hindari <b>${escapeHTML(losers[losers.length - 1].name)}</b> dulu — net <code>◎${losers[losers.length - 1].net.toFixed(4)}</code> hari ini`);
   }
 
   return recs;

@@ -84,7 +84,7 @@ export async function runSelfHealingSync(notifyFn = null) {
           });
 
           reclaimedCount++;
-          await notifyFn?.(`👻 <b>GHOST POSITION RECLAIMED!</b>\n\n• Pool: <code>${shortAddr(ocPos.poolAddress)}</code>\n• Address: <code>${shortAddr(ocPos.address)}</code>\n• Value: ~${ocPos.currentValueSol.toFixed(4)} SOL\n\n<i>Bot berhasil mensinkronisasi ulang posisi gaib ke database.</i>`);
+          await notifyFn?.(`👻 <b>GHOST POSITION RECLAIMED!</b>\n\n• Pool: <code>${shortAddr(ocPos.poolAddress)}</code>\n• Address: <code>${shortAddr(ocPos.address)}</code>\n• Value: ~${ocPos.currentValueSol.toFixed(4)} SOL\n\n<i>Bot berhasil mensinkronisasi ulang posisi gaib ke database.</i>`, { parse_mode: 'HTML' });
         } catch (err) {
           console.error(`❌ [healer] Gagal reclaim posisi ${ocPos.address}:`, err.message);
         }
@@ -450,7 +450,7 @@ export async function executeTool(name, input, notifyFn = null) {
             updatePositionRuntimeState(addr, { lastTvl: currentTvl });
 
           } catch (e) {
-            console.warn(`⚠️ [healer] Aegis check failed for ${addr.slice(0,8)}: ${e.message}`);
+            console.warn(`⚠️ [healer] Aegis check failed for ${addr.slice(0,8)}: ${escapeHTML(e.message)}`);
           }
 
           if (proactiveWarning) {
@@ -557,10 +557,10 @@ export async function executeTool(name, input, notifyFn = null) {
       // Notifikasi jika swap gagal
       if (swapErrors.length > 0 && currentNotify) {
         currentNotify(
-          `⚠️ *Auto-Swap Gagal (Claim Fees)*\n\n` +
+          `⚠️ <b>Auto-Swap Gagal (Claim Fees)</b>\n\n` +
           `Fee sudah di-claim, tapi token belum dikonversi ke SOL.\n` +
-          `Error: ${swapErrors.map(e => e.error || e.mint).join(', ')}\n` +
-          `_Lakukan swap manual di Jupiter/Meteora._`
+          `Error: <code>${escapeHTML(swapErrors.map(e => e.error || e.mint).join(', '))}</code>\n\n` +
+          `<i>Lakukan swap manual di Jupiter/Meteora.</i>`
         ).catch(() => {});
       }
 
@@ -684,16 +684,18 @@ export async function executeTool(name, input, notifyFn = null) {
         if (swapResults.some(r => r.outSol)) {
           const swapLine = swapResults.map(r => r.outSol ? `+${r.outSol.toFixed(4)}◎` : 'skip').join(', ');
           currentNotify(
-            `🔄 *Auto-Swap Selesai*\n\n` +
+            `🔄 <b>Auto-Swap Selesai</b>\n\n` +
             `Token → SOL: ${swapLine}\n` +
-            `Total: \`+${totalSol.toFixed(4)} SOL\``
+            `Total: <code>+${totalSol.toFixed(4)} SOL</code>`,
+            { parse_mode: 'HTML' }
           ).catch(() => {});
         } else if (swapErrors.length > 0) {
           currentNotify(
-            `⚠️ *Auto-Swap Gagal*\n\n` +
+            `⚠️ <b>Auto-Swap Gagal</b>\n\n` +
             `Posisi sudah ditutup, tapi token belum dikonversi ke SOL.\n` +
-            `Error: ${swapErrors.map(e => e.error || e.mint).join(', ')}\n` +
-            `_Lakukan swap manual di Jupiter/Meteora._`
+            `Error: <code>${escapeHTML(swapErrors.map(e => e.error || e.mint).join(', '))}</code>\n\n` +
+            `<i>Lakukan swap manual di Jupiter/Meteora.</i>`,
+            { parse_mode: 'HTML' }
           ).catch(() => {});
         }
       }
@@ -848,21 +850,24 @@ export async function executeTool(name, input, notifyFn = null) {
         if (swapResults.some(r => r.outSol)) {
           const swapLine = swapResults.map(r => r.outSol ? `+${r.outSol.toFixed(4)}◎` : 'skip').join(', ');
           currentNotify(
-            `⚡ *Zap Out Selesai*\n\n` +
+            `⚡ <b>Zap Out Selesai</b>\n\n` +
             `Token → SOL: ${swapLine}\n` +
-            `Total: \`+${totalSwappedSol.toFixed(4)} SOL\``
+            `Total: <code>+${totalSwappedSol.toFixed(4)} SOL</code>`,
+            { parse_mode: 'HTML' }
           ).catch(() => {});
         } else if (swapErrors.length > 0) {
           currentNotify(
-            `⚠️ *Zap Out — Swap Gagal*\n\n` +
+            `⚠️ <b>Zap Out — Swap Gagal</b>\n\n` +
             `Posisi sudah ditutup, tapi token belum dikonversi ke SOL.\n` +
-            `Error: ${swapErrors.map(e => e.error || e.mint).join(', ')}\n` +
-            `_Lakukan swap manual di Jupiter/Meteora._`
+            `Error: <code>${escapeHTML(swapErrors.map(e => e.error || e.mint).join(', '))}</code>\n\n` +
+            `<i>Lakukan swap manual di Jupiter/Meteora.</i>`,
+            { parse_mode: 'HTML' }
           ).catch(() => {});
         } else {
           // Semua di-skip (balance 0 — kemungkinan single-side SOL yang belum OOR)
           currentNotify(
-            `✅ *Zap Out Selesai*\n\nPosisi ditutup. Semua dana sudah dalam bentuk SOL.`
+            `✅ <b>Zap Out Selesai</b>\n\nPosisi ditutup. Semua dana sudah dalam bentuk SOL.`,
+            { parse_mode: 'HTML' }
           ).catch(() => {});
         }
       }
@@ -941,8 +946,8 @@ export async function runHealerAlpha(notifyFn) {
   // ── Safety Check: Max Drawdown ────────────────────────────────
   const drawdown = checkMaxDrawdown();
   if (drawdown.triggered) {
-    const msg = `⛔ *Healer Alpha FROZEN*\n\n${drawdown.reason}\n\nBot tidak akan membuka posisi baru hari ini. Posisi yang ada tetap dimonitor.`;
-    if (notifyFn) await notifyFn(msg);
+    const msg = `⛔ <b>Healer Alpha FROZEN</b>\n\n${escapeHTML(drawdown.reason)}\n\nBot tidak akan membuka posisi baru hari ini. Posisi yang ada tetap dimonitor.`;
+    if (notifyFn) await notifyFn(msg, { parse_mode: 'HTML' });
     return msg;
   }
 
@@ -991,7 +996,8 @@ export async function runHealerAlpha(notifyFn) {
           kv('Status',   'Ditutup manual — tidak ada di chain', 10),
         ];
         await notifyFn?.(
-          `⚠️ *Posisi Ditutup Manual*\n\n${codeBlock(manualLines)}\n\n_Posisi tidak ditemukan on-chain. Status diperbarui ke CLOSED._`
+          `⚠️ <b>Posisi Ditutup Manual</b>\n\n${codeBlock(manualLines)}\n\n<i>Posisi tidak ditemukan on-chain. Status diperbarui ke CLOSED.</i>`,
+          { parse_mode: 'HTML' }
         );
         continue;
       }
@@ -1827,10 +1833,10 @@ export async function runPanicWatchdog(notifyFn) {
         console.log(`🚜 [harvest] Uncollected fees (${uncollectedFeeSol.toFixed(4)} SOL) reached threshold. Starting Auto-Harvest...`);
         
         // Notify beginning of harvest
-        await notifyFn?.(`🚜 *AUTONOMOUS HARVEST!*\n\n` +
-                       `• Posisi: \`${shortAddr(pos.position_address)}\`\n` +
-                       `• Fee Terakumulasi: ${uncollectedFeeSol.toFixed(4)} SOL\n\n` +
-                       `_Sistem mengamankan profit ke SOL tanpa menutup posisi._`);
+        await notifyFn?.(`🚜 <b>AUTONOMOUS HARVEST!</b>\n\n` +
+                       `• Posisi: <code>${escapeHTML(shortAddr(pos.position_address))}</code>\n` +
+                       `• Fee Terakumulasi: <code>${uncollectedFeeSol.toFixed(4)} SOL</code>\n\n` +
+                       `<i>Sistem mengamankan profit ke SOL tanpa menutup posisi.</i>`, { parse_mode: 'HTML' });
 
         try {
           // Gunakan tool logic internal tanpa panggil LLM
@@ -1853,25 +1859,24 @@ export async function runPanicWatchdog(notifyFn) {
           }
 
           if (harvestedTotal > 0) {
-            await notifyFn?.(`✅ *HARVEST SUCCESSFUL!*\n\n` +
-                           `• Realized Profit: +${harvestedTotal.toFixed(4)} SOL\n` +
-                           `• Status Position: OPEN & Yielding 🎋`);
+            await notifyFn?.(`✅ <b>HARVEST SUCCESSFUL!</b>\n\n` +
+                           `• Realized Profit: <code>+${harvestedTotal.toFixed(4)} SOL</code>\n` +
+                           `• Status Position: <b>OPEN &amp; Yielding 🎋</b>`, { parse_mode: 'HTML' });
           }
         } catch (harvestErr) {
           console.error(`❌ [harvest] Gagal harvest otonom:`, harvestErr.message);
         }
       }
 
-      // Skenario 4: CRITICAL DUMP (Bearish + Jebol Jaring)
       if (isTrendBearish && isOORLower) {
-        const msg = `🚨 *PANIC EXIT EXECUTED!* (Critical Dump)\n\n` +
-                   `• Posisi: \`${shortAddr(pos.position_address)}\`\n` +
-                   `• Pool: \`${shortAddr(pos.pool_address)}\`\n` +
-                   `• Alasan: Trend 15m BEARISH & Price < Lower Range\n` +
-                   `• PnL: ${pnlPct > 0 ? '+' : ''}${pnlPct.toFixed(2)}%\n\n` +
-                   `⚠️ _Sistem menutup posisi secara otomatis untuk mengamankan sisa SOL._`;
+        const msg = `🚨 <b>PANIC EXIT EXECUTED!</b> (Critical Dump)\n\n` +
+                   `• Posisi: <code>${escapeHTML(shortAddr(pos.position_address))}</code>\n` +
+                   `• Pool: <code>${escapeHTML(shortAddr(pos.pool_address))}</code>\n` +
+                   `• Alasan: <i>Trend 15m BEARISH &amp; Price &lt; Lower Range</i>\n` +
+                   `• PnL: <code>${pnlPct > 0 ? '+' : ''}${pnlPct.toFixed(2)}%</code>\n\n` +
+                   `⚠️ <i>Sistem menutup posisi secara otomatis untuk mengamankan sisa SOL.</i>`;
         
-        await notifyFn?.(msg);
+        await notifyFn?.(msg, { parse_mode: 'HTML' });
         const closeResult = await closePositionDLMM(pos.pool_address, pos.position_address, {
           pnlUsd: posSnapshot.pnlUsd,
           pnlPct: posSnapshot.pnlPct,
@@ -1890,9 +1895,9 @@ export async function runPanicWatchdog(notifyFn) {
             const swapRes = await swapAllToSOL(pos.token_mint, slippage);
             await closeTokenAccount(pos.token_mint).catch(() => {});
             if (swapRes.success) {
-              await notifyFn?.(`🔄 *Zero Dust:* Berhasil swap balik ke \`${swapRes.outSol}\` SOL.`);
+              await notifyFn?.(`🔄 <b>Zero Dust:</b> Berhasil swap balik ke <code>${escapeHTML(swapRes.outSol)}</code> SOL.`, { parse_mode: 'HTML' });
             } else if (swapRes.reason !== 'ZERO_BALANCE') {
-              await notifyFn?.(`⚠️ *Zero Dust Gagal:* Token masih di wallet. Lakukan swap manual!`);
+              await notifyFn?.(`⚠️ <b>Zero Dust Gagal:</b> Token masih di wallet. Lakukan swap manual!`, { parse_mode: 'HTML' });
             }
           } catch (e) {
             if (e.message.includes('LIQUIDITY_TRAP')) {
@@ -1906,13 +1911,13 @@ export async function runPanicWatchdog(notifyFn) {
       // Skenario 2: PROFIT PROTECTION (Profit + Trend Bearish)
       // Kalau lu udah profit biarpun dikit, tapi trend-nya flip, mending bungkus.
       if (isBearish && pnlPct >= 0.5) {
-        const msg = `🛡️ *PROFIT PROTECTION:* (Trend Flip)\n\n` +
-                   `• Posisi: \`${shortAddr(pos.position_address)}\`\n` +
-                   `• Alasan: Trend Bearish detected while in profit.\n` +
-                   `• PnL: +${pnlPct.toFixed(2)}%\n\n` +
-                   `_Mengunci profit sebelum dimakan dump._`;
+        const msg = `🛡️ <b>PROFIT PROTECTION:</b> (Trend Flip)\n\n` +
+                   `• Posisi: <code>${escapeHTML(shortAddr(pos.position_address))}</code>\n` +
+                   `• Alasan: <i>Trend Bearish detected while in profit.</i>\n` +
+                   `• PnL: <code>+${pnlPct.toFixed(2)}%</code>\n\n` +
+                   `<i>Mengunci profit sebelum dimakan dump.</i>`;
         
-        await notifyFn?.(msg);
+        await notifyFn?.(msg, { parse_mode: 'HTML' });
         const closeResult = await closePositionDLMM(pos.pool_address, pos.position_address, {
           pnlUsd: posSnapshot.pnlUsd,
           pnlPct: posSnapshot.pnlPct,
@@ -1930,7 +1935,7 @@ export async function runPanicWatchdog(notifyFn) {
           const swapRes = await swapAllToSOL(pos.token_mint, slippage);
           if (swapRes.success) {
             await closeTokenAccount(pos.token_mint).catch(() => {});
-            await notifyFn?.(`🔄 *Zero Dust:* Profit dikunci & dikonversi ke SOL.`);
+            await notifyFn?.(`🔄 <b>Zero Dust:</b> Profit dikunci &amp; dikonversi ke SOL.`, { parse_mode: 'HTML' });
           }
         }
       }

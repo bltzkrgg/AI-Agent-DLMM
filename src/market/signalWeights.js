@@ -211,15 +211,15 @@ export function recalibrateWeights() {
 // ─── Public: format untuk Telegram ───────────────────────────────
 
 export function formatWeightsReport(result) {
-  if (!result) return '📊 Data belum cukup untuk kalibrasi (butuh min 10 posisi berpasangan).';
+  if (!result) return '📊 <i>Data belum cukup untuk kalibrasi (butuh min 10 posisi berpasangan).</i>';
 
   const { weights, liftReport, sampleSize } = result;
-  let text = `🧬 *Signal Weights Recalibrated*\n\nSample: ${sampleSize} posisi\n\n`;
-  text += '```\n';
+  let text = `🧬 <b>Signal Weights Recalibrated</b>\n\nSample: <code>${sampleSize}</code> posisi\n\n`;
+  text += '<pre><code>';
   for (const [k, w] of Object.entries(weights)) {
     const lift = liftReport[k] !== undefined ? ` (lift: ${liftReport[k] > 0 ? '+' : ''}${liftReport[k]})` : '';
     text += `${k.padEnd(20)} ${String(w.toFixed(3)).padStart(5)}x${lift}\n`;
   }
-  text += '```';
+  text += '</code></pre>';
   return text;
 }
