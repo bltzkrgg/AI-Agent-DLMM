@@ -848,7 +848,8 @@ async function _openPositionLogic(poolAddress, tokenXAmount, tokenYAmount, price
           console.log(`[meteora] Blockhash will be replaced by RPC during simulateTransaction`);
         }
 
-        // Priority fee — slightly higher for large bin deployments
+        try {
+          // Priority fee — slightly higher for large bin deployments
         let microLamports = 250_000;
         // Aegis: Increased compute budget for addLiquidityByWeight (more instructions)
         let computeUnits = totalBins > 50 ? 1_200_000 : 600_000;
