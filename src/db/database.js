@@ -131,9 +131,6 @@ db.exec(`
     status TEXT DEFAULT 'open'
   );
 
-  // Migration: Add SOL columns if they don't exist
-  try { db.prepare(`ALTER TABLE positions ADD COLUMN pnl_sol REAL DEFAULT 0`).run(); } catch(e) {}
-  try { db.prepare(`ALTER TABLE positions ADD COLUMN fees_collected_sol REAL DEFAULT 0`).run(); } catch(e) {}
 
   CREATE TABLE IF NOT EXISTS notifications (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
