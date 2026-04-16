@@ -660,7 +660,8 @@ bot.onText(/\/start/, (msg) => {
     `*Brain & Evolution:*\n` +
     `/brain /lessons /evolve /poolmemory\n\n` +
     `*Admin:*\n` +
-    `/setconfig /safety /providers /model /testmodel\n\n` +
+    `/setconfig /safety /providers /model /testmodel\n` +
+    `/system_update — 🚀 Upgrade Aegis Pro (v75)\n\n` +
     `_Atau chat bebas langsung untuk instruksi manual!_`,
     { parse_mode: 'Markdown' }
   );
