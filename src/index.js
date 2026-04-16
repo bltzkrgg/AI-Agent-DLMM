@@ -37,6 +37,7 @@ import { DbBackup } from './db/backup.js';
 import { initializeRpcManager, getRpcMetrics } from './utils/helius.js';
 import { CircuitBreaker } from './safety/circuitBreaker.js';
 import { createMessageTransport } from './telegram/messageTransport.js';
+import { performGitPull, performNpmInstall } from './utils/shell.js';
 
 // ─── PID lock — cegah multiple instance ─────────────────────────
 const PID_FILE = new URL('../../bot.pid', import.meta.url).pathname;
@@ -992,6 +993,57 @@ bot.onText(/\/check(?:\s+(.+))?/, async (msg, match) => {
     const result = await screenToken(tokenMint);
     bot.sendMessage(chatId, formatScreenResult(result), { parse_mode: 'Markdown' });
   } catch (e) { bot.sendMessage(chatId, `❌ ${e.message}`); }
+});
+
+bot.onText(/\/system_update/, (msg) => {
+  if (msg.from.id !== ALLOWED_ID) return;
+  const chatId = msg.chat.id;
+  
+  const text = `🔄 *SYSTEM UPDATE & RESTART*\n\n` +
+               `Anda akan melakukan pembaruan sistem:\n` +
+               `1. Ambil kode terbaru (\`git pull\`)\n` +
+               `2. Update dependensi (\`npm install\`)\n` +
+               `3. Jalankan migrasi database otomatis\n` +
+               `4. Restart bot (via PM2)\n\n` +
+               `⚠️ *PERINGATAN*: Pastikan bot berjalan menggunakan PM2 di VPS agar bisa restart otomatis.\n\n` +
+               `Ketik \`GAS UPDATE\` untuk mengeksekusi pembaruan.`;
+               
+  bot.sendMessage(chatId, text, { parse_mode: 'Markdown' });
+
+  const updateHandler = async (cMsg) => {
+    if (cMsg.from.id === ALLOWED_ID && cMsg.text === 'GAS UPDATE' && cMsg.chat.id === chatId) {
+      bot.removeListener('message', updateHandler);
+      bot.sendMessage(chatId, '📥 *Memulai Update...*');
+      
+      try {
+        // Step 1: Git Pull
+        bot.sendMessage(chatId, '📡 `git pull` dalam proses...');
+        const gitResult = await performGitPull();
+        bot.sendMessage(chatId, `✅ *Git Pull Success:*\n\`\`\`\n${gitResult}\n\`\`\``, { parse_mode: 'Markdown' });
+
+        // Step 2: NPM Install (Opsional tapi disarankan)
+        bot.sendMessage(chatId, '📦 `npm install` dalam proses (Mungkin agak lama)...');
+        await performNpmInstall();
+        bot.sendMessage(chatId, '✅ *NPM Install Success.*');
+
+        // Step 3: Restart
+        bot.sendMessage(chatId, '🚀 *Memicu Restart Sistem...* Bot akan offline sebentar.');
+        
+        setTimeout(() => {
+          process.exit(0); // Trigger PM2 Restart
+        }, 1000);
+
+      } catch (err) {
+        bot.sendMessage(chatId, `❌ *Update Gagal:*\n\n${err.message}`);
+      }
+    } else if (cMsg.from.id === ALLOWED_ID && cMsg.chat.id === chatId && cMsg.text !== 'GAS UPDATE' && !cMsg.text.startsWith('/')) {
+       bot.removeListener('message', updateHandler);
+       bot.sendMessage(chatId, '❌ Update dibatalkan.');
+    }
+  };
+
+  bot.on('message', updateHandler);
+  setTimeout(() => bot.removeListener('message', updateHandler), 60000); // 1 minute timeout
 });
 
 bot.onText(/\/library/, (msg) => {

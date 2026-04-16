@@ -210,6 +210,7 @@ const migrations = [
   "ALTER TABLE positions ADD COLUMN lifecycle_state TEXT DEFAULT 'open'",
   'ALTER TABLE positions ADD COLUMN pnl_sol REAL DEFAULT 0',
   'ALTER TABLE positions ADD COLUMN fees_collected_sol REAL DEFAULT 0',
+  'ALTER TABLE positions ADD COLUMN dev_address TEXT',
 ];
 for (const sql of migrations) {
   try { db.exec(sql); } catch { /* kolom sudah ada, skip */ }

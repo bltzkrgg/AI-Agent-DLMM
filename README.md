@@ -1,90 +1,87 @@
-# 🐼 Adaptive Evil Panda: DLMM AI Agent
+# 🐼 Tactical Panda: Aegis Pro (v75)
+**Autonomous DLMM Yield Aggregator & Defensive Trader untuk Meteora (Solana).**
 
-**Autonomous DLMM Liquidity Specialist untuk Meteora (Solana), dikontrol via Telegram.**
-
-Panda ini ngga cuma sekadar bot grid. Ia adalah agen trading otonom yang bisa "mendengar" narasi (Discord), "belajar" dari kesalahan (Post-Mortem), dan "adaptif" terhadap market yang volatil.
+Tactical Panda bukan sekadar bot; ia adalah "Aegis Pro" — agen trading otonom dengan sistem pertahanan berlapis, manajemen profit mandiri, dan kendali penuh via Telegram tanpa perlu menyentuh SSH.
 
 ---
 
-## 🚀 Fitur "Evil Panda" Specialist
+## 🚀 Fitur "Aegis Pro" Suite (v75)
 
 | Fitur | Deskripsi |
 |---|---|
-| **Adaptive Momentum** | Fokus pada **M5 Momentum Velocity** dengan fallback **H1 Elastic** (APR > 1000% + Trend Bullish). |
-| **Social Awareness** | Integrasi **Discord Aggregator** (Meridian-style). Bot dapet skor boost jika token sedang ramai di komunitas. |
-| **Post-Mortem Learning** | Setiap trade ditutup, LLM melakukan analisa kegagalan/keberhasilan dan menyimpan "Instinct" baru. |
-| **Adaptive OOR** | Kelola Out-of-Range secara cerdas: **EXTEND** (tunggu recovery jika bullish) atau **PANIC EXIT** (zap-out jika bearish breakdown). |
-| **Darwinian Evolution** | Autonomously recalibrate signal weights (Mcap, TVL, Fees, Social) berdasarkan performa trade nyata. |
-| **Security Walls** | 10-step filter termasuk **Helius Authority Check** (Mint/Freeze) & **Jupiter Slippage Simulation**. |
+| **Autonomous Harvest** | Panen profit fee otomatis ke SOL setiap akumulasi > 0.04 SOL tanpa tutup posisi. |
+| **Simulation Shield** | *Pre-flight gateway* yang mensimulasikan transaksi RPC dan memblokir eksekusi jika terdeteksi gagal. |
+| **Zero-SSH Update** | Perbarui kode bot (`git pull`), install library, & restart otomatis langsung via Telegram. |
+| **Toxic IL Watchdog** | Tutup posisi instan jika kerugian *Impermanent Loss* menyentuh ambang batas kritis (-5%). |
+| **TVL Velocity Guard** | Keluar otomatis jika likuiditas pool turun drastis (> 20%) dalam waktu singkat. |
+| **Hourly Pulse** | Laporan "Detak Jantung" sistem (Wallet, Open Positions, Yield) setiap jam ke Telegram. |
+| **Darwinian Instinct** | Belajar dari data post-mortem untuk mengoptimalkan bobot sinyal screening secara adaptif. |
 
 ---
 
-## 🛠️ Quick Start (VPS Ready)
+## 🛠️ Quick Start (Sultan Edition)
 
 ### 1. Requirements
-- **Node.js v20** (wajib pake nvm)
-- **Helius API Key** (untuk RPC + On-chain data)
-- **Telegram Bot Token** (@BotFather) & User ID (@userinfobot)
-- **AI API Key** (OpenRouter sangat disarankan untuk cost-efficiency)
+- **Node.js v20 (LTS)** — Wajib untuk stabilitas database SQLite biner.
+- **Helius API Key** — Digunakan untuk RPC stabil dan Simulation Shield.
+- **DeepSeek-V3 API** — Direkomendasikan via OpenRouter untuk biaya operasional rendah (~$0.20/hari).
 
-### 2. Install
+### 2. Install & Deploy (Zero-SSH Ready)
+Gunakan **PM2** agar bot bisa melakukan self-restart saat di-update via Telegram.
+
 ```bash
+# Clone & Install
 git clone https://github.com/bltzkrgg/AI-Agent-DLMM.git
 cd AI-Agent-DLMM
+nvm use 20
 npm install
-cp .env.example .env # Isi API Keys lo di sini!
-cp user-config.example.json user-config.json # Setting awal bot lo
-npm start
-```
 
-### 3. Recommended VPS PM2 Run
-```bash
+# Setup Config
+cp .env.example .env
+cp user-config.example.json user-config.json
+
+# Jalankan dengan PM2 (Wajib untuk fitur /system_update)
 npm install -g pm2
-pm2 start src/index.js --name "evil-panda"
+pm2 start src/index.js --name "panda-bot"
 pm2 save
+pm2 startup
 ```
 
 ---
 
 ## ⚙️ Configuration (user-config.json)
 
-Bot ini menggunakan `user-config.json` untuk menyimpan parameter trading lo secara persisten. Gunakan `user-config.example.json` sebagai referensi lengkap.
-
+Aktifkan fitur Professional Suite di config lo:
 ```json
 {
-  "deployAmountSol": 0.1,      // Jumlah SOL per posisi
-  "maxPositions": 1,           // Maksimal slot posisi terbuka
-  "managementIntervalMin": 5,  // Jeda Healer (manajemen posisi)
-  "autoScreeningEnabled": true // Status otonom (ON/OFF)
+  "autoHarvestEnabled": true,      // Auto-tarik profit fee ke SOL
+  "autoHarvestThresholdSol": 0.04, // Threshold panen otomatis (SOL)
+  "enableSimulationShield": true,  // Aktifkan blokir transaksi gagal
+  "hourlyPulseEnabled": true       // Aktifkan laporan performa tiap jam
 }
 ```
 
-> [!IMPORTANT]
-> - **Full Template**: Gunakan template di `user-config.example.json` untuk melihat semua parameter (Mcap, TVL, WinRate, Darwinian Weights, dll).
-> - **Sensitive Keys**: API Keys dan RPC Host tetap disimpan di file **`.env`** demi keamanan.
-> - **Lenient Parsing**: Bot tetap toleran terhadap typo angka atau karakter non-numerik saat lo edit manual.
-
 ---
 
-## 🐼 Specialist Commands
+## 🐼 Command Kendali Sultan
 
-- `/hunt` — Jalankan Hunter Alpha manual (Social + Momentum screening).
-- `/status` — Cek PnL Live, Fees, Pendaftaran Posisi, dan Balance.
-- `/heal` — Trigger Healer (Management posisi, Trailing TP, OOR management).
-- `/weights` — Lihat bagaimana bot lo "belajar" dan mengubah bobot sinyalnya.
-- `/lessons` — Intip "Instinct" yang sudah dipelajari bot dari post-mortem analysis.
-- `/autoscreen on` — Lepas Panda lo ke alam liar (Fully Autonomous Mode).
+- `/system_update` — **Update & Restart** bot otonom (Git Pull + NPM Install + Restart).
+- `/pos` — Cek status posisi terbuka, PnL, Fees, dan Range secara *lightweight*.
+- `/status` — Laporan on-chain mendalam untuk semua posisi aktif.
+- `/zap <addr>` — **Emergency Exit** & Swap semua token ke SOL via Jupiter.
+- `/hunt` — Trigger Hunter Alpha manual untuk mencari koin sniper terbaik.
+- `/heal` — Trigger Healer manual untuk manajemen posisi dan trailing TP.
 
 ---
 
 ## 🛡️ Trust & Safety
-- **Non-Custodial**: Bot jalan di infrastruktur lo sendiri (VPS/Laptop).
-- **Dry Run Mode**: Bisa testing tanpa pake SOL asli (`dryRun: true` di config).
-- **Circuit Breaker**: Auto-stop jika drawdown harian mencapai threshold (default 10%).
+- **Zero Gas Waste**: Simulation Shield membentengi bot dari pengeluaran gas sia-sia untuk TX gagal.
+- **Zero Dust Protocol**: Otomatis tutup akun token kosong untuk mengembalikan SOL rent.
+- **Non-Custodial**: Bot berjalan di infrastruktur lo sendiri (VPS/Laptop).
 
 ---
 
 ## 📝 Disclaimer
-Trading DLMM (Liquidity Provisioning) memiliki risiko **Impermanent Loss** yang tinggi. Bot ini adalah alat bantu otonom, bukan jaminan cuan. Gunakan dana yang siap lo relakan.
+Trading DLMM (Liquidity Provisioning) memiliki risiko **Impermanent Loss** yang tinggi. Bot v75 ini dirancang untuk meminimalisir risiko, bukan menghilangkannya. Gunakan dana dingin.
 
-**MIT License | Inspired by Meridian**
+**MIT License | Inspired by Meridian | Aegis Pro Edition v75**
