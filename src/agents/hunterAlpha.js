@@ -886,28 +886,61 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null, opt
 
     let rejTvl = 0, rejBin = 0, rejMcap = 0, rejCooldown = 0;
 
-    const filtered = rawPools
-      .filter(p => {
-        const cfg = getConfig();
-        const thresholds = getThresholds();
-        const tvl = p.liquidityRaw || 0;
-        const binStep = p.binStep || 0;
-        
-        // Gembok Naga: Mengikuti allowedBinSteps dari Config Sultan
-        const allowed = cfg.allowedBinSteps || [100, 125];
-        const isPandaStep = allowed.includes(binStep);
+    // --- SULTAN RADAR MAPPING (v75.3) --- 
+    // Kita petakan koin yang Lolos (Matched) dan yang Disingkirkan (Vetoed)
+    const radarSnapshot = rawPools.map(p => {
+      const cfg = getConfig();
+      const thresholds = getThresholds();
+      const tvl = p.liquidityRaw || 0;
+      const binStep = p.binStep || 0;
+      const allowed = cfg.allowedBinSteps || [100, 125];
+      
+      let matched = true;
+      let reason = 'Target Locked via Hybrid Scan';
 
-        if (!isPandaStep) { rejBin++; return false; }
-        if (tvl < thresholds.minTvl || tvl > thresholds.maxTvl) { rejTvl++; return false; }
-        if (p.volume24hRaw < thresholds.minVolume24h) { rejTvl++; return false; } // grouped as Basic/TVL
-        if (p.mcap && p.mcap < thresholds.minMcap) { rejMcap++; return false; }
-        if (isOnCooldown(p.address)) { rejCooldown++; return false; }
+      if (!allowed.includes(binStep)) {
+        matched = false;
+        reason = `Reject: Bin Step ${binStep} bukan standar Sultan [100, 125]`;
+        rejBin++;
+      } else if (tvl < thresholds.minTvl || tvl > thresholds.maxTvl) {
+        matched = false;
+        reason = `Reject: TVL $${(tvl/1000).toFixed(1)}k di luar rentang Sultan`;
+        rejTvl++;
+      } else if (p.volume24hRaw < thresholds.minVolume24h) {
+        matched = false;
+        reason = `Reject: Volume $${(p.volume24hRaw/1000).toFixed(1)}k terlalu sepi`;
+        rejTvl++;
+      } else if (p.mcap && p.mcap < thresholds.minMcap) {
+        matched = false;
+        reason = `Reject: Mcap $${(p.mcap/1000).toFixed(1)}k terlalu kecil`;
+        rejMcap++;
+      } else if (isOnCooldown(p.address)) {
+        matched = false;
+        reason = `Reject: Koin sedang dalam masa cooldown`;
+        rejCooldown++;
+      }
 
-        return true;
-      })
-      .map(p => ({ ...p, darwinScore: calculateDarwinScore(p, weights, 'NEUTRAL') }))
+      return {
+        ...p,
+        isMatched: matched,
+        vetoReason: reason,
+        darwinScore: calculateDarwinScore(p, weights, 'NEUTRAL')
+      };
+    });
+
+    // filtered: Hanya yang benar-benar lolos untuk diproses LLM (Hemat Cost)
+    const filtered = radarSnapshot
+      .filter(p => p.isMatched)
       .sort((a, b) => b.darwinScore - a.darwinScore)
-      .slice(0, 12); // Melirik lebih banyak kandidat untuk Dashboard
+      .slice(0, 6);
+
+    // radarDisplay: Koin terpilih (Matched + Vetoed terbaik) untuk Dashboard Mac
+    const radarDisplay = radarSnapshot
+      .sort((a, b) => {
+        if (a.isMatched !== b.isMatched) return b.isMatched ? 1 : -1;
+        return b.volume24hRaw - a.volume24hRaw;
+      })
+      .slice(0, 15);
 
     lastCandidates = filtered;
 
@@ -926,7 +959,7 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null, opt
         activeCount: openPositions.length,
         totalNetProfitSol: (openPositions.reduce((acc, p) => acc + (parseFloat(p.pnl_sol) || 0), 0)).toFixed(4),
         totalRentSaved: safeNum(rentSaved).toFixed(4), 
-        candidates: filtered.map(p => ({
+        candidates: radarDisplay.map(p => ({
           address: p.address,
           name: p.name,
           tvl: p.liquidityRaw,
@@ -936,7 +969,8 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null, opt
           mcap: p.mcap,
           score: p.darwinScore,
           volTvlRatio: (p.volume24hRaw / (p.liquidityRaw || 1)).toFixed(2),
-          isMatched: true
+          isMatched: p.isMatched,
+          vetoReason: p.vetoReason
         })),
         sentiment: 'BULLISH'
       };
