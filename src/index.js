@@ -659,10 +659,10 @@ bot.onText(/\/start/, (msg) => {
     `🧠 <b>Brain</b> — Intelligence dashboard\n\n` +
     `<b>Monitoring:</b>\n` +
     `• <code>/status</code> — On-chain position details\n` +
-    `• <code>/pos</code> — Fast REST summary\n` +
+    `• <code>/getradar</code> — 🛰️ Download Radar to Mac\n` +
     `• <code>/results</code> — Daily PnL report\n\n` +
     `<b>Control:</b>\n` +
-    `• <code>/hunting</code> — 🦅 Sniper Trigger\n` +
+    `• <code>/hunting</code> — 🦅 Sultan Sniper Trigger\n` +
     `• <code>/heal</code> — 🩺 Position Management\n` +
     `• <code>/zap &lt;addr&gt;</code> — 🆘 Emergency Exit\n` +
     `• <code>/check &lt;mint&gt;</code> — 🔍 RugCheck\n` +
@@ -672,7 +672,7 @@ bot.onText(/\/start/, (msg) => {
     `<code>/brain</code> <code>/lessons</code> <code>/evolve</code> <code>/poolmemory</code>\n\n` +
     `<b>Admin:</b>\n` +
     `<code>/setconfig</code> <code>/safety</code> <code>/providers</code> <code>/model</code>\n` +
-    `<code>/system_update</code> — 🚀 Upgrade Aegis Pro (v75)\n\n` +
+    `<code>/system_update</code> — 🚀 Upgrade Aegis Pro (v75.2)\n\n` +
     `<i>Atau chat bebas untuk instruksi manual!</i>`,
     { parse_mode: 'HTML' }
   );
