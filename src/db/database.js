@@ -512,4 +512,17 @@ export function listRecentOperations(limit = 10) {
   }));
 }
 
+export function updateLivePositionStats(positionAddress, { pnlUsd, pnlPct, feesUsd, pnlSol, feesSol }) {
+  return runInQueue(() => db.prepare(`
+    UPDATE positions SET 
+      pnl_usd = ?, 
+      pnl_pct = ?, 
+      fees_collected_usd = ?,
+      pnl_sol = ?,
+      fees_collected_sol = ?,
+      updated_at = CURRENT_TIMESTAMP
+    WHERE position_address = ?
+  `).run(pnlUsd, pnlPct, feesUsd, pnlSol, feesSol, positionAddress));
+}
+
 export default db;
