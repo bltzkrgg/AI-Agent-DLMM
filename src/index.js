@@ -68,7 +68,15 @@ if (isNaN(ALLOWED_ID)) {
   process.exit(1);
 }
 
-const bot = new TelegramBot(process.env.TELEGRAM_BOT_TOKEN, { polling: true });
+const bot = new TelegramBot(process.env.TELEGRAM_BOT_TOKEN, {
+  polling: {
+    interval: 2000,
+    autoStart: true,
+    params: {
+      timeout: 60
+    }
+  }
+});
 const cfg = getConfig();
 initMonitor(bot, ALLOWED_ID);
 
@@ -100,13 +108,13 @@ const circuitBreaker = new CircuitBreaker({
   recoverySuccessThreshold: 3,
   autoStart: true,
   onTrip: async (info) => {
-    const msg = `🚨 *CIRCUIT BREAKER TRIPPED*\n\nReason: ${info.reason}\nTime: ${new Date(info.tripTime).toISOString()}\n\n⛔ Trading paused (Hunter/Healer offline)`;
-    await bot.sendMessage(ALLOWED_ID, msg, { parse_mode: 'Markdown' }).catch(() => {});
+    const msg = `🚨 <b>CIRCUIT BREAKER TRIPPED</b>\n\nReason: ${info.reason}\nTime: ${new Date(info.tripTime).toISOString()}\n\n⛔ Trading paused (Hunter/Healer offline)`;
+    await bot.sendMessage(ALLOWED_ID, msg, { parse_mode: 'HTML' }).catch(() => {});
   },
   onRecover: async (info) => {
     const timeOpen = (info.timeOpenMs / 1000 / 60).toFixed(2);
-    const msg = `✅ *CIRCUIT BREAKER RECOVERED*\n\nRecovery time: ${new Date(info.recoveryTime).toISOString()}\nDowntime: ${timeOpen} minutes\n\n🚀 Trading resumed (Hunter/Healer online)`;
-    await bot.sendMessage(ALLOWED_ID, msg, { parse_mode: 'Markdown' }).catch(() => {});
+    const msg = `✅ <b>CIRCUIT BREAKER RECOVERED</b>\n\nRecovery time: ${new Date(info.recoveryTime).toISOString()}\nDowntime: ${timeOpen} minutes\n\n🚀 Trading resumed (Hunter/Healer online)`;
+    await bot.sendMessage(ALLOWED_ID, msg, { parse_mode: 'HTML' }).catch(() => {});
   },
   onHealthCheck: async (info) => {
     if (info.state !== 'CLOSED') {
@@ -1164,7 +1172,7 @@ bot.onText(/\/pinlesson(?:\s+(\d+))?/, (msg, match) => {
   if (msg.from.id !== ALLOWED_ID) return;
   const idx = match[1] ? parseInt(match[1]) - 1 : null; // 1-based dari user
   if (idx === null || isNaN(idx)) {
-    bot.sendMessage(msg.chat.id, '❓ Gunakan: `/pinlesson <nomor>` (lihat nomor di /lessons)', { parse_mode: 'Markdown' });
+    bot.sendMessage(msg.chat.id, '❓ Gunakan: <code>/pinlesson &lt;nomor&gt;</code> (lihat nomor di /lessons)', { parse_mode: 'HTML' });
     return;
   }
   const result = pinLesson(idx);
@@ -1180,7 +1188,7 @@ bot.onText(/\/unpinlesson(?:\s+(\d+))?/, (msg, match) => {
   if (msg.from.id !== ALLOWED_ID) return;
   const idx = match[1] ? parseInt(match[1]) - 1 : null;
   if (idx === null || isNaN(idx)) {
-    bot.sendMessage(msg.chat.id, '❓ Gunakan: `/unpinlesson <nomor>`', { parse_mode: 'Markdown' });
+    bot.sendMessage(msg.chat.id, '❓ Gunakan: <code>/unpinlesson &lt;nomor&gt;</code>', { parse_mode: 'HTML' });
     return;
   }
   const result = unpinLesson(idx);
@@ -1191,7 +1199,7 @@ bot.onText(/\/deletelesson(?:\s+(\d+))?/, (msg, match) => {
   if (msg.from.id !== ALLOWED_ID) return;
   const idx = match[1] ? parseInt(match[1]) - 1 : null;
   if (idx === null || isNaN(idx)) {
-    bot.sendMessage(msg.chat.id, '❓ Gunakan: `/deletelesson <nomor>` (lihat nomor di /lessons)', { parse_mode: 'Markdown' });
+    bot.sendMessage(msg.chat.id, '❓ Gunakan: <code>/deletelesson &lt;nomor&gt;</code> (lihat nomor di /lessons)', { parse_mode: 'HTML' });
     return;
   }
   const result = deleteLesson(idx);
@@ -1235,7 +1243,7 @@ bot.onText(/\/addwallet(?:\s+(\S+))?(?:\s+(.+))?/, (msg, match) => {
   const address = match[1]?.trim();
   const label   = match[2]?.trim() || 'unknown';
   if (!address) {
-    bot.sendMessage(msg.chat.id, '❓ Gunakan: `/addwallet <address> <label>`\nContoh: `/addwallet 7xKd...1bAz alpha_lp_1`', { parse_mode: 'Markdown' });
+    bot.sendMessage(msg.chat.id, '❓ Gunakan: <code>/addwallet &lt;address&gt; &lt;label&gt;</code>\nContoh: <code>/addwallet 7xKd...1bAz alpha_lp_1</code>', { parse_mode: 'HTML' });
     return;
   }
   const { ok, reason } = addSmartWallet(address, label);
@@ -1250,7 +1258,7 @@ bot.onText(/\/removewallet(?:\s+(\S+))?/, (msg, match) => {
   if (msg.from.id !== ALLOWED_ID) return;
   const address = match[1]?.trim();
   if (!address) {
-    bot.sendMessage(msg.chat.id, '❓ Gunakan: `/removewallet <address>`', { parse_mode: 'Markdown' });
+    bot.sendMessage(msg.chat.id, '❓ Gunakan: <code>/removewallet &lt;address&gt;</code>', { parse_mode: 'HTML' });
     return;
   }
   const { ok, reason } = removeSmartWallet(address);
@@ -1260,7 +1268,7 @@ bot.onText(/\/removewallet(?:\s+(\S+))?/, (msg, match) => {
 // /listwallet
 bot.onText(/\/listwallet/, (msg) => {
   if (msg.from.id !== ALLOWED_ID) return;
-  sendLong(msg.chat.id, formatWalletList(), { parse_mode: 'Markdown' }).catch(() => {});
+  sendLong(msg.chat.id, formatWalletList(), { parse_mode: 'HTML' }).catch(() => {});
 });
 
 // ─── Pool Memory command ──────────────────────────────────────────
@@ -1268,7 +1276,7 @@ bot.onText(/\/listwallet/, (msg) => {
 // /poolmemory — tampilkan top/worst pools berdasarkan riwayat deploy
 bot.onText(/\/poolmemory/, (msg) => {
   if (msg.from.id !== ALLOWED_ID) return;
-  sendLong(msg.chat.id, formatPoolMemoryReport(), { parse_mode: 'Markdown' }).catch(() => {});
+  sendLong(msg.chat.id, formatPoolMemoryReport(), { parse_mode: 'HTML' }).catch(() => {});
 });
 
 // /dryrun on|off — toggle dry run mode
@@ -1498,26 +1506,34 @@ let _pollingRestartCount = 0;
 const MAX_POLLING_RESTARTS = 10;
 
 bot.on('polling_error', (e) => {
+  const isTimeout = e.message?.includes('ETIMEDOUT') || e.message?.includes('timeout');
+  
+  // Jika hanya timeout biasa, jangan penuhi log dengan warning kecuali EFATAL
+  if (isTimeout && !e.message?.includes('EFATAL')) {
+    return; // Abaikan timeout transien
+  }
+
   console.error('Polling error:', e.message);
 
-  // EFATAL = polling has stopped — restart automatically
-  // Ini terjadi saat koneksi Telegram putus akibat timeout/network glitch
   if (e.code === 'EFATAL' || e.message?.includes('EFATAL')) {
     if (_pollingRestartCount >= MAX_POLLING_RESTARTS) {
-      console.error(`❌ Polling restart limit (${MAX_POLLING_RESTARTS}x) tercapai. Restart bot manual.`);
+      console.error(`❌ Polling restart limit (${MAX_POLLING_RESTARTS}x) tercapai.`);
       return;
     }
+    
     _pollingRestartCount++;
-    const delay = Math.min(5000 * _pollingRestartCount, 60000); // exponential, max 60s
-    console.warn(`⚠️ EFATAL terdeteksi — restart polling dalam ${delay / 1000}s... (${_pollingRestartCount}/${MAX_POLLING_RESTARTS})`);
+    const delay = Math.min(10000 * _pollingRestartCount, 60000); 
+    console.warn(`⚠️ Koneksi terputus (EFATAL) — mencoba pulihkan dalam ${delay / 1000}s... (${_pollingRestartCount}/${MAX_POLLING_RESTARTS})`);
+    
     setTimeout(async () => {
       try {
-        await bot.stopPolling();
+        await bot.stopPolling().catch(() => {});
+        await new Promise(r => setTimeout(r, 2000));
         await bot.startPolling();
-        console.log('✅ Polling Telegram berhasil di-restart.');
-        _pollingRestartCount = 0; 
+        console.log('✅ Koneksi Telegram berhasil dipulihkan.');
+        _pollingRestartCount = 0;
       } catch (err) {
-        console.error('❌ Polling restart gagal:', err.message);
+        console.error('❌ Pemulihan koneksi gagal:', err.message);
       }
     }, delay);
   }
