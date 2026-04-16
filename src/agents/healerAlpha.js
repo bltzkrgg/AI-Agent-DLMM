@@ -1781,7 +1781,6 @@ export async function runPanicWatchdog(notifyFn) {
           }
           continue;
         }
-      }
 
       const isOORLower = !match.inRange && match.currentPrice < match.lowerPrice;
       const trackedOorAt = runtimeState.oorSince;
