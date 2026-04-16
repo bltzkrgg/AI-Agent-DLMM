@@ -499,4 +499,17 @@ export function getStat(key) {
   return row ? row.value : 0;
 }
 
+export function listRecentOperations(limit = 10) {
+  return db.prepare(`
+    SELECT * FROM operation_log 
+    ORDER BY created_at DESC 
+    LIMIT ?
+  `).all(limit).map(row => ({
+    ...row,
+    result: row.result ? JSON.parse(row.result) : null,
+    metadata: row.metadata ? JSON.parse(row.metadata) : null,
+    tx_hashes: row.tx_hashes ? JSON.parse(row.tx_hashes) : []
+  }));
+}
+
 export default db;
