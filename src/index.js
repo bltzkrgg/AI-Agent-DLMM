@@ -1510,8 +1510,10 @@ bot.on('polling_error', (e) => {
     _pollingRestartCount++;
     const delay = Math.min(5000 * _pollingRestartCount, 60000); // exponential, max 60s
     console.warn(`⚠️ EFATAL terdeteksi — restart polling dalam ${delay / 1000}s... (${_pollingRestartCount}/${MAX_POLLING_RESTARTS})`);
-    setTimeout(() => {
-      bot.startPolling().then(() => {
+    setTimeout(async () => {
+      try {
+        await bot.stopPolling();
+        await bot.startPolling();
         console.log('✅ Polling Telegram berhasil di-restart.');
         _pollingRestartCount = 0; // reset counter saat berhasil
       }).catch(err => console.error('❌ Polling restart gagal:', err.message));
