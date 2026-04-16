@@ -201,13 +201,16 @@ export async function evaluateStrategyReadiness({ strategyName, snapshot, binSte
   
   if (strategyName === 'Evil Panda') {
     const st = ta.supertrend;
+    const priceChangeM5 = snapshot.ohlcv?.priceChangeM5 || 0;
+    const isGreen = priceChangeM5 > 0;
     
-    // ── Hard Guard: Supertrend Bullish State (15m) OR New Token Bypass ──
-    if (st && st.trend !== 'BULLISH') {
+    // ── Hard Guard: Supertrend Bullish State (15m) AND Green Momentum ──
+    if (st && (st.trend !== 'BULLISH' || !isGreen)) {
+      const reason = st.trend !== 'BULLISH' ? 'Supertrend 15m is ' + st.trend : '15m Candle is RED (No Momentum)';
       return {
         ok: false,
-        blockers: ['Supertrend is ' + st.trend],
-        notes: 'Evil Panda Master requires Price > Supertrend on 15m timeframe.',
+        blockers: [reason],
+        notes: `Tactical Panda requires 15m BULLISH Trend AND 15m Green Candle confirmation. Current Change: ${priceChangeM5}%`,
       };
     } else if (!st) {
       // Data Supertrend 15m belum tersedia — koin terlalu baru secara teknikal.

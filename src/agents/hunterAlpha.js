@@ -1,5 +1,6 @@
 'use strict';
 
+import { writeFileSync, readFileSync, existsSync } from 'fs';
 import { createMessage, resolveModel } from '../agent/provider.js';
 import { getConfig, getThresholds } from '../config.js';
 import { getTopPools, getPoolInfo, openPosition } from '../solana/meteora.js';
@@ -62,6 +63,15 @@ function calculateDarwinScore(pool, weightsOverride, sentiment = 'NEUTRAL') {
     score += ratioScore * (w.feeActiveTvlRatio || 3.5);
   }
 
+  // Maturity Bonus: Beri poin ekstra untuk koin yang sudah terbukti bertahan lama
+  if (pool.createdAt) {
+    const ageHours = (Date.now() - new Date(pool.createdAt).getTime()) / (1000 * 60 * 60);
+    if (ageHours > 24) {
+      score += 1.0; // Bonus +1.0 untuk koin berumur > 24 jam
+      if (process.env.HUNTER_DEBUG) console.log(`[hunter] Maturity Bonus for ${pool.name}: +1.0`);
+    }
+  }
+
   // volume — near floor, de-emphasize
   const vol = pool.volume24hRaw || 0;
   if (vol > 0) {
@@ -83,15 +93,12 @@ function calculateDarwinScore(pool, weightsOverride, sentiment = 'NEUTRAL') {
   }
 
   // Technical Confluence Filter: Slash score if trend is bearish
-  // Sentinel v56 (LP Identity): Only penalize if sentiment is NOT BULLISH
   const isGlobalBullish = sentiment === 'BULLISH';
   if (pool.multiTFScore > 0 && pool.multiTFScore < 0.4) {
     if (!isGlobalBullish) {
-      score *= 0.5; // High risk - Bearish trend override
+      score *= 0.5;
     } else {
-      // In Bullish trend, 15m Bearish is a "Buy the Dip" (LP Opportunity)
-      // We keep the score high to encourage entry during pullbacks.
-      score *= 0.95; // Minor buffer for volatility
+      score *= 0.95;
     }
   }
 
@@ -158,6 +165,7 @@ const HUNTER_TOOLS = [
       properties: {
         pool_address: { type: 'string' },
         strategy_name: { type: 'string', description: 'Nama strategi dari Strategy Library' },
+        dev_address: { type: 'string', description: 'Alamat deployer koin (diambil dari screen_token)' },
         reasoning: { type: 'string', description: 'Alasan memilih pool dan strategi ini (DLMM-specific: fee APR, range fit, volatilitas)' },
       },
       required: ['pool_address', 'reasoning'],
@@ -237,11 +245,17 @@ async function executeTool(name, input) {
         const fees = p.fees24hRaw || 0;
         const feeRatio = tvl > 0 ? fees / tvl : 0;
         const binStep = p.binStep || 0;
+
+        // 📊 LP EFFICIENCY GUARD: Prioritaskan kolam "Gacor" (Volume/TVL Ratio > 0.5)
+        // Kita mau kolam yang sibuk biar fee ngalir terus di jaring 94% kita.
+        const isHighlyProductive = feeRatio >= 0.005; // 0.5% yield per hari (approx > 180% APR)
+
         return (
           (binStep === 100 || binStep === 125) &&
           tvl >= thresholds.minTvl &&
           tvl <= thresholds.maxTvl &&
           feeRatio >= thresholds.minFeeActiveTvlRatio &&
+          isHighlyProductive &&
           (minTokenFeesSol <= 0 || fees >= minTokenFeesSol) &&
           !isOnCooldown(p.address)
         );
@@ -434,13 +448,19 @@ async function executeTool(name, input) {
       const effectiveMax = _hunterTargetCount != null
         ? openPos.length + _hunterTargetCount
         : cfg.maxPositions;
+      const minReserve = cfg.gasReserve || 0.05;
+      const totalRequired = cfg.deployAmountSol + minReserve;
+      
       return stringify({
         solBalance: balance,
         openPositions: openPos.length,
         maxPositions: effectiveMax,
         targetCount: _hunterTargetCount,
-        canOpen: safeNum(balance) >= (cfg.deployAmountSol + (cfg.gasReserve ?? 0.02)) && openPos.length < effectiveMax,
-        requiredSol: safeNum((cfg.deployAmountSol + (cfg.gasReserve ?? 0.02)).toFixed(4)),
+        canOpen: safeNum(balance) >= totalRequired && openPos.length < effectiveMax,
+        requiredSol: safeNum(totalRequired.toFixed(4)),
+        gasReserve: minReserve,
+        notes: safeNum(balance) < totalRequired ? `⚠️ Saldo SOL kurang untuk Gas Reserve (${minReserve} SOL)` : 'OK',
+      }, 2);
       }, 2);
     }
 
@@ -559,6 +579,42 @@ async function executeTool(name, input) {
           blocked: true,
           reason: `Pool binStep (${poolInfo.binStep}) tidak dijinkan untuk strategi ${strategy.name}. Diperlukan: [${strategy.allowedBinSteps.join(', ')}].`,
         }, null, 2);
+      }
+
+      // ── Guard: Dev Correlation Filter (Intelligence v1.0) ──────
+584:       const devAddr = input.dev_address || null;
+585:       if (devAddr) {
+586:         const activeDevs = getOpenPositions().map(p => p.dev_address).filter(Boolean);
+587:         if (activeDevs.includes(devAddr)) {
+588:           return JSON.stringify({
+589:             blocked: true,
+590:             reason: `CORRELATION RISK: Deployer \`${devAddr.slice(0, 8)}...\` sudah memiliki posisi aktif di bot ini. Melewati pool ini untuk menghindari risiko sistemik satu dev.`,
+591:           }, null, 2);
+592:         }
+593:       }
+594: 
+595:       // ── Guard: Dev Correlation Filter (Intelligence v1.0) ──────
+      const devAddr = input.dev_address || null;
+      if (devAddr) {
+        const activeDevs = getOpenPositions().map(p => p.dev_address).filter(Boolean);
+        if (activeDevs.includes(devAddr)) {
+          return JSON.stringify({
+            blocked: true,
+            reason: `CORRELATION RISK: Deployer \`${devAddr.slice(0, 8)}...\` sudah memiliki posisi aktif di bot ini. Melewati pool ini untuk menghindari risiko sistemik satu dev.`,
+          }, null, 2);
+        }
+      }
+
+      // ── Guard: Dev Correlation Filter (Intelligence v1.0) ──────
+      const devAddr = input.dev_address || null;
+      if (devAddr) {
+        const activeDevs = getOpenPositions().map(p => p.dev_address).filter(Boolean);
+        if (activeDevs.includes(devAddr)) {
+          return JSON.stringify({
+            blocked: true,
+            reason: `CORRELATION RISK: Deployer \`${devAddr.slice(0, 8)}...\` sudah memiliki posisi aktif di bot ini. Melewati pool ini untuk menghindari risiko sistemik satu dev.`,
+          }, null, 2);
+        }
       }
 
       // ── Guard: Gas Vault & Balance Check ───────────────────────
@@ -823,8 +879,9 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null, opt
   try {
     const thresholds = getThresholds();
     const weights = getDarwinWeights(); // adaptive weights dari data nyata
+    // --- Hybrid Discovery Layer ---
     const [rawPools, socialSignals] = await Promise.all([
-      getTopPools(100),
+      import('../solana/meteora.js').then(m => m.getDiscoveryPools(40)),
       getSocialSignals().catch(() => [])
     ]);
 
@@ -835,22 +892,60 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null, opt
         const feeRatio = tvl > 0 ? fees / tvl : 0;
         const binStep = p.binStep || 0;
         
-        // Evil Panda baseline steps (Hukum 3)
+        // Gembok Naga: Hanya Bin 100 dan 125
         const isPandaStep = [100, 125].includes(binStep);
 
         return (
           isPandaStep &&
           tvl >= thresholds.minTvl &&
           tvl <= thresholds.maxTvl &&
-          feeRatio >= thresholds.minFeeActiveTvlRatio &&
-          !isOnCooldown(p.address) // skip pool sedang cooldown
+          p.volume24hRaw >= thresholds.minVolume24h &&
+          p.fees24hRaw >= (thresholds.minTokenFeesSol || 0) &&
+          (!p.mcap || p.mcap >= thresholds.minMcap) &&
+          !isOnCooldown(p.address)
         );
       })
       .map(p => ({ ...p, darwinScore: calculateDarwinScore(p, weights, 'NEUTRAL') }))
       .sort((a, b) => b.darwinScore - a.darwinScore)
-      .slice(0, 7);
+      .slice(0, 12); // Melirik lebih banyak kandidat untuk Dashboard
 
     lastCandidates = filtered;
+
+    // --- DASHBOARD EXPORT (Tactical Panda Radar) ---
+    try {
+      const __dirname = fileURLToPath(new URL('.', import.meta.url));
+      const dashboardFile = join(__dirname, '../web/dashboard_data.json');
+      const { getWalletBalance } = await import('../solana/wallet.js');
+      const { getStat } = await import('../db/database.js');
+      const walBal = await getWalletBalance().catch(() => 0);
+      const openPositions = await getOpenPositions();
+      const thresholds = getThresholds();
+      const rentSaved = getStat('total_rent_reclaimed_sol');
+
+      const dashboardSnapshot = {
+        timestamp: new Date().toISOString(),
+        walletBalance: walBal.toFixed(4),
+        activeCount: openPositions.length,
+        totalNetProfitSol: (openPositions.reduce((acc, p) => acc + (parseFloat(p.pnl_sol) || 0), 0)).toFixed(4),
+        totalRentSaved: rentSaved.toFixed(4), 
+        candidates: filtered.map(p => ({
+          address: p.address,
+          name: p.name,
+          tvl: p.liquidityRaw,
+          vol24h: p.volume24hRaw,
+          fees: p.fees24hRaw,
+          binStep: p.binStep,
+          mcap: p.mcap,
+          score: p.darwinScore,
+          volTvlRatio: (p.volume24hRaw / (p.liquidityRaw || 1)).toFixed(2),
+          isMatched: true
+        })),
+        sentiment: 'BULLISH'
+      };
+      writeFileSync(dashboardFile, JSON.stringify(dashboardSnapshot, null, 2));
+    } catch (dErr) {
+      console.warn('[hunter] Dashboard export failed:', dErr.message);
+    }
 
     // Fetch pool memory + multi-TF + smart wallets + sentiment in parallel
     const enriched = await Promise.all(filtered.map(async (p) => {

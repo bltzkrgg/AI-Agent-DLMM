@@ -657,6 +657,7 @@ export async function screenToken(tokenMint, tokenName = '', tokenSymbol = '', o
     tokenAgeMinutes: s4.ageMinutes ?? null,
     priceImpact: sim?.priceImpactBuy,
     priceImpactSell: sim?.priceImpactSell,
+    devAddress: gmgnInfo?.dev?.creator_address || gmgnInfo?.creator_address || null,
     gmgnStatus, // ACTIVE, DISABLED, ERROR, UNKNOWN
     gmgnRejects: s12.rejects,
     gmgnWarnings: s12.warnings,

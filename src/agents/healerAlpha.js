@@ -5,7 +5,7 @@ import { getConfig, getThresholds, isDryRun } from '../config.js';
 import { getPositionInfo, closePositionDLMM, claimFees, getPoolInfo, getSolPriceUsd, getAllWalletPositions } from '../solana/meteora.js';
 import { getConnection, getWallet, getWalletBalance } from '../solana/wallet.js';
 import { PublicKey } from '@solana/web3.js';
-import { getOpenPositions, closePositionWithPnl, saveNotification, updatePositionLifecycle, savePosition } from '../db/database.js';
+import { getOpenPositions, closePositionWithPnl, saveNotification, updatePositionLifecycle, savePosition, updateLivePositionStats } from '../db/database.js';
 import { getLessonsContext } from '../learn/lessons.js';
 import { checkStopLoss, checkMaxDrawdown, recordPnlUsd, getSafetyStatus } from '../safety/safetyManager.js';
 import { analyzeMarket } from '../market/analyst.js';
@@ -288,6 +288,23 @@ export async function executeTool(name, input, notifyFn = null) {
             providerPnlPct: lpPnlMap.get(pos.position_address),
             directPnlPct: Number.isFinite(match?.pnlPct) ? match.pnlPct : null,
           });
+
+          // 📊 LP-IDENTITY: Real-time IL & HODL Analysis (SOL Denominated)
+          const entryPriceVal = parseFloat(pos.entry_price || 0);
+          const currentPriceVal = parseFloat(match?.displayPrice || snapshot.price || 0);
+          const initialSol = parseFloat(pos.deployed_sol || 0);
+          
+          // Benchmarking: Berapa SOL kita punya kalau cuma HODL koin (pumping gain)?
+          const priceChangeRatio = (entryPriceVal > 0 && currentPriceVal > 0) ? (currentPriceVal / entryPriceVal) : 1;
+          const hodlValueSol = initialSol * priceChangeRatio;
+          
+          // Berapa SOL kita punya sekarang (LP Value + Fees)?
+          const currentTotalUsd = parseFloat(snapshot.pnlUsd || 0) + (initialSol * entryPriceVal);
+          const lpValueInSol = currentPriceVal > 0 ? (currentTotalUsd / currentPriceVal) : initialSol;
+          
+          const yieldVsHodlSol = hodlValueSol > 0 ? (lpValueInSol / hodlValueSol) - 1 : 0;
+          const netLpProfitSol = lpValueInSol - initialSol;
+
           const pnlPct = snapshot.pnlPct;
           const feeCollSol = match?.feeCollectedSol ?? 0;
           const isProfit   = pnlPct > 0;
@@ -412,8 +429,28 @@ export async function executeTool(name, input, notifyFn = null) {
               proactiveCloseRecommended = true;
               proactiveWarning = `💰 HARD TAKE PROFIT: Keuntungan mencapai target ${strategyTp}% (PnL: ${pnlPct.toFixed(2)}%). Closing to lock profit and re-anchor.`;
             }
-          } catch {
-            // Market analysis optional
+            // ── Toxic IL Safeguard (Aegis v1.0) ──
+            const toxicIlThreshold = -0.05; // -5% Yield vs HODL
+            if (!proactiveCloseRecommended && yieldVsHodlSol <= toxicIlThreshold && pnlPct < -2) {
+              proactiveCloseRecommended = true;
+              proactiveWarning = `🤢 TOXIC IL DETECTED: Yield vs HODL is ${(yieldVsHodlSol * 100).toFixed(2)}%. LP is bleeding relative to HODL. Exiting to preserve capital.`;
+            }
+
+            // ── TVL Velocity Guard (Aegis v1.0) ──
+            const currentTvl = analysis.snapshot?.pool?.tvl || 0;
+            const lastTvl = runtimeState.lastTvl ?? currentTvl;
+            const tvlChange = lastTvl > 0 ? (currentTvl - lastTvl) / lastTvl : 0;
+            
+            if (!proactiveCloseRecommended && tvlChange <= -0.20 && currentTvl > 0) {
+              proactiveCloseRecommended = true;
+              proactiveWarning = `⚠️ TVL CRASH: Liquidity dropped ${(tvlChange * 100).toFixed(2)}% rapidly. Possible pool exodus or rug. Emergency exit triggered!`;
+            }
+
+            // Update TVL for next check
+            updatePositionRuntimeState(addr, { lastTvl: currentTvl });
+
+          } catch (e) {
+            console.warn(`⚠️ [healer] Aegis check failed for ${addr.slice(0,8)}: ${e.message}`);
           }
 
           if (proactiveWarning) {
@@ -424,6 +461,19 @@ export async function executeTool(name, input, notifyFn = null) {
             await saveNotification('trailing_tp', `Trailing TP triggered: posisi ${addr.slice(0, 8)}... PnL turun dari peak ${tracker.peakPnl.toFixed(2)}% ke ${pnlPct.toFixed(2)}%`);
           }
 
+          // 🐼 LIVE DB SYNC: Update stats even while open for Live Dashboard
+          try {
+            await updateLivePositionStats(pos.position_address, {
+              pnlUsd: pnlUsd,
+              pnlPct: pnlPct,
+              feesUsd: feesUsd,
+              pnlSol: snapshot.pnlSol,
+              feesSol: feeCollSol
+            });
+          } catch (dbErr) {
+            console.warn(`⚠️ [healer] Live DB Sync failed for ${addr.slice(0,8)}: ${dbErr.message}`);
+          }
+
           return {
             ...pos,
             onChain:      match || null,
@@ -431,6 +481,8 @@ export async function executeTool(name, input, notifyFn = null) {
             shouldClaimFee:        feeCollSol >= claimThreshold3Sol,
             shouldClaimFeeUrgent:  feeCollSol >= claimThreshold5Sol,
             feeCollectedSol:       feeCollSol,
+            yieldVsHodlSol:       (yieldVsHodlSol * 100).toFixed(2) + '%',
+            netLpProfitSol:       netLpProfitSol.toFixed(4) + ' SOL',
             oorThresholdExceeded: (
               (outOfRangeMins !== null && outOfRangeMins >= thresholds.outOfRangeWaitMinutes) ||
               (outOfRangeBins !== null && cfg.outOfRangeBinsToClose > 0 && outOfRangeBins >= cfg.outOfRangeBinsToClose)
@@ -1358,37 +1410,23 @@ RUG EMERGENCY BYPASS:
   → Bypass semua exit logic — zap_out SEGERA tanpa menunggu sinyal lain.
   Ini adalah emergency exit, prioritas tertinggi.
 
-ALUR KERJA:
+ALUR KERJA SINKRONISASI TAE-LP:
 1. get_all_positions → evaluasi semua posisi aktif
-2. Untuk setiap posisi:
+2. Untuk setiap posisi, timbang Sinyal TAE + Efisiensi LP:
 
-   PROACTIVE EXIT (profit tapi market bearish):
-   - proactiveCloseRecommended = true → WAJIB zap_out (exit bersih ke SOL)
-   - proactiveWarning ada tapi tidak recommended → monitor ketat
+   A. MASTER SIGNAL (TAE Exit):
+      - Jika Supertrend 15m Flip Merah ATAU RSI menukik tajam dari Overbought (>85) -> WAJIB ZAP_OUT ke SOL.
+      - Filosofi: "Jangan melawan trend, amankan modal di SOL."
 
-    OUT OF RANGE (LP Identity Protocol):
-    - Jika Tren Global = BULLISH → Tahan posisi (HOLD) meskipun OOR atau Supertrend 15m Bearish. Ini adalah fase penyerapan fee dari seller.
-    - marketSignal.oorDecision === 'PANIC_EXIT' DAN Tren Global = BEARISH → EXIT SEGERA (Zap Out).
-    - Jika posisi OOR tapi Fee APR > 100% → BERTAHAN (Fee extraction is priority).
-    - Jangan ZAP_OUT hanya karena retracement teknikal jika trend harian masih kuat.
+   B. LP EFFICIENCY GUARD (Irit Biaya Swap):
+      - JANGAN TERJEBAK OVER-TRADING. Setiap Zap Out itu mahal.
+      - Jika TAE masih Bullish/Sideways tapi harga OOR (Out of Range) -> HOLD maksimal 30-60 menit jika Fee APR masih > 70%. Biarkan "Patience Buffer" LP bekerja.
+      - Jika PnL < -5% DAN Fee Velocity "Menurun" -> EXIT SEGERA (Stop Bleeding).
 
-    ALGORITMA ADAPTIF (PnL vs Fees):
-    - Jika PnL Negatif (-1 s/d -5%) tapi Fee Velocity "meningkat" → BERTAHAN (Fees akan menutup kerugian).
-    - Jika PnL Negatif dan Fee Velocity "menurun" → CUT LOSS (Meninggalkan kolam yang mati).
-    - Jika PnL Positif (>5%) → BERTAHAN (Let the profit run).
+   C. ZERO DUST & RENT RECOVERY:
+      - Apapun alasan exit-nya, sistem otomatis sikat bersih sisa token ke SOL dan tarik balik duit sewa akun (0.002 SOL).
 
-   STOP LOSS TAMBAHAN (Surgical Safety):
-    - pnlPct < -${safety.stopLossPct}% DAN BEARISH → zap_out SEGERA (Safe Exit).
-    - pnlPct < -${safety.stopLossPct}% DAN BULLISH confidence > 0.6 → HOLD, tunggu recovery (Volatile pullback).
-
-   EVIL PANDA EXIT — khusus posisi dengan strategi Evil Panda:
-   Satu-satunya sinyal exit yang valid:
-   • poolTaSignals.evilPandaExit.triggered = true → EXIT SEGERA (Supertrend 15m flip merah)
-    feeVelocity dari pool: "increasing" → hold lebih lama, "decreasing" → pertimbangkan exit lebih cepat.
-   Jika poolTaSignals = null → gunakan TP normal (+${safety.stopLossPct}% fee APR).
-
-
-   NORMAL → STAY
+3. Berikan reasoning: Jelaskan keputusanmu berdasarkan perpaduan Sinyal TAE dan efisiensi Fee lu vs estimasi biaya swap.
 
 3. Berikan reasoning lengkap untuk setiap keputusan.
    ⚠️ JANGAN panggil swap_to_sol setelah close_position atau zap_out — sudah ditangani otomatis di dalam tool.
@@ -1514,6 +1552,20 @@ export async function runPanicWatchdog(notifyFn) {
         providerPnlPct: lpPnlMap.get(pos.position_address),
       });
 
+      // 📊 LP-IDENTITY: Real-time IL & HODL Analysis (SOL Denominated)
+      const entryPriceVal = parseFloat(pos.entry_price || 0);
+      const currentPriceVal = parseFloat(posSnapshot.price || 0);
+      const initialSol = parseFloat(pos.deployed_sol || pos.deployed_capital || 0);
+      
+      // Benchmarking: Berapa SOL kita kalau cuma simpan (HODL) koin/modal awal?
+      // Jika koin naik 20%, HODLer punya 'pumping gain'. LPer sering kena 'lag' karena IL.
+      const priceChangeRatio = entryPriceVal > 0 ? (currentPriceVal / entryPriceVal) : 1;
+      const holdValueSol = initialSol * priceChangeRatio;
+      const lpValueSol = initialSol + (parseFloat(posSnapshot.pnlUsd || 0) / (currentPriceVal || 1));
+      
+      const yieldVsHodl = holdValueSol > 0 ? (lpValueSol / holdValueSol) - 1 : 0;
+      const netProfitSol = lpValueSol - initialSol;
+
       const isTrendBullish = snapshot.supertrend?.trend === 'BULLISH' || snapshot.indicators?.supertrend?.trend === 'BULLISH';
       const isTrendBearish = snapshot.supertrend?.trend === 'BEARISH' || snapshot.indicators?.supertrend?.trend === 'BEARISH';
       
@@ -1528,6 +1580,7 @@ export async function runPanicWatchdog(notifyFn) {
       const now = Date.now();
       const posAgeMin = getPositionAgeMinutes(pos);
       const vol24h = snapshot.volume24h || snapshot.stats?.v24h || 0;
+      const isFeeVelocityIncreasing = snapshot.feeVelocity === 'increasing' || snapshot.stats?.feeVelocity === 'increasing';
       
       if (!runtimeState.feeTracker) {
         runtimeState.feeTracker = { lastFee: feeSol, lastTimestamp: now };
@@ -1650,26 +1703,34 @@ export async function runPanicWatchdog(notifyFn) {
         isLPerPatienceEnabled = true;
       }
 
-      if (feeRatio >= 0.03) retracementCap += 2.0;
+      // 🐼 LP-IDENTITY: Sinkronisasi TAE dengan Mindset LP
+      // Jika Fee APR sangat tinggi (>70%) atau Velocity meningkat, kita lebih "Sabar" menghadapi retracement.
+      if (feeRatio >= 0.03 || isFeeVelocityIncreasing) { 
+        retracementCap += 3.0; // Tambah toleransi 3% lagi biar gak gampang ke-kick TAE
+        isLPerPatienceEnabled = true;
+        console.log(`[watchdog] LP Mindset Active: Fee APR/Velocity tinggi, TAE Exit ditunda (Cap: +${retracementCap}%).`);
+      }
 
       let peak = runtimeState.peakPnlPct ?? pnlPct;
       if (pnlPct > peak) peak = pnlPct;
       
       const trailingActive = runtimeState.trailingActive || pnlPct >= triggerPct;
       const retracementDrop = peak - pnlPct;
-      const trailingTpHit  = trailingActive && retracementDrop >= 1.5; 
+      const trailingTpHit  = trailingActive && retracementDrop >= retracementCap; 
 
       updatePositionRuntimeState(addr, { peakPnlPct: peak, trailingActive: trailingActive });
 
-      if (trailingTpHit) {
-        if (retracementDrop >= retracementCap) {
-          const msg = `🚨 *PANIC EXIT!* (${zone})\n\n` +
-                     `• Posisi: \`${shortAddr(pos.position_address)}\`\n` +
-                     `• Peak PnL: +${peak.toFixed(2)}%\n` +
-                     `• Exit @ PnL: +${pnlPct.toFixed(2)}% (Drop: ${retracementDrop.toFixed(2)}%)\n\n` +
-                     `_Retracement cap ${retracementCap}% tercapai._`;
-          
-          await notifyFn?.(msg);
+      // 🐼 LP-TAE SYNC: Jika Trailing Hit tapi Fee APR > 100% dan TREND BULLISH -> Kasih Peluang (HOLD)
+      if (trailingTpHit && isLPerPatienceEnabled && isTrendBullish && retracementDrop < (retracementCap + 2.0)) {
+        console.log(`[watchdog] Trailing hit (${retracementDrop.toFixed(2)}%), but LP Identity is STRONG (Fee APR/Trend OK). Holding for more fees.`);
+      } else if (trailingTpHit) {
+        const msg = `🚨 *TAE-LP EXIT!* (${zone})\n\n` +
+                   `• Posisi: \`${shortAddr(pos.position_address)}\`\n` +
+                   `• Peak PnL: +${peak.toFixed(2)}%\n` +
+                   `• Exit @ PnL: +${pnlPct.toFixed(2)}% (Drop: ${retracementDrop.toFixed(2)}%)\n\n` +
+                   `_Retracement cap ${retracementCap}% (incl. Fee Buffer) tercapai._`;
+        
+        await notifyFn?.(msg);
           await closePositionDLMM(pos.pool_address, pos.position_address, {
             pnlUsd: posSnapshot.pnlUsd, pnlPct: posSnapshot.pnlPct, feesUsd: posSnapshot.feesUsd,
             closeReason: `TAE_WATCHDOG_EXIT_${zone.replace(/ /g, '_')}`, lifecycleState: 'closed_panic'
@@ -1757,6 +1818,49 @@ export async function runPanicWatchdog(notifyFn) {
           }
         }
         continue;
+      }
+
+      // ─── 🐼 SULTAN HARVEST: Auto-Profit Realization ────────────────
+      const uncollectedFeeSol = match?.feeUncollectedSol ?? 0;
+      const minHarvestFloor   = cfg.autoHarvestThresholdSol || 0.04; 
+      
+      if (cfg.autoHarvestEnabled && uncollectedFeeSol >= Math.max(minHarvestFloor, claimThreshold3Sol)) {
+        console.log(`🚜 [harvest] Uncollected fees (${uncollectedFeeSol.toFixed(4)} SOL) reached threshold. Starting Auto-Harvest...`);
+        
+        // Notify beginning of harvest
+        await notifyFn?.(`🚜 *AUTONOMOUS HARVEST!*\n\n` +
+                       `• Posisi: \`${shortAddr(pos.position_address)}\`\n` +
+                       `• Fee Terakumulasi: ${uncollectedFeeSol.toFixed(4)} SOL\n\n` +
+                       `_Sistem mengamankan profit ke SOL tanpa menutup posisi._`);
+
+        try {
+          // Gunakan tool logic internal tanpa panggil LLM
+          await claimFees(pos.pool_address, pos.position_address, { isUrgent: false });
+          
+          await new Promise(r => setTimeout(r, 3000));
+          
+          const poolInfo = await getPoolInfo(pos.pool_address);
+          const snapshot = await getMarketSnapshot(pos.token_mint, pos.pool_address);
+          const vol      = snapshot?.price?.volatility24h || 0;
+          const slippage = getConservativeSlippage(vol);
+
+          let harvestedTotal = 0;
+          for (const mint of [poolInfo.tokenX, poolInfo.tokenY]) {
+            if (mint && mint !== 'So11111111111111111111111111111111111111112') {
+              const swapRes = await withExponentialBackoff(() => swapAllToSOL(mint, slippage), { maxRetries: 2 });
+              if (swapRes.success) harvestedTotal += (swapRes.outSol || 0);
+              await closeTokenAccount(mint).catch(() => {});
+            }
+          }
+
+          if (harvestedTotal > 0) {
+            await notifyFn?.(`✅ *HARVEST SUCCESSFUL!*\n\n` +
+                           `• Realized Profit: +${harvestedTotal.toFixed(4)} SOL\n` +
+                           `• Status Position: OPEN & Yielding 🎋`);
+          }
+        } catch (harvestErr) {
+          console.error(`❌ [harvest] Gagal harvest otonom:`, harvestErr.message);
+        }
       }
 
       // Skenario 4: CRITICAL DUMP (Bearish + Jebol Jaring)

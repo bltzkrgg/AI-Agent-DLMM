@@ -5,7 +5,7 @@ import { PublicKey } from '@solana/web3.js';
 import { writeFileSync, readFileSync, existsSync, unlinkSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
-import { initSolana, getConnection, getWallet, getWalletBalance, runMidnightSweeper } from './solana/wallet.js';
+import { initSolana, getConnection, getWallet, getWalletBalance, runMidnightSweeper, checkGasReserve } from './solana/wallet.js';
 import { processMessage } from './agent/claude.js';
 import { handleStrategyCommand, isInStrategySession } from './strategies/strategyHandler.js';
 import { runHunterAlpha, getCandidates } from './agents/hunterAlpha.js';
@@ -282,6 +282,7 @@ async function runHealerWithReopenCheck() {
     console.log(`⏭ Healer skip — Circuit Breaker ${circuitBreaker.getState().state}`);
     return;
   }
+  await checkGasReserve().catch(() => {});
   await runHealerAlpha(notify);
 }
 
@@ -297,9 +298,12 @@ cron.schedule('*/5 * * * *', async () => {
     return;
   }
   
-  _healerBusy = Date.now(); // Kunci posisi biar nggak diganggu Healer
+  _healerBusy = Date.now();
+  console.log('🩺 [index] High-Frequency Watchdog (Panic Guard) started...');
   try {
+    await checkGasReserve().catch(() => {});
     await runPanicWatchdog(notify);
+    console.log('✅ [index] Watchdog completed.');
   } catch (e) {
     console.error('Watchdog error:', e.message);
   } finally {
@@ -456,13 +460,27 @@ cron.schedule('0 21 * * *', async () => {
 // Scan top 25 pools untuk strategi: Evil Panda Master
 // Alert dikirim regardless posisi terbuka / balance / status deploy
 // KOMENTAR: Dimatikan atas permintaan user untuk mengurangi noise notifikasi.
-// ─── Global Low Gas Alert — setiap jam ──────────────────────────
-// Memastikan bot selalu punya SOL untuk gas (Healer/Rescue)
+// ─── Hourly Pulse Report & Gas Alert ──────────────────
 cron.schedule('0 * * * *', async () => {
   if (!solanaReady) return;
   try {
     const balance = await getWalletBalance();
     const balNum = safeNum(balance);
+    const openPos = getOpenPositions();
+    
+    // 1. Send Pulse Report (if enabled)
+    const cfg = getConfig();
+    if (cfg.hourlyPulseEnabled) {
+      let msg = `💓 *HOURLY PULSE REPORT*\n\n` +
+               `• Wallet: +${balNum.toFixed(4)} SOL\n` +
+               `• Active Positions: ${openPos.length}\n` +
+               `• Status: 🎋 Auto-Harvest ${cfg.autoHarvestEnabled ? 'Active' : 'Disabled'}\n\n` +
+               `_Sistem berjalan normal. Semua penjaga gawang aktif._`;
+      
+      await notify(msg);
+    }
+
+    // 2. Gas Alert (Keep existing logic)
     if (balNum < 0.05) {
       const walletAddr = getWallet().publicKey.toString();
       await urgentNotify(
@@ -472,7 +490,9 @@ cron.schedule('0 * * * *', async () => {
         `_Segera isi bensin biar si Healer gak mogok pas mau nyelametin modal lu, Bos!_`
       );
     }
-  } catch (e) { console.error('Low Gas Alert error:', e.message); }
+  } catch (e) {
+    console.error('Hourly Pulse / Gas Alert error:', e.message);
+  }
 });
 
 // ─── Midnight Sweeper — setiap hari jam 1 pagi ──────────────────
