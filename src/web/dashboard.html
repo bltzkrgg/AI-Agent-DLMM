@@ -142,16 +142,14 @@
             display: inline-block;
             text-align: center;
         }
-
-        /* SULTAN_RADAR_DATA_INJECTION_POINT */
-        window.SULTAN_RADAR_DATA = null;
     </style>
 </head>
 <body>
 
     <header class="header">
         <h1>TACTICAL PANDA</h1>
-        <div class="version">IRONCLAD SNIPER RADAR — V75.5</div>
+        <div class="version">IRONCLAD SNIPER RADAR — V75.7</div>
+        <div id="lastPulse" style="font-size: 0.8em; color: var(--accent-color); margin-top: 5px; font-weight: bold;">🛰️ WAITING FOR DATA...</div>
     </header>
 
     <div class="stats-grid">
@@ -175,8 +173,15 @@
     </div>
 
     <script>
+        /* SULTAN_RADAR_DATA_INJECTION_POINT */
+        window.SULTAN_RADAR_DATA = null;
+
         function updateUI(data) {
             if (!data) return;
+            if (data.timestamp) {
+                const date = new Date(data.timestamp);
+                document.getElementById('lastPulse').innerText = `🛰️ LAST HUNT: ${date.getHours()}:${String(date.getMinutes()).padStart(2, '0')}:${String(date.getSeconds()).padStart(2, '0')} WIB`;
+            }
             document.getElementById('walletBal').innerText = (data.walletBalance || '0.0000') + ' SOL';
             document.getElementById('netProfit').innerText = (data.totalNetProfitSol || '0.0000') + '◎';
             document.getElementById('rentSaved').innerText = (data.totalRentSaved || '0.0000') + '◎';

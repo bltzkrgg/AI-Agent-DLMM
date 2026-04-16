@@ -1426,7 +1426,7 @@ bot.onText(/\/getradar/, async (msg) => {
 
     if (existsSync(sultanRadarPath)) {
       await bot.sendDocument(chatId, sultanRadarPath, {
-        caption: '🐼 Sultan Radar (v75.4) — LANGSUNG BUKA di Mac Bos (Data sudah tertanam di dalam!)'
+        caption: '🐼 Sultan Radar (v75.7) — LANGSUNG BUKA di Mac Bos (Real-time Sync!)'
       });
     } else {
       bot.sendMessage(chatId, '⚠️ Radar Sultan belum digenerate. Silakan jalankan <code>/hunting</code> dulu biar datanya keisi, Bos!', { parse_mode: 'HTML' });
