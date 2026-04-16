@@ -2,7 +2,7 @@ import 'dotenv/config';
 import TelegramBot from 'node-telegram-bot-api';
 import cron from 'node-cron';
 import { PublicKey } from '@solana/web3.js';
-import { writeFileSync, readFileSync, existsSync, unlinkSync } from 'fs';
+import { writeFileSync, readFileSync, existsSync, unlinkSync, createReadStream } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { initSolana, getConnection, getWallet, getWalletBalance, runMidnightSweeper, checkGasReserve } from './solana/wallet.js';
@@ -1426,9 +1426,9 @@ bot.onText(/\/getradar/, async (msg) => {
     const sultanRadarPath = join(__dirname, '../src/web/radar_sultan.html');
 
     if (existsSync(sultanRadarPath)) {
-      await bot.sendDocument(chatId, sultanRadarPath, {
-        caption: '🐼 Sultan Radar (v75.7) — LANGSUNG BUKA di Mac Bos (Real-time Sync!)'
-      });
+      await bot.sendDocument(chatId, createReadStream(sultanRadarPath), { 
+        caption: '🐼 Sultan Radar (v75.9) — LANGSUNG BUKA di Mac Bos (Real-time Sync!)' 
+      }, { contentType: 'text/html' });
     } else {
       bot.sendMessage(chatId, '⚠️ Radar Sultan belum digenerate. Silakan jalankan <code>/hunting</code> dulu biar datanya keisi, Bos!', { parse_mode: 'HTML' });
     }
