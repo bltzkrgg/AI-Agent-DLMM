@@ -178,12 +178,12 @@ export async function getRecommendedPriorityFee(accountKeys = []) {
 
     if (sorted.length === 0) return 50000;
 
-    // P75 — lebih tinggi dari median untuk prioritas landing
+    // P75 — lebih tinggi dari median untuk prioritas landing (Sultan Gas Mode)
     const p75idx = Math.floor(sorted.length * 0.75);
     const p75 = sorted[Math.min(p75idx, sorted.length - 1)];
 
-    // Clamp: min 5000 (0.000005 SOL), max 500000 (0.0005 SOL)
-    return Math.max(5000, Math.min(500000, p75));
+    // Clamp: min 10000 (0.00001 SOL), max 1_000_000 (0.001 SOL - Sultan Safety)
+    return Math.max(10000, Math.min(1000000, p75));
   } catch (err) {
     console.warn(`⚠️ [helius] Helius fee API failed, trying native fallback...`);
     try {

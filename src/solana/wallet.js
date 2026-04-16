@@ -55,6 +55,25 @@ export async function getWalletBalance() {
   }
 }
 
+/**
+ * ⛽ GAS WATCHDOG (Aegis v1.0)
+ * Memastikan saldo SOL cukup untuk biaya gas Sultan (P75 Priority).
+ */
+export async function checkGasReserve() {
+  const balanceRaw = await getWalletBalance();
+  const balance = parseFloat(balanceRaw);
+  const threshold = 0.05; // 0.05 SOL minimum reserve
+
+  if (balance < threshold) {
+    const msg = `🚨 *LOW GAS WARNING!* Saldo SOL saat ini: \`${balance} SOL\`. Dibutuhkan minimal \`0.05 SOL\` untuk menjamin landing Sultan Gas. Silihkan top up atau kurangi posisi.`;
+    const { saveNotification } = await import('../db/database.js');
+    await saveNotification('gas_low_warning', msg);
+    console.warn(`🚨 [wallet] CRYITICAL: Low gas reserve (${balance} SOL)`);
+    return { low: true, balance };
+  }
+  return { low: false, balance };
+}
+
 export async function getTokenBalance(mintAddress) {
   const { PublicKey } = await import('@solana/web3.js');
   try {
@@ -110,6 +129,11 @@ export async function closeTokenAccount(mintAddress) {
 
     const signature = await sendAndConfirmTransaction(connection, transaction, [wallet]);
     console.log(`🧹 [wallet] Rent recovered! 0.002 SOL kembali ke dompet. (TX: ${signature.slice(0, 8)}...)`);
+    
+    // Track reclaimed rent in DB
+    const { incrementStat } = await import('../db/database.js');
+    await incrementStat('total_rent_reclaimed_sol', 0.00204);
+
     return { success: true, signature };
   } catch (err) {
     console.error(`❌ [wallet] Gagal Close Account ${mintAddress}:`, err.message);
