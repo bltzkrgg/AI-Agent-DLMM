@@ -1,6 +1,8 @@
 'use strict';
 
 import { writeFileSync, readFileSync, existsSync } from 'fs';
+import { join } from 'path';
+import { fileURLToPath } from 'url';
 import { createMessage, resolveModel } from '../agent/provider.js';
 import { getConfig, getThresholds } from '../config.js';
 import { getTopPools, getPoolInfo, openPosition } from '../solana/meteora.js';
@@ -860,25 +862,26 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null, opt
       getSocialSignals().catch(() => [])
     ]);
 
+    let rejTvl = 0, rejBin = 0, rejMcap = 0, rejCooldown = 0;
+
     const filtered = rawPools
       .filter(p => {
+        const cfg = getConfig();
+        const thresholds = getThresholds();
         const tvl = p.liquidityRaw || 0;
-        const fees = p.fees24hRaw || 0;
-        const feeRatio = tvl > 0 ? fees / tvl : 0;
         const binStep = p.binStep || 0;
         
-        // Gembok Naga: Hanya Bin 100 dan 125
-        const isPandaStep = [100, 125].includes(binStep);
+        // Gembok Naga: Mengikuti allowedBinSteps dari Config Sultan
+        const allowed = cfg.allowedBinSteps || [100, 125];
+        const isPandaStep = allowed.includes(binStep);
 
-        return (
-          isPandaStep &&
-          tvl >= thresholds.minTvl &&
-          tvl <= thresholds.maxTvl &&
-          p.volume24hRaw >= thresholds.minVolume24h &&
-          p.fees24hRaw >= (thresholds.minTokenFeesSol || 0) &&
-          (!p.mcap || p.mcap >= thresholds.minMcap) &&
-          !isOnCooldown(p.address)
-        );
+        if (!isPandaStep) { rejBin++; return false; }
+        if (tvl < thresholds.minTvl || tvl > thresholds.maxTvl) { rejTvl++; return false; }
+        if (p.volume24hRaw < thresholds.minVolume24h) { rejTvl++; return false; } // grouped as Basic/TVL
+        if (p.mcap && p.mcap < thresholds.minMcap) { rejMcap++; return false; }
+        if (isOnCooldown(p.address)) { rejCooldown++; return false; }
+
+        return true;
       })
       .map(p => ({ ...p, darwinScore: calculateDarwinScore(p, weights, 'NEUTRAL') }))
       .sort((a, b) => b.darwinScore - a.darwinScore)
@@ -1001,14 +1004,16 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null, opt
     const rawTotal = rawPools.length;
     const basicFilteredCount = filtered.length;
     const finalEnriched = enriched.filter(p => p !== null);
+    const trendFilteredCount = finalEnriched.length;
     const trendRejectedCount = basicFilteredCount - finalEnriched.length;
     
     if (finalEnriched.length === 0) {
       if (notifyFn) {
         await notifyFn(
           `⚠️ <b>Discovery Result:</b> 0/${rawTotal} candidates matched.\n\n` +
-          `• Basic Filters (TVL/BinStep): ${rawTotal - basicFilteredCount} rejected\n` +
-          `• Technical Hard-Gate (Trend): ${trendRejectedCount} non-Bullish\n` +
+          `• Candidates Scanned: <b>${rawTotal}</b>\n` +
+          `• Rejected: <code>BinStep: ${rejBin} | TVL/Vol: ${rejTvl} | Mcap: ${rejMcap} | Cooldown: ${rejCooldown}</code>\n` +
+          `• Technical Hard-Gate (Trend): <b>${basicFilteredCount - trendFilteredCount}</b> non-Bullish\n` +
           `• API/Data Status: ${trendRejectedCount === 0 && basicFilteredCount > 0 ? '❌ All APIs Failed' : '✅ APIs Linked'}\n\n` +
           `<i>Market sepertinya sedang sideways/bearish. Sniper tetap disiplin.</i>`
         );

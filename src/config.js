@@ -38,6 +38,7 @@ const DEFAULTS = {
   maxTvl: 150000,
   minOrganic: 55,
   minBinStep: 100,            // Minimal 100 bin step (Hukum 3)
+  allowedBinSteps: [100, 125], // Daftar Bin Step spesifik yang diijinkan (Saklek Mode)
   minTokenFeesSol: 0,        // Min total fees SOL untuk pool (0 = disabled)
   minTokenAgeMinutes: 0,     // Min usia token sejak launch (0 = disabled) — Supertrend sudah jadi gate alami
 
@@ -156,6 +157,7 @@ const CONFIG_BOUNDS = {
   maxBinsPerPosition: { min: 20, max: 150 },
   minTokenAgeMinutes: { min: 0, max: 1440 },
   dailyLossLimitUsd: { min: 0, max: 1000 },
+  allowedBinSteps: { type: 'array' }, // Custom handling logic in updateConfig
 
   // Professional Suite Bounds
   autoHarvestThresholdSol: { min: 0.005, max: 1.0 },
@@ -237,6 +239,15 @@ export function updateConfig(updates) {
         ...getConfig().signalWeights,
         ...value,
       };
+      continue;
+    }
+
+    if (key === 'allowedBinSteps') {
+      if (!Array.isArray(value)) {
+        rejected.push(`${key}: must be an array`);
+        continue;
+      }
+      validated[key] = value.map(v => parseInt(v)).filter(v => !isNaN(v));
       continue;
     }
 
