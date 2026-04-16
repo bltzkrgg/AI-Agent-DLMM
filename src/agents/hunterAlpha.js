@@ -581,30 +581,6 @@ async function executeTool(name, input) {
       }
 
       // ── Guard: Dev Correlation Filter (Intelligence v1.0) ──────
-584:       const devAddr = input.dev_address || null;
-585:       if (devAddr) {
-586:         const activeDevs = getOpenPositions().map(p => p.dev_address).filter(Boolean);
-587:         if (activeDevs.includes(devAddr)) {
-588:           return JSON.stringify({
-589:             blocked: true,
-590:             reason: `CORRELATION RISK: Deployer \`${devAddr.slice(0, 8)}...\` sudah memiliki posisi aktif di bot ini. Melewati pool ini untuk menghindari risiko sistemik satu dev.`,
-591:           }, null, 2);
-592:         }
-593:       }
-594: 
-595:       // ── Guard: Dev Correlation Filter (Intelligence v1.0) ──────
-      const devAddr = input.dev_address || null;
-      if (devAddr) {
-        const activeDevs = getOpenPositions().map(p => p.dev_address).filter(Boolean);
-        if (activeDevs.includes(devAddr)) {
-          return JSON.stringify({
-            blocked: true,
-            reason: `CORRELATION RISK: Deployer \`${devAddr.slice(0, 8)}...\` sudah memiliki posisi aktif di bot ini. Melewati pool ini untuk menghindari risiko sistemik satu dev.`,
-          }, null, 2);
-        }
-      }
-
-      // ── Guard: Dev Correlation Filter (Intelligence v1.0) ──────
       const devAddr = input.dev_address || null;
       if (devAddr) {
         const activeDevs = getOpenPositions().map(p => p.dev_address).filter(Boolean);
