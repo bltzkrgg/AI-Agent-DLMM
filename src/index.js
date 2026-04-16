@@ -85,7 +85,10 @@ const transport = createMessageTransport(bot, ALLOWED_ID);
 const sendLong = transport.sendLong;
 
 async function notify(text) {
-  transport.notify(text).catch(e => console.error('Notify error:', e.message));
+  return transport.notify(text).catch(e => {
+    console.error('Notify error:', e.message);
+    return null;
+  });
 }
 
 async function urgentNotify(text) {
@@ -274,10 +277,11 @@ async function triggerHunter(targetCount = null) {
   }
   _hunterBusy = Date.now();
   try { 
+    // Aegis Pulse: Lewatkan bot & ALLOWED_ID agar Hunter bisa melakukan editMessage
     await runHunterAlpha(notify, bot, ALLOWED_ID, { targetCount }); 
   }
   catch (e) { 
-    await urgentNotify(`❌ *Hunter Panic*\nReason: ${e.message}`);
+    await urgentNotify(`❌ <b>Hunter Panic</b>\nReason: <code>${escapeHTML(e.message)}</code>`);
     console.error(`Hunter Critical Failure:`, e); 
   }
   finally { _hunterBusy = 0; }
@@ -1409,6 +1413,46 @@ bot.onText(/\/setconfig(?:\s+(\S+))?(?:\s+(.+))?/, (msg, match) => {
     `✅ <b>Config diperbarui</b>\n\n<code>${key}</code> → <code>${saved}</code>\n\n<i>Berlaku segera, tidak perlu restart.</i>`,
     { parse_mode: 'HTML' }
   );
+});
+
+// /getradar — Kirim file dashboard untuk dibuka di Mac/PC
+bot.onText(/\/getradar/, async (msg) => {
+  if (msg.from.id !== ALLOWED_ID) return;
+  const chatId = msg.chat.id;
+  bot.sendMessage(chatId, '🛰️ <b>Menyiapkan paket Radar Dashboard...</b>', { parse_mode: 'HTML' });
+  
+  try {
+    const htmlPath = join(__dirname, '../src/web/dashboard.html');
+    const jsonPath = join(__dirname, '../src/web/dashboard_data.json');
+    
+    let sentCount = 0;
+    if (existsSync(htmlPath)) {
+      await bot.sendDocument(chatId, htmlPath, { caption: '🐼 Tactical Panda Radar (HTML) — Buka di Mac Bos' });
+      sentCount++;
+    }
+    if (existsSync(jsonPath)) {
+      await bot.sendDocument(chatId, jsonPath, { caption: '📊 Radar Data (JSON)' });
+      sentCount++;
+    }
+    
+    if (sentCount === 0) {
+      bot.sendMessage(chatId, '⚠️ File radar belum digenerate. Silakan jalankan <code>/hunting</code> dulu.', { parse_mode: 'HTML' });
+    }
+  } catch (e) {
+    bot.sendMessage(chatId, `❌ Gagal mengambil radar: <code>${escapeHTML(e.message)}</code>`, { parse_mode: 'HTML' });
+  }
+});
+
+// /hunting — Panggilan manual Hunter Sniper
+bot.onText(/\/(hunt|hunting)/, async (msg) => {
+  if (msg.from.id !== ALLOWED_ID) return;
+  const chatId = msg.chat.id;
+  if (_hunterBusy) {
+    bot.sendMessage(chatId, '⚠️ Hunter sedang bekerja, Bos. Sabar ya, jangan double nembak!');
+    return;
+  }
+  bot.sendMessage(chatId, '🦅 <b>Sultan Sniper: Scanning market...</b>', { parse_mode: 'HTML' });
+  await triggerHunter();
 });
 
 // /weights — tampilkan/recalibrate bobot Darwinian

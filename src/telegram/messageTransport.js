@@ -54,5 +54,25 @@ export function createMessageTransport(bot, allowedId) {
     return sendLong(allowedId, text, opts);
   }
 
-  return { sendLong, notify };
+  // updateStatus: Mengedit pesan yang sudah ada untuk progres real-time
+  async function updateStatus(chatId, messageId, text, opts = {}) {
+    if (!messageId) return null;
+    try {
+      return await bot.editMessageText(text, {
+        chat_id: chatId,
+        message_id: messageId,
+        parse_mode: 'HTML',
+        disable_web_page_preview: true,
+        ...opts
+      });
+    } catch (e) {
+      // Ignore "message is not modified" errors
+      if (!e.message?.includes('message is not modified')) {
+        console.error('updateStatus error:', e.message);
+      }
+      return null;
+    }
+  }
+
+  return { sendLong, notify, updateStatus };
 }

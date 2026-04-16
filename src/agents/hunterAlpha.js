@@ -8,7 +8,7 @@ import { getConfig, getThresholds } from '../config.js';
 import { getTopPools, getPoolInfo, openPosition } from '../solana/meteora.js';
 import { getWalletBalance, getConnection } from '../solana/wallet.js';
 import { PublicKey } from '@solana/web3.js';
-import { getOpenPositions, getPoolStats, closePositionWithPnl } from '../db/database.js';
+import { getOpenPositions, getPoolStats, closePositionWithPnl, getStat } from '../db/database.js';
 import { getLessonsContext } from '../learn/lessons.js';
 import { getStrategy, parseStrategyParameters, getAllStrategies } from '../strategies/strategyManager.js';
 import {
@@ -820,7 +820,8 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null, opt
   const cfg = getConfig();
 
   // --- Portfolio Awareness ---
-  const balanceSnapshot = await getWalletBalance().catch(() => 0);
+  const balanceRaw = await getWalletBalance().catch(() => 0);
+  const balanceSnapshot = safeNum(balanceRaw);
   const minSolNeeded = cfg.minSolToOpen + (cfg.gasReserve ?? 0.02);
   const isBalanceLow = balanceSnapshot < (minSolNeeded * 3);
 
@@ -850,7 +851,28 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null, opt
   // ── PRE-COMPUTE: parallelkan pool screening sebelum LLM loop ─
   // Mengurangi LLM round trips dari 40+ menjadi ~6-8.
   // getTopPools + pool memory + OKX dijalankan sekaligus, bukan satu per satu oleh LLM.
-  if (notifyFn) await notifyFn(`🔍 <b>Screening kandidat pool...</b>`);
+  let statusMsgId = null;
+  const updatePulse = async (text) => {
+    if (!notifyFn) return;
+    if (!statusMsgId) {
+      const msg = await notifyFn(`🔍 <b>Radar Sweep Initializing...</b>`);
+      if (msg?.message_id) statusMsgId = msg.message_id;
+    } else {
+      // Access updateStatus if the transport provides it
+      // hunterBotRef and hunterNotifyFn are cached in state
+      if (hunterBotRef && statusMsgId) {
+        try {
+          await bot.editMessageText(text, {
+            chat_id: chatId,
+            message_id: statusMsgId,
+            parse_mode: 'HTML'
+          });
+        } catch (e) { /* ignore mod errors */ }
+      }
+    }
+  };
+
+  await updatePulse(`🔍 <b>Radar Sweep: Scanning Meteora DLMM...</b>`);
 
   let preComputedContext = '';
   try {
@@ -893,19 +915,17 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null, opt
     try {
       const __dirname = fileURLToPath(new URL('.', import.meta.url));
       const dashboardFile = join(__dirname, '../web/dashboard_data.json');
-      const { getWalletBalance } = await import('../solana/wallet.js');
-      const { getStat } = await import('../db/database.js');
-      const walBal = await getWalletBalance().catch(() => 0);
+      const walBalRaw = await getWalletBalance().catch(() => '0');
       const openPositions = await getOpenPositions();
       const thresholds = getThresholds();
-      const rentSaved = getStat('total_rent_reclaimed_sol');
+      const rentSaved = getStat('total_rent_reclaimed_sol') || 0;
 
       const dashboardSnapshot = {
         timestamp: new Date().toISOString(),
-        walletBalance: walBal.toFixed(4),
+        walletBalance: safeNum(walBalRaw).toFixed(4),
         activeCount: openPositions.length,
         totalNetProfitSol: (openPositions.reduce((acc, p) => acc + (parseFloat(p.pnl_sol) || 0), 0)).toFixed(4),
-        totalRentSaved: rentSaved.toFixed(4), 
+        totalRentSaved: safeNum(rentSaved).toFixed(4), 
         candidates: filtered.map(p => ({
           address: p.address,
           name: p.name,
@@ -926,6 +946,9 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null, opt
     }
 
     // Fetch pool memory + multi-TF + smart wallets + sentiment in parallel
+    const totalToEnrich = filtered.length;
+    let processed = 0;
+
     const enriched = await Promise.all(filtered.map(async (p) => {
       const [memResult, ohlcvResult, swResult, sentResult] = await Promise.allSettled([
         Promise.resolve(getPoolStats(p.address)),
@@ -933,6 +956,11 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null, opt
         checkSmartWalletsOnPool(p.address),
         getSentiment(p.tokenX || p.tokenY)
       ]);
+
+      processed++;
+      if (processed % 2 === 0 || processed === totalToEnrich) {
+        await updatePulse(`🔍 <b>Radar Sweep: Analyzing Candidates [${processed}/${totalToEnrich}]...</b>`);
+      }
 
       const mem = memResult.status === 'fulfilled' ? memResult.value : null;
       const ohlcv = ohlcvResult.status === 'fulfilled' ? ohlcvResult.value : null;
