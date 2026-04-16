@@ -974,6 +974,22 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null, opt
         })),
         sentiment: 'BULLISH'
       };
+
+      // --- SULTAN PORTABLE RADAR (v75.4) ---
+      // Injeksi data (all-in-one) agar bisa dibuka di Mac tanpa CORS issues
+      const templatePath = join(__dirname, '../web/dashboard.html');
+      const sultanRadarPath = join(__dirname, '../web/radar_sultan.html');
+      
+      if (existsSync(templatePath)) {
+        let htmlStr = readFileSync(templatePath, 'utf8');
+        const injectionPoint = 'window.SULTAN_RADAR_DATA = null;';
+        const injectionValue = `window.SULTAN_RADAR_DATA = ${JSON.stringify(dashboardSnapshot, null, 2)};`;
+        
+        htmlStr = htmlStr.replace(injectionPoint, injectionValue);
+        writeFileSync(sultanRadarPath, htmlStr);
+      }
+
+      // Keep JSON for legacy/API support
       writeFileSync(dashboardFile, JSON.stringify(dashboardSnapshot, null, 2));
     } catch (dErr) {
       console.warn('[hunter] Dashboard export failed:', dErr.message);

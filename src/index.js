@@ -1419,24 +1419,17 @@ bot.onText(/\/setconfig(?:\s+(\S+))?(?:\s+(.+))?/, (msg, match) => {
 bot.onText(/\/getradar/, async (msg) => {
   if (msg.from.id !== ALLOWED_ID) return;
   const chatId = msg.chat.id;
-  bot.sendMessage(chatId, '🛰️ <b>Menyiapkan paket Radar Dashboard...</b>', { parse_mode: 'HTML' });
+  bot.sendMessage(chatId, '🛰️ <b>Menyiapkan Radar Sultan (All-in-One)...</b>', { parse_mode: 'HTML' });
   
   try {
-    const htmlPath = join(__dirname, '../src/web/dashboard.html');
-    const jsonPath = join(__dirname, '../src/web/dashboard_data.json');
+    const sultanRadarPath = join(__dirname, '../src/web/radar_sultan.html');
     
-    let sentCount = 0;
-    if (existsSync(htmlPath)) {
-      await bot.sendDocument(chatId, htmlPath, { caption: '🐼 Tactical Panda Radar (HTML) — Buka di Mac Bos' });
-      sentCount++;
-    }
-    if (existsSync(jsonPath)) {
-      await bot.sendDocument(chatId, jsonPath, { caption: '📊 Radar Data (JSON)' });
-      sentCount++;
-    }
-    
-    if (sentCount === 0) {
-      bot.sendMessage(chatId, '⚠️ File radar belum digenerate. Silakan jalankan <code>/hunting</code> dulu.', { parse_mode: 'HTML' });
+    if (existsSync(sultanRadarPath)) {
+      await bot.sendDocument(chatId, sultanRadarPath, { 
+        caption: '🐼 Sultan Radar (v75.4) — LANGSUNG BUKA di Mac Bos (Data sudah tertanam di dalam!)' 
+      });
+    } else {
+      bot.sendMessage(chatId, '⚠️ Radar Sultan belum digenerate. Silakan jalankan <code>/hunting</code> dulu biar datanya keisi, Bos!', { parse_mode: 'HTML' });
     }
   } catch (e) {
     bot.sendMessage(chatId, `❌ Gagal mengambil radar: <code>${escapeHTML(e.message)}</code>`, { parse_mode: 'HTML' });

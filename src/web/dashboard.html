@@ -259,6 +259,9 @@
             animation: pulse 2s infinite;
         }
 
+        /* SULTAN_RADAR_DATA_INJECTION_POINT */
+        window.SULTAN_RADAR_DATA = null;
+
     </style>
 </head>
 <body>
@@ -346,12 +349,22 @@
     </div>
 
     <script>
+        // ─── Update Dashboard ───────────────────────────────────────────
         async function updateDashboard() {
             try {
-                const response = await fetch('dashboard_data.json');
-                const data = await response.json();
-                
-                // Update Stats
+                let data;
+                // In-line Injection Check (Priority for Sultan Portable Radar)
+                if (window.SULTAN_RADAR_DATA) {
+                    console.log('🛰️ Radar: Using SULTAN_RADAR_DATA Injection');
+                    data = window.SULTAN_RADAR_DATA;
+                } else {
+                    console.log('🛰️ Radar: Fetching from dashboard_data.json');
+                    const response = await fetch('dashboard_data.json');
+                    if (!response.ok) throw new Error('Failed to fetch radar data');
+                    data = await response.json();
+                }
+
+                if (!data || !data.candidates) return;
                 document.getElementById('walletBal').innerText = (data.walletBalance || '0.00') + ' SOL';
                 document.getElementById('netProfit').innerText = (data.totalNetProfitSol || '0.0000') + '◎';
                 document.getElementById('rentSaved').innerText = (data.totalRentSaved || '0.0000') + '◎';
