@@ -52,7 +52,7 @@ if (existsSync(PID_FILE)) {
   }
 }
 writeFileSync(PID_FILE, String(process.pid));
-process.on('exit', () => { try { unlinkSync(PID_FILE); } catch {} });
+process.on('exit', () => { try { unlinkSync(PID_FILE); } catch { } });
 
 // ─── Validate env ────────────────────────────────────────────────
 const { missing } = validateRuntimeEnv({ requireTrading: true });
@@ -112,12 +112,12 @@ const circuitBreaker = new CircuitBreaker({
   autoStart: true,
   onTrip: async (info) => {
     const msg = `🚨 <b>CIRCUIT BREAKER TRIPPED</b>\n\nReason: ${info.reason}\nTime: ${new Date(info.tripTime).toISOString()}\n\n⛔ Trading paused (Hunter/Healer offline)`;
-    await bot.sendMessage(ALLOWED_ID, msg, { parse_mode: 'HTML' }).catch(() => {});
+    await bot.sendMessage(ALLOWED_ID, msg, { parse_mode: 'HTML' }).catch(() => { });
   },
   onRecover: async (info) => {
     const timeOpen = (info.timeOpenMs / 1000 / 60).toFixed(2);
     const msg = `✅ <b>CIRCUIT BREAKER RECOVERED</b>\n\nRecovery time: ${new Date(info.recoveryTime).toISOString()}\nDowntime: ${timeOpen} minutes\n\n🚀 Trading resumed (Hunter/Healer online)`;
-    await bot.sendMessage(ALLOWED_ID, msg, { parse_mode: 'HTML' }).catch(() => {});
+    await bot.sendMessage(ALLOWED_ID, msg, { parse_mode: 'HTML' }).catch(() => { });
   },
   onHealthCheck: async (info) => {
     if (info.state !== 'CLOSED') {
@@ -146,10 +146,10 @@ const bootStatus = solanaReady ? '🚀 <b>Bot Started!</b>' : '⚠️ <b>Bot Sta
 const walletNote = solanaReady ? '' : '\n<i>Wallet/RPC gagal inisialisasi. Fitur trading dipause.</i>';
 
 const bootMsg = `${bootStatus} (Mode: Survivalist)\n\n` +
-               `🛡️ Hunter: <b>${solanaReady ? 'ON' : 'OFF'}</b> (Standby ⏳)\n` +
-               `🩺 Healer: <b>${solanaReady ? 'ON' : 'OFF'}</b> (Standby ⏳)\n${walletNote}\n\n` +
-               `<i>Sesuai jadwal, bot akan mulai bekerja dalam ${cfg.managementIntervalMin} - ${cfg.screeningIntervalMin} menit.</i>`;
-bot.sendMessage(ALLOWED_ID, bootMsg, { parse_mode: 'HTML' }).catch(() => {});
+  `🛡️ Hunter: <b>${solanaReady ? 'ON' : 'OFF'}</b> (Standby ⏳)\n` +
+  `🩺 Healer: <b>${solanaReady ? 'ON' : 'OFF'}</b> (Standby ⏳)\n${walletNote}\n\n` +
+  `<i>Sesuai jadwal, bot akan mulai bekerja dalam ${cfg.managementIntervalMin} - ${cfg.screeningIntervalMin} menit.</i>`;
+bot.sendMessage(ALLOWED_ID, bootMsg, { parse_mode: 'HTML' }).catch(() => { });
 
 async function syncStartingBalanceBaseline() {
   if (!solanaReady) return;
@@ -256,11 +256,11 @@ const setupState = {
 // triggerHunter — hanya dipanggil dari /entry, TIDAK dari cron atau post-close
 async function triggerHunter(targetCount = null) {
   if (!solanaReady) {
-    notify('⚠️ Wallet/RPC belum siap. Perbaiki koneksi Solana sebelum menjalankan Hunter.').catch(() => {});
+    notify('⚠️ Wallet/RPC belum siap. Perbaiki koneksi Solana sebelum menjalankan Hunter.').catch(() => { });
     return;
   }
   if (!circuitBreaker.isHealthy()) {
-    notify(`⚠️ Circuit Breaker AKTIF (state: ${circuitBreaker.getState().state}). Trading sedang dipause karena sistem degraded.`).catch(() => {});
+    notify(`⚠️ Circuit Breaker AKTIF (state: ${circuitBreaker.getState().state}). Trading sedang dipause karena sistem degraded.`).catch(() => { });
     return;
   }
   if (_hunterBusy && (Date.now() - _hunterBusy < LOCK_TIMEOUT_MS)) return;
@@ -272,17 +272,17 @@ async function triggerHunter(targetCount = null) {
     ? openPos.length + targetCount   // buka targetCount posisi baru
     : liveCfg.maxPositions;
   if (openPos.length >= effectiveMax && targetCount == null) {
-    notify(`⚠️ Posisi sudah penuh (${openPos.length}/${liveCfg.maxPositions}). Tutup posisi dulu sebelum entry baru.`).catch(() => {});
+    notify(`⚠️ Posisi sudah penuh (${openPos.length}/${liveCfg.maxPositions}). Tutup posisi dulu sebelum entry baru.`).catch(() => { });
     return;
   }
   _hunterBusy = Date.now();
-  try { 
+  try {
     // Aegis Pulse: Lewatkan bot & ALLOWED_ID agar Hunter bisa melakukan editMessage
-    await runHunterAlpha(notify, bot, ALLOWED_ID, { targetCount }); 
+    await runHunterAlpha(notify, bot, ALLOWED_ID, { targetCount });
   }
-  catch (e) { 
+  catch (e) {
     await urgentNotify(`❌ <b>Hunter Panic</b>\nReason: <code>${escapeHTML(e.message)}</code>`);
-    console.error(`Hunter Critical Failure:`, e); 
+    console.error(`Hunter Critical Failure:`, e);
   }
   finally { _hunterBusy = 0; }
 }
@@ -294,7 +294,7 @@ async function runHealerWithReopenCheck() {
     console.log(`⏭ Healer skip — Circuit Breaker ${circuitBreaker.getState().state}`);
     return;
   }
-  await checkGasReserve().catch(() => {});
+  await checkGasReserve().catch(() => { });
   await runHealerAlpha(notify);
 }
 
@@ -303,17 +303,17 @@ async function runHealerWithReopenCheck() {
 // Berjalan tiap 5 menit untuk nangkis dump cepat (Supertrend + OOR) tanpa LLM.
 cron.schedule('*/5 * * * *', async () => {
   if (!solanaReady) return;
-  
+
   // SHARED LOCK: Jangan jalan kalau Healer utama lagi kerja
   if (_healerBusy && (Date.now() - _healerBusy < LOCK_TIMEOUT_MS)) {
     console.log('⏭ Watchdog skip — Healer loop sedang berjalan');
     return;
   }
-  
+
   _healerBusy = Date.now();
   console.log('🩺 [index] High-Frequency Watchdog (Panic Guard) started...');
   try {
-    await checkGasReserve().catch(() => {});
+    await checkGasReserve().catch(() => { });
     await runPanicWatchdog(notify);
     console.log('✅ [index] Watchdog completed.');
   } catch (e) {
@@ -337,14 +337,14 @@ cron.schedule('0 * * * *', async () => {
 // Semua cron jalan setiap menit dan cek interval live dari config.
 // Ini memungkinkan perubahan interval via /setconfig TANPA restart bot.
 
-let _lastHealerRun    = Date.now(); // delay run pertama sampai interval berlalu
+let _lastHealerRun = Date.now(); // delay run pertama sampai interval berlalu
 let _lastScreeningRun = Date.now();
 let _lastBalanceWarningAt = 0; // cooldown notif saldo low
 
 cron.schedule('* * * * *', async () => {
   if (!solanaReady) return; // Prevent management spam if no wallet
   const liveCfg = getConfig();
-  const now     = Date.now();
+  const now = Date.now();
   if (now - _lastHealerRun < liveCfg.managementIntervalMin * 60 * 1000) return;
   // Update SETELAH cek busy — supaya timer tidak mundur saat healer masih jalan
   if (_healerBusy && (Date.now() - _healerBusy < LOCK_TIMEOUT_MS)) { console.log('⏭ Healer skip — masih berjalan'); return; }
@@ -356,7 +356,7 @@ cron.schedule('* * * * *', async () => {
     try { recalibrateWeights(); } catch { /* data belum cukup, skip */ }
     savePerformanceSnapshot();
   }
-  catch (e) { 
+  catch (e) {
     await urgentNotify(`🩺 <b>Healer Panic</b>\nReason: <code>${escapeHTML(e.message)}</code>\n\n<i>Check Solscan for hanging transactions.</i>`);
     console.error(`Healer Critical Failure:`, e);
   }
@@ -394,7 +394,7 @@ async function runAutoScreening() {
         `Net PnL Hari Ini: \`$${dailyPnl.toFixed(2)}\`\n` +
         `Limit Kerugian: \`$${liveCfg.dailyLossLimitUsd.toFixed(2)}\`\n\n` +
         `_Batas kerugian harian tercapai. Hunter dipaksa istirahat demi keamanan modal lu, Bos!_`
-      ).catch(() => {});
+      ).catch(() => { });
     }
     console.log(`[index] Daily Circuit Breaker: Skip screening (Daily PnL: $${dailyPnl.toFixed(2)})`);
     return;
@@ -408,11 +408,11 @@ async function runAutoScreening() {
 
   const balance = await getWalletBalance().catch(() => '0');
   const needed = liveCfg.deployAmountSol + (liveCfg.gasReserve ?? 0.02);
-  
+
   if (safeNum(balance) < needed) {
     const balNum = safeNum(balance).toFixed(4);
     console.log(`⏭ Hunter skip — saldo low (${balNum} < ${needed.toFixed(2)})`);
-    
+
     // Log internal & skip (notifikasi sudah ditangani oleh Global Low Gas Alert per jam)
     console.log(`⏭ Hunter skip — saldo low (${balNum} < ${needed.toFixed(2)})`);
     return;
@@ -422,22 +422,22 @@ async function runAutoScreening() {
   _lastBalanceWarningAt = 0;
 
   _screeningBusy = Date.now();
-  _hunterBusy    = Date.now();
+  _hunterBusy = Date.now();
   try {
     await runHunterAlpha(notify, bot, ALLOWED_ID);
   } catch (e) {
     console.error('Auto-screening error:', e.message);
-    notify(`❌ Auto-screening error: ${e.message}`).catch(() => {});
+    notify(`❌ Auto-screening error: ${e.message}`).catch(() => { });
   } finally {
     _screeningBusy = 0;
-    _hunterBusy    = 0;
+    _hunterBusy = 0;
   }
 }
 
 cron.schedule('* * * * *', async () => {
   if (!solanaReady) return; // Prevent screening spam if no wallet
   const liveCfg = getConfig();
-  const now     = Date.now();
+  const now = Date.now();
   if (now - _lastScreeningRun < liveCfg.screeningIntervalMin * 60 * 1000) return;
   _lastScreeningRun = now;
   try { await runAutoScreening(); }
@@ -479,16 +479,16 @@ cron.schedule('0 * * * *', async () => {
     const balance = await getWalletBalance();
     const balNum = safeNum(balance);
     const openPos = getOpenPositions();
-    
+
     // 1. Send Pulse Report (if enabled)
     const cfg = getConfig();
     if (cfg.hourlyPulseEnabled) {
       let msg = `💓 *HOURLY PULSE REPORT*\n\n` +
-               `• Wallet: +${balNum.toFixed(4)} SOL\n` +
-               `• Active Positions: ${openPos.length}\n` +
-               `• Status: 🎋 Auto-Harvest ${cfg.autoHarvestEnabled ? 'Active' : 'Disabled'}\n\n` +
-               `_Sistem berjalan normal. Semua penjaga gawang aktif._`;
-      
+        `• Wallet: +${balNum.toFixed(4)} SOL\n` +
+        `• Active Positions: ${openPos.length}\n` +
+        `• Status: 🎋 Auto-Harvest ${cfg.autoHarvestEnabled ? 'Active' : 'Disabled'}\n\n` +
+        `_Sistem berjalan normal. Semua penjaga gawang aktif._`;
+
       await notify(msg);
     }
 
@@ -518,9 +518,9 @@ cron.schedule('0 1 * * *', async () => {
 cron.schedule('0 7 * * *', async () => {
   try {
     await syncStartingBalanceBaseline();
-    const balance  = await getWalletBalance();
-    const openPos  = getOpenPositions();
-    const stats    = getPositionStats();
+    const balance = await getWalletBalance();
+    const openPos = getOpenPositions();
+    const stats = getPositionStats();
     const memStats = getMemoryStats();
     const instincts = getInstinctsContext();
 
@@ -579,7 +579,7 @@ bot.onText(/\/testmodel/, async (msg) => {
 
 bot.onText(/\/model(?:\s+(.+))?/, async (msg, match) => {
   if (msg.from.id !== ALLOWED_ID) return;
-  const chatId  = msg.chat.id;
+  const chatId = msg.chat.id;
   const modelId = match[1]?.trim();
 
   if (!modelId) {
@@ -602,7 +602,7 @@ bot.onText(/\/model(?:\s+(.+))?/, async (msg, match) => {
   if (modelId === 'reset') {
     updateConfig({ activeModel: null });
     const fallback = process.env.AI_MODEL || getConfig().generalModel || 'openai/gpt-4o-mini';
-    const envNote  = process.env.AI_MODEL
+    const envNote = process.env.AI_MODEL
       ? `\n\n⚠️ <code>AI_MODEL</code> env aktif: <code>${process.env.AI_MODEL}</code>\n<i>/model command tidak bisa override env. Hapus <code>AI_MODEL</code> dari .env untuk pakai /model.</i>`
       : '';
     bot.sendMessage(chatId, `✅ <b>Model di-reset</b>\n\nKembali ke: <code>${fallback}</code>${envNote}`, { parse_mode: 'HTML' });
@@ -708,7 +708,7 @@ bot.onText(/\/status/, async (msg) => {
             directPnlPct: Number.isFinite(match?.pnlPct) ? match.pnlPct : null,
           });
           chainMap[pos.position_address] = {
-            status:  snapshot.status,
+            status: snapshot.status,
             pnlSol: snapshot.pnlSol,
             pnlPct: snapshot.pnlPct,
             feeSol: snapshot.feeSol,
@@ -750,7 +750,7 @@ bot.onText(/\/status/, async (msg) => {
             `Strategi : ${pos.strategy_used || '-'}\n\n` +
             `<i>Posisi tidak terlihat via SDK/API dan account on-chain tidak ditemukan.</i>\n` +
             `<i>Status bersifat sementara; healer akan reconcile sebelum perubahan DB.</i>`
-          ).catch(() => {});
+          ).catch(() => { });
         } else {
           chainMap[pos.position_address] = {
             ...c,
@@ -768,12 +768,12 @@ bot.onText(/\/status/, async (msg) => {
     // ── Header ───────────────────────────────────────────────────
     let text = `📊 <b>Status Bot</b> — 🐼 <b>ADAPTIVE PANDA</b>\n\n`;
 
-    const pnlSign  = (v) => safeNum(v) >= 0 ? '+' : '';
+    const pnlSign = (v) => safeNum(v) >= 0 ? '+' : '';
     const headerLines = [
-      kv('Balance',   `${safeNum(balance).toFixed(4)} SOL`, 10),
-      kv('Posisi',    `${activePos.length} / ${getConfig().maxPositions}`, 10),
-      kv('Closed',    `${stats.closedPositions}  Win: ${stats.winRate}`, 10),
-      kv('PnL',       `${pnlSign(stats.totalPnlUsd)}$${safeNum(stats.totalPnlUsd || 0).toFixed(2)}  Fees: +$${safeNum(stats.totalFeesUsd || 0).toFixed(2)}`, 10),
+      kv('Balance', `${safeNum(balance).toFixed(4)} SOL`, 10),
+      kv('Posisi', `${activePos.length} / ${getConfig().maxPositions}`, 10),
+      kv('Closed', `${stats.closedPositions}  Win: ${stats.winRate}`, 10),
+      kv('PnL', `${pnlSign(stats.totalPnlUsd)}$${safeNum(stats.totalPnlUsd || 0).toFixed(2)}  Fees: +$${safeNum(stats.totalFeesUsd || 0).toFixed(2)}`, 10),
       kv('Instincts', `${memStats.instinctCount}`, 10),
     ];
     text += codeBlock(headerLines) + '\n';
@@ -879,7 +879,7 @@ bot.onText(/\/pos$/, async (msg) => {
     let text = `📊 <b>Posisi Terbuka — ${time} WIB</b>\n\n`;
 
     for (const pos of openPos) {
-      const cd        = chainMap[pos.position_address];
+      const cd = chainMap[pos.position_address];
       const deploySol = safeNum(pos.deployed_sol ?? 0);
       const snapshot = cd ? resolvePositionSnapshot({
         dbPosition: pos,
@@ -887,13 +887,13 @@ bot.onText(/\/pos$/, async (msg) => {
         providerPnlPct: lpPnlMap.get(pos.position_address),
         directPnlPct: Number.isFinite(cd?.pnlPct) ? cd.pnlPct : null,
       }) : null;
-      const pnlPct    = snapshot ? snapshot.pnlPct.toFixed(2) : '?';
-      const pnlSign   = safeNum(pnlPct) >= 0 ? '+' : '';
+      const pnlPct = snapshot ? snapshot.pnlPct.toFixed(2) : '?';
+      const pnlSign = safeNum(pnlPct) >= 0 ? '+' : '';
       const rangeIcon = cd ? (cd.inRange ? '🟢' : '🔴') : '⚪';
-      const oorLabel  = cd && !cd.inRange ? ' OOR' : '';
-      const feesStr   = cd ? `${(cd.feeCollectedSol || 0).toFixed(4)} SOL` : '?';
-      const strat     = pos.strategy_used ? ` · ${pos.strategy_used}` : '';
-      const symbol    = pos.token_x_symbol || pos.token_x?.slice(0, 6) || '?';
+      const oorLabel = cd && !cd.inRange ? ' OOR' : '';
+      const feesStr = cd ? `${(cd.feeCollectedSol || 0).toFixed(4)} SOL` : '?';
+      const strat = pos.strategy_used ? ` · ${pos.strategy_used}` : '';
+      const symbol = pos.token_x_symbol || pos.token_x?.slice(0, 6) || '?';
 
       // Invert harga kalau SOL pair dan data dari REST API (tidak ada displayCurrentPrice)
       const WSOL_M = 'So11111111111111111111111111111111111111112';
@@ -902,7 +902,7 @@ bot.onText(/\/pos$/, async (msg) => {
       const priceDisp = cd?.displayCurrentPrice != null
         ? `${cd.displayCurrentPrice} ${cd.priceUnit || ''}`
         : rawPrice > 0
-          ? `${isSOLP ? (1/rawPrice).toFixed(4) : rawPrice.toFixed(8)} ${isSOLP ? `${symbol}/SOL` : ''}`
+          ? `${isSOLP ? (1 / rawPrice).toFixed(4) : rawPrice.toFixed(8)} ${isSOLP ? `${symbol}/SOL` : ''}`
           : '';
 
       text +=
@@ -936,7 +936,7 @@ bot.onText(/\/zap(?:\s+(\S+))?/, async (msg, match) => {
   }
 
   bot.sendMessage(chatId, `⚠️ <b>KONFIRMASI ZAP OUT</b>\n\nKamu akan menutup paksa posisi:\nToken: <b>${matchPos.token_x_symbol || 'unknown'}</b>\nPool: <code>${shortAddr(matchPos.pool_address)}</code>\n\nKetik <code>GAS ZAP</code> untuk mengeksekusi.`, { parse_mode: 'HTML' });
-  
+
   const confirmHandler = async (cMsg) => {
     if (cMsg.from.id === ALLOWED_ID && cMsg.text === 'GAS ZAP' && cMsg.chat.id === chatId) {
       bot.removeListener('message', confirmHandler);
@@ -951,8 +951,8 @@ bot.onText(/\/zap(?:\s+(\S+))?/, async (msg, match) => {
         bot.sendMessage(chatId, `❌ Zap failed: <code>${escapeHTML(e.message)}</code>`, { parse_mode: 'HTML' });
       }
     } else if (cMsg.from.id === ALLOWED_ID && cMsg.chat.id === chatId && cMsg.text !== 'GAS ZAP' && !cMsg.text.startsWith('/')) {
-       bot.removeListener('message', confirmHandler);
-       bot.sendMessage(chatId, '❌ Zap dibatalkan.');
+      bot.removeListener('message', confirmHandler);
+      bot.sendMessage(chatId, '❌ Zap dibatalkan.');
     }
   };
   bot.on('message', confirmHandler);
@@ -1010,23 +1010,23 @@ bot.onText(/\/check(?:\s+(.+))?/, async (msg, match) => {
 bot.onText(/\/system_update/, (msg) => {
   if (msg.from.id !== ALLOWED_ID) return;
   const chatId = msg.chat.id;
-  
+
   const text = `🔄 <b>SYSTEM UPDATE &amp; RESTART</b>\n\n` +
-               `Anda akan melakukan pembaruan sistem:\n` +
-               `1. Ambil kode terbaru (<code>git pull</code>)\n` +
-               `2. Update dependensi (<code>npm install</code>)\n` +
-               `3. Jalankan migrasi database otomatis\n` +
-               `4. Restart bot (via PM2)\n\n` +
-               `⚠️ <b>PERINGATAN</b>: Pastikan bot berjalan menggunakan PM2 di VPS agar bisa restart otomatis.\n\n` +
-               `Ketik <code>GAS UPDATE</code> untuk mengeksekusi pembaruan.`;
-               
+    `Anda akan melakukan pembaruan sistem:\n` +
+    `1. Ambil kode terbaru (<code>git pull</code>)\n` +
+    `2. Update dependensi (<code>npm install</code>)\n` +
+    `3. Jalankan migrasi database otomatis\n` +
+    `4. Restart bot (via PM2)\n\n` +
+    `⚠️ <b>PERINGATAN</b>: Pastikan bot berjalan menggunakan PM2 di VPS agar bisa restart otomatis.\n\n` +
+    `Ketik <code>GAS UPDATE</code> untuk mengeksekusi pembaruan.`;
+
   bot.sendMessage(chatId, text, { parse_mode: 'HTML' });
 
   const updateHandler = async (cMsg) => {
     if (cMsg.from.id === ALLOWED_ID && cMsg.text === 'GAS UPDATE' && cMsg.chat.id === chatId) {
       bot.removeListener('message', updateHandler);
       bot.sendMessage(chatId, '📥 <b>Memulai Update...</b>', { parse_mode: 'HTML' });
-      
+
       try {
         // Step 1: Git Pull
         bot.sendMessage(chatId, '📡 <code>git pull</code> dalam proses...', { parse_mode: 'HTML' });
@@ -1040,7 +1040,7 @@ bot.onText(/\/system_update/, (msg) => {
 
         // Step 3: Restart
         bot.sendMessage(chatId, '🚀 <b>Memicu Restart Sistem...</b> Bot akan offline sebentar.', { parse_mode: 'HTML' });
-        
+
         setTimeout(() => {
           process.exit(0); // Trigger PM2 Restart
         }, 1000);
@@ -1049,8 +1049,8 @@ bot.onText(/\/system_update/, (msg) => {
         bot.sendMessage(chatId, `❌ <b>Update Gagal:</b>\n\n<code>${escapeHTML(err.message)}</code>`, { parse_mode: 'HTML' });
       }
     } else if (cMsg.from.id === ALLOWED_ID && cMsg.chat.id === chatId && cMsg.text !== 'GAS UPDATE' && !cMsg.text.startsWith('/')) {
-       bot.removeListener('message', updateHandler);
-       bot.sendMessage(chatId, '❌ Update dibatalkan.');
+      bot.removeListener('message', updateHandler);
+      bot.sendMessage(chatId, '❌ Update dibatalkan.');
     }
   };
 
@@ -1168,7 +1168,7 @@ bot.onText(/\/learn(?:\s+(.+))?/, async (msg, match) => {
 
 bot.onText(/\/lessons/, (msg) => {
   if (msg.from.id !== ALLOWED_ID) return;
-  sendLong(msg.chat.id, formatLessonsList(), { parse_mode: 'HTML' }).catch(() => {});
+  sendLong(msg.chat.id, formatLessonsList(), { parse_mode: 'HTML' }).catch(() => { });
 });
 
 // /pinlesson <index> — pin lesson ke tier 1 (selalu masuk prompt)
@@ -1245,7 +1245,7 @@ bot.onText(/\/(strategies|addstrategy|deletestrategy)(.*)/, (msg) => {
 bot.onText(/\/addwallet(?:\s+(\S+))?(?:\s+(.+))?/, (msg, match) => {
   if (msg.from.id !== ALLOWED_ID) return;
   const address = match[1]?.trim();
-  const label   = match[2]?.trim() || 'unknown';
+  const label = match[2]?.trim() || 'unknown';
   if (!address) {
     bot.sendMessage(msg.chat.id, '❓ Gunakan: <code>/addwallet &lt;address&gt; &lt;label&gt;</code>\nContoh: <code>/addwallet 7xKd...1bAz alpha_lp_1</code>', { parse_mode: 'HTML' });
     return;
@@ -1272,7 +1272,7 @@ bot.onText(/\/removewallet(?:\s+(\S+))?/, (msg, match) => {
 // /listwallet
 bot.onText(/\/listwallet/, (msg) => {
   if (msg.from.id !== ALLOWED_ID) return;
-  sendLong(msg.chat.id, formatWalletList(), { parse_mode: 'HTML' }).catch(() => {});
+  sendLong(msg.chat.id, formatWalletList(), { parse_mode: 'HTML' }).catch(() => { });
 });
 
 // ─── Pool Memory command ──────────────────────────────────────────
@@ -1280,7 +1280,7 @@ bot.onText(/\/listwallet/, (msg) => {
 // /poolmemory — tampilkan top/worst pools berdasarkan riwayat deploy
 bot.onText(/\/poolmemory/, (msg) => {
   if (msg.from.id !== ALLOWED_ID) return;
-  sendLong(msg.chat.id, formatPoolMemoryReport(), { parse_mode: 'HTML' }).catch(() => {});
+  sendLong(msg.chat.id, formatPoolMemoryReport(), { parse_mode: 'HTML' }).catch(() => { });
 });
 
 // /dryrun on|off — toggle dry run mode
@@ -1325,7 +1325,7 @@ bot.onText(/\/(?:autoscreen|autohunter)(?:\s+(on|off))?(?:\s+(\d+))?/, async (ms
 
   const enable = toggle === 'on';
   const updates = { autoScreeningEnabled: enable };
-  
+
   if (enable && intervalArg) {
     const val = parseInt(intervalArg);
     if (val >= 5 && val <= 1440) {
@@ -1353,7 +1353,7 @@ bot.onText(/\/(?:autoscreen|autohunter)(?:\s+(on|off))?(?:\s+(\d+))?/, async (ms
 bot.onText(/\/setconfig(?:\s+(\S+))?(?:\s+(.+))?/, (msg, match) => {
   if (msg.from.id !== ALLOWED_ID) return;
   const chatId = msg.chat.id;
-  const key    = match[1]?.trim();
+  const key = match[1]?.trim();
   const rawVal = match[2]?.trim();
 
   const cfg = getConfig();
@@ -1393,10 +1393,10 @@ bot.onText(/\/setconfig(?:\s+(\S+))?(?:\s+(.+))?/, (msg, match) => {
   }
 
   let parsed;
-  if (rawVal === 'true')        parsed = true;
-  else if (rawVal === 'false')  parsed = false;
-  else if (!isNaN(rawVal))      parsed = parseFloat(rawVal);
-  else                          parsed = rawVal;
+  if (rawVal === 'true') parsed = true;
+  else if (rawVal === 'false') parsed = false;
+  else if (!isNaN(rawVal)) parsed = parseFloat(rawVal);
+  else parsed = rawVal;
 
   const result = updateConfig({ [key]: parsed });
 
@@ -1420,13 +1420,13 @@ bot.onText(/\/getradar/, async (msg) => {
   if (msg.from.id !== ALLOWED_ID) return;
   const chatId = msg.chat.id;
   bot.sendMessage(chatId, '🛰️ <b>Menyiapkan Radar Sultan (All-in-One)...</b>', { parse_mode: 'HTML' });
-  
+
   try {
     const sultanRadarPath = join(__dirname, '../src/web/radar_sultan.html');
-    
+
     if (existsSync(sultanRadarPath)) {
-      await bot.sendDocument(chatId, sultanRadarPath, { 
-        caption: '🐼 Sultan Radar (v75.4) — LANGSUNG BUKA di Mac Bos (Data sudah tertanam di dalam!)' 
+      await bot.sendDocument(chatId, sultanRadarPath, {
+        caption: '🐼 Sultan Radar (v75.4) — LANGSUNG BUKA di Mac Bos (Data sudah tertanam di dalam!)'
       });
     } else {
       bot.sendMessage(chatId, '⚠️ Radar Sultan belum digenerate. Silakan jalankan <code>/hunting</code> dulu biar datanya keisi, Bos!', { parse_mode: 'HTML' });
@@ -1488,9 +1488,9 @@ bot.onText(/\/providers/, async (msg) => {
       });
     }
 
-    sendLong(msg.chat.id, report, { parse_mode: 'HTML' }).catch(() => {});
+    sendLong(msg.chat.id, report, { parse_mode: 'HTML' }).catch(() => { });
   } catch (e) {
-    bot.sendMessage(msg.chat.id, `❌ Error: <code>${escapeHTML(e.message)}</code>`, { parse_mode: 'HTML' }).catch(() => {});
+    bot.sendMessage(msg.chat.id, `❌ Error: <code>${escapeHTML(e.message)}</code>`, { parse_mode: 'HTML' }).catch(() => { });
   }
 });
 
@@ -1519,7 +1519,7 @@ bot.on('message', async (msg) => {
 
   // Cegah double-request saat AI masih berpikir
   if (_chatBusy) {
-    bot.sendMessage(msg.chat.id, '⏳ Masih memproses pesan sebelumnya...').catch(() => {});
+    bot.sendMessage(msg.chat.id, '⏳ Masih memproses pesan sebelumnya...').catch(() => { });
     return;
   }
 
@@ -1528,12 +1528,12 @@ bot.on('message', async (msg) => {
 
 async function handleMessage(msg, text) {
   _chatBusy = true;
-  bot.sendChatAction(msg.chat.id, 'typing').catch(() => {});
+  bot.sendChatAction(msg.chat.id, 'typing').catch(() => { });
   try {
     const response = await processMessage(text);
     await sendLong(msg.chat.id, escapeHTML(response), { parse_mode: 'HTML', disable_web_page_preview: true });
   } catch (e) {
-    bot.sendMessage(msg.chat.id, `❌ Error: <code>${escapeHTML(e.message)}</code>`, { parse_mode: 'HTML' }).catch(() => {});
+    bot.sendMessage(msg.chat.id, `❌ Error: <code>${escapeHTML(e.message)}</code>`, { parse_mode: 'HTML' }).catch(() => { });
   } finally {
     _chatBusy = false;
   }
@@ -1544,7 +1544,7 @@ const MAX_POLLING_RESTARTS = 10;
 
 bot.on('polling_error', (e) => {
   const isTimeout = e.message?.includes('ETIMEDOUT') || e.message?.includes('timeout');
-  
+
   // Jika hanya timeout biasa, jangan penuhi log dengan warning kecuali EFATAL
   if (isTimeout && !e.message?.includes('EFATAL')) {
     return; // Abaikan timeout transien
@@ -1557,14 +1557,14 @@ bot.on('polling_error', (e) => {
       console.error(`❌ Polling restart limit (${MAX_POLLING_RESTARTS}x) tercapai.`);
       return;
     }
-    
+
     _pollingRestartCount++;
-    const delay = Math.min(10000 * _pollingRestartCount, 60000); 
+    const delay = Math.min(10000 * _pollingRestartCount, 60000);
     console.warn(`⚠️ Koneksi terputus (EFATAL) — mencoba pulihkan dalam ${delay / 1000}s... (${_pollingRestartCount}/${MAX_POLLING_RESTARTS})`);
-    
+
     setTimeout(async () => {
       try {
-        await bot.stopPolling().catch(() => {});
+        await bot.stopPolling().catch(() => { });
         await new Promise(r => setTimeout(r, 2000));
         await bot.startPolling();
         console.log('✅ Koneksi Telegram berhasil dipulihkan.');
@@ -1583,21 +1583,21 @@ async function shutdown(signal) {
     const openPos = getOpenPositions();
     console.log(`📍 Open positions at shutdown: ${openPos.length}`);
     bot.stopPolling();
-  } catch {}
+  } catch { }
   process.exit(0);
 }
-process.on('SIGINT',  () => shutdown('SIGINT'));
+process.on('SIGINT', () => shutdown('SIGINT'));
 process.on('SIGTERM', () => shutdown('SIGTERM'));
 
 // Tangkap uncaught exceptions supaya bot tidak mati tiba-tiba
 process.on('uncaughtException', (e) => {
   console.error('❌ Uncaught Exception:', e.message, e.stack);
-  notify(`⚠️ <b>Uncaught error (bot tetap jalan):</b>\n<code>${escapeHTML(e.message)}</code>`, { parse_mode: 'HTML' }).catch(() => {});
+  notify(`⚠️ <b>Uncaught error (bot tetap jalan):</b>\n<code>${escapeHTML(e.message)}</code>`, { parse_mode: 'HTML' }).catch(() => { });
 });
 process.on('unhandledRejection', (reason) => {
   const msg = reason instanceof Error ? reason.message : String(reason);
   console.error('❌ Unhandled Rejection:', msg);
-  notify(`⚠️ <b>Unhandled promise rejection:</b>\n<code>${escapeHTML(msg)}</code>`, { parse_mode: 'HTML' }).catch(() => {});
+  notify(`⚠️ <b>Unhandled promise rejection:</b>\n<code>${escapeHTML(msg)}</code>`, { parse_mode: 'HTML' }).catch(() => { });
 });
 
 // ─── Startup ─────────────────────────────────────────────────────

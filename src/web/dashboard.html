@@ -1,0 +1,230 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Sultan Radar Dashboard v75.5</title>
+    <style>
+        :root {
+            --bg-color: #0d1117;
+            --card-bg: #161b22;
+            --accent-color: #00ff88;
+            --text-color: #e6edf3;
+            --text-dim: #8b949e;
+            --veto-color: #ff4b2b;
+        }
+
+        body {
+            background-color: var(--bg-color);
+            color: var(--text-color);
+            font-family: 'Inter', -apple-system, sans-serif;
+            margin: 0;
+            padding: 20px;
+        }
+
+        .header {
+            text-align: center;
+            margin-bottom: 40px;
+        }
+
+        h1 {
+            color: var(--accent-color);
+            letter-spacing: 2px;
+            margin-bottom: 5px;
+        }
+
+        .version {
+            color: var(--text-dim);
+            font-size: 0.8em;
+        }
+
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 20px;
+            margin-bottom: 40px;
+        }
+
+        .stat-card {
+            background: var(--card-bg);
+            padding: 20px;
+            border-radius: 12px;
+            border: 1px solid #30363d;
+        }
+
+        .stat-card h3 {
+            margin: 0;
+            font-size: 0.9em;
+            color: var(--text-dim);
+        }
+
+        .stat-card .value {
+            font-size: 1.5em;
+            font-weight: bold;
+            color: var(--accent-color);
+            margin-top: 10px;
+        }
+
+        .pool-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+            gap: 20px;
+        }
+
+        .pool-card {
+            background: var(--card-bg);
+            border-radius: 12px;
+            padding: 20px;
+            border: 1px solid #30363d;
+            transition: transform 0.2s;
+        }
+
+        .pool-card.vetoed {
+            border-left: 4px solid var(--veto-color);
+        }
+
+        .pool-card.matched {
+            border-left: 4px solid var(--accent-color);
+        }
+
+        .card-header {
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 15px;
+        }
+
+        .pool-name {
+            font-weight: bold;
+            font-size: 1.1em;
+        }
+
+        .badge {
+            padding: 4px 8px;
+            border-radius: 6px;
+            font-size: 0.7em;
+            font-weight: bold;
+        }
+
+        .badge.veto { background: rgba(255, 75, 43, 0.1); color: var(--veto-color); }
+        .badge.match { background: rgba(0, 255, 136, 0.1); color: var(--accent-color); }
+
+        .metrics {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 10px;
+            margin-bottom: 15px;
+        }
+
+        .metric {
+            font-size: 0.85em;
+        }
+
+        .metric label { display: block; color: var(--text-dim); margin-bottom: 2px; }
+
+        .veto-reason {
+            background: rgba(255, 255, 255, 0.05);
+            padding: 10px;
+            border-radius: 6px;
+            font-size: 0.85em;
+            color: var(--text-dim);
+            margin-bottom: 15px;
+        }
+
+        .btn-view {
+            width: 100%;
+            background: #21262d;
+            color: var(--text-color);
+            border: 1px solid #30363d;
+            padding: 8px;
+            border-radius: 6px;
+            cursor: pointer;
+            text-decoration: none;
+            display: inline-block;
+            text-align: center;
+        }
+
+        /* SULTAN_RADAR_DATA_INJECTION_POINT */
+        window.SULTAN_RADAR_DATA = null;
+    </style>
+</head>
+<body>
+
+    <header class="header">
+        <h1>TACTICAL PANDA</h1>
+        <div class="version">IRONCLAD SNIPER RADAR — V75.5</div>
+    </header>
+
+    <div class="stats-grid">
+        <div class="stat-card">
+            <h3>Solana Balance</h3>
+            <div id="walletBal" class="value">-- SOL</div>
+        </div>
+        <div class="stat-card">
+            <h3>Net Profit</h3>
+            <div id="netProfit" class="value">--◎</div>
+        </div>
+        <div class="stat-card">
+            <h3>Rent Reclaimed</h3>
+            <div id="rentSaved" class="value">--◎</div>
+        </div>
+    </div>
+
+    <h2 style="font-size: 1.2em; border-left: 4px solid var(--accent-color); padding-left: 10px; margin-bottom: 20px;">HYBRID MARKET RADAR</h2>
+    <div class="pool-grid" id="poolGrid">
+        <!-- Dashboard akan kosong jika data belum diinjeksi -->
+    </div>
+
+    <script>
+        function updateUI(data) {
+            if (!data) return;
+            document.getElementById('walletBal').innerText = (data.walletBalance || '0.0000') + ' SOL';
+            document.getElementById('netProfit').innerText = (data.totalNetProfitSol || '0.0000') + '◎';
+            document.getElementById('rentSaved').innerText = (data.totalRentSaved || '0.0000') + '◎';
+
+            const grid = document.getElementById('poolGrid');
+            grid.innerHTML = '';
+
+            if (data.candidates && data.candidates.length > 0) {
+                data.candidates.forEach(p => {
+                    const card = document.createElement('div');
+                    card.className = `pool-card ${p.isMatched ? 'matched' : 'vetoed'}`;
+                    
+                    card.innerHTML = `
+                        <div class="card-header">
+                            <div>
+                                <div class="pool-name">${p.name}</div>
+                                <div style="font-size: 0.7em; color: var(--text-dim);">${p.address.slice(0, 10)}...</div>
+                            </div>
+                            <span class="badge ${p.isMatched ? 'match' : 'veto'}">${p.isMatched ? 'MATCHED' : 'VETOED'}</span>
+                        </div>
+                        <div class="metrics">
+                            <div class="metric"><label>MCAP</label><span>$${(p.mcap/1000).toFixed(1)}K</span></div>
+                            <div class="metric"><label>VOL 24H</label><span>$${(p.vol24h/1000).toFixed(1)}K</span></div>
+                            <div class="metric"><label>LIQUIDITY</label><span>$${(p.tvl/1000).toFixed(1)}K</span></div>
+                            <div class="metric"><label>BIN STEP</label><span>${p.binStep}</span></div>
+                        </div>
+                        <div class="veto-reason">
+                            ${p.isMatched ? '✅ Position Active & Sync with TAE' : '⚠️ ' + (p.vetoReason || 'Filter Blocked')}
+                        </div>
+                        <a href="https://app.meteora.ag/dlmm/${p.address}" target="_blank" class="btn-view">VIEW ON METEORA</a>
+                    `;
+                    grid.appendChild(card);
+                });
+            } else {
+                grid.innerHTML = '<div style="grid-column: 1/-1; text-align: center; color: var(--text-dim);">⚠️ Radar standby. Klik /hunting di Telegram untuk mendulang data.</div>';
+            }
+        }
+
+        // Logic Sultan: Prioritaskan Injection
+        if (window.SULTAN_RADAR_DATA) {
+            updateUI(window.SULTAN_RADAR_DATA);
+        } else {
+            // Fallback (for devs)
+            fetch('dashboard_data.json')
+                .then(r => r.json())
+                .then(updateUI)
+                .catch(err => console.error('Radar sync failed:', err));
+        }
+    </script>
+</body>
+</html>
