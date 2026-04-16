@@ -107,6 +107,12 @@ const DEFAULTS = {
   maxVolumeTvlRatio: 70,       // Rasio Volume/TVL maksimal (Safety against wash-trade)
   minTokenFeesSol: 30,         // Minimal fee 24 jam dalam satuan SOL
   slippageBps: 100,            // Slippage tolerance dalam basis points (100 = 1%)
+
+  // Professional Yield & IQ Suite
+  autoHarvestEnabled: true,      // Aktifkan penarikan profit otomatis tanpa tutup posisi
+  autoHarvestThresholdSol: 0.04, // Threshold fee (SOL) untuk memicu harvest otomatis
+  enableSimulationShield: true,  // Aktifkan pengecekan simulasi ketat sebelum eksekusi
+  hourlyPulseEnabled: true,      // Kirim laporan ringkas setiap jam ke Telegram
 };
 
 const KNOWN_CONFIG_KEYS = new Set(Object.keys(DEFAULTS));
@@ -151,6 +157,12 @@ const CONFIG_BOUNDS = {
   minTokenAgeMinutes: { min: 0, max: 1440 },
   dailyLossLimitUsd: { min: 0, max: 1000 },
 
+  // Professional Suite Bounds
+  autoHarvestThresholdSol: { min: 0.005, max: 1.0 },
+  autoHarvestEnabled: { type: 'boolean' },
+  enableSimulationShield: { type: 'boolean' },
+  hourlyPulseEnabled: { type: 'boolean' },
+  
   lastEvolutionTradeCount: { min: 0, max: 1000000 },
   maxVolumeTvlRatio: { min: 1, max: 1000 },
   minTokenFeesSol: { min: 0, max: 10000 },

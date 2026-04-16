@@ -124,10 +124,16 @@ db.exec(`
     strategy_used TEXT,
     close_reason TEXT,
     lifecycle_state TEXT DEFAULT 'open',
+    pnl_sol REAL DEFAULT 0,
+    fees_collected_sol REAL DEFAULT 0,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     closed_at DATETIME,
     status TEXT DEFAULT 'open'
   );
+
+  // Migration: Add SOL columns if they don't exist
+  try { db.prepare(`ALTER TABLE positions ADD COLUMN pnl_sol REAL DEFAULT 0`).run(); } catch(e) {}
+  try { db.prepare(`ALTER TABLE positions ADD COLUMN fees_collected_sol REAL DEFAULT 0`).run(); } catch(e) {}
 
   CREATE TABLE IF NOT EXISTS notifications (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -175,6 +181,12 @@ db.exec(`
     payload TEXT,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     expires_at DATETIME
+  );
+
+  CREATE TABLE IF NOT EXISTS app_stats (
+    key TEXT PRIMARY KEY,
+    value REAL DEFAULT 0,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
   );
 `);
 
@@ -477,12 +489,16 @@ export function deletePendingApproval(key) {
   return runInQueue(() => db.prepare(`DELETE FROM pending_approvals WHERE key = ?`).run(key));
 }
 
-export function listRecentOperations(limit = 20) {
-  return db.prepare(`
-    SELECT * FROM operation_log
-    ORDER BY updated_at DESC, created_at DESC
-    LIMIT ?
-  `).all(limit);
+export function incrementStat(key, amount) {
+  return runInQueue(() => db.prepare(`
+    INSERT INTO app_stats (key, value) VALUES (?, ?)
+    ON CONFLICT(key) DO UPDATE SET value = value + excluded.value, updated_at = CURRENT_TIMESTAMP
+  `).run(key, amount));
+}
+
+export function getStat(key) {
+  const row = db.prepare(`SELECT value FROM app_stats WHERE key = ?`).get(key);
+  return row ? row.value : 0;
 }
 
 export default db;

@@ -170,13 +170,17 @@ export function stringify(obj, space = 0) {
  * @param {number} volatility24h - Persentase rentang harga 24 jam (0-100+)
  * @returns {number} Slippage dalam BPS (100 = 1%)
  */
-export function getConservativeSlippage(volatility24h = 0) {
-  const baseSlippage = 100; // 1.0%
-  const volFactor = 1.2;
+export function getConservativeSlippage(volatility24h = 0, isUrgent = false) {
+  const baseSlippage = isUrgent ? 200 : 150; // 2.0% for urgent, 1.5% normal
+  const volFactor = isUrgent ? 2.5 : 1.5;
   const dynamic = Math.round((volatility24h || 0) * volFactor);
   
-  // Cap ketat di 200 BPS (2.0%) sesuai request user "gak mau kena pajak max 5%"
-  const finalSlippage = Math.min(200, baseSlippage + dynamic);
+  // Aegis Chaos Factor: Jika vol > 30%, kita butuh proteksi extra
+  const chaosFactor = volatility24h > 30 ? 50 : 0;
+  
+  // Cap ditingkatkan ke 350 BPS (3.5%) untuk kondisi darurat (URGENT)
+  const maxCap = isUrgent ? 350 : 250;
+  const finalSlippage = Math.min(maxCap, baseSlippage + dynamic + chaosFactor);
   return finalSlippage;
 }
 
