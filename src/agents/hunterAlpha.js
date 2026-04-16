@@ -975,18 +975,24 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null, opt
         sentiment: 'BULLISH'
       };
 
-      // --- SULTAN PORTABLE RADAR (v75.4) ---
+      // --- SULTAN PORTABLE RADAR (v75.6) ---
       // Injeksi data (all-in-one) agar bisa dibuka di Mac tanpa CORS issues
-      const templatePath = join(__dirname, '../web/dashboard.html');
-      const sultanRadarPath = join(__dirname, '../web/radar_sultan.html');
+      const rootDir = process.cwd();
+      const templatePath = join(rootDir, 'src/web/dashboard.html');
+      const sultanRadarPath = join(rootDir, 'src/web/radar_sultan.html');
       
       if (existsSync(templatePath)) {
         let htmlStr = readFileSync(templatePath, 'utf8');
-        const injectionPoint = 'window.SULTAN_RADAR_DATA = null;';
+        // Gunakan REGEX agar anti-gagal terhadap spasi/indentasi
+        const injectionRegex = /window\.SULTAN_RADAR_DATA\s*=\s*null;/;
         const injectionValue = `window.SULTAN_RADAR_DATA = ${JSON.stringify(dashboardSnapshot, null, 2)};`;
         
-        htmlStr = htmlStr.replace(injectionPoint, injectionValue);
-        writeFileSync(sultanRadarPath, htmlStr);
+        if (injectionRegex.test(htmlStr)) {
+          htmlStr = htmlStr.replace(injectionRegex, injectionValue);
+          writeFileSync(sultanRadarPath, htmlStr);
+        } else {
+          console.warn('[hunter] Injection point not found in template!');
+        }
       }
 
       // Keep JSON for legacy/API support
