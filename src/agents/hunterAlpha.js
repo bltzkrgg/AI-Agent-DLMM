@@ -461,7 +461,6 @@ async function executeTool(name, input) {
         gasReserve: minReserve,
         notes: safeNum(balance) < totalRequired ? `⚠️ Saldo SOL kurang untuk Gas Reserve (${minReserve} SOL)` : 'OK',
       }, 2);
-      }, 2);
     }
 
     case 'get_pool_memory': {
