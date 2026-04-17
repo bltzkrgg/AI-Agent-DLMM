@@ -181,7 +181,9 @@ const CONFIG_BOUNDS = {
 function safeParseJSON(raw) {
   try {
     return JSON.parse(raw);
-  } catch {
+  } catch (e) {
+    console.error('⚠️ [config] GAGAL MEMBACA user-config.json (Syntax Error):', e.message);
+    console.error('Bot akan menggunakan nilai DEFAULT sementara. Periksa tanda koma/kutip di file Bos!');
     return {};
   }
 }
