@@ -1541,6 +1541,11 @@ export async function getTopPools(limit = 10, sortBy = 'fee_24h:desc') {
     const tvl = pool.tvl || 0;
     const vol24h = pool.volume?.['24h'] || 0;
 
+    // Heritage Awareness logic v76.0
+    const createdAt = pool.created_at || pool.pool_created_at || new Date().toISOString();
+    const ageDays = Math.max(0.1, (Date.now() - new Date(createdAt).getTime()) / (1000 * 60 * 60 * 24));
+    const totalFeesEstimated = fees24h * (ageDays * 0.6);
+
     return {
       address: pool.address,
       name: pool.name || 'Unknown',
@@ -1556,8 +1561,10 @@ export async function getTopPools(limit = 10, sortBy = 'fee_24h:desc') {
       liquidityRaw: tvl,
       fees24hRaw: fees24h,
       volume24hRaw: vol24h,
-      feeApr: parseFloat(apr24h.toFixed(2)),
-      createdAt: pool.pool_created_at,
+      feeAprNum: parseFloat(apr24h.toFixed(2)),
+      createdAt,
+      totalFeesEstimated: parseFloat(totalFeesEstimated.toFixed(2)),
+      poolAgeDays: parseFloat(ageDays.toFixed(2)),
       mcap: pool.base_token_market_cap || pool.quote_token_market_cap || pool.token_x?.market_cap || (tvl * 1.5), // Sultan Fallback: Use token context or TVL proxy
       feeTvlRatio: pool.fee_tvl_ratio?.['24h'] || 0
     };

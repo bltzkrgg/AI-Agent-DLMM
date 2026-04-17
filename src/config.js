@@ -40,6 +40,8 @@ const DEFAULTS = {
   minBinStep: 100,            // Minimal 100 bin step (Hukum 3)
   allowedBinSteps: [100, 125], // Daftar Bin Step spesifik yang diijinkan (Saklek Mode)
   minTokenFeesSol: 0,        // Min total fees SOL untuk pool (0 = disabled)
+  minTotalFeesSol: 30.0,     // Ambang batas Heritage (Total Fee seumur hidup)
+  heritageModeEnabled: true, // Aktifkan saringan riwayat sultan
   minTokenAgeMinutes: 0,     // Min usia token sejak launch (0 = disabled) — Supertrend sudah jadi gate alami
 
   // Position management
@@ -133,6 +135,9 @@ const CONFIG_BOUNDS = {
   minOrganic: { min: 0, max: 100 },
   minBinStep: { min: 1, max: 400 },
   minTokenFeesSol: { min: 0, max: 10000 },
+  minTotalFeesSol: { min: 0, max: 1000000 },
+  heritageModeEnabled: { type: 'boolean' },
+  dryRun: { type: 'boolean' },
   takeProfitFeePct: { min: 0.1, max: 100 },
   trailingTriggerPct: { min: 0.5, max: 50 },
   trailingDropPct: { min: 0.1, max: 20 },
@@ -167,10 +172,10 @@ const CONFIG_BOUNDS = {
   
   lastEvolutionTradeCount: { min: 0, max: 1000000 },
   maxVolumeTvlRatio: { min: 1, max: 1000 },
-  minTokenFeesSol: { min: 0, max: 10000 },
   slippageBps: { min: 10, max: 1000 },
   managementModel: { type: 'string' },
   hunterModel: { type: 'string' },
+  activePreset: { type: 'string' },
 };
 
 function safeParseJSON(raw) {

@@ -105,8 +105,9 @@
             font-weight: bold;
         }
 
-        .badge.veto { background: rgba(255, 75, 43, 0.1); color: var(--veto-color); }
+        .badge.veto { background: rgba(239, 68, 68, 0.2); color: #ef4444; border: 1px solid #ef4444; }
         .badge.match { background: rgba(0, 255, 136, 0.1); color: var(--accent-color); }
+        .badge.heritage { background: rgba(245, 158, 11, 0.2); color: #f59e0b; border: 1px solid #f59e0b; margin-left: 5px; }
 
         .metrics {
             display: grid;
@@ -200,7 +201,10 @@
                                 <div class="pool-name">${p.name}</div>
                                 <div style="font-size: 0.7em; color: var(--text-dim);">${p.address.slice(0, 10)}...</div>
                             </div>
-                            <span class="badge ${p.isMatched ? 'match' : 'veto'}">${p.isMatched ? 'MATCHED' : 'VETOED'}</span>
+                            <div style="display: flex; gap: 5px; align-items: center;">
+                                ${p.isHeritage ? '<span class="badge heritage">🏰 HERITAGE</span>' : ''}
+                                <span class="badge ${p.isMatched ? 'match' : 'veto'}">${p.isMatched ? 'MATCHED' : 'VETOED'}</span>
+                            </div>
                         </div>
                         <div class="metrics">
                             <div class="metric">
@@ -208,6 +212,8 @@
                                 <span>$${p.mcap >= 1e6 ? (p.mcap/1e6).toFixed(1) + 'M' : (p.mcap/1e3).toFixed(1) + 'K'}</span>
                             </div>
                             <div class="metric"><label>VOL 24H</label><span>$${(p.vol24h/1000).toFixed(1)}K</span></div>
+                            <div class="metric"><label>FEES 24H</label><span style="color: var(--accent-color)">◎${(p.fees || 0).toFixed(2)}</span></div>
+                            <div class="metric"><label>TOTAL FEES (EST)</label><span style="color: #f59e0b">◎${(p.totalFees || 0).toFixed(1)}</span></div>
                             <div class="metric"><label>LIQUIDITY</label><span>$${(p.tvl/1000).toFixed(1)}K</span></div>
                             <div class="metric"><label>BIN STEP</label><span>${p.binStep}</span></div>
                         </div>

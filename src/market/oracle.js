@@ -44,6 +44,13 @@ export async function getDLMMPoolData(poolAddress) {
 
     const feeAprCategory = feeApr >= 100 ? 'HIGH' : feeApr >= 30 ? 'MEDIUM' : 'LOW';
 
+    // Heritage Awareness logic v76.0
+    const createdAt = pool.created_at || pool.pool_created_at || new Date().toISOString();
+    const ageDays = Math.max(0.1, (Date.now() - new Date(createdAt).getTime()) / (1000 * 60 * 60 * 24));
+    
+    // Konversi fees24h ke estimasi total seumur hidup (Konservatif: rata-rata harian adalah 60% dari 24h terakhir)
+    const totalFeesEstimated = fees24h * (ageDays * 0.6);
+
     return {
       address: poolAddress, name: pool.name || '',
       tvl, volume24h, fees24h,
@@ -52,6 +59,9 @@ export async function getDLMMPoolData(poolAddress) {
       binStep,
       tokenXMint: pool.token_x?.address || null,
       tokenYMint: pool.token_y?.address || null,
+      createdAt,
+      totalFeesEstimated: parseFloat(totalFeesEstimated.toFixed(2)),
+      poolAgeDays: parseFloat(ageDays.toFixed(2)),
     };
   } catch { return null; }
 }

@@ -251,16 +251,32 @@ async function executeTool(name, input) {
         // 📊 LP EFFICIENCY GUARD: Prioritaskan kolam "Gacor" (Volume/TVL Ratio > 0.5)
         // Kita mau kolam yang sibuk biar fee ngalir terus di jaring 94% kita.
         const isHighlyProductive = feeRatio >= 0.005; // 0.5% yield per hari (approx > 180% APR)
+        
+        // 🏰 HERITAGE FILTER v76.0 (Kecerdasan Sultan)
+        const minTotalFeesSol = cfg.minTotalFeesSol || 30.0;
+        const heritageMode = cfg.heritageModeEnabled !== false;
+        
+        const isMomentumPass = (minTokenFeesSol <= 0 || fees >= minTokenFeesSol) && isHighlyProductive;
+        const isHeritagePass = heritageMode && (p.totalFeesEstimated >= minTotalFeesSol);
 
         return (
           (binStep === 100 || binStep === 125) &&
           tvl >= thresholds.minTvl &&
           tvl <= thresholds.maxTvl &&
           feeRatio >= thresholds.minFeeActiveTvlRatio &&
-          isHighlyProductive &&
-          (minTokenFeesSol <= 0 || fees >= minTokenFeesSol) &&
+          (isMomentumPass || isHeritagePass) &&
           !isOnCooldown(p.address)
         );
+      }).map(p => {
+        const fees = p.fees24hRaw || 0;
+        const isMomentumPass = (minTokenFeesSol <= 0 || fees >= minTokenFeesSol);
+        const isHeritagePass = (cfg.heritageModeEnabled !== false) && (p.totalFeesEstimated >= (cfg.minTotalFeesSol || 30.0));
+        
+        return {
+          ...p,
+          isHeritageMatch: isHeritagePass && !isMomentumPass,
+          heritageStatus: isHeritagePass ? 'HERITAGE_SULTAN' : 'MOMENTUM_ONLY'
+        };
       });
 
       // Enrich: multi-TF + smart wallet + LP Agent data (parallel, best-effort)
@@ -965,11 +981,13 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null, opt
           tvl: p.liquidityRaw,
           vol24h: p.volume24hRaw,
           fees: p.fees24hRaw,
+          totalFees: p.totalFeesEstimated, // New: Heritage Awareness v76.0
           binStep: p.binStep,
           mcap: p.mcap,
           score: p.darwinScore,
           volTvlRatio: (p.volume24hRaw / (p.liquidityRaw || 1)).toFixed(2),
           isMatched: p.isMatched,
+          isHeritage: p.isHeritageMatch,   // New: Tag Sultan Multiday
           vetoReason: p.vetoReason
         })),
         sentiment: 'BULLISH'
@@ -1122,9 +1140,12 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null, opt
     if (notifyFn) {
       const smartWalletHits = finalEnriched.filter(p => p.smartWallet?.wallets?.length > 0).length;
       const highTFAlign = finalEnriched.filter(p => (p.multiTF?.score || 0) >= 0.67).length;
+      const heritageHits = finalEnriched.filter(p => p.isHeritageMatch).length;
+
       await notifyFn(
         `📊 <b>Pre-screening selesai</b>\n` +
         `✅ Viable: ${viable.length}  ❌ Filtered: ${skipped}\n` +
+        (heritageHits > 0 ? `🏰 Heritage Sultan (Multiday): <b>${heritageHits} pool</b>\n` : '') +
         (highTFAlign > 0 ? `📈 Multi-TF kuat (≥4 TF): ${highTFAlign} pool\n` : '') +
         (smartWalletHits > 0 ? `🎯 Smart wallet detected: ${smartWalletHits} pool\n` : '') +
         (viable.length === 0 ? `🛑 <i>Skipping AI: Tidak ada kandidat sehat untuk dianalisis.</i>` : `<i>Menjalankan analisis mendalam (Top ${Math.min(10, viable.length)})...</i>`)

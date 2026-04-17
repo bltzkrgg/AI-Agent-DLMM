@@ -1377,6 +1377,10 @@ bot.onText(/\/setconfig(?:\s+(\S+))?(?:\s+(.+))?/, (msg, match) => {
       `minVolume24h             = ${cfg.minVolume24h}`,
       `minTvl                   = ${cfg.minTvl}`,
       `maxTvl                   = ${cfg.maxTvl}`,
+      `minTokenFeesSol          = ${cfg.minTokenFeesSol}`,
+      `minTotalFeesSol          = ${cfg.minTotalFeesSol}`,
+      `heritageModeEnabled      = ${cfg.heritageModeEnabled}`,
+      `activePreset             = ${cfg.activePreset}`,
       `dryRun                   = ${cfg.dryRun}`,
     ];
     return bot.sendMessage(chatId,
