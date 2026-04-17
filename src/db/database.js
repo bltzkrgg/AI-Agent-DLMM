@@ -186,12 +186,59 @@ db.exec(`
     value REAL DEFAULT 0,
     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
   );
+
+  CREATE TABLE IF NOT EXISTS exit_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    position_address TEXT NOT NULL UNIQUE,
+    pool_address TEXT NOT NULL,
+    token_mint TEXT,
+
+    -- Entry timing
+    entry_time TEXT,
+    entry_price REAL,
+
+    -- Exit timing & price
+    exit_time TEXT,
+    exit_price REAL,
+    hold_minutes INTEGER,
+
+    -- PnL & returns
+    pnl_pct REAL,
+    pnl_usd REAL,
+    fees_claimed_usd REAL,
+    total_return_usd REAL,
+
+    -- TAE exit metadata
+    exit_trigger TEXT,
+    exit_zone TEXT,
+    exit_retracement REAL,
+    exit_retracement_cap REAL,
+
+    -- Fee & modifier status saat exit
+    fee_ratio_at_exit REAL,
+    fee_velocity_increasing INTEGER,
+    lper_patience_active INTEGER,
+
+    -- Outcome
+    profit_or_loss TEXT,
+    exit_reason TEXT,
+    close_reason_code TEXT,
+
+    -- Metadata
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY(position_address) REFERENCES positions(position_address)
+  );
 `);
 
 db.exec(`
   CREATE UNIQUE INDEX IF NOT EXISTS idx_operation_active_unique
   ON operation_log(operation_type, IFNULL(entity_id, '__global__'))
   WHERE status IN ('pending', 'in_progress');
+
+  CREATE INDEX IF NOT EXISTS idx_exit_trigger ON exit_events(exit_trigger);
+  CREATE INDEX IF NOT EXISTS idx_exit_zone ON exit_events(exit_zone);
+  CREATE INDEX IF NOT EXISTS idx_exit_created_at ON exit_events(created_at);
+  CREATE INDEX IF NOT EXISTS idx_exit_pool ON exit_events(pool_address);
 `);
 
 // Migrasi kolom — setiap ALTER dijalankan sendiri supaya error satu tidak block yang lain

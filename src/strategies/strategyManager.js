@@ -43,6 +43,34 @@ const BASELINE_STRATEGIES = {
       emergencyStopLossPct: 95,
       takeProfitPct: 20,
     },
+  },
+  'Deep Fishing': {
+    id: 'deep_fishing',
+    type: 'single_side_y',
+    allowedBinSteps: [80, 100, 125],
+    parameters: {
+      binStep: 100,
+      minMcap: 250000,
+      minVolume24h: 1000000,
+      timeframe: '15m',
+    },
+    entry: {
+      requireSupertrendBullish: true,
+      requireSupertrendFlip: true,
+      timeframe: '15m',
+      confirmationOnClose: true,
+    },
+    deploy: {
+      label: 'deep_fishing_v1',
+      entryPriceOffsetMin: 86,
+      entryPriceOffsetMax: 94,
+      slippagePct: 0.5,
+    },
+    exit: {
+      mode: 'supertrend_flip',
+      emergencyStopLossPct: 95,
+      takeProfitPct: 20,
+    },
   }
 };
 

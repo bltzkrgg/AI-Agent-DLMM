@@ -24,6 +24,7 @@ import { padR, hr, kv, codeBlock, formatPnl, shortAddr, shortStrat } from './uti
 import { initMonitor } from './monitor/positionMonitor.js';
 import { autoEvolveIfReady, runEvolutionCycle } from './learn/evolve.js';
 import { getTodayResults, formatDailyReport, savePerformanceSnapshot, backupAllData } from './market/strategyPerformance.js';
+import { recordExitEvent, getExitsByTrigger, getExitsByZone, getPatientExitAnalysis, getTAESummary, getTriggerComparison, getExitEventCount } from './db/exitTracking.js';
 import { runStartupModelCheck, formatModelStatus, testModel, testCurrentModel, fetchFreeModels } from './agent/modelCheck.js';
 import { discoverAllModels, formatModelList, listAvailableModels, getModelInfo, initializeModelDiscovery } from './agent/modelDiscovery.js';
 import { runOpportunityScanner } from './market/opportunityScanner.js';
@@ -649,6 +650,86 @@ bot.onText(/\/results/, async (msg) => {
     const results = getTodayResults();
     await sendLong(msg.chat.id, formatDailyReport(results), { parse_mode: 'HTML' });
   } catch (e) { bot.sendMessage(msg.chat.id, `❌ <code>${escapeHTML(e.message)}</code>`, { parse_mode: 'HTML' }); }
+});
+
+// 📊 TAE Exit Tracking Analytics
+bot.onText(/\/tae_stats/, async (msg) => {
+  if (msg.from.id !== ALLOWED_ID) return;
+  try {
+    const summary = getTAESummary();
+    const byTrigger = getTriggerComparison();
+    const byZone = getExitsByZone();
+    const patientAnalysis = getPatientExitAnalysis();
+    const totalCount = getExitEventCount();
+
+    if (totalCount === 0) {
+      await bot.sendMessage(msg.chat.id,
+        `📊 <b>TAE Exit Tracking</b>\n\n` +
+        `⏳ <i>No exit events recorded yet. System ready!</i>\n` +
+        `Monitor this dashboard after first positions close.`,
+        { parse_mode: 'HTML' }
+      );
+      return;
+    }
+
+    let report = `📊 <b>TAE SYSTEM ANALYTICS</b>\n\n`;
+
+    // Overall Summary
+    report += `<b>📈 Overall Performance:</b>\n`;
+    report += `├─ Total Exits: <code>${summary.total_exits}</code>\n`;
+    report += `├─ Avg PnL: <code>${(summary.overall_avg_pnl || 0).toFixed(2)}%</code>\n`;
+    report += `├─ Win Rate: <code>${summary.overall_win_rate ? summary.overall_win_rate.toFixed(1) : '0'}%</code> (${summary.total_wins || 0}W)\n`;
+    report += `├─ Avg Hold: <code>${summary.avg_hold || 0}</code> min\n`;
+    report += `├─ Best Exit: <code>+${(summary.best_exit || 0).toFixed(2)}%</code>\n`;
+    report += `├─ Worst Exit: <code>${(summary.worst_exit || 0).toFixed(2)}%</code>\n`;
+    report += `├─ Total PnL USD: <code>$${(summary.total_pnl_usd || 0).toFixed(2)}</code>\n`;
+    report += `└─ Total Fees: <code>$${(summary.total_fees || 0).toFixed(2)}</code>\n\n`;
+
+    // Performance by Trigger
+    if (byTrigger.length > 0) {
+      report += `<b>🎯 Exit Triggers Performance:</b>\n`;
+      for (const t of byTrigger) {
+        const winRate = t.count > 0 ? ((t.wins / t.count) * 100).toFixed(0) : 0;
+        report += `├─ <code>${t.exit_trigger}</code>\n`;
+        report += `│  ├─ Count: ${t.total} | Avg PnL: <code>${(t.avg_pnl_pct || 0).toFixed(2)}%</code>\n`;
+        report += `│  ├─ Win Rate: <code>${winRate}%</code> (${t.wins}/${t.total})\n`;
+        report += `│  └─ Avg Hold: <code>${(t.avg_hold_min || 0).toFixed(0)}</code> min\n`;
+      }
+      report += `\n`;
+    }
+
+    // Performance by Zone
+    if (byZone.length > 0) {
+      report += `<b>🎪 Zone Performance:</b>\n`;
+      for (const z of byZone) {
+        const winRate = z.count > 0 ? ((z.wins / z.count) * 100).toFixed(0) : 0;
+        report += `├─ <code>${z.exit_zone}</code>\n`;
+        report += `│  ├─ Avg PnL: <code>${(z.avg_pnl_pct || 0).toFixed(2)}%</code> (${z.count} exits)\n`;
+        report += `│  └─ Win Rate: <code>${winRate}%</code>\n`;
+      }
+      report += `\n`;
+    }
+
+    // LP Patience Modifier Impact
+    if (patientAnalysis.length > 0) {
+      report += `<b>⏸️ LP Patience Modifier Impact:</b>\n`;
+      for (const p of patientAnalysis) {
+        const mode = p.mode || (p.lper_patience_active === 1 ? 'Active (High Fee)' : 'Inactive (Low Fee)');
+        const winRate = p.count > 0 ? ((p.wins / p.count) * 100).toFixed(1) : 0;
+        report += `├─ ${mode}\n`;
+        report += `│  ├─ Avg PnL: <code>${(p.avg_pnl_pct || 0).toFixed(2)}%</code>\n`;
+        report += `│  └─ Win Rate: <code>${winRate}%</code> (${p.count} exits)\n`;
+      }
+      report += `\n`;
+    }
+
+    report += `<i>Updated: ${new Date().toLocaleString('en-US', { timeZone: 'UTC' })} UTC</i>`;
+
+    await sendLong(msg.chat.id, report, { parse_mode: 'HTML' });
+  } catch (e) {
+    console.error('[tae_stats] Error:', e.message);
+    bot.sendMessage(msg.chat.id, `❌ <code>${escapeHTML(e.message)}</code>`, { parse_mode: 'HTML' });
+  }
 });
 
 bot.onText(/\/start/, (msg) => {

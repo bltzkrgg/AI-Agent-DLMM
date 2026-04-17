@@ -909,14 +909,15 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null, opt
       const thresholds = getThresholds();
       const tvl = p.liquidityRaw || 0;
       const binStep = p.binStep || 0;
-      const allowed = cfg.allowedBinSteps || [100, 125];
+      const activeStrat = getStrategy(cfg.activeStrategy || 'Evil Panda');
+      const allowed = activeStrat?.allowedBinSteps || cfg.allowedBinSteps || [100, 125];
       
       let matched = true;
       let reason = 'Target Locked via Hybrid Scan';
 
       if (!allowed.includes(binStep)) {
         matched = false;
-        reason = `Reject: Bin Step ${binStep} bukan standar Sultan [100, 125]`;
+        reason = `Reject: Bin Step ${binStep} not in allowed list [${allowed.join(', ')}] for strategy`;
         rejBin++;
       } else if (tvl < thresholds.minTvl || tvl > thresholds.maxTvl) {
         matched = false;
@@ -1049,6 +1050,23 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null, opt
       if (trend !== 'BULLISH') {
         if (process.env.HUNTER_DEBUG) console.log(`[hunter] Skipping ${p.name} - Supertrend 15m is ${trend}`);
         return null;
+      }
+
+      // ─── Phase 2.0a: Deep Fishing Flip Gate ──────────────────────
+      // Only applies if active strategy requires confirmed flip (requireSupertrendFlip: true)
+      const supChanged = ohlcv?.ta?.supertrend?.changed;
+      const dataSource = ohlcv?.ta?.supertrend?.source;
+      const _activeStrat = getStrategy(cfg.activeStrategy || 'Evil Panda');
+      if (_activeStrat?.entry?.requireSupertrendFlip) {
+        if (dataSource === 'Momentum-Proxy') {
+          if (process.env.HUNTER_DEBUG) console.log(`[hunter] Deep Fishing: Skipping ${p.name} - Momentum-Proxy has no flip data`);
+          return null;
+        }
+        if (!supChanged) {
+          if (process.env.HUNTER_DEBUG) console.log(`[hunter] Deep Fishing: Skipping ${p.name} - trend BULLISH but changed=false (no flip)`);
+          return null;
+        }
+        if (process.env.HUNTER_DEBUG) console.log(`[hunter] Deep Fishing FLIP CONFIRMED: ${p.name} - Supertrend flipped BEARISH→BULLISH on closed candle`);
       }
 
       // ─── Phase 2.1: LLM Cost Guard (Static Security Filter) ─────

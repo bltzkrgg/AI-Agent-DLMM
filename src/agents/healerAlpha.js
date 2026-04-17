@@ -26,6 +26,7 @@ import { getStrategy } from '../strategies/strategyManager.js';
 import { analyzeTradeResult } from '../learn/failureAnalysis.js';
 import { calculateSupertrend } from '../utils/ta.js';
 import { getGmgnSecurity } from '../utils/gmgn.js';
+import { recordExitEvent } from '../db/exitTracking.js';
 
 
 
@@ -1625,7 +1626,33 @@ export async function runPanicWatchdog(notifyFn) {
               : `Insiders/Shadow Wallets dumping! (Drop: ${(insiderDrop * 100).toFixed(1)}%)`;
 
             await notifyLiquidityDump(pos.token_mint, reason, notifyFn);
-            
+
+            // 📊 TAE Tracking: Guardian Angel Dump Exit
+            recordExitEvent({
+              positionAddress: pos.position_address,
+              poolAddress: pos.pool_address,
+              tokenMint: pos.token_mint,
+              entryTime: pos.created_at,
+              entryPrice: pos.entry_price || 0,
+              exitTime: new Date().toISOString(),
+              exitPrice: analysis?.snapshot?.price || 0,
+              holdMinutes: Math.floor((Date.now() - new Date(pos.created_at)) / 60000),
+              pnlPct: pnlPct,
+              pnlUsd: posSnapshot.pnlUsd,
+              feesClaimedUsd: posSnapshot.feesUsd,
+              totalReturnUsd: (posSnapshot.pnlUsd || 0) + (posSnapshot.feesUsd || 0),
+              exitTrigger: 'GUARDIAN_ANGEL_DUMP',
+              exitZone: zone || 'UNKNOWN',
+              exitRetracement: 0,
+              exitRetrancementCap: 0,
+              feeRatioAtExit: feeRatio || 0,
+              feeVelocityIncreasing: isFeeVelocityIncreasing ? 1 : 0,
+              lperPatienceActive: isLPerPatienceEnabled ? 1 : 0,
+              profitOrLoss: pnlPct > 0 ? 'PROFIT' : pnlPct < 0 ? 'LOSS' : 'BREAKEVEN',
+              exitReason: reason,
+              closeReasonCode: 'GUARDIAN_ANGEL_DUMP_EXIT'
+            });
+
             // 🔥 Zap Out Instan (Survival Override)
             await closePositionDLMM(pos.pool_address, pos.position_address, {
               pnlUsd: posSnapshot.pnlUsd, pnlPct: posSnapshot.pnlPct, feesUsd: posSnapshot.feesUsd,
@@ -1667,8 +1694,35 @@ export async function runPanicWatchdog(notifyFn) {
                    `• Alasan: ${reason === "FEE_STAGNATION" ? "Mati Suri (1 jam tanpa fee)" : "Volume Drop (< $400k)"}\n` +
                    `• PnL: ${pnlPct.toFixed(2)}%\n\n` +
                    `_Modal dilepas untuk mencari pool baru._`;
-        
+
         await notifyFn?.(msg);
+
+        // 📊 TAE Tracking: Zombie Pool Exit
+        recordExitEvent({
+          positionAddress: pos.position_address,
+          poolAddress: pos.pool_address,
+          tokenMint: pos.token_mint,
+          entryTime: pos.created_at,
+          entryPrice: pos.entry_price || 0,
+          exitTime: new Date().toISOString(),
+          exitPrice: analysis?.snapshot?.price || 0,
+          holdMinutes: Math.floor((Date.now() - new Date(pos.created_at)) / 60000),
+          pnlPct: pnlPct,
+          pnlUsd: posSnapshot.pnlUsd,
+          feesClaimedUsd: posSnapshot.feesUsd,
+          totalReturnUsd: (posSnapshot.pnlUsd || 0) + (posSnapshot.feesUsd || 0),
+          exitTrigger: 'ZOMBIE_EXIT',
+          exitZone: zone || 'UNKNOWN',
+          exitRetracement: 0,
+          exitRetrancementCap: 0,
+          feeRatioAtExit: feeRatio || 0,
+          feeVelocityIncreasing: isFeeVelocityIncreasing ? 1 : 0,
+          lperPatienceActive: isLPerPatienceEnabled ? 1 : 0,
+          profitOrLoss: pnlPct > 0 ? 'PROFIT' : pnlPct < 0 ? 'LOSS' : 'BREAKEVEN',
+          exitReason: `Zombie pool: ${reason === "FEE_STAGNATION" ? "No fees for 1h" : "Volume < $400k"}`,
+          closeReasonCode: `ZOMBIE_EXIT_${reason}`
+        });
+
         await closePositionDLMM(pos.pool_address, pos.position_address, {
           pnlUsd: posSnapshot.pnlUsd, pnlPct: posSnapshot.pnlPct, feesUsd: posSnapshot.feesUsd,
           closeReason: `ZOMBIE_EXIT_${reason}`, lifecycleState: 'closed_zombie'
@@ -1735,12 +1789,39 @@ export async function runPanicWatchdog(notifyFn) {
                    `• Peak PnL: +${peak.toFixed(2)}%\n` +
                    `• Exit @ PnL: +${pnlPct.toFixed(2)}% (Drop: ${retracementDrop.toFixed(2)}%)\n\n` +
                    `_Retracement cap ${retracementCap}% (incl. Fee Buffer) tercapai._`;
-        
+
         await notifyFn?.(msg);
-          await closePositionDLMM(pos.pool_address, pos.position_address, {
-            pnlUsd: posSnapshot.pnlUsd, pnlPct: posSnapshot.pnlPct, feesUsd: posSnapshot.feesUsd,
-            closeReason: `TAE_WATCHDOG_EXIT_${zone.replace(/ /g, '_')}`, lifecycleState: 'closed_panic'
-          }, { isUrgent: true });
+
+        // 📊 TAE Tracking: Trailing TP Hit
+        recordExitEvent({
+          positionAddress: pos.position_address,
+          poolAddress: pos.pool_address,
+          tokenMint: pos.token_mint,
+          entryTime: pos.created_at,
+          entryPrice: pos.entry_price || 0,
+          exitTime: new Date().toISOString(),
+          exitPrice: analysis?.snapshot?.price || 0,
+          holdMinutes: Math.floor((Date.now() - new Date(pos.created_at)) / 60000),
+          pnlPct: pnlPct,
+          pnlUsd: posSnapshot.pnlUsd,
+          feesClaimedUsd: posSnapshot.feesUsd,
+          totalReturnUsd: (posSnapshot.pnlUsd || 0) + (posSnapshot.feesUsd || 0),
+          exitTrigger: 'TRAILING_TP_HIT',
+          exitZone: zone,
+          exitRetracement: retracementDrop,
+          exitRetrancementCap: retracementCap,
+          feeRatioAtExit: feeRatio || 0,
+          feeVelocityIncreasing: isFeeVelocityIncreasing ? 1 : 0,
+          lperPatienceActive: isLPerPatienceEnabled ? 1 : 0,
+          profitOrLoss: pnlPct > 0 ? 'PROFIT' : pnlPct < 0 ? 'LOSS' : 'BREAKEVEN',
+          exitReason: `Trailing TP hit at ${zone}. Peak PnL: +${peak.toFixed(2)}%, Exit: +${pnlPct.toFixed(2)}%`,
+          closeReasonCode: `TAE_WATCHDOG_EXIT_${zone.replace(/ /g, '_')}`
+        });
+
+        await closePositionDLMM(pos.pool_address, pos.position_address, {
+          pnlUsd: posSnapshot.pnlUsd, pnlPct: posSnapshot.pnlPct, feesUsd: posSnapshot.feesUsd,
+          closeReason: `TAE_WATCHDOG_EXIT_${zone.replace(/ /g, '_')}`, lifecycleState: 'closed_panic'
+        }, { isUrgent: true });
           if (!isDryRun()) {
             await new Promise(r => setTimeout(r, 2000));
             try {
@@ -1765,8 +1846,35 @@ export async function runPanicWatchdog(notifyFn) {
                      `• Exit @ PnL: +${pnlPct.toFixed(2)}%\n` +
                      `• Trend: ${isTrendBearish ? 'BEARISH' : 'NEUTRAL'}\n\n` +
                      `_Profit dikunci sesuai momentum._`;
-          
+
           await notifyFn?.(msg);
+
+          // 📊 TAE Tracking: Supertrend Flip Exit
+          recordExitEvent({
+            positionAddress: pos.position_address,
+            poolAddress: pos.pool_address,
+            tokenMint: pos.token_mint,
+            entryTime: pos.created_at,
+            entryPrice: pos.entry_price || 0,
+            exitTime: new Date().toISOString(),
+            exitPrice: analysis?.snapshot?.price || 0,
+            holdMinutes: Math.floor((Date.now() - new Date(pos.created_at)) / 60000),
+            pnlPct: pnlPct,
+            pnlUsd: posSnapshot.pnlUsd,
+            feesClaimedUsd: posSnapshot.feesUsd,
+            totalReturnUsd: (posSnapshot.pnlUsd || 0) + (posSnapshot.feesUsd || 0),
+            exitTrigger: 'SUPERTREND_FLIP',
+            exitZone: zone,
+            exitRetracement: retracementDrop,
+            exitRetrancementCap: retracementCap,
+            feeRatioAtExit: feeRatio || 0,
+            feeVelocityIncreasing: isFeeVelocityIncreasing ? 1 : 0,
+            lperPatienceActive: isLPerPatienceEnabled ? 1 : 0,
+            profitOrLoss: pnlPct > 0 ? 'PROFIT' : pnlPct < 0 ? 'LOSS' : 'BREAKEVEN',
+            exitReason: `Trend flipped to ${isTrendBearish ? 'BEARISH' : 'NEUTRAL'} at ${zone}. Profit locked.`,
+            closeReasonCode: `TAE_WATCHDOG_MOMENTUM_EXIT_${zone.replace(/ /g, '_')}`
+          });
+
           await closePositionDLMM(pos.pool_address, pos.position_address, {
             pnlUsd: posSnapshot.pnlUsd, pnlPct: posSnapshot.pnlPct, feesUsd: posSnapshot.feesUsd,
             closeReason: `TAE_WATCHDOG_MOMENTUM_EXIT_${zone.replace(/ /g, '_')}`, lifecycleState: 'closed_profit'
@@ -1798,8 +1906,35 @@ export async function runPanicWatchdog(notifyFn) {
                    `• Status: Out of Range > 15 Menit\n` +
                    `• PnL: ${pnlPct.toFixed(2)}%\n\n` +
                    `_Modal dibebaskan untuk mencari pool baru yang produktif._`;
-        
+
         await notifyFn?.(msg);
+
+        // 📊 TAE Tracking: OOR Bailout
+        recordExitEvent({
+          positionAddress: pos.position_address,
+          poolAddress: pos.pool_address,
+          tokenMint: pos.token_mint,
+          entryTime: pos.created_at,
+          entryPrice: pos.entry_price || 0,
+          exitTime: new Date().toISOString(),
+          exitPrice: analysis?.snapshot?.price || 0,
+          holdMinutes: Math.floor((Date.now() - new Date(pos.created_at)) / 60000),
+          pnlPct: pnlPct,
+          pnlUsd: posSnapshot.pnlUsd,
+          feesClaimedUsd: posSnapshot.feesUsd,
+          totalReturnUsd: (posSnapshot.pnlUsd || 0) + (posSnapshot.feesUsd || 0),
+          exitTrigger: 'OOR_BAILOUT',
+          exitZone: zone || 'UNKNOWN',
+          exitRetracement: 0,
+          exitRetrancementCap: 0,
+          feeRatioAtExit: feeRatio || 0,
+          feeVelocityIncreasing: isFeeVelocityIncreasing ? 1 : 0,
+          lperPatienceActive: isLPerPatienceEnabled ? 1 : 0,
+          profitOrLoss: pnlPct > 0 ? 'PROFIT' : pnlPct < 0 ? 'LOSS' : 'BREAKEVEN',
+          exitReason: `Out of range > 15 minutes. Emergency exit to find productive pool.`,
+          closeReasonCode: 'OOR_HARD_EXIT_WATCHDOG'
+        });
+
         await closePositionDLMM(pos.pool_address, pos.position_address, {
           pnlUsd: posSnapshot.pnlUsd,
           pnlPct: posSnapshot.pnlPct,
@@ -1875,8 +2010,35 @@ export async function runPanicWatchdog(notifyFn) {
                    `• Alasan: <i>Trend 15m BEARISH &amp; Price &lt; Lower Range</i>\n` +
                    `• PnL: <code>${pnlPct > 0 ? '+' : ''}${pnlPct.toFixed(2)}%</code>\n\n` +
                    `⚠️ <i>Sistem menutup posisi secara otomatis untuk mengamankan sisa SOL.</i>`;
-        
+
         await notifyFn?.(msg, { parse_mode: 'HTML' });
+
+        // 📊 TAE Tracking: Panic Exit (Bearish + OOR)
+        recordExitEvent({
+          positionAddress: pos.position_address,
+          poolAddress: pos.pool_address,
+          tokenMint: pos.token_mint,
+          entryTime: pos.created_at,
+          entryPrice: pos.entry_price || 0,
+          exitTime: new Date().toISOString(),
+          exitPrice: analysis?.snapshot?.price || 0,
+          holdMinutes: Math.floor((Date.now() - new Date(pos.created_at)) / 60000),
+          pnlPct: pnlPct,
+          pnlUsd: posSnapshot.pnlUsd,
+          feesClaimedUsd: posSnapshot.feesUsd,
+          totalReturnUsd: (posSnapshot.pnlUsd || 0) + (posSnapshot.feesUsd || 0),
+          exitTrigger: 'PANIC_EXIT_BEARISH_OOR',
+          exitZone: zone || 'UNKNOWN',
+          exitRetracement: 0,
+          exitRetrancementCap: 0,
+          feeRatioAtExit: feeRatio || 0,
+          feeVelocityIncreasing: isFeeVelocityIncreasing ? 1 : 0,
+          lperPatienceActive: isLPerPatienceEnabled ? 1 : 0,
+          profitOrLoss: pnlPct > 0 ? 'PROFIT' : pnlPct < 0 ? 'LOSS' : 'BREAKEVEN',
+          exitReason: `Critical dump: Trend bearish + price below range. Emergency liquidation to protect capital.`,
+          closeReasonCode: 'PANIC_EXIT_BEARISH_OOR'
+        });
+
         const closeResult = await closePositionDLMM(pos.pool_address, pos.position_address, {
           pnlUsd: posSnapshot.pnlUsd,
           pnlPct: posSnapshot.pnlPct,
@@ -1916,8 +2078,35 @@ export async function runPanicWatchdog(notifyFn) {
                    `• Alasan: <i>Trend Bearish detected while in profit.</i>\n` +
                    `• PnL: <code>+${pnlPct.toFixed(2)}%</code>\n\n` +
                    `<i>Mengunci profit sebelum dimakan dump.</i>`;
-        
+
         await notifyFn?.(msg, { parse_mode: 'HTML' });
+
+        // 📊 TAE Tracking: Profit Protection Exit
+        recordExitEvent({
+          positionAddress: pos.position_address,
+          poolAddress: pos.pool_address,
+          tokenMint: pos.token_mint,
+          entryTime: pos.created_at,
+          entryPrice: pos.entry_price || 0,
+          exitTime: new Date().toISOString(),
+          exitPrice: analysis?.snapshot?.price || 0,
+          holdMinutes: Math.floor((Date.now() - new Date(pos.created_at)) / 60000),
+          pnlPct: pnlPct,
+          pnlUsd: posSnapshot.pnlUsd,
+          feesClaimedUsd: posSnapshot.feesUsd,
+          totalReturnUsd: (posSnapshot.pnlUsd || 0) + (posSnapshot.feesUsd || 0),
+          exitTrigger: 'PROFIT_PROTECTION',
+          exitZone: zone || 'UNKNOWN',
+          exitRetracement: 0,
+          exitRetrancementCap: 0,
+          feeRatioAtExit: feeRatio || 0,
+          feeVelocityIncreasing: isFeeVelocityIncreasing ? 1 : 0,
+          lperPatienceActive: isLPerPatienceEnabled ? 1 : 0,
+          profitOrLoss: 'PROFIT',
+          exitReason: `Trend flip to bearish while in profit. Securing gains before dump.`,
+          closeReasonCode: 'PROFIT_PROTECTION_BEARISH'
+        });
+
         const closeResult = await closePositionDLMM(pos.pool_address, pos.position_address, {
           pnlUsd: posSnapshot.pnlUsd,
           pnlPct: posSnapshot.pnlPct,
