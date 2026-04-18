@@ -51,10 +51,8 @@ const BASELINE_STRATEGIES = {
     },
     exit: {
       mode: 'evil_panda_confluence',
-      takeProfitPct: 5,
-      emergencyStopLossPct: 8,
-      maxHoldHours: 168,
-      volumeTvlAlertThreshold: 15,
+      // takeProfitPct, emergencyStopLossPct, maxHoldHours dibaca dari config
+      // supaya user bisa ubah via user-config.json tanpa sentuh kode strategi
     },
   },
 };
