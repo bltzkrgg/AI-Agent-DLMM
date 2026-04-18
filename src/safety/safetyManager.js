@@ -21,7 +21,11 @@ import { safeNum, stringify } from '../utils/safeJson.js';
 
 const DAILY_RISK_STATE_KEY = 'daily-risk-state';
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const DAILY_RISK_FILE = process.env.BOT_DAILY_RISK_PATH || join(__dirname, '../../daily-risk-state.json');
+
+// Lazy — resolved at call time so BOT_DAILY_RISK_PATH set before first use is always honoured.
+function getDailyRiskFilePath() {
+  return process.env.BOT_DAILY_RISK_PATH || join(__dirname, '../../daily-risk-state.json');
+}
 
 // Pending confirmations — key: confirmationId, value: { resolve, reject, timeout }
 const pendingConfirmations = new Map();
@@ -36,9 +40,10 @@ function getDefaultDailyRiskState(date = getTodayStr()) {
 }
 
 function readDailyRiskFile() {
-  if (!existsSync(DAILY_RISK_FILE)) return null;
+  const filePath = getDailyRiskFilePath();
+  if (!existsSync(filePath)) return null;
   try {
-    const parsed = JSON.parse(readFileSync(DAILY_RISK_FILE, 'utf8'));
+    const parsed = JSON.parse(readFileSync(filePath, 'utf8'));
     return parsed && typeof parsed === 'object' ? parsed : null;
   } catch (e) {
     console.warn(`[safety] Failed to parse daily risk file: ${e.message}`);
@@ -47,10 +52,11 @@ function readDailyRiskFile() {
 }
 
 function writeDailyRiskFile(state) {
+  const filePath = getDailyRiskFilePath();
   try {
-    const tmp = `${DAILY_RISK_FILE}.tmp`;
+    const tmp = `${filePath}.tmp`;
     writeFileSync(tmp, stringify(state, 2), 'utf8');
-    renameSync(tmp, DAILY_RISK_FILE);
+    renameSync(tmp, filePath);
   } catch (e) {
     console.warn(`[safety] Failed to persist daily risk file: ${e.message}`);
   }

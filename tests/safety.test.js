@@ -16,6 +16,7 @@ test('daily risk state persists across module reloads and uses USD consistently'
   const root = mkdtempSync(join(tmpdir(), 'dlmm-safety-'));
   process.env.BOT_CONFIG_PATH = join(root, 'user-config.json');
   process.env.BOT_RUNTIME_STATE_PATH = join(root, 'runtime-state.json');
+  process.env.BOT_DAILY_RISK_PATH = join(root, 'daily-risk-state.json');
 
   const firstLoad = await importFresh(join(repoRoot, 'src/safety/safetyManager.js'));
   firstLoad.setStartingBalanceUsd(1000);
