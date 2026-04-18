@@ -390,7 +390,7 @@ POOL FILTER (semua harus terpenuhi):
   • Fee tier       : 0.25%+ (minimal worth the gas)
 
 EXECUTION:
-  • Type           : single_side_y — SOL only, tidak pakai token X
+  • Type           : single_side_y — SOL only, tidak pakai token X sama sekali
   • Range          : 0% sampai -94% dari harga aktif (entryPriceOffsetMin=0, entryPriceOffsetMax=94) ~94 bins
   • Deploy size    : 1.0 SOL (target 0.8–1.2 SOL per posisi)
   • Entry gate     : Supertrend 15m BULLISH + confirmed candle close

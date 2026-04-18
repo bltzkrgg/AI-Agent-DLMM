@@ -30,13 +30,13 @@ function getDbIfReady() {
 const BASELINE_STRATEGIES = {
   'Evil Panda': {
     id: 'evil_panda',
-    type: 'single_side_y', // SOL only
+    type: 'single_side_y',        // SOL only
     allowedBinSteps: [100, 125],
     parameters: {
       binStep: 100,
       minMcap: 250000,
-      minVolume24h: 1000000,
-      timeframe: '15m', // 15-minute Master Guard
+      minVolume24h: 20000,
+      timeframe: '15m',           // 15-minute Master Guard
     },
     entry: {
       requireSupertrendBullish: true,
@@ -45,15 +45,16 @@ const BASELINE_STRATEGIES = {
     },
     deploy: {
       label: 'evil_panda_master_v61',
-      entryPriceOffsetMin: 0,  // Starts at current price
-      entryPriceOffsetMax: 94, // Extends to -94% drop
+      entryPriceOffsetMin: 0,     // Starts at current price
+      entryPriceOffsetMax: 94,    // Extends to -94% drop (~94 bins)
       slippagePct: 0.5,
     },
     exit: {
       mode: 'evil_panda_confluence',
       takeProfitPct: 5,
-      emergencyStopLossPct: 8,   // Emergency: price break >8%
-      maxHoldHours: 168,          // Max 7 days hold window
+      emergencyStopLossPct: 8,
+      maxHoldHours: 168,
+      volumeTvlAlertThreshold: 15,
     },
   },
 };
