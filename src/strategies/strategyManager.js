@@ -56,35 +56,6 @@ const BASELINE_STRATEGIES = {
       maxHoldHours: 6,
     },
   },
-  'Deep Fishing': {
-    id: 'deep_fishing',
-    type: 'single_side_y',
-    allowedBinSteps: [80, 100, 125],
-    parameters: {
-      binStep: 100,
-      minMcap: 250000,
-      minVolume24h: 1000000,
-      timeframe: '15m',
-    },
-    entry: {
-      requireSupertrendBullish: true,
-      requireSupertrendFlip: true,
-      timeframe: '15m',
-      confirmationOnClose: true,
-    },
-    deploy: {
-      label: 'deep_fishing_v1',
-      entryPriceOffsetMin: 86,
-      entryPriceOffsetMax: 94,
-      slippagePct: 0.5,
-    },
-    exit: {
-      mode: 'evil_panda_confluence',
-      takeProfitPct: 5,
-      emergencyStopLossPct: 10,
-      maxHoldHours: 6,
-    },
-  }
 };
 
 const DEFAULT_CUSTOM_STRATEGY_TEMPLATE = {

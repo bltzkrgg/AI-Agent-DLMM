@@ -73,7 +73,7 @@ const DEFAULTS = {
   maxPriceImpactPct: 1.5,     // Maksimal price impact (%) yang diijinkan saat simulasi swap
   maxBinsPerPosition: 125,   // Kapasitas bin maksimal sesuai skema (80-125)
   activePreset: 'supertrend_only', // Mode keputusan: supertrend_only
-  activeStrategy: 'Evil Panda', // Active BASELINE strategy. Set to 'Deep Fishing' to activate crash-zone strategy
+  activeStrategy: 'Evil Panda', // Active BASELINE strategy
   targetRangePct: 90.0,      // Goal: Deep Jaring 90% Range (Hukum 2)
 
   // Darwinian Signal Weighting — dari 263 closed positions
@@ -95,7 +95,6 @@ const DEFAULTS = {
   // Strategy-specific tuning. Base identity is 'Evil Panda Master'.
   strategyOverrides: {
     'Evil Panda': {},
-    'Deep Fishing': {},
   },
 
   // Meridian Integration & Evolution

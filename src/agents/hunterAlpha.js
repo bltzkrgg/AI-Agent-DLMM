@@ -1131,23 +1131,6 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null, opt
         return null;
       }
 
-      // ─── Phase 2.0a: Deep Fishing Flip Gate ──────────────────────
-      // Only applies if active strategy requires confirmed flip (requireSupertrendFlip: true)
-      const supChanged = ohlcv?.ta?.supertrend?.changed;
-      const dataSource = ohlcv?.ta?.supertrend?.source;
-      const _activeStrat = getStrategy(cfg.activeStrategy || 'Evil Panda');
-      if (_activeStrat?.entry?.requireSupertrendFlip) {
-        if (dataSource === 'Momentum-Proxy') {
-          if (process.env.HUNTER_DEBUG) console.log(`[hunter] Deep Fishing: Skipping ${p.name} - Momentum-Proxy has no flip data`);
-          return null;
-        }
-        if (!supChanged) {
-          if (process.env.HUNTER_DEBUG) console.log(`[hunter] Deep Fishing: Skipping ${p.name} - trend BULLISH but changed=false (no flip)`);
-          return null;
-        }
-        if (process.env.HUNTER_DEBUG) console.log(`[hunter] Deep Fishing FLIP CONFIRMED: ${p.name} - Supertrend flipped BEARISH→BULLISH on closed candle`);
-      }
-
       // ─── Phase 2.1: LLM Cost Guard (Static Security Filter) ─────
       // Run full audit for top candidates BEFORE sending to LLM.
       // This saves 10k-50k tokens by rejecting rugs during pre-screening.

@@ -1825,7 +1825,9 @@ export async function runPanicWatchdog(notifyFn) {
       const deployedSol = pos.deployed_sol || 0;
       const claimThreshold3Sol = deployedSol > 0 ? Math.max(deployedSol * 0.03, 0.005) : 0.01;
       const exitPrice = snapshot?.price?.currentPrice || match?.currentPrice || 0;
-      let zone = 'UNKNOWN';
+      let zone = pnlPct < 10 ? 'ZONE 1 (Sniper)'
+        : pnlPct < 30 ? 'ZONE 2 (Runner)'
+        : 'ZONE 3 (Moonshot)';
       let isLPerPatienceEnabled = false;
       
       if (!runtimeState.feeTracker) {
@@ -1983,24 +1985,9 @@ export async function runPanicWatchdog(notifyFn) {
         continue;
       }
 
-      zone = "NONE";
       let triggerPct = 1.0;
-      let retracementCap = 1.5;
-      isLPerPatienceEnabled = false;
-
-      if (pnlPct < 10) {
-        zone = "ZONE 1 (Sniper)";
-        retracementCap = 1.5;
-        isLPerPatienceEnabled = false;
-      } else if (pnlPct < 30) {
-        zone = "ZONE 2 (Runner)";
-        retracementCap = 3.5;
-        isLPerPatienceEnabled = true;
-      } else {
-        zone = "ZONE 3 (Moonshot)";
-        retracementCap = 7.0;
-        isLPerPatienceEnabled = true;
-      }
+      let retracementCap = pnlPct < 10 ? 1.5 : pnlPct < 30 ? 3.5 : 7.0;
+      isLPerPatienceEnabled = pnlPct >= 10;
 
       // 🐼 LP-IDENTITY: Sinkronisasi TAE dengan Mindset LP
       // Jika Fee APR sangat tinggi (>70%) atau Velocity meningkat, kita lebih "Sabar" menghadapi retracement.
