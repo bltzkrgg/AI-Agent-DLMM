@@ -383,23 +383,27 @@ EVIL PANDA — SATU-SATUNYA CORE STRATEGY. DILARANG SEBUT STRATEGI LAIN.
 GUNAKAN PARAMETER INI SECARA PERSIS — JANGAN KARANG ANGKA SENDIRI:
 
 POOL FILTER (semua harus terpenuhi):
-  • Pool age       : <72 jam (3 hari max) — freshness edge
-  • Volume/TVL     : >20x (hyper-active gate, pool sepi = skip)
-  • TVL            : $1K–$15K (lo bisa dominasi likuiditas)
-  • binStep        : 100 atau 125 (meme/volatile SOL pairs)
+  • Pool age       : <${cfg.maxPoolAgeDays * 24} jam (${cfg.maxPoolAgeDays} hari max) — freshness edge
+  • Volume/TVL     : >${cfg.minVolumeTvlRatio}x (hyper-active gate, pool sepi = skip)
+  • TVL            : $${cfg.minTvl.toLocaleString('en-US')}–$${cfg.maxTvl.toLocaleString('en-US')} (lo bisa dominasi likuiditas)
+  • binStep        : ${(cfg.allowedBinSteps || [100, 125]).join(' atau ')} (meme/volatile SOL pairs)
   • Fee tier       : 0.25%+ (minimal worth the gas)
+  • Min mcap       : $${cfg.minMcap.toLocaleString('en-US')}
+  • Min volume 24h : $${cfg.minVolume24h.toLocaleString('en-US')}
 
 EXECUTION:
   • Type           : single_side_y — SOL only, tidak pakai token X sama sekali
   • Range          : 0% sampai -94% dari harga aktif (entryPriceOffsetMin=0, entryPriceOffsetMax=94) ~94 bins
-  • Deploy size    : 1.0 SOL (target 0.8–1.2 SOL per posisi)
+  • Deploy size    : ${cfg.deployAmountSol} SOL per posisi (max ${cfg.maxPositions} posisi)
   • Entry gate     : Supertrend 15m BULLISH + confirmed candle close
 
 EXIT:
-  • Take profit    : 5% fee PnL
-  • Emergency SL   : >8% price break dari range
-  • Max hold       : 168 jam (7 hari)
+  • Take profit    : ${cfg.takeProfitFeePct}% fee PnL
+  • Emergency SL   : >${cfg.stopLossPct}% price break dari range
+  • Max hold       : ${cfg.maxHoldHours} jam
+  • Trailing TP    : aktif di ${cfg.trailingTriggerPct}% PnL, close jika turun ${cfg.trailingDropPct}% dari peak
   • Volume alert   : jika Volume/TVL turun <15x → prep exit
+  • OOR wait       : ${cfg.outOfRangeWaitMinutes} menit sebelum close OOR
 
 MONITORING:
   • In-range check : setiap 2 jam
