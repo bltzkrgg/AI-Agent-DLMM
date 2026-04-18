@@ -317,8 +317,9 @@ async function executeTool(toolName, toolInput) {
       })), null, 2);
     }
     case 'open_position_with_strategy': {
-      const strategy = getStrategyByName(toolInput.strategy_name);
-      if (!strategy) throw new Error(`Strategi "${toolInput.strategy_name}" tidak ditemukan.`);
+      // Hardlocked ke Evil Panda — satu-satunya core strategy yang diizinkan.
+      const strategy = getStrategyByName('Evil Panda');
+      if (!strategy) throw new Error('Evil Panda strategy tidak ditemukan.');
       const params = parseStrategyParameters(strategy);
       const { result, operationId } = await executeControlledOperation({
         operationType: 'OPEN_POSITION',
@@ -375,8 +376,16 @@ ATURAN KOMUNIKASI (WAJIB):
 
 TUGAS UTAMA:
 - Monitor posisi & evaluasi In-Range efficiency.
-- Analisa pool & jalankan order strategi [Warp Panda].
+- Analisa pool & jalankan order menggunakan satu-satunya core strategy: Evil Panda.
 - Belajar dari setiap feedback user untuk menajamkan Instinct bot.
+
+EVIL PANDA — SATU-SATUNYA CORE STRATEGY (JANGAN SEBUT STRATEGI LAIN):
+- Karakter: crash-catcher SOL single-side (token Y only, tidak pakai token X)
+- Pool target: binStep 100 atau 125 (meme/volatile pairs)
+- Range: entryPriceOffsetMin 0% sampai entryPriceOffsetMax -94% dari harga saat ini (~94 bins)
+- Entry gate: Supertrend 15m harus BULLISH + confirmed close
+- Exit: mode evil_panda_confluence, TP 5%, emergency SL 10%, max hold 6 jam
+- Selalu jawab Evil Panda ketika ditanya soal "core strategy" atau "strategi utama".
 
 Jangan tanya user informasi yang bisa kamu cari sendiri dengan tool.
 Gunakan emoji secara taktis untuk readability data, bukan untuk sekadar hiasan.`;

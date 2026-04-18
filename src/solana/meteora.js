@@ -682,7 +682,7 @@ async function _openPositionLogic(poolAddress, tokenXAmount, tokenYAmount, price
   let rangeMin, rangeMax;
 
   if (Number.isFinite(offsetMin) && Number.isFinite(offsetMax)) {
-    // Deep Fishing logic: Price < Current
+    // Evil Panda offset-based range deployment: Price < Current (SOL single-side Y)
     // BinStepPct = binStep / 10000.  Percent / BinStepPct = Bins.
     const binStepPct = binStep / 10000;
     rangeMax = activeBin.binId - Math.floor((offsetMin / 100) / binStepPct);

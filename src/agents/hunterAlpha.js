@@ -620,8 +620,8 @@ async function executeTool(name, input) {
         }, null, 2);
       }
 
-      // Strategy validation sebelum lock
-      const strategy = getStrategy(input.strategy_name || 'Evil Panda');
+      // Strategy validation sebelum lock — hardlocked ke Evil Panda, tidak ada strategi lain.
+      const strategy = getStrategy('Evil Panda');
 
       if (!strategy) {
         return JSON.stringify({
