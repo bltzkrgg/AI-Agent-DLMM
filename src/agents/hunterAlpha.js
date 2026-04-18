@@ -5,7 +5,7 @@ import { join } from 'path';
 import { fileURLToPath } from 'url';
 import { createMessage, resolveModel } from '../agent/provider.js';
 import { getConfig, getThresholds } from '../config.js';
-import { getTopPools, getPoolInfo, openPosition } from '../solana/meteora.js';
+import { getTopPools, getPoolInfo, openPosition, getSolPriceUsd } from '../solana/meteora.js';
 import { getWalletBalance, getConnection } from '../solana/wallet.js';
 import { PublicKey } from '@solana/web3.js';
 import { getOpenPositions, getPoolStats, closePositionWithPnl, getStat } from '../db/database.js';
@@ -317,7 +317,7 @@ async function executeTool(name, input) {
         const fees = p.fees24hRaw || 0;
         const isMomentumPass = (minTokenFeesSol <= 0 || fees >= minTokenFeesSol);
         const isHeritagePass = (cfg.heritageModeEnabled !== false) && (p.totalFeesEstimated >= (cfg.minTotalFeesSol || 30.0));
-        
+
         return {
           ...p,
           isHeritageMatch: isHeritagePass && !isMomentumPass,
@@ -372,7 +372,7 @@ async function executeTool(name, input) {
         const mint = p.tokenX || p.tokenY;
         const currentRatio = parseFloat(p.feeToTvlRatio);
         const existing = tokenMap.get(mint);
-        
+
         if (!existing || currentRatio > parseFloat(existing.feeToTvlRatio)) {
           tokenMap.set(mint, p);
         }
@@ -516,7 +516,7 @@ async function executeTool(name, input) {
         : maxCap;
       const minReserve = cfg.gasReserve || 0.05;
       const totalRequired = cfg.deployAmountSol + minReserve;
-      
+
       return stringify({
         solBalance: balance,
         openPositions: openPos.length,
@@ -633,6 +633,22 @@ async function executeTool(name, input) {
           blocked: true,
           reason: `Pool tokenY bukan WSOL (${poolInfo.tokenYSymbol || poolInfo.tokenY?.slice(0, 8)}) — bot hanya deploy ke pool TOKEN/SOL. Skip pool ini.`,
         }, null, 2);
+      }
+
+      // Guard: Liquidity Dominance — prevent bot from becoming the dominant LP
+      // Dominant LP = price can be manipulated against the position, amplifying IL
+      const poolTvlUsd = safeNum(poolInfo?.tvl);
+      if (poolTvlUsd > 0) {
+        const solPriceUsd   = await getSolPriceUsd().catch(() => 150);
+        const deployUsd     = deployAmountSol * solPriceUsd;
+        const dominancePct  = (deployUsd / poolTvlUsd) * 100;
+        const maxDominance  = cfg.maxLpDominancePct ?? 20;
+        if (dominancePct > maxDominance) {
+          return JSON.stringify({
+            blocked: true,
+            reason: `Liquidity dominance terlalu tinggi: ${dominancePct.toFixed(1)}% (max ${maxDominance}%). Deploy ~$${deployUsd.toFixed(0)} ke pool TVL $${poolTvlUsd.toFixed(0)} akan membuat bot jadi LP dominan — risiko manipulasi harga tinggi.`,
+          }, null, 2);
+        }
       }
 
       // Strategy validation sebelum lock — hardlocked ke Evil Panda, tidak ada strategi lain.
@@ -798,11 +814,11 @@ async function executeTool(name, input) {
             strategy: strategy.name,
             deployOptions,
           },
-        metadata: { source: 'hunter_alpha', strategy: strategy.name },
-        policy: { isEntryOperation: true, entryMaxPositions: effectiveMaxPos },
-        execute: () => openPosition(
-          input.pool_address,
-          tokenXAmount,
+          metadata: { source: 'hunter_alpha', strategy: strategy.name },
+          policy: { isEntryOperation: true, entryMaxPositions: effectiveMaxPos },
+          execute: () => openPosition(
+            input.pool_address,
+            tokenXAmount,
             tokenYAmount,
             targetPriceRangePct,
             strategy.name,
@@ -914,8 +930,8 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null, opt
   // Error "terminated" terjadi saat polling Telegram putus ditengah eksekusi.
   hunterNotifyFn = notifyFn
     ? (msg) => notifyFn(msg).catch(err => {
-        if (process.env.HUNTER_DEBUG) console.warn('[hunter] notify swallowed:', err?.message);
-      })
+      if (process.env.HUNTER_DEBUG) console.warn('[hunter] notify swallowed:', err?.message);
+    })
     : null;
   hunterBotRef = bot;
   hunterAllowedId = allowedId;
@@ -1005,7 +1021,7 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null, opt
       const binStep = p.binStep || 0;
       const activeStrat = getStrategy(cfg.activeStrategy || 'Evil Panda');
       const allowed = activeStrat?.allowedBinSteps || cfg.allowedBinSteps || [100, 125];
-      
+
       let matched = true;
       let reason = 'Target Locked via Hybrid Scan';
 
@@ -1015,11 +1031,11 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null, opt
         rejBin++;
       } else if (tvl < thresholds.minTvl || tvl > thresholds.maxTvl) {
         matched = false;
-        reason = `Reject: TVL $${(tvl/1000).toFixed(1)}k di luar rentang $${(thresholds.minTvl/1000).toFixed(1)}k-$${(thresholds.maxTvl/1000).toFixed(1)}k`;
+        reason = `Reject: TVL $${(tvl / 1000).toFixed(1)}k di luar rentang $${(thresholds.minTvl / 1000).toFixed(1)}k-$${(thresholds.maxTvl / 1000).toFixed(1)}k`;
         rejTvl++;
       } else if (p.volume24hRaw < thresholds.minVolume24h) {
         matched = false;
-        reason = `Reject: Volume $${(p.volume24hRaw/1000).toFixed(1)}k terlalu sepi`;
+        reason = `Reject: Volume $${(p.volume24hRaw / 1000).toFixed(1)}k terlalu sepi`;
         rejTvl++;
       } else if ((() => {
         const vol = p.volume24hRaw || 0;
@@ -1042,7 +1058,7 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null, opt
         rejTvl++;
       } else if (p.mcap && p.mcap < thresholds.minMcap) {
         matched = false;
-        reason = `Reject: Mcap $${(p.mcap/1000).toFixed(1)}k terlalu kecil`;
+        reason = `Reject: Mcap $${(p.mcap / 1000).toFixed(1)}k terlalu kecil`;
         rejMcap++;
       } else if (isOnCooldown(p.address)) {
         matched = false;
@@ -1088,7 +1104,7 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null, opt
         walletBalance: safeNum(walBalRaw).toFixed(4),
         activeCount: openPositions.length,
         totalNetProfitSol: (openPositions.reduce((acc, p) => acc + (parseFloat(p.pnl_sol) || 0), 0)).toFixed(4),
-        totalRentSaved: safeNum(rentSaved).toFixed(4), 
+        totalRentSaved: safeNum(rentSaved).toFixed(4),
         candidates: radarDisplay.map(p => ({
           address: p.address,
           name: p.name,
@@ -1112,13 +1128,13 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null, opt
       const rootDir = process.cwd();
       const templatePath = join(rootDir, 'src/web/dashboard.html');
       const sultanRadarPath = join(rootDir, 'src/web/radar_sultan.html');
-      
+
       if (existsSync(templatePath)) {
         let htmlStr = readFileSync(templatePath, 'utf8');
         // Gunakan REGEX agar anti-gagal terhadap spasi/indentasi
         const injectionRegex = /window\.SULTAN_RADAR_DATA\s*=\s*null;/;
         const injectionValue = `window.SULTAN_RADAR_DATA = ${JSON.stringify(dashboardSnapshot, null, 2)};`;
-        
+
         if (injectionRegex.test(htmlStr)) {
           htmlStr = htmlStr.replace(injectionRegex, injectionValue);
           writeFileSync(sultanRadarPath, htmlStr);
@@ -1222,7 +1238,7 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null, opt
     const finalEnriched = enriched.filter(p => p !== null);
     const trendFilteredCount = finalEnriched.length;
     const trendRejectedCount = basicFilteredCount - finalEnriched.length;
-    
+
     if (finalEnriched.length === 0) {
       if (notifyFn) {
         await notifyFn(
@@ -1237,8 +1253,8 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null, opt
       return null;
     }
 
-    const viable = finalEnriched.filter(p => 
-      p.poolMemory.verdict !== 'HINDARI' && 
+    const viable = finalEnriched.filter(p =>
+      p.poolMemory.verdict !== 'HINDARI' &&
       p.security.verdict !== 'AVOID'
     );
     const skipped = finalEnriched.length - viable.length;

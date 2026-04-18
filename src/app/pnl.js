@@ -5,6 +5,7 @@ function round(value, digits) {
 export function resolvePnlSnapshot({
   deployedSol = 0,
   currentValueSol = 0,
+  feesClaimed = 0,
   providerPnlPct = null,
   directPnlPct = null,
   positionAddress = null,
@@ -44,9 +45,11 @@ export function resolvePnlSnapshot({
 
   if (candidatePnlPct !== null) {
     const pnlPct = round(candidatePnlPct, 2);
+    // Include claimed fees so PnL is not understated after auto-harvest
+    const adjustedValueSol = currentValueSol + feesClaimed;
     const pnlSol = deployedSol > 0
       ? round((deployedSol * pnlPct) / 100, 6)
-      : round(currentValueSol - deployedSol, 6);
+      : round(adjustedValueSol - deployedSol, 6);
     return {
       pnlPct,
       pnlSol,
@@ -54,9 +57,11 @@ export function resolvePnlSnapshot({
     };
   }
 
-  const pnlSol = round(currentValueSol - deployedSol, 6);
-  const pnlPct = deployedSol > 0 && currentValueSol > 0
-    ? round(((currentValueSol - deployedSol) / deployedSol) * 100, 2)
+  // Fallback: manual estimate — include claimed fees so post-harvest PnL is accurate
+  const adjustedValueSol = currentValueSol + feesClaimed;
+  const pnlSol = round(adjustedValueSol - deployedSol, 6);
+  const pnlPct = deployedSol > 0 && adjustedValueSol > 0
+    ? round(((adjustedValueSol - deployedSol) / deployedSol) * 100, 2)
     : 0;
 
   return {

@@ -18,6 +18,7 @@ export function resolvePositionSnapshot({
   const pnl = resolvePnlSnapshot({
     deployedSol,
     currentValueSol,
+    feesClaimed: dbPosition?.fees_claimed_sol || 0,
     providerPnlPct,
     directPnlPct: Number.isFinite(directPnlPct)
       ? directPnlPct

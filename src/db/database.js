@@ -288,6 +288,8 @@ const migrations = [
   // Fix #1: Track claimed fees separately so unclaimed = collected - claimed
   'ALTER TABLE positions ADD COLUMN fees_claimed_sol REAL DEFAULT 0',
   'ALTER TABLE positions ADD COLUMN fees_claimed_usd REAL DEFAULT 0',
+  // Fix #4: Persist trailing TP peak so it survives healer restarts
+  'ALTER TABLE positions ADD COLUMN peak_pnl_pct REAL DEFAULT NULL',
 ];
 for (const sql of migrations) {
   try { db.exec(sql); } catch (e) {
@@ -678,6 +680,13 @@ export function listRecentFailedOperations(hours = 6, limit = 50) {
     payload:  safeJsonParse(row.payload,  null),
     metadata: safeJsonParse(row.metadata, null),
   }));
+}
+
+export function updatePositionPeakPnl(positionAddress, peakPnlPct) {
+  return runInQueue(() => db.prepare(`
+    UPDATE positions SET peak_pnl_pct = ?, updated_at = CURRENT_TIMESTAMP
+    WHERE position_address = ?
+  `).run(peakPnlPct, positionAddress));
 }
 
 export function updateLivePositionStats(positionAddress, { pnlUsd, pnlPct, feesUsd, pnlSol, feesSol }) {

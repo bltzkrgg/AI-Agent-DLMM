@@ -17,15 +17,48 @@ import crypto from 'crypto';
 
 const METEORA_DLMM_API = 'https://dlmm-api.meteora.ag';
 
-// 🛡️ Jito Anti-MEV Addresses
-const JITO_TIP_ADDRESSES = [
+// 🛡️ Jito Anti-MEV — fallback addresses (used if live fetch fails)
+const JITO_TIP_ADDRESSES_FALLBACK = [
   '96g9sRQCvMSN7Y7dqGfS9i77fof6q63tZ7AghqC9R94',
   'HFqU5x63VTqvQss8hp11i4wVV8bD44PvwucfZ2bU7gRe',
   'Cw8CFyMvAxE9tLDH96L3e2r2Zgrj6n8R6KX35tN7uA7y',
   'ADaUMid9Tfdt98Z1k8n5A1S13TPrWfW19Vw935w1A3y',
   'DfXy77Ym97yqT5xSUnXRH2B3D5YQ9v4A5Agh96yq9C7y',
-  'ADuX8sjZpK3xUn5iGfS9v5ADuUvYdfR6k9w35wYdfR5y'
+  'ADuX8sjZpK3xUn5iGfS9v5ADuUvYdfR6k9w35wYdfR5y',
 ];
+
+// Cache: refresh every 60 seconds so stale addresses are detected quickly
+let _jitoTipCache = { addrs: null, fetchedAt: 0 };
+const JITO_TIP_CACHE_TTL_MS = 60_000;
+
+async function getJitoTipAddresses() {
+  const now = Date.now();
+  if (_jitoTipCache.addrs && now - _jitoTipCache.fetchedAt < JITO_TIP_CACHE_TTL_MS) {
+    return _jitoTipCache.addrs;
+  }
+  try {
+    const res = await fetchWithTimeout(
+      'https://mainnet.block-engine.jito.wtf/api/v1/bundles',
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'getTipAccounts', params: [] }),
+      },
+      5000,
+    );
+    if (res.ok) {
+      const data = await res.json();
+      const addrs = data?.result;
+      if (Array.isArray(addrs) && addrs.length > 0) {
+        _jitoTipCache = { addrs, fetchedAt: now };
+        return addrs;
+      }
+    }
+  } catch (e) {
+    console.warn(`[meteora] Jito tip fetch failed (using fallback): ${e.message}`);
+  }
+  return JITO_TIP_ADDRESSES_FALLBACK;
+}
 
 // Strip existing ComputeBudget instructions then inject fresh ones.
 // Only works for Legacy Transaction — VersionedTransaction uses compiled format.
@@ -140,7 +173,9 @@ async function pollJitoBundleStatus(bundleId, maxWaitMs = 60000) {
     }
     await new Promise(r => setTimeout(r, 2000));
   }
-  return { landed: false, reason: 'Timeout' };
+  // Throw instead of returning landed:false — callers that forget to check the return
+  // value would silently record the position as open even when the TX never landed.
+  throw new Error(`Jito bundle ${bundleId.slice(0, 8)}… did not confirm after ${maxWaitMs / 1000}s`);
 }
 
 // ─── Bin ID → display price helpers ─────────────────────────────
@@ -802,6 +837,10 @@ async function _openPositionLogic(poolAddress, tokenXAmount, tokenYAmount, price
   const allTxHashes = [];
   let totalSucceededSol = 0;
 
+  // Proportional chunk allocation tracking — prevents chunks 2+ from deploying zero liquidity
+  let allocatedChunkX = new BN(0);
+  let allocatedChunkY = new BN(0);
+
   try {
     for (let ci = 0; ci < binChunks.length; ci++) {
       const chunk = binChunks[ci];
@@ -822,21 +861,23 @@ async function _openPositionLogic(poolAddress, tokenXAmount, tokenYAmount, price
       const chunkBinsCount = chunk.upperBinId - chunk.lowerBinId + 1;
 
       // ── Chunk Amount Allocation ──────────────────────────────────
-      // Chunk 0 (position creation): Use FULL amount to initialize position
-      // Chunk 1+ (range extension): Use ZERO amount, only add empty bins
-      // This prevents amount fragmentation and reduces transaction count
+      // Distribute total liquidity proportionally across all chunks by bin count.
+      // Previous design put all liquidity in chunk 0 and zero in chunks 1+, which
+      // meant up to 65% of the range (Evil Panda ~281 bins at binStep=100) had no
+      // actual liquidity and would earn zero fees when price moved into those bins.
       let chunkTotalX, chunkTotalY;
-      if (ci === 0) {
-        // First chunk: Deploy full amount to create position
-        chunkTotalX = totalXBN;
-        chunkTotalY = totalYBN;
-        console.log(`[meteora] Chunk 0 allocation: FULL amount (X=${chunkTotalX.toString()}, Y=${chunkTotalY.toString()})`);
+      if (ci === binChunks.length - 1) {
+        // Last chunk: assign remaining balance to prevent dust from integer division
+        chunkTotalX = totalXBN.sub(allocatedChunkX);
+        chunkTotalY = totalYBN.sub(allocatedChunkY);
       } else {
-        // Subsequent chunks: Zero amount, only extend bin range
-        chunkTotalX = new BN(0);
-        chunkTotalY = new BN(0);
-        console.log(`[meteora] Chunk ${ci} allocation: ZERO amount (only extend range)`);
+        // Proportional share: (chunkBins / totalBins) * totalAmount (integer division)
+        chunkTotalX = totalXBN.mul(new BN(chunkBinsCount)).div(new BN(totalBins));
+        chunkTotalY = totalYBN.mul(new BN(chunkBinsCount)).div(new BN(totalBins));
+        allocatedChunkX = allocatedChunkX.add(chunkTotalX);
+        allocatedChunkY = allocatedChunkY.add(chunkTotalY);
       }
+      console.log(`[meteora] Chunk ${ci} allocation: bins=${chunkBinsCount}/${totalBins}, X=${chunkTotalX.toString()}, Y=${chunkTotalY.toString()}`);
 
       let txs;
       const isDipFishing = (tokenXAmount === 0 || tokenXAmount === '0');
@@ -1247,7 +1288,8 @@ export async function closePositionDLMM(poolAddress, positionAddress, pnlData = 
         if (isTxVersioned) {
           try {
             const tipAmount = 1000000; // 0.001 SOL Jito Tip
-            const tipAddr = JITO_TIP_ADDRESSES[Math.floor(Math.random() * JITO_TIP_ADDRESSES.length)];
+            const jitoAddrs = await getJitoTipAddresses();
+            const tipAddr = jitoAddrs[Math.floor(Math.random() * jitoAddrs.length)];
             const tipIx = SystemProgram.transfer({
                fromPubkey: wallet.publicKey,
                toPubkey: new PublicKey(tipAddr),

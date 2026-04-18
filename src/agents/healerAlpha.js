@@ -5,7 +5,7 @@ import { getConfig, getThresholds, isDryRun } from '../config.js';
 import { getPositionInfo, closePositionDLMM, claimFees, getPoolInfo, getSolPriceUsd, getAllWalletPositions, addLiquidityToPosition } from '../solana/meteora.js';
 import { getConnection, getWallet, getWalletBalance } from '../solana/wallet.js';
 import { PublicKey } from '@solana/web3.js';
-import { getOpenPositions, closePositionWithPnl, saveNotification, updatePositionLifecycle, savePosition, updateLivePositionStats, recordFeesClaimed, recordPnlDivergenceEvent } from '../db/database.js';
+import { getOpenPositions, closePositionWithPnl, saveNotification, updatePositionLifecycle, savePosition, updateLivePositionStats, updatePositionPeakPnl, recordFeesClaimed, recordPnlDivergenceEvent } from '../db/database.js';
 import { getLessonsContext } from '../learn/lessons.js';
 import { checkStopLoss, checkMaxDrawdown, recordPnlUsd, getSafetyStatus } from '../safety/safetyManager.js';
 import { analyzeMarket } from '../market/analyst.js';
@@ -1094,11 +1094,17 @@ export async function runHealerAlpha(notifyFn) {
       // ── Healer Trailing Shadow State (non-exit, telemetry only) ─────────
       // Trailing exit utama dipusatkan di TAE Watchdog (single source of truth).
       // Main Healer hanya menyimpan telemetry agar tidak terjadi race dengan Watchdog.
+      // Fix #4: seed peak from DB so it survives healer restarts
+      const savedPeakPnl = Number.isFinite(pos.peak_pnl_pct) ? pos.peak_pnl_pct : null;
       let tracker = {
-        peakPnl: runtimeState.healerPeakPnl ?? pnlPct,
+        peakPnl: runtimeState.healerPeakPnl ?? savedPeakPnl ?? pnlPct,
         trailingActive: false,
       };
-      if (pnlPct > tracker.peakPnl) tracker.peakPnl = pnlPct;
+      if (pnlPct > tracker.peakPnl) {
+        tracker.peakPnl = pnlPct;
+        // Persist new peak so it survives a restart (best-effort, non-blocking)
+        updatePositionPeakPnl(addr, tracker.peakPnl).catch(() => {});
+      }
       const trailingTpHit = false;
       updatePositionRuntimeState(addr, {
         healerPeakPnl: tracker.peakPnl,
@@ -1142,8 +1148,16 @@ export async function runHealerAlpha(notifyFn) {
       } else {
         updatePositionRuntimeState(addr, { oorSince: null });
       }
+      // Normalize OOR distance to price % — raw bin counts are not comparable across pools
+      // with different binSteps (binStep=100: 10 bins ≈ 10.5% move; binStep=5: 10 bins ≈ 0.5%)
+      const poolBinStep = match.binStep || strategyProfile?.parameters?.binStep || 100;
+      const oorPricePct = outOfRangeBins !== null
+        ? (Math.pow(1 + poolBinStep / 10000, outOfRangeBins) - 1) * 100
+        : null;
       const oorBinsThreshold = cfg.outOfRangeBinsToClose ?? 10;
-      const oorBinsTriggered = outOfRangeBins !== null && oorBinsThreshold > 0 && outOfRangeBins >= oorBinsThreshold;
+      // Scale threshold to consistent price % (oorBinsThreshold × binStep/100 ≈ intended %)
+      const oorPricePctThreshold = oorBinsThreshold * (poolBinStep / 100);
+      const oorBinsTriggered = oorPricePct !== null && oorPricePctThreshold > 0 && oorPricePct >= oorPricePctThreshold;
       const tpHit   = pnlPct >= strategyTakeProfitPct;
 
       // Tidak ada trigger → flag apakah posisi ini butuh LLM, lalu skip
@@ -1997,8 +2011,13 @@ export async function runPanicWatchdog(notifyFn) {
         console.log(`[watchdog] LP Mindset Active: Fee APR/Velocity tinggi, TAE Exit ditunda (Cap: +${retracementCap}%).`);
       }
 
-      let peak = runtimeState.watchdogPeakPnl ?? pnlPct;
-      if (pnlPct > peak) peak = pnlPct;
+      // Fix #4: seed watchdog peak from DB so trailing TP survives restarts
+      const savedWatchdogPeak = Number.isFinite(pos.peak_pnl_pct) ? pos.peak_pnl_pct : null;
+      let peak = runtimeState.watchdogPeakPnl ?? savedWatchdogPeak ?? pnlPct;
+      if (pnlPct > peak) {
+        peak = pnlPct;
+        updatePositionPeakPnl(addr, peak).catch(() => {});
+      }
       
       const trailingActive = runtimeState.watchdogTrailingActive || pnlPct >= triggerPct;
       const retracementDrop = peak - pnlPct;

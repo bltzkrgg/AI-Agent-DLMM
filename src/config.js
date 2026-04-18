@@ -56,7 +56,7 @@ const DEFAULTS = {
   trailingDropPct: 1.5,      // Close kalau PnL turun X% dari peak
   outOfRangeWaitMinutes: 30,
   outOfRangeBinsToClose: 10, // Tutup posisi jika OOR lebih dari N bins
-  maxHoldHours: 168,         // Force close position after 168h (7 days) — Evil Panda hold window
+  maxHoldHours: 6,           // Force close position after 6h — dead capital cleanup
   minFeeClaimUsd: 1.0,
 
   // OOR-specific pool cooldown
@@ -73,6 +73,7 @@ const DEFAULTS = {
   proactiveExitMinProfitPct: 1.0,
   proactiveExitBearishConfidence: 0.7,
   maxPriceImpactPct: 1.5,     // Maksimal price impact (%) yang diijinkan saat simulasi swap
+  maxLpDominancePct: 20,      // Max % dari pool TVL yang boleh dimiliki bot — cegah jadi LP dominan
   maxBinsPerPosition: 125,   // Kapasitas bin maksimal sesuai skema (80-125)
   activePreset: 'supertrend_only', // Mode keputusan: supertrend_only
   activeStrategy: 'Evil Panda', // Active BASELINE strategy
@@ -178,6 +179,7 @@ const CONFIG_BOUNDS = {
   minFeeClaimUsd: { min: 0.01, max: 1000 },
   stopLossPct: { min: 0.1, max: 50 },
   maxDailyDrawdownPct: { min: 0.5, max: 50 },
+  maxLpDominancePct: { min: 1, max: 100 },
   proactiveExitMinProfitPct: { min: 0.1, max: 100 },
   proactiveExitBearishConfidence: { min: 0.5, max: 1.0 },
   darwinWindowDays: { min: 7, max: 365 },
