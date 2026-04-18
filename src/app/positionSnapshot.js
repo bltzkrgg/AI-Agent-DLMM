@@ -7,9 +7,13 @@ export function resolvePositionSnapshot({
   directPnlPct = null,
   manualClose = false,
   rpcError = false,
+  onPnlDivergence = null,
 }) {
   const deployedSol = dbPosition?.deployed_sol || 0;
   const currentValueSol = livePosition?.currentValueSol ?? 0;
+  const positionAddress = dbPosition?.position_address ?? livePosition?.address ?? null;
+  const poolAddress = dbPosition?.pool_address ?? livePosition?.poolAddress ?? null;
+  const tokenMint = dbPosition?.token_mint ?? dbPosition?.token_x ?? livePosition?.tokenMint ?? null;
 
   const pnl = resolvePnlSnapshot({
     deployedSol,
@@ -18,6 +22,10 @@ export function resolvePositionSnapshot({
     directPnlPct: Number.isFinite(directPnlPct)
       ? directPnlPct
       : (Number.isFinite(livePosition?.pnlPct) ? livePosition.pnlPct : null),
+    positionAddress,
+    poolAddress,
+    tokenMint,
+    onDivergence: onPnlDivergence,
   });
 
   let status = 'NoData';
@@ -26,7 +34,7 @@ export function resolvePositionSnapshot({
   else if (livePosition) status = livePosition.inRange ? 'InRange' : 'OutRange';
 
   return {
-    positionAddress: dbPosition?.position_address ?? livePosition?.address ?? null,
+    positionAddress,
     lifecycleState: dbPosition?.lifecycle_state || (dbPosition?.status === 'closed' ? 'closed_reconciled' : 'open'),
     status,
     manualClose,

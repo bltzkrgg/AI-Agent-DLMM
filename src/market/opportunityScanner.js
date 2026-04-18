@@ -64,7 +64,14 @@ export async function runOpportunityScanner(notifyFn) {
           ? `${opp.reason} | TF: ${tfSummary} (${(mtf.score * 100).toFixed(0)}% bullish)`
           : opp.reason;
 
-        // Strategy alert silenced (Opportunity identified and available in logs)
+        await notifyFn(
+          `🎯 <b>Opportunity Detected: ${opp.strategy}</b>\n\n` +
+          `Pool: <code>${pool.address}</code>\n` +
+          `Token: <code>${tokenMint}</code>\n` +
+          `Priority: <b>${opp.priority}</b>\n\n` +
+          `📊 ${enrichedReason}\n\n` +
+          `<i>Scan otomatis — buka posisi manual atau tunggu Hunter Alpha.</i>`
+        );
 
         await new Promise(r => setTimeout(r, 1200)); // anti-flood
       }

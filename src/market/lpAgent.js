@@ -27,9 +27,9 @@ async function rateLimitedFetch(path, params = {}) {
   let baseUrl = LP_AGENT_BASE;
   let useRelay = false;
 
-  // Use Meridian Relay if enabled and no private key is present
-  if (cfg.lpAgentRelayEnabled && (!apiKey || cfg.publicApiKey)) {
-    apiKey = cfg.publicApiKey || 'bWVyaWRpYW4taXMtdGhlLWJlc3QtYWdlbnRz';
+  // Use relay only when it is explicitly configured.
+  if (!apiKey && cfg.lpAgentRelayEnabled && cfg.publicApiKey) {
+    apiKey = cfg.publicApiKey;
     baseUrl = cfg.agentMeridianApiUrl || 'https://api.agentmeridian.xyz/api';
     useRelay = true;
   }

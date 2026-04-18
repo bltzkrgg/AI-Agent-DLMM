@@ -8,7 +8,7 @@ export function getAIProvider() {
   return provider;
 }
 
-export function getRequiredEnvKeys({ requireTrading = true } = {}) {
+export function getRequiredEnvKeys({ requireTrading = true, requireGmgn = false } = {}) {
   const provider = getAIProvider();
   const required = ['TELEGRAM_BOT_TOKEN', 'ALLOWED_TELEGRAM_ID'];
 
@@ -28,13 +28,16 @@ export function getRequiredEnvKeys({ requireTrading = true } = {}) {
       required.push('HELIUS_API_KEY or SOLANA_RPC_URL');
     }
   }
+  if (requireGmgn) {
+    required.push('GMGN_API_KEY');
+  }
 
   return required;
 }
 
-export function validateRuntimeEnv({ requireTrading = true } = {}) {
+export function validateRuntimeEnv({ requireTrading = true, requireGmgn = false } = {}) {
   const missing = [];
-  for (const key of getRequiredEnvKeys({ requireTrading })) {
+  for (const key of getRequiredEnvKeys({ requireTrading, requireGmgn })) {
     if (key.includes(' or ')) {
       const [left, right] = key.split(' or ');
       if (!process.env[left] && !process.env[right]) missing.push(key);

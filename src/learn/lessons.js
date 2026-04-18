@@ -1,4 +1,4 @@
-import { readFileSync, writeFileSync, existsSync } from 'fs';
+import { readFileSync, writeFileSync, existsSync, renameSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { createMessage, resolveModel, extractText } from '../agent/provider.js';
@@ -22,7 +22,9 @@ export function loadLessons() {
 
 export function saveLessons(lessons) {
   try {
-    writeFileSync(LESSONS_PATH, stringify(lessons, 2));
+    const tmp = `${LESSONS_PATH}.tmp`;
+    writeFileSync(tmp, stringify(lessons, 2));
+    renameSync(tmp, LESSONS_PATH);
   } catch (e) {
     console.error('⚠️ Failed to save lessons.json:', e.message);
   }
@@ -208,11 +210,19 @@ Jangan ada teks lain selain JSON.`;
   const newLessons = safeParseAI(text, []);
   if (!Array.isArray(newLessons) || newLessons.length === 0) return [];
 
-  // Merge dengan lessons yang ada
+  // Merge dengan lessons yang ada, skip duplikat (≥5 kata bermakna sama)
   const existing = loadLessons();
+  const deduped = newLessons.filter(newL => {
+    const newWords = new Set(newL.lesson.toLowerCase().split(/\s+/).filter(w => w.length > 4));
+    return !existing.some(exL => {
+      const exWords = new Set(exL.lesson.toLowerCase().split(/\s+/).filter(w => w.length > 4));
+      const overlap = [...newWords].filter(w => exWords.has(w)).length;
+      return overlap >= 5;
+    });
+  });
   const merged = [
     ...existing,
-    ...newLessons.map(l => ({ ...l, learnedAt: new Date().toISOString() }))
+    ...deduped.map(l => ({ ...l, learnedAt: new Date().toISOString() }))
   ];
 
   // Keep max 50 lessons, prioritize pinned + high confidence

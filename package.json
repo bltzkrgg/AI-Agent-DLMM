@@ -4,6 +4,9 @@
   "description": "Autonomous Meteora DLMM AI Agent — Telegram + Hunter/Healer loop",
   "main": "src/index.js",
   "type": "module",
+  "engines": {
+    "node": ">=20 <25"
+  },
   "scripts": {
     "start": "node src/index.js",
     "dev": "DRY_RUN=true node --watch src/index.js",

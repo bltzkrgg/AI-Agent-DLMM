@@ -13,6 +13,20 @@ let allowedUserId;
 let _lastOorCheckRun = Date.now();
 let _lastStatusRun   = 0; // 0 = trigger update di menit pertama setelah start
 
+function resolveDistToEdgeBins(pos) {
+  const activeBinId = Number(pos?.activeBinId);
+  const lowerBinId = Number(pos?.lowerBinId);
+  const upperBinId = Number(pos?.upperBinId);
+
+  if (!Number.isFinite(activeBinId) || !Number.isFinite(lowerBinId) || !Number.isFinite(upperBinId)) {
+    return 99;
+  }
+
+  if (activeBinId < lowerBinId) return lowerBinId - activeBinId;
+  if (activeBinId > upperBinId) return activeBinId - upperBinId;
+  return Math.min(activeBinId - lowerBinId, upperBinId - activeBinId);
+}
+
 export function initMonitor(telegramBot, userId) {
   bot = telegramBot;
   allowedUserId = userId;
@@ -35,7 +49,7 @@ export function initMonitor(telegramBot, userId) {
       const lastPnl = runtimeState?.lastPnlPct || 0;
       const isNearEdge = (runtimeState?.distToEdgeBins || 99) < 10;
       
-      if (lastPnl > 1.5 || isNearEdge || !runtimeState?.inRange) {
+      if (lastPnl > 1.5 || isNearEdge || runtimeState?.inRange === false) {
         needsHighFreq = true;
         break;
       }
@@ -69,9 +83,6 @@ async function checkOutOfRange() {
 
   const poolsToCheck = [...new Set(openPositions.map(p => p.pool_address))];
 
-  // Kumpulkan semua address posisi yang masih ada di DB
-  const dbPositionAddresses = new Set(openPositions.map(p => p.position_address));
-
   for (const poolAddress of poolsToCheck) {
     try {
       const positions = await getPositionInfo(poolAddress);
@@ -79,15 +90,8 @@ async function checkOutOfRange() {
 
       for (const pos of positions) {
         const runtimeState = getPositionRuntimeState(pos.address);
-        // Proactive Distance Tracking: How many bins until we hit the edge?
-        let distToEdge = 99;
-        if (pos.inRange && pos.activeBin && pos.rangeMin && pos.rangeMax) {
-          const distToLower = Math.abs(pos.activeBin - pos.rangeMin);
-          const distToUpper = Math.abs(pos.activeBin - pos.rangeMax);
-          distToEdge = Math.min(distToLower, distToUpper);
-        } else if (!pos.inRange) {
-          distToEdge = 0;
-        }
+        // Proactive Distance Tracking in bin IDs (activeBinId/lowerBinId/upperBinId)
+        const distToEdge = resolveDistToEdgeBins(pos);
 
         if (!pos.inRange) {
           const oorSince = runtimeState.oorSince || Date.now();
@@ -100,10 +104,10 @@ async function checkOutOfRange() {
 
           if (shouldAlert) {
             const message = `🔴 <b>POSITION OUT OF RANGE</b>\n\n` +
-              `Pool: <code>${pos.pool_address.slice(0, 12)}...</code>\n` +
-              `Range: ${pos.rangeMin} - ${pos.rangeMax}\n` +
-              `Active: ${pos.activeBin}\n` +
-              `Distance: ${pos.outOfRangeBins || 0} bins\n\n` +
+              `Pool: <code>${poolAddress.slice(0, 12)}...</code>\n` +
+              `Range: ${pos.lowerBinId} - ${pos.upperBinId}\n` +
+              `Active: ${pos.activeBinId}\n` +
+              `Distance: ${distToEdge} bins\n\n` +
               `<i>Bot monitor lebih ketat (1m) sampai posisi kembali in-range atau ditutup.</i>`;
 
             await bot.sendMessage(allowedUserId, message, { parse_mode: 'HTML' });
@@ -188,10 +192,11 @@ async function sendPositionStatus() {
       });
 
       // Update runtime state for Tiered Polling
+      const distToEdgeBins = resolveDistToEdgeBins(pos);
       updatePositionRuntimeState(pos.address, {
         lastPnlPct: snapshot.pnlPct,
         inRange: !!pos.inRange,
-        distToEdgeBins: pos.outOfRangeBins || 99
+        distToEdgeBins
       });
 
       const rangeIcon = pos.inRange ? '🟢' : '🔴';
@@ -222,7 +227,7 @@ async function sendPositionStatus() {
 
       const rangeStr = pos.displayLowerPrice != null
         ? `${pos.displayLowerPrice} – ${pos.displayUpperPrice}`
-        : (pos.lowerBinId && pos.upperBinId)
+        : (Number.isFinite(pos.lowerBinId) && Number.isFinite(pos.upperBinId))
           ? `bin ${pos.lowerBinId} – ${pos.upperBinId}`
           : '-';
 

@@ -21,7 +21,7 @@ import { getSocialSignals, getTokenSocialScore } from '../market/socialScanner.j
 import { getInstinctsContext } from '../market/memory.js';
 import { getStrategyIntelligenceContext } from '../market/strategyPerformance.js';
 import { screenToken, formatScreenResult } from '../market/coinfilter.js';
-import { parseTvl, safeNum, stringify, escapeHTML } from '../utils/safeJson.js';
+import { parseTvl, safeNum, stringify, escapeHTML, getConservativeSlippage } from '../utils/safeJson.js';
 import { kv, hr, codeBlock, shortAddr } from '../utils/table.js';
 import { getDarwinWeights, captureSignals } from '../market/signalWeights.js';
 import { isOnCooldown, getPoolMemoryContext, recordDeployment } from '../market/poolMemory.js';
@@ -39,9 +39,38 @@ let hunterNotifyFn = null;
 let hunterBotRef = null;
 let hunterAllowedId = null;
 let _hunterTargetCount = null; // Local caches for tool output (shared across rounds)
+let _hunterMaxPositionsCap = null; // Global stage-aware cap injected by orchestrator (index)
 
 export function getCandidates() { return lastCandidates; }
 export function getLastHunterReport() { return lastReport; }
+
+function clamp(value, min, max) {
+  return Math.min(max, Math.max(min, value));
+}
+
+function computeAdaptiveDeployAmount({ cfg, poolInfo, snapshot }) {
+  const baseAmount = safeNum(cfg.deployAmountSol || 0.05);
+  const range24hPct = safeNum(snapshot?.ohlcv?.range24hPct);
+  const volatility = String(snapshot?.ohlcv?.volatilityCategory || '').toUpperCase();
+  const feeApr = safeNum(poolInfo?.feeApr);
+  const tvl = safeNum(poolInfo?.tvl);
+  const volume24h = safeNum(poolInfo?.volume24h);
+  const volumeTvlRatio = tvl > 0 ? volume24h / tvl : 0;
+
+  let multiplier = 1.0;
+
+  if (volatility === 'HIGH' || range24hPct >= 20) multiplier *= 0.55;
+  else if (volatility === 'MEDIUM' || range24hPct >= 10) multiplier *= 0.75;
+
+  if (feeApr >= 250) multiplier *= 1.10;
+  else if (feeApr > 0 && feeApr < 60) multiplier *= 0.85;
+
+  if (volumeTvlRatio > 0 && volumeTvlRatio < 0.75) multiplier *= 0.80;
+  else if (volumeTvlRatio > 3.0 && volatility !== 'HIGH' && range24hPct < 15) multiplier *= 1.05;
+
+  const adjusted = clamp(baseAmount * multiplier, 0.01, baseAmount);
+  return Number(adjusted.toFixed(4));
+}
 
 // --- Kode Zombie Diamputasi (Baris 43-149) ---
 // Logika evaluasi strategi kini terpusat di src/market/strategyLibrary.js 
@@ -240,7 +269,9 @@ async function executeTool(name, input) {
         ? await lpAgentEnrichPools(allAddresses).catch(() => ({}))
         : {};
 
-      // Filter dasar — binStep difilter via exact allowlist [100, 125]
+      // Filter dasar — binStep difilter via allowlist dari active strategy (dynamic)
+      const activeStrat = getStrategy(cfg.activeStrategy || 'Evil Panda');
+      const allowedBinSteps = activeStrat?.allowedBinSteps || cfg.allowedBinSteps || [100, 125];
       const minTokenFeesSol = cfg.minTokenFeesSol;
       const preFiltered = combined.filter(p => {
         const tvl = parseTvl(p.tvlStr || p.tvl || 0);
@@ -251,16 +282,16 @@ async function executeTool(name, input) {
         // 📊 LP EFFICIENCY GUARD: Prioritaskan kolam "Gacor" (Volume/TVL Ratio > 0.5)
         // Kita mau kolam yang sibuk biar fee ngalir terus di jaring 94% kita.
         const isHighlyProductive = feeRatio >= 0.005; // 0.5% yield per hari (approx > 180% APR)
-        
+
         // 🏰 HERITAGE FILTER v76.0 (Kecerdasan Sultan)
         const minTotalFeesSol = cfg.minTotalFeesSol || 30.0;
         const heritageMode = cfg.heritageModeEnabled !== false;
-        
+
         const isMomentumPass = (minTokenFeesSol <= 0 || fees >= minTokenFeesSol) && isHighlyProductive;
         const isHeritagePass = heritageMode && (p.totalFeesEstimated >= minTotalFeesSol);
 
         return (
-          (binStep === 100 || binStep === 125) &&
+          allowedBinSteps.includes(binStep) &&
           tvl >= thresholds.minTvl &&
           tvl <= thresholds.maxTvl &&
           feeRatio >= thresholds.minFeeActiveTvlRatio &&
@@ -368,6 +399,9 @@ async function executeTool(name, input) {
 
     case 'get_pool_detail': {
       const info = await getPoolInfo(input.pool_address);
+      if (!info) {
+        return JSON.stringify({ error: 'Pool tidak ditemukan atau RPC gagal. Coba pool lain.' }, null, 2);
+      }
       let strategyMatch = null;
       let dlmmSnapshot = null;
 
@@ -444,10 +478,8 @@ async function executeTool(name, input) {
         eligible: result.eligible,
         highFlags: (result.highFlags || []).map(f => f.msg),
         mediumFlags: (result.mediumFlags || []).map(f => f.msg),
-        gmgnActive: result.gmgnActive,
-        gmgnStatus: result.gmgnActive
-          ? (result.gmgnRejects?.length > 0 ? 'FLAGGED' : 'CLEAN')
-          : 'INACTIVE',
+        gmgnStatus: result.gmgnStatus || 'UNKNOWN',
+        gmgnDegradedMode: result.gmgnDegradedMode === true,
         gmgnIssues: (result.gmgnRejects || []).map(f => f.msg),
         tokenAgeMinutes: result.tokenAgeMinutes,
         priceImpact: result.priceImpact,
@@ -455,17 +487,18 @@ async function executeTool(name, input) {
         action: result.verdict === 'AVOID'
           ? 'SKIP — cari kandidat lain'
           : 'LANJUT DEPLOY — jumlah token dihitung otomatis',
-      }, 2);
+      }, null, 2);
     }
 
     case 'get_wallet_status': {
       const cfg = getConfig();
       const balance = await getWalletBalance();
       const openPos = getOpenPositions();
+      const maxCap = Number.isFinite(_hunterMaxPositionsCap) ? _hunterMaxPositionsCap : cfg.maxPositions;
       // Jika run dari /entry dengan targetCount, hitung batas berdasarkan posisi yang akan dibuka
       const effectiveMax = _hunterTargetCount != null
-        ? openPos.length + _hunterTargetCount
-        : cfg.maxPositions;
+        ? Math.min(openPos.length + _hunterTargetCount, maxCap)
+        : maxCap;
       const minReserve = cfg.gasReserve || 0.05;
       const totalRequired = cfg.deployAmountSol + minReserve;
       
@@ -543,9 +576,10 @@ async function executeTool(name, input) {
       // NOTE: Database-level lock in executeControlledOperation handles duplicate guard per pool.
 
       // ── Guard: slot posisi penuh ─────────────────────────────────
+      const maxCap = Number.isFinite(_hunterMaxPositionsCap) ? _hunterMaxPositionsCap : cfg.maxPositions;
       const effectiveMaxPos = _hunterTargetCount != null
-        ? existingPositions.length + _hunterTargetCount
-        : cfg.maxPositions;
+        ? Math.min(existingPositions.length + _hunterTargetCount, maxCap)
+        : maxCap;
       if (existingPositions.length >= effectiveMaxPos) {
         return JSON.stringify({
           blocked: true,
@@ -564,12 +598,18 @@ async function executeTool(name, input) {
       }
 
       // ── Auto-calculate position sizing ──────────────────────────
-      const deployAmountSol = cfg.deployAmountSol || 0.1;
+      let deployAmountSol = cfg.deployAmountSol || 0.1;
       const tokenXAmount = 0;
-      const tokenYAmount = deployAmountSol;
+      let tokenYAmount = deployAmountSol;
 
       // Ambil pool info + validasi sebelum lock
       const poolInfo = await getPoolInfo(input.pool_address);
+      if (!poolInfo) {
+        return JSON.stringify({
+          blocked: true,
+          reason: 'Gagal fetch pool info — RPC tidak merespons atau pool tidak valid. Coba lagi.',
+        }, null, 2);
+      }
 
       // Guard: hanya deploy ke pool TOKEN/SOL
       const WSOL_MINT = 'So11111111111111111111111111111111111111112';
@@ -610,14 +650,17 @@ async function executeTool(name, input) {
         }
       }
 
-      // ── Guard: Gas Vault & Balance Check ───────────────────────
+      // ── Guard: Gas Vault & Balance Check (atomic) ──────────────
       const walletBalance = await getWalletBalance();
       const gasReserve = cfg.gasReserve || 0.025; // Aegis-level reserve
-      const minRequired = (deployAmountSol || 0.1) + gasReserve;
+      // Each open position needs ~0.004 SOL gas buffer to close (tx fees + account rent).
+      const existingCount = getOpenPositions().length;
+      const closeGasBuffer = existingCount * 0.004;
+      const minRequired = (deployAmountSol || 0.1) + gasReserve + closeGasBuffer;
       if (safeNum(walletBalance) < minRequired) {
         return JSON.stringify({
           blocked: true,
-          reason: `Saldo SOL tidak cukup (${walletBalance} SOL). Butuh ${minRequired} SOL (Amount: ${deployAmountSol} + Reserve: ${gasReserve}) untuk menjamin exit gas.`,
+          reason: `Saldo SOL tidak cukup (${walletBalance.toFixed(4)} SOL). Butuh ${minRequired.toFixed(4)} SOL (Deploy: ${(deployAmountSol || 0.1).toFixed(4)} + Reserve: ${gasReserve} + CloseBuffer: ${closeGasBuffer.toFixed(4)} untuk ${existingCount} posisi).`,
         }, null, 2);
       }
 
@@ -629,16 +672,38 @@ async function executeTool(name, input) {
 
       try {
         const snapshot = await getMarketSnapshot(poolInfo.tokenX, input.pool_address);
+        const failSafeEnabled = cfg.failSafeModeOnDataUnreliable !== false;
+        const dataReliable = snapshot?.quality?.dataReliable !== false;
+        const taReliable = snapshot?.quality?.taReliable === true;
+        const taSource = snapshot?.quality?.taSource || snapshot?.ta?.supertrend?.source || 'unknown';
+        if (failSafeEnabled && (!dataReliable || !taReliable)) {
+          const issueText = (snapshot?.quality?.issues || []).join(' | ') || 'oracle snapshot unreliable';
+          const taIssue = !taReliable
+            ? `TA reliability belum memenuhi syarat (source=${taSource}, minConf=${snapshot?.quality?.minTaConfidence ?? 'n/a'}).`
+            : '';
+          return JSON.stringify({
+            blocked: true,
+            reason: `Fail-safe aktif: data market/TA belum reliable untuk entry. ${issueText} ${taIssue}`.trim(),
+            policy: 'FAIL_SAFE_UNRELIABLE_DATA',
+          }, null, 2);
+        }
+        deployAmountSol = computeAdaptiveDeployAmount({ cfg, poolInfo, snapshot });
+        tokenYAmount = deployAmountSol;
         strategyEval = await libEvaluateReadiness({
           strategyName: strategy.name,
           poolAddress: input.pool_address,
           snapshot,
           binStep: poolInfo.binStep,
+          activeBinId: poolInfo.activeBinId,
         });
         // Merge dynamic market-based options (e.g., adaptive fixedBinsBelow)
         if (strategyEval?.deployOptions) {
           deployOptions = { ...deployOptions, ...strategyEval.deployOptions };
         }
+        // T1.4: Per-pool slippage at deploy time, not hardcoded strategy default.
+        // Stored in deployOptions.slippageBps so closePositionDLMM can use it as a floor.
+        const vol24h = snapshot?.price?.volatility24h || 0;
+        deployOptions.slippageBps = getConservativeSlippage(vol24h);
       } catch (e) {
         console.warn(`[hunter] Market evaluation failed for ${input.pool_address}:`, e.message);
       }
@@ -651,12 +716,20 @@ async function executeTool(name, input) {
         }, null, 2);
       }
 
-      // Dynamic range — gunakan hasil evaluasi market (jika ada), baru profile, baru generic.
-      targetPriceRangePct = strategyEval?.priceRangePct ?? deployOptions?.priceRangePct ?? stratParams.priceRangePercent ?? 10;
+      // Dynamic range — strategyEval.deployOptions sudah di-merge ke deployOptions di atas.
+      // Fallback: deployOptions.priceRangePct → strategy params → generic 10%.
+      targetPriceRangePct = deployOptions?.priceRangePct ?? stratParams.priceRangePercent ?? 10;
 
       // Strategy vs pool warning (non-blocking)
       try {
         const validation = validateStrategyForMarket(strategyType, poolInfo);
+        if (!validation.valid && strategy.name === 'Evil Panda') {
+          return JSON.stringify({
+            blocked: true,
+            reason: `Strategy ${strategy.name} diblokir oleh LP market validation: ${validation.warning}`,
+            recommendation: validation.recommendation,
+          }, null, 2);
+        }
         if (!validation.valid && hunterNotifyFn) {
           await hunterNotifyFn(`⚠️ <b>Strategy Warning</b>\n\n${escapeHTML(validation.warning)}`);
         }
@@ -684,7 +757,7 @@ async function executeTool(name, input) {
           `🚀 <b>Hunter Alpha ingin deploy:</b>\n\n` +
           `📍 Pool: <code>${escapeHTML(input.pool_address.slice(0, 8))}...</code>\n` +
           `📊 Strategi: <b>${escapeHTML(strategy.name)}</b> (${targetPriceRangePct.toFixed(1)}%)\n` +
-          `💰 Deploy: ${deployAmountSol} SOL (Single-Side SOL)\n` +
+          `💰 Deploy: ${deployAmountSol} SOL (Single-Side SOL, adaptive)\n` +
           `  tokenX: 0 | tokenY: ${tokenYAmount.toFixed(4)} SOL\n\n` +
           `💭 ${escapeHTML(deployOptions.technicalReasoning || input.reasoning)}`
         );
@@ -710,11 +783,11 @@ async function executeTool(name, input) {
             strategy: strategy.name,
             deployOptions,
           },
-          metadata: { source: 'hunter_alpha', strategy: strategy.name },
-          policy: { isEntryOperation: true },
-          execute: () => openPosition(
-            input.pool_address,
-            tokenXAmount,
+        metadata: { source: 'hunter_alpha', strategy: strategy.name },
+        policy: { isEntryOperation: true, entryMaxPositions: effectiveMaxPos },
+        execute: () => openPosition(
+          input.pool_address,
+          tokenXAmount,
             tokenYAmount,
             targetPriceRangePct,
             strategy.name,
@@ -832,6 +905,9 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null, opt
   hunterBotRef = bot;
   hunterAllowedId = allowedId;
   _hunterTargetCount = options.targetCount ?? null;
+  _hunterMaxPositionsCap = Number.isFinite(options.maxPositionsCap)
+    ? Math.max(1, Math.floor(options.maxPositionsCap))
+    : null;
 
   const cfg = getConfig();
 
@@ -847,11 +923,13 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null, opt
 
   // ── Skip silently jika slot posisi penuh ─────────────────────
   const openPos = getOpenPositions();
+  const maxCap = Number.isFinite(_hunterMaxPositionsCap) ? _hunterMaxPositionsCap : cfg.maxPositions;
   const effectiveMax = _hunterTargetCount != null
-    ? openPos.length + _hunterTargetCount
-    : cfg.maxPositions;
+    ? Math.min(openPos.length + _hunterTargetCount, maxCap)
+    : maxCap;
   if (openPos.length >= effectiveMax) {
     _hunterTargetCount = null;
+    _hunterMaxPositionsCap = null;
     return null;
   }
 
@@ -860,6 +938,7 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null, opt
     const balance = await getWalletBalance();
     if (safeNum(balance) < (cfg.deployAmountSol + (cfg.gasReserve ?? 0.02))) {
       _hunterTargetCount = null;
+      _hunterMaxPositionsCap = null;
       return null;
     }
   } catch { /* lanjut jika gagal cek balance */ }
@@ -1173,6 +1252,7 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null, opt
     // Early Exit: Jika tidak ada pool layak, jangan panggil LLM (hemat API cost)
     if (viable.length === 0) {
       _hunterTargetCount = null;
+      _hunterMaxPositionsCap = null;
       return null;
     }
 
@@ -1300,6 +1380,7 @@ Use Indonesian for reasoning. Stay technical, precise, and fast.`;
   const report = response.content.filter(b => b.type === 'text').map(b => b.text).join('\n');
   lastReport = { report, timestamp: new Date().toISOString() };
   _hunterTargetCount = null; // reset setelah selesai
+  _hunterMaxPositionsCap = null;
 
   // Detect Model Refusal / Hallucinated Support Template
   const reportIsRefusal = (

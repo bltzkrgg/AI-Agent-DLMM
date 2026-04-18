@@ -12,10 +12,14 @@
 import { readFileSync, writeFileSync, existsSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
+import { safeNum } from '../utils/safeJson.js';
+import { getHistoryOHLCV } from './oracle.js';
+import { getRuntimeCollectionItem, updateRuntimeCollectionItem } from '../runtime/state.js';
+import { getStrategyRegimeGuard } from './memory.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-// Path absolut ke library strategi di folder yang sama (src/market)
-const LIBRARY_PATH = join(__dirname, 'strategy-library.json');
+// Source-of-truth library path (shared with strategyManager)
+const LIBRARY_PATH = join(__dirname, '../../strategy-library.json');
 
 import { getThresholds } from '../config.js';
 
@@ -24,6 +28,53 @@ const DEFAULT_LIBRARY = {
   lastUpdated: null,
   totalResearched: 0,
 };
+
+const PANDA_ENTRY_PROBE_KEY = 'panda-entry-probes';
+
+function recordLivePoolProbe(poolAddress, { activeBinId = null, feeTvlRatio = 0 }) {
+  if (!poolAddress) {
+    return { driftBinsPerMin: null, feeVelocityOk: true, sampleCount: 0 };
+  }
+
+  const nextSample = {
+    ts: Date.now(),
+    activeBinId: Number.isFinite(activeBinId) ? activeBinId : null,
+    feeTvlRatio: safeNum(feeTvlRatio),
+  };
+
+  const samples = updateRuntimeCollectionItem(PANDA_ENTRY_PROBE_KEY, poolAddress, current => {
+    const prev = Array.isArray(current?.samples) ? current.samples : [];
+    const merged = [...prev, nextSample].slice(-6);
+    return { samples: merged };
+  })?.samples || [nextSample];
+
+  let driftBinsPerMin = null;
+  if (samples.length >= 2) {
+    const prev = samples[samples.length - 2];
+    const curr = samples[samples.length - 1];
+    if (Number.isFinite(prev?.activeBinId) && Number.isFinite(curr?.activeBinId)) {
+      const deltaBins = Math.abs(curr.activeBinId - prev.activeBinId);
+      const deltaMin = Math.max((curr.ts - prev.ts) / 60000, 1 / 60);
+      driftBinsPerMin = deltaBins / deltaMin;
+    }
+  }
+
+  let feeVelocityOk = true;
+  if (samples.length >= 3) {
+    const last3 = samples.slice(-3).map(s => safeNum(s.feeTvlRatio));
+    const strictlyDescending = last3[0] > last3[1] && last3[1] > last3[2];
+    const meaningfulDrop = last3[2] < last3[0] * 0.8;
+    if (strictlyDescending && meaningfulDrop) {
+      feeVelocityOk = false;
+    }
+  }
+
+  return {
+    driftBinsPerMin: driftBinsPerMin != null ? Number(driftBinsPerMin.toFixed(2)) : null,
+    feeVelocityOk,
+    sampleCount: samples.length,
+  };
+}
 
 // ─── Research Storage ──────────────────────────────────────────
 // strategyLibrary.js kini hanya fokus menyimpan strategi hasil riset dinamis.
@@ -195,14 +246,25 @@ function scoreStrategy(strategy, conditions) {
  * Eval readiness based on technical indicators and market snapshot.
  * Integrated for Technical Sniper upgrade.
  */
-export async function evaluateStrategyReadiness({ strategyName, snapshot, binStep = 100 }) {
+export async function evaluateStrategyReadiness({ strategyName, snapshot, binStep = 100, activeBinId = null }) {
   if (!snapshot) return { ok: false, blockers: ['Missing Snapshot data'] };
   const ta = snapshot.ta || {};
   
   if (strategyName === 'Evil Panda') {
     const st = ta.supertrend;
     const priceChangeM5 = snapshot.ohlcv?.priceChangeM5 || 0;
+    const priceChangeH1 = snapshot.ohlcv?.priceChangeH1 || 0;
     const isGreen = priceChangeM5 > 0;
+    const pool = snapshot.pool || {};
+    const feeTvlRatio = safeNum(pool.feeTvlRatio);
+    const volumeTvlRatio = pool.tvl > 0 ? safeNum(pool.volume24h) / safeNum(pool.tvl) : 0;
+    const history = snapshot.poolAddress ? await getHistoryOHLCV(snapshot.poolAddress).catch(() => null) : null;
+    const recentClosedCandles = Array.isArray(history) ? history.slice(0, -1).slice(-2) : [];
+    const hasTwoClosedGreenCandles = recentClosedCandles.length === 2
+      && recentClosedCandles.every(c => c.close > c.open)
+      && recentClosedCandles[1].close >= recentClosedCandles[0].close;
+    const liveProbe = recordLivePoolProbe(snapshot.poolAddress, { activeBinId, feeTvlRatio });
+    const regimeGuard = getStrategyRegimeGuard({ strategyName, snapshot });
     
     // ── Hard Guard: Supertrend Bullish State (15m) AND Green Momentum ──
     if (st && (st.trend !== 'BULLISH' || !isGreen)) {
@@ -223,25 +285,150 @@ export async function evaluateStrategyReadiness({ strategyName, snapshot, binSte
       };
     }
 
-    // Dynamic range per binStep:
-    //   binStep 100 → 90% range (~230 bins, 5 TX)
-    //   binStep 125 → 94% range (~225 bins, 5 TX)
-    const targetRangePct = binStep === 125 ? 94.0 : 90.0;
-    const offsetMin = 0.0;         // Upper bound: mulai tepat di harga saat ini
-    const offsetMax = targetRangePct; // Lower bound: turun targetRangePct%
-    
-    // Suggest 0.5% slippage as per master spec
-    const suggestedSlippage = 0.5;
+    if (feeTvlRatio > 0 && feeTvlRatio < 0.01) {
+      return {
+        ok: false,
+        blockers: [`Fee/TVL harian terlalu rendah untuk Evil Panda (${(feeTvlRatio * 100).toFixed(2)}%)`],
+        notes: 'Evil Panda butuh pool yang benar-benar produktif. Fee yield harian di bawah 1% biasanya terlalu lemah untuk membayar directional risk.',
+      };
+    }
+
+    if (volumeTvlRatio > 0 && volumeTvlRatio < 0.75) {
+      return {
+        ok: false,
+        blockers: [`Volume/TVL terlalu lemah (${volumeTvlRatio.toFixed(2)}x)`],
+        notes: 'Flow trader belum cukup aktif. Untuk LP single-side SOL, volume/TVL lemah berarti fee bisa kalah oleh drift harga.',
+      };
+    }
+
+    if (liveProbe.driftBinsPerMin != null && liveProbe.driftBinsPerMin > 4.0) {
+      return {
+        ok: false,
+        blockers: [`Active-bin drift live terlalu cepat (${liveProbe.driftBinsPerMin.toFixed(2)} bins/min)`],
+        notes: 'Drift bin on-chain bergerak terlalu cepat antar sample. Tunggu pasar lebih tenang agar jaring Panda tidak langsung keseret.',
+      };
+    }
+
+    if (priceChangeH1 > 12) {
+      return {
+        ok: false,
+        blockers: [`Momentum 1h terlalu panas (${priceChangeH1.toFixed(2)}%)`],
+        notes: 'Evil Panda tidak mengejar candle vertikal. Tunggu euforia 1h mereda sebelum deploy.',
+      };
+    }
+
+    if (recentClosedCandles.length === 2 && !hasTwoClosedGreenCandles) {
+      return {
+        ok: false,
+        blockers: ['Konfirmasi 2 candle 15m belum valid'],
+        notes: 'Evil Panda sekarang menunggu 2 candle 15m tertutup yang sama-sama hijau dan closing naik sebelum deploy.',
+      };
+    }
+
+    if (liveProbe.sampleCount >= 3 && !liveProbe.feeVelocityOk) {
+      return {
+        ok: false,
+        blockers: ['Fee velocity multi-cycle melemah'],
+        notes: 'Tiga sample terakhir menunjukkan fee/TVL menurun cukup tajam. Evil Panda menunggu aliran fee stabil sebelum entry.',
+      };
+    }
+
+    if (regimeGuard.blocked) {
+      return {
+        ok: false,
+        blockers: ['Regime memory block'],
+        notes: regimeGuard.reason,
+      };
+    }
+
+    // 94% range for all bin steps — matches strategyManager baseline.
+    // Bin count varies by binStep (binStep 100 → ~281 bins, binStep 125 → ~225 bins)
+    // but both are within the 1000-bin TX safety limit and will chunk correctly.
+    const offsetMin = 0.0;  // Upper bound: starts at current price
+    const offsetMax = 94.0; // Lower bound: -94% below current price
 
     return {
       ok: true,
       blockers: [],
       notes: `🎯 Evil Panda Master (v61) Active: Price is Bullish. Deploying Ultimate Wide Jaring (0% to -94%).`,
       deployOptions: {
-        priceRangePct: targetRangePct,
+        priceRangePct: offsetMax,
         entryPriceOffsetMin: offsetMin,
         entryPriceOffsetMax: offsetMax,
-        slippagePct: suggestedSlippage,
+        slippagePct: 0.5,
+      }
+    };
+  }
+
+  if (strategyName === 'Deep Fishing') {
+    const st = snapshot.ta?.supertrend;
+    const pool = snapshot.pool || {};
+    const feeTvlRatio = safeNum(pool.feeTvlRatio);
+    const volumeTvlRatio = pool.tvl > 0 ? safeNum(pool.volume24h) / safeNum(pool.tvl) : 0;
+    const priceChangeH1 = snapshot.ohlcv?.priceChangeH1 || 0;
+
+    // Hard Guard 1: Supertrend must be BULLISH (no flip required — bot monitors flip via exit logic)
+    if (!st) {
+      return {
+        ok: false,
+        blockers: ['Data TA Supertrend 15m belum tersedia — koin perlu ~2.5 jam data candle'],
+        notes: 'Deep Fishing butuh konfirmasi Supertrend 15m (min. 10 candle). Safety filter = ~2.5 jam.',
+      };
+    }
+    if (st.trend !== 'BULLISH') {
+      return {
+        ok: false,
+        blockers: [`Supertrend 15m is ${st.trend} — Deep Fishing hanya deploy saat trend BULLISH`],
+        notes: 'Deep Fishing crash-catcher menempatkan likuiditas di zona -86% sampai -94%. Butuh momentum bullish agar jaring tidak langsung terkena saat baru deploy.',
+      };
+    }
+
+    // Hard Guard 2: Fee/TVL minimum
+    if (feeTvlRatio > 0 && feeTvlRatio < 0.005) {
+      return {
+        ok: false,
+        blockers: [`Fee/TVL harian terlalu rendah untuk Deep Fishing (${(feeTvlRatio * 100).toFixed(2)}%)`],
+        notes: 'Pool tidak cukup aktif untuk membayar crash risk.',
+      };
+    }
+
+    // Hard Guard 3: Volume/TVL minimum
+    if (volumeTvlRatio > 0 && volumeTvlRatio < 0.5) {
+      return {
+        ok: false,
+        blockers: [`Volume/TVL terlalu lemah (${volumeTvlRatio.toFixed(2)}x) — butuh ≥0.5x`],
+        notes: 'Flow trader belum cukup aktif. Deep Fishing hanya worthwhile di pool yang sibuk.',
+      };
+    }
+
+    // Guard 4: Avoid deploying during a rapid pump (price may crash back into range immediately)
+    if (priceChangeH1 > 20) {
+      return {
+        ok: false,
+        blockers: [`Momentum 1h terlalu panas (${priceChangeH1.toFixed(2)}%) — tunggu euforia mereda`],
+        notes: 'Jangan deploy crash-catcher saat pump masih berlangsung. Masuk setelah fase euforia selesai.',
+      };
+    }
+
+    const regimeGuard = getStrategyRegimeGuard({ strategyName, snapshot });
+    if (regimeGuard.blocked) {
+      return {
+        ok: false,
+        blockers: ['Regime memory block'],
+        notes: regimeGuard.reason,
+      };
+    }
+
+    // Deep Fishing range: -86% to -94% below current price
+    return {
+      ok: true,
+      blockers: [],
+      notes: `🎣 Deep Fishing Active: Deploying crash-catcher zone (-86% to -94%).`,
+      deployOptions: {
+        priceRangePct: 94.0,
+        entryPriceOffsetMin: 86.0,
+        entryPriceOffsetMax: 94.0,
+        slippagePct: 0.5,
       }
     };
   }

@@ -4,7 +4,10 @@ import { fileURLToPath } from 'url';
 import { stringify } from '../utils/safeJson.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const STATE_PATH = process.env.BOT_RUNTIME_STATE_PATH || join(__dirname, '../../runtime-state.json');
+
+function getStatePath() {
+  return process.env.BOT_RUNTIME_STATE_PATH || join(__dirname, '../../runtime-state.json');
+}
 
 // ─── In-memory state singleton ────────────────────────────────────
 let _cachedState = null;
@@ -14,12 +17,13 @@ let _persistTimeout = null;
 
 function loadStateSync() {
   if (_cachedState !== null) return _cachedState;
-  if (!existsSync(STATE_PATH)) {
+  const statePath = getStatePath();
+  if (!existsSync(statePath)) {
     _cachedState = {};
     return _cachedState;
   }
   try {
-    _cachedState = JSON.parse(readFileSync(STATE_PATH, 'utf-8'));
+    _cachedState = JSON.parse(readFileSync(statePath, 'utf-8'));
   } catch (e) {
     console.warn(`[state] Failed to parse state file, starting fresh: ${e.message}`);
     _cachedState = {};
@@ -38,12 +42,13 @@ async function persistState() {
   _isPersisting = true;
   _needsPersist = false;
 
-  const tmpPath = `${STATE_PATH}.tmp`;
+  const statePath = getStatePath();
+  const tmpPath = `${statePath}.tmp`;
   try {
     const data = stringify(_cachedState, 2);
     await fs.writeFile(tmpPath, data, 'utf-8');
     // Atomic swap
-    renameSync(tmpPath, STATE_PATH);
+    renameSync(tmpPath, statePath);
   } catch (e) {
     console.error(`[state] Failed to persist state to disk: ${e.message}`);
   } finally {

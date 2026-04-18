@@ -64,7 +64,12 @@ test('position lifecycle state is stored alongside close records', async (t) => 
   try {
     dbModule = await importFresh(join(repoRoot, 'src/db/database.js'));
   } catch (error) {
-    if (String(error?.message || '').includes('Could not locate the bindings file')) {
+    const message = String(error?.message || '');
+    if (
+      message.includes('Could not locate the bindings file') ||
+      message.includes('native binding tidak cocok') ||
+      message.includes('NODE_MODULE_VERSION')
+    ) {
       t.skip('better-sqlite3 native binding is not available in this test environment');
       return;
     }

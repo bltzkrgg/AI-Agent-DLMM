@@ -8,8 +8,7 @@
  */
 
 import { getTopPools } from '../solana/meteora.js';
-import { getTopPools } from '../solana/meteora.js';
-import { getOHLCV, getDLMMPoolData, getSentiment } from './oracle.js';
+import { getOHLCV, getDLMMPoolData } from './oracle.js';
 import { kv, hr, codeBlock, shortAddr } from '../utils/table.js';
 
 const _alertedPools   = new Map();   // poolAddress → last alert timestamp
@@ -44,7 +43,7 @@ export async function runEvilPandaScanner(notifyFn) {
       if (!ohlcv) continue;
 
       // Momentum-based Evil Panda Signal (Proxy for Supertrend break)
-      const isBullishMomentum = ohlcv.trend === 'UPTREND' && ohlcv.priceChange > 3;
+      const isBullishMomentum = ohlcv.trend === 'UPTREND' && (ohlcv.priceChangeH1 || 0) > 3;
       if (!isBullishMomentum) continue;
 
       // Mark as alerted
@@ -63,7 +62,7 @@ export async function runEvilPandaScanner(notifyFn) {
         hr(44),
         '📈 MOMENTUM (Consolidated)',
         kv('Trend',      ohlcv.trend || '-', 12),
-        kv('Gain 1h',    (ohlcv.priceChange?.toFixed(2) || '0') + '%', 12),
+        kv('Gain 1h',    ((ohlcv.priceChangeH1 || 0).toFixed(2)) + '%', 12),
         kv('Volatility', ohlcv.volatilityCategory || '-', 12),
         hr(44),
         '💧 POOL (Meteora)',
@@ -79,8 +78,8 @@ export async function runEvilPandaScanner(notifyFn) {
 
       const alertMsg =
         `🐼 <b>EVIL PANDA MOMENTUM ALERT</b>\n\n` +
-        `<pre><code>${chartLines.join('\n')}</code></pre>\n\n` +
-        `💭 <i>Terdeteksi bullish momentum kuat: Trend ${ohlcv.trend} dengan kenaikan ${ohlcv.priceChange?.toFixed(1)}% dalam 1 jam.</i>\n\n` +
+        codeBlock(chartLines) + `\n\n` +
+        `💭 <i>Terdeteksi bullish momentum kuat: Trend ${ohlcv.trend} dengan kenaikan ${(ohlcv.priceChangeH1 || 0).toFixed(1)}% dalam 1 jam.</i>\n\n` +
         `👉 Ketik <code>/hunting</code> untuk deploy sekarang`;
 
       await notifyFn(alertMsg);
@@ -91,9 +90,5 @@ export async function runEvilPandaScanner(notifyFn) {
     } catch (e) { 
       console.warn(`[EP Scanner] Error scanning pool ${pool.address}:`, e.message);
     }
-  }
-}
-
-    } catch { /* skip pool jika error — jangan crash scanner */ }
   }
 }

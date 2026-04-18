@@ -22,7 +22,7 @@ Tactical Panda bukan sekadar bot; ia adalah "Aegis Pro" — agen trading otonom 
 ## 🛠️ Quick Start (Sultan Edition)
 
 ### 1. Requirements
-- **Node.js v20 (LTS)** — Wajib untuk stabilitas database SQLite biner.
+- **Node.js 20 LTS sampai < 25** — Direkomendasikan untuk kompatibilitas `better-sqlite3`.
 - **Helius API Key** — Digunakan untuk RPC stabil dan Simulation Shield.
 - **DeepSeek-V3 API** — Direkomendasikan via OpenRouter untuk biaya operasional rendah (~$0.20/hari).
 
@@ -37,7 +37,7 @@ nvm use 20
 npm install
 
 # Setup Config
-cp .env.example .env
+cp env.example .env
 cp user-config.example.json user-config.json
 
 # Jalankan dengan PM2 (Wajib untuk fitur /system_update)
@@ -51,9 +51,22 @@ pm2 startup
 
 ## ⚙️ Configuration (user-config.json)
 
-Aktifkan fitur Professional Suite di config lo:
+Default contoh config sekarang sengaja konservatif untuk first run:
+- `dryRun: true`
+- `autoScreeningEnabled: false`
+- `requireConfirmation: true`
+- `deployAmountSol: 0.05`
+
+Kalau mau langsung live, ubah dengan sadar setelah wallet, RPC, dan command Telegram sudah tervalidasi.
+
+Contoh baseline aman:
 ```json
 {
+  "dryRun": true,
+  "autoScreeningEnabled": false,
+  "requireConfirmation": true,
+  "deployAmountSol": 0.05,
+  "allowedBinSteps": [100, 125],
   "autoHarvestEnabled": true,      // Auto-tarik profit fee ke SOL
   "autoHarvestThresholdSol": 0.04, // Threshold panen otomatis (SOL)
   "enableSimulationShield": true,  // Aktifkan blokir transaksi gagal
@@ -69,8 +82,24 @@ Aktifkan fitur Professional Suite di config lo:
 - `/pos` — Cek status posisi terbuka, PnL, Fees, dan Range secara *lightweight*.
 - `/status` — Laporan on-chain mendalam untuk semua posisi aktif.
 - `/zap <addr>` — **Emergency Exit** & Swap semua token ke SOL via Jupiter.
+- `/claim <position_address>` — Claim fee manual untuk posisi tertentu.
 - `/hunt` — Trigger Hunter Alpha manual untuk mencari koin sniper terbaik.
 - `/heal` — Trigger Healer manual untuk manajemen posisi dan trailing TP.
+- `/override_range <pct> [strategy]` — Override range entry untuk strategi tertentu.
+- `/pause` / `/resume` — Pause/lanjutkan loop otonom (watchdog/healer/hunter auto).
+- `/preflight` — Cek readiness gate sebelum entry live.
+- `/stage shadow|canary|full` — Progressive deployment stage.
+- `/rollback` — Fast safe-mode rollback.
+
+---
+
+## 🚦 Production Hardening Flow
+- Mulai dari canary: `/stage canary 1`
+- Validasi status: `/preflight` + `/health`
+- Baru lanjut ke full stage jika readiness `READY`.
+- Saat insiden: `/rollback` untuk freeze otomatis.
+
+Runbook detail: [DEPLOYMENT_RUNBOOK.md](./DEPLOYMENT_RUNBOOK.md)
 
 ---
 
@@ -78,6 +107,7 @@ Aktifkan fitur Professional Suite di config lo:
 - **Zero Gas Waste**: Simulation Shield membentengi bot dari pengeluaran gas sia-sia untuk TX gagal.
 - **Zero Dust Protocol**: Otomatis tutup akun token kosong untuk mengembalikan SOL rent.
 - **Non-Custodial**: Bot berjalan di infrastruktur lo sendiri (VPS/Laptop).
+- **Safer First Boot**: Contoh config default jalan di `dryRun`, auto-screen OFF, dan butuh konfirmasi sebelum deploy.
 
 ---
 

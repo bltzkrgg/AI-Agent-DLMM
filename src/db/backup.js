@@ -2,15 +2,30 @@ import fs from 'fs';
 import path from 'path';
 const logger = console; // Fallback ke console jika logger tidak tersedia
 
+export function resolveBackupDir(dbPath, explicitBackupDir = null) {
+  if (explicitBackupDir) {
+    return path.isAbsolute(explicitBackupDir)
+      ? explicitBackupDir
+      : path.resolve(explicitBackupDir);
+  }
+  if (process.env.BOT_BACKUP_DIR) {
+    return path.isAbsolute(process.env.BOT_BACKUP_DIR)
+      ? process.env.BOT_BACKUP_DIR
+      : path.resolve(process.env.BOT_BACKUP_DIR);
+  }
+  // Default deterministic path: sibling folder dari DB file
+  return path.join(path.dirname(dbPath), 'backups');
+}
+
 export class DbBackup {
-  constructor(dbPath, backupDir = './backups') {
+  constructor(dbPath, backupDir = null) {
     this.dbPath = dbPath;
-    this.backupDir = backupDir;
+    this.backupDir = resolveBackupDir(dbPath, backupDir);
     this.retention = 7 * 24 * 60 * 60 * 1000; // 7 days
 
-    if (!fs.existsSync(backupDir)) {
-      fs.mkdirSync(backupDir, { recursive: true });
-      logger.log(`📁 Created backup directory: ${backupDir}`);
+    if (!fs.existsSync(this.backupDir)) {
+      fs.mkdirSync(this.backupDir, { recursive: true });
+      logger.log(`📁 Created backup directory: ${this.backupDir}`);
     }
   }
 

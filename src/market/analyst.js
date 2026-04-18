@@ -14,7 +14,7 @@
 
 'use strict';
 
-import { safeParseAI } from '../utils/safeJson.js';
+import { safeParseAI, safeNum } from '../utils/safeJson.js';
 import { createMessage, resolveModel, extractText } from '../agent/provider.js';
 
 import { getConfig } from '../config.js';
@@ -196,11 +196,14 @@ function buildDLMMContext(snapshot, position) {
     const ta = snapshot.ta || {};
     const o = snapshot.ohlcv;
     const st = ta.supertrend || { trend: 'NEUTRAL', value: 0 };
+    const q = snapshot.quality || {};
 
     parts.push(`🔍 TECHNICAL ANALYSIS (15m):
 - Supertrend: ${st.trend} (Value: $${st.value.toFixed(8)})
 - Candles: ${ta.candleCount ?? 'N/A'} × 15m tersedia
-- Result: ${o.historySuccess ? '✅ Data Histori Valid' : '⚠️ Snapshot Mode (No History)'}`);
+- Result: ${o.historySuccess ? '✅ Data Histori Valid' : '⚠️ Snapshot Mode (No History)'}
+- TA Confidence: ${(safeNum(q.taConfidence) * 100).toFixed(1)}% ${q.taReliable ? '✅' : '⚠️'}
+- Price Divergence: ${q.priceDivergencePct != null ? `${q.priceDivergencePct}%` : 'N/A'}`);
 
     if (ta.evilPanda?.exit?.triggered) {
       parts.push(`⚠️ EVIL PANDA EXIT SIGNAL: ${ta.evilPanda.exit.reason}`);

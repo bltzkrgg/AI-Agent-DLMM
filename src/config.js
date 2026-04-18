@@ -8,11 +8,11 @@ const CONFIG_PATH = process.env.BOT_CONFIG_PATH || join(__dirname, '../user-conf
 
 const DEFAULTS = {
   // Position sizing
-  deployAmountSol: 0.1,
-  maxPositions: 10,
-  minSolToOpen: 0.07,
-  gasReserve: 0.02, // SOL yang disisakan untuk tx fees + account rent
-  dailyLossLimitUsd: 5.0, // Batas kerugian harian ($) sebelum Hunter istirahat
+  deployAmountSol: 0.05,
+  maxPositions: 3,
+  minSolToOpen: 0.10,
+  gasReserve: 0.03, // SOL yang disisakan untuk tx fees + account rent
+  dailyLossLimitUsd: 25, // Batas kerugian harian ($) sebelum Hunter istirahat (default lebih realistis untuk live deployment)
 
   // Agent intervals (minutes)
   managementIntervalMin: 15,
@@ -21,9 +21,14 @@ const DEFAULTS = {
 
   // Auto-screening
   autoScreeningEnabled: false,  // Aktifkan auto-screening Hunter via cron
+  autonomyMode: 'active',       // active | paused (pause semua loop otonom, manual command tetap bisa)
 
   // Dry run — tidak eksekusi TX apapun, semua else normal
   dryRun: false,
+  deploymentStage: 'full',      // shadow | canary | full
+  canaryMaxPositions: 1,        // Max posisi saat stage=canary
+  autoPauseOnManualReview: true,
+  manualReviewPauseThreshold: 1,
 
   // Models — default ke meta-llama/llama-3.3-70b-instruct:free (proven available), bisa override di .env via AI_MODEL
   // activeModel: diset via /model command — highest priority, override semua
@@ -39,7 +44,6 @@ const DEFAULTS = {
   minOrganic: 55,
   minBinStep: 100,            // Minimal 100 bin step (Hukum 3)
   allowedBinSteps: [100, 125], // Daftar Bin Step spesifik yang diijinkan (Saklek Mode)
-  minTokenFeesSol: 0,        // Min total fees SOL untuk pool (0 = disabled)
   minTotalFeesSol: 30.0,     // Ambang batas Heritage (Total Fee seumur hidup)
   heritageModeEnabled: true, // Aktifkan saringan riwayat sultan
   minTokenAgeMinutes: 0,     // Min usia token sejak launch (0 = disabled) — Supertrend sudah jadi gate alami
@@ -50,6 +54,7 @@ const DEFAULTS = {
   trailingDropPct: 1.5,      // Close kalau PnL turun X% dari peak
   outOfRangeWaitMinutes: 30,
   outOfRangeBinsToClose: 10, // Tutup posisi jika OOR lebih dari N bins
+  maxHoldHours: 6,           // Force close position after N hours regardless of PnL signal
   minFeeClaimUsd: 1.0,
 
   // OOR-specific pool cooldown
@@ -58,14 +63,14 @@ const DEFAULTS = {
 
   // Safety
   stopLossPct: 5,
-  maxDailyDrawdownPct: 10,
-  requireConfirmation: false,
+  maxDailyDrawdownPct: 6,
+  requireConfirmation: true,
 
   // Proactive exit
   proactiveExitEnabled: true,
   proactiveExitMinProfitPct: 1.0,
   proactiveExitBearishConfidence: 0.7,
-  maxPriceImpactPct: 2.5,     // Maksimal price impact (%) yang diijinkan saat simulasi swap (0.5 SOL)
+  maxPriceImpactPct: 1.5,     // Maksimal price impact (%) yang diijinkan saat simulasi swap
   maxBinsPerPosition: 125,   // Kapasitas bin maksimal sesuai skema (80-125)
   activePreset: 'supertrend_only', // Mode keputusan: supertrend_only
   activeStrategy: 'Evil Panda', // Active BASELINE strategy. Set to 'Deep Fishing' to activate crash-zone strategy
@@ -102,22 +107,36 @@ const DEFAULTS = {
   minSmartMoneyOverlap: 1,        // Minimum overlapping "SmartWallets" to boost confidence
   useSmartWalletRanges: true,     // Mirror Top LPer ranges in Healer
 
+  // LLM-derived weight hints (written by memory.js evolveFromTrades, blended in signalWeights.js)
+  llmWeightHints: null,
+
   // Adaptive Post-Mortem
   autoPostMortemEnabled: true,     // Enable LLM-based analysis of closed trades
 
   // Meridian Relay (Experimental)
   lpAgentRelayEnabled: true,
-  publicApiKey: 'bWVyaWRpYW4taXMtdGhlLWJlc3QtYWdlbnRz',
+  publicApiKey: null,
   agentMeridianApiUrl: 'https://api.agentmeridian.xyz/api',
   maxVolumeTvlRatio: 70,       // Rasio Volume/TVL maksimal (Safety against wash-trade)
-  minTokenFeesSol: 30,         // Minimal fee 24 jam dalam satuan SOL
+  minTokenFeesSol: 30,         // Minimal fee 24 jam dalam SOL untuk momentum filter
   slippageBps: 100,            // Slippage tolerance dalam basis points (100 = 1%)
 
   // Professional Yield & IQ Suite
   autoHarvestEnabled: true,      // Aktifkan penarikan profit otomatis tanpa tutup posisi
   autoHarvestThresholdSol: 0.04, // Threshold fee (SOL) untuk memicu harvest otomatis
+  autoHarvestCompound: false,    // Re-invest harvested fees back into same position instead of realizing
   enableSimulationShield: true,  // Aktifkan pengecekan simulasi ketat sebelum eksekusi
   hourlyPulseEnabled: true,      // Kirim laporan ringkas setiap jam ke Telegram
+  minTaConfidenceForAutoExit: 0.55, // Minimal confidence TA untuk trigger auto-exit berbasis trend
+  oracleMaxPriceDivergencePct: 3.0, // Maks divergence Dex vs Jupiter sebelum data ditandai risky
+  minPriceSourcesForEntry: 2, // Minimum sumber harga yang valid untuk entry otomatis
+  failSafeModeOnDataUnreliable: true, // Blok entry baru jika quality oracle tidak reliable
+  gmgnDegradedModeEnabled: true, // Jika GMGN down/unknown, pakai screening konservatif
+  gmgnDegradedMinMcap: 400000, // Batas mcap minimal saat GMGN degraded
+  gmgnDegradedMinVolume24h: 1500000, // Batas volume minimal saat GMGN degraded
+  gmgnDegradedMinTokenAgeMinutes: 180, // Token age minimal saat GMGN degraded
+  minTaeSamplesForFullStage: 10, // Minimum sample exit sebelum stage full dianggap matang
+  minTaeWinRateForFullStage: 45, // Minimum win rate (%) exit tracker untuk lolos gate stage full
 };
 
 const KNOWN_CONFIG_KEYS = new Set(Object.keys(DEFAULTS));
@@ -140,11 +159,17 @@ const CONFIG_BOUNDS = {
   minTotalFeesSol: { min: 0, max: 1000000 },
   heritageModeEnabled: { type: 'boolean' },
   dryRun: { type: 'boolean' },
+  autonomyMode: { type: 'string' },
+  deploymentStage: { type: 'string' },
+  canaryMaxPositions: { min: 1, max: 20 },
+  autoPauseOnManualReview: { type: 'boolean' },
+  manualReviewPauseThreshold: { min: 1, max: 50 },
   takeProfitFeePct: { min: 0.1, max: 100 },
   trailingTriggerPct: { min: 0.5, max: 50 },
   trailingDropPct: { min: 0.1, max: 20 },
   outOfRangeWaitMinutes: { min: 1, max: 1440 },
   outOfRangeBinsToClose: { min: 1, max: 200 },
+  maxHoldHours: { min: 1, max: 168 },
   oorCooldownTriggerCount: { min: 1, max: 20 },
   oorCooldownHours: { min: 1, max: 168 },
   minFeeClaimUsd: { min: 0.01, max: 1000 },
@@ -169,10 +194,22 @@ const CONFIG_BOUNDS = {
   // Professional Suite Bounds
   autoHarvestThresholdSol: { min: 0.005, max: 1.0 },
   autoHarvestEnabled: { type: 'boolean' },
+  autoHarvestCompound: { type: 'boolean' },
   enableSimulationShield: { type: 'boolean' },
   hourlyPulseEnabled: { type: 'boolean' },
+  minTaConfidenceForAutoExit: { min: 0.1, max: 0.95 },
+  oracleMaxPriceDivergencePct: { min: 0.5, max: 25.0 },
+  minPriceSourcesForEntry: { min: 1, max: 3 },
+  failSafeModeOnDataUnreliable: { type: 'boolean' },
+  gmgnDegradedModeEnabled: { type: 'boolean' },
+  gmgnDegradedMinMcap: { min: 0, max: 10000000000 },
+  gmgnDegradedMinVolume24h: { min: 0, max: 1000000000 },
+  gmgnDegradedMinTokenAgeMinutes: { min: 0, max: 1440 },
+  minTaeSamplesForFullStage: { min: 0, max: 1000 },
+  minTaeWinRateForFullStage: { min: 0, max: 100 },
   
   lastEvolutionTradeCount: { min: 0, max: 1000000 },
+  llmWeightHints: { type: 'object' },
   maxVolumeTvlRatio: { min: 1, max: 1000 },
   slippageBps: { min: 10, max: 1000 },
   managementModel: { type: 'string' },
@@ -206,16 +243,23 @@ export function getConfig() {
     },
   };
 
-  // Automated Lenient numeric parsing for manual edits (anti-NaN guard)
+  // Lenient numeric parsing for manual edits — strips trailing units (e.g. "1.5 SOL" → 1.5)
+  // but rejects ambiguous multi-dot strings like "1.5.0" to prevent silent 10x errors.
   for (const key of Object.keys(merged)) {
     if (typeof DEFAULTS[key] === 'number' && typeof merged[key] === 'string') {
-      // Extract numbers (including signs and decimals), ignore everything else
-      const raw = merged[key].replace(/[^-0-9.]/g, '');
-      const parsed = parseFloat(raw);
+      const trimmed = merged[key].trim();
+      const clean = trimmed.replace(/[^-0-9.]/g, '');
+      const dotCount = (clean.match(/\./g) || []).length;
+      if (dotCount > 1) {
+        console.warn(`[config] Rejected malformed numeric value for "${key}": "${trimmed}" — using default ${DEFAULTS[key]}`);
+        merged[key] = DEFAULTS[key];
+        continue;
+      }
+      const parsed = parseFloat(clean);
       if (!isNaN(parsed)) {
         merged[key] = parsed;
       } else {
-        merged[key] = DEFAULTS[key]; // fallback to default if no numbers found
+        merged[key] = DEFAULTS[key];
       }
     }
   }
@@ -272,6 +316,37 @@ export function updateConfig(updates) {
       continue;
     }
 
+    if (key === 'deploymentStage') {
+      const stage = String(value || '').toLowerCase();
+      const allowed = ['shadow', 'canary', 'full'];
+      if (!allowed.includes(stage)) {
+        rejected.push(`${key}: must be one of ${allowed.join(', ')}`);
+        continue;
+      }
+      validated[key] = stage;
+      continue;
+    }
+
+    if (key === 'autonomyMode') {
+      const mode = String(value || '').toLowerCase();
+      const allowed = ['active', 'paused'];
+      if (!allowed.includes(mode)) {
+        rejected.push(`${key}: must be one of ${allowed.join(', ')}`);
+        continue;
+      }
+      validated[key] = mode;
+      continue;
+    }
+
+    if (bounds?.type === 'object') {
+      if (value !== null && (typeof value !== 'object' || Array.isArray(value))) {
+        rejected.push(`${key}: must be an object or null`);
+        continue;
+      }
+      validated[key] = value;
+      continue;
+    }
+
     if (bounds && typeof value === 'number') {
       if (value < bounds.min || value > bounds.max) {
         rejected.push(`${key}: ${value} (allowed: ${bounds.min}-${bounds.max})`);
@@ -324,4 +399,36 @@ export function getThresholds() {
 
 export function isDryRun() {
   return getConfig().dryRun === true;
+}
+
+/**
+ * Resolve entry capacity based on deployment stage.
+ * Returns a deterministic capacity decision used by runtime guards.
+ */
+export function getEntryCapacity(cfg = getConfig(), maxPositionsOverride = null) {
+  const stage = String(cfg?.deploymentStage || 'full').toLowerCase();
+  if (stage === 'shadow') {
+    return {
+      blocked: true,
+      reason: 'Entry diblokir karena deploymentStage=shadow.',
+      stage,
+      stageMaxPositions: 0,
+      maxPositions: 0,
+    };
+  }
+
+  const stageMaxPositions = stage === 'canary'
+    ? Math.min(cfg.maxPositions, Math.max(1, Number(cfg.canaryMaxPositions || 1)))
+    : cfg.maxPositions;
+  const requestedMax = Number.isFinite(maxPositionsOverride)
+    ? Math.max(1, Math.floor(maxPositionsOverride))
+    : stageMaxPositions;
+
+  return {
+    blocked: false,
+    reason: null,
+    stage,
+    stageMaxPositions,
+    maxPositions: Math.min(requestedMax, stageMaxPositions),
+  };
 }

@@ -8,6 +8,16 @@ if (!ADMIN_PASSWORD) {
 
 // State untuk track user yang lagi dalam proses tambah strategi
 const pendingSessions = new Map();
+const SESSION_TTL_MS = 30 * 60 * 1000; // 30 menit
+
+function cleanStaleSessions() {
+  const now = Date.now();
+  for (const [userId, session] of pendingSessions) {
+    if (now - (session.startedAt || 0) > SESSION_TTL_MS) {
+      pendingSessions.delete(userId);
+    }
+  }
+}
 
 // Verifikasi password admin
 export function verifyAdminPassword(password) {
@@ -74,7 +84,8 @@ export function handleStrategyCommand(bot, msg, allowedUserId) {
     }
 
     // Mulai sesi tambah strategi
-    pendingSessions.set(userId, { step: 'name', data: {}, action: 'add' });
+    cleanStaleSessions();
+    pendingSessions.set(userId, { step: 'name', data: {}, action: 'add', startedAt: Date.now() });
     bot.sendMessage(chatId,
       '✅ <b>Password benar! Mode Admin aktif.</b>\n\n' +
       '📝 Mari tambah strategi baru.\n\n' +
@@ -110,6 +121,7 @@ export function handleStrategyCommand(bot, msg, allowedUserId) {
   }
 
   // Handle conversation steps untuk tambah strategi
+  cleanStaleSessions();
   const session = pendingSessions.get(userId);
   if (!session) return false;
 

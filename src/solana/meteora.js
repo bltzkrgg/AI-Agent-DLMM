@@ -159,10 +159,14 @@ function toDisplayPrice(rawPrice, isSOLPair) {
 
 // ─── Pool Info ───────────────────────────────────────────────────
 
+function isValidSolanaAddress(addr) {
+  if (!addr || typeof addr !== 'string') return false;
+  try { new PublicKey(addr); return true; } catch { return false; }
+}
+
 export async function getPoolInfo(poolAddress) {
-  // Validate pool address format before attempting SDK calls
-  if (!poolAddress || typeof poolAddress !== 'string' || (poolAddress.length !== 43 && poolAddress.length !== 44)) {
-    const errorMsg = `Invalid pool address format: "${poolAddress}" (must be 43 or 44 chars, got ${poolAddress?.length || 0})`;
+  if (!isValidSolanaAddress(poolAddress)) {
+    const errorMsg = `Invalid pool address: "${poolAddress}"`;
     console.error(`[meteora] ${errorMsg}`);
     throw new Error(errorMsg);
   }
@@ -365,9 +369,8 @@ export async function getAllWalletPositions() {
 //   null → fetch error (network issue, don't mark as manual close)
 
 export async function getPositionInfo(poolAddress) {
-  // Validate pool address format before attempting SDK calls
-  if (!poolAddress || typeof poolAddress !== 'string' || (poolAddress.length !== 43 && poolAddress.length !== 44)) {
-    const errorMsg = `Invalid pool address format: "${poolAddress}" (must be 43 or 44 chars, got ${poolAddress?.length || 0})`;
+  if (!isValidSolanaAddress(poolAddress)) {
+    const errorMsg = `Invalid pool address: "${poolAddress}"`;
     console.error(`[meteora] ${errorMsg}`);
     throw new Error(errorMsg);
   }
@@ -375,12 +378,6 @@ export async function getPositionInfo(poolAddress) {
   try {
     return await withRetry(async () => {
       const connection = getConnection();
-      const walletBalance = await getWalletBalance();
-      const gasReserve = cfg.gasReserve || 0.025; // Aegis-level reserve
-      const minRequired = (deployAmountSol || 0.1) + gasReserve;
-      if (safeNum(walletBalance) < minRequired) {
-        // ... logic continues
-      }
       const wallet = getWallet();
       const poolPubkey = new PublicKey(poolAddress);
       const dlmmPool = await DLMM.create(connection, poolPubkey);
@@ -514,6 +511,120 @@ export async function getSolPriceUsd() {
   }
 }
 
+// ─── Compound: Add Liquidity to Existing Position ───────────────
+// Reinvests tokenY (SOL) back into an already-open position.
+// Used by autoHarvestCompound after fees are claimed and X→Y swapped.
+// Only the wallet keypair is needed (not the position keypair — that's only
+// required at account creation time).
+export async function addLiquidityToPosition(poolAddress, positionAddress, tokenYAmountSol) {
+  if (isDryRun()) {
+    console.log(`[DRY RUN] addLiquidityToPosition skipped: pool=${poolAddress} pos=${positionAddress} yAmt=${tokenYAmountSol}`);
+    return { dryRun: true, poolAddress, positionAddress, tokenYAmountSol };
+  }
+  if (!isValidSolanaAddress(poolAddress) || !isValidSolanaAddress(positionAddress)) {
+    throw new Error(`addLiquidityToPosition: invalid address (pool=${poolAddress} pos=${positionAddress})`);
+  }
+  if (!tokenYAmountSol || tokenYAmountSol <= 0) {
+    return { skipped: true, reason: 'Zero Y amount — nothing to compound' };
+  }
+
+  return withRetry(async () => {
+    const connection = getConnection();
+    const wallet     = getWallet();
+    const poolPubkey = new PublicKey(poolAddress);
+    const posPubkey  = new PublicKey(positionAddress);
+    const dlmmPool   = await DLMM.create(connection, poolPubkey);
+
+    // Resolve token Y decimals (Y = SOL/WSOL)
+    const yMint     = dlmmPool.tokenY.publicKey.toString();
+    const [, yMeta] = await resolveTokens([dlmmPool.tokenX.publicKey.toString(), yMint]);
+    const yDecimals = yMeta.decimals;
+    const totalYBN  = toBN(tokenYAmountSol, yDecimals);
+
+    // Fetch current position to get existing bin range
+    const userPositions = await dlmmPool.getPositionsByUserAndLbPair(wallet.publicKey);
+    const posData = userPositions?.userPositions?.find(
+      p => p.publicKey.toString() === positionAddress
+    );
+    if (!posData) {
+      throw new Error(`addLiquidityToPosition: position ${positionAddress.slice(0, 8)} not found on-chain`);
+    }
+    const minBinId = posData.positionData?.lowerBinId ?? posData.positionData?.minBinId;
+    const maxBinId = posData.positionData?.upperBinId ?? posData.positionData?.maxBinId;
+    if (minBinId == null || maxBinId == null) {
+      throw new Error(`addLiquidityToPosition: could not determine bin range for ${positionAddress.slice(0, 8)}`);
+    }
+    const activeBin = await dlmmPool.getActiveBin().catch(() => null);
+    const activeBinId = Number(activeBin?.binId);
+    const directStrategyType = Number(
+      posData?.positionData?.strategyType
+      ?? posData?.positionData?.strategy?.strategyType
+      ?? posData?.strategyType
+      ?? posData?.strategy?.strategyType
+    );
+    const inferredStrategyType = Number.isFinite(activeBinId)
+      ? (maxBinId < activeBinId ? 2 : (minBinId > activeBinId ? 1 : 0))
+      : 0;
+    const strategyType = Number.isFinite(directStrategyType) ? directStrategyType : inferredStrategyType;
+    if (!Number.isFinite(directStrategyType)) {
+      console.log(
+        `[compound] strategyType inferred=${strategyType} for ${positionAddress.slice(0, 8)} `
+        + `(range ${minBinId}-${maxBinId}, active ${Number.isFinite(activeBinId) ? activeBinId : 'n/a'})`
+      );
+    }
+
+    const txs = await dlmmPool.addLiquidityByStrategy({
+      positionPubKey: posPubkey,
+      user: wallet.publicKey,
+      totalXAmount: new BN(0),
+      totalYAmount: totalYBN,
+      strategy: { maxBinId, minBinId, strategyType },
+    });
+
+    if (!txs || (Array.isArray(txs) && txs.length === 0)) {
+      throw new Error('addLiquidityByStrategy returned no transactions');
+    }
+    const txList = Array.isArray(txs) ? txs : [txs];
+
+    // Sign and send — mirrors _openPositionLogic pattern (wallet-only, no posKp needed)
+    let allTxHashes = [];
+    for (const tx of txList) {
+      const isVersioned = tx instanceof VersionedTransaction;
+      const { blockhash } = await connection.getLatestBlockhash('confirmed');
+      if (isVersioned) {
+        tx.message.recentBlockhash = blockhash;
+      } else {
+        tx.feePayer = wallet.publicKey;
+      }
+
+      let microLamports = 250_000;
+      try {
+        const recommended = await getRecommendedPriorityFee([poolAddress, yMint]);
+        if (recommended > 0) microLamports = recommended;
+      } catch { /* fallback */ }
+      injectPriorityFee(tx, { units: 400_000, microLamports });
+
+      if (isVersioned) {
+        tx.signatures = [];
+        tx.sign([wallet]);
+      } else {
+        tx.sign(wallet);
+      }
+
+      const txHash = await connection.sendRawTransaction(tx.serialize(), {
+        skipPreflight: isVersioned,
+        preflightCommitment: 'confirmed',
+        maxRetries: 1,
+      });
+      await pollTxConfirm(connection, txHash);
+      allTxHashes.push(txHash);
+    }
+
+    console.log(`[compound] Added ${tokenYAmountSol} SOL to position ${positionAddress.slice(0, 8)} — txs: ${allTxHashes.join(', ')}`);
+    return { success: true, txHash: allTxHashes[0], txHashes: allTxHashes, positionAddress, addedYSol: tokenYAmountSol };
+  });
+}
+
 // ─── Open Position ───────────────────────────────────────────────
 export async function openPosition(poolAddress, tokenXAmount, tokenYAmount, priceRangePercent = 5, strategyName = null, deployOptions = {}) {
   return withExponentialBackoff(async () => {
@@ -542,9 +653,13 @@ async function _openPositionLogic(poolAddress, tokenXAmount, tokenYAmount, price
   }
 
   const binStep = dlmmPool.lbPair.binStep;
+  const cfg = getConfig();
+  const allowedBinSteps = Array.isArray(cfg.allowedBinSteps) && cfg.allowedBinSteps.length > 0
+    ? cfg.allowedBinSteps.map(v => Number(v)).filter(Number.isFinite)
+    : [100, 125];
 
-  if (binStep !== 100 && binStep !== 125) {
-    throw new Error(`Pool ditolak: bin step ${binStep} tidak didukung. Evil Panda hanya accept binStep 100 atau 125.`);
+  if (!allowedBinSteps.includes(binStep)) {
+    throw new Error(`Pool ditolak: bin step ${binStep} tidak didukung. Allowed: [${allowedBinSteps.join(', ')}].`);
   }
 
   const xMint = dlmmPool.tokenX.publicKey.toString();
@@ -649,11 +764,12 @@ async function _openPositionLogic(poolAddress, tokenXAmount, tokenYAmount, price
     binChunks = [{ lowerBinId: rangeMin, upperBinId: rangeMax }];
   }
 
-  // ── Unified deterministic position recovery ─────────────────────
-  // Derived from: (wallet + pool + strategy) - Allows auto-discovery after crash.
-  const seedString = `${wallet.publicKey.toString()}_${poolAddress}_${strategyName || 'default'}`;
-  const seed = crypto.createHash('sha256').update(seedString).digest();
-  const posKp = Keypair.fromSeed(seed);
+  // ── Random keypair per deploy ────────────────────────────────────
+  // DB (Watchtower) is the crash-recovery source of truth — position_address is
+  // persisted before any TX is sent, so recovery reads from DB not from key derivation.
+  // The old sha256(wallet+pool+strategy) seed limited us to one active position per
+  // pool and would derive the wrong keypair if strategy name changed across deploys.
+  const posKp = Keypair.generate();
 
   // Aegis Recovery: Check if the position account already exists (partial previous deploy)
   let accountExists = false;
@@ -1404,20 +1520,25 @@ export async function closePositionDLMM(poolAddress, positionAddress, pnlData = 
           const yMint = pd.tokenY.toString();
           
           // Helper: Resolve metadata for decimals
-          const { xMeta } = await resolveTokens(xMint, yMint);
+          const [xMeta] = await resolveTokens([xMint, yMint]);
 
           const xBalance = await getTokenBalance(xMint);
           if (xBalance > 0) {
-            // Logika Irit: Hitung slippage dinamis biar gak rugi price impact
+            // Logika Irit: Hitung slippage dinamis biar gak rugi price impact.
+            // Use deploy-time slippage (stored in options.deploySlippageBps) as a floor
+            // to avoid under-slippage when current market is calmer than at deploy time.
             let slippage = 100; // default 1.0%
             try {
               const snapshot = await getMarketSnapshot(xMint, poolAddress);
               slippage = getConservativeSlippage(snapshot?.price?.volatility24h || 0, isUrgent);
             } catch { /* fallback 1% */ }
+            if (options.deploySlippageBps && options.deploySlippageBps > slippage) {
+              slippage = options.deploySlippageBps; // deploy-time slippage is the minimum
+            }
 
             console.log(`[closePositionDLMM] Auto-Swap: Converting ${xBalance} Token X back to SOL (Slippage: ${slippage/100}%)...`);
             const swapResult = await swapToSol(xMint, Math.floor(xBalance * Math.pow(10, xMeta.decimals)), slippage);
-            if (swapResult) {
+            if (swapResult?.swapTransaction) {
                const connection = getConnection();
                const wallet = getWallet();
                const { VersionedTransaction } = await import('@solana/web3.js');
@@ -1427,6 +1548,10 @@ export async function closePositionDLMM(poolAddress, positionAddress, pnlData = 
                await pollTxConfirm(connection, hash, 45000);
                console.log(`[closePositionDLMM] Auto-Swap Success: ${hash}`);
                txHashes.push(hash);
+            } else if (swapResult?.reason) {
+              console.warn(`[closePositionDLMM] Auto-Swap skipped: ${swapResult.reason}${Number.isFinite(swapResult.shift) ? ` (shift ${(swapResult.shift * 100).toFixed(2)}%)` : ''}`);
+            } else {
+              console.warn('[closePositionDLMM] Auto-Swap failed: no swap transaction returned');
             }
           }
           

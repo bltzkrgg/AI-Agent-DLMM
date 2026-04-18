@@ -66,14 +66,24 @@ Respond HANYA dengan JSON array, format:
       newLessons = safeParseAI(text, []);
     }
     
-    // Fallback: If parsing fails but we have text, try to extract a single sentence as a lesson
-    if ((!Array.isArray(newLessons) || newLessons.length === 0) && text.length > 20) {
-      console.log('⚠️ Post-Mortem: Failed to parse JSON, using fallback text.');
-      newLessons = [{
-        lesson: text.split('\n')[0].slice(0, 150),
-        confidence: 0.5,
-        crossPool: false
-      }];
+    // Fallback: If parsing fails but we have prose text, extract a sentence as a lesson
+    if (!Array.isArray(newLessons) || newLessons.length === 0) {
+      // Find the first non-empty line that looks like actual text (not markdown/JSON)
+      const candidateLine = text.split('\n')
+        .map(l => l.trim())
+        .find(l =>
+          l.length >= 30 &&            // minimum length
+          !/^[#{`\[\]<>]/.test(l) &&   // not markdown header / code / json bracket
+          /\s/.test(l)                 // must contain spaces (real words, not a token)
+        );
+      if (candidateLine) {
+        console.log('⚠️ Post-Mortem: Failed to parse JSON, using fallback text.');
+        newLessons = [{
+          lesson: candidateLine.slice(0, 150),
+          confidence: 0.4,
+          crossPool: false
+        }];
+      }
     }
     
     if (Array.isArray(newLessons) && newLessons.length > 0) {
@@ -84,20 +94,30 @@ Respond HANYA dengan JSON array, format:
         learnedAt: new Date().toISOString(),
         source: 'post-mortem',
         poolAddress: position.pool_address,
-        pinned: isLoss 
+        pinned: isLoss
       }));
 
-      if (enriched.length > 0) {
-        const merged = [...existing, ...enriched];
+      // Dedup: skip lessons too similar to existing ones (≥5 shared meaningful words)
+      const deduped = enriched.filter(newL => {
+        const newWords = new Set(newL.lesson.toLowerCase().split(/\s+/).filter(w => w.length > 4));
+        return !existing.some(exL => {
+          const exWords = new Set(exL.lesson.toLowerCase().split(/\s+/).filter(w => w.length > 4));
+          const overlap = [...newWords].filter(w => exWords.has(w)).length;
+          return overlap >= 5;
+        });
+      });
+
+      if (deduped.length > 0) {
+        const merged = [...existing, ...deduped];
         saveLessons(merged.slice(-1000)); // Simpan hingga 1000 pelajaran (efektif selamanya)
 
         if (notifyFn && isLoss) {
-          const lessonStr = enriched.map(l => `• ${l.lesson}`).join('\n');
+          const lessonStr = deduped.map(l => `• ${l.lesson}`).join('\n');
           await notifyFn(`🧠 *Auto-Correction Initiated*\n\nAnalisa trade ${position.pool_address.slice(0, 8)}:\n${lessonStr}\n\n_Pelajaran ini telah disimpan di "Instinct" bot._`);
         }
       }
-      
-      return enriched;
+
+      return deduped.length > 0 ? deduped : null;
     }
   } catch (e) {
     console.error('⚠️ Post-Mortem analysis failed:', e.message);

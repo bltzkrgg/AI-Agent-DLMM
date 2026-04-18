@@ -18,8 +18,8 @@ import { extractStrategiesFromArticle, summarizeArticle } from './market/researc
 import { getLibraryStats } from './market/strategyLibrary.js';
 import { screenToken, formatScreenResult } from './market/coinfilter.js';
 import { safeNum, escapeHTML } from './utils/safeJson.js';
-import { getOpenPositions, getPositionStats } from './db/database.js';
-import { getPositionInfo, getPositionInfoLight, getSolPriceUsd } from './solana/meteora.js';
+import { getOpenPositions, getPositionStats, listPendingReconcileIssues, listRecentFailedOperations } from './db/database.js';
+import { getPositionInfo, getPositionInfoLight, getSolPriceUsd, claimFees } from './solana/meteora.js';
 import { padR, hr, kv, codeBlock, formatPnl, shortAddr, shortStrat } from './utils/table.js';
 import { initMonitor } from './monitor/positionMonitor.js';
 import { autoEvolveIfReady, runEvolutionCycle } from './learn/evolve.js';
@@ -31,13 +31,15 @@ import { runOpportunityScanner } from './market/opportunityScanner.js';
 import { addSmartWallet, removeSmartWallet, formatWalletList } from './market/smartWallets.js';
 import { formatPoolMemoryReport } from './market/poolMemory.js';
 import { recalibrateWeights, formatWeightsReport } from './market/signalWeights.js';
+import { getWalletPositions, isLPAgentEnabled } from './market/lpAgent.js';
 import { validateRuntimeEnv } from './runtime/env.js';
 import { resolvePositionSnapshot } from './app/positionSnapshot.js';
+import { evaluateDeployReadiness } from './app/deployReadiness.js';
 import { DbBackup } from './db/backup.js';
 import { initializeRpcManager, getRpcMetrics } from './utils/helius.js';
 import { CircuitBreaker } from './safety/circuitBreaker.js';
 import { createMessageTransport } from './telegram/messageTransport.js';
-import { performGitPull, performNpmInstall } from './utils/shell.js';
+import { performGitPull, performNpmInstall, performPostUpdateChecks } from './utils/shell.js';
 
 // ─── PID lock — cegah multiple instance ─────────────────────────
 const PID_FILE = new URL('../../bot.pid', import.meta.url).pathname;
@@ -55,11 +57,16 @@ if (existsSync(PID_FILE)) {
 writeFileSync(PID_FILE, String(process.pid));
 process.on('exit', () => { try { unlinkSync(PID_FILE); } catch { } });
 
+const bootCfg = getConfig();
+
 // ─── Validate env ────────────────────────────────────────────────
-const { missing } = validateRuntimeEnv({ requireTrading: true });
+const { missing } = validateRuntimeEnv({
+  requireTrading: true,
+  requireGmgn: bootCfg.gmgnDegradedModeEnabled === false,
+});
 if (missing.length > 0) {
   console.error(`❌ Missing env vars: ${missing.join(', ')}`);
-  console.error('Copy .env.example to .env and fill in all values.');
+  console.error('Copy env.example to .env and fill in all values.');
   process.exit(1);
 }
 
@@ -79,7 +86,7 @@ const bot = new TelegramBot(process.env.TELEGRAM_BOT_TOKEN, {
     }
   }
 });
-const cfg = getConfig();
+const cfg = bootCfg;
 initMonitor(bot, ALLOWED_ID);
 
 // ─── Shared Utilities ───────────────────────────────────────────
@@ -101,7 +108,7 @@ async function urgentNotify(text) {
 // Initialize DB backup system
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const dbPath = process.env.BOT_DB_PATH || join(__dirname, '../data.db');
-const dbBackup = new DbBackup(dbPath, './backups');
+const dbBackup = new DbBackup(dbPath);
 
 // Initialize Circuit Breaker untuk system safety
 const circuitBreaker = new CircuitBreaker({
@@ -243,22 +250,111 @@ let _hunterBusy = 0;
 let _healerBusy = 0;
 let _screeningBusy = 0;
 const LOCK_TIMEOUT_MS = 15 * 60 * 1000; // 15 menit
+let _lastEntryGuardAlertAt = 0;
+let _lastEntryGuardAlertMsg = '';
 
-// ─── Pending approval state (auto-screening) ─────────────────────
-// Map: approvalKey → { candidates, chatId, expiresAt, messageId }
-const pendingApprovals = new Map();
+function isAutonomyPaused(cfg = getConfig()) {
+  return String(cfg?.autonomyMode || 'active').toLowerCase() === 'paused';
+}
 
-// ─── Setup state — dipakai oleh wizard /entry ────────────────────
-const setupState = {
-  phase: 'done', // bot langsung jalan; wizard hanya aktif saat /entry
-  solPerPool: null,
-  poolCount: null,
-};
+function summarizeEntryGuard() {
+  const liveCfg = getConfig();
+  const stage = String(liveCfg.deploymentStage || 'full').toLowerCase();
+  const openPos = getOpenPositions();
+  const pendingReconcile = listPendingReconcileIssues(200);
+  const manualReviewOpen = openPos.filter(p => p.lifecycle_state === 'manual_review').length;
 
-// triggerHunter — hanya dipanggil dari /entry, TIDAK dari cron atau post-close
-async function triggerHunter(targetCount = null) {
+  const stageMaxPositions = stage === 'canary'
+    ? Math.min(liveCfg.maxPositions, Math.max(1, Number(liveCfg.canaryMaxPositions || 1)))
+    : liveCfg.maxPositions;
+
+  const reasons = [];
+  if (stage === 'shadow') {
+    reasons.push('Stage SHADOW aktif (entry live diblokir).');
+  }
+  if (isAutonomyPaused(liveCfg)) {
+    reasons.push('Autonomy mode PAUSED.');
+  }
+  if (liveCfg.autoPauseOnManualReview !== false && manualReviewOpen >= (liveCfg.manualReviewPauseThreshold || 1)) {
+    reasons.push(`manual_review terbuka: ${manualReviewOpen} posisi.`);
+  }
+  if (pendingReconcile.length > 0) {
+    reasons.push(`pending reconcile: ${pendingReconcile.length} item.`);
+  }
+
+  return {
+    stage,
+    stageMaxPositions,
+    openPositions: openPos.length,
+    manualReviewOpen,
+    pendingReconcile: pendingReconcile.length,
+    reasons,
+    entryAllowed: reasons.length === 0,
+  };
+}
+
+async function maybeNotifyEntryGuard(reasons, { force = false } = {}) {
+  if (!Array.isArray(reasons) || reasons.length === 0) return;
+  const msg = reasons.join(' | ');
+  const now = Date.now();
+  const cooldownMs = 15 * 60 * 1000;
+  const shouldSend = force || msg !== _lastEntryGuardAlertMsg || (now - _lastEntryGuardAlertAt) > cooldownMs;
+  if (!shouldSend) return;
+  _lastEntryGuardAlertMsg = msg;
+  _lastEntryGuardAlertAt = now;
+  await notify(`⏸️ Entry Guard aktif: ${escapeHTML(msg)}`).catch(() => { });
+}
+
+function getDeployReadinessSnapshot() {
+  const cfgNow = getConfig();
+  const cbState = circuitBreaker.getState();
+  const guard = summarizeEntryGuard();
+  const failedOps = listRecentFailedOperations(6, 50);
+  const taeSummary = getTAESummary() || {};
+  const taeExitCount = getExitEventCount();
+  const taeWinRatePct = Number(taeSummary.overall_win_rate);
+  const readiness = evaluateDeployReadiness({
+    solanaReady,
+    circuitState: cbState.state,
+    pendingReconcile: guard.pendingReconcile,
+    manualReviewOpen: guard.manualReviewOpen,
+    manualReviewThreshold: cfgNow.manualReviewPauseThreshold || 1,
+    autoPauseOnManualReview: cfgNow.autoPauseOnManualReview !== false,
+    failedOps6h: failedOps.length,
+    deploymentStage: cfgNow.deploymentStage,
+    dryRun: cfgNow.dryRun,
+    autoScreeningEnabled: cfgNow.autoScreeningEnabled,
+    autonomyMode: cfgNow.autonomyMode,
+    taeExitCount,
+    taeWinRatePct: Number.isFinite(taeWinRatePct) ? taeWinRatePct : null,
+    minTaeSamplesForFullStage: cfgNow.minTaeSamplesForFullStage,
+    minTaeWinRateForFullStage: cfgNow.minTaeWinRateForFullStage,
+  });
+
+  return {
+    cfgNow,
+    cbState,
+    guard,
+    failedOps,
+    taeExitCount,
+    taeWinRatePct: Number.isFinite(taeWinRatePct) ? taeWinRatePct : null,
+    readiness,
+  };
+}
+
+// triggerHunter — dipanggil dari /hunt dan loop auto-screening
+async function triggerHunter(targetCount = null, options = {}) {
+  const { ignoreAutonomyPause = false } = options;
   if (!solanaReady) {
     notify('⚠️ Wallet/RPC belum siap. Perbaiki koneksi Solana sebelum menjalankan Hunter.').catch(() => { });
+    return;
+  }
+  const guard = summarizeEntryGuard();
+  const effectiveReasons = ignoreAutonomyPause
+    ? guard.reasons.filter(r => r !== 'Autonomy mode PAUSED.')
+    : guard.reasons;
+  if (effectiveReasons.length > 0) {
+    maybeNotifyEntryGuard(effectiveReasons, { force: true }).catch(() => { });
     return;
   }
   if (!circuitBreaker.isHealthy()) {
@@ -270,17 +366,21 @@ async function triggerHunter(targetCount = null) {
   const openPos = getOpenPositions();
   // Cek kuota: jika targetCount diberikan, cek apakah masih ada slot
   // Jika tidak ada targetCount, gunakan maxPositions global
+  const stageMax = guard.stageMaxPositions;
   const effectiveMax = targetCount != null
-    ? openPos.length + targetCount   // buka targetCount posisi baru
-    : liveCfg.maxPositions;
-  if (openPos.length >= effectiveMax && targetCount == null) {
-    notify(`⚠️ Posisi sudah penuh (${openPos.length}/${liveCfg.maxPositions}). Tutup posisi dulu sebelum entry baru.`).catch(() => { });
+    ? Math.min(openPos.length + targetCount, stageMax)   // buka targetCount posisi baru
+    : stageMax;
+  if (openPos.length >= effectiveMax) {
+    notify(`⚠️ Posisi sudah penuh (${openPos.length}/${effectiveMax}). Tutup posisi dulu sebelum entry baru.`).catch(() => { });
     return;
   }
   _hunterBusy = Date.now();
   try {
     // Aegis Pulse: Lewatkan bot & ALLOWED_ID agar Hunter bisa melakukan editMessage
-    await runHunterAlpha(notify, bot, ALLOWED_ID, { targetCount });
+    await runHunterAlpha(notify, bot, ALLOWED_ID, {
+      targetCount,
+      maxPositionsCap: stageMax,
+    });
   }
   catch (e) {
     await urgentNotify(`❌ <b>Hunter Panic</b>\nReason: <code>${escapeHTML(e.message)}</code>`);
@@ -290,8 +390,13 @@ async function triggerHunter(targetCount = null) {
 }
 
 // Healer — hanya manage posisi, tidak ada reopen prompt
-async function runHealerWithReopenCheck() {
+async function runHealerWithReopenCheck(options = {}) {
+  const { ignoreAutonomyPause = false } = options;
   if (!solanaReady) return;
+  if (!ignoreAutonomyPause && isAutonomyPaused()) {
+    console.log('⏭ Healer skip — autonomy paused');
+    return;
+  }
   if (!circuitBreaker.isHealthy()) {
     console.log(`⏭ Healer skip — Circuit Breaker ${circuitBreaker.getState().state}`);
     return;
@@ -305,6 +410,7 @@ async function runHealerWithReopenCheck() {
 // Berjalan tiap 5 menit untuk nangkis dump cepat (Supertrend + OOR) tanpa LLM.
 cron.schedule('*/5 * * * *', async () => {
   if (!solanaReady) return;
+  if (isAutonomyPaused()) return;
 
   // SHARED LOCK: Jangan jalan kalau Healer utama lagi kerja
   if (_healerBusy && (Date.now() - _healerBusy < LOCK_TIMEOUT_MS)) {
@@ -371,6 +477,10 @@ cron.schedule('* * * * *', async () => {
 
 async function runAutoScreening() {
   if (!solanaReady) return;
+  if (isAutonomyPaused()) {
+    console.log('⏭ Auto-screening skip — autonomy paused');
+    return;
+  }
   if (!circuitBreaker.isHealthy()) {
     console.log(`⏭ Auto-screening skip — Circuit Breaker ${circuitBreaker.getState().state}`);
     return;
@@ -382,6 +492,12 @@ async function runAutoScreening() {
 
   const liveCfg = getConfig();
   if (!liveCfg.autoScreeningEnabled) return;
+  const guard = summarizeEntryGuard();
+  if (!guard.entryAllowed) {
+    console.log(`⏭ Auto-screening skip — Entry Guard aktif (${guard.reasons.join(' | ')})`);
+    await maybeNotifyEntryGuard(guard.reasons).catch(() => { });
+    return;
+  }
 
   // ─── Daily Circuit Breaker Check ─────────────────────────────
   // Jika PnL hari ini ditutup minus lebih dari dailyLossLimitUsd ($5), Hunter istirahat.
@@ -403,8 +519,9 @@ async function runAutoScreening() {
   }
 
   const openPos = getOpenPositions();
-  if (openPos.length >= liveCfg.maxPositions) {
-    console.log(`⏭ Hunter skip — slot penuh (${openPos.length}/${liveCfg.maxPositions})`);
+  const stageMax = guard.stageMaxPositions;
+  if (openPos.length >= stageMax) {
+    console.log(`⏭ Hunter skip — slot penuh (${openPos.length}/${stageMax}) [stage:${guard.stage}]`);
     return;
   }
 
@@ -426,7 +543,9 @@ async function runAutoScreening() {
   _screeningBusy = Date.now();
   _hunterBusy = Date.now();
   try {
-    await runHunterAlpha(notify, bot, ALLOWED_ID);
+    await runHunterAlpha(notify, bot, ALLOWED_ID, {
+      maxPositionsCap: stageMax,
+    });
   } catch (e) {
     console.error('Auto-screening error:', e.message);
     notify(`❌ Auto-screening error: ${e.message}`).catch(() => { });
@@ -689,10 +808,12 @@ bot.onText(/\/tae_stats/, async (msg) => {
     if (byTrigger.length > 0) {
       report += `<b>🎯 Exit Triggers Performance:</b>\n`;
       for (const t of byTrigger) {
-        const winRate = t.count > 0 ? ((t.wins / t.count) * 100).toFixed(0) : 0;
+        const total = Number(t.total || 0);
+        const wins = Number(t.wins || 0);
+        const winRate = total > 0 ? ((wins / total) * 100).toFixed(0) : 0;
         report += `├─ <code>${t.exit_trigger}</code>\n`;
-        report += `│  ├─ Count: ${t.total} | Avg PnL: <code>${(t.avg_pnl_pct || 0).toFixed(2)}%</code>\n`;
-        report += `│  ├─ Win Rate: <code>${winRate}%</code> (${t.wins}/${t.total})\n`;
+        report += `│  ├─ Count: ${total} | Avg PnL: <code>${(t.avg_pnl_pct || 0).toFixed(2)}%</code>\n`;
+        report += `│  ├─ Win Rate: <code>${winRate}%</code> (${wins}/${total})\n`;
         report += `│  └─ Avg Hold: <code>${(t.avg_hold_min || 0).toFixed(0)}</code> min\n`;
       }
       report += `\n`;
@@ -746,14 +867,19 @@ bot.onText(/\/start/, (msg) => {
     `<b>Control:</b>\n` +
     `• <code>/hunting</code> — 🦅 Sultan Sniper Trigger\n` +
     `• <code>/heal</code> — 🩺 Position Management\n` +
+    `• <code>/claim &lt;position&gt;</code> — 💸 Claim fees manual\n` +
     `• <code>/zap &lt;addr&gt;</code> — 🆘 Emergency Exit\n` +
     `• <code>/check &lt;mint&gt;</code> — 🔍 RugCheck\n` +
     `• <code>/autoscreen on|off</code> — Toggle Autonomy\n` +
+    `• <code>/pause</code> / <code>/resume</code> — Pause/lanjut loop otonom\n` +
+    `• <code>/stage [shadow|canary|full]</code> — Deployment Gate\n` +
+    `• <code>/override_range &lt;pct&gt; [strategy]</code> — Override range entry\n` +
+    `• <code>/rollback</code> — Safe-mode rollback cepat\n` +
     `• <code>/dryrun on|off</code> — Toggle Simulation\n\n` +
     `<b>Brain &amp; Evolution:</b>\n` +
-    `<code>/brain</code> <code>/lessons</code> <code>/evolve</code> <code>/poolmemory</code>\n\n` +
+    `<code>/brain</code> <code>/lessons</code> <code>/evolve</code> <code>/evolve_memory</code> <code>/poolmemory</code>\n\n` +
     `<b>Admin:</b>\n` +
-    `<code>/setconfig</code> <code>/safety</code> <code>/providers</code> <code>/model</code>\n` +
+    `<code>/setconfig</code> <code>/safety</code> <code>/providers</code> <code>/model</code> <code>/health</code> <code>/preflight</code>\n` +
     `<code>/system_update</code> — 🚀 Upgrade Aegis Supreme (v75.9)\n\n` +
     `<i>Atau chat bebas untuk instruksi manual!</i>`,
     { parse_mode: 'HTML' }
@@ -908,7 +1034,7 @@ bot.onText(/\/status/, async (msg) => {
   }
 });
 
-bot.onText(/\/evolve/, async (msg) => {
+bot.onText(/\/(?:evolve_memory|instinct_evolve)/, async (msg) => {
   if (msg.from.id !== ALLOWED_ID) return;
   const chatId = msg.chat.id;
   bot.sendMessage(chatId, '🧬 Menjalankan Evolution Cycle...');
@@ -1056,7 +1182,7 @@ bot.onText(/\/(hunt|hunting)/, async (msg) => {
     return;
   }
   bot.sendMessage(msg.chat.id, '🦅 Menjalankan Hunter Alpha...');
-  try { await triggerHunter(); }
+  try { await triggerHunter(null, { ignoreAutonomyPause: true }); }
   catch (e) { bot.sendMessage(msg.chat.id, `❌ <code>${escapeHTML(e.message)}</code>`, { parse_mode: 'HTML' }); }
 });
 
@@ -1068,7 +1194,7 @@ bot.onText(/\/heal/, async (msg) => {
   }
   bot.sendMessage(msg.chat.id, '🩺 Menjalankan Healer Alpha...');
   _healerBusy = Date.now();
-  try { await runHealerWithReopenCheck(); }
+  try { await runHealerWithReopenCheck({ ignoreAutonomyPause: true }); }
   catch (e) { bot.sendMessage(msg.chat.id, `❌ <code>${escapeHTML(e.message)}</code>`, { parse_mode: 'HTML' }); }
   finally { _healerBusy = 0; }
 });
@@ -1120,7 +1246,13 @@ bot.onText(/\/system_update/, (msg) => {
         await performNpmInstall();
         bot.sendMessage(chatId, '✅ <b>NPM Install Success.</b>', { parse_mode: 'HTML' });
 
-        // Step 3: Restart
+        // Step 3: Post-update health checks (block restart jika gagal)
+        bot.sendMessage(chatId, '🧪 Menjalankan post-update checks (<code>lint + readiness tests</code>)...', { parse_mode: 'HTML' });
+        const checksOutput = await performPostUpdateChecks();
+        const preview = escapeHTML((checksOutput || '').slice(-3500));
+        bot.sendMessage(chatId, `✅ <b>Post-update checks passed</b>\n<pre><code>${preview || 'OK'}</code></pre>`, { parse_mode: 'HTML' });
+
+        // Step 4: Restart
         bot.sendMessage(chatId, '🚀 <b>Memicu Restart Sistem...</b> Bot akan offline sebentar.', { parse_mode: 'HTML' });
 
         setTimeout(() => {
@@ -1147,7 +1279,7 @@ bot.onText(/\/library/, (msg) => {
     join(ROOT, 'memory.json'),
     join(ROOT, 'lessons.json'),
     join(ROOT, 'strategyPerformance.json'),
-    join(__dirname, 'strategy-library.json'),
+    join(__dirname, '../strategy-library.json'),
   ];
   const stats = getLibraryStats();
   let text = `📚 <b>Strategy Library</b>\n\n`;
@@ -1387,6 +1519,100 @@ bot.onText(/\/dryrun(?:\s+(on|off))?/, (msg, match) => {
   );
 });
 
+// /pause — pause loop otonom (watchdog/healer/hunter auto)
+bot.onText(/\/pause$/, (msg) => {
+  if (msg.from.id !== ALLOWED_ID) return;
+  const before = getConfig();
+  const next = updateConfig({ autonomyMode: 'paused' });
+  bot.sendMessage(msg.chat.id,
+    `⏸️ <b>Autonomy Paused</b>\n\n` +
+    `autonomyMode: <code>${next.autonomyMode}</code>\n` +
+    `autoScreeningEnabled: <code>${next.autoScreeningEnabled}</code>\n\n` +
+    `<i>Loop otonom dihentikan sementara. Command manual (/hunt, /heal, /zap) tetap bisa dipakai.</i>`,
+    { parse_mode: 'HTML' }
+  );
+  if (before.autonomyMode !== next.autonomyMode) {
+    notify('⏸️ Autonomy mode dipause via command /pause.').catch(() => { });
+  }
+});
+
+// /resume — lanjutkan loop otonom
+bot.onText(/\/resume$/, (msg) => {
+  if (msg.from.id !== ALLOWED_ID) return;
+  const before = getConfig();
+  const next = updateConfig({ autonomyMode: 'active' });
+  bot.sendMessage(msg.chat.id,
+    `▶️ <b>Autonomy Resumed</b>\n\n` +
+    `autonomyMode: <code>${next.autonomyMode}</code>\n` +
+    `autoScreeningEnabled: <code>${next.autoScreeningEnabled}</code>`,
+    { parse_mode: 'HTML' }
+  );
+  if (before.autonomyMode !== next.autonomyMode) {
+    notify('▶️ Autonomy mode diaktifkan lagi via command /resume.').catch(() => { });
+  }
+});
+
+// /claim <positionAddress> — manual fee claim untuk posisi tertentu
+bot.onText(/\/claim(?:\s+(\S+))?/, async (msg, match) => {
+  if (msg.from.id !== ALLOWED_ID) return;
+  const chatId = msg.chat.id;
+  const positionAddress = match[1]?.trim();
+  if (!positionAddress) {
+    bot.sendMessage(chatId, `ℹ️ Gunakan: <code>/claim &lt;position_address&gt;</code>`, { parse_mode: 'HTML' });
+    return;
+  }
+
+  const openPos = getOpenPositions();
+  const pos = openPos.find(p => p.position_address === positionAddress);
+  if (!pos) {
+    bot.sendMessage(chatId, `❌ Posisi <code>${escapeHTML(positionAddress)}</code> tidak ditemukan di open positions.`, { parse_mode: 'HTML' });
+    return;
+  }
+
+  bot.sendMessage(chatId, `💸 Claiming fees untuk <code>${escapeHTML(positionAddress.slice(0, 8))}...</code>`, { parse_mode: 'HTML' }).catch(() => { });
+  try {
+    await claimFees(pos.pool_address, pos.position_address);
+    bot.sendMessage(chatId,
+      `✅ <b>Claim berhasil</b>\n\n` +
+      `Position: <code>${escapeHTML(pos.position_address)}</code>\n` +
+      `Pool: <code>${escapeHTML(pos.pool_address)}</code>\n\n` +
+      `<i>Tip: jalankan /status untuk lihat update fee/PnL terbaru.</i>`,
+      { parse_mode: 'HTML' }
+    ).catch(() => { });
+  } catch (e) {
+    bot.sendMessage(chatId, `❌ Claim gagal: <code>${escapeHTML(e.message)}</code>`, { parse_mode: 'HTML' }).catch(() => { });
+  }
+});
+
+// /rollback or /safemode — harden runtime before intervention/deploy
+bot.onText(/\/(?:rollback|safemode)/, (msg) => {
+  if (msg.from.id !== ALLOWED_ID) return;
+  const chatId = msg.chat.id;
+  const before = getConfig();
+  const next = updateConfig({
+    dryRun: true,
+    autoScreeningEnabled: false,
+    deploymentStage: 'shadow',
+    autonomyMode: 'paused',
+  });
+  const changed = [];
+  if (before.dryRun !== next.dryRun) changed.push(`dryRun: ${before.dryRun} → ${next.dryRun}`);
+  if (before.autoScreeningEnabled !== next.autoScreeningEnabled) changed.push(`autoScreeningEnabled: ${before.autoScreeningEnabled} → ${next.autoScreeningEnabled}`);
+  if (String(before.deploymentStage) !== String(next.deploymentStage)) changed.push(`deploymentStage: ${before.deploymentStage} → ${next.deploymentStage}`);
+  if (String(before.autonomyMode) !== String(next.autonomyMode)) changed.push(`autonomyMode: ${before.autonomyMode} → ${next.autonomyMode}`);
+
+  bot.sendMessage(chatId,
+    `🛑 <b>Safe Rollback Aktif</b>\n\n` +
+    `Mode aman diterapkan:\n` +
+    `• dryRun = <code>${next.dryRun}</code>\n` +
+    `• autoScreeningEnabled = <code>${next.autoScreeningEnabled}</code>\n` +
+    `• deploymentStage = <code>${next.deploymentStage}</code>\n` +
+    `• autonomyMode = <code>${next.autonomyMode}</code>\n\n` +
+    (changed.length ? `<i>Perubahan: ${escapeHTML(changed.join(' | '))}</i>` : '<i>Nilai sudah dalam mode aman sejak awal.</i>'),
+    { parse_mode: 'HTML' }
+  );
+});
+
 // /autoscreen on|off [interval] — toggle auto-screening (alias: /autohunter)
 bot.onText(/\/(?:autoscreen|autohunter)(?:\s+(on|off))?(?:\s+(\d+))?/, async (msg, match) => {
   if (msg.from.id !== ALLOWED_ID) return;
@@ -1399,13 +1625,28 @@ bot.onText(/\/(?:autoscreen|autohunter)(?:\s+(on|off))?(?:\s+(\d+))?/, async (ms
     bot.sendMessage(chatId,
       `🤖 <b>Auto-Screening</b>: ${current ? '✅ ON' : '❌ OFF'}\n\n` +
       `Gunakan <code>/autoscreen on [interval]</code> atau <code>/autoscreen off</code> untuk toggle.\n` +
-      `Interval screening: ${getConfig().screeningIntervalMin} menit`,
+      `Interval screening: ${getConfig().screeningIntervalMin} menit\n` +
+      `Stage: <code>${getConfig().deploymentStage}</code>`,
       { parse_mode: 'HTML' }
     );
     return;
   }
 
   const enable = toggle === 'on';
+  if (enable) {
+    const snap = getDeployReadinessSnapshot();
+    if (!snap.readiness.ready) {
+      const blockerText = snap.readiness.blockers.join(' | ');
+      bot.sendMessage(chatId,
+        `⛔ <b>Auto-screening ditolak</b>\n\n` +
+        `Sistem belum ready untuk entry live.\n` +
+        `Blockers: <code>${escapeHTML(blockerText)}</code>\n\n` +
+        `<i>Jalankan /preflight untuk detail dan action items.</i>`,
+        { parse_mode: 'HTML' }
+      );
+      return;
+    }
+  }
   const updates = { autoScreeningEnabled: enable };
 
   if (enable && intervalArg) {
@@ -1426,6 +1667,126 @@ bot.onText(/\/(?:autoscreen|autohunter)(?:\s+(on|off))?(?:\s+(\d+))?/, async (ms
     );
   } else {
     bot.sendMessage(chatId, `🤖 <b>Auto-Screening</b>: ❌ Dimatikan. Hunter tidak akan auto-deploy.`, { parse_mode: 'HTML' });
+  }
+});
+
+// /stage [shadow|canary|full] [canaryMax] [force] — runtime deployment stage gate
+bot.onText(/\/stage(?:\s+(.+))?/, (msg, match) => {
+  if (msg.from.id !== ALLOWED_ID) return;
+  const chatId = msg.chat.id;
+  const rawArgs = match[1]?.trim();
+  const cfgNow = getConfig();
+
+  if (!rawArgs) {
+    const guard = summarizeEntryGuard();
+    const reasonText = guard.reasons.length ? guard.reasons.join(' | ') : 'none';
+    bot.sendMessage(chatId,
+      `🧭 <b>Deployment Stage</b>\n\n` +
+      `Stage: <code>${cfgNow.deploymentStage}</code>\n` +
+      `Canary Max Positions: <code>${cfgNow.canaryMaxPositions}</code>\n` +
+      `Effective Max (stage): <code>${guard.stageMaxPositions}</code>\n` +
+      `Entry Guard: <code>${guard.entryAllowed ? 'OPEN' : 'BLOCKED'}</code>\n` +
+      `Reasons: <code>${escapeHTML(reasonText)}</code>\n\n` +
+      `<i>Ubah: /stage shadow|canary|full [canaryMax] [force]</i>`,
+      { parse_mode: 'HTML' }
+    );
+    return;
+  }
+
+  const tokens = rawArgs.split(/\s+/).filter(Boolean);
+  const requestedStage = tokens[0]?.toLowerCase();
+  const canaryArgToken = tokens.find(t => /^\d+$/.test(t));
+  const canaryArg = canaryArgToken ? parseInt(canaryArgToken, 10) : null;
+  const force = tokens.some(t => t.toLowerCase() === 'force' || t === '--force');
+  const allowedStages = ['shadow', 'canary', 'full'];
+  if (!allowedStages.includes(requestedStage)) {
+    bot.sendMessage(chatId, `❌ Stage tidak valid. Gunakan: <code>/stage shadow|canary|full [canaryMax] [force]</code>`, { parse_mode: 'HTML' });
+    return;
+  }
+
+  if (requestedStage === 'full' && !force) {
+    const snap = getDeployReadinessSnapshot();
+    const readinessForFull = evaluateDeployReadiness({
+      ...snap.readiness,
+      solanaReady,
+      circuitState: snap.cbState.state,
+      pendingReconcile: snap.guard.pendingReconcile,
+      manualReviewOpen: snap.guard.manualReviewOpen,
+      manualReviewThreshold: snap.cfgNow.manualReviewPauseThreshold || 1,
+      autoPauseOnManualReview: snap.cfgNow.autoPauseOnManualReview !== false,
+      failedOps6h: snap.failedOps.length,
+      deploymentStage: snap.cfgNow.deploymentStage,
+      targetStage: 'full',
+      dryRun: snap.cfgNow.dryRun,
+      autoScreeningEnabled: snap.cfgNow.autoScreeningEnabled,
+      autonomyMode: snap.cfgNow.autonomyMode,
+      taeExitCount: snap.taeExitCount,
+      taeWinRatePct: snap.taeWinRatePct,
+      minTaeSamplesForFullStage: snap.cfgNow.minTaeSamplesForFullStage,
+      minTaeWinRateForFullStage: snap.cfgNow.minTaeWinRateForFullStage,
+    });
+    if (!readinessForFull.ready) {
+      const blockerText = readinessForFull.blockers.join(' | ');
+      bot.sendMessage(chatId,
+        `⛔ <b>Stage FULL ditolak</b>\n\n` +
+        `System readiness belum lolos.\n` +
+        `Blockers: <code>${escapeHTML(blockerText)}</code>\n\n` +
+        `<i>Perbaiki dulu atau override sadar risiko: /stage full force</i>`,
+        { parse_mode: 'HTML' }
+      );
+      return;
+    }
+  }
+
+  const updates = { deploymentStage: requestedStage };
+  if (requestedStage === 'canary' && Number.isFinite(canaryArg) && canaryArg >= 1) {
+    updates.canaryMaxPositions = canaryArg;
+  }
+  const next = updateConfig(updates);
+  const guard = summarizeEntryGuard();
+  bot.sendMessage(chatId,
+    `✅ <b>Stage diperbarui</b>\n\n` +
+    `deploymentStage: <code>${next.deploymentStage}</code>\n` +
+    `canaryMaxPositions: <code>${next.canaryMaxPositions}</code>\n` +
+    `effectiveMax: <code>${guard.stageMaxPositions}</code>\n` +
+    `entryGuard: <code>${guard.entryAllowed ? 'OPEN' : 'BLOCKED'}</code>`,
+    { parse_mode: 'HTML' }
+  );
+});
+
+// /preflight — readiness gate sebelum deploy live
+bot.onText(/\/preflight/, async (msg) => {
+  if (msg.from.id !== ALLOWED_ID) return;
+  const chatId = msg.chat.id;
+  try {
+    const snap = getDeployReadinessSnapshot();
+    const { readiness, cfgNow, guard, cbState, taeExitCount, taeWinRatePct } = snap;
+    const blockersText = readiness.blockers.length ? readiness.blockers.join('\n') : 'none';
+    const warningsText = readiness.warnings.length ? readiness.warnings.join('\n') : 'none';
+    const status = readiness.ready ? '✅ READY' : '⛔ BLOCKED';
+
+    const text = [
+      `🧪 <b>Preflight Check</b>`,
+      ``,
+      `Status: <code>${status}</code>`,
+      `Readiness Score: <code>${readiness.score}/100</code>`,
+      `Stage: <code>${cfgNow.deploymentStage}</code>`,
+      `Autonomy Mode: <code>${cfgNow.autonomyMode}</code>`,
+      `Circuit Breaker: <code>${cbState.state}</code>`,
+      `Pending Reconcile: <code>${guard.pendingReconcile}</code>`,
+      `Manual Review Open: <code>${guard.manualReviewOpen}</code>`,
+      `TAE Samples: <code>${taeExitCount}</code>`,
+      `TAE Win Rate: <code>${Number.isFinite(taeWinRatePct) ? `${taeWinRatePct.toFixed(1)}%` : 'N/A'}</code>`,
+      ``,
+      `<b>Blockers</b>`,
+      `<pre><code>${escapeHTML(blockersText)}</code></pre>`,
+      `<b>Warnings</b>`,
+      `<pre><code>${escapeHTML(warningsText)}</code></pre>`,
+      `<i>Tip: gunakan /health untuk incident detail, /rollback untuk safe-mode cepat.</i>`,
+    ].join('\n');
+    await bot.sendMessage(chatId, text, { parse_mode: 'HTML' });
+  } catch (e) {
+    bot.sendMessage(chatId, `❌ <code>${escapeHTML(e.message)}</code>`, { parse_mode: 'HTML' }).catch(() => { });
   }
 });
 
@@ -1462,7 +1823,22 @@ bot.onText(/\/setconfig(?:\s+(\S+))?(?:\s+(.+))?/, (msg, match) => {
       `minTotalFeesSol          = ${cfg.minTotalFeesSol}`,
       `heritageModeEnabled      = ${cfg.heritageModeEnabled}`,
       `activePreset             = ${cfg.activePreset}`,
+      `deploymentStage          = ${cfg.deploymentStage}`,
+      `canaryMaxPositions       = ${cfg.canaryMaxPositions}`,
+      `autoPauseOnManualReview  = ${cfg.autoPauseOnManualReview}`,
+      `manualReviewPauseThreshold= ${cfg.manualReviewPauseThreshold}`,
+      `autonomyMode            = ${cfg.autonomyMode}`,
+      `autoScreeningEnabled     = ${cfg.autoScreeningEnabled}`,
       `dryRun                   = ${cfg.dryRun}`,
+      `failSafeModeOnDataUnreliable= ${cfg.failSafeModeOnDataUnreliable}`,
+      `minPriceSourcesForEntry  = ${cfg.minPriceSourcesForEntry}`,
+      `oracleMaxPriceDivergencePct= ${cfg.oracleMaxPriceDivergencePct}`,
+      `gmgnDegradedModeEnabled  = ${cfg.gmgnDegradedModeEnabled}`,
+      `gmgnDegradedMinMcap      = ${cfg.gmgnDegradedMinMcap}`,
+      `gmgnDegradedMinVolume24h = ${cfg.gmgnDegradedMinVolume24h}`,
+      `gmgnDegradedMinTokenAgeMinutes= ${cfg.gmgnDegradedMinTokenAgeMinutes}`,
+      `minTaeSamplesForFullStage= ${cfg.minTaeSamplesForFullStage}`,
+      `minTaeWinRateForFullStage= ${cfg.minTaeWinRateForFullStage}`,
     ];
     return bot.sendMessage(chatId,
       `⚙️ <b>Config Saat Ini</b>\n\n<pre><code>${lines.join('\n')}</code></pre>\n\n<i>Ubah: <code>/setconfig key value</code></i>`,
@@ -1501,6 +1877,52 @@ bot.onText(/\/setconfig(?:\s+(\S+))?(?:\s+(.+))?/, (msg, match) => {
   );
 });
 
+// /override_range [pct] [strategyName] — override price range strategy aktif
+bot.onText(/\/override_range(?:\s+([0-9]*\.?[0-9]+))?(?:\s+(.+))?/, (msg, match) => {
+  if (msg.from.id !== ALLOWED_ID) return;
+  const chatId = msg.chat.id;
+  const cfg = getConfig();
+  const pctRaw = match[1];
+  const strategyName = (match[2] || cfg.activeStrategy || 'Evil Panda').trim();
+  const currentRange = cfg.strategyOverrides?.[strategyName]?.deploy?.priceRangePct;
+
+  if (!pctRaw) {
+    bot.sendMessage(chatId,
+      `🎛️ <b>Override Range</b>\n\n` +
+      `Strategy: <code>${escapeHTML(strategyName)}</code>\n` +
+      `Current override: <code>${Number.isFinite(Number(currentRange)) ? `${Number(currentRange)}%` : 'not set'}</code>\n\n` +
+      `<i>Set baru: /override_range &lt;persen&gt; [strategyName]</i>\n` +
+      `<i>Contoh: /override_range 90 Evil Panda</i>`,
+      { parse_mode: 'HTML' }
+    );
+    return;
+  }
+
+  const pct = Number(pctRaw);
+  if (!Number.isFinite(pct) || pct < 1 || pct > 95) {
+    bot.sendMessage(chatId, `❌ Range tidak valid. Gunakan angka <code>1</code> sampai <code>95</code>.`, { parse_mode: 'HTML' });
+    return;
+  }
+
+  const next = updateConfig({
+    strategyOverrides: {
+      [strategyName]: {
+        deploy: {
+          priceRangePct: pct,
+        },
+      },
+    },
+  });
+  const saved = next.strategyOverrides?.[strategyName]?.deploy?.priceRangePct;
+  bot.sendMessage(chatId,
+    `✅ <b>Range override disimpan</b>\n\n` +
+    `Strategy: <code>${escapeHTML(strategyName)}</code>\n` +
+    `priceRangePct: <code>${saved}%</code>\n\n` +
+    `<i>Berlaku di entry berikutnya.</i>`,
+    { parse_mode: 'HTML' }
+  );
+});
+
 // /getradar — Kirim file dashboard untuk dibuka di Mac/PC
 bot.onText(/\/getradar/, async (msg) => {
   if (msg.from.id !== ALLOWED_ID) return;
@@ -1522,17 +1944,9 @@ bot.onText(/\/getradar/, async (msg) => {
   }
 });
 
-// /hunting — Panggilan manual Hunter Sniper
-bot.onText(/\/(hunt|hunting)/, async (msg) => {
-  if (msg.from.id !== ALLOWED_ID) return;
-  const chatId = msg.chat.id;
-  if (_hunterBusy) {
-    bot.sendMessage(chatId, '⚠️ Hunter sedang bekerja, Bos. Sabar ya, jangan double nembak!');
-    return;
-  }
-  bot.sendMessage(chatId, '🦅 <b>Sultan Sniper: Scanning market...</b>', { parse_mode: 'HTML' });
-  await triggerHunter();
-});
+// NOTE:
+// Handler /hunt sudah didefinisikan di atas.
+// Jangan daftarkan ulang command yang sama karena bisa memicu double execution.
 
 // /weights — tampilkan/recalibrate bobot Darwinian
 
@@ -1577,6 +1991,59 @@ bot.onText(/\/providers/, async (msg) => {
     sendLong(msg.chat.id, report, { parse_mode: 'HTML' }).catch(() => { });
   } catch (e) {
     bot.sendMessage(msg.chat.id, `❌ Error: <code>${escapeHTML(e.message)}</code>`, { parse_mode: 'HTML' }).catch(() => { });
+  }
+});
+
+// /health — ringkasan readiness deploy + incident signal
+bot.onText(/\/health/, async (msg) => {
+  if (msg.from.id !== ALLOWED_ID) return;
+  const chatId = msg.chat.id;
+  try {
+    const { cfgNow, cbState, guard, readiness, taeExitCount, taeWinRatePct } = getDeployReadinessSnapshot();
+    const pending = listPendingReconcileIssues(50);
+    const failedOps = listRecentFailedOperations(6, 10);
+
+    const cbStatus = cbState.state === 'CLOSED' ? '✅ CLOSED' : `⛔ ${cbState.state}`;
+    const reasons = guard.reasons.length ? guard.reasons.join(' | ') : 'none';
+    const failLines = failedOps.length === 0
+      ? 'none'
+      : failedOps
+        .slice(0, 5)
+        .map(op => {
+          const t = new Date(op.created_at).toLocaleString('id-ID', { timeZone: 'Asia/Jakarta', hour12: false }).replace(',', '');
+          const action = op.action || op.operation_type || 'unknown';
+          return `${t} | ${action}`;
+        })
+        .join('\n');
+
+    const report = [
+      '🩺 <b>System Health</b>',
+      '',
+      `<b>Gate & Stage</b>`,
+      `• readiness: <code>${readiness.ready ? 'READY' : 'BLOCKED'} (${readiness.score}/100)</code>`,
+      `• deploymentStage: <code>${cfgNow.deploymentStage}</code>`,
+      `• canaryMaxPositions: <code>${cfgNow.canaryMaxPositions}</code>`,
+      `• effectiveMax: <code>${guard.stageMaxPositions}</code>`,
+      `• entryGuard: <code>${guard.entryAllowed ? 'OPEN' : 'BLOCKED'}</code>`,
+      `• guardReasons: <code>${escapeHTML(reasons)}</code>`,
+      '',
+      `<b>Runtime Safety</b>`,
+      `• circuitBreaker: <code>${cbStatus}</code>`,
+      `• dryRun: <code>${cfgNow.dryRun}</code>`,
+      `• autonomyMode: <code>${cfgNow.autonomyMode}</code>`,
+      `• autoScreening: <code>${cfgNow.autoScreeningEnabled}</code>`,
+      `• pendingReconcile: <code>${pending.length}</code>`,
+      `• manualReviewOpen: <code>${guard.manualReviewOpen}</code>`,
+      `• taeSamples: <code>${taeExitCount}</code>`,
+      `• taeWinRate: <code>${Number.isFinite(taeWinRatePct) ? `${taeWinRatePct.toFixed(1)}%` : 'N/A'}</code>`,
+      '',
+      `<b>Recent Failed Ops (6h)</b>`,
+      `<pre><code>${escapeHTML(failLines)}</code></pre>`,
+    ].join('\n');
+
+    await bot.sendMessage(chatId, report, { parse_mode: 'HTML' });
+  } catch (e) {
+    bot.sendMessage(chatId, `❌ <code>${escapeHTML(e.message)}</code>`, { parse_mode: 'HTML' }).catch(() => { });
   }
 });
 
@@ -1668,9 +2135,18 @@ async function shutdown(signal) {
   try {
     const openPos = getOpenPositions();
     console.log(`📍 Open positions at shutdown: ${openPos.length}`);
+    // Notify Telegram before stopping polling so the message can be delivered
+    if (openPos.length > 0) {
+      const posLines = openPos.map(p => `• <code>${p.position_address.slice(0, 8)}</code> @ ${p.pool_address.slice(0, 8)}`).join('\n');
+      await notify(`⚠️ <b>Bot Shutting Down (${signal})</b>\n\n${openPos.length} posisi masih terbuka:\n${posLines}\n\n<i>Posisi TIDAK ditutup otomatis — monitor secara manual.</i>`).catch(() => {});
+    } else {
+      await notify(`🛑 <b>Bot Shutdown (${signal})</b>\n\nTidak ada posisi terbuka.`).catch(() => {});
+    }
+    circuitBreaker.destroy();
     bot.stopPolling();
   } catch { }
-  process.exit(0);
+  // Give Telegram a moment to flush the message
+  setTimeout(() => process.exit(0), 1500);
 }
 process.on('SIGINT', () => shutdown('SIGINT'));
 process.on('SIGTERM', () => shutdown('SIGTERM'));
@@ -1703,6 +2179,7 @@ setTimeout(async () => {
       `🚀 <b>Bot Started!</b>\n\n` +
       `💰 Balance: ${balance} SOL | 📊 Daily PnL: <code>$${dailyPnl.toFixed(2)}</code>\n` +
       `🛡️ Circuit Breaker: <b>${cbStatus}</b>\n` +
+      `🧭 Stage: <code>${cfg.deploymentStage}</code> (canaryMax ${cfg.canaryMaxPositions})\n` +
       `🦅 Hunter: ${cfg.autoScreeningEnabled ? '🤖 auto-screen ON' : '⏸ auto-screen OFF'} | 🩺 Healer: ON\n\n` +
       `/status untuk cek posisi | /start untuk semua commands`,
       { parse_mode: 'HTML' }

@@ -38,3 +38,27 @@ export async function performNpmInstall() {
   const { stdout } = await runCommand('npm install --no-audit --no-fund');
   return stdout;
 }
+
+/**
+ * Jalankan health checks minimal sebelum restart pasca-update.
+ * Return output gabungan untuk dilaporkan ke Telegram.
+ */
+export async function performPostUpdateChecks() {
+  const hardChecks = [
+    'node --test tests/deploy-readiness.test.js tests/config.test.js',
+  ];
+  const outputs = [];
+  for (const cmd of hardChecks) {
+    const { stdout } = await runCommand(cmd);
+    outputs.push(`$ ${cmd}\n${stdout}`);
+  }
+  // Lint bersifat advisory (non-blocking) karena beberapa debt lama bisa membuat
+  // /system_update terkunci walau runtime core sudah sehat.
+  try {
+    const { stdout } = await runCommand('npm run lint');
+    outputs.push(`$ npm run lint\n${stdout}`);
+  } catch (e) {
+    outputs.push(`$ npm run lint\nWARNING (non-blocking): ${e.message}`);
+  }
+  return outputs.join('\n\n');
+}

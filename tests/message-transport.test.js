@@ -15,7 +15,7 @@ test('message transport splits long text into chunks', async () => {
   assert.equal(sent.every((m) => m.text.length <= 4000), true);
 });
 
-test('notify sends markdown to allowed chat', async () => {
+test('notify sends HTML to allowed chat', async () => {
   const sent = [];
   const bot = {
     async sendMessage(chatId, text, opts) {
@@ -26,5 +26,5 @@ test('notify sends markdown to allowed chat', async () => {
   await notify('hello');
   assert.equal(sent.length, 1);
   assert.equal(sent[0].chatId, 777);
-  assert.equal(sent[0].opts.parse_mode, 'Markdown');
+  assert.equal(sent[0].opts.parse_mode, 'HTML');
 });

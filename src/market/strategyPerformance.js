@@ -11,6 +11,7 @@ import { writeFileSync, existsSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { getClosedPositions } from '../db/database.js';
+import { escapeHTML } from '../utils/safeJson.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(__dirname, '../..');
@@ -21,7 +22,7 @@ const DATA_FILES = [
   join(ROOT, 'memory.json'),
   join(ROOT, 'lessons.json'),
   join(ROOT, 'strategyPerformance.json'),
-  join(__dirname, 'strategy-library.json'), // Aegis Corrected Path
+  join(ROOT, 'strategy-library.json'),
 ];
 
 // ─── Simpan snapshot performa ke file lokal ───────────────────────

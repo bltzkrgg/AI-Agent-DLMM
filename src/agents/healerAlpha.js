@@ -2,10 +2,10 @@
 
 import { createMessage, resolveModel } from '../agent/provider.js';
 import { getConfig, getThresholds, isDryRun } from '../config.js';
-import { getPositionInfo, closePositionDLMM, claimFees, getPoolInfo, getSolPriceUsd, getAllWalletPositions } from '../solana/meteora.js';
+import { getPositionInfo, closePositionDLMM, claimFees, getPoolInfo, getSolPriceUsd, getAllWalletPositions, addLiquidityToPosition } from '../solana/meteora.js';
 import { getConnection, getWallet, getWalletBalance } from '../solana/wallet.js';
 import { PublicKey } from '@solana/web3.js';
-import { getOpenPositions, closePositionWithPnl, saveNotification, updatePositionLifecycle, savePosition, updateLivePositionStats } from '../db/database.js';
+import { getOpenPositions, closePositionWithPnl, saveNotification, updatePositionLifecycle, savePosition, updateLivePositionStats, recordFeesClaimed, recordPnlDivergenceEvent } from '../db/database.js';
 import { getLessonsContext } from '../learn/lessons.js';
 import { checkStopLoss, checkMaxDrawdown, recordPnlUsd, getSafetyStatus } from '../safety/safetyManager.js';
 import { analyzeMarket } from '../market/analyst.js';
@@ -13,7 +13,7 @@ import { getInstinctsContext } from '../market/memory.js';
 import { getStrategyIntelligenceContext } from '../market/strategyPerformance.js';
 import { swapAllToSOL, SOL_MINT } from '../solana/jupiter.js';
 import { getMarketSnapshot, getOHLCV } from '../market/oracle.js';
-import { fetchWithTimeout, withExponentialBackoff, stringify, getConservativeSlippage } from '../utils/safeJson.js';
+import { fetchWithTimeout, withExponentialBackoff, stringify, getConservativeSlippage, escapeHTML } from '../utils/safeJson.js';
 import { withRetry as executionRetry } from '../utils/retry.js';
 import { kv, hr, codeBlock, formatPnl, shortAddr, shortStrat } from '../utils/table.js';
 import { recordClose } from '../market/poolMemory.js';
@@ -24,11 +24,26 @@ import { clearPositionRuntimeState, getPositionRuntimeState, updatePositionRunti
 import { resolvePositionSnapshot } from '../app/positionSnapshot.js';
 import { getStrategy } from '../strategies/strategyManager.js';
 import { analyzeTradeResult } from '../learn/failureAnalysis.js';
-import { calculateSupertrend } from '../utils/ta.js';
 import { getGmgnSecurity } from '../utils/gmgn.js';
 import { recordExitEvent } from '../db/exitTracking.js';
 
 
+
+// ─── T1.3 Concurrency guard ───────────────────────────────────────
+// Prevents two healer cycles from closing the same position concurrently.
+// A second cycle that races to close the same address finds it in this set
+// and skips, avoiding double-close errors and nonce conflicts.
+const _closingInProgress = new Set();
+
+function acquireClose(addr) {
+  if (_closingInProgress.has(addr)) return false;
+  _closingInProgress.add(addr);
+  return true;
+}
+
+function releaseClose(addr) {
+  _closingInProgress.delete(addr);
+}
 
 // Verifikasi apakah position account benar-benar tidak ada on-chain.
 // Dipakai sebelum mark MANUAL_CLOSE — cegah false positive dari RPC glitch.
@@ -36,9 +51,27 @@ async function positionAccountExists(positionAddress) {
   try {
     const info = await getConnection().getAccountInfo(new PublicKey(positionAddress));
     return info !== null;
-  } catch {
+  } catch (e) {
+    console.warn(`[healer] positionAccountExists check failed for ${positionAddress?.slice(0, 8)}: ${e?.message} — assuming exists`);
     return true; // gagal cek → asumsikan masih ada (safe default)
   }
+}
+
+function shouldEscalateSkippedSwap(swapRes) {
+  if (!swapRes || swapRes.success) return false;
+  const reason = String(swapRes.reason || '').toUpperCase();
+  // ZERO_BALANCE berarti memang tidak ada token untuk diswap → state bisa dianggap reconcile.
+  if (reason === 'ZERO_BALANCE') return false;
+  // Reason kosong atau reason lain (PRICE_UNSTABLE, SWAP_FAILED, dst) dianggap unresolved.
+  return true;
+}
+
+function auditPnlDivergence(event, metadata = null) {
+  if (!event || !Number.isFinite(event?.divergencePct)) return;
+  recordPnlDivergenceEvent({
+    ...event,
+    metadata,
+  }).catch(() => {});
 }
 
 /**
@@ -288,6 +321,7 @@ export async function executeTool(name, input, notifyFn = null) {
             livePosition: match,
             providerPnlPct: lpPnlMap.get(pos.position_address),
             directPnlPct: Number.isFinite(match?.pnlPct) ? match.pnlPct : null,
+            onPnlDivergence: (event) => auditPnlDivergence(event, { scope: 'execute_tool_get_all_positions' }),
           });
 
           // 📊 LP-IDENTITY: Real-time IL & HODL Analysis (SOL Denominated)
@@ -319,8 +353,8 @@ export async function executeTool(name, input, notifyFn = null) {
           // Terinspirasi dari Meridian: track peak PnL, aktifkan trailing
           const addr = pos.position_address;
           let tracker = {
-            peakPnl: runtimeState.peakPnlPct ?? pnlPct,
-            trailingActive: runtimeState.trailingActive === true,
+            peakPnl: runtimeState.healerPeakPnl ?? pnlPct,
+            trailingActive: runtimeState.healerTrailingActive === true,
           };
 
           // Update peak
@@ -339,8 +373,8 @@ export async function executeTool(name, input, notifyFn = null) {
             (tracker.peakPnl - pnlPct) >= trailingCfg.dropPct;
 
           updatePositionRuntimeState(addr, {
-            peakPnlPct: tracker.peakPnl,
-            trailingActive: tracker.trailingActive,
+            healerPeakPnl: tracker.peakPnl,
+            healerTrailingActive: tracker.trailingActive,
           });
 
           // ── Smart Money Tracking (Meteora Native) ────────────
@@ -425,7 +459,8 @@ export async function executeTool(name, input, notifyFn = null) {
             }
 
             // ── Hard Take Profit Guard (Sentinel v61) ──
-            const strategyTp = strategyProfile?.exit?.takeProfitPct || 0;
+            const configuredTp = Number(strategyProfile?.exit?.takeProfitPct ?? getConfig().takeProfitFeePct);
+            const strategyTp = Number.isFinite(configuredTp) && configuredTp > 0 ? configuredTp : 5.0;
             if (!proactiveCloseRecommended && strategyTp > 0 && pnlPct >= strategyTp) {
               proactiveCloseRecommended = true;
               proactiveWarning = `💰 HARD TAKE PROFIT: Keuntungan mencapai target ${strategyTp}% (PnL: ${pnlPct.toFixed(2)}%). Closing to lock profit and re-anchor.`;
@@ -459,7 +494,12 @@ export async function executeTool(name, input, notifyFn = null) {
           }
 
           if (trailingTpHit) {
-            await saveNotification('trailing_tp', `Trailing TP triggered: posisi ${addr.slice(0, 8)}... PnL turun dari peak ${tracker.peakPnl.toFixed(2)}% ke ${pnlPct.toFixed(2)}%`);
+            if (runtimeState.healerTrailingTpNotified !== true) {
+              await saveNotification('trailing_tp', `Trailing TP triggered: posisi ${addr.slice(0, 8)}... PnL turun dari peak ${tracker.peakPnl.toFixed(2)}% ke ${pnlPct.toFixed(2)}%`);
+              updatePositionRuntimeState(addr, { healerTrailingTpNotified: true });
+            }
+          } else if (runtimeState.healerTrailingTpNotified === true) {
+            updatePositionRuntimeState(addr, { healerTrailingTpNotified: false });
           }
 
           // 🐼 LIVE DB SYNC: Update stats even while open for Live Dashboard
@@ -589,6 +629,10 @@ export async function executeTool(name, input, notifyFn = null) {
             currentValueSol: currentVal,
             providerPnlPct: lpPnlMap.get(input.position_address),
             directPnlPct: Number.isFinite(match?.pnlPct) ? match.pnlPct : null,
+            positionAddress: input.position_address,
+            poolAddress: input.pool_address,
+            tokenMint: dbPos?.token_mint || dbPos?.token_x || null,
+            onDivergence: (event) => auditPnlDivergence(event, { scope: 'execute_tool_close_position' }),
           });
           const solPriceUsd = await getSolPriceUsd().catch(() => 150);
           pnlData.pnlUsd  = parseFloat((pnl.pnlSol * solPriceUsd).toFixed(2));
@@ -650,6 +694,7 @@ export async function executeTool(name, input, notifyFn = null) {
       // Auto-swap returned tokens ke SOL setelah close (retry 3x)
       const swapResults = [];
       const swapErrors  = [];
+      const unresolvedSwapSkips = [];
       let lifecycleState = 'closed_reconciled';
       try {
         const poolInfo = await getPoolInfo(input.pool_address);
@@ -668,6 +713,9 @@ export async function executeTool(name, input, notifyFn = null) {
                 swapResults.push({ mint: mint.slice(0, 8), outSol: swapRes.outSol });
               } else {
                 swapResults.push({ mint: mint.slice(0, 8), skipped: swapRes.reason });
+                if (shouldEscalateSkippedSwap(swapRes)) {
+                  unresolvedSwapSkips.push({ mint: mint.slice(0, 8), reason: swapRes.reason || 'UNKNOWN_SKIP_REASON' });
+                }
               }
             } catch (e) {
               swapErrors.push({ mint: mint.slice(0, 8), error: e.message });
@@ -676,7 +724,7 @@ export async function executeTool(name, input, notifyFn = null) {
         }
       } catch { /* swap best-effort */ }
 
-      if (swapErrors.length > 0) lifecycleState = 'manual_review';
+      if (swapErrors.length > 0 || unresolvedSwapSkips.length > 0) lifecycleState = 'manual_review';
       await updatePositionLifecycle(input.position_address, lifecycleState);
 
       // Notifikasi swap + mulai post-close monitor
@@ -690,11 +738,13 @@ export async function executeTool(name, input, notifyFn = null) {
             `Total: <code>+${totalSol.toFixed(4)} SOL</code>`,
             { parse_mode: 'HTML' }
           ).catch(() => {});
-        } else if (swapErrors.length > 0) {
+        } else if (swapErrors.length > 0 || unresolvedSwapSkips.length > 0) {
+          const unresolvedText = unresolvedSwapSkips.map(e => `${e.mint}:${e.reason}`).join(', ');
           currentNotify(
             `⚠️ <b>Auto-Swap Gagal</b>\n\n` +
             `Posisi sudah ditutup, tapi token belum dikonversi ke SOL.\n` +
-            `Error: <code>${escapeHTML(swapErrors.map(e => e.error || e.mint).join(', '))}</code>\n\n` +
+            `Error: <code>${escapeHTML(swapErrors.map(e => e.error || e.mint).join(', '))}</code>\n` +
+            `Skip: <code>${escapeHTML(unresolvedText || '-')}</code>\n\n` +
             `<i>Lakukan swap manual di Jupiter/Meteora.</i>`,
             { parse_mode: 'HTML' }
           ).catch(() => {});
@@ -707,6 +757,7 @@ export async function executeTool(name, input, notifyFn = null) {
         pnlRecorded: pnlData,
         autoSwap:    swapResults.length > 0 ? swapResults : 'skipped',
         swapErrors:  swapErrors.length > 0  ? swapErrors  : undefined,
+        unresolvedSwapSkips: unresolvedSwapSkips.length > 0 ? unresolvedSwapSkips : undefined,
         reasoning:   input.reasoning,
       }, null, 2);
     }
@@ -752,6 +803,10 @@ export async function executeTool(name, input, notifyFn = null) {
             currentValueSol: currentVal,
             providerPnlPct: lpPnlMap.get(input.position_address),
             directPnlPct: Number.isFinite(match?.pnlPct) ? match.pnlPct : null,
+            positionAddress: input.position_address,
+            poolAddress: input.pool_address,
+            tokenMint: dbPos?.token_mint || dbPos?.token_x || null,
+            onDivergence: (event) => auditPnlDivergence(event, { scope: 'execute_tool_zap_out' }),
           });
           const solPriceUsd = await getSolPriceUsd().catch(() => 150);
           zapPnlData.pnlUsd = parseFloat((pnl.pnlSol * solPriceUsd).toFixed(2));
@@ -808,6 +863,7 @@ export async function executeTool(name, input, notifyFn = null) {
 
       const swapResults = [];
       const swapErrors  = [];
+      const unresolvedSwapSkips = [];
       let lifecycleState = 'closed_reconciled';
       try {
         const poolInfo = await getPoolInfo(input.pool_address);
@@ -828,6 +884,9 @@ export async function executeTool(name, input, notifyFn = null) {
               await closeTokenAccount(mint).catch(() => {});
             } else {
               swapResults.push({ mint: mint.slice(0, 8), skipped: swapRes.reason });
+              if (shouldEscalateSkippedSwap(swapRes)) {
+                unresolvedSwapSkips.push({ mint: mint.slice(0, 8), reason: swapRes.reason || 'UNKNOWN_SKIP_REASON' });
+              }
             }
           } catch (e) {
             if (e.message.includes('LIQUIDITY_TRAP')) {
@@ -843,7 +902,7 @@ export async function executeTool(name, input, notifyFn = null) {
       }
 
       const totalSwappedSol = swapResults.reduce((s, r) => s + (r.outSol || 0), 0);
-      if (swapErrors.length > 0) lifecycleState = 'manual_review';
+      if (swapErrors.length > 0 || unresolvedSwapSkips.length > 0) lifecycleState = 'manual_review';
       await updatePositionLifecycle(input.position_address, lifecycleState);
 
       // Notifikasi hasil + mulai post-close monitor
@@ -856,11 +915,13 @@ export async function executeTool(name, input, notifyFn = null) {
             `Total: <code>+${totalSwappedSol.toFixed(4)} SOL</code>`,
             { parse_mode: 'HTML' }
           ).catch(() => {});
-        } else if (swapErrors.length > 0) {
+        } else if (swapErrors.length > 0 || unresolvedSwapSkips.length > 0) {
+          const unresolvedText = unresolvedSwapSkips.map(e => `${e.mint}:${e.reason}`).join(', ');
           currentNotify(
             `⚠️ <b>Zap Out — Swap Gagal</b>\n\n` +
             `Posisi sudah ditutup, tapi token belum dikonversi ke SOL.\n` +
-            `Error: <code>${escapeHTML(swapErrors.map(e => e.error || e.mint).join(', '))}</code>\n\n` +
+            `Error: <code>${escapeHTML(swapErrors.map(e => e.error || e.mint).join(', '))}</code>\n` +
+            `Skip: <code>${escapeHTML(unresolvedText || '-')}</code>\n\n` +
             `<i>Lakukan swap manual di Jupiter/Meteora.</i>`,
             { parse_mode: 'HTML' }
           ).catch(() => {});
@@ -879,6 +940,7 @@ export async function executeTool(name, input, notifyFn = null) {
         lifecycleState,
         swapResults,
         swapErrors: swapErrors.length > 0 ? swapErrors : null,
+        unresolvedSwapSkips: unresolvedSwapSkips.length > 0 ? unresolvedSwapSkips : null,
         totalSwappedSol: parseFloat(totalSwappedSol.toFixed(6)),
         reasoning: input.reasoning,
       }, null, 2);
@@ -935,6 +997,7 @@ let _healerNotifyFn = null;
 export async function runHealerAlpha(notifyFn) {
   _healerNotifyFn = notifyFn || null;
   const cfg = getConfig();
+  const minTaConfidence = cfg.minTaConfidenceForAutoExit ?? 0.55;
 
   // ── Skip cycle silently jika tidak ada posisi terbuka ────────
   const openPositions = getOpenPositions();
@@ -1011,6 +1074,8 @@ export async function runHealerAlpha(notifyFn) {
         dbPosition: pos,
         livePosition: match,
         providerPnlPct: lpPnlMap.get(pos.position_address),
+        directPnlPct: Number.isFinite(match?.pnlPct) ? match.pnlPct : null,
+        onPnlDivergence: (event) => auditPnlDivergence(event, { scope: 'main_healer_loop' }),
       });
       const pnlPct = snapshot.pnlPct;
       const pnlSol = snapshot.pnlSol;
@@ -1019,34 +1084,70 @@ export async function runHealerAlpha(notifyFn) {
       const strategyProfile = getStrategy(pos.strategy_used || '');
       const positionAgeMin = getPositionAgeMinutes(pos);
       const exitMode = strategyProfile?.exit?.mode || 'default';
-      const trailCfg = getTrailingConfig();
-      const strategyTakeProfitPct = strategyProfile?.exit?.takeProfitPct ?? thresholds.takeProfitFeePct;
-      const strategyTriggerPct = strategyProfile?.exit?.trailingTriggerPct ?? trailCfg.activatePct;
-      const strategyDropPct = strategyProfile?.exit?.trailingDropPct ?? trailCfg.dropPct;
+      const configuredTp = Number(strategyProfile?.exit?.takeProfitPct ?? thresholds.takeProfitFeePct);
+      const strategyTakeProfitPct = Number.isFinite(configuredTp) && configuredTp > 0 ? configuredTp : 5.0;
       const emergencyStopLossPct = strategyProfile?.exit?.emergencyStopLossPct ?? thresholds.stopLossPct;
+      const maxHoldHours      = strategyProfile?.exit?.maxHoldHours ?? thresholds.maxHoldHours ?? 6;
+      const maxHoldMinutes    = maxHoldHours * 60;
+      const maxHoldTriggered  = positionAgeMin >= maxHoldMinutes;
 
-      // ── Trailing TP state ────────────────────────────────────
+      // ── Healer Trailing Shadow State (non-exit, telemetry only) ─────────
+      // Trailing exit utama dipusatkan di TAE Watchdog (single source of truth).
+      // Main Healer hanya menyimpan telemetry agar tidak terjadi race dengan Watchdog.
       let tracker = {
-        peakPnl: runtimeState.peakPnlPct ?? pnlPct,
-        trailingActive: runtimeState.trailingActive === true,
+        peakPnl: runtimeState.healerPeakPnl ?? pnlPct,
+        trailingActive: false,
       };
       if (pnlPct > tracker.peakPnl) tracker.peakPnl = pnlPct;
-      if (!tracker.trailingActive && pnlPct >= strategyTriggerPct) tracker.trailingActive = true;
-      const trailingTpHit = tracker.trailingActive && (tracker.peakPnl - pnlPct) >= strategyDropPct;
+      const trailingTpHit = false;
       updatePositionRuntimeState(addr, {
-        peakPnlPct: tracker.peakPnl,
-        trailingActive: tracker.trailingActive,
+        healerPeakPnl: tracker.peakPnl,
+        healerTrailingActive: tracker.trailingActive,
       });
 
-      const slTriggered = pnlPct <= -Math.abs(emergencyStopLossPct);
+      // ── T2.6: Volatility-scaled SL ───────────────────────────────
+      // Scale emergencyStopLossPct up for HIGH volatility tokens so we don't get
+      // stopped out prematurely on normal swings. Uses cached category from prior
+      // analyzeMarket cycle to avoid extra API calls on every check.
+      const cachedVolCat = runtimeState.volatilityCategory;
+      const volSLMultiplier = cachedVolCat === 'HIGH' ? 1.5
+        : cachedVolCat === 'MEDIUM' ? 1.2
+        : 1.0;
+      const effectiveSLPct = emergencyStopLossPct * volSLMultiplier;
+
+      const slTriggered = pnlPct <= -Math.abs(effectiveSLPct);
       const slCheck = {
         triggered: slTriggered,
-        reason: `PnL ${pnlPct.toFixed(2)}% <= emergency stop loss -${Math.abs(emergencyStopLossPct).toFixed(2)}%`,
+        reason: `PnL ${pnlPct.toFixed(2)}% <= stop loss -${Math.abs(effectiveSLPct).toFixed(2)}%${volSLMultiplier !== 1.0 ? ` (${cachedVolCat} vol ×${volSLMultiplier})` : ''}`,
       };
+
+      // ── T2.7: OOR tracking in main loop ─────────────────────────
+      // Mirrors the executeTool.get_all_positions logic so the decision block
+      // has valid outOfRangeMins / outOfRangeBins (previously undefined here).
+      let outOfRangeMins = null;
+      let outOfRangeBins = null;
+      if (!match.inRange) {
+        const trackedAt = runtimeState.oorSince;
+        if (!trackedAt) {
+          updatePositionRuntimeState(addr, { oorSince: Date.now() });
+        } else {
+          outOfRangeMins = Math.floor((Date.now() - trackedAt) / 60000);
+        }
+        if (match.activeBinId != null && (match.lowerBinId != null || match.upperBinId != null)) {
+          const lowerBin = match.lowerBinId ?? match.activeBinId;
+          const upperBin = match.upperBinId ?? match.activeBinId;
+          if (match.activeBinId < lowerBin) outOfRangeBins = lowerBin - match.activeBinId;
+          else if (match.activeBinId > upperBin) outOfRangeBins = match.activeBinId - upperBin;
+        }
+      } else {
+        updatePositionRuntimeState(addr, { oorSince: null });
+      }
+      const oorBinsThreshold = cfg.outOfRangeBinsToClose ?? 10;
+      const oorBinsTriggered = outOfRangeBins !== null && oorBinsThreshold > 0 && outOfRangeBins >= oorBinsThreshold;
       const tpHit   = pnlPct >= strategyTakeProfitPct;
 
       // Tidak ada trigger → flag apakah posisi ini butuh LLM, lalu skip
-      if (!trailingTpHit && !tpHit && !slCheck.triggered) {
+      if (!trailingTpHit && !tpHit && !slCheck.triggered && !maxHoldTriggered && !oorBinsTriggered) {
         // Posisi butuh LLM jika: out of range, fees tinggi, atau mencapai threshold SL
         if (!match?.inRange) _healerNeedsLLM = true;
         const feePct = (match?.feeCollectedSol || 0) / (pos.deployed_sol || 0.001);
@@ -1058,55 +1159,93 @@ export async function runHealerAlpha(notifyFn) {
       // ── Baca kondisi chart & narasi sebelum keputusan ────────
       let market = null;
       try {
-        market = await analyzeMarket(pos.token_x, pos.pool_address, {
-          inRange: match.inRange,
-          pnlPct,
-        });
+        for (let attempt = 1; attempt <= 2; attempt++) {
+          try {
+            const _marketTimeout = new Promise((_, reject) =>
+              setTimeout(() => reject(new Error('analyzeMarket timeout')), 12000)
+            );
+            market = await Promise.race([
+              analyzeMarket(pos.token_x, pos.pool_address, { inRange: match.inRange, pnlPct }),
+              _marketTimeout,
+            ]);
+            if (market) break;
+          } catch (e) {
+            if (attempt === 2) throw e;
+            await new Promise(r => setTimeout(r, 500 * attempt));
+          }
+        }
+        // Cache volatility category for T2.6 vol-scaled SL in subsequent cycles
+        const volCat = market?.snapshot?.price?.volatilityCategory || market?.volatilityCategory;
+        if (volCat) {
+          updatePositionRuntimeState(addr, { volatilityCategory: volCat });
+        }
+        if (market?.signal) {
+          updatePositionRuntimeState(addr, {
+            lastSignal: market.signal,
+            lastSignalConf: Number.isFinite(market?.confidence) ? market.confidence : 0.5,
+            lastSignalAt: Date.now(),
+          });
+        }
       } catch { /* tetap lanjut tanpa market data */ }
 
-      const sig  = market?.signal     || 'NEUTRAL';
-      const conf = market?.confidence || 0;
+      const hasFreshCachedSignal = Number.isFinite(runtimeState?.lastSignalAt) && (Date.now() - runtimeState.lastSignalAt) <= (30 * 60 * 1000);
+      const taConfidence = market?.snapshot?.quality?.taConfidence ?? (hasFreshCachedSignal ? minTaConfidence : 0.5);
+      const taReliable = taConfidence >= minTaConfidence;
+      const fallbackSignal = hasFreshCachedSignal ? (runtimeState.lastSignal || 'NEUTRAL') : 'NEUTRAL';
+      const fallbackConf = hasFreshCachedSignal && Number.isFinite(runtimeState?.lastSignalConf)
+        ? runtimeState.lastSignalConf
+        : 0.45;
+      const sig  = taReliable ? (market?.signal || fallbackSignal) : fallbackSignal;
+      const conf = taReliable
+        ? (Number.isFinite(market?.confidence) ? market.confidence : fallbackConf)
+        : Math.min(fallbackConf, 0.45);
       const thesis = market?.thesis   || '-';
       const keyRisks = market?.keyRisks?.join(', ') || '-';
+      const inRange = match?.inRange === true;
+      const mildStopLossBreach = Math.abs(pnlPct) <= (Math.abs(emergencyStopLossPct) + 1.0);
+      const veryBullishRecovery = sig === 'BULLISH' && conf >= 0.90 && inRange;
+      const strongBullishInRange = sig === 'BULLISH' && conf >= 0.85 && inRange;
 
       // ── Putuskan: CLOSE atau HOLD ─────────────────────────────
       let decision  = 'CLOSE';
       let holdReason = '';
 
-      if (exitMode === 'evil_panda_confluence' && sig === 'BULLISH' && conf >= 0.5) {
+      if (exitMode === 'evil_panda_confluence' && strongBullishInRange) {
         decision = 'HOLD';
         holdReason = 'Evil Panda menunggu konfirmasi bearish sebelum exit.';
       }
 
       if (trailingTpHit) {
-        if (sig === 'BULLISH' && conf >= 0.75) {
+        if (strongBullishInRange) {
           decision   = 'HOLD';
           holdReason = `Chart masih BULLISH (${(conf * 100).toFixed(0)}% conf) — tunda close 1 siklus`;
         }
       } else if (tpHit) {
-        if (sig === 'BULLISH' && conf >= 0.70) {
-          decision   = 'HOLD_TRAIL';  // aktifkan trailing, jangan close dulu
-          holdReason = `Chart BULLISH (${(conf * 100).toFixed(0)}% conf) — aktifkan trailing, biarkan profit jalan`;
+        if (sig === 'BULLISH' && conf >= 0.80 && inRange) {
+          decision   = 'HOLD';  // TP hold aktif, trailing exit ditangani TAE watchdog
+          holdReason = `Chart BULLISH (${(conf * 100).toFixed(0)}% conf) — tunda close, biarkan profit jalan`;
         }
       } else if (slCheck.triggered) {
-        // SNIPER REBIRTH: Mode trend_confirmed won't SL if trend is still BULLISH
-        const needsTrendConf = exitMode === 'evil_panda_confluence' || exitMode === 'trend_confirmed';
-        if (needsTrendConf && sig === 'BULLISH') {
+        const needsTrendConf = exitMode === 'evil_panda_confluence';
+        if (needsTrendConf && veryBullishRecovery && mildStopLossBreach) {
           decision = 'HOLD';
           holdReason = `Strategy Aware: Tren masih BULLISH — nunggu recovery di jaring Panda.`;
-        } else if (sig === 'BULLISH' && conf >= 0.65) {
+        } else if (veryBullishRecovery && mildStopLossBreach) {
           decision   = 'HOLD';
           holdReason = `Chart masih BULLISH (${(conf * 100).toFixed(0)}% conf) — hold untuk recovery`;
         }
       } else if (!match?.inRange) {
         // Logika Adaptive OOR
-        if (market?.oorDecision === 'EXTEND' && (outOfRangeMins || 0) < 60) {
+        if (oorBinsTriggered) {
+          // Bins-based OOR: price moved too many bins away — immediate close
+          decision   = 'CLOSE';
+        } else if (market?.oorDecision === 'EXTEND' && (outOfRangeMins || 0) < 60) {
           decision   = 'HOLD';
           holdReason = `Adaptive OOR: Chart BULLISH, nunggu re-entry (${outOfRangeMins}/60m max)`;
         } else if (market?.oorDecision === 'PANIC_EXIT') {
           decision   = 'CLOSE';
           _healerNotifyFn?.(`🚨 *PANIC EXIT* @ ${pos.pool_address.slice(0, 8)}\nOOR + Bearish Breakdown detected (conf ${(market.confidence * 100).toFixed(0)}%).`).catch(() => {});
-        } else if (outOfRangeMins >= thresholds.outOfRangeWaitMinutes) {
+        } else if (outOfRangeMins !== null && outOfRangeMins >= thresholds.outOfRangeWaitMinutes) {
           decision   = 'CLOSE';
         } else {
           decision   = 'HOLD';
@@ -1114,17 +1253,31 @@ export async function runHealerAlpha(notifyFn) {
         }
       }
 
+      // Max hold force-close overrides any hold decision
+      if (maxHoldTriggered) {
+        decision   = 'CLOSE';
+        holdReason = '';
+      }
+
       // Tentukan label + emoji
-      const triggerLabel = trailingTpHit                     ? 'Trailing Take Profit'
-        : tpHit                             ? 'Take Profit'
+      const triggerLabel = trailingTpHit   ? 'Trailing Take Profit'
+        : tpHit             ? 'Take Profit'
+        : maxHoldTriggered  ? 'Max Hold Expired'
+        : oorBinsTriggered  ? 'OOR Bins Exceeded'
         : 'Stop-Loss';
-      const triggerEmoji = trailingTpHit                     ? '🎯'
-        : tpHit                             ? '💰'
+      const triggerEmoji = trailingTpHit   ? '🎯'
+        : tpHit             ? '💰'
+        : maxHoldTriggered  ? '⏰'
+        : oorBinsTriggered  ? '📍'
         : '🛑';
       const triggerReason = trailingTpHit
         ? `PnL turun dari peak ${tracker.peakPnl.toFixed(2)}% ke ${pnlPct.toFixed(2)}%`
         : tpHit
         ? `PnL ${pnlPct.toFixed(2)}% ≥ target ${strategyTakeProfitPct}%`
+        : maxHoldTriggered
+        ? `Position held for ${maxHoldHours}h — force close to unlock capital`
+        : oorBinsTriggered
+        ? `OOR ${outOfRangeBins} bins (threshold: ${oorBinsThreshold}) — force close`
         : slCheck.reason;
 
       // ── Terminal-style indicator table ───────────────────────────
@@ -1170,8 +1323,20 @@ export async function runHealerAlpha(notifyFn) {
 
       const _fullTable = [..._posLines, ..._mktLines, ..._trigLines];
 
+      const tpBullishHold = decision === 'HOLD' && tpHit && sig === 'BULLISH' && conf >= 0.80 && inRange;
+      const tpHoldTrailActive = runtimeState.tpHoldTrailActive === true;
+      if (tpBullishHold && !tpHoldTrailActive) {
+        updatePositionRuntimeState(addr, { tpHoldTrailActive: true });
+      } else if (!tpBullishHold && tpHoldTrailActive) {
+        updatePositionRuntimeState(addr, { tpHoldTrailActive: false });
+      }
+
       // ── HOLD ─────────────────────────────────────────────────────
       if (decision === 'HOLD') {
+        if (tpBullishHold && tpHoldTrailActive) {
+          // HOLD TRAIL already active; avoid repeated activation notifications every cycle.
+          continue;
+        }
         const lines = [
           ..._fullTable,
           hr(40),
@@ -1183,25 +1348,13 @@ export async function runHealerAlpha(notifyFn) {
         continue;
       }
 
-      // ── HOLD_TRAIL ───────────────────────────────────────────────
-      if (decision === 'HOLD_TRAIL') {
-        tracker.trailingActive = true;
-        updatePositionRuntimeState(addr, {
-          peakPnlPct: tracker.peakPnl,
-          trailingActive: tracker.trailingActive,
-        });
-        const lines = [
-          ..._fullTable,
-          hr(40),
-          kv('Trail', `close ≤ ${(tracker.peakPnl - trailCfg.dropPct).toFixed(2)}%`, W),
-        ];
-        await notifyFn?.(
-          `💰 *Take Profit — Trailing Diaktifkan*\n\n${codeBlock(lines)}`
-        );
+      // ── CLOSE ─────────────────────────────────────────────────────
+      // T1.3: Concurrency guard — skip if another cycle is already closing this address
+      if (!acquireClose(addr)) {
+        console.warn(`[healer] Close skipped for ${addr.slice(0, 8)} — already in progress`);
         continue;
       }
 
-      // ── CLOSE ─────────────────────────────────────────────────────
       const preCloseLines = [
         ..._fullTable,
         hr(40),
@@ -1212,15 +1365,22 @@ export async function runHealerAlpha(notifyFn) {
       );
 
       try {
-        const solPriceUsd = await getSolPriceUsd().catch(() => 150);
-        const realizedPnlUsd = parseFloat((pnlSol * solPriceUsd).toFixed(2));
+        const solPriceUsd = await getSolPriceUsd().catch((e) => {
+          console.warn(`[healer] SOL price feed failed (${e?.message}), falling back to 150 USD — PnL USD will be approximate`);
+          return 150;
+        });
+        const safePnlSol = Number.isFinite(pnlSol) ? pnlSol : 0;
+        if (!Number.isFinite(pnlSol)) {
+          console.warn(`[healer] pnlSol is ${pnlSol} for ${addr} — defaulting to 0 to prevent NaN corruption`);
+        }
+        const realizedPnlUsd = parseFloat((safePnlSol * solPriceUsd).toFixed(2));
         const realizedFeesUsd = parseFloat((((match.feeCollectedSol ?? 0) * solPriceUsd)).toFixed(2));
         await updatePositionLifecycle(addr, 'closing');
         await closePositionDLMM(pos.pool_address, addr, {
           pnlUsd:      realizedPnlUsd,
           pnlPct,
           feeUsd:      realizedFeesUsd,
-          pnlSol:      pnlSol,
+          pnlSol:      safePnlSol,
           feeSol:      match.feeCollectedSol || 0,
           closeReason: triggerLabel.toUpperCase().replace(/ /g, '_'),
           lifecycleState: 'closed_pending_swap',
@@ -1230,11 +1390,62 @@ export async function runHealerAlpha(notifyFn) {
         // DB updates — best-effort: jangan kirim "❌ Gagal close" kalau ini yang throw
         try { await recordPnlUsd(realizedPnlUsd); } catch { /* best-effort */ }
         try {
-          await recordClose(pos.pool_address, {
+          await executionRetry(() => recordClose(pos.pool_address, {
             pnlPct: pnlPct,
             reason: triggerLabel.toUpperCase().replace(/ /g, '_'),
+          }), { maxRetries: 2, delayMs: 500 });
+        } catch (e) { console.warn('[healer] recordClose failed after retries:', e?.message); }
+
+        // TAE Tracking: Record exit event for analytics
+        try {
+          // Fix #2: Compute real TAE exit context (same zone logic as runPanicWatchdog)
+          const _deployedSolSafe = pos.deployed_sol > 0 ? pos.deployed_sol : null;
+          const _feeRatioAtExit = _deployedSolSafe ? (match.feeCollectedSol ?? 0) / _deployedSolSafe : 0;
+          const _retracementDrop = Math.max(0, tracker.peakPnl - pnlPct);
+          let _exitZone = 'ZONE 1 (Sniper)';
+          let _retracementCap = 1.5;
+          let _isLPerPatienceActive = false;
+          if (pnlPct >= 30) {
+            _exitZone = 'ZONE 3 (Moonshot)';
+            _retracementCap = 7.0;
+            _isLPerPatienceActive = true;
+          } else if (pnlPct >= 10) {
+            _exitZone = 'ZONE 2 (Runner)';
+            _retracementCap = 3.5;
+            _isLPerPatienceActive = true;
+          }
+          if (_feeRatioAtExit >= 0.03) {
+            _retracementCap += 3.0;
+            _isLPerPatienceActive = true;
+          }
+
+          recordExitEvent({
+            positionAddress: pos.position_address,
+            poolAddress: pos.pool_address,
+            tokenMint: pos.token_mint || pos.token_x,
+            entryTime: pos.created_at,
+            entryPrice: pos.entry_price || 0,
+            exitTime: new Date().toISOString(),
+            exitPrice: match.currentPrice || match.displayPrice || 0,
+            holdMinutes: positionAgeMin,
+            pnlPct: pnlPct,
+            pnlUsd: realizedPnlUsd,
+            feesClaimedUsd: realizedFeesUsd,
+            totalReturnUsd: realizedPnlUsd + realizedFeesUsd,
+            exitTrigger: triggerLabel.toUpperCase().replace(/ /g, '_'),
+            exitZone: _exitZone,
+            exitRetracement: _retracementDrop,
+            exitRetracementCap: _retracementCap,
+            feeRatioAtExit: _feeRatioAtExit,
+            feeVelocityIncreasing: false,
+            lperPatienceActive: _isLPerPatienceActive,
+            profitOrLoss: pnlPct > 0 ? 'PROFIT' : pnlPct < 0 ? 'LOSS' : 'BREAKEVEN',
+            exitReason: triggerReason || triggerLabel,
+            closeReasonCode: triggerLabel.toUpperCase().replace(/ /g, '_'),
           });
-        } catch { /* best-effort */ }
+        } catch (e) {
+          console.warn('[healer] recordExitEvent failed — TAE analytics data lost for', addr, ':', e?.message);
+        }
 
         // Tunggu 3 detik — token perlu waktu untuk muncul di wallet setelah close
         await new Promise(r => setTimeout(r, 3000));
@@ -1246,6 +1457,12 @@ export async function runHealerAlpha(notifyFn) {
         let lifecycleState = 'closed_reconciled';
         try {
           const poolInfo = await getPoolInfo(pos.pool_address);
+          if (!poolInfo) {
+            console.warn(`[healer] getPoolInfo returned null for ${pos.pool_address} — pool may be deleted. Skipping auto-swap, marking manual_review.`);
+            lifecycleState = 'manual_review';
+            await notifyFn?.(`⚠️ <b>Manual Review Required</b>\n\nPool <code>${pos.pool_address.slice(0, 8)}</code> tidak ditemukan di Meteora.\nToken kemungkinan masih di wallet — swap manual diperlukan.`, { parse_mode: 'HTML' }).catch(() => {});
+            throw new Error('POOL_NOT_FOUND'); // exit try block, skip swap loop
+          }
           for (const mint of [poolInfo.tokenX, poolInfo.tokenY]) {
             if (mint && mint !== SOL_MINT) {
               try {
@@ -1309,22 +1526,19 @@ export async function runHealerAlpha(notifyFn) {
         await notifyFn?.(`✅ *Posisi Ditutup*\n\n${codeBlock(closedLines)}`);
 
         // ── Post-close opportunity scan ────────────────────────────
-        // Cek apakah pool masih layak re-entry berdasarkan Supertrend saja.
+        // Cek apakah pool masih layak re-entry berdasarkan Supertrend snapshot.
         try {
-          const epCandles = await fetchCandles(pos.token_x, '15m', 100, pos.pool_address);
-          if (epCandles && epCandles.length >= 11) {
-            const closes = epCandles.map(c => c.c);
-            const highs  = epCandles.map(c => c.h);
-            const lows   = epCandles.map(c => c.l);
-            const st     = calculateSupertrend(highs, lows, closes, 10, 3);
-            const last96 = epCandles.slice(-96);
-            const low24h = Math.min(...last96.map(c => c.l));
-            const curPrice = closes[closes.length - 1];
-            const distPct  = low24h > 0 ? ((curPrice - low24h) / low24h) * 100 : 99;
-            // Re-entry hanya jika Supertrend bullish dan harga dekat low 24h
-            if (st?.isBullish && distPct >= 0 && distPct <= 12) {
-              // Strategy alert silenced (info tersedia di logs)
-            }
+          const ohlcv = await getOHLCV(pos.token_x, pos.pool_address);
+          const stTrend = ohlcv?.ta?.supertrend?.trend || 'NEUTRAL';
+          const low24h = Number(ohlcv?.low24h || 0);
+          const curPrice = Number(ohlcv?.currentPrice || 0);
+          const distPct  = low24h > 0 ? ((curPrice - low24h) / low24h) * 100 : 99;
+          // Re-entry hanya jika Supertrend bullish dan harga dekat low 24h
+          if (stTrend === 'BULLISH' && distPct >= 0 && distPct <= 12) {
+            notifyFn?.(
+              `🔁 <b>Re-entry Signal</b>\n\nPool: <code>${pos.pool_address.slice(0, 8)}</code>\nSupertrend: ${stTrend} | Dist from 24h Low: ${distPct.toFixed(1)}%\n<i>Kondisi ideal untuk re-entry — gunakan Hunter untuk konfirmasi.</i>`,
+              { parse_mode: 'HTML' }
+            ).catch(() => {});
           }
         } catch { /* best-effort, jangan crash */ }
       } catch (e) {
@@ -1332,6 +1546,8 @@ export async function runHealerAlpha(notifyFn) {
           await updatePositionLifecycle(addr, 'open');
         }
         await notifyFn?.(`❌ Gagal close ${triggerLabel}: ${e.message}`);
+      } finally {
+        releaseClose(addr);
       }
     } catch { /* skip jika gagal fetch */ }
   }
@@ -1346,19 +1562,29 @@ export async function runHealerAlpha(notifyFn) {
         const analysis = await analyzeMarket(pos.token_x, pos.pool_address, { pnlPct: 0 });
         const snapshot = analysis?.snapshot;
         const ta = snapshot?.ta?.['Evil Panda'] || snapshot?.ta?.[pos.strategy_used];
+        const taConfidence = snapshot?.quality?.taConfidence ?? 0.5;
+        const taReliable = taConfidence >= minTaConfidence;
         
-        if (ta?.exit?.triggered) {
+        if (ta?.exit?.triggered && taReliable) {
           console.log(`[healer] AEGIS PRIORITY EXIT: Technical trigger for ${addr.slice(0,8)} - Reason: ${ta.exit.reason}`);
           const triggerLabel = ta.exit.shadowExit ? 'SHADOW EXIT' : 'TECHNICAL EXIT';
           const triggerReason = ta.exit.reason || 'Confluence reached';
 
-          await notifyFn?.(`🦅 <b>AEGIS GUARD</b> — ${triggerLabel}\n\nPosition: <code>${addr.slice(0, 8)}</code>\nReason: ${triggerReason}\n<i>Executing immediate liquidation...</i>`);
-          
-          await closePositionDLMM(pos.pool_address, addr, {
-            closeReason: triggerLabel,
-            lifecycleState: 'closed_pending_swap'
-          });
-          clearPositionState(addr);
+          if (!acquireClose(addr)) {
+            console.warn(`[healer] AEGIS close skipped for ${addr.slice(0, 8)} — already in progress`);
+            return;
+          }
+          try {
+            await notifyFn?.(`🦅 <b>AEGIS GUARD</b> — ${triggerLabel}\n\nPosition: <code>${addr.slice(0, 8)}</code>\nReason: ${triggerReason}\n<i>Executing immediate liquidation...</i>`);
+            // Gunakan jalur zap_out standar agar close + swap + lifecycle reconcile konsisten.
+            await executeTool('zap_out', {
+              pool_address: pos.pool_address,
+              position_address: addr,
+              reasoning: `${triggerLabel}: ${triggerReason}`,
+            }, notifyFn);
+          } finally {
+            releaseClose(addr);
+          }
         }
       } catch (e) {
         console.warn(`[healer] Technical sweep failed for ${pos.position_address.slice(0,8)}:`, e.message);
@@ -1453,16 +1679,18 @@ Gunakan Bahasa Indonesia. Selalu explain kenapa HOLD atau CLOSE.`;
   ];
 
   // Obelisk: Healer Silence — Skip LLM if all positions are "Perfectly Fine"
-  let needsDeliberation = false;
+  let needsDeliberation = _healerNeedsLLM;
   const currentPositions = getOpenPositions();
   for (const pos of currentPositions) {
+    if (needsDeliberation) break;
     try {
       const analysis = await analyzeMarket(pos.token_x, pos.pool_address, { inRange: true, pnlPct: 0 });
       const snap = analysis?.snapshot;
       const ta = snap?.ta?.['Evil Panda'] || snap?.ta?.[pos.strategy_used];
       
       const isOOR = !snap?.inRange;
-      const isLowFees = (snap?.unclaimedFeesUsd || 0) < (pos.deployed_capital * 0.03); 
+      const deployedSol = pos.deployed_sol || pos.deployed_capital || 0;
+      const isLowFees = (snap?.unclaimedFeesUsd || 0) < (deployedSol * 0.03);
       const isHealthyPnL = (analysis?.pnlPct || 0) > -2.0;
 
       if (isOOR || !isHealthyPnL || !isLowFees || ta?.supertrend?.trend === 'BEARISH') {
@@ -1540,6 +1768,8 @@ Gunakan Bahasa Indonesia. Selalu explain kenapa HOLD atau CLOSE.`;
  * Tanpa LLM, tanpa biaya, fokus murni pada keselamatan modal (Option B+).
  */
 export async function runPanicWatchdog(notifyFn) {
+  const cfg = getConfig();
+  const minTaConfidence = cfg.minTaConfidenceForAutoExit ?? 0.55;
   const openPositions = getOpenPositions();
   if (openPositions.length === 0) return;
 
@@ -1557,6 +1787,8 @@ export async function runPanicWatchdog(notifyFn) {
         dbPosition: pos,
         livePosition: match,
         providerPnlPct: lpPnlMap.get(pos.position_address),
+        directPnlPct: Number.isFinite(match?.pnlPct) ? match.pnlPct : null,
+        onPnlDivergence: (event) => auditPnlDivergence(event, { scope: 'tae_watchdog_loop' }),
       });
 
       // 📊 LP-IDENTITY: Real-time IL & HODL Analysis (SOL Denominated)
@@ -1575,6 +1807,8 @@ export async function runPanicWatchdog(notifyFn) {
 
       const isTrendBullish = snapshot.supertrend?.trend === 'BULLISH' || snapshot.indicators?.supertrend?.trend === 'BULLISH';
       const isTrendBearish = snapshot.supertrend?.trend === 'BEARISH' || snapshot.indicators?.supertrend?.trend === 'BEARISH';
+      const taConfidence = snapshot?.quality?.taConfidence ?? 0.5;
+      const taReliable = taConfidence >= minTaConfidence;
       
       const pnlPct = posSnapshot.pnlPct;
       const addr   = pos.position_address;
@@ -1588,6 +1822,11 @@ export async function runPanicWatchdog(notifyFn) {
       const posAgeMin = getPositionAgeMinutes(pos);
       const vol24h = snapshot.volume24h || snapshot.stats?.v24h || 0;
       const isFeeVelocityIncreasing = snapshot.feeVelocity === 'increasing' || snapshot.stats?.feeVelocity === 'increasing';
+      const deployedSol = pos.deployed_sol || 0;
+      const claimThreshold3Sol = deployedSol > 0 ? Math.max(deployedSol * 0.03, 0.005) : 0.01;
+      const exitPrice = snapshot?.price?.currentPrice || match?.currentPrice || 0;
+      let zone = 'UNKNOWN';
+      let isLPerPatienceEnabled = false;
       
       if (!runtimeState.feeTracker) {
         runtimeState.feeTracker = { lastFee: feeSol, lastTimestamp: now };
@@ -1635,7 +1874,7 @@ export async function runPanicWatchdog(notifyFn) {
               entryTime: pos.created_at,
               entryPrice: pos.entry_price || 0,
               exitTime: new Date().toISOString(),
-              exitPrice: analysis?.snapshot?.price || 0,
+              exitPrice,
               holdMinutes: Math.floor((Date.now() - new Date(pos.created_at)) / 60000),
               pnlPct: pnlPct,
               pnlUsd: posSnapshot.pnlUsd,
@@ -1644,7 +1883,7 @@ export async function runPanicWatchdog(notifyFn) {
               exitTrigger: 'GUARDIAN_ANGEL_DUMP',
               exitZone: zone || 'UNKNOWN',
               exitRetracement: 0,
-              exitRetrancementCap: 0,
+              exitRetracementCap: 0,
               feeRatioAtExit: feeRatio || 0,
               feeVelocityIncreasing: isFeeVelocityIncreasing ? 1 : 0,
               lperPatienceActive: isLPerPatienceEnabled ? 1 : 0,
@@ -1705,7 +1944,7 @@ export async function runPanicWatchdog(notifyFn) {
           entryTime: pos.created_at,
           entryPrice: pos.entry_price || 0,
           exitTime: new Date().toISOString(),
-          exitPrice: analysis?.snapshot?.price || 0,
+          exitPrice,
           holdMinutes: Math.floor((Date.now() - new Date(pos.created_at)) / 60000),
           pnlPct: pnlPct,
           pnlUsd: posSnapshot.pnlUsd,
@@ -1714,7 +1953,7 @@ export async function runPanicWatchdog(notifyFn) {
           exitTrigger: 'ZOMBIE_EXIT',
           exitZone: zone || 'UNKNOWN',
           exitRetracement: 0,
-          exitRetrancementCap: 0,
+          exitRetracementCap: 0,
           feeRatioAtExit: feeRatio || 0,
           feeVelocityIncreasing: isFeeVelocityIncreasing ? 1 : 0,
           lperPatienceActive: isLPerPatienceEnabled ? 1 : 0,
@@ -1744,10 +1983,10 @@ export async function runPanicWatchdog(notifyFn) {
         continue;
       }
 
-      let zone = "NONE";
+      zone = "NONE";
       let triggerPct = 1.0;
       let retracementCap = 1.5;
-      let isLPerPatienceEnabled = false;
+      isLPerPatienceEnabled = false;
 
       if (pnlPct < 10) {
         zone = "ZONE 1 (Sniper)";
@@ -1771,14 +2010,17 @@ export async function runPanicWatchdog(notifyFn) {
         console.log(`[watchdog] LP Mindset Active: Fee APR/Velocity tinggi, TAE Exit ditunda (Cap: +${retracementCap}%).`);
       }
 
-      let peak = runtimeState.peakPnlPct ?? pnlPct;
+      let peak = runtimeState.watchdogPeakPnl ?? pnlPct;
       if (pnlPct > peak) peak = pnlPct;
       
-      const trailingActive = runtimeState.trailingActive || pnlPct >= triggerPct;
+      const trailingActive = runtimeState.watchdogTrailingActive || pnlPct >= triggerPct;
       const retracementDrop = peak - pnlPct;
       const trailingTpHit  = trailingActive && retracementDrop >= retracementCap; 
 
-      updatePositionRuntimeState(addr, { peakPnlPct: peak, trailingActive: trailingActive });
+      updatePositionRuntimeState(addr, {
+        watchdogPeakPnl: peak,
+        watchdogTrailingActive: trailingActive,
+      });
 
       // 🐼 LP-TAE SYNC: Jika Trailing Hit tapi Fee APR > 100% dan TREND BULLISH -> Kasih Peluang (HOLD)
       if (trailingTpHit && isLPerPatienceEnabled && isTrendBullish && retracementDrop < (retracementCap + 2.0)) {
@@ -1800,7 +2042,7 @@ export async function runPanicWatchdog(notifyFn) {
           entryTime: pos.created_at,
           entryPrice: pos.entry_price || 0,
           exitTime: new Date().toISOString(),
-          exitPrice: analysis?.snapshot?.price || 0,
+          exitPrice,
           holdMinutes: Math.floor((Date.now() - new Date(pos.created_at)) / 60000),
           pnlPct: pnlPct,
           pnlUsd: posSnapshot.pnlUsd,
@@ -1809,7 +2051,7 @@ export async function runPanicWatchdog(notifyFn) {
           exitTrigger: 'TRAILING_TP_HIT',
           exitZone: zone,
           exitRetracement: retracementDrop,
-          exitRetrancementCap: retracementCap,
+          exitRetracementCap: retracementCap,
           feeRatioAtExit: feeRatio || 0,
           feeVelocityIncreasing: isFeeVelocityIncreasing ? 1 : 0,
           lperPatienceActive: isLPerPatienceEnabled ? 1 : 0,
@@ -1841,7 +2083,7 @@ export async function runPanicWatchdog(notifyFn) {
 
         if (isLPerPatienceEnabled && isTrendBullish) {
           console.log(`[watchdog] Trailing hit in ${zone} (+${pnlPct.toFixed(2)}%), but holding because TREND is BULLISH.`);
-        } else if (!isTrendBullish) {
+        } else if (taReliable && !isTrendBullish) {
           const msg = `🎯 *ADAPTIVE ZAP OUT!* (${zone})\n\n` +
                      `• Exit @ PnL: +${pnlPct.toFixed(2)}%\n` +
                      `• Trend: ${isTrendBearish ? 'BEARISH' : 'NEUTRAL'}\n\n` +
@@ -1857,7 +2099,7 @@ export async function runPanicWatchdog(notifyFn) {
             entryTime: pos.created_at,
             entryPrice: pos.entry_price || 0,
             exitTime: new Date().toISOString(),
-            exitPrice: analysis?.snapshot?.price || 0,
+            exitPrice,
             holdMinutes: Math.floor((Date.now() - new Date(pos.created_at)) / 60000),
             pnlPct: pnlPct,
             pnlUsd: posSnapshot.pnlUsd,
@@ -1866,7 +2108,7 @@ export async function runPanicWatchdog(notifyFn) {
             exitTrigger: 'SUPERTREND_FLIP',
             exitZone: zone,
             exitRetracement: retracementDrop,
-            exitRetrancementCap: retracementCap,
+            exitRetracementCap: retracementCap,
             feeRatioAtExit: feeRatio || 0,
             feeVelocityIncreasing: isFeeVelocityIncreasing ? 1 : 0,
             lperPatienceActive: isLPerPatienceEnabled ? 1 : 0,
@@ -1917,7 +2159,7 @@ export async function runPanicWatchdog(notifyFn) {
           entryTime: pos.created_at,
           entryPrice: pos.entry_price || 0,
           exitTime: new Date().toISOString(),
-          exitPrice: analysis?.snapshot?.price || 0,
+          exitPrice,
           holdMinutes: Math.floor((Date.now() - new Date(pos.created_at)) / 60000),
           pnlPct: pnlPct,
           pnlUsd: posSnapshot.pnlUsd,
@@ -1926,7 +2168,7 @@ export async function runPanicWatchdog(notifyFn) {
           exitTrigger: 'OOR_BAILOUT',
           exitZone: zone || 'UNKNOWN',
           exitRetracement: 0,
-          exitRetrancementCap: 0,
+          exitRetracementCap: 0,
           feeRatioAtExit: feeRatio || 0,
           feeVelocityIncreasing: isFeeVelocityIncreasing ? 1 : 0,
           lperPatienceActive: isLPerPatienceEnabled ? 1 : 0,
@@ -1994,16 +2236,43 @@ export async function runPanicWatchdog(notifyFn) {
           }
 
           if (harvestedTotal > 0) {
-            await notifyFn?.(`✅ <b>HARVEST SUCCESSFUL!</b>\n\n` +
-                           `• Realized Profit: <code>+${harvestedTotal.toFixed(4)} SOL</code>\n` +
-                           `• Status Position: <b>OPEN &amp; Yielding 🎋</b>`, { parse_mode: 'HTML' });
+            const harvestedUsd = harvestedTotal * await getSolPriceUsd().catch(() => 150);
+
+            if (cfg.autoHarvestCompound) {
+              // ─── Compound: reinvest back into same position ──────────
+              try {
+                const compResult = await addLiquidityToPosition(pos.pool_address, pos.position_address, harvestedTotal);
+                if (compResult?.success) {
+                  await notifyFn?.(`♻️ <b>HARVEST COMPOUNDED!</b>\n\n` +
+                    `• Re-invested: <code>+${harvestedTotal.toFixed(4)} SOL</code>\n` +
+                    `• Position: <code>${escapeHTML(shortAddr(pos.position_address))}</code>\n` +
+                    `• Status: <b>OPEN &amp; Growing 🌱</b>`, { parse_mode: 'HTML' });
+                } else {
+                  // Compound failed (dry-run or skipped) — fall back to realize
+                  await recordFeesClaimed(pos.position_address, { claimedSol: harvestedTotal, claimedUsd: harvestedUsd }).catch(() => {});
+                }
+              } catch (compErr) {
+                console.error(`[compound] Failed to compound — falling back to realize:`, compErr.message);
+                await recordFeesClaimed(pos.position_address, { claimedSol: harvestedTotal, claimedUsd: harvestedUsd }).catch(() => {});
+                await notifyFn?.(`✅ <b>HARVEST SUCCESSFUL!</b> <i>(compound failed, realized instead)</i>\n\n` +
+                  `• Realized Profit: <code>+${harvestedTotal.toFixed(4)} SOL</code>\n` +
+                  `• Status Position: <b>OPEN &amp; Yielding 🎋</b>`, { parse_mode: 'HTML' });
+              }
+            } else {
+              // ─── Default: realize fees as profit ────────────────────
+              await recordFeesClaimed(pos.position_address, { claimedSol: harvestedTotal, claimedUsd: harvestedUsd }).catch(() => {});
+              await notifyFn?.(`✅ <b>HARVEST SUCCESSFUL!</b>\n\n` +
+                `• Realized Profit: <code>+${harvestedTotal.toFixed(4)} SOL</code>\n` +
+                `• Status Position: <b>OPEN &amp; Yielding 🎋</b>`, { parse_mode: 'HTML' });
+            }
           }
         } catch (harvestErr) {
           console.error(`❌ [harvest] Gagal harvest otonom:`, harvestErr.message);
         }
       }
 
-      if (isTrendBearish && isOORLower) {
+      const emergencyOorLoss = isOORLower && pnlPct <= -10;
+      if ((taReliable && isTrendBearish && isOORLower) || emergencyOorLoss) {
         const msg = `🚨 <b>PANIC EXIT EXECUTED!</b> (Critical Dump)\n\n` +
                    `• Posisi: <code>${escapeHTML(shortAddr(pos.position_address))}</code>\n` +
                    `• Pool: <code>${escapeHTML(shortAddr(pos.pool_address))}</code>\n` +
@@ -2021,7 +2290,7 @@ export async function runPanicWatchdog(notifyFn) {
           entryTime: pos.created_at,
           entryPrice: pos.entry_price || 0,
           exitTime: new Date().toISOString(),
-          exitPrice: analysis?.snapshot?.price || 0,
+          exitPrice,
           holdMinutes: Math.floor((Date.now() - new Date(pos.created_at)) / 60000),
           pnlPct: pnlPct,
           pnlUsd: posSnapshot.pnlUsd,
@@ -2030,7 +2299,7 @@ export async function runPanicWatchdog(notifyFn) {
           exitTrigger: 'PANIC_EXIT_BEARISH_OOR',
           exitZone: zone || 'UNKNOWN',
           exitRetracement: 0,
-          exitRetrancementCap: 0,
+          exitRetracementCap: 0,
           feeRatioAtExit: feeRatio || 0,
           feeVelocityIncreasing: isFeeVelocityIncreasing ? 1 : 0,
           lperPatienceActive: isLPerPatienceEnabled ? 1 : 0,
@@ -2072,7 +2341,7 @@ export async function runPanicWatchdog(notifyFn) {
 
       // Skenario 2: PROFIT PROTECTION (Profit + Trend Bearish)
       // Kalau lu udah profit biarpun dikit, tapi trend-nya flip, mending bungkus.
-      if (isBearish && pnlPct >= 0.5) {
+      if (taReliable && isTrendBearish && pnlPct >= 0.5) {
         const msg = `🛡️ <b>PROFIT PROTECTION:</b> (Trend Flip)\n\n` +
                    `• Posisi: <code>${escapeHTML(shortAddr(pos.position_address))}</code>\n` +
                    `• Alasan: <i>Trend Bearish detected while in profit.</i>\n` +
@@ -2089,7 +2358,7 @@ export async function runPanicWatchdog(notifyFn) {
           entryTime: pos.created_at,
           entryPrice: pos.entry_price || 0,
           exitTime: new Date().toISOString(),
-          exitPrice: analysis?.snapshot?.price || 0,
+          exitPrice,
           holdMinutes: Math.floor((Date.now() - new Date(pos.created_at)) / 60000),
           pnlPct: pnlPct,
           pnlUsd: posSnapshot.pnlUsd,
@@ -2098,7 +2367,7 @@ export async function runPanicWatchdog(notifyFn) {
           exitTrigger: 'PROFIT_PROTECTION',
           exitZone: zone || 'UNKNOWN',
           exitRetracement: 0,
-          exitRetrancementCap: 0,
+          exitRetracementCap: 0,
           feeRatioAtExit: feeRatio || 0,
           feeVelocityIncreasing: isFeeVelocityIncreasing ? 1 : 0,
           lperPatienceActive: isLPerPatienceEnabled ? 1 : 0,

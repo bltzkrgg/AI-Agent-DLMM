@@ -1,6 +1,8 @@
 import { fetchWithTimeout, safeNum } from '../utils/safeJson.js';
 import { getHeliusOnChainSignals } from '../utils/helius.js';
+import { heliusRpc } from '../utils/helius.js';
 import { getJupiterPrice } from '../utils/jupiter.js';
+import { getConfig } from '../config.js';
 import * as ta from '../utils/ta.js';
 import { getPoolSmartMoney } from '../market/lpAgent.js';
 
@@ -12,7 +14,7 @@ const METEORA_DATAPI = 'https://dlmm-api.meteora.ag';
 // Oracle: OHLCV + TA dari DexScreener untuk Evil Panda entry/exit.
 
 export async function getOHLCV(tokenMint, poolAddress = null) {
-  return buildOHLCVFromDexScreener(tokenMint);
+  return buildOHLCVFromDexScreener(tokenMint, poolAddress);
 }
 
 // ─── 2. On-Chain Signals (Helius) ────────────────────────────────
@@ -66,6 +68,56 @@ export async function getDLMMPoolData(poolAddress) {
   } catch { return null; }
 }
 
+async function getMeteoraPoolPriceUsd(poolAddress) {
+  if (!poolAddress) return null;
+  try {
+    const res = await fetchWithTimeout(
+      `${METEORA_DATAPI}/pools/${poolAddress}`,
+      { headers: { Accept: 'application/json' } },
+      6000
+    );
+    if (!res.ok) return null;
+    const pool = await res.json();
+
+    const directCandidates = [
+      pool?.current_price_usd,
+      pool?.price_usd,
+      pool?.currentPriceUsd,
+      pool?.priceUsd,
+      pool?.active_price_usd,
+      pool?.activePriceUsd,
+    ];
+    for (const candidate of directCandidates) {
+      const parsed = safeNum(candidate, NaN);
+      if (Number.isFinite(parsed) && parsed > 0) return parsed;
+    }
+
+    // Fallback estimate when explicit USD price is unavailable:
+    // tokenX price in tokenY multiplied by tokenY USD price (if present).
+    const tokenYUsdCandidates = [
+      pool?.token_y?.price,
+      pool?.tokenY?.price,
+      pool?.token_y?.price_usd,
+      pool?.tokenY?.priceUsd,
+      pool?.token_y_price_usd,
+    ];
+    const tokenXPerYCandidates = [
+      pool?.active_bin_price,
+      pool?.activePrice,
+      pool?.current_price,
+      pool?.price,
+    ];
+    const tokenYUsd = tokenYUsdCandidates.map(v => safeNum(v, NaN)).find(v => Number.isFinite(v) && v > 0);
+    const xPerY = tokenXPerYCandidates.map(v => safeNum(v, NaN)).find(v => Number.isFinite(v) && v > 0);
+    if (Number.isFinite(tokenYUsd) && Number.isFinite(xPerY)) {
+      return xPerY * tokenYUsd;
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
 // ─── 4. DexScreener — Sentiment & Momentum ──────────────────────
 
 export async function getSentiment(tokenMint) {
@@ -86,6 +138,7 @@ export async function getSentiment(tokenMint) {
     return {
       tokenSymbol: best.baseToken?.symbol || '',
       priceUsd: safeNum(best.priceUsd),
+      priceChange5m: safeNum(best.priceChange?.m5),
       priceChange1h: safeNum(best.priceChange?.h1),
       priceChange6h: safeNum(best.priceChange?.h6),
       priceChange24h: safeNum(best.priceChange?.h24),
@@ -93,8 +146,123 @@ export async function getSentiment(tokenMint) {
       buys24h: buys, sells24h: sells, buyPressurePct,
       fdv: safeNum(best.fdv),
       sentiment: buyPressurePct > 60 ? 'BULLISH' : buyPressurePct < 40 ? 'BEARISH' : 'NEUTRAL',
+      fetchedAt: new Date().toISOString(),
     };
   } catch { return null; }
+}
+
+export async function getTokenMarketCapUsd(tokenMint) {
+  if (!tokenMint || typeof tokenMint !== 'string') return null;
+  try {
+    const sentiment = await getSentiment(tokenMint);
+    const fdv = safeNum(sentiment?.fdv, NaN);
+    if (Number.isFinite(fdv) && fdv > 0) return fdv;
+
+    const priceUsd = safeNum(sentiment?.priceUsd, NaN);
+    if (!Number.isFinite(priceUsd) || priceUsd <= 0) return null;
+
+    const supplyRes = await heliusRpc('getTokenSupply', [tokenMint], 8000);
+    const supplyVal = supplyRes?.value || {};
+    const uiAmount = safeNum(supplyVal?.uiAmount, NaN);
+    if (Number.isFinite(uiAmount) && uiAmount > 0) {
+      return priceUsd * uiAmount;
+    }
+
+    const rawAmount = safeNum(supplyVal?.amount, NaN);
+    const decimals = safeNum(supplyVal?.decimals, NaN);
+    if (Number.isFinite(rawAmount) && Number.isFinite(decimals) && decimals >= 0) {
+      return priceUsd * (rawAmount / Math.pow(10, decimals));
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+function clamp(value, min, max) {
+  return Math.max(min, Math.min(max, value));
+}
+
+export function computeSnapshotQuality({
+  ohlcv,
+  sentiment,
+  jupiterPrice,
+  dexPrice,
+  meteoraPrice,
+  minPriceSources = 2,
+  maxAllowedDivergencePct = 3.0,
+}) {
+  const issues = [];
+  let taConfidence = 0.35;
+  const taSource = ohlcv?.ta?.supertrend?.source || 'unknown';
+
+  if (taSource === 'DexScreener-15m') taConfidence += 0.24;
+  else if (taSource === 'Momentum-Proxy') taConfidence += 0.12;
+  if (ohlcv?.historySuccess) taConfidence += 0.10;
+  if (sentiment && Number.isFinite(sentiment.buyPressurePct)) taConfidence += 0.08;
+
+  const rawSources = {
+    dex: Number.isFinite(dexPrice) && dexPrice > 0 ? dexPrice : null,
+    jupiter: Number.isFinite(jupiterPrice) && jupiterPrice > 0 ? jupiterPrice : null,
+    meteora: Number.isFinite(meteoraPrice) && meteoraPrice > 0 ? meteoraPrice : null,
+  };
+  const sourceEntries = Object.entries(rawSources).filter(([, v]) => Number.isFinite(v) && v > 0);
+  const sourceCount = sourceEntries.length;
+  const sourceValues = sourceEntries.map(([, v]) => v).sort((a, b) => a - b);
+  const medianPrice = sourceValues.length === 0
+    ? null
+    : sourceValues.length % 2 === 1
+      ? sourceValues[(sourceValues.length - 1) / 2]
+      : (sourceValues[sourceValues.length / 2 - 1] + sourceValues[sourceValues.length / 2]) / 2;
+
+  const divergenceBySource = {};
+  if (Number.isFinite(medianPrice) && medianPrice > 0) {
+    for (const [name, price] of sourceEntries) {
+      divergenceBySource[name] = Math.abs(price - medianPrice) / medianPrice * 100;
+    }
+  }
+  const divergenceValues = Object.values(divergenceBySource).filter(v => Number.isFinite(v));
+  const maxPairDivergencePct = divergenceValues.length > 0 ? Math.max(...divergenceValues) : null;
+
+  if (sourceCount < minPriceSources) {
+    issues.push(`Sumber harga kurang (${sourceCount}/${minPriceSources})`);
+    taConfidence -= 0.18;
+  }
+  if (Number.isFinite(maxPairDivergencePct) && maxPairDivergencePct > maxAllowedDivergencePct) {
+    issues.push(`Price quorum divergence tinggi (${maxPairDivergencePct.toFixed(2)}%)`);
+    taConfidence -= 0.25;
+  } else if (sourceCount >= minPriceSources) {
+    taConfidence += 0.10;
+  }
+
+  if (!ohlcv) {
+    issues.push('OHLCV tidak tersedia');
+    taConfidence -= 0.20;
+  }
+  if (!sentiment) {
+    issues.push('Sentiment tidak tersedia');
+    taConfidence -= 0.15;
+  }
+
+  taConfidence = clamp(taConfidence, 0.05, 0.95);
+
+  return {
+    taSource,
+    taConfidence: Number(taConfidence.toFixed(3)),
+    priceDivergencePct: Number.isFinite(maxPairDivergencePct)
+      ? Number(maxPairDivergencePct.toFixed(3))
+      : null,
+    priceSources: {
+      available: sourceCount,
+      minRequired: minPriceSources,
+      values: Object.fromEntries(sourceEntries.map(([name, price]) => [name, Number(price.toFixed(8))])),
+      medianPrice: Number.isFinite(medianPrice) ? Number(medianPrice.toFixed(8)) : null,
+      divergenceBySource: Object.fromEntries(
+        Object.entries(divergenceBySource).map(([k, v]) => [k, Number(v.toFixed(3))])
+      ),
+    },
+    issues,
+  };
 }
 
 // ─── OHLCV Build helper ──────────────────────────────────────────
@@ -136,50 +304,75 @@ async function buildOHLCVFromDexScreener(tokenMint, poolAddress = null) {
         : (priceChangeM5 > 3) ? 'PUMPING'
           : 'SIDEWAYS';
 
-    // ─── Phase 1: High-Efficiency Data Fetch ────────────────────────
-    // Satu koin = Satu panggil API. Jangan duplikasi fetch ke DexScreener.
-    let sentiment = marketSnapshot.sentiment;
-    if (!sentiment) {
-      sentiment = await getSentiment(tokenMint);
-    }
+    const txns24h = best.txns?.h24 || {};
+    const buys24h = safeNum(txns24h.buys);
+    const sells24h = safeNum(txns24h.sells);
+    const total24h = buys24h + sells24h;
+    const buyPressurePct = total24h > 0 ? safeNum((buys24h / total24h * 100).toFixed(1)) : 50;
 
-    if (!sentiment) {
-      if (process.env.HUNTER_DEBUG) console.log(`[oracle] Skipping ${tokenMint} - Sentiment data unavailable (API Rate Limit/Down)`);
-      return null; // Gagal total ambil data, skip pool ini
-    }
+    const p1h  = priceChange1h || 0;
+    const p5m  = priceChangeM5 || 0;
+    const bp   = buyPressurePct;
 
-    // ─── Phase 2: Perennial Momentum Logic (The Stability Fix) ──────────
-    // Karena API Candle (OHLCV) sering mati, kita gunakan momentum dari statistik
-    // DexScreener yang kita ambil di Phase 1.
-    
-    const p1h  = sentiment.priceChange1h || 0;
-    const p5m  = sentiment.priceChange5m || 0;
-    const bp   = sentiment.buyPressurePct || 50;
+    // Momentum proxy fallback (always available from DexScreener latest pair stats).
+    const isBullishProxy = (p1h > 1.0 && bp > 55) || (p5m > 3 && p1h > -1);
+    const isBearishProxy = (p1h < -5 || bp < 35);
 
-    // Logika Proksi Supertrend:
-    const isBullish = (p1h > 1.0 && bp > 55) || (p5m > 3 && p1h > -1);
-    const isBearish = (p1h < -5 || bp < 35);
-
-    taData = {
+    let historySuccess = false;
+    let taData = {
       supertrend: {
-        trend: isBullish ? 'BULLISH' : (isBearish ? 'BEARISH' : 'NEUTRAL'),
-        value: sentiment.priceUsd || 0,
+        trend: isBullishProxy ? 'BULLISH' : (isBearishProxy ? 'BEARISH' : 'NEUTRAL'),
+        value: currentPrice || 0,
         source: 'Momentum-Proxy'
       },
       candleCount: 0,
-      historySuccess: true,
+      historySuccess: false,
       "Evil Panda": {
         entry: {
-          triggered: isBullish,
-          reason: isBullish ? `EVIL PANDA MOMENTUM: Trend Bullish (1h: ${p1h}%, BP: ${bp}%).` : null
+          triggered: isBullishProxy,
+          reason: isBullishProxy ? `EVIL PANDA MOMENTUM: Trend Bullish (1h: ${p1h}%, BP: ${bp}%).` : null
         },
         exit: {
-          triggered: isBearish,
-          reason: isBearish ? `MOMENTUM EXIT: Sell pressure ekstrim.` : null
+          triggered: isBearishProxy,
+          reason: isBearishProxy ? 'MOMENTUM EXIT: Sell pressure ekstrim.' : null
         }
       }
     };
-    historySuccess = true;
+
+    // Prefer real 15m Supertrend from OHLCV history when pool address is available.
+    if (poolAddress) {
+      const history = await getHistoryOHLCV(poolAddress);
+      const closedCandles = Array.isArray(history) ? history.slice(0, -1) : [];
+      if (closedCandles.length >= 10) {
+        const st = ta.calculateSupertrend(closedCandles, 10, 3);
+        const lastClose = closedCandles[closedCandles.length - 1]?.close || currentPrice || 0;
+        const isBullish = st?.trend === 'BULLISH';
+        const isBearish = st?.trend === 'BEARISH';
+
+        taData = {
+          supertrend: {
+            trend: st?.trend || 'NEUTRAL',
+            value: Number.isFinite(st?.value) ? st.value : lastClose,
+            atr: Number.isFinite(st?.atr) ? st.atr : null,
+            changed: Boolean(st?.changed),
+            source: 'DexScreener-15m'
+          },
+          candleCount: closedCandles.length,
+          historySuccess: true,
+          "Evil Panda": {
+            entry: {
+              triggered: isBullish,
+              reason: isBullish ? `EVIL PANDA TREND: Supertrend 15m bullish (${closedCandles.length} candles).` : null
+            },
+            exit: {
+              triggered: isBearish,
+              reason: isBearish ? 'TREND EXIT: Supertrend 15m bearish.' : null
+            }
+          }
+        };
+        historySuccess = true;
+      }
+    }
 
     return {
       tokenMint,
@@ -252,7 +445,7 @@ function aggregateCandles(candles, targetMinutes = 15) {
   return result;
 }
 
-async function getHistoryOHLCV(poolAddress) {
+export async function getHistoryOHLCV(poolAddress) {
   try {
     // DexScreener V1 OHLCV API (Solana) 
     // Format: https://api.dexscreener.com/ohlcv/latest/v1/solana/{poolAddress}
@@ -275,15 +468,22 @@ async function getHistoryOHLCV(poolAddress) {
       volume: safeNum(c.v)
     })).sort((a, b) => a.time - b.time);
 
+    // Validate that mapped fields are not all NaN (API shape change guard)
+    const validCandles = raw.filter(c => Number.isFinite(c.close) && c.close > 0);
+    if (raw.length > 0 && validCandles.length === 0) {
+      console.warn('[oracle] DexScreener OHLCV: all candles have invalid close prices — possible API shape change');
+      return null;
+    }
+
     // Aggregate to 15m for Sniper Bullish Guard
-    return aggregateCandles(raw, 15);
+    return aggregateCandles(validCandles, 15);
   } catch { return null; }
 }
 
 // ─── Full DLMM Snapshot ──────────────────────────────────────────
 
 export async function getMarketSnapshot(tokenMint, poolAddress = null) {
-  const [ohlcvR, poolR, onChainR, sentimentR, smartMoneyR] = await Promise.allSettled([
+  const [ohlcvR, poolR, onChainR, sentimentR, smartMoneyR, jupiterPriceR, meteoraPriceR] = await Promise.allSettled([
     getOHLCV(tokenMint, poolAddress),
     poolAddress ? getDLMMPoolData(poolAddress) : Promise.resolve(null),
     getOnChainSignals(tokenMint),
@@ -293,6 +493,8 @@ export async function getMarketSnapshot(tokenMint, poolAddress = null) {
         .then(res => res.ok ? res.json() : null)
         .catch(() => null)
       : Promise.resolve(null),
+    getJupiterPrice(tokenMint),
+    poolAddress ? getMeteoraPoolPriceUsd(poolAddress) : Promise.resolve(null),
   ]);
 
   const ohlcv = ohlcvR.status === 'fulfilled' ? ohlcvR.value : null;
@@ -300,6 +502,9 @@ export async function getMarketSnapshot(tokenMint, poolAddress = null) {
   const onChain = onChainR.status === 'fulfilled' ? onChainR.value : null;
   const sentiment = sentimentR.status === 'fulfilled' ? sentimentR.value : null;
   const smartMoney = smartMoneyR.status === 'fulfilled' ? smartMoneyR.value : null;
+  const jupiterPrice = jupiterPriceR.status === 'fulfilled' ? jupiterPriceR.value : null;
+  const meteoraPrice = meteoraPriceR.status === 'fulfilled' ? meteoraPriceR.value : null;
+  const cfg = getConfig();
 
   // Simplified Health Score (using only allowed sources)
   let healthScore = 50;
@@ -329,6 +534,20 @@ export async function getMarketSnapshot(tokenMint, poolAddress = null) {
   }
 
   healthScore = Math.max(0, Math.min(100, healthScore));
+  const quality = computeSnapshotQuality({
+    ohlcv,
+    sentiment,
+    jupiterPrice,
+    dexPrice: sentiment?.priceUsd,
+    meteoraPrice,
+    minPriceSources: cfg.minPriceSourcesForEntry ?? 2,
+    maxAllowedDivergencePct: cfg.oracleMaxPriceDivergencePct ?? 3.0,
+  });
+  const taTrend = ohlcv?.ta?.supertrend?.trend || 'NEUTRAL';
+  const minTaConfidence = cfg.minTaConfidenceForAutoExit ?? 0.55;
+  const taReliable = quality.taConfidence >= minTaConfidence;
+  const dataReliable = (quality.priceSources?.available || 0) >= (quality.priceSources?.minRequired || 2)
+    && (quality.priceDivergencePct == null || quality.priceDivergencePct <= (cfg.oracleMaxPriceDivergencePct ?? 3.0));
 
   return {
     tokenMint, poolAddress,
@@ -337,6 +556,16 @@ export async function getMarketSnapshot(tokenMint, poolAddress = null) {
     smartMoney,
     healthScore,
     ta: ohlcv?.ta || null,
+    quality: {
+      ...quality,
+      taReliable,
+      dataReliable,
+      minTaConfidence,
+      jupiterPrice: Number.isFinite(jupiterPrice) ? Number(jupiterPrice.toFixed(8)) : null,
+      dexPrice: Number.isFinite(sentiment?.priceUsd) ? Number(sentiment.priceUsd.toFixed(8)) : null,
+      meteoraPrice: Number.isFinite(meteoraPrice) ? Number(meteoraPrice.toFixed(8)) : null,
+      taTrend,
+    },
     dataSource: ohlcv?.source || 'unknown',
     price: sentiment ? {
       currentPrice: sentiment.priceUsd,

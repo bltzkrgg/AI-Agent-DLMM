@@ -1,4 +1,4 @@
-import { getConfig } from '../config.js';
+import { getConfig, getEntryCapacity } from '../config.js';
 import { checkMaxDrawdown } from '../safety/safetyManager.js';
 import { getActiveOperation, getOpenPositions, listPendingReconcileIssues } from '../db/database.js';
 import { getConnection, getWallet } from '../solana/wallet.js';
@@ -16,11 +16,16 @@ function ensureNoDuplicateOperation(operationType, entityId) {
   }
 }
 
-function ensureEntryCapacity() {
+function ensureEntryCapacity(maxPositionsOverride = null) {
   const cfg = getConfig();
+  const capacity = getEntryCapacity(cfg, maxPositionsOverride);
+  if (capacity.blocked) {
+    throw new Error(capacity.reason);
+  }
+  const maxPositions = capacity.maxPositions;
   const openPositions = getOpenPositions();
-  if (openPositions.length >= cfg.maxPositions) {
-    throw new Error(`Posisi sudah penuh (${openPositions.length}/${cfg.maxPositions}).`);
+  if (openPositions.length >= maxPositions) {
+    throw new Error(`Posisi sudah penuh (${openPositions.length}/${maxPositions}).`);
   }
   const pendingReconcile = listPendingReconcileIssues(1);
   if (pendingReconcile.length > 0) {
@@ -34,6 +39,7 @@ export function validateExecutionPolicy({
   requiresRuntime = true,
   blocksOnDrawdown = true,
   isEntryOperation = false,
+  entryMaxPositions = null,
 }) {
   if (requiresRuntime) ensureRuntimeReady();
   if (blocksOnDrawdown) {
@@ -41,5 +47,5 @@ export function validateExecutionPolicy({
     if (drawdown.triggered) throw new Error(drawdown.reason);
   }
   ensureNoDuplicateOperation(operationType, entityId);
-  if (isEntryOperation) ensureEntryCapacity();
+  if (isEntryOperation) ensureEntryCapacity(entryMaxPositions);
 }

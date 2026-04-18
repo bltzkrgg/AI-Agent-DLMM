@@ -1,8 +1,25 @@
 import { getClosedPositions, getPositionStats } from '../db/database.js';
 import { getConfig, updateConfig } from '../config.js';
 import { addToHistory } from '../db/database.js';
+import { getTokenMarketCapUsd } from '../market/oracle.js';
 
-const PROTECTED_KEYS = ['minMcap', 'maxMcap', 'deployAmountSol'];
+const PROTECTED_KEYS = ['maxMcap', 'deployAmountSol'];
+
+function finiteOrNull(value) {
+  const n = Number(value);
+  return Number.isFinite(n) && n > 0 ? n : null;
+}
+
+async function resolveTradeMarketCap(trade) {
+  const direct = finiteOrNull(trade?.market_cap ?? trade?.mcap ?? trade?.fdv);
+  if (direct) return direct;
+
+  const tokenMint = trade?.token_mint || trade?.token_x || trade?.tokenMint || null;
+  if (!tokenMint) return null;
+
+  return finiteOrNull(await getTokenMarketCapUsd(tokenMint));
+}
+
 export async function runEvolutionCycle() {
   const cfg = getConfig();
   if (!cfg.autonomousEvolutionEnabled) return null;
@@ -33,10 +50,17 @@ export async function runEvolutionCycle() {
   // Logika 1: Adjust MCAP threshold based on losers
   // Jika win rate rendah (< 40%) dan banyak loser di low-mcap
   if (winRate < 0.40) {
-    const avgMcapLosers = losers.reduce((s, t) => s + (t.deployed_usd / (t.pnl_pct/100 + 1) || 0), 0) / (losers.length || 1);
-    if (avgMcapLosers < cfg.minMcap * 1.5) {
+    const loserMcaps = await Promise.all(losers.map(resolveTradeMarketCap));
+    const validLoserMcaps = loserMcaps.filter(v => Number.isFinite(v) && v > 0);
+    const avgMcapLosers = validLoserMcaps.length > 0
+      ? validLoserMcaps.reduce((s, v) => s + v, 0) / validLoserMcaps.length
+      : null;
+
+    if (avgMcapLosers !== null && avgMcapLosers < cfg.minMcap * 1.5) {
       updates.minMcap = Math.min(cfg.minMcap * 1.2, 1000000); // Naikkan min mcap 20%
-      logs.push(`Tightening minMcap to ${updates.minMcap} due to low win rate (${(winRate*100).toFixed(0)}%)`);
+      logs.push(`Tightening minMcap to ${updates.minMcap} due to low win rate (${(winRate*100).toFixed(0)}%) and avg loser mcap $${Math.round(avgMcapLosers).toLocaleString()}`);
+    } else if (avgMcapLosers === null && losers.length > 0) {
+      logs.push('Skipping minMcap adaptation: market cap data tidak tersedia untuk sampel loser.');
     }
   }
 

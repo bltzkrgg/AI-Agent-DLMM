@@ -24,6 +24,17 @@ function initializeDatabase() {
 
     return db;
   } catch (e) {
+    const message = String(e?.message || '');
+    const isNativeBindingIssue =
+      message.includes('NODE_MODULE_VERSION') ||
+      message.includes('Could not locate the bindings file') ||
+      message.includes('compiled against a different Node.js version');
+
+    if (isNativeBindingIssue) {
+      console.error('❌ SQLite native binding unavailable:', e.message);
+      throw new Error(`better-sqlite3 native binding tidak cocok dengan Node.js aktif. Jalankan "npm rebuild better-sqlite3" atau pakai versi Node yang sesuai.`);
+    }
+
     console.error('❌ Database corrupted or unreadable:', e.message);
 
     // Attempt recovery from backup
@@ -83,13 +94,13 @@ globalThis.db = db; // Sledgehammer fix: Make db globally accessible to the proc
 const queue = [];
 let processing = false;
 
-async function processQueue() {
+function processQueue() {
   if (processing || queue.length === 0) return;
   processing = true;
   while (queue.length > 0) {
     const { task, resolve, reject } = queue.shift();
     try {
-      const res = await task();
+      const res = task();
       resolve(res);
     } catch (err) {
       reject(err);
@@ -228,6 +239,19 @@ db.exec(`
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY(position_address) REFERENCES positions(position_address)
   );
+
+  CREATE TABLE IF NOT EXISTS pnl_divergence_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    position_address TEXT,
+    pool_address TEXT,
+    token_mint TEXT,
+    provider_pnl_pct REAL NOT NULL,
+    onchain_pnl_pct REAL NOT NULL,
+    divergence_pct REAL NOT NULL,
+    selected_source TEXT NOT NULL DEFAULT 'lp_agent',
+    metadata TEXT,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+  );
 `);
 
 db.exec(`
@@ -239,6 +263,8 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_exit_zone ON exit_events(exit_zone);
   CREATE INDEX IF NOT EXISTS idx_exit_created_at ON exit_events(created_at);
   CREATE INDEX IF NOT EXISTS idx_exit_pool ON exit_events(pool_address);
+  CREATE INDEX IF NOT EXISTS idx_pnl_div_pos_created ON pnl_divergence_events(position_address, created_at);
+  CREATE INDEX IF NOT EXISTS idx_pnl_div_created_at ON pnl_divergence_events(created_at);
 `);
 
 // Migrasi kolom — setiap ALTER dijalankan sendiri supaya error satu tidak block yang lain
@@ -257,21 +283,34 @@ const migrations = [
   'ALTER TABLE positions ADD COLUMN fees_collected_sol REAL DEFAULT 0',
   'ALTER TABLE positions ADD COLUMN dev_address TEXT',
   'ALTER TABLE positions ADD COLUMN updated_at DATETIME DEFAULT CURRENT_TIMESTAMP',
+  // Fix #1: Add token_mint for proper token identity tracking
+  'ALTER TABLE positions ADD COLUMN token_mint TEXT',
+  // Fix #1: Track claimed fees separately so unclaimed = collected - claimed
+  'ALTER TABLE positions ADD COLUMN fees_claimed_sol REAL DEFAULT 0',
+  'ALTER TABLE positions ADD COLUMN fees_claimed_usd REAL DEFAULT 0',
 ];
 for (const sql of migrations) {
-  try { db.exec(sql); } catch { /* kolom sudah ada, skip */ }
+  try { db.exec(sql); } catch (e) {
+    // "duplicate column name" and "already exists" are expected during re-runs — safe to skip.
+    // Any other error indicates a real schema problem that should surface.
+    const msg = e?.message || '';
+    if (!msg.includes('duplicate column') && !msg.includes('already exists')) {
+      console.error('[db] Migration failed (unexpected):', msg, '\nSQL:', sql);
+    }
+  }
 }
 
 export function savePosition(data) {
   return runInQueue(() => db.prepare(`
     INSERT OR IGNORE INTO positions
-    (pool_address, position_address, token_x, token_y, token_x_amount, token_y_amount, deployed_sol, entry_price, deployed_usd, strategy_used, token_x_symbol, lifecycle_state, pnl_sol, fees_collected_sol)
-    VALUES (@pool_address, @position_address, @token_x, @token_y, @token_x_amount, @token_y_amount, @deployed_sol, @entry_price, @deployed_usd, @strategy_used, @token_x_symbol, @lifecycle_state, @pnl_sol, @fees_collected_sol)
+    (pool_address, position_address, token_x, token_y, token_mint, token_x_amount, token_y_amount, deployed_sol, entry_price, deployed_usd, strategy_used, token_x_symbol, lifecycle_state, pnl_sol, fees_collected_sol)
+    VALUES (@pool_address, @position_address, @token_x, @token_y, @token_mint, @token_x_amount, @token_y_amount, @deployed_sol, @entry_price, @deployed_usd, @strategy_used, @token_x_symbol, @lifecycle_state, @pnl_sol, @fees_collected_sol)
   `).run({
     pool_address: data.pool_address,
     position_address: data.position_address,
     token_x: data.token_x,
     token_y: data.token_y,
+    token_mint: data.token_mint || data.token_x || null, // token_mint defaults to token_x
     token_x_amount: data.token_x_amount || 0,
     token_y_amount: data.token_y_amount || 0,
     deployed_sol: data.deployed_sol || 0,
@@ -283,6 +322,16 @@ export function savePosition(data) {
     pnl_sol: data.pnl_sol || 0,
     fees_collected_sol: data.fees_collected_sol || 0,
   }));
+}
+
+export function recordFeesClaimed(positionAddress, { claimedSol = 0, claimedUsd = 0 }) {
+  return runInQueue(() => db.prepare(`
+    UPDATE positions SET
+      fees_claimed_sol = fees_claimed_sol + ?,
+      fees_claimed_usd = fees_claimed_usd + ?,
+      updated_at = CURRENT_TIMESTAMP
+    WHERE position_address = ?
+  `).run(claimedSol, claimedUsd, positionAddress));
 }
 
 export function getOpenPositions() {
@@ -420,6 +469,53 @@ export function saveNotification(type, message) {
   return runInQueue(() => db.prepare(`INSERT INTO notifications (type, message) VALUES (?, ?)`).run(type, message));
 }
 
+export function recordPnlDivergenceEvent({
+  positionAddress = null,
+  poolAddress = null,
+  tokenMint = null,
+  providerPnlPct,
+  onChainPnlPct,
+  divergencePct,
+  selectedSource = 'lp_agent',
+  metadata = null,
+}) {
+  return runInQueue(() => {
+    const recent = db.prepare(`
+      SELECT id
+      FROM pnl_divergence_events
+      WHERE IFNULL(position_address, '') = IFNULL(?, '')
+        AND IFNULL(pool_address, '') = IFNULL(?, '')
+        AND created_at > datetime('now', '-10 minutes')
+      ORDER BY created_at DESC
+      LIMIT 1
+    `).get(positionAddress, poolAddress);
+    if (recent) return recent;
+
+    return db.prepare(`
+      INSERT INTO pnl_divergence_events (
+        position_address,
+        pool_address,
+        token_mint,
+        provider_pnl_pct,
+        onchain_pnl_pct,
+        divergence_pct,
+        selected_source,
+        metadata
+      )
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      positionAddress,
+      poolAddress,
+      tokenMint,
+      providerPnlPct,
+      onChainPnlPct,
+      divergencePct,
+      selectedSource,
+      metadata ? safeStringify(metadata) : null,
+    );
+  });
+}
+
 export function getConversationHistory(limit = 20) {
   return db.prepare(`
     SELECT role, content FROM conversation_history
@@ -551,16 +647,36 @@ export function getStat(key) {
   return row ? row.value : 0;
 }
 
+function safeJsonParse(str, fallback = null) {
+  if (!str || typeof str !== 'string' || !str.trim()) return fallback;
+  try { return JSON.parse(str); } catch { return fallback; }
+}
+
 export function listRecentOperations(limit = 10) {
   return db.prepare(`
-    SELECT * FROM operation_log 
-    ORDER BY created_at DESC 
+    SELECT * FROM operation_log
+    ORDER BY created_at DESC
     LIMIT ?
   `).all(limit).map(row => ({
     ...row,
-    result: row.result ? JSON.parse(row.result) : null,
-    metadata: row.metadata ? JSON.parse(row.metadata) : null,
-    tx_hashes: row.tx_hashes ? JSON.parse(row.tx_hashes) : []
+    result:    safeJsonParse(row.result,    null),
+    metadata:  safeJsonParse(row.metadata,  null),
+    tx_hashes: safeJsonParse(row.tx_hashes, []),
+  }));
+}
+
+export function listRecentFailedOperations(hours = 6, limit = 50) {
+  return db.prepare(`
+    SELECT *
+    FROM operation_log
+    WHERE status = 'failed'
+      AND created_at >= datetime('now', ?)
+    ORDER BY created_at DESC
+    LIMIT ?
+  `).all(`-${Math.max(1, Math.floor(hours))} hours`, limit).map(row => ({
+    ...row,
+    payload:  safeJsonParse(row.payload,  null),
+    metadata: safeJsonParse(row.metadata, null),
   }));
 }
 

@@ -1,6 +1,6 @@
 
-import { getStrategy } from './src/strategies/strategyManager.js';
-import { evaluateStrategyReadiness } from './src/market/strategyLibrary.js';
+import { getStrategy } from '../src/strategies/strategyManager.js';
+import { evaluateStrategyReadiness } from '../src/market/strategyLibrary.js';
 
 async function testSentinelV61() {
   console.log("=== SENTINEL v61 SIMULATION TEST ===");
@@ -17,6 +17,15 @@ async function testSentinelV61() {
   const mockSnapshot = {
     ta: {
       supertrend: { trend: 'BULLISH', value: 90, changed: false }
+    },
+    ohlcv: {
+      priceChangeM5: 1.25,
+      priceChangeH1: 3.5,
+    },
+    pool: {
+      feeTvlRatio: 0.025,
+      tvl: 100000,
+      volume24h: 120000,
     }
   };
   
@@ -27,6 +36,10 @@ async function testSentinelV61() {
   
   console.log(`- OK: ${readiness.ok}`);
   console.log(`- Notes: ${readiness.notes}`);
+  if (!readiness.ok || !readiness.deployOptions) {
+    console.log(`- Blockers: ${(readiness.blockers || []).join(' | ')}`);
+    return;
+  }
   console.log(`- Final Deploy Offsets: ${readiness.deployOptions.entryPriceOffsetMin} to ${readiness.deployOptions.entryPriceOffsetMax}`);
   
   // 3. Bin Math Simulation

@@ -64,6 +64,10 @@ class RpcProvider {
       // Report latency to circuit breaker if available
       if (this.circuitBreaker) {
         this.circuitBreaker.recordLatency(this.name, latencyMs);
+        // Advance HALF_OPEN → CLOSED recovery on successful RPC calls
+        if (this.circuitBreaker.isHalfOpen()) {
+          this.circuitBreaker.recordHealthCheckSuccess();
+        }
       }
 
       return data.result;
@@ -157,6 +161,9 @@ export class RpcManager {
     this.cacheExpiry = 5 * 60 * 1000; // 5 minutes
     this.lastProviderIndex = 0;
     this.circuitBreaker = config.circuitBreaker || null;
+    this.providerFailStreakToCooldown = config.providerFailStreakToCooldown || 2;
+    this.providerCooldownMs = config.providerCooldownMs || 45_000;
+    this.providerHealth = new Map(); // providerName -> { failStreak, cooldownUntil, lastFailureAt, lastSuccessAt }
 
     // Initialize providers in order: try primary first, then fallbacks
     if (config.helius) {
@@ -179,6 +186,49 @@ export class RpcManager {
     logger.log(`📡 RPC Manager initialized with ${this.providers.length} provider(s): ${this.providers.map(p => p.name).join(', ')}`);
   }
 
+  getProviderHealth(providerName) {
+    if (!this.providerHealth.has(providerName)) {
+      this.providerHealth.set(providerName, {
+        failStreak: 0,
+        cooldownUntil: 0,
+        lastFailureAt: 0,
+        lastSuccessAt: 0,
+      });
+    }
+    return this.providerHealth.get(providerName);
+  }
+
+  isProviderCoolingDown(provider, now = Date.now()) {
+    const h = this.getProviderHealth(provider.name);
+    return h.cooldownUntil > now;
+  }
+
+  markProviderFailure(provider, error) {
+    const h = this.getProviderHealth(provider.name);
+    h.failStreak += 1;
+    h.lastFailureAt = Date.now();
+
+    const msg = String(error?.message || '').toLowerCase();
+    const isHardFailure =
+      msg.includes('http 429') ||
+      msg.includes('http 5') ||
+      msg.includes('timeout') ||
+      msg.includes('fetch failed') ||
+      msg.includes('rpc error');
+
+    if (h.failStreak >= this.providerFailStreakToCooldown || isHardFailure) {
+      h.cooldownUntil = Date.now() + this.providerCooldownMs;
+      logger.warn(`⏸ ${provider.name} cooling down for ${Math.round(this.providerCooldownMs / 1000)}s (streak=${h.failStreak}).`);
+    }
+  }
+
+  markProviderSuccess(provider) {
+    const h = this.getProviderHealth(provider.name);
+    h.failStreak = 0;
+    h.cooldownUntil = 0;
+    h.lastSuccessAt = Date.now();
+  }
+
   /**
    * Get a healthy connection object
    */
@@ -194,30 +244,40 @@ export class RpcManager {
     // Skip cache for real-time methods
     const bypassCache = ['getSlot', 'getRecentPrioritizationFees', 'getLatestBlockhash', 'getSignatureStatuses'];
     const cacheKey = bypassCache.includes(method) ? null : `${method}:${stringify(params)}`;
+    let cached = null;
     
     if (cacheKey) {
-      const cached = this.cache.get(cacheKey);
+      cached = this.cache.get(cacheKey);
       if (cached && Date.now() - cached.time < this.cacheExpiry) {
         return cached.result;
       }
     }
 
+    const now = Date.now();
+    const activeProviders = this.providers.filter(p => !this.isProviderCoolingDown(p, now));
+    const providersToTry = activeProviders.length > 0 ? activeProviders : this.providers;
+    if (activeProviders.length === 0 && this.providers.length > 0) {
+      logger.warn(`⚠️ All providers cooling down. Forcing probe on primary provider for ${method}.`);
+    }
+
     // Try each provider in order
-    for (let i = 0; i < this.providers.length; i++) {
-      const provider = this.providers[i];
+    for (let i = 0; i < providersToTry.length; i++) {
+      const provider = providersToTry[i];
 
       try {
         const result = await provider.call(method, params, timeoutMs);
+        this.markProviderSuccess(provider);
 
         // Cache successful result
-        this.cache.set(cacheKey, { result, time: Date.now() });
+        if (cacheKey) this.cache.set(cacheKey, { result, time: Date.now() });
         return result;
       } catch (e) {
+        this.markProviderFailure(provider, e);
         logger.warn(`❌ ${provider.name} failed for ${method}: ${e.message}`);
 
         // Try next provider
-        if (i < this.providers.length - 1) {
-          const next = this.providers[i + 1];
+        if (i < providersToTry.length - 1) {
+          const next = providersToTry[i + 1];
           logger.log(`↻ Failover: Switching from ${provider.name} to ${next.name} for ${method}`);
           continue;
         }
@@ -259,6 +319,8 @@ export class RpcManager {
         errors: p.errorCount,
         successes: p.successCount,
         lastError: p.lastError,
+        failStreak: this.getProviderHealth(p.name).failStreak,
+        cooldownRemainingMs: Math.max(0, this.getProviderHealth(p.name).cooldownUntil - Date.now()),
       })),
       cacheSize: this.cache.size,
     };

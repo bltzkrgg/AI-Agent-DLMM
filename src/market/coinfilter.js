@@ -594,6 +594,7 @@ export async function screenToken(tokenMint, tokenName = '', tokenSymbol = '', o
 
   const gmgnInfo = gmgnInfoResult.status === 'fulfilled' ? gmgnInfoResult.value : null;
   const gmgnSec  = gmgnSecResult.status  === 'fulfilled' ? gmgnSecResult.value  : null;
+  const gmgnDegraded = cfg.gmgnDegradedModeEnabled !== false && gmgnStatus !== 'ACTIVE';
 
   const name   = tokenName   || dex?.name   || jup?.name   || '';
   const symbol = tokenSymbol || dex?.symbol || jup?.symbol || '';
@@ -608,6 +609,57 @@ export async function screenToken(tokenMint, tokenName = '', tokenSymbol = '', o
   const s12 = step12_gmgnSecurity(gmgnInfo, gmgnSec);
   const s13 = step13_volumeTurnoverRatio(dex, thresholds);
   const s14 = step14_feeIntegrity(dex, solPrice, thresholds);
+  const degradedRejects = [];
+  const degradedWarnings = [];
+
+  if (gmgnDegraded) {
+    const minMcap = Math.max(thresholds.minMcap || 0, safeNum(cfg.gmgnDegradedMinMcap, 400000));
+    const minVolume = Math.max(thresholds.minVolume24h || 0, safeNum(cfg.gmgnDegradedMinVolume24h, 1500000));
+    const minAge = Math.max(0, safeNum(cfg.gmgnDegradedMinTokenAgeMinutes, 180));
+
+    degradedWarnings.push({
+      rule: 'GMGN_DEGRADED_MODE',
+      msg: `GMGN ${gmgnStatus} — mode konservatif aktif (mcap≥$${minMcap.toLocaleString()}, vol24h≥$${minVolume.toLocaleString()}, age≥${minAge}m).`,
+    });
+
+    const currMcap = safeNum(dex?.fdv, 0);
+    const currVol = safeNum(dex?.volume24h, 0);
+    const currAge = safeNum(s4.ageMinutes, 0);
+
+    if (currMcap <= 0) {
+      degradedRejects.push({
+        rule: 'GMGN_DEGRADED_MCAP_MISSING',
+        msg: 'GMGN degraded: data mcap tidak tersedia, fail-closed.',
+      });
+    } else if (currMcap < minMcap) {
+      degradedRejects.push({
+        rule: 'GMGN_DEGRADED_MCAP',
+        msg: `GMGN degraded: mcap $${currMcap.toLocaleString()} < $${minMcap.toLocaleString()}.`,
+      });
+    }
+    if (currVol <= 0) {
+      degradedRejects.push({
+        rule: 'GMGN_DEGRADED_VOLUME_MISSING',
+        msg: 'GMGN degraded: data volume24h tidak tersedia, fail-closed.',
+      });
+    } else if (currVol < minVolume) {
+      degradedRejects.push({
+        rule: 'GMGN_DEGRADED_VOLUME',
+        msg: `GMGN degraded: volume24h $${currVol.toLocaleString()} < $${minVolume.toLocaleString()}.`,
+      });
+    }
+    if (s4.ageMinutes == null) {
+      degradedRejects.push({
+        rule: 'GMGN_DEGRADED_TOKEN_AGE_MISSING',
+        msg: 'GMGN degraded: data usia token tidak tersedia, fail-closed.',
+      });
+    } else if (currAge < minAge) {
+      degradedRejects.push({
+        rule: 'GMGN_DEGRADED_TOKEN_AGE',
+        msg: `GMGN degraded: usia token ${currAge}m < ${minAge}m.`,
+      });
+    }
+  }
 
   // Obelisk Handle: Manual MCAP calculation if DexScreener is lagging
   let mcap = dex?.fdv || null;
@@ -637,6 +689,7 @@ export async function screenToken(tokenMint, tokenName = '', tokenSymbol = '', o
     // ...s12.rejects, <-- GMGN Security stays as Warning (Fees = Security)
     ...s13, 
     ...s14, // minTokenFeesSol Gate
+    ...degradedRejects,
   ];
   const allWarnings = [
     ...s1.warnings, 
@@ -646,6 +699,7 @@ export async function screenToken(tokenMint, tokenName = '', tokenSymbol = '', o
     ...s11.warnings, 
     ...s12.warnings, 
     ...s12.rejects,  // GMGN security stays here
+    ...degradedWarnings,
   ];
 
   let verdict = allRejects.length > 0 ? 'AVOID' : (allWarnings.length > 0 ? 'CAUTION' : 'PASS');
@@ -661,6 +715,7 @@ export async function screenToken(tokenMint, tokenName = '', tokenSymbol = '', o
     gmgnStatus, // ACTIVE, DISABLED, ERROR, UNKNOWN
     gmgnRejects: s12.rejects,
     gmgnWarnings: s12.warnings,
+    gmgnDegradedMode: gmgnDegraded,
     sources: {
       dexscreener: !!dex,
       jupiter: !!(jup?.found),

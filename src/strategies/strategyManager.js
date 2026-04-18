@@ -1,5 +1,4 @@
 import { getConfig } from '../config.js';
-import db from '../db/database.js';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
 import fs from 'fs';
@@ -7,8 +6,20 @@ import fs from 'fs';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
-// Path relatif ke strategy-library.json (Sekarang absolute via import.meta.url)
-const STRATEGIES_JSON_PATH = join(__dirname, '../../src/market/strategy-library.json');
+// Source of truth strategy library lives at repo root.
+const STRATEGIES_JSON_PATH = join(__dirname, '../../strategy-library.json');
+
+function getDbOrThrow() {
+  const db = globalThis.db;
+  if (!db) {
+    throw new Error('Database belum terinisialisasi.');
+  }
+  return db;
+}
+
+function getDbIfReady() {
+  return globalThis.db || null;
+}
 
 /**
  * BASELINE_STRATEGIES
@@ -39,9 +50,10 @@ const BASELINE_STRATEGIES = {
       slippagePct: 0.5,
     },
     exit: {
-      mode: 'supertrend_flip',
-      emergencyStopLossPct: 95,
-      takeProfitPct: 20,
+      mode: 'evil_panda_confluence',
+      takeProfitPct: 5,
+      emergencyStopLossPct: 10,
+      maxHoldHours: 6,
     },
   },
   'Deep Fishing': {
@@ -67,11 +79,28 @@ const BASELINE_STRATEGIES = {
       slippagePct: 0.5,
     },
     exit: {
-      mode: 'supertrend_flip',
-      emergencyStopLossPct: 95,
-      takeProfitPct: 20,
+      mode: 'evil_panda_confluence',
+      takeProfitPct: 5,
+      emergencyStopLossPct: 10,
+      maxHoldHours: 6,
     },
   }
+};
+
+const DEFAULT_CUSTOM_STRATEGY_TEMPLATE = {
+  type: 'spot',
+  parameters: {
+    priceRangePercent: 10,
+    binStep: 10,
+  },
+  deploy: {
+    fixedBinsBelow: 24,
+    label: 'Custom',
+  },
+  exit: {
+    holdMinMinutes: 10,
+    holdMaxMinutes: 20,
+  },
 };
 
 /**
@@ -80,7 +109,7 @@ const BASELINE_STRATEGIES = {
 
 export function addStrategy(data) {
   const paramsStr = typeof data.parameters === 'object' ? JSON.stringify(data.parameters) : data.parameters;
-  const _db = db || globalThis.db;
+  const _db = getDbOrThrow();
   const result = _db.prepare(`
     INSERT INTO strategies (name, description, strategy_type, parameters, logic, created_by)
     VALUES (?, ?, ?, ?, ?, ?)
@@ -91,7 +120,7 @@ export function addStrategy(data) {
 
 export function updateStrategy(name, data) {
   const paramsStr = typeof data.parameters === 'object' ? JSON.stringify(data.parameters) : data.parameters;
-  const _db = db || globalThis.db;
+  const _db = getDbOrThrow();
   return _db.prepare(`
     UPDATE strategies 
     SET description = ?, strategy_type = ?, parameters = ?, logic = ?, updated_at = CURRENT_TIMESTAMP
@@ -103,7 +132,7 @@ export function deleteStrategy(name) {
   // Prevent deleting baseline strategies
   if (BASELINE_STRATEGIES[name]) return false;
 
-  const _db = db || globalThis.db;
+  const _db = getDbOrThrow();
   const result = _db.prepare(`DELETE FROM strategies WHERE name = ?`).run(name);
   return result.changes > 0;
 }
@@ -159,15 +188,20 @@ export function getStrategy(name) {
 
   // --- Normalisasi Nama (Fuzzy Match) ---
   const clean = cleanName(name);
+  let hasBaseline = false;
 
   // 1. Load from Baseline (Factory Presets)
   let base = BASELINE_STRATEGIES[name];
+  if (base) hasBaseline = true;
   if (!base) {
     const baselineKey = Object.keys(BASELINE_STRATEGIES).find(k =>
       slugify(k) === clean ||
       k.toLowerCase() === name.toLowerCase().replace(/_/g, ' ')
     );
-    if (baselineKey) base = BASELINE_STRATEGIES[baselineKey];
+    if (baselineKey) {
+      base = BASELINE_STRATEGIES[baselineKey];
+      hasBaseline = true;
+    }
   }
 
   // 2. Load from JSON Library (External "Big Book" of strategies)
@@ -189,31 +223,53 @@ export function getStrategy(name) {
   }
 
   // 3. Load from Database (Persistent Overrides)
-  if (!base || base.id) {
+  if (!hasBaseline) {
     const dbClean = base?.id || clean;
-    const _db = db || globalThis.db;
-    const row = _db.prepare(`SELECT * FROM strategies WHERE LOWER(name) = ? OR id = ? AND is_active = 1`).get(dbClean.replace(/_/g, ' '), dbClean);
-    if (row) {
-      const dbParams = JSON.parse(row.parameters || '{}');
-      const dbBase = {
-        name: row.name,
-        description: row.description,
-        type: row.strategy_type === 'spot' ? 'single_side_y' : row.strategy_type,
-        parameters: dbParams,
-        logic: row.logic,
-        _db: true
-      };
-      base = base ? deepMerge(base, dbBase) : dbBase;
+    const _db = getDbIfReady();
+    if (_db) {
+      const row = _db.prepare(`SELECT * FROM strategies WHERE (LOWER(name) = ? OR id = ?) AND is_active = 1`).get(dbClean.replace(/_/g, ' '), dbClean);
+      if (row) {
+        const dbParams = JSON.parse(row.parameters || '{}');
+        const dbBase = {
+          name: row.name,
+          description: row.description,
+          type: row.strategy_type === 'spot' ? 'single_side_y' : row.strategy_type,
+          parameters: dbParams,
+          logic: row.logic,
+          _db: true
+        };
+        base = base ? deepMerge(base, dbBase) : dbBase;
+      }
     }
   }
-
-  if (!base) return null;
 
   // 3. User Config Overrides
   const cfg = getConfig();
   const overrides = cfg.strategyOverrides?.[name] || {};
+  if (!base && Object.keys(overrides).length > 0) {
+    base = { ...DEFAULT_CUSTOM_STRATEGY_TEMPLATE };
+  }
+
+  if (!base) return null;
 
   const final = deepMerge(base, overrides);
+
+  // Sanitize numeric exit fields — reject non-finite values to prevent silent bad config
+  if (final.exit && typeof final.exit === 'object') {
+    const numericExitFields = ['emergencyStopLossPct', 'takeProfitPct', 'maxHoldHours', 'trailingTriggerPct', 'trailingDropPct'];
+    for (const field of numericExitFields) {
+      if (field in final.exit) {
+        const v = parseFloat(final.exit[field]);
+        if (!Number.isFinite(v)) {
+          console.warn(`[strategyManager] Invalid exit.${field} value "${final.exit[field]}" for strategy "${name}" — removed`);
+          delete final.exit[field];
+        } else {
+          final.exit[field] = v;
+        }
+      }
+    }
+  }
+
   return { ...final, name };
 }
 
@@ -225,7 +281,8 @@ export function getAllStrategies() {
   const baselineList = Object.keys(BASELINE_STRATEGIES).map(name => getStrategy(name));
 
   // 2. Database
-  const _db = db || globalThis.db;
+  const _db = getDbIfReady();
+  if (!_db) return baselineList;
   const dbRows = _db.prepare(`SELECT name FROM strategies WHERE is_active = 1`).all();
   const dbList = dbRows
     .filter(row => !BASELINE_STRATEGIES[row.name])
@@ -240,9 +297,17 @@ export function getAllStrategies() {
 export function parseStrategyParameters(strategy) {
   if (!strategy) return { priceRangePercent: 10, strategyType: 0, tokenXWeight: 0, tokenYWeight: 100 };
 
+  const deploy = strategy.deploy || {};
+  const offsetMin = Number(deploy.entryPriceOffsetMin);
+  const offsetMax = Number(deploy.entryPriceOffsetMax);
+  const derivedRangePct = Number.isFinite(offsetMax) && Number.isFinite(offsetMin) && offsetMax >= offsetMin
+    ? Math.max(1, offsetMax - offsetMin)
+    : null;
+  const priceRangePercent = deploy.priceRangePct ?? derivedRangePct ?? 10;
+
   return {
     ...(strategy.parameters || {}),
-    priceRangePercent: strategy.deploy?.priceRangePct || 10,
+    priceRangePercent,
     strategyType: 0, // Default to Spot for DLMM standard
     tokenXWeight: strategy.type === 'single_side_y' ? 0 : 50,
     tokenYWeight: strategy.type === 'single_side_y' ? 100 : 50,

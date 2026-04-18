@@ -19,7 +19,10 @@ import { createMessage, resolveModel, extractText } from '../agent/provider.js';
 import { getConfig, updateConfig } from '../config.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const MEMORY_PATH = join(__dirname, '../../memory.json');
+
+function getMemoryPath() {
+  return process.env.BOT_MEMORY_PATH || join(__dirname, '../../memory.json');
+}
 
 const DEFAULT_MEMORY = {
   instincts: [],
@@ -34,9 +37,10 @@ const DEFAULT_MEMORY = {
 // ─── Load / Save ──────────────────────────────────────────────────
 
 export function loadMemory() {
-  if (!existsSync(MEMORY_PATH)) return { ...DEFAULT_MEMORY };
+  const memoryPath = getMemoryPath();
+  if (!existsSync(memoryPath)) return { ...DEFAULT_MEMORY };
   try {
-    return { ...DEFAULT_MEMORY, ...JSON.parse(readFileSync(MEMORY_PATH, 'utf-8')) };
+    return { ...DEFAULT_MEMORY, ...JSON.parse(readFileSync(memoryPath, 'utf-8')) };
   } catch {
     return { ...DEFAULT_MEMORY };
   }
@@ -44,7 +48,7 @@ export function loadMemory() {
 
 export function saveMemory(memory) {
   try {
-    writeFileSync(MEMORY_PATH, JSON.stringify(memory, null, 2));
+    writeFileSync(getMemoryPath(), JSON.stringify(memory, null, 2));
   } catch (e) {
     console.error('⚠️ Failed to save memory.json:', e.message);
   }
@@ -160,8 +164,8 @@ export async function evolveFromTrades() {
   const memory = loadMemory();
   const trades = memory.closedTrades;
 
-  if (trades.length < 3) {
-    throw new Error(`Butuh minimal 3 posisi closed untuk evolve. Sekarang: ${trades.length}`);
+  if (trades.length < 10) {
+    throw new Error(`Butuh minimal 10 posisi closed untuk evolve. Sekarang: ${trades.length}`);
   }
 
   const cfg = getConfig();
@@ -296,7 +300,8 @@ Respond HANYA dengan JSON:
       }
     }
     if (Object.keys(validated).length === WEIGHT_KEYS.length) {
-      updateConfig({ signalWeights: validated });
+      // Store as hints, not override — signalWeights.js owns the statistical weights
+      updateConfig({ llmWeightHints: validated });
       appliedWeights = validated;
     }
   }
@@ -348,5 +353,48 @@ export function getMemoryStats() {
     lastEvolution: memory.lastEvolution,
     evolutionCount: memory.evolutionCount || 0,
     lastAutoEvolution: memory.lastAutoEvolution || null,
+  };
+}
+
+export function getStrategyRegimeGuard({ strategyName, snapshot, minTrades = 3 } = {}) {
+  if (!strategyName || !snapshot) return { blocked: false, reason: null, sampleSize: 0 };
+
+  const memory = loadMemory();
+  const currentTrend = snapshot.ohlcv?.trend || null;
+  const currentVolatility = snapshot.ohlcv?.volatilityCategory || null;
+
+  const candidates = (memory.closedTrades || [])
+    .filter(t => t.strategy === strategyName)
+    .filter(t => {
+      const sameTrend = currentTrend && t.marketAtEntry?.trend === currentTrend;
+      const sameVolatility = currentVolatility && t.volatility === currentVolatility;
+      return sameTrend || sameVolatility;
+    })
+    .slice(-10);
+
+  if (candidates.length < minTrades) {
+    return { blocked: false, reason: null, sampleSize: candidates.length };
+  }
+
+  const losses = candidates.filter(t => !t.profitable);
+  const lossRate = losses.length / candidates.length;
+  const avgPnlPct = candidates.reduce((sum, t) => sum + (t.pnlPct || 0), 0) / candidates.length;
+
+  if (lossRate >= 0.67 && avgPnlPct <= -2.0) {
+    return {
+      blocked: true,
+      reason: `Regime memory menolak setup Panda: ${losses.length}/${candidates.length} trade serupa berakhir loss (avg ${avgPnlPct.toFixed(2)}%).`,
+      sampleSize: candidates.length,
+      avgPnlPct: Number(avgPnlPct.toFixed(2)),
+      lossRate: Number((lossRate * 100).toFixed(1)),
+    };
+  }
+
+  return {
+    blocked: false,
+    reason: null,
+    sampleSize: candidates.length,
+    avgPnlPct: Number(avgPnlPct.toFixed(2)),
+    lossRate: Number((lossRate * 100).toFixed(1)),
   };
 }

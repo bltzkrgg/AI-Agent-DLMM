@@ -7,7 +7,35 @@ export function resolvePnlSnapshot({
   currentValueSol = 0,
   providerPnlPct = null,
   directPnlPct = null,
+  positionAddress = null,
+  poolAddress = null,
+  tokenMint = null,
+  divergenceThresholdPct = 10,
+  onDivergence = null,
 }) {
+  // Fix #3: Log significant divergence between PnL sources so silent data quality issues surface
+  if (Number.isFinite(providerPnlPct) && Number.isFinite(directPnlPct)) {
+    const divergence = Math.abs(providerPnlPct - directPnlPct);
+    if (divergence > divergenceThresholdPct) {
+      console.warn(`[pnl] ⚠️ Source divergence ${divergence.toFixed(1)}%: lp_agent=${providerPnlPct.toFixed(2)}% vs on_chain=${directPnlPct.toFixed(2)}% — using lp_agent`);
+      if (typeof onDivergence === 'function') {
+        try {
+          onDivergence({
+            positionAddress,
+            poolAddress,
+            tokenMint,
+            providerPnlPct,
+            onChainPnlPct: directPnlPct,
+            divergencePct: divergence,
+            selectedSource: 'lp_agent',
+          });
+        } catch {
+          // no-op: divergence audit must never break decision path
+        }
+      }
+    }
+  }
+
   const candidatePnlPct = Number.isFinite(providerPnlPct)
     ? providerPnlPct
     : Number.isFinite(directPnlPct)

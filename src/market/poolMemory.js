@@ -12,7 +12,7 @@
  *   - index.js: update saat deploy & close
  */
 
-import { readFileSync, writeFileSync, existsSync } from 'fs';
+import { readFileSync, writeFileSync, existsSync, renameSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { getConfig } from '../config.js';
@@ -51,7 +51,9 @@ function loadPoolMemory() {
 
 function savePoolMemory(memory) {
   try {
-    writeFileSync(POOL_MEMORY_PATH, JSON.stringify(memory, null, 2));
+    const tmp = `${POOL_MEMORY_PATH}.tmp`;
+    writeFileSync(tmp, JSON.stringify(memory, null, 2));
+    renameSync(tmp, POOL_MEMORY_PATH);
   } catch (e) {
     console.error('⚠️ Failed to save pool-memory.json:', e.message);
   }

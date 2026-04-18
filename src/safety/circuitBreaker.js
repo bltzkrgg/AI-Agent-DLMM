@@ -29,6 +29,8 @@ export class CircuitBreaker {
     this.tripTime = null;
     this.tripReason = null;
     this.recoverySuccessCount = 0;
+    this.halfOpenSince = null;
+    this.halfOpenTimeoutMs = config.halfOpenTimeoutMs || 10 * 60 * 1000; // 10 min auto-reset
 
     // Callbacks for bot notifications
     this.onTrip = config.onTrip || (() => {});
@@ -140,10 +142,18 @@ export class CircuitBreaker {
     if (this.state === 'OPEN') {
       logger.log('CB: Attempting recovery (HALF_OPEN)...');
       this.state = 'HALF_OPEN';
+      this.halfOpenSince = Date.now();
+      return;
     }
 
-    // Test if system is healthy by checking if we can make successful RPC calls
-    // This will be called by the RPC manager's health checks
+    if (this.state === 'HALF_OPEN') {
+      // Auto-recover if HALF_OPEN for longer than timeout with no new failures recorded
+      const halfOpenAge = Date.now() - (this.halfOpenSince || Date.now());
+      if (halfOpenAge >= this.halfOpenTimeoutMs) {
+        logger.log(`CB: HALF_OPEN timeout reached (${Math.round(halfOpenAge / 1000)}s) — auto-resetting`);
+        await this.reset();
+      }
+    }
   }
 
   recordHealthCheckSuccess() {
@@ -162,6 +172,7 @@ export class CircuitBreaker {
       logger.warn('CB: Health check failed, remaining OPEN');
       this.state = 'OPEN';
       this.recoverySuccessCount = 0;
+      this.halfOpenSince = null;
     }
   }
 

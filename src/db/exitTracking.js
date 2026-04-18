@@ -8,7 +8,7 @@ import db from './database.js';
 export function recordExitEvent(exitData) {
   try {
     const stmt = db.prepare(`
-      INSERT INTO exit_events (
+      INSERT OR REPLACE INTO exit_events (
         position_address, pool_address, token_mint,
         entry_time, entry_price,
         exit_time, exit_price, hold_minutes,
@@ -35,7 +35,7 @@ export function recordExitEvent(exitData) {
       exitData.exitTrigger,
       exitData.exitZone,
       exitData.exitRetracement,
-      exitData.exitRetrancementCap,
+      exitData.exitRetracementCap,
       exitData.feeRatioAtExit,
       exitData.feeVelocityIncreasing ? 1 : 0,
       exitData.lperPatienceActive ? 1 : 0,

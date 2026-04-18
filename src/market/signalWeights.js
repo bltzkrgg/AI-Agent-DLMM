@@ -84,7 +84,20 @@ function saveSignals(signals) {
 // ─── Public: ambil bobot aktual ───────────────────────────────────
 
 export function getDarwinWeights() {
-  return loadWeights();
+  const weights = loadWeights();
+  const cfg = getConfig();
+  const hints = cfg.llmWeightHints;
+  if (hints && typeof hints === 'object' && !Array.isArray(hints)) {
+    // Blend LLM hints (0–5 scale) into statistical weights (0.3–2.5 scale)
+    // Soft blend: 70% statistical, 30% LLM hint — LLM never dominates
+    for (const [key, rawVal] of Object.entries(hints)) {
+      if (key in weights && Number.isFinite(rawVal) && rawVal > 0) {
+        const normalized = Math.min(WEIGHT_MAX, Math.max(WEIGHT_MIN, (rawVal / 5) * WEIGHT_MAX));
+        weights[key] = +(weights[key] * 0.7 + normalized * 0.3).toFixed(4);
+      }
+    }
+  }
+  return weights;
 }
 
 // ─── Public: capture sinyal saat deploy ──────────────────────────
@@ -167,7 +180,14 @@ export function recalibrateWeights() {
   const winners = paired.filter(p => p.pnlPct > 0);
   const losers  = paired.filter(p => p.pnlPct < -3);
 
-  if (winners.length < 3 || losers.length < 2) return null;
+  // Anomaly guard: require minimum balanced samples to prevent weight hijacking
+  // by a small extreme batch (e.g. 1 winner / 40 losers during a market crash).
+  if (winners.length < 5 || losers.length < 3) return null;
+  const imbalanceRatio = Math.max(winners.length, losers.length) / Math.min(winners.length, losers.length);
+  if (imbalanceRatio > 5) {
+    console.warn(`[signalWeights] Recalibration skipped: sample imbalance ${winners.length}W / ${losers.length}L (ratio ${imbalanceRatio.toFixed(1)}x) — data too skewed`);
+    return null;
+  }
 
   const signalKeys = ['feeActiveTvlRatio', 'volume', 'tvl', 'holderCount', 'multiTFScore', 'socialSignal'];
   const liftReport = {};
@@ -196,6 +216,14 @@ export function recalibrateWeights() {
     }
     // Round to 3 decimals
     newWeights[key] = parseFloat((newWeights[key] || 1).toFixed(3));
+
+    // Anomaly guard: cap single-cycle drift to ±30% of prior weight to prevent
+    // one bad batch from overwriting long-run signal memory.
+    const prior = current[key] || 1;
+    const maxAllowed = parseFloat((prior * 1.30).toFixed(3));
+    const minAllowed = parseFloat((prior * 0.70).toFixed(3));
+    if (newWeights[key] > maxAllowed) newWeights[key] = maxAllowed;
+    if (newWeights[key] < minAllowed) newWeights[key] = minAllowed;
   }
 
   saveWeights(newWeights, {
