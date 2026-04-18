@@ -8,7 +8,7 @@ const CONFIG_PATH = process.env.BOT_CONFIG_PATH || join(__dirname, '../user-conf
 
 const DEFAULTS = {
   // Position sizing
-  deployAmountSol: 0.05,
+  deployAmountSol: 1.0,
   maxPositions: 3,
   minSolToOpen: 0.10,
   gasReserve: 0.03, // SOL yang disisakan untuk tx fees + account rent
@@ -37,10 +37,12 @@ const DEFAULTS = {
   generalModel: 'meta-llama/llama-3.3-70b-instruct:free',
   activeModel: null,
 
-  // Screening thresholds
+  // Screening thresholds — Evil Panda: hunt fresh hyper-active pools
   minFeeActiveTvlRatio: 0.05,
-  minTvl: 10000,
-  maxTvl: 150000,
+  minTvl: 1000,
+  maxTvl: 15000,
+  maxPoolAgeDays: 3,          // Reject pools older than 3 days (72h freshness rule)
+  minVolumeTvlRatio: 20,      // Reject if Volume/TVL < 20x (hyper-active gate)
   minOrganic: 55,
   minBinStep: 100,            // Minimal 100 bin step (Hukum 3)
   allowedBinSteps: [100, 125], // Daftar Bin Step spesifik yang diijinkan (Saklek Mode)
@@ -54,7 +56,7 @@ const DEFAULTS = {
   trailingDropPct: 1.5,      // Close kalau PnL turun X% dari peak
   outOfRangeWaitMinutes: 30,
   outOfRangeBinsToClose: 10, // Tutup posisi jika OOR lebih dari N bins
-  maxHoldHours: 6,           // Force close position after N hours regardless of PnL signal
+  maxHoldHours: 168,         // Force close position after 168h (7 days) — Evil Panda hold window
   minFeeClaimUsd: 1.0,
 
   // OOR-specific pool cooldown
@@ -62,7 +64,7 @@ const DEFAULTS = {
   oorCooldownHours: 12,       // Durasi cooldown OOR (jam)
 
   // Safety
-  stopLossPct: 5,
+  stopLossPct: 8,
   maxDailyDrawdownPct: 6,
   requireConfirmation: true,
 
@@ -90,7 +92,7 @@ const DEFAULTS = {
   // Coin selection thresholds (USD, via GeckoTerminal + DexScreener)
   minMcap: 250000,           // Min market cap ($) — null data → skip
   maxMcap: 0,                // Max market cap ($, 0 = disabled)
-  minVolume24h: 1000000,     // Min 24h volume ($) untuk Evil Panda
+  minVolume24h: 20000,       // Min 24h volume ($) — ratio gate (minVolumeTvlRatio) is primary filter
 
   // Strategy-specific tuning. Base identity is 'Evil Panda Master'.
   strategyOverrides: {
@@ -152,6 +154,8 @@ const CONFIG_BOUNDS = {
   minFeeActiveTvlRatio: { min: 0.001, max: 1 },
   minTvl: { min: 100, max: 10000000 },
   maxTvl: { min: 1000, max: 100000000 },
+  maxPoolAgeDays: { min: 0.1, max: 365 },
+  minVolumeTvlRatio: { min: 0, max: 1000 },
   minOrganic: { min: 0, max: 100 },
   minBinStep: { min: 1, max: 400 },
   minTokenFeesSol: { min: 0, max: 10000 },

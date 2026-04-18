@@ -52,8 +52,8 @@ const BASELINE_STRATEGIES = {
     exit: {
       mode: 'evil_panda_confluence',
       takeProfitPct: 5,
-      emergencyStopLossPct: 10,
-      maxHoldHours: 6,
+      emergencyStopLossPct: 8,   // Emergency: price break >8%
+      maxHoldHours: 168,          // Max 7 days hold window
     },
   },
 };

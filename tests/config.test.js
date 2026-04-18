@@ -69,7 +69,7 @@ test('safer defaults stay conservative for real-capital usage', async () => {
   const configModule = await importFresh(join(repoRoot, 'src/config.js'));
   const cfg = configModule.getConfig();
 
-  assert.equal(cfg.deployAmountSol, 0.05);
+  assert.equal(cfg.deployAmountSol, 1.0);
   assert.equal(cfg.maxPositions, 3);
   assert.equal(cfg.gasReserve, 0.03);
   assert.equal(cfg.requireConfirmation, true);

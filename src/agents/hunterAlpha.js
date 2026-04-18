@@ -290,11 +290,26 @@ async function executeTool(name, input) {
         const isMomentumPass = (minTokenFeesSol <= 0 || fees >= minTokenFeesSol) && isHighlyProductive;
         const isHeritagePass = heritageMode && (p.totalFeesEstimated >= minTotalFeesSol);
 
+        // 🐼 EVIL PANDA GATE 1: Pool age <72h (freshness edge)
+        const maxPoolAgeDays = cfg.maxPoolAgeDays ?? 3;
+        const poolAgeHours = p.createdAt
+          ? (Date.now() - new Date(p.createdAt).getTime()) / (1000 * 60 * 60)
+          : null;
+        const agePasses = poolAgeHours === null || poolAgeHours <= maxPoolAgeDays * 24;
+
+        // 🐼 EVIL PANDA GATE 2: Volume/TVL >20x (hyper-active only)
+        const minVolumeTvlRatio = cfg.minVolumeTvlRatio ?? 20;
+        const volume24h = p.volume24hRaw || 0;
+        const volumeTvlRatio = tvl > 0 ? volume24h / tvl : 0;
+        const volumeRatioPasses = volumeTvlRatio >= minVolumeTvlRatio;
+
         return (
           allowedBinSteps.includes(binStep) &&
           tvl >= thresholds.minTvl &&
           tvl <= thresholds.maxTvl &&
           feeRatio >= thresholds.minFeeActiveTvlRatio &&
+          agePasses &&
+          volumeRatioPasses &&
           (isMomentumPass || isHeritagePass) &&
           !isOnCooldown(p.address)
         );
@@ -1000,11 +1015,30 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null, opt
         rejBin++;
       } else if (tvl < thresholds.minTvl || tvl > thresholds.maxTvl) {
         matched = false;
-        reason = `Reject: TVL $${(tvl/1000).toFixed(1)}k di luar rentang Sultan`;
+        reason = `Reject: TVL $${(tvl/1000).toFixed(1)}k di luar rentang $${(thresholds.minTvl/1000).toFixed(1)}k-$${(thresholds.maxTvl/1000).toFixed(1)}k`;
         rejTvl++;
       } else if (p.volume24hRaw < thresholds.minVolume24h) {
         matched = false;
         reason = `Reject: Volume $${(p.volume24hRaw/1000).toFixed(1)}k terlalu sepi`;
+        rejTvl++;
+      } else if ((() => {
+        const vol = p.volume24hRaw || 0;
+        const ratio = tvl > 0 ? vol / tvl : 0;
+        const minRatio = cfg.minVolumeTvlRatio ?? 20;
+        return ratio < minRatio;
+      })()) {
+        const vol = p.volume24hRaw || 0;
+        const ratio = tvl > 0 ? (vol / tvl).toFixed(1) : 0;
+        matched = false;
+        reason = `Reject: Volume/TVL ${ratio}x < ${cfg.minVolumeTvlRatio ?? 20}x (butuh hyper-active pool)`;
+        rejTvl++;
+      } else if (p.createdAt && (() => {
+        const ageHours = (Date.now() - new Date(p.createdAt).getTime()) / (1000 * 60 * 60);
+        return ageHours > (cfg.maxPoolAgeDays ?? 3) * 24;
+      })()) {
+        const ageH = ((Date.now() - new Date(p.createdAt).getTime()) / (1000 * 60 * 60)).toFixed(0);
+        matched = false;
+        reason = `Reject: Pool sudah ${ageH}h (max ${(cfg.maxPoolAgeDays ?? 3) * 24}h freshness rule)`;
         rejTvl++;
       } else if (p.mcap && p.mcap < thresholds.minMcap) {
         matched = false;
