@@ -26,6 +26,9 @@ MONITORING:
   /positions          List active positions with PnL
   /positions history  Recent closed positions
   /health            Detailed system health
+  /claim             Claim fee rewards on active positions
+  /claim_fees        Alias for /claim (same behavior)
+  /strategy_report   Per-strategy: trades | win rate | avg PnL | confidence
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 KEY CONFIGURATION PARAMETERS
@@ -153,13 +156,53 @@ AGGRESSIVE EXPERIMENTAL:
   → Use when: Development only, not recommended for live capital
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+EXIT TRIGGER CODES (exit_events.exitTrigger)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+MAIN LOOP (exitTrigger = closeReasonCode):
+  STOP_LOSS              Drawdown >= stopLossPct (default 10%) — immediate close
+  TAKE_PROFIT            PnL >= takeProfitFeePct — static profit target
+  TRAILING_TAKE_PROFIT   Peak–current > trailingDropPct — trailing peak drop
+  MAX_HOLD_EXIT          Age >= maxHoldHours (6h) — dead capital cleanup
+  OOR_BINS_EXCEEDED      Out-of-range bins >= outOfRangeBinsToClose
+
+WATCHDOG PATHS (exitTrigger ≠ closeReasonCode — ⚠️ split):
+  GUARDIAN_ANGEL_DUMP    → DB: GUARDIAN_ANGEL_DUMP_EXIT
+  ZOMBIE_EXIT            → DB: ZOMBIE_EXIT_${reason}
+  TRAILING_TP_HIT        → DB: TAE_WATCHDOG_EXIT_${zone}
+  SUPERTREND_FLIP        → DB: TAE_WATCHDOG_MOMENTUM_EXIT_${zone}
+  OOR_BAILOUT            → DB: OOR_HARD_EXIT_WATCHDOG
+  PANIC_EXIT_BEARISH_OOR → DB: same (consistent)
+  PROFIT_PROTECTION      → DB: PROFIT_PROTECTION_BEARISH
+
+OPERATOR INITIATED:
+  MANUAL_CLOSE           /pause + manual close
+  AGENT_CLOSE            AI agent decision
+  ZAP_OUT                Close + swap all tokens to SOL
+
+CIRCUIT BREAKER (NOT in exit_events — separate table):
+  SL_CLUSTER_THRESHOLD_MET → circuit_breaker_events (poolAddress, slCount, pausedUntil)
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+PNL SOURCE VALUES (positions.pnlSource / exit_events.pnlSource)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  lp_agent           Provider value — agrees with on-chain within 10%
+  on_chain_fallback  Provider diverged >10% — agent switched to on-chain SDK value
+  manual_estimate    No provider or on-chain — estimated from deployedSol vs currentValueSol
+
+on_chain_fallback in logs = provider reported stale/wrong value; auto-corrected. No action needed
+unless it appears on every cycle (indicates persistent provider issue).
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 INCIDENT QUICK CARDS  (use during live volatility)
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 QC-1: CIRCUIT BREAKER TRIPPED
   Detect:  runtime-state.json has hunter-circuit-breaker.pausedUntil key
            Telegram "⚡ CIRCUIT BREAKER TRIPPED" | logs slCount >= slCircuitBreakerCount
-           NOTE: SL_CLUSTER_THRESHOLD_MET is schema-only (not written to exit_events DB)
+  NOTE:    SL_CLUSTER_THRESHOLD_MET writes to circuit_breaker_events table (NOT exit_events)
+           Query: sqlite3 positions.db "SELECT * FROM circuit_breaker_events ORDER BY id DESC LIMIT 5;"
   First5:  1. DO NOT override — this is intended safety behavior
            2. /health → confirm circuitBreaker: OPEN
            3. /positions history → check last 3–5 exits for SL cluster pattern

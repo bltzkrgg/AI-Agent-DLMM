@@ -27,6 +27,15 @@ export async function getOHLCV(tokenMint, poolAddress = null) {
   return birdeye || dex;
 }
 
+function isCandleSeriesStale(candles = [], maxStaleMinutes = 90) {
+  if (!Array.isArray(candles) || candles.length === 0) return true;
+  const last = candles[candles.length - 1];
+  const tsSec = Number(last?.time);
+  if (!Number.isFinite(tsSec) || tsSec <= 0) return true;
+  const ageMinutes = (Date.now() / 1000 - tsSec) / 60;
+  return ageMinutes > Math.max(1, Number(maxStaleMinutes || 90));
+}
+
 // ─── 2. On-Chain Signals (Helius) ────────────────────────────────
 // Kept for инфраструкura (metadata, priority fees), but market signals (whale risk) 
 // are now simplified or derived from allowed sources.
@@ -325,14 +334,20 @@ async function getHistoryOHLCVFromBirdeye(tokenMint, lookbackHours = 12) {
 
 async function buildOHLCVFromBirdeye(tokenMint, dexFallback = null) {
   try {
+    const cfg = getConfig();
     const history = await getHistoryOHLCVFromBirdeye(tokenMint, 12);
     if (!Array.isArray(history) || history.length < 12) return null;
 
     const closedCandles = history.slice(0, -1);
     if (closedCandles.length < 10) return null;
+    if (isCandleSeriesStale(closedCandles, cfg.maxOhlcvStaleMinutes15m ?? 90)) {
+      console.warn('[oracle] Birdeye OHLCV stale — fallback ignored');
+      return null;
+    }
 
     const last = closedCandles[closedCandles.length - 1];
     const first = closedCandles[0];
+    const historyAgeMinutes = Number(((Date.now() / 1000 - safeNum(last.time, 0)) / 60).toFixed(2));
     const maxHigh = Math.max(...closedCandles.map((c) => c.high));
     const minLow = Math.min(...closedCandles.map((c) => c.low));
     const range24hPct = last.close > 0 ? Math.abs(((maxHigh - minLow) / last.close) * 100) : 0;
@@ -347,6 +362,7 @@ async function buildOHLCVFromBirdeye(tokenMint, dexFallback = null) {
       timeframe: '15m',
       source: 'birdeye-ohlcv',
       currentPrice: safeNum(last.close),
+      atrPct: Number.isFinite(st?.atr) && last.close > 0 ? Number(((st.atr / last.close) * 100).toFixed(3)) : null,
       priceChangeM5,
       priceChangeH1,
       high24h: safeNum(maxHigh),
@@ -384,6 +400,7 @@ async function buildOHLCVFromBirdeye(tokenMint, dexFallback = null) {
         },
       },
       historySuccess: true,
+      historyAgeMinutes,
       historyWindowSec: safeNum(last.time - first.time),
     };
   } catch {
@@ -445,6 +462,7 @@ async function buildOHLCVFromDexScreener(tokenMint, poolAddress = null) {
     const isBearishProxy = (p1h < -5 || bp < 35);
 
     let historySuccess = false;
+    let historyAgeMinutes = null;
     let taData = {
       supertrend: {
         trend: isBullishProxy ? 'BULLISH' : (isBearishProxy ? 'BEARISH' : 'NEUTRAL'),
@@ -467,10 +485,14 @@ async function buildOHLCVFromDexScreener(tokenMint, poolAddress = null) {
 
     // Prefer real 15m Supertrend from OHLCV history when pool address is available.
     if (poolAddress) {
+      const cfg = getConfig();
       const history = await getHistoryOHLCV(poolAddress);
       const closedCandles = Array.isArray(history) ? history.slice(0, -1) : [];
-      if (closedCandles.length >= 10) {
+      const staleHistory = isCandleSeriesStale(closedCandles, cfg.maxOhlcvStaleMinutes15m ?? 90);
+      if (closedCandles.length >= 10 && !staleHistory) {
         const st = ta.calculateSupertrend(closedCandles, 10, 3);
+        const lastCandle = closedCandles[closedCandles.length - 1];
+        historyAgeMinutes = Number(((Date.now() / 1000 - safeNum(lastCandle?.time, 0)) / 60).toFixed(2));
         const lastClose = closedCandles[closedCandles.length - 1]?.close || currentPrice || 0;
         const isBullish = st?.trend === 'BULLISH';
         const isBearish = st?.trend === 'BEARISH';
@@ -497,6 +519,8 @@ async function buildOHLCVFromDexScreener(tokenMint, poolAddress = null) {
           }
         };
         historySuccess = true;
+      } else if (closedCandles.length >= 10 && staleHistory) {
+        console.warn('[oracle] DexScreener OHLCV stale — fallback to Birdeye/proxy');
       }
     }
 
@@ -505,6 +529,9 @@ async function buildOHLCVFromDexScreener(tokenMint, poolAddress = null) {
       timeframe: '15m',
       source: 'dexscreener-v1',
       currentPrice,
+      atrPct: Number.isFinite(taData?.supertrend?.atr) && currentPrice > 0
+        ? Number(((taData.supertrend.atr / currentPrice) * 100).toFixed(3))
+        : null,
       priceChangeM5,
       priceChangeH1: priceChange1h,
       high24h, low24h,
@@ -515,6 +542,7 @@ async function buildOHLCVFromDexScreener(tokenMint, poolAddress = null) {
       volatilityCategory: range24hPct > 20 ? 'HIGH' : range24hPct > 7 ? 'MEDIUM' : 'LOW',
       ta: taData,
       historySuccess,
+      historyAgeMinutes,
     };
   } catch (e) {
     console.error('[oracle] buildOHLCV failed:', e.message);
@@ -635,11 +663,13 @@ export async function getMarketSnapshot(tokenMint, poolAddress = null) {
   // Simplified Health Score (using only allowed sources)
   let healthScore = 50;
   if (pool) {
+    const minFeeYieldRatio = Math.max(0, Number(cfg.minDailyFeeYieldPct ?? 1.0)) / 100;
+    const strongFeeYieldRatio = Math.max(minFeeYieldRatio * 5, 0.05);
     const feeCat = pool.feeAprCategory || 'MEDIUM';
     healthScore += feeCat === 'HIGH' ? 20 : feeCat === 'LOW' ? -20 : 0;
 
     const feeRatio = Number.isFinite(pool.feeTvlRatio) ? pool.feeTvlRatio : 0;
-    healthScore += feeRatio > 0.05 ? 15 : feeRatio < 0.01 ? -10 : 0;
+    healthScore += feeRatio > strongFeeYieldRatio ? 15 : feeRatio < minFeeYieldRatio ? -10 : 0;
   }
 
   if (onChain && onChain.available) {
@@ -715,7 +745,8 @@ export async function fetchCandles() { return null; }
 export async function getMultiTFScore() { return { score: 0.5, validCount: 0 }; }
 export async function fetchMultiTFOHLCV() { return {}; }
 export async function getOKXData() {
-  const apiKey = process.env.OKX_API_KEY || '';
+  const cfg = getConfig();
+  const apiKey = String(cfg.okxApiKey || process.env.OKX_API_KEY || '');
   if (!apiKey) {
     return { available: false, reason: 'OKX_API_KEY missing' };
   }

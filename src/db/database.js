@@ -331,6 +331,28 @@ for (const sql of migrations) {
     // "duplicate column name" and "already exists" are expected during re-runs — safe to skip.
     // Any other error indicates a real schema problem that should surface.
     const msg = e?.message || '';
+    const isUpdatedAtDefaultMigration =
+      sql.includes('ALTER TABLE positions ADD COLUMN updated_at DATETIME DEFAULT CURRENT_TIMESTAMP');
+    if (isUpdatedAtDefaultMigration && msg.includes('non-constant default')) {
+      // SQLite compatibility fallback: some runtimes reject ADD COLUMN with CURRENT_TIMESTAMP default.
+      // Fallback to plain DATETIME column + backfill existing rows.
+      try {
+        db.exec('ALTER TABLE positions ADD COLUMN updated_at DATETIME');
+      } catch (fallbackErr) {
+        const fallbackMsg = fallbackErr?.message || '';
+        if (!fallbackMsg.includes('duplicate column') && !fallbackMsg.includes('already exists')) {
+          console.error('[db] Migration fallback failed:', fallbackMsg, '\nSQL:', sql);
+        }
+      }
+      try {
+        db.exec(`UPDATE positions
+                 SET updated_at = COALESCE(updated_at, created_at, CURRENT_TIMESTAMP)
+                 WHERE updated_at IS NULL`);
+      } catch (fillErr) {
+        console.error('[db] Migration backfill failed:', fillErr?.message || fillErr);
+      }
+      continue;
+    }
     if (!msg.includes('duplicate column') && !msg.includes('already exists')) {
       console.error('[db] Migration failed (unexpected):', msg, '\nSQL:', sql);
     }
@@ -340,8 +362,8 @@ for (const sql of migrations) {
 export function savePosition(data) {
   return runInQueue(() => db.prepare(`
     INSERT OR IGNORE INTO positions
-    (pool_address, position_address, token_x, token_y, token_mint, token_x_amount, token_y_amount, deployed_sol, entry_price, deployed_usd, strategy_used, token_x_symbol, lifecycle_state, pnl_sol, fees_collected_sol)
-    VALUES (@pool_address, @position_address, @token_x, @token_y, @token_mint, @token_x_amount, @token_y_amount, @deployed_sol, @entry_price, @deployed_usd, @strategy_used, @token_x_symbol, @lifecycle_state, @pnl_sol, @fees_collected_sol)
+    (pool_address, position_address, token_x, token_y, token_mint, token_x_amount, token_y_amount, deployed_sol, entry_price, deployed_usd, strategy_used, token_x_symbol, lifecycle_state, pnl_sol, fees_collected_sol, updated_at)
+    VALUES (@pool_address, @position_address, @token_x, @token_y, @token_mint, @token_x_amount, @token_y_amount, @deployed_sol, @entry_price, @deployed_usd, @strategy_used, @token_x_symbol, @lifecycle_state, @pnl_sol, @fees_collected_sol, CURRENT_TIMESTAMP)
   `).run({
     pool_address: data.pool_address,
     position_address: data.position_address,

@@ -19,6 +19,11 @@ export function evaluateDeployReadiness(input = {}) {
     worktreeClean = true,
     worktreeDirtyCount = 0,
     worktreeCheckAvailable = true,
+    signalReportRequired = false,
+    signalReportAvailable = false,
+    signalReportPassed = false,
+    signalReportAgeHours = null,
+    signalReportMaxAgeHours = 24,
   } = input;
 
   const blockers = [];
@@ -87,6 +92,25 @@ export function evaluateDeployReadiness(input = {}) {
       warnings.push(msg);
       score -= 5;
     }
+  }
+
+  if (!dryRun && signalReportRequired) {
+    if (!signalReportAvailable) {
+      blockers.push('Rapor akurasi sinyal belum tersedia.');
+      score -= 15;
+    } else {
+      if (signalReportPassed !== true) {
+        blockers.push('Rapor akurasi sinyal belum lolos threshold.');
+        score -= 12;
+      }
+      if (!Number.isFinite(signalReportAgeHours) || signalReportAgeHours > signalReportMaxAgeHours) {
+        blockers.push(`Rapor akurasi sinyal stale (> ${signalReportMaxAgeHours} jam).`);
+        score -= 10;
+      }
+    }
+  } else if (signalReportAvailable && signalReportPassed !== true) {
+    warnings.push('Rapor akurasi sinyal belum lolos. Jalankan mode konservatif.');
+    score -= 4;
   }
 
   if (!dryRun && stageForGate === 'full') {

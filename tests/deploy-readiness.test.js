@@ -121,3 +121,49 @@ test('deploy readiness blocks live deploy when worktree is dirty', () => {
   assert.equal(result.ready, false);
   assert.match(result.blockers.join(' '), /worktree dirty/i);
 });
+
+test('deploy readiness blocks live when signal report is required but missing', () => {
+  const result = evaluateDeployReadiness({
+    solanaReady: true,
+    circuitState: 'CLOSED',
+    pendingReconcile: 0,
+    manualReviewOpen: 0,
+    failedOps6h: 0,
+    deploymentStage: 'canary',
+    dryRun: false,
+    autoScreeningEnabled: true,
+    taeExitCount: 15,
+    taeWinRatePct: 55,
+    worktreeClean: true,
+    signalReportRequired: true,
+    signalReportAvailable: false,
+  });
+
+  assert.equal(result.ready, false);
+  assert.match(result.blockers.join(' '), /rapor akurasi sinyal belum tersedia/i);
+});
+
+test('deploy readiness blocks live when signal report is stale or failed', () => {
+  const result = evaluateDeployReadiness({
+    solanaReady: true,
+    circuitState: 'CLOSED',
+    pendingReconcile: 0,
+    manualReviewOpen: 0,
+    failedOps6h: 0,
+    deploymentStage: 'canary',
+    dryRun: false,
+    autoScreeningEnabled: true,
+    taeExitCount: 15,
+    taeWinRatePct: 55,
+    worktreeClean: true,
+    signalReportRequired: true,
+    signalReportAvailable: true,
+    signalReportPassed: false,
+    signalReportAgeHours: 30,
+    signalReportMaxAgeHours: 24,
+  });
+
+  assert.equal(result.ready, false);
+  assert.match(result.blockers.join(' '), /belum lolos threshold/i);
+  assert.match(result.blockers.join(' '), /stale/i);
+});

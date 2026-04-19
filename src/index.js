@@ -36,6 +36,7 @@ import { validateRuntimeEnv } from './runtime/env.js';
 import { resolvePositionSnapshot } from './app/positionSnapshot.js';
 import { evaluateDeployReadiness } from './app/deployReadiness.js';
 import { getWorktreeHealth } from './app/worktreeHealth.js';
+import { getSignalReportHealth } from './app/signalReportHealth.js';
 import { DbBackup } from './db/backup.js';
 import { initializeRpcManager, getRpcMetrics } from './utils/helius.js';
 import { CircuitBreaker } from './safety/circuitBreaker.js';
@@ -312,6 +313,10 @@ function getDeployReadinessSnapshot() {
   const guard = summarizeEntryGuard();
   const failedOps = listRecentFailedOperations(6, 50);
   const worktree = getWorktreeHealth();
+  const signalReport = getSignalReportHealth({
+    reportPath: cfgNow.signalReportPath,
+    maxAgeHours: cfgNow.signalReportMaxAgeHours,
+  });
   const taeSummary = getTAESummary() || {};
   const taeExitCount = getExitEventCount();
   const taeWinRatePct = Number(taeSummary.overall_win_rate);
@@ -334,6 +339,11 @@ function getDeployReadinessSnapshot() {
     worktreeClean: worktree.clean,
     worktreeDirtyCount: worktree.dirtyCount,
     worktreeCheckAvailable: worktree.available,
+    signalReportRequired: cfgNow.requireSignalReportForLive !== false,
+    signalReportAvailable: signalReport.available,
+    signalReportPassed: signalReport.passed,
+    signalReportAgeHours: signalReport.ageHours,
+    signalReportMaxAgeHours: cfgNow.signalReportMaxAgeHours,
   });
 
   return {
@@ -344,6 +354,7 @@ function getDeployReadinessSnapshot() {
     failedOps,
     taeExitCount,
     taeWinRatePct: Number.isFinite(taeWinRatePct) ? taeWinRatePct : null,
+    signalReport,
     readiness,
   };
 }
@@ -1300,14 +1311,14 @@ bot.onText(/\/library/, (msg) => {
 });
 
 // /strategy_report — per-strategy performance: trades, win rate, avg PnL, confidence
-bot.onText(/\/strategy_report/, (msg) => {
+bot.onText(/\/strategy_report/, async (msg) => {
   if (msg.from.id !== ALLOWED_ID) return;
   const chatId = msg.chat.id;
   const library = loadLibrary();
   const strategies = library.strategies || [];
 
   if (strategies.length === 0) {
-    bot.sendMessage(chatId, `📊 Strategy library kosong.`, { parse_mode: 'HTML' });
+    await sendLong(chatId, `📊 Strategy library kosong.`);
     return;
   }
 
@@ -1328,7 +1339,7 @@ bot.onText(/\/strategy_report/, (msg) => {
   }
 
   text += `<i>Confidence diperbarui otomatis setelah 3+ trade.</i>`;
-  bot.sendMessage(chatId, text, { parse_mode: 'HTML' });
+  await sendLong(chatId, text);
 });
 
 // Research sessions state
@@ -1794,6 +1805,11 @@ bot.onText(/\/stage(?:\s+(.+))?/, (msg, match) => {
       taeWinRatePct: snap.taeWinRatePct,
       minTaeSamplesForFullStage: snap.cfgNow.minTaeSamplesForFullStage,
       minTaeWinRateForFullStage: snap.cfgNow.minTaeWinRateForFullStage,
+      signalReportRequired: snap.cfgNow.requireSignalReportForLive !== false,
+      signalReportAvailable: snap.signalReport.available,
+      signalReportPassed: snap.signalReport.passed,
+      signalReportAgeHours: snap.signalReport.ageHours,
+      signalReportMaxAgeHours: snap.cfgNow.signalReportMaxAgeHours,
     });
     if (!readinessForFull.ready) {
       const blockerText = readinessForFull.blockers.join(' | ');
@@ -1830,7 +1846,7 @@ bot.onText(/\/preflight/, async (msg) => {
   const chatId = msg.chat.id;
   try {
     const snap = getDeployReadinessSnapshot();
-    const { readiness, cfgNow, guard, cbState, taeExitCount, taeWinRatePct, worktree } = snap;
+    const { readiness, cfgNow, guard, cbState, taeExitCount, taeWinRatePct, worktree, signalReport } = snap;
     const blockersText = readiness.blockers.length ? readiness.blockers.join('\n') : 'none';
     const warningsText = readiness.warnings.length ? readiness.warnings.join('\n') : 'none';
     const status = readiness.ready ? '✅ READY' : '⛔ BLOCKED';
@@ -1853,6 +1869,8 @@ bot.onText(/\/preflight/, async (msg) => {
       `Pending Reconcile: <code>${guard.pendingReconcile}</code>`,
       `Manual Review Open: <code>${guard.manualReviewOpen}</code>`,
       `Worktree: <code>${worktreeLabel}</code>`,
+      `Signal Report: <code>${signalReport.available ? (signalReport.passed ? 'PASS' : 'FAIL') : 'MISSING'}</code>`,
+      `Signal Age: <code>${Number.isFinite(signalReport.ageHours) ? `${signalReport.ageHours.toFixed(1)}h` : 'N/A'}</code>`,
       `TAE Samples: <code>${taeExitCount}</code>`,
       `TAE Win Rate: <code>${Number.isFinite(taeWinRatePct) ? `${taeWinRatePct.toFixed(1)}%` : 'N/A'}</code>`,
       ``,

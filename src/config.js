@@ -43,8 +43,12 @@ const DEFAULTS = {
   minBinStep: 100,            // Minimal 100 bin step (Hukum 3)
   allowedBinSteps: [100, 125], // Daftar Bin Step spesifik yang diijinkan (Saklek Mode)
   minTotalFeesSol: 30.0,     // Ambang batas Heritage (Total Fee seumur hidup)
+  minDailyFeeYieldPct: 1.0,  // Minimum fee/TVL harian (%) agar entry Evil Panda tetap worth it
   heritageModeEnabled: true, // Aktifkan saringan riwayat sultan
   minTokenAgeMinutes: 0,     // Min usia token sejak launch (0 = disabled) — Supertrend sudah jadi gate alami
+  maxOhlcvStaleMinutes15m: 90, // Maks umur candle 15m sebelum dianggap stale
+  maxOhlcvStaleMinutes1h: 180, // Maks umur candle 1h (cadangan HTF)
+  minAtrPctForEntry: 2.0,      // Minimal ATR% untuk entry supaya tidak masuk market terlalu flat
   // External vamped source (RapidLaunch/provider lain)
   // Default OFF agar backward-compatible; aktifkan saat endpoint siap.
   vampedSourceEnabled: false,
@@ -65,6 +69,9 @@ const DEFAULTS = {
   slCircuitBreakerWindowMin: 60,
   slCircuitBreakerPauseMin: 60,
   minFeeClaimUsd: 1.0,
+  maxILvsHodlPct: 5,         // Batas maksimal underperform LP vs HODL sebelum proactive exit
+  slCooldownMinutes: 360,    // Cooldown pasca-loss (menit)
+  oorAlertIntervalMin: 30,   // Jeda alert OOR agar tidak spam
 
   // OOR-specific pool cooldown
   oorCooldownTriggerCount: 3, // Setelah N kali OOR close, aktifkan cooldown
@@ -142,6 +149,9 @@ const DEFAULTS = {
   failSafeModeOnDataUnreliable: true, // Blok entry baru jika quality oracle tidak reliable
   minTaeSamplesForFullStage: 10, // Minimum sample exit sebelum stage full dianggap matang
   minTaeWinRateForFullStage: 45, // Minimum win rate (%) exit tracker untuk lolos gate stage full
+  requireSignalReportForLive: true, // Wajib ada rapor akurasi sinyal sebelum live deploy
+  signalReportMaxAgeHours: 24,      // Maks umur report akurasi sinyal
+  signalReportPath: 'data/signal-accuracy-report.json',
 };
 
 const KNOWN_CONFIG_KEYS = new Set(Object.keys(DEFAULTS));
@@ -160,6 +170,7 @@ const CONFIG_BOUNDS = {
   minBinStep: { min: 1, max: 400 },
   minTokenFeesSol: { min: 0, max: 10000 },
   minTotalFeesSol: { min: 0, max: 1000000 },
+  minDailyFeeYieldPct: { min: 0, max: 20 },
   heritageModeEnabled: { type: 'boolean' },
   dryRun: { type: 'boolean' },
   autonomyMode: { type: 'string' },
@@ -179,6 +190,9 @@ const CONFIG_BOUNDS = {
   oorCooldownTriggerCount: { min: 1, max: 20 },
   oorCooldownHours: { min: 1, max: 168 },
   minFeeClaimUsd: { min: 0.01, max: 1000 },
+  maxILvsHodlPct: { min: 0.5, max: 80 },
+  slCooldownMinutes: { min: 0, max: 10080 },
+  oorAlertIntervalMin: { min: 1, max: 1440 },
   stopLossPct: { min: 0.1, max: 50 },
   maxDailyDrawdownPct: { min: 0.5, max: 50 },
   maxLpDominancePct: { min: 1, max: 100 },
@@ -195,6 +209,9 @@ const CONFIG_BOUNDS = {
   maxPriceImpactPct: { min: 0.1, max: 5 },
   maxBinsPerPosition: { min: 20, max: 150 },
   minTokenAgeMinutes: { min: 0, max: 1440 },
+  maxOhlcvStaleMinutes15m: { min: 5, max: 720 },
+  maxOhlcvStaleMinutes1h: { min: 15, max: 1440 },
+  minAtrPctForEntry: { min: 0, max: 20 },
   vampedSourceEnabled: { type: 'boolean' },
   vampedSourceFailClosed: { type: 'boolean' },
   vampedSourceUrlTemplate: { type: 'string' },
@@ -216,6 +233,9 @@ const CONFIG_BOUNDS = {
   failSafeModeOnDataUnreliable: { type: 'boolean' },
   minTaeSamplesForFullStage: { min: 0, max: 1000 },
   minTaeWinRateForFullStage: { min: 0, max: 100 },
+  requireSignalReportForLive: { type: 'boolean' },
+  signalReportMaxAgeHours: { min: 1, max: 168 },
+  signalReportPath: { type: 'string' },
   
   lastEvolutionTradeCount: { min: 0, max: 1000000 },
   llmWeightHints: { type: 'object' },

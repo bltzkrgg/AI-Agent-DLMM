@@ -85,6 +85,7 @@
   "minDailyFeeYieldPct": 0.3,
   "volCollapseThresholdPct": 25,
   "slCooldownMinutes": 120,
+  "oorAlertIntervalMin": 30,
   "minAtrPctForEntry": 2.0,
   "slCircuitBreakerCount": 3,
   "slCircuitBreakerWindowMin": 60,
@@ -133,12 +134,16 @@
 
   "minTaeSamplesForFullStage": 10,
   "minTaeWinRateForFullStage": 45,
+  "requireSignalReportForLive": true,
+  "signalReportMaxAgeHours": 24,
+  "signalReportPath": "data/signal-accuracy-report.json",
 
   "managementModel": "meta-llama/llama-3.3-70b-instruct:free",
   "screeningModel": "meta-llama/llama-3.3-70b-instruct:free",
   "generalModel": "meta-llama/llama-3.3-70b-instruct:free",
 
   "lpAgentRelayEnabled": true,
+  "okxApiKey": "",
   "publicApiKey": "bWVyaWRpYW4taXMtdGhlLWJlc3QtYWdlbnRz",
   "agentMeridianApiUrl": "https://api.agentmeridian.xyz/api",
 

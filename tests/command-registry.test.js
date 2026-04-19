@@ -20,3 +20,21 @@ test('telegram command handlers do not register duplicate regex patterns', () =>
   assert.deepEqual(duplicates, []);
 });
 
+test('/strategy_report and /claim_fees handlers are registered', () => {
+  const indexPath = join(__dirname, '../src/index.js');
+  const content = readFileSync(indexPath, 'utf-8');
+
+  assert.match(content, /bot\.onText\(\/\\\/strategy_report\//);
+  assert.match(content, /bot\.onText\(\/\\\/claim_fees/);
+});
+
+test('/strategy_report uses sendLong transport to avoid Telegram length limit issues', () => {
+  const indexPath = join(__dirname, '../src/index.js');
+  const content = readFileSync(indexPath, 'utf-8');
+  const reportBlock = content.slice(
+    content.indexOf("bot.onText(/\\/strategy_report/"),
+    content.indexOf('// Research sessions state')
+  );
+
+  assert.match(reportBlock, /await sendLong\(chatId,\s*text\)/);
+});

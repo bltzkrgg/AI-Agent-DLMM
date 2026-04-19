@@ -21,7 +21,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 // Source-of-truth library path (shared with strategyManager)
 const LIBRARY_PATH = join(__dirname, '../../strategy-library.json');
 
-import { getThresholds } from '../config.js';
+import { getConfig } from '../config.js';
 
 const DEFAULT_LIBRARY = {
   strategies: [],
@@ -252,6 +252,10 @@ function scoreStrategy(strategy, conditions) {
  */
 export async function evaluateStrategyReadiness({ strategyName, snapshot, binStep = 100, activeBinId = null }) {
   if (!snapshot) return { ok: false, blockers: ['Missing Snapshot data'] };
+  const cfg = getConfig();
+  const minFeeYieldRatio = Math.max(0, Number(cfg.minDailyFeeYieldPct ?? 1.0)) / 100;
+  const minAtrPct = Math.max(0, Number(cfg.minAtrPctForEntry ?? 2.0));
+  const maxH1StaleMin = Math.max(15, Number(cfg.maxOhlcvStaleMinutes1h ?? 180));
   const ta = snapshot.ta || {};
   
   if (strategyName === 'Evil Panda') {
@@ -289,11 +293,11 @@ export async function evaluateStrategyReadiness({ strategyName, snapshot, binSte
       };
     }
 
-    if (feeTvlRatio > 0 && feeTvlRatio < 0.01) {
+    if (feeTvlRatio > 0 && feeTvlRatio < minFeeYieldRatio) {
       return {
         ok: false,
         blockers: [`Fee/TVL harian terlalu rendah untuk Evil Panda (${(feeTvlRatio * 100).toFixed(2)}%)`],
-        notes: 'Evil Panda butuh pool yang benar-benar produktif. Fee yield harian di bawah 1% biasanya terlalu lemah untuk membayar directional risk.',
+        notes: `Evil Panda butuh pool yang benar-benar produktif. Fee yield harian di bawah ${(minFeeYieldRatio * 100).toFixed(2)}% biasanya terlalu lemah untuk membayar directional risk.`,
       };
     }
 
@@ -310,6 +314,24 @@ export async function evaluateStrategyReadiness({ strategyName, snapshot, binSte
         ok: false,
         blockers: [`Active-bin drift live terlalu cepat (${liveProbe.driftBinsPerMin.toFixed(2)} bins/min)`],
         notes: 'Drift bin on-chain bergerak terlalu cepat antar sample. Tunggu pasar lebih tenang agar jaring Panda tidak langsung keseret.',
+      };
+    }
+
+    const atrPctNow = Number(snapshot?.ohlcv?.atrPct);
+    if (Number.isFinite(atrPctNow) && atrPctNow < minAtrPct) {
+      return {
+        ok: false,
+        blockers: [`ATR terlalu rendah (${atrPctNow.toFixed(2)}% < ${minAtrPct.toFixed(2)}%)`],
+        notes: 'Volatilitas belum cukup untuk masuk LP aktif. Tunggu ATR menguat dulu.',
+      };
+    }
+
+    const historyAgeMinutes = Number(snapshot?.ohlcv?.historyAgeMinutes);
+    if (Number.isFinite(historyAgeMinutes) && historyAgeMinutes > maxH1StaleMin) {
+      return {
+        ok: false,
+        blockers: [`Data candle stale (${historyAgeMinutes.toFixed(1)}m > ${maxH1StaleMin}m)`],
+        notes: 'Data 1h terlalu lama untuk menilai momentum. Skip entry sampai feed segar kembali.',
       };
     }
 
@@ -407,10 +429,16 @@ export function classifyMarketRegime(snapshot) {
   const pool = snapshot.pool || {};
   const sentiment = snapshot.sentiment || {};
 
+  const cfg = getConfig();
+  const minAtrPct = Math.max(0, Number(cfg.minAtrPctForEntry ?? 2.0));
+  const minFeeYieldRatio = Math.max(0, Number(cfg.minDailyFeeYieldPct ?? 1.0)) / 100;
+  const maxH1StaleMin = Math.max(15, Number(cfg.maxOhlcvStaleMinutes1h ?? 180));
   const supertrend = ta.supertrend;
   const priceChangeH1 = ohlcv.priceChangeH1 || 0;
   const priceChangeM5 = ohlcv.priceChangeM5 || 0;
   const atrPct = ohlcv.atrPct || 0;
+  const historyAgeMinutes = Number(ohlcv.historyAgeMinutes);
+  const h1Stale = Number.isFinite(historyAgeMinutes) && historyAgeMinutes > maxH1StaleMin;
   const range24hPct = ohlcv.range24hPct || 0;
   const tvl = pool.tvl || 0;
   const volume24h = pool.volume24h || 0;
@@ -424,6 +452,7 @@ export function classifyMarketRegime(snapshot) {
 
   // ─── BULL_TREND Detection ──────────────────────────────────────────
   if (
+    !h1Stale &&
     supertrend &&
     supertrend.trend === 'BULLISH' &&
     priceChangeH1 > 2 &&
@@ -457,7 +486,7 @@ export function classifyMarketRegime(snapshot) {
     reasonCodes.push('LOW_LIQUIDITY');
   }
   // ─── SIDEWAYS_CHOP Detection ──────────────────────────────────────────
-  else if (Math.abs(priceChangeH1) < 2 && atrPct < 3 && range24hPct < 8) {
+  else if (Math.abs(priceChangeH1) < 2 && atrPct < Math.max(minAtrPct, 3) && range24hPct < 8) {
     regime = 'SIDEWAYS_CHOP';
     confidence = 0.6;
     recommendation = 'WAIT';
@@ -472,10 +501,20 @@ export function classifyMarketRegime(snapshot) {
 
   // Add fee assessment
   const feeTvlRatio = pool.feeTvlRatio || 0;
-  if (feeTvlRatio > 0.01) {
+  if (feeTvlRatio > minFeeYieldRatio) {
     reasonCodes.push('FEE_OK');
   } else if (feeTvlRatio > 0) {
     reasonCodes.push('FEE_LOW');
+  }
+
+  if (h1Stale) {
+    reasonCodes.push('H1_STALE');
+    blockers.push(`Data 1h stale (${historyAgeMinutes.toFixed(1)}m > ${maxH1StaleMin}m)`);
+    if (recommendation === 'evil_panda') {
+      recommendation = 'WAIT';
+      regime = 'SIDEWAYS_CHOP';
+      confidence = Math.min(confidence, 0.55);
+    }
   }
 
   const notes =

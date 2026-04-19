@@ -74,11 +74,11 @@ Generalized decision taxonomy and structured decision context for entry, hold, a
 | `AGENT_CLOSE` | AI agent-initiated close | healerAlpha — tool execution |
 | `ZAP_OUT` | Close position + swap all tokens to SOL | healerAlpha — zap_out path |
 
-#### Schema-only — NOT emitted to DB (⚠️ risk P0-A)
+#### Circuit Breaker Event — recorded separately (NOT in `exit_events`)
 
 | Code | Status | Notes |
 |------|--------|-------|
-| `SL_CLUSTER_THRESHOLD_MET` | Schema-only, not in src | Side-effect of SL cluster → sets circuit breaker in runtime-state.json. The triggering SL close records `STOP_LOSS`, not this code. See P0-A in residual risks. |
+| `SL_CLUSTER_THRESHOLD_MET` | Writes to `circuit_breaker_events` via `recordCircuitBreakerEvent()` | Side-effect of SL cluster → writes a row to `circuit_breaker_events` table with `poolAddress`, `slCount`, `pausedUntil`. The triggering SL close still records `STOP_LOSS` in `exit_events`. Does **not** appear in `exit_events`. |
 
 ### Blocked Codes — emitted by `hunterAlpha.js` (entry blocked, no position opened)
 
@@ -234,7 +234,7 @@ Generalized decision taxonomy and structured decision context for entry, hold, a
 | `FAIL_SAFE_UNRELIABLE_DATA` | policy block | — | (entry skipped) | Hunter blocked — oracle/TA unreliable |
 | `SL_COOLDOWN_ACTIVE` | HOLD code | — | (skip, not closed) | Healer HOLD delay only — NOT a Hunter block |
 | `HTF_NULL_STRICT_ATR` | policy block | — | (skip, not closed) | Hunter blocked — 1h data missing + ATR too low |
-| `SL_CLUSTER_THRESHOLD_MET` | schema-only | — | (side effect) | ⚠️ Not emitted to DB — sets circuit breaker only |
+| `SL_CLUSTER_THRESHOLD_MET` | `circuit_breaker_events` table | — | (side effect) | Writes to `circuit_breaker_events` via `recordCircuitBreakerEvent()` — NOT in `exit_events` |
 
 ---
 

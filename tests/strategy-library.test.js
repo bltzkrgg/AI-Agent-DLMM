@@ -176,3 +176,32 @@ test('Evil Panda readiness blocks bad historical regime from memory', async () =
     global.fetch = originalFetch;
   }
 });
+
+test('Evil Panda readiness blocks stale 1h candle data', async () => {
+  const originalFetch = global.fetch;
+  setupEnv('dlmm-panda-stale-');
+  mockFetchWithCandles([
+    { t: 0, o: 1, h: 1.2, l: 0.9, c: 1.1, v: 1000 },
+    { t: 900, o: 1.1, h: 1.3, l: 1.0, c: 1.2, v: 1200 },
+    { t: 1800, o: 1.2, h: 1.25, l: 1.15, c: 1.22, v: 900 },
+  ]);
+
+  try {
+    const mod = await importFresh(join(repoRoot, 'src/market/strategyLibrary.js'));
+    const result = await mod.evaluateStrategyReadiness({
+      strategyName: 'Evil Panda',
+      binStep: 100,
+      snapshot: {
+        poolAddress: 'pool-stale',
+        ohlcv: { priceChangeM5: 0.9, priceChangeH1: 2.3, historyAgeMinutes: 250, atrPct: 3.2 },
+        ta: { supertrend: { trend: 'BULLISH' } },
+        pool: { feeTvlRatio: 0.02, tvl: 100000, volume24h: 200000, feeApr: 140 },
+      },
+    });
+
+    assert.equal(result.ok, false);
+    assert.match(result.blockers[0], /stale/i);
+  } finally {
+    global.fetch = originalFetch;
+  }
+});

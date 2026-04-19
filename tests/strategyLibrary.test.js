@@ -45,3 +45,14 @@ test('classifyMarketRegime detects SIDEWAYS_CHOP during low-vol range', () => {
   assert.equal(res.regime, 'SIDEWAYS_CHOP');
   assert.ok(res.confidence >= 0.55);
 });
+
+test('classifyMarketRegime downgrades bullish setup when 1h data is stale', () => {
+  const res = classifyMarketRegime({
+    ta: { supertrend: { trend: 'BULLISH' } },
+    ohlcv: { priceChangeH1: 4.2, priceChangeM5: 1.3, atrPct: 3.1, range24hPct: 12, historyAgeMinutes: 240 },
+    pool: { tvl: 120000, volume24h: 260000, feeTvlRatio: 0.02 },
+    sentiment: { buyPressurePct: 68 },
+  });
+  assert.equal(res.recommendation, 'WAIT');
+  assert.ok(res.reasonCodes.includes('H1_STALE'));
+});

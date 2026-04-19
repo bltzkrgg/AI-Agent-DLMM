@@ -139,7 +139,13 @@ export function recordClose(poolAddress, { pnlPct = 0, reason = 'unknown', close
   }
 
   // Set cooldown
-  let cooldownHours = isWin ? COOLDOWN_WIN_HOURS : COOLDOWN_LOSS_HOURS;
+  const cfg = getConfig();
+  const rawCooldownMin = Number(cfg.slCooldownMinutes);
+  const configuredLossCooldownHours = Math.max(
+    0,
+    (Number.isFinite(rawCooldownMin) ? rawCooldownMin : COOLDOWN_LOSS_HOURS * 60) / 60
+  );
+  let cooldownHours = isWin ? COOLDOWN_WIN_HOURS : configuredLossCooldownHours;
   if (!isWin && pool.consecutiveLosses >= 2) cooldownHours = COOLDOWN_STREAK_HOURS;
 
   // OOR-specific cooldown overrides normal cooldown if trigger count reached

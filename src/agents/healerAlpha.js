@@ -494,10 +494,11 @@ export async function executeTool(name, input, notifyFn = null) {
               proactiveWarning = `💰 HARD TAKE PROFIT: Keuntungan mencapai target ${strategyTp}% (PnL: ${pnlPct.toFixed(2)}%). Closing to lock profit and re-anchor.`;
             }
             // ── Toxic IL Safeguard (Aegis v1.0) ──
-            const toxicIlThreshold = -0.05; // -5% Yield vs HODL
+            const cfgIlLimitPct = Math.abs(Number(getConfig().maxILvsHodlPct ?? 5));
+            const toxicIlThreshold = -(cfgIlLimitPct / 100); // configurable, default -5% Yield vs HODL
             if (!proactiveCloseRecommended && yieldVsHodlSol <= toxicIlThreshold && pnlPct < -2) {
               proactiveCloseRecommended = true;
-              proactiveWarning = `🤢 TOXIC IL DETECTED: Yield vs HODL is ${(yieldVsHodlSol * 100).toFixed(2)}%. LP is bleeding relative to HODL. Exiting to preserve capital.`;
+              proactiveWarning = `🤢 TOXIC IL DETECTED: Yield vs HODL is ${(yieldVsHodlSol * 100).toFixed(2)}% (limit -${cfgIlLimitPct.toFixed(2)}%). LP is bleeding relative to HODL. Exiting to preserve capital.`;
             }
 
             // ── TVL Velocity Guard (Aegis v1.0) ──

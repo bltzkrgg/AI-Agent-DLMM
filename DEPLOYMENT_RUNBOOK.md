@@ -214,7 +214,9 @@ When `classifyMarketRegime()` returns `BEAR_DEFENSE`, hunter **hard-blocks all n
 DETECT:  runtime-state.json has hunter-circuit-breaker.pausedUntil key
          Telegram "⚡ CIRCUIT BREAKER TRIPPED"
          logs: slCount >= slCircuitBreakerCount in window
-NOTE:    SL_CLUSTER_THRESHOLD_MET will NOT appear in exit_events DB (schema-only)
+NOTE:    SL_CLUSTER_THRESHOLD_MET writes to circuit_breaker_events table (NOT exit_events)
+         circuit_breaker_events: poolAddress, slCount, pausedUntil per trip
+         Query: sqlite3 positions.db "SELECT * FROM circuit_breaker_events ORDER BY id DESC LIMIT 5;"
 FIRST 5 MIN:
   1. Do NOT override — this is a safety mechanism, not a bug
   2. Confirm hunter blocked: /health → circuitBreaker: OPEN
@@ -408,6 +410,41 @@ After transitioning from shadow → canary → full:
 
 ---
 
+## Telegram Operator Commands
+
+| Command | Description |
+|---------|-------------|
+| `/status` | Agent state snapshot: open positions, PnL, regime |
+| `/health` | System health: RPC, DB, circuit breaker, data freshness |
+| `/pause` | Stop all autonomous entry/exit |
+| `/resume` | Resume autonomy after manual pause |
+| `/preflight` | Pre-deploy checklist score (must be ≥ 85/100 before canary) |
+| `/positions` | List active positions |
+| `/positions history` | Recent closed positions with exit triggers |
+| `/claim` | Claim fee rewards on active positions |
+| `/claim_fees` | Alias for `/claim` — same behavior |
+| `/strategy_report` | Per-strategy stats: trades, win rate, avg PnL %, confidence % |
+| `/autoscreen on [N]` | Start auto-screening every N minutes (default: config interval) |
+| `/autoscreen off` | Stop auto-screening |
+| `/stage <level> [n]` | Set deployment stage: `shadow`, `canary [n]`, `full` |
+| `/zap_out <posAddr>` | Close position + swap all tokens to SOL |
+
+---
+
+## PnL Source Values
+
+The `pnlSource` field in position and exit records can be one of:
+
+| Value | Meaning |
+|-------|---------|
+| `lp_agent` | Provider (LP Agent API) PnL used — provider and on-chain agree within threshold |
+| `on_chain_fallback` | On-chain direct SDK value used — provider diverged > `divergenceThresholdPct` (default 10%) |
+| `manual_estimate` | Fallback calculation from `deployedSol` vs `currentValueSol` — no provider or on-chain data |
+
+When `on_chain_fallback` appears in logs it means the lp_agent provider reported a stale or incorrect value; the agent automatically switched to the on-chain SDK value and logged a divergence audit event.
+
+---
+
 ## What Changed (2026-04-19)
 
 | Module | Change | Impact |
@@ -418,5 +455,9 @@ After transitioning from shadow → canary → full:
 | `runtime/state.js` | Circuit breaker state persisted to `runtime-state.json` | Restart no longer resets pause timer |
 | `strategyManager.js` | `Deep Fishing` added to BASELINE_STRATEGIES | `getStrategy('Deep Fishing')` now works without JSON file |
 | `strategyManager.js` | `parseStrategyParameters` maps `single_side_y` → `strategyType: 2` | Correct bin deployment for single-sided strategies |
+| `src/index.js` | `/claim_fees` Telegram command added — alias for `/claim` | Operator UX: both spellings work |
+| `src/index.js` | `/strategy_report` Telegram command added — per-strategy trades/win rate/avg PnL/confidence | Operator visibility into strategy performance |
+| `src/app/pnl.js` | `resolvePnlSnapshot` switches to `on_chain_fallback` when provider diverges > threshold | Prevents silent stale data from provider reaching exit decisions |
+| `src/agents/healerAlpha.js` | `emergencyStopLossPct` reduced 95% → 10%; `maxHoldHours: 6` added; `takeProfitPct` removed (now reads `takeProfitFeePct` from user-config) | Exit behavior now correct for production capital |
 
 **Last Updated:** 2026-04-19
