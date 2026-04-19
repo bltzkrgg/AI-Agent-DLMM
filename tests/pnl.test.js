@@ -38,11 +38,37 @@ test('resolvePnlSnapshot emits divergence audit payload when lp_agent and on-cha
     onDivergence: (e) => events.push(e),
   });
 
-  assert.equal(result.source, 'lp_agent');
+  // Fix #4: divergence now forces on_chain_fallback so result source must change
+  assert.equal(result.source, 'on_chain_fallback');
   assert.equal(events.length, 1);
   assert.equal(events[0].positionAddress, 'pos_test_1');
   assert.equal(events[0].poolAddress, 'pool_test_1');
   assert.equal(events[0].tokenMint, 'mint_test_1');
-  assert.equal(events[0].selectedSource, 'lp_agent');
+  assert.equal(events[0].selectedSource, 'on_chain_fallback');
   assert.equal(Number(events[0].divergencePct.toFixed(2)), 15);
+});
+
+test('resolvePnlSnapshot uses directPnlPct value when divergence exceeds threshold', () => {
+  const result = resolvePnlSnapshot({
+    deployedSol: 1,
+    currentValueSol: 0.9,
+    providerPnlPct: 12,   // stale/wrong
+    directPnlPct: -3,     // on-chain truth, divergence = 15% > default 10%
+  });
+
+  // Must use on-chain value, not provider value
+  assert.equal(result.pnlPct, -3);
+  assert.equal(result.source, 'on_chain_fallback');
+});
+
+test('resolvePnlSnapshot uses providerPnlPct when divergence is within threshold', () => {
+  const result = resolvePnlSnapshot({
+    deployedSol: 1,
+    currentValueSol: 1.05,
+    providerPnlPct: 5,
+    directPnlPct: 5.5,    // divergence = 0.5% — well within threshold
+  });
+
+  assert.equal(result.pnlPct, 5);
+  assert.equal(result.source, 'lp_agent');
 });

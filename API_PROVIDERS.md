@@ -34,7 +34,7 @@ OPENROUTER_API_KEY=your_key_here
 # 3. Use free models with :free suffix:
 AI_MODEL=openai/gpt-4o-mini:free
 # or
-AI_MODEL=qwen/qwen3.6-plus:free
+AI_MODEL=qwen/qwen3-next-80b-a3b-instruct:free
 ```
 
 **Available Free Models** (checked Jan 2025):
@@ -45,7 +45,7 @@ google/gemma-4-26b-a4b-it:free             # ✅ Google's Gemma
 nvidia/nemotron-3-super-120b-a12b:free     # ✅ Nvidia Nemotron
 ```
 
-**⚠️ Note:** `qwen/qwen3.6-plus:free` no longer exists. Use `qwen/qwen3-next-80b-a3b-instruct:free` instead.
+**⚠️ Note:** `qwen/qwen3.6-plus:free` no longer exists. Canonical fallback: `qwen/qwen3-next-80b-a3b-instruct:free`.
 
 **Check all available models:**
 ```bash
@@ -221,7 +221,7 @@ Model "minimax/minimax-m2.5" returned empty content. Model mungkin overloaded...
 1. **Automatic Detection** — System detects if minimax is configured (via AI_MODEL env, /model command, or config file)
 2. **Immediate Blocking** — Minimax is rejected before any API call is made
 3. **Intelligent Fallback** — System automatically switches to a working model:
-   - **OpenRouter users** → `qwen/qwen3.6-plus:free` (proven working)
+   - **OpenRouter users** → `qwen/qwen3-next-80b-a3b-instruct:free` (proven working)
    - **Groq users** → `mixtral-8x7b-32768` (if GROQ_API_KEY set)
    - **OpenAI users** → `gpt-4o-mini` (if OPENAI_API_KEY set)
    - **Anthropic users** → `claude-haiku-4-5` (if ANTHROPIC_API_KEY set)
@@ -230,8 +230,8 @@ Model "minimax/minimax-m2.5" returned empty content. Model mungkin overloaded...
 
 **What Users See:**
 ```
-⚠️ Model "minimax/minimax-m2.5" is blocked (known to fail). Switching to fallback: qwen/qwen3.6-plus:free
-✅ Model check OK: qwen/qwen3.6-plus:free
+⚠️ Model "minimax/minimax-m2.5" is blocked (known to fail). Switching to fallback: qwen/qwen3-next-80b-a3b-instruct:free
+✅ Model check OK: qwen/qwen3-next-80b-a3b-instruct:free
 ```
 
 **Defense-in-Depth:**
@@ -385,12 +385,105 @@ Bot automatically falls back to `FALLBACK_AI_MODEL` (default: `openai/gpt-4o-min
 ❌ minimax-m2.7
 ```
 
-**Why?** These models fail silently on OpenRouter by returning empty responses. The system automatically blocks them and switches to `qwen/qwen3.6-plus:free` instead.
+**Why?** These models fail silently on OpenRouter by returning empty responses. The system automatically blocks them and switches to `qwen/qwen3-next-80b-a3b-instruct:free` instead.
 
 **If you see "Model minimax..." in config:**
 - Remove it from `.env` (if set as `AI_MODEL`)
 - Or use `/model reset` to clear session override
 - System will auto-switch to working model
+
+---
+
+---
+
+## DexScreener OHLCV Integration
+
+**Endpoints:**
+- **15m candles:** `GET https://api.dexscreener.com/latest/dex/candles/[chain]/[address]?timeframe=15m`
+- **1h candles:** `GET https://api.dexscreener.com/latest/dex/candles/[chain]/[address]?timeframe=1h`
+
+**Response Format:**
+```json
+{
+  "data": {
+    "o": [open, open, ...],      // Opening prices
+    "h": [high, high, ...],      // High prices
+    "l": [low, low, ...],        // Low prices
+    "c": [close, close, ...],    // Closing prices
+    "v": [vol, vol, ...],        // Volumes
+    "t": [ts, ts, ...]           // Timestamps (unix seconds)
+  }
+}
+```
+
+**Staleness Configuration:**
+
+| Timeframe | Max Staleness | Recovery Action |
+|-----------|---------------|-----------------|
+| **15m** | 90 minutes | Use cached OHLCV if recent; skip entry if > 90m stale |
+| **1h** | 180 minutes | Use cached OHLCV if recent; fall back to Jupiter price |
+
+**Config Parameters:**
+```json
+{
+  "maxOhlcvStaleMinutes15m": 90,     // 15m candle staleness limit
+  "maxOhlcvStaleMinutes1h": 180      // 1h candle staleness limit
+}
+```
+
+**Failure Mode:**
+- DexScreener timeout → `historySuccess: false` logged
+- Bot continues with proxy data (Jupiter → Meteora fallback)
+- No new entries placed (requires DexScreener confidence)
+- Existing positions managed normally (on-chain price used)
+
+---
+
+## Oracle Fallback Chain
+
+**Priority Order (used if DexScreener unavailable):**
+
+1. **DexScreener OHLCV** (primary)
+   - Used for: Supertrend calculation, volatility metrics
+   - Confidence: Highest
+   - If fails → next
+
+2. **Jupiter Price API** (secondary)
+   - Used for: Current price reference
+   - Confidence: Medium (spot price only, no history)
+   - If fails → next
+
+3. **Meteora Liquidity Book** (tertiary)
+   - Used for: On-chain active bin price
+   - Confidence: Low (only for emergency fallback)
+   - If fails → error state
+
+**Recovery:**
+```javascript
+const price = await getPriceWithFallback(tokenMint);
+// Tries: DexScreener → Jupiter → Meteora
+// Returns first successful result or error
+```
+
+---
+
+## Circuit Breaker Behavior for API Failures
+
+**Single API Failure:**
+- Log warning, use fallback
+- No impact on position management
+- Entry screening paused (requires DexScreener)
+
+**Multi-API Failure (2+ down):**
+- Activate **Fail-Safe Mode**: `failSafeModeOnDataUnreliable: true`
+- All exits use conservative thresholds
+- All entries blocked until oracle recovery
+
+**Recovery Sequence:**
+1. Monitor `historySuccess` flag
+2. Confirm DexScreener returning `success: true`
+3. Validate OHLCV timestamp < maxOhlcvStaleMinutes
+4. Resume entry screening automatically
 
 ---
 
@@ -408,7 +501,7 @@ Bot automatically falls back to `FALLBACK_AI_MODEL` (default: `openai/gpt-4o-min
 - Use free models for testing before switching to paid
 - Keep API keys in `.env` file (add to `.gitignore`)
 - Check provider's model list before using model ID
-- Use `qwen/qwen3.6-plus:free` as fallback if unsure
+- Use `qwen/qwen3-next-80b-a3b-instruct:free` as fallback if unsure
 
 ---
 
@@ -419,3 +512,4 @@ Bot automatically falls back to `FALLBACK_AI_MODEL` (default: `openai/gpt-4o-min
 - **OpenAI**: https://platform.openai.com/docs
 - **Anthropic**: https://docs.anthropic.com
 - **HuggingFace**: https://huggingface.co/docs/api-inference
+- **DexScreener**: https://docs.dexscreener.com

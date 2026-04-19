@@ -214,6 +214,48 @@ export function getAllExitEvents() {
 }
 
 /**
+ * Circuit Breaker: Record event when SL cluster threshold is met
+ * Fills the analytics gap for SL_CLUSTER_THRESHOLD_MET (schema-only in src, never written to exit_events).
+ */
+export function recordCircuitBreakerEvent({
+  poolAddress = null,
+  triggeredAt,
+  pausedUntil,
+  slCount,
+  cbWindowMs = null,
+  cbPauseMs = null,
+}) {
+  try {
+    db.prepare(`
+      INSERT INTO circuit_breaker_events
+        (pool_address, triggered_at, paused_until, sl_count, cb_window_ms, cb_pause_ms)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `).run(poolAddress, triggeredAt, pausedUntil, slCount, cbWindowMs ?? null, cbPauseMs ?? null);
+    console.log(`[exitTracking] ✅ Circuit breaker event recorded: slCount=${slCount}, pausedUntil=${new Date(pausedUntil).toISOString()}`);
+    return true;
+  } catch (e) {
+    console.error('[exitTracking] ❌ Error recording circuit breaker event:', e.message);
+    return false;
+  }
+}
+
+/**
+ * Query: Recent circuit breaker trips for operator diagnostics
+ */
+export function getCircuitBreakerEvents(limit = 10) {
+  try {
+    return db.prepare(`
+      SELECT * FROM circuit_breaker_events
+      ORDER BY created_at DESC
+      LIMIT ?
+    `).all(limit);
+  } catch (e) {
+    console.error('[exitTracking] Error in getCircuitBreakerEvents:', e.message);
+    return [];
+  }
+}
+
+/**
  * Stats: Count total exits recorded
  */
 export function getExitEventCount() {

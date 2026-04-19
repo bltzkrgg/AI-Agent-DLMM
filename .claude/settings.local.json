@@ -71,7 +71,11 @@
       "Bash(nvm exec:*)",
       "Bash(npm start:*)",
       "Bash(pkill -9 node)",
-      "Bash(sqlite3:*)"
+      "Bash(sqlite3:*)",
+      "Bash(sed -n '2120,2135p' src/agents/healerAlpha.js)",
+      "Bash(sed -n '2180,2195p' src/agents/healerAlpha.js)",
+      "Bash(sed -n '2240,2260p' src/agents/healerAlpha.js)",
+      "Bash(rg -n \"dailyLossLimitUsd\" src/ --include=\"*.js\")"
     ]
   }
 }

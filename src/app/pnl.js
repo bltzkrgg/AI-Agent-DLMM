@@ -15,10 +15,14 @@ export function resolvePnlSnapshot({
   onDivergence = null,
 }) {
   // Fix #3: Log significant divergence between PnL sources so silent data quality issues surface
+  // Fix #4: When divergence exceeds threshold, fall back to on-chain (directPnlPct) as the more
+  //         trustworthy source rather than silently accepting potentially stale provider data.
+  let resolvedProviderPnlPct = providerPnlPct;
   if (Number.isFinite(providerPnlPct) && Number.isFinite(directPnlPct)) {
     const divergence = Math.abs(providerPnlPct - directPnlPct);
     if (divergence > divergenceThresholdPct) {
-      console.warn(`[pnl] ⚠️ Source divergence ${divergence.toFixed(1)}%: lp_agent=${providerPnlPct.toFixed(2)}% vs on_chain=${directPnlPct.toFixed(2)}% — using lp_agent`);
+      resolvedProviderPnlPct = null; // force fallback to on-chain below
+      console.warn(`[pnl] ⚠️ Source divergence ${divergence.toFixed(1)}%: lp_agent=${providerPnlPct.toFixed(2)}% vs on_chain=${directPnlPct.toFixed(2)}% — using on_chain_fallback`);
       if (typeof onDivergence === 'function') {
         try {
           onDivergence({
@@ -28,7 +32,7 @@ export function resolvePnlSnapshot({
             providerPnlPct,
             onChainPnlPct: directPnlPct,
             divergencePct: divergence,
-            selectedSource: 'lp_agent',
+            selectedSource: 'on_chain_fallback',
           });
         } catch {
           // no-op: divergence audit must never break decision path
@@ -37,8 +41,8 @@ export function resolvePnlSnapshot({
     }
   }
 
-  const candidatePnlPct = Number.isFinite(providerPnlPct)
-    ? providerPnlPct
+  const candidatePnlPct = Number.isFinite(resolvedProviderPnlPct)
+    ? resolvedProviderPnlPct
     : Number.isFinite(directPnlPct)
       ? directPnlPct
       : null;
@@ -53,7 +57,7 @@ export function resolvePnlSnapshot({
     return {
       pnlPct,
       pnlSol,
-      source: Number.isFinite(providerPnlPct) ? 'lp_agent' : 'position_provider',
+      source: Number.isFinite(resolvedProviderPnlPct) ? 'lp_agent' : 'on_chain_fallback',
     };
   }
 

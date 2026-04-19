@@ -171,7 +171,14 @@ export function isOnCooldown(poolAddress) {
 
 export function getPoolMemory(poolAddress) {
   const memory = loadPoolMemory();
-  return memory[poolAddress] || null;
+  const pool = memory[poolAddress];
+  if (!pool) return null;
+  const total = (pool.wins || 0) + (pool.losses || 0);
+  return {
+    ...pool,
+    totalTrades: total,
+    winRate: total > 0 ? parseFloat(((pool.wins || 0) / total).toFixed(3)) : null,
+  };
 }
 
 // ─── Public: context string untuk inject ke prompt ───────────────

@@ -26,11 +26,11 @@
 - Jika semua error → PnL blind
 - **Action:** Define single source of truth, add validation layer
 
-### 3. **Exit Logic Vague**
-- Supertrend flip = exit, tapi timing unclear (1 menit vs 1 jam = same?)
-- 95% emergency stop loss = catastrophic
-- No time-based exit, no partial profit taking
-- **Action:** Define exact exit rules + add time fallback
+### 3. ~~**Exit Logic Vague**~~ **RESOLVED**
+- ~~95% emergency stop loss~~ → Stop loss now 10%, configurable via `stopLossPct`
+- Time-based exit implemented: `MAX_HOLD_EXIT` force-closes after `maxHoldHours` (default 6h)
+- Exit trigger codes defined: `TRAILING_TAKE_PROFIT`, `TAKE_PROFIT`, `MAX_HOLD_EXIT`, `STOP_LOSS`, `OOR_BINS_EXCEEDED`
+- Full exit mapping in `AGENT_EXECUTION_SCHEMA.md`
 
 ### 4. **Test Coverage Incomplete**
 - ✅ Circuit breaker, PnL, rate limiter tested
@@ -64,10 +64,10 @@ Status:  User decided to stick with current (0% to -94%), so this is DEFERRED
 - Fee yields hypothetical, not proven
 - **Action:** Collect real data sebelum scale capital
 
-### 3. **Hunter/Healer/Strategy Coupling Loose**
-- Tidak jelas "pool X deploy strategy Y" decision flow
-- Missing integration between agents
-- **Action:** Define clear coupling, add logging to verify
+### 3. ~~**Hunter/Healer/Strategy Coupling Loose**~~ **RESOLVED**
+- Hunter calls `classifyMarketRegime()` → selects strategy from `strategy-library.json`
+- Healer imports `recordStrategyPerformance()` → closes loop on performance feedback
+- Decision flow documented in `AGENT_EXECUTION_SCHEMA.md` and `STRATEGY_ANALYSIS.md`
 
 ### 4. **Telegram Interface Too Basic**
 - Only alerts + text commands
@@ -131,16 +131,17 @@ CONFIDENCE: Supertrend signal reliable (>60% win rate)?
 
 ## 📈 DEPLOYMENT READINESS CHECKLIST
 
-- ❌ Supertrend signal accuracy validated (not done)
-- ❌ Full workflow integration tested (not done)
-- ❌ Realistic APY tracked (not done)
-- ❌ Exit logic clearly defined (not done)
-- ✅ Safety mechanisms in place (done)
+- ❌ Supertrend signal accuracy validated (backtest not done — live data accumulating)
+- ⚠️ Full workflow integration tested (unit: 59/59 pass; integration: not yet)
+- ⚠️ Realistic APY tracked (performanceHistory wires now live; no historical data yet)
+- ✅ Exit logic clearly defined (MAX_HOLD_EXIT + STOP_LOSS + TAKE_PROFIT all implemented)
+- ✅ Safety mechanisms in place (circuit breaker persisted, OOR cooldown, vol collapse)
 - ✅ Infrastructure solid (done)
-- ⚠️ Capital sizing conservative (done but need stress test)
+- ✅ Regime-based entry gating (BEAR_DEFENSE hard-blocks entry)
+- ⚠️ Capital sizing conservative (done but need live stress test)
 
-**Current Status:** 35% ready for live trading with real capital
-**Missing:** Validation layer + performance proof + exit clarity
+**Current Status:** 65% ready for live trading with real capital
+**Missing:** Live backtest data + integration test harness
 
 ---
 

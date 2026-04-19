@@ -55,6 +55,31 @@ const BASELINE_STRATEGIES = {
       // supaya user bisa ubah via user-config.json tanpa sentuh kode strategi
     },
   },
+  'Deep Fishing': {
+    id: 'deep_fishing',
+    type: 'single_side_y',
+    allowedBinSteps: [80, 100, 125],
+    parameters: {
+      binStep: 100,
+      minMcap: 250000,
+      minVolume24h: 20000,
+      timeframe: '15m',
+    },
+    entry: {
+      requireSupertrendBullish: true,
+      timeframe: '15m',
+      confirmationOnClose: true,
+    },
+    deploy: {
+      label: 'deep_fishing_v1',
+      entryPriceOffsetMin: 86,
+      entryPriceOffsetMax: 94,
+      slippagePct: 0.5,
+    },
+    exit: {
+      mode: 'evil_panda_confluence',
+    },
+  },
 };
 
 const DEFAULT_CUSTOM_STRATEGY_TEMPLATE = {
@@ -275,10 +300,12 @@ export function parseStrategyParameters(strategy) {
     : null;
   const priceRangePercent = deploy.priceRangePct ?? derivedRangePct ?? 10;
 
+  const derivedStrategyType = deploy.strategyType ?? (strategy.type === 'single_side_y' ? 2 : 0);
+
   return {
     ...(strategy.parameters || {}),
     priceRangePercent,
-    strategyType: 0, // Default to Spot for DLMM standard
+    strategyType: derivedStrategyType,
     tokenXWeight: strategy.type === 'single_side_y' ? 0 : 50,
     tokenYWeight: strategy.type === 'single_side_y' ? 100 : 50,
   };

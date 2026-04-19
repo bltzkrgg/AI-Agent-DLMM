@@ -240,6 +240,17 @@ db.exec(`
     FOREIGN KEY(position_address) REFERENCES positions(position_address)
   );
 
+  CREATE TABLE IF NOT EXISTS circuit_breaker_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    pool_address TEXT,
+    triggered_at INTEGER NOT NULL,
+    paused_until INTEGER NOT NULL,
+    sl_count INTEGER NOT NULL,
+    cb_window_ms INTEGER,
+    cb_pause_ms INTEGER,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+  );
+
   CREATE TABLE IF NOT EXISTS pnl_divergence_events (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     position_address TEXT,
@@ -265,6 +276,7 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_exit_pool ON exit_events(pool_address);
   CREATE INDEX IF NOT EXISTS idx_pnl_div_pos_created ON pnl_divergence_events(position_address, created_at);
   CREATE INDEX IF NOT EXISTS idx_pnl_div_created_at ON pnl_divergence_events(created_at);
+  CREATE INDEX IF NOT EXISTS idx_cb_events_triggered_at ON circuit_breaker_events(triggered_at);
 `);
 
 // Migrasi kolom — setiap ALTER dijalankan sendiri supaya error satu tidak block yang lain

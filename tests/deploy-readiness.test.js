@@ -95,3 +95,29 @@ test('deploy readiness blocks stage full when TAE win rate is below threshold', 
   assert.equal(result.ready, false);
   assert.match(result.blockers.join(' '), /win rate tae/i);
 });
+
+test('deploy readiness blocks live deploy when worktree is dirty', () => {
+  const result = evaluateDeployReadiness({
+    solanaReady: true,
+    circuitState: 'CLOSED',
+    pendingReconcile: 0,
+    manualReviewOpen: 0,
+    manualReviewThreshold: 1,
+    autoPauseOnManualReview: true,
+    failedOps6h: 0,
+    deploymentStage: 'canary',
+    dryRun: false,
+    autoScreeningEnabled: true,
+    autonomyMode: 'active',
+    taeExitCount: 20,
+    taeWinRatePct: 60,
+    minTaeSamplesForFullStage: 10,
+    minTaeWinRateForFullStage: 45,
+    worktreeClean: false,
+    worktreeDirtyCount: 12,
+    worktreeCheckAvailable: true,
+  });
+
+  assert.equal(result.ready, false);
+  assert.match(result.blockers.join(' '), /worktree dirty/i);
+});

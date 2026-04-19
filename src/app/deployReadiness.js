@@ -16,6 +16,9 @@ export function evaluateDeployReadiness(input = {}) {
     taeWinRatePct = null,
     minTaeSamplesForFullStage = 10,
     minTaeWinRateForFullStage = 45,
+    worktreeClean = true,
+    worktreeDirtyCount = 0,
+    worktreeCheckAvailable = true,
   } = input;
 
   const blockers = [];
@@ -68,6 +71,22 @@ export function evaluateDeployReadiness(input = {}) {
   if (String(autonomyMode).toLowerCase() === 'paused') {
     warnings.push('Autonomy mode PAUSED (loop otonom dihentikan sementara).');
     score -= 5;
+  }
+
+  if (!worktreeCheckAvailable) {
+    warnings.push('Git worktree check tidak tersedia (deploy hygiene tidak terverifikasi).');
+    score -= 2;
+  }
+
+  if (!worktreeClean) {
+    const msg = `Worktree dirty (${worktreeDirtyCount} perubahan belum di-commit).`;
+    if (!dryRun) {
+      blockers.push(`${msg} Commit/stash dulu sebelum live deploy.`);
+      score -= 20;
+    } else {
+      warnings.push(msg);
+      score -= 5;
+    }
   }
 
   if (!dryRun && stageForGate === 'full') {

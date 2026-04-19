@@ -65,6 +65,14 @@ function triggerPersist() {
   _persistTimeout = setTimeout(persistState, 500);
 }
 
+export async function flushRuntimeState() {
+  if (_persistTimeout) {
+    clearTimeout(_persistTimeout);
+    _persistTimeout = null;
+  }
+  await persistState();
+}
+
 // ─── Public API ───────────────────────────────────────────────────
 
 export function getRuntimeState(key, fallback = null) {

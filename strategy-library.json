@@ -1,5 +1,115 @@
 {
-  "strategies": [],
-  "lastUpdated": null,
+  "__comment_confidence": "confidence fields below are managed by recordStrategyPerformance() — do not edit manually",
+  "strategies": [
+    {
+      "id": "evil_panda",
+      "name": "Evil Panda",
+      "type": "single_side_y",
+      "description": "Single-side SOL liquidity provision for bullish trends. Deploys full capital range from current price to -94% below, capturing upside fee generation.",
+      "marketConditions": {
+        "trend": ["UPTREND", "BULLISH"],
+        "volatility": ["HIGH", "MEDIUM"],
+        "sentiment": ["BULLISH", "NEUTRAL"],
+        "volumeVsAvg": { "min": 1.0, "max": 10.0 }
+      },
+      "entry": {
+        "signal": "Supertrend 15m BULLISH + Green momentum (price > Supertrend)",
+        "confirmation": "15m candle close above Supertrend line",
+        "priceOffsetMin": 0,
+        "priceOffsetMax": 94
+      },
+      "exit": {
+        "takeProfit": "Supertrend flip to BEARISH or profit threshold met",
+        "stopLoss": "5-8% drawdown or supertrend flip",
+        "maxHoldHours": 6
+      },
+      "binStep": [100, 125],
+      "confidence": 0.85,
+      "source": "builtin",
+      "performanceHistory": []
+    },
+    {
+      "id": "deep_fishing",
+      "name": "Deep Fishing",
+      "type": "single_side_y",
+      "description": "Ultra-deep one-sided SOL bid zone (-86% to -94% below price). Extreme value hunting for crash scenarios with minimal capital deployment.",
+      "marketConditions": {
+        "trend": ["UPTREND", "BULLISH"],
+        "volatility": ["HIGH"],
+        "sentiment": ["BULLISH"],
+        "volumeVsAvg": { "min": 2.0, "max": 15.0 }
+      },
+      "entry": {
+        "signal": "Supertrend 15m BULLISH + High volume velocity",
+        "confirmation": "15m candle close above Supertrend, volume confirms conviction",
+        "priceOffsetMin": -86,
+        "priceOffsetMax": -94
+      },
+      "exit": {
+        "takeProfit": "Price crashes into zone OR 4-6 hours elapsed",
+        "stopLoss": "Supertrend flip + 2 candles confirmation",
+        "maxHoldHours": 6
+      },
+      "binStep": [80, 100, 125],
+      "confidence": 0.72,
+      "source": "builtin",
+      "performanceHistory": []
+    },
+    {
+      "id": "sideways_yield",
+      "name": "Sideways Yield",
+      "type": "dual_side",
+      "description": "Balanced dual-side LP concentrated near current price for sideways/ranging markets. Symmetric fee capture in chop zones.",
+      "marketConditions": {
+        "trend": ["SIDEWAYS"],
+        "volatility": ["LOW", "MEDIUM"],
+        "sentiment": ["NEUTRAL"],
+        "volumeVsAvg": { "min": 0.5, "max": 3.0 }
+      },
+      "entry": {
+        "signal": "Price in middle of 24h range, ATR < 5%",
+        "confirmation": "Multiple candles within range band",
+        "priceOffsetMin": -15,
+        "priceOffsetMax": 15
+      },
+      "exit": {
+        "takeProfit": "Out-of-range or 12+ hours elapsed",
+        "stopLoss": "Price breaks range band by 2%",
+        "maxHoldHours": 12
+      },
+      "binStep": [100, 125],
+      "confidence": 0.65,
+      "source": "builtin",
+      "performanceHistory": []
+    },
+    {
+      "id": "bear_defense_idle",
+      "name": "Bear Defense Idle",
+      "type": "hold_cash",
+      "description": "No deployment — hold USDC/SOL reserves during bearish regimes. Wait for trend reversal and regime confirmation.",
+      "marketConditions": {
+        "trend": ["DOWNTREND", "BEARISH"],
+        "volatility": ["HIGH", "MEDIUM"],
+        "sentiment": ["BEARISH", "FEAR"],
+        "volumeVsAvg": { "min": 0.0, "max": 10.0 }
+      },
+      "entry": {
+        "signal": "Supertrend BEARISH or priceChangeH1 < -5%",
+        "confirmation": "No entry — capital preserved",
+        "priceOffsetMin": null,
+        "priceOffsetMax": null
+      },
+      "exit": {
+        "takeProfit": "N/A — no position deployed",
+        "stopLoss": "N/A",
+        "maxHoldHours": null
+      },
+      "binStep": null,
+      "confidence": 0.8,
+      "source": "builtin",
+      "performanceHistory": []
+    }
+  ],
+  "lastUpdated": "2026-04-19T00:00:00Z",
   "totalResearched": 0
 }

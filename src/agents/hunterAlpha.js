@@ -14,7 +14,8 @@ import { getStrategy, parseStrategyParameters, getAllStrategies } from '../strat
 import {
   matchStrategyToMarket,
   getLibraryStats,
-  evaluateStrategyReadiness as libEvaluateReadiness
+  evaluateStrategyReadiness as libEvaluateReadiness,
+  classifyMarketRegime,
 } from '../market/strategyLibrary.js';
 import { fetchCandles, getMarketSnapshot, getOHLCV, getMultiTFScore, getSentiment } from '../market/oracle.js';
 import { getSocialSignals, getTokenSocialScore } from '../market/socialScanner.js';
@@ -30,6 +31,7 @@ import { executeControlledOperation } from '../app/executionService.js';
 import { discoverPools as lpAgentDiscoverPools, enrichPools as lpAgentEnrichPools, isLPAgentEnabled } from '../market/lpAgent.js';
 import { runEvolutionCycle } from '../learn/evolve.js';
 import { checkMaxDrawdown, requestConfirmation, validateStrategyForMarket } from '../safety/safetyManager.js';
+import { getRuntimeState, setRuntimeState, flushRuntimeState } from '../runtime/state.js';
 
 // ─── State ───────────────────────────────────────────────────────
 
@@ -703,6 +705,15 @@ async function executeTool(name, input) {
 
       try {
         const snapshot = await getMarketSnapshot(poolInfo.tokenX, input.pool_address);
+        const regimeInfo = classifyMarketRegime(snapshot);
+        if (regimeInfo?.regime === 'BEAR_DEFENSE') {
+          return JSON.stringify({
+            blocked: true,
+            reason: `Regime ${regimeInfo.regime}: ${regimeInfo.notes || 'market bearish-defense mode'}. Entry di-skip.`,
+            policy: 'REGIME_BEAR_DEFENSE',
+            regime: regimeInfo,
+          }, null, 2);
+        }
         const failSafeEnabled = cfg.failSafeModeOnDataUnreliable !== false;
         const dataReliable = snapshot?.quality?.dataReliable !== false;
         const taReliable = snapshot?.quality?.taReliable === true;
@@ -941,6 +952,30 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null, opt
     : null;
 
   const cfg = getConfig();
+
+  // ─── Circuit Breaker Check ────────────────────────────────────
+  // Healer can trip this state after rapid stop-loss clusters.
+  // Persisted in runtime-state.json so restart does not bypass cooldown.
+  {
+    const cb = getRuntimeState('hunter-circuit-breaker', null);
+    if (cb?.pausedUntil && Date.now() < cb.pausedUntil) {
+      const remainMin = Math.ceil((cb.pausedUntil - Date.now()) / 60000);
+      hunterNotifyFn?.(
+        `⚡ *Hunter Paused — Circuit Breaker Active*\n` +
+        `Sisa waktu pembekuan: *${remainMin} menit*\n` +
+        `_${cb.count || 0} SL exits terdeteksi. Menunggu kondisi market stabil._`
+      );
+      return;
+    }
+    if (cb?.pausedUntil && Date.now() >= cb.pausedUntil) {
+      setRuntimeState('hunter-circuit-breaker', null);
+      setRuntimeState('recent-sl-events', []);
+      await flushRuntimeState().catch(() => {});
+      hunterNotifyFn?.(
+        '✅ *Hunter Circuit Breaker Reset*\n_Buffer SL lama dibersihkan, hunter kembali normal._'
+      );
+    }
+  }
 
   // --- Portfolio Awareness ---
   const balanceRaw = await getWalletBalance().catch(() => 0);

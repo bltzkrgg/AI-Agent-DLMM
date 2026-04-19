@@ -11,10 +11,11 @@
     "start": "node src/index.js",
     "dev": "DRY_RUN=true node --watch src/index.js",
     "dry": "DRY_RUN=true node src/index.js",
-    "test": "node --test tests/*.test.js",
-    "test:coverage": "c8 --reporter=text-summary --reporter=lcov node --test tests/*.test.js",
+    "test": "node --test tests/*.test.js tests/integration/*.test.js",
+    "test:coverage": "c8 --reporter=text-summary --reporter=lcov node --test tests/*.test.js tests/integration/*.test.js",
     "lint": "node scripts/lint.js",
     "check": "npm run lint && npm run test",
+    "predeploy:check": "npm run check",
     "postinstall": "patch-package && node scripts/ensure-anchor-esm.js"
   },
   "dependencies": {

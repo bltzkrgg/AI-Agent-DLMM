@@ -1,383 +1,239 @@
 ╔═══════════════════════════════════════════════════════════════════════════╗
-║        AGENT EXECUTION: Deep Fishing Strategy - Quick Reference            ║
-║              Single Position | Entry → Pool → Bins → Execution             ║
+║                    AGENT QUICK REFERENCE GUIDE                             ║
+║                    Configuration & Tuning Parameters                        ║
 ╚═══════════════════════════════════════════════════════════════════════════╝
 
-
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-PHASE 1: ENTRY SIGNAL
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-┌──────────────────────────────────────────────────────────────┐
-│ Detect Supertrend Trend FLIP (not just bullish)             │
-├──────────────────────────────────────────────────────────────┤
-│ Previous Candle:  BEARISH                                    │
-│ Current Candle:   BULLISH   ← FLIP! ✅                       │
-│                                                              │
-│ Wait: 15m candle CLOSE above Supertrend line               │
-│ (NOT just touch/wick - must be final close)                │
-│                                                              │
-│ Price at signal: $2000 (captured)                           │
-│ Price at deploy:  $2000 (or recalc if >2% moved)           │
-└──────────────────────────────────────────────────────────────┘
-
-DECISION POINT: Ready untuk pool selection? → YES → CONTINUE
-
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-PHASE 2: POOL & BINSTEP SELECTION
+TELEGRAM BOT COMMANDS
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-POOL SCREENING:
-  1. List all pools untuk pair (WETH/SOL, USDC/SOL, etc)
-  2. Filter: >$10k liquidity, non-paused, price available
-  3. Check BinStep for each pool
+DEPLOYMENT & STAGE CONTROL:
+  /preflight          Check readiness before going live
+  /stage [shadow|canary|full]  Set deployment stage
+  /autoscreen on|off [min]     Enable/disable auto-screening (interval in minutes)
+  /health            Full system health report
+  /status            Quick status snapshot (PnL, positions, circuitBreaker)
+  /providers         API provider status (RPC, DexScreener, Oracle)
 
-BINSTEP SELECTION PRIORITY:
+OPERATIONS:
+  /pause              Pause all autonomous operations (manual mode)
+  /resume             Resume autonomous operations
+  /rollback          Fast rollback to shadow stage
+  /testslot          Test RPC endpoint with getSlot()
+  /testmodel         Test active AI model
 
-  Try BinStep 100? ─→ YES → Calculate range width
-       │                    │
-       NO                   │
-       ↓                    ↓
-  Try BinStep 125? ─→ YES → Calculate range width
-       │
-       NO
-       ↓
-  NO VALID POOL   ─→ WAIT for next scan cycle
-
-ADAPTIVE RANGE CHECK:
-  After calculating range with candidate BinStep:
-
-  If range width ≤ 250 bins?
-    ✅ USE THIS BINSTEP → Deploy
-
-  If range width > 250 bins (with BinStep 100)?
-    → TRY BINSTEP 125 instead (coarser = fewer bins)
-    → If width still > 250 with BinStep 125?
-    → Split into multiple positions OR skip
-
-
-EXAMPLE SELECTION:
-┌─────────────────────────────────────────────────────────────┐
-│ Pool Options Found:                                         │
-├─────────────────────────────────────────────────────────────┤
-│ A) WETH/SOL BinStep 80  ← SELECTED ✅ (priority #1)         │
-│ B) WETH/SOL BinStep 100 (backup)                            │
-│ C) USDC/SOL BinStep 125 (backup)                            │
-│ D) BONK/SOL BinStep 200 (skip)                              │
-└─────────────────────────────────────────────────────────────┘
-
-CAPTURED STATE:
-  Pool: WETH/SOL
-  BinStep: 80
-  Current Price: $2000
-  Active Bin: 10000
-  Fee Tier: 250bps
-
+MONITORING:
+  /positions          List active positions with PnL
+  /positions history  Recent closed positions
+  /health            Detailed system health
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-PHASE 3: BIN CALCULATION (-86% to -94% Range)
+KEY CONFIGURATION PARAMETERS
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-CONVERT OFFSETS TO BIN DISTANCE:
+POSITION SIZING & RISK:
+  deployAmountSol          Amount per position (SOL)           [default: 0.5]
+  maxPositions             Max simultaneous positions           [default: 3]
+  stopLossPct              Stop loss threshold (%)              [default: 5-8]
+  maxHoldHours             Force-close position after N hours   [default: 6]
+  dailyLossLimitUsd        Daily loss limit before pause ($)    [default: 25]
 
-  Formula:
-    logBinFactor = binStep × ln(1.0001)
-    offsetBins = |ln(1 - offset/100) / logBinFactor|
+MARKET ENTRY FILTERS:
+  minTvl                   Minimum pool liquidity ($)           [default: 10k]
+  maxTvl                   Maximum pool liquidity ($)           [default: 500k]
+  maxPoolAgeDays           Reject pools older than N days       [default: 3]
+  minVolumeTvlRatio        Minimum volume/TVL ratio             [default: 20]
+  minBinStep               Minimum bin step (100 or 125)        [default: 100]
+  allowedBinSteps          Allowed bin steps                    [default: [100,125]]
 
-  For BinStep 80:
-    logBinFactor = 80 × 0.00009999 ≈ 0.008
+VOLATILITY & MOMENTUM:
+  minAtrPctForEntry        Min ATR% for entry signal            [default: 2.0]
+  atrPct < 3%              Signal: Low volatility (WAIT)        [threshold]
+  priceChangeH1 > 2%       Signal: Bullish momentum (ENTER)     [threshold]
+  priceChangeH1 < -5%      Signal: Bearish crash (AVOID)        [threshold]
 
-  For offsetMin = -86%:
-    offsetMinBins = |ln(1.86) / 0.008| ≈ 77 bins
+FEES & YIELD:
+  minDailyFeeYieldPct      Minimum daily fee yield (%)          [default: 0.3]
+  maxILvsHodlPct           Max IL vs HODL before exit (%)       [default: 15]
+  takeProfitFeePct         Fee income take-profit (%)           [default: 5]
 
-  For offsetMax = -94%:
-    offsetMaxBins = |ln(1.94) / 0.008| ≈ 83 bins
+EXIT SAFETY:
+  volCollapseThresholdPct  Volume collapse exit trigger (%)     [default: 25]
+  slCooldownMinutes        Stop-loss cooldown after trigger     [default: 120]
+  slCircuitBreakerCount    SL triggers before circuit breaks    [default: 3]
+  slCircuitBreakerWindowMin Window for counting SL triggers      [default: 60]
+  slCircuitBreakerPauseMin Pause duration after circuit break   [default: 60]
 
-
-CALCULATE BIN RANGE:
-
-  Active Bin: 10000
-  Bins below active for top (-86%): 77
-  Bins below active for bottom (-94%): 83
-
-  rangeMax = 10000 - 77 = 9923  (TOP, shallower, -86%)
-  rangeMin = 10000 - 83 = 9917  (BOTTOM, deeper, -94%)
-
-  Range Width: 9923 - 9917 = 6 bins ✅
-
-
-VERIFY AGAINST PRICE:
-
-  Bin to price formula: price(bin) = currentPrice / (1.0001 ^ offsetBins)
-
-  Top bin (9923): $2000 / (1.0001^77) ≈ $280    (-86% from $2000) ✅
-  Bottom bin (9917): $2000 / (1.0001^83) ≈ $120  (-94% from $2000) ✅
-
-  Sanity check: Top > Bottom? YES ✅
-
-
-RESULT:
-┌─────────────────────────────────────────────────────────────┐
-│ Deployment Range: BIN 9917 TO 9923                           │
-│                                                              │
-│ Visual price representation:                                 │
-│                                                              │
-│ $2000 (current) ────────────────────────────────────────   │
-│                                                              │
-│                                  ↓ -86%                     │
-│                              $280 ├─ bin 9923 (TOP)          │
-│                                  │ bin 9922                  │
-│                                  │ bin 9921                  │
-│                                  │ bin 9920                  │
-│                                  │ bin 9919                  │
-│                              $120 ├─ bin 9917 (BOTTOM)       │
-│                                  ↑ -94%                     │
-│                                                              │
-│ Total: 6 bins (width correct!) ✅                           │
-└─────────────────────────────────────────────────────────────┘
-
+API & DATA STALENESS:
+  maxOhlcvStaleMinutes15m  Max staleness for 15m candles        [default: 90]
+  maxOhlcvStaleMinutes1h   Max staleness for 1h candles         [default: 180]
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-PHASE 4: LIVE PRICE CHECK & POTENTIAL RECALCULATION
+WHAT EACH INDICATOR CONTROLS
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-BEFORE DEPLOYMENT: Check if price moved significantly
+SUPERTREND (15m + 1h):
+  → Controls entry signal detection (BULLISH = ready to deploy)
+  → Controls exit decision (flip from BULLISH to BEARISH = close)
+  → Adjust period/multiplier in src/utils/ta.js if too noisy/delayed
+  → Default: period=10, multiplier=3
 
-  Signal Time: Price = $2000, calculated range = 9917-9923
-  Deploy Time: Price = ? (check now)
+VOLUME/TVL RATIO:
+  → Controls pool selection quality (minVolumeTvlRatio > 20)
+  → Minimum means: must see 20x annual volume through pool to consider
+  → Increase if missing good pools; decrease if accepting low-volume trades
 
-  If |currentPrice - signalPrice| / signalPrice ≤ 2%
-    → Price movement acceptable, use original range
-    → Continue to chunking ✅
+ATR (Average True Range):
+  → Controls volatility gate (minAtrPctForEntry > 2.0)
+  → If ATR too low: IL risk without corresponding fee yield
+  → If ATR too high: stop-loss likely to trigger early
+  → Safe range: 2–5% for Evil Panda
 
-  If |currentPrice - signalPrice| / signalPrice > 2%
-    → Price moved significantly (pump or dump)
-    → Recalculate offsets from NEW price
+FEE/TVL RATIO (Daily Fees / Total Value Locked):
+  → Controls dead-pool rejection (minFeeActiveTvlRatio > 0.01)
+  → If pool making < 1% APY daily fee: not worth the risk
+  → Real pools should show 5–20% daily fee APY for DLMM
 
-RECALCULATION EXAMPLE (price moved to $2100):
-
-  New current price: $2100
-  New active bin: ~10038 (higher)
-
-  Recalculate:
-    offsetMinBins(-86%) from $2100 = 77 bins (same)
-    offsetMaxBins(-94%) from $2100 = 83 bins (same)
-
-  New range:
-    rangeMax = 10038 - 77 = 9961
-    rangeMin = 10038 - 83 = 9955
-    Width: still 6 bins ✅
-
-  Verify:
-    Top: $2100 * 0.14 = $294 ✅
-    Bottom: $2100 * 0.06 = $126 ✅
-
-  → Deploy to NEW range (9955-9961) ✅
-
-
-DECISION:
-  Range valid? → YES → CONTINUE TO CHUNKING
-  Range valid? → NO  → ABORT DEPLOYMENT
-
+PRICE CHANGE (1h, 5m):
+  → priceChangeH1 > 2% = bullish confirmation (enter)
+  → priceChangeH1 < -5% = bearish rejection (avoid)
+  → priceChangeM5 > 0 = 15m candle must be green (additional gate)
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-PHASE 5: BIN CHUNKING (Split into Transactions)
+WHEN TO ADJUST VS LEAVE DEFAULTS
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-CONSTRAINT:
-  Max bins per transaction: ~50 bins
-  Solana TX size limit
+LEAVE DEFAULTS IF:
+  ✓ Positions hitting stop-loss < 1 per day
+  ✓ Win rate > 40% (fees earned > SL losses)
+  ✓ Circuit breaker not tripping
+  ✓ No cascading manual review queue
 
-OUR RANGE:
-  Bin width: 6 bins
-  Max per TX: 50 bins
+ADJUST IF:
+  ✗ Stop-loss hit > 3× per day             → Increase stopLossPct (8→10) or reduce minAtrPctForEntry
+  ✗ Missing obvious entry opportunities   → Reduce minVolumeTvlRatio (20→15) or minTvl (10k→5k)
+  ✗ Positions staying unprofitable        → Reduce maxHoldHours (6→4) to exit dead positions faster
+  ✗ Circuit breaker trips weekly          → Increase slCircuitBreakerCount (3→4) or slCooldownMinutes (120→180)
+  ✗ DexScreener API timeouts              → Increase maxOhlcvStaleMinutes15m (90→120)
 
-  6 ≤ 50? → YES ✅ → USE SINGLE TRANSACTION
-
-ALLOCATION STRATEGY:
-
-  Total deploy amount: 0.5 SOL
-  Total bins: 6
-  Amount per bin: 0.5 / 6 = 0.0833 SOL
-
-  Chunk 0 (ONLY chunk needed):
-  ┌─────────────────────────────────────┐
-  │ Bins: 9917, 9918, 9919, 9920, 9921, 9923
-  │ Amount per bin: 0.0833 SOL           │
-  │ Total: 0.5 SOL                       │
-  │ Token X: 0 (single-side SOL)         │
-  │ TX index: 0 (first and only TX)      │
-  └─────────────────────────────────────┘
-
-  Why? Because 6 bins fit in one Solana transaction
-       No need to split across multiple TXs
-
+NEVER ADJUST:
+  - allowedBinSteps (locking to 100/125 is intentional — maintains Saklek Mode)
+  - maxBinsPerPosition (125 is hardcoded Solana TX limit)
+  - activeStrategy (Evil Panda/Deep Fishing chosen by classifyMarketRegime)
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-PHASE 6: TRANSACTION EXECUTION
+THREE DEPLOYMENT PROFILES
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-BUILD:
-  6 instructions (one per bin):
-    ├─ AddLiquidity bin 9917, 0.0833 SOL, 0 token X
-    ├─ AddLiquidity bin 9918, 0.0833 SOL, 0 token X
-    ├─ AddLiquidity bin 9919, 0.0833 SOL, 0 token X
-    ├─ AddLiquidity bin 9920, 0.0833 SOL, 0 token X
-    ├─ AddLiquidity bin 9921, 0.0833 SOL, 0 token X
-    └─ AddLiquidity bin 9923, 0.0833 SOL, 0 token X
+CONSERVATIVE LIVE:
+  deployAmountSol: 0.25        # Small position size, minimize drawdown
+  maxPositions: 1              # One position at a time
+  stopLossPct: 3               # Tight SL — quick exit on loss
+  maxHoldHours: 4              # Aggressive time decay cleanup
+  maxTvl: 100000               # Only touch high-liquidity pools
+  minVolumeTvlRatio: 30        # Very selective entry
+  → Use when: Real money live, capital preservation critical
 
-SIGN:
-  Signer 1: Wallet keypair (payer, owner)
-  Signer 2: Position keypair (position account)
+BALANCED:
+  deployAmountSol: 0.5         # Standard position size
+  maxPositions: 3              # Multiple simultaneous positions
+  stopLossPct: 5               # Reasonable SL threshold
+  maxHoldHours: 6              # Medium-term holding
+  maxTvl: 500000               # Standard pool selection
+  minVolumeTvlRatio: 20        # Moderate selectivity
+  → Use when: Demo trading, tuning phase, small capital
 
-SEND:
-  ├─ Serialize transaction
-  ├─ Send to network
-  ├─ Poll for confirmation
-  └─ Check signature status
-
-RETRY:
-  If failed:
-    Wait 1s, retry
-  If failed again:
-    Wait 2s, retry
-  If failed 3x:
-    ABORT, mark as failed
-
-SUCCESS:
-  ✅ Signature: 5y7X...abc
-  ✅ Confirmed on-chain
-  ✅ Position created
-  ✅ Record in database
-
-
-RESULT:
-┌─────────────────────────────────────────────────────────┐
-│ POSITION DEPLOYED SUCCESSFULLY                          │
-├─────────────────────────────────────────────────────────┤
-│ Pool: WETH/SOL (BinStep 80)                             │
-│ Range: bin 9917 - 9923 (6 bins)                         │
-│ Amount: 0.5 SOL (distributed as 0.0833 per bin)        │
-│ Status: Active                                          │
-│ Signature: 5y7X...                                      │
-│ Deploy time: 2026-04-14 14:32:15 UTC                   │
-│                                                         │
-│ NOW MONITORING FOR:                                     │
-│ • Fee accumulation (if price stays above range)         │
-│ • Price crash into -86% to -94% zone                   │
-│ • Fee explosion if crash happens                        │
-└─────────────────────────────────────────────────────────┘
-
+AGGRESSIVE EXPERIMENTAL:
+  deployAmountSol: 1.0         # Large position size
+  maxPositions: 5              # Maximum concurrent positions
+  stopLossPct: 8               # Wide SL — accept more variance
+  maxHoldHours: 12             # Long-term holding
+  maxTvl: 2000000              # High-liquidity hunting
+  minVolumeTvlRatio: 10        # Accept lower-quality pools
+  → Use when: Development only, not recommended for live capital
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-MONITORING AFTER DEPLOYMENT
+INCIDENT QUICK CARDS  (use during live volatility)
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-SCENARIO A: Price stays above range ($2000 - $3000)
-┌─────────────────────────────────────────────────────────┐
-│ Status: Safe, no impermanent loss                        │
-│ Fee generation: ZERO (no trading in range)               │
-│ Action: Continue monitoring                              │
-│ Exit: Manual close when satisfied                        │
-└─────────────────────────────────────────────────────────┘
+QC-1: CIRCUIT BREAKER TRIPPED
+  Detect:  runtime-state.json has hunter-circuit-breaker.pausedUntil key
+           Telegram "⚡ CIRCUIT BREAKER TRIPPED" | logs slCount >= slCircuitBreakerCount
+           NOTE: SL_CLUSTER_THRESHOLD_MET is schema-only (not written to exit_events DB)
+  First5:  1. DO NOT override — this is intended safety behavior
+           2. /health → confirm circuitBreaker: OPEN
+           3. /positions history → check last 3–5 exits for SL cluster pattern
+  Resume:  Wait slCircuitBreakerPauseMin (default 60min) — persists through restarts
+           Telegram "✅ Hunter Circuit Breaker Reset" = safe to proceed
+  Verify:  /health → circuitBreaker: CLOSED
+           runtime-state.json: hunter-circuit-breaker key absent
+  Escalate: Trips >3×/day → increase slCircuitBreakerCount (3→4) in user-config.json
+  Manual Reset (emergency only): Delete hunter-circuit-breaker from runtime-state.json → restart
 
-SCENARIO B: Price crashes into range ($200 - $1000)
-┌─────────────────────────────────────────────────────────┐
-│ Status: ACTIVE TRADING - FEES PRINTING 🔥🔥🔥              │
-│ Fee generation: MASSIVE (every swap hits range)          │
-│ Action: Monitor fee accumulation closely                 │
-│ Exit: May want to close when crash bottoms out          │
-└─────────────────────────────────────────────────────────┘
+QC-2: DATA STALE / MARKET SNAPSHOT UNRELIABLE
+  Detect:  Logs historySuccess: false | /providers → DexScreener DEGRADED
+           OHLCV age > maxOhlcvStaleMinutes (15m: 90min, 1h: 180min)
+  Act:     No action needed — entries auto-blocked, exits use on-chain price
+  Resume:  Logs historySuccess: true → entry screening resumes automatically
+  Verify:  /providers → all HEALTHY
+  Escalate: DexScreener down >30min + Meteora price unreliable → /pause
 
-SCENARIO C: Price crashes BELOW range (<$100)
-┌─────────────────────────────────────────────────────────┐
-│ Status: Range not active (below deployment)              │
-│ Fee generation: ZERO (price passed through, no more)     │
-│ Action: Close position, realize profits/losses           │
-│ Note: Can only be used if extreme crash (>94%)           │
-└─────────────────────────────────────────────────────────┘
+QC-3: SWAP UNRESOLVED / manual_review
+  Detect:  status='manual_review' in positions DB | "LIQUIDITY_TRAP" in logs
+  Act:     1. /pause    2. Check on-chain via Meteora UI
+           3. Manual close if open    4. Update DB status after
+  Resume:  /resume after manual_review queue = 0
+  Verify:  sqlite3 "SELECT COUNT(*) FROM positions WHERE status='manual_review';" → 0
+  Escalate: Manual close fails on UI → contact Meteora support
 
+QC-4: MAX HOLD EXITS CLUSTERING
+  Detect:  Multiple "Max Hold Exit — CLOSE" Telegram alerts in short window
+           exitTrigger='MAX_HOLD_EXIT' for many positions same hour
+  First5:  1. No intervention — dead capital cleanup working correctly
+           2. /status → confirm positions closed (not manual_review)
+           3. Check: was regime SIDEWAYS_CHOP during holding period?
+  Resume:  Bot auto-resumes entry after positions close
+  Adjust:  If recurring weekly → reduce maxHoldHours: 6→4 in user-config.json
+  Escalate: If clustering + circuit breaker fire together → /pause + root-cause review
 
-═══════════════════════════════════════════════════════════════════════════════
-DECISION TREE: Which Path?
-═══════════════════════════════════════════════════════════════════════════════
+QC-5: DAILY DRAWDOWN LIMIT BREACHED
+  Detect:  Log "Daily loss limit reached" | dailyLossUsd >= dailyLossLimitUsd ($25 default)
+           Telegram: "⛔ DAILY LOSS LIMIT REACHED — autonomous ops paused"
+  First5:  1. Bot auto-pauses new entries (exits still fire on open positions)
+           2. /status → check dailyLossUsd, open positions, open PnL
+           3. /positions history → identify SL pattern or large loss causing breach
+  Resume:  Next UTC midnight (auto-reset) OR /resume (manual — confirm root cause first)
+  Verify:  /health → dailyLoss: LIMIT_REACHED | no new entries in logs after pause
+  Escalate: Hits limit 3 consecutive days → reduce deployAmountSol or stopLossPct
 
-                    ┌─────────────────────┐
-                    │ Supertrend Flip?    │
-                    └────────┬────────────┘
-                             │
-                      YES ✅ │ NO ❌
-                             │
-                    ┌────────▼────────┐
-                    │ Wait for candle │
-                    │ close above ST  │
-                    └────────┬────────┘
-                             │
-                      YES ✅ │ NO ❌
-                             │
-                    ┌────────▼────────┐
-                    │ Check price     │
-                    │ movement        │
-                    └────────┬────────┘
-                             │
-                      >2%?   │
-                      YES→ RECALC (or skip)
-                      NO  → USE ORIGINAL
-                             │
-                    ┌────────▼────────┐
-                    │ Select pool:    │
-                    │ Try BS 80→100→125
-                    └────────┬────────┘
-                             │
-                      FOUND? │
-                      YES ✅ │ NO ❌ WAIT
-                             │
-                    ┌────────▼────────┐
-                    │ Calculate bins  │
-                    │ -86% to -94%    │
-                    └────────┬────────┘
-                             │
-                      VALID? │
-                      YES ✅ │ NO ❌ ABORT
-                             │
-                    ┌────────▼────────┐
-                    │ Chunk allocation│
-                    │ (usually 1 TX)  │
-                    └────────┬────────┘
-                             │
-                    ┌────────▼────────┐
-                    │ Build TX & sign │
-                    │ wallet + posKp  │
-                    └────────┬────────┘
-                             │
-                    ┌────────▼────────┐
-                    │ Send & confirm  │
-                    │ retry 3x if fail│
-                    └────────┬────────┘
-                             │
-                      SUCCESS│ FAIL ❌
-                      ✅     │ ABORT
-                             │
-                    ┌────────▼────────┐
-                    │ POSITION ACTIVE │
-                    │ MONITORING MODE │
-                    └─────────────────┘
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+REGIME BEHAVIOR QUICK REFERENCE
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
+  BULL_TREND      → Entries allowed (Evil Panda / Deep Fishing)
+  SIDEWAYS_CHOP   → Entries blocked by low ATR (await volatility)
+  BEAR_DEFENSE    → ALL entries hard-blocked (policy: REGIME_BEAR_DEFENSE)
+  LOW_LIQ_HIGH_RISK → Pool skipped (insufficient TVL or volume flow)
 
-═══════════════════════════════════════════════════════════════════════════════
-QUICK REFERENCE TABLE
-═══════════════════════════════════════════════════════════════════════════════
+ENTRY BLOCK POLICY CODES:
+  REGIME_BEAR_DEFENSE       classifyMarketRegime() === 'BEAR_DEFENSE'
+  CIRCUIT_BREAKER_ACTIVE    hunter-circuit-breaker.pausedUntil > now (runtime-state.json)
+  FAIL_SAFE_UNRELIABLE_DATA oracle/TA data unreliable (failSafeModeOnDataUnreliable=true)
+  HTF_NULL_STRICT_ATR       1h data missing + atrPct < 2.0
+  TREND_BEARISH             supertrend.trend === 'BEARISH'
+  ATR_LOW                   atrPct < minAtrPctForEntry
+  FEE_VELOCITY_DOWN         3-sample feeTvlRatio strictly descending
 
-PHASE           INPUT                   PROCESS            OUTPUT
-─────────────────────────────────────────────────────────────────────────────
-1. Entry        15m candles            FLIP detection     Ready to deploy
-2. Pool         Available pools        BinStep select     Pool + BinStep
-3. Bins         Offset params          Math (log calc)    Range bins
-4. Price chk    Current price          Validation         Confirmed range
-5. Chunk        Range width            Split logic        Chunk plan
-6. TX           Chunk details          Build + sign       Signature
-7. Confirm      Signature              Poll network       Position created
-8. Monitor      Active position        Fee tracking       Fee generation
+  SL_COOLDOWN_ACTIVE = Healer HOLD delay only — does NOT block Hunter entry.
+  CIRCUIT_BREAKER_ACTIVE = Hunter entry block from persisted state.
 
-═══════════════════════════════════════════════════════════════════════════════
+  Exits always fire regardless of regime.
+  Circuit breaker persists across restarts (runtime-state.json).
+  Strategy confidence auto-adjusts via performanceHistory on each close.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+**Reference:** See user-config.json for full parameter list.
+              See STRATEGY_ANALYSIS.md for regime-based strategy selection.
+              See DEPLOYMENT_RUNBOOK.md for incident response procedures.
+              See AGENT_EXECUTION_SCHEMA.md for reason code mapping table.

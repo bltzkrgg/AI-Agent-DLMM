@@ -125,7 +125,7 @@ export function addResearchedStrategy(strategy) {
 // ─── Match strategy to market conditions ─────────────────────────
 
 export function matchStrategyToMarket(marketSnapshot) {
-  if (!marketSnapshot) return { recommended: null, alternatives: [], currentConditions: {} };
+  if (!marketSnapshot) return { recommended: null, alternatives: [], currentConditions: {}, regime: null };
   const library = loadLibrary();
   const strategies = library.strategies;
 
@@ -156,6 +156,9 @@ export function matchStrategyToMarket(marketSnapshot) {
     highFeeApr,
   };
 
+  // Get market regime classification
+  const regimeInfo = classifyMarketRegime(marketSnapshot);
+
   // Score each strategy against current conditions
   const scored = strategies.map(strategy => {
     const score = scoreStrategy(strategy, currentConditions);
@@ -171,6 +174,7 @@ export function matchStrategyToMarket(marketSnapshot) {
     recommended: sorted[0] || null,
     alternatives: sorted.slice(1, 3),
     currentConditions,
+    regime: regimeInfo,
     allScored: sorted,
   };
 }
@@ -380,6 +384,117 @@ function classifyVolatility(ohlcv) {
   if (range > 15) return 'HIGH';
   if (range < 5) return 'LOW';
   return 'MEDIUM';
+}
+
+/**
+ * Classify market regime based on technical and sentiment snapshot.
+ * Returns actionable regime classification with blockers and strategy recommendations.
+ */
+export function classifyMarketRegime(snapshot) {
+  if (!snapshot) {
+    return {
+      regime: 'LOW_LIQ_HIGH_RISK',
+      confidence: 0.0,
+      blockers: ['No snapshot data available'],
+      recommendation: 'WAIT',
+      reasonCodes: [],
+      notes: 'Insufficient data for regime classification',
+    };
+  }
+
+  const ta = snapshot.ta || {};
+  const ohlcv = snapshot.ohlcv || {};
+  const pool = snapshot.pool || {};
+  const sentiment = snapshot.sentiment || {};
+
+  const supertrend = ta.supertrend;
+  const priceChangeH1 = ohlcv.priceChangeH1 || 0;
+  const priceChangeM5 = ohlcv.priceChangeM5 || 0;
+  const atrPct = ohlcv.atrPct || 0;
+  const range24hPct = ohlcv.range24hPct || 0;
+  const tvl = pool.tvl || 0;
+  const volume24h = pool.volume24h || 0;
+  const volumeTvlRatio = tvl > 0 ? volume24h / tvl : 0;
+
+  const reasonCodes = [];
+  const blockers = [];
+  let regime = 'SIDEWAYS_CHOP';
+  let confidence = 0.5;
+  let recommendation = 'WAIT';
+
+  // ─── BULL_TREND Detection ──────────────────────────────────────────
+  if (
+    supertrend &&
+    supertrend.trend === 'BULLISH' &&
+    priceChangeH1 > 2 &&
+    volumeTvlRatio > 1.5
+  ) {
+    regime = 'BULL_TREND';
+    confidence = 0.85;
+    recommendation = 'evil_panda';
+    reasonCodes.push('TREND_BULL', 'PRICE_UP_H1', 'VOL_HIGH');
+  }
+  // ─── BEAR_DEFENSE Detection ──────────────────────────────────────────
+  else if (supertrend && supertrend.trend === 'BEARISH') {
+    regime = 'BEAR_DEFENSE';
+    confidence = 0.8;
+    recommendation = 'AVOID';
+    blockers.push('Bearish trend — entry forbidden');
+    reasonCodes.push('TREND_BEAR');
+  } else if (priceChangeH1 < -5) {
+    regime = 'BEAR_DEFENSE';
+    confidence = 0.75;
+    recommendation = 'AVOID';
+    blockers.push('Strong downtrend (H1 < -5%) — entry forbidden');
+    reasonCodes.push('PRICE_DOWN_SEVERE');
+  }
+  // ─── LOW_LIQ_HIGH_RISK Detection ──────────────────────────────────────
+  else if (tvl < 50000 || volumeTvlRatio < 0.3) {
+    regime = 'LOW_LIQ_HIGH_RISK';
+    confidence = 0.65;
+    recommendation = 'AVOID';
+    blockers.push('Insufficient liquidity or trader flow');
+    reasonCodes.push('LOW_LIQUIDITY');
+  }
+  // ─── SIDEWAYS_CHOP Detection ──────────────────────────────────────────
+  else if (Math.abs(priceChangeH1) < 2 && atrPct < 3 && range24hPct < 8) {
+    regime = 'SIDEWAYS_CHOP';
+    confidence = 0.6;
+    recommendation = 'WAIT';
+    blockers.push('Low volatility — IL risk without fee compensation');
+    reasonCodes.push('LOW_VOL', 'TIGHT_RANGE');
+  }
+
+  // Add additional reason codes if not yet set
+  if (reasonCodes.length === 0) {
+    reasonCodes.push('NEUTRAL');
+  }
+
+  // Add fee assessment
+  const feeTvlRatio = pool.feeTvlRatio || 0;
+  if (feeTvlRatio > 0.01) {
+    reasonCodes.push('FEE_OK');
+  } else if (feeTvlRatio > 0) {
+    reasonCodes.push('FEE_LOW');
+  }
+
+  const notes =
+    recommendation === 'evil_panda'
+      ? 'Bullish confluence detected. Evil Panda conditions met.'
+      : recommendation === 'AVOID'
+        ? `Market regime ${regime}. Deploy forbidden.`
+        : recommendation === 'WAIT'
+          ? `Market regime ${regime}. Hold and monitor.`
+          : 'Market conditions insufficient for confident entry.';
+
+  return {
+    regime,
+    confidence,
+    blockers,
+    recommendation,
+    reasonCodes,
+    notes,
+  };
 }
 
 // ─── Update performance history ──────────────────────────────────

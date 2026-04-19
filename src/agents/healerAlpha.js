@@ -25,7 +25,9 @@ import { resolvePositionSnapshot } from '../app/positionSnapshot.js';
 import { getStrategy } from '../strategies/strategyManager.js';
 import { analyzeTradeResult } from '../learn/failureAnalysis.js';
 import { getGmgnSecurity } from '../utils/gmgn.js';
-import { recordExitEvent } from '../db/exitTracking.js';
+import { recordExitEvent, recordCircuitBreakerEvent } from '../db/exitTracking.js';
+import { recordStrategyPerformance } from '../market/strategyLibrary.js';
+import { getRuntimeState, setRuntimeState, flushRuntimeState } from '../runtime/state.js';
 
 
 
@@ -72,6 +74,32 @@ function auditPnlDivergence(event, metadata = null) {
     ...event,
     metadata,
   }).catch(() => {});
+}
+
+function toStrategyId(strategyName) {
+  if (!strategyName) return null;
+  return String(strategyName).toLowerCase().replace(/\s+/g, '_');
+}
+
+async function recordPoolCloseOutcome(poolAddress, pnlPct, reason, strategyUsed = null) {
+  await executionRetry(
+    () => recordClose(poolAddress, { pnlPct, reason }),
+    { maxRetries: 2, delayMs: 500 }
+  );
+
+  const strategyId = toStrategyId(strategyUsed);
+  if (strategyId) {
+    try {
+      recordStrategyPerformance(strategyId, {
+        poolAddress,
+        pnlPct,
+        profitable: pnlPct > 0,
+        closeReason: reason,
+      });
+    } catch (e) {
+      console.warn('[healer] recordStrategyPerformance failed:', e?.message);
+    }
+  }
 }
 
 /**
@@ -616,12 +644,14 @@ export async function executeTool(name, input, notifyFn = null) {
     case 'close_position': {
       // Ambil PnL on-chain sebelum close untuk akurasi pencatatan
       let pnlData = { closeReason: (input.reasoning || 'AGENT_CLOSE').toUpperCase().replace(/ /g, '_') };
+      let closeStrategyUsed = null;
       try {
         const lpPnlMap = await getLpPnlMap();
         const onChain = await getPositionInfo(input.pool_address);
         const match   = onChain?.find(p => p.address === input.position_address);
         if (match) {
           const dbPos      = getOpenPositions().find(p => p.position_address === input.position_address);
+          closeStrategyUsed = dbPos?.strategy_used || null;
           const deployedSol = dbPos?.deployed_sol || 0;
           const currentVal  = match.currentValueSol ?? 0;
           const pnl = resolvePnlSnapshot({
@@ -680,13 +710,17 @@ export async function executeTool(name, input, notifyFn = null) {
         range_efficiency_pct: 50, // default
       }, currentNotify).catch(e => console.error('Post-Mortem error:', e.message));
 
-      // Record ke pool memory — best-effort, jangan gagalkan response jika throw
+      // Record ke pool memory + strategy performance — best-effort
       try {
-        await recordClose(input.pool_address, {
-          pnlPct: pnlData.pnlPct || 0,
-          reason:  pnlData.closeReason || 'AGENT_CLOSE',
-        });
-      } catch { /* best-effort */ }
+        await recordPoolCloseOutcome(
+          input.pool_address,
+          pnlData.pnlPct || 0,
+          pnlData.closeReason || 'AGENT_CLOSE',
+          closeStrategyUsed || pnlData.strategyUsed || null,
+        );
+      } catch (e) {
+        console.warn('[healer] recordPoolCloseOutcome failed:', e?.message);
+      }
 
       // Tunggu 3 detik — token perlu waktu untuk muncul di wallet setelah close
       await new Promise(r => setTimeout(r, 3000));
@@ -790,12 +824,14 @@ export async function executeTool(name, input, notifyFn = null) {
       // Zap Out = close position + guaranteed swap semua token ke SOL
       // Ambil PnL on-chain sebelum close
       let zapPnlData = { closeReason: 'ZAP_OUT' };
+      let zapStrategyUsed = null;
       try {
         const lpPnlMap = await getLpPnlMap();
         const onChain = await getPositionInfo(input.pool_address);
         const match   = onChain?.find(p => p.address === input.position_address);
         if (match) {
           const dbPos      = getOpenPositions().find(p => p.position_address === input.position_address);
+          zapStrategyUsed = dbPos?.strategy_used || null;
           const deployedSol = dbPos?.deployed_sol || 0;
           const currentVal  = match.currentValueSol ?? 0;
           const pnl = resolvePnlSnapshot({
@@ -850,13 +886,17 @@ export async function executeTool(name, input, notifyFn = null) {
         range_efficiency_pct: 50,
       }, currentNotify).catch(e => console.error('Zap Out Post-Mortem error:', e.message));
 
-      // Record ke pool memory — best-effort, jangan gagalkan response jika throw
+      // Record ke pool memory + strategy performance — best-effort
       try {
-        await recordClose(input.pool_address, {
-          pnlPct: zapPnlData.pnlPct || 0,
-          reason:  zapPnlData.closeReason || 'ZAP_OUT',
-        });
-      } catch { /* best-effort */ }
+        await recordPoolCloseOutcome(
+          input.pool_address,
+          zapPnlData.pnlPct || 0,
+          zapPnlData.closeReason || 'ZAP_OUT',
+          zapStrategyUsed || zapPnlData.strategyUsed || null,
+        );
+      } catch (e) {
+        console.warn('[healer] recordPoolCloseOutcome failed:', e?.message);
+      }
 
       // Tunggu 3 detik — token perlu waktu untuk muncul di wallet setelah close
       await new Promise(r => setTimeout(r, 3000));
@@ -1050,6 +1090,11 @@ export async function runHealerAlpha(notifyFn) {
         await closePositionWithPnl(pos.position_address, {
           pnlUsd: 0, pnlPct: 0, feesUsd: 0, pnlSol: 0, feesSol: 0, closeReason: 'MANUAL_CLOSE', lifecycleState: 'closed_reconciled',
         });
+        try {
+          await recordPoolCloseOutcome(pos.pool_address, 0, 'MANUAL_CLOSE', pos.strategy_used);
+        } catch (e) {
+          console.warn('[healer] recordPoolCloseOutcome failed for manual close:', e?.message);
+        }
         clearPositionState(pos.position_address);
         const manualLines = [
           kv('Posisi',   shortAddr(pos.position_address), 10),
@@ -1274,11 +1319,16 @@ export async function runHealerAlpha(notifyFn) {
       }
 
       // Tentukan label + emoji
-      const triggerLabel = trailingTpHit   ? 'Trailing Take Profit'
-        : tpHit             ? 'Take Profit'
-        : maxHoldTriggered  ? 'Max Hold Expired'
-        : oorBinsTriggered  ? 'OOR Bins Exceeded'
-        : 'Stop-Loss';
+      const triggerCode = trailingTpHit   ? 'TRAILING_TAKE_PROFIT'
+        : tpHit             ? 'TAKE_PROFIT'
+        : maxHoldTriggered  ? 'MAX_HOLD_EXIT'
+        : oorBinsTriggered  ? 'OOR_BINS_EXCEEDED'
+        : 'STOP_LOSS';
+      const triggerLabel = triggerCode === 'TRAILING_TAKE_PROFIT' ? 'Trailing Take Profit'
+        : triggerCode === 'TAKE_PROFIT' ? 'Take Profit'
+          : triggerCode === 'MAX_HOLD_EXIT' ? 'Max Hold Exit'
+            : triggerCode === 'OOR_BINS_EXCEEDED' ? 'OOR Bins Exceeded'
+              : 'Stop-Loss';
       const triggerEmoji = trailingTpHit   ? '🎯'
         : tpHit             ? '💰'
         : maxHoldTriggered  ? '⏰'
@@ -1396,19 +1446,44 @@ export async function runHealerAlpha(notifyFn) {
           feeUsd:      realizedFeesUsd,
           pnlSol:      safePnlSol,
           feeSol:      match.feeCollectedSol || 0,
-          closeReason: triggerLabel.toUpperCase().replace(/ /g, '_'),
+          closeReason: triggerCode,
           lifecycleState: 'closed_pending_swap',
         });
         clearPositionState(addr);
 
+        // Record SL streak for circuit breaker persistence
+        if (triggerCode === 'STOP_LOSS') {
+          const nowCb = Date.now();
+          const cbWindowMs = (cfg.slCircuitBreakerWindowMin ?? 60) * 60 * 1000;
+          const cbCount = cfg.slCircuitBreakerCount ?? 3;
+          const cbPauseMs = (cfg.slCircuitBreakerPauseMin ?? 60) * 60 * 1000;
+          const recentSLEvents = getRuntimeState('recent-sl-events', [])
+            .filter(ts => Number.isFinite(ts) && (nowCb - ts) < cbWindowMs);
+          recentSLEvents.push(nowCb);
+          setRuntimeState('recent-sl-events', recentSLEvents);
+          if (recentSLEvents.length >= cbCount) {
+            setRuntimeState('hunter-circuit-breaker', {
+              pausedUntil: nowCb + cbPauseMs,
+              triggeredAt: nowCb,
+              count: recentSLEvents.length,
+            });
+            recordCircuitBreakerEvent({
+              poolAddress:  pos.pool_address,
+              triggeredAt:  nowCb,
+              pausedUntil:  nowCb + cbPauseMs,
+              slCount:      recentSLEvents.length,
+              cbWindowMs,
+              cbPauseMs,
+            });
+          }
+          await flushRuntimeState().catch(() => {});
+        }
+
         // DB updates — best-effort: jangan kirim "❌ Gagal close" kalau ini yang throw
         try { await recordPnlUsd(realizedPnlUsd); } catch { /* best-effort */ }
         try {
-          await executionRetry(() => recordClose(pos.pool_address, {
-            pnlPct: pnlPct,
-            reason: triggerLabel.toUpperCase().replace(/ /g, '_'),
-          }), { maxRetries: 2, delayMs: 500 });
-        } catch (e) { console.warn('[healer] recordClose failed after retries:', e?.message); }
+          await recordPoolCloseOutcome(pos.pool_address, pnlPct, triggerCode, pos.strategy_used);
+        } catch (e) { console.warn('[healer] recordPoolCloseOutcome failed after retries:', e?.message); }
 
         // TAE Tracking: Record exit event for analytics
         try {
@@ -1446,7 +1521,7 @@ export async function runHealerAlpha(notifyFn) {
             pnlUsd: realizedPnlUsd,
             feesClaimedUsd: realizedFeesUsd,
             totalReturnUsd: realizedPnlUsd + realizedFeesUsd,
-            exitTrigger: triggerLabel.toUpperCase().replace(/ /g, '_'),
+            exitTrigger: triggerCode,
             exitZone: _exitZone,
             exitRetracement: _retracementDrop,
             exitRetracementCap: _retracementCap,
@@ -1455,7 +1530,7 @@ export async function runHealerAlpha(notifyFn) {
             lperPatienceActive: _isLPerPatienceActive,
             profitOrLoss: pnlPct > 0 ? 'PROFIT' : pnlPct < 0 ? 'LOSS' : 'BREAKEVEN',
             exitReason: triggerReason || triggerLabel,
-            closeReasonCode: triggerLabel.toUpperCase().replace(/ /g, '_'),
+            closeReasonCode: triggerCode,
           });
         } catch (e) {
           console.warn('[healer] recordExitEvent failed — TAE analytics data lost for', addr, ':', e?.message);
@@ -1913,6 +1988,7 @@ export async function runPanicWatchdog(notifyFn) {
               pnlUsd: posSnapshot.pnlUsd, pnlPct: posSnapshot.pnlPct, feesUsd: posSnapshot.feesUsd,
               closeReason: 'GUARDIAN_ANGEL_DUMP_EXIT', lifecycleState: 'closed_panic'
             }, { isUrgent: true });
+            await recordPoolCloseOutcome(pos.pool_address, pnlPct, 'GUARDIAN_ANGEL_DUMP_EXIT', pos.strategy_used);
 
             if (!isDryRun()) {
                await new Promise(r => setTimeout(r, 2000));
@@ -1982,6 +2058,7 @@ export async function runPanicWatchdog(notifyFn) {
           pnlUsd: posSnapshot.pnlUsd, pnlPct: posSnapshot.pnlPct, feesUsd: posSnapshot.feesUsd,
           closeReason: `ZOMBIE_EXIT_${reason}`, lifecycleState: 'closed_zombie'
         }, { isUrgent: true });
+        await recordPoolCloseOutcome(pos.pool_address, pnlPct, `ZOMBIE_EXIT_${reason}`, pos.strategy_used);
         if (!isDryRun()) {
           await new Promise(r => setTimeout(r, 2000));
           try {
@@ -2070,6 +2147,7 @@ export async function runPanicWatchdog(notifyFn) {
           pnlUsd: posSnapshot.pnlUsd, pnlPct: posSnapshot.pnlPct, feesUsd: posSnapshot.feesUsd,
           closeReason: `TAE_WATCHDOG_EXIT_${zone.replace(/ /g, '_')}`, lifecycleState: 'closed_panic'
         }, { isUrgent: true });
+        await recordPoolCloseOutcome(pos.pool_address, pnlPct, `TAE_WATCHDOG_EXIT_${zone.replace(/ /g, '_')}`, pos.strategy_used);
           if (!isDryRun()) {
             await new Promise(r => setTimeout(r, 2000));
             try {
@@ -2127,6 +2205,7 @@ export async function runPanicWatchdog(notifyFn) {
             pnlUsd: posSnapshot.pnlUsd, pnlPct: posSnapshot.pnlPct, feesUsd: posSnapshot.feesUsd,
             closeReason: `TAE_WATCHDOG_MOMENTUM_EXIT_${zone.replace(/ /g, '_')}`, lifecycleState: 'closed_profit'
           }, { isUrgent: true });
+          await recordPoolCloseOutcome(pos.pool_address, pnlPct, `TAE_WATCHDOG_MOMENTUM_EXIT_${zone.replace(/ /g, '_')}`, pos.strategy_used);
           if (!isDryRun()) {
             await new Promise(r => setTimeout(r, 2000));
             try {
@@ -2190,6 +2269,7 @@ export async function runPanicWatchdog(notifyFn) {
           closeReason: 'OOR_HARD_EXIT_WATCHDOG',
           lifecycleState: 'closed_oor'
         }, { isUrgent: true });
+        await recordPoolCloseOutcome(pos.pool_address, pnlPct, 'OOR_HARD_EXIT_WATCHDOG', pos.strategy_used);
         
         if (!isDryRun()) {
           await new Promise(r => setTimeout(r, 2000));
@@ -2321,6 +2401,7 @@ export async function runPanicWatchdog(notifyFn) {
           closeReason: 'PANIC_EXIT_BEARISH_OOR',
           lifecycleState: 'closed_panic'
         }, { isUrgent: true });
+        await recordPoolCloseOutcome(pos.pool_address, pnlPct, 'PANIC_EXIT_BEARISH_OOR', pos.strategy_used);
 
         // 🛡️ ZERO DUST PROTOCOL: Instan Swap Balik ke SOL
         if (closeResult && !isDryRun()) {
@@ -2389,6 +2470,7 @@ export async function runPanicWatchdog(notifyFn) {
           closeReason: 'PROFIT_PROTECTION_BEARISH',
           lifecycleState: 'closed_profit_protection'
         }, { isUrgent: true });
+        await recordPoolCloseOutcome(pos.pool_address, pnlPct, 'PROFIT_PROTECTION_BEARISH', pos.strategy_used);
 
         // 🛡️ ZERO DUST PROTOCOL: Instan Swap Balik ke SOL
         if (closeResult && !isDryRun()) {

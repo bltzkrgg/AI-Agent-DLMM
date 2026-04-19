@@ -15,7 +15,7 @@ import { getConfig, getThresholds, updateConfig, isConfigKeySupported } from './
 import { handleConfirmationReply, getSafetyStatus, setStartingBalanceUsd } from './safety/safetyManager.js';
 import { evolveFromTrades, getMemoryStats, getInstinctsContext } from './market/memory.js';
 import { extractStrategiesFromArticle, summarizeArticle } from './market/researcher.js';
-import { getLibraryStats } from './market/strategyLibrary.js';
+import { getLibraryStats, loadLibrary } from './market/strategyLibrary.js';
 import { screenToken, formatScreenResult } from './market/coinfilter.js';
 import { safeNum, escapeHTML } from './utils/safeJson.js';
 import { getOpenPositions, getPositionStats, listPendingReconcileIssues, listRecentFailedOperations } from './db/database.js';
@@ -35,6 +35,7 @@ import { getWalletPositions, isLPAgentEnabled } from './market/lpAgent.js';
 import { validateRuntimeEnv } from './runtime/env.js';
 import { resolvePositionSnapshot } from './app/positionSnapshot.js';
 import { evaluateDeployReadiness } from './app/deployReadiness.js';
+import { getWorktreeHealth } from './app/worktreeHealth.js';
 import { DbBackup } from './db/backup.js';
 import { initializeRpcManager, getRpcMetrics } from './utils/helius.js';
 import { CircuitBreaker } from './safety/circuitBreaker.js';
@@ -310,6 +311,7 @@ function getDeployReadinessSnapshot() {
   const cbState = circuitBreaker.getState();
   const guard = summarizeEntryGuard();
   const failedOps = listRecentFailedOperations(6, 50);
+  const worktree = getWorktreeHealth();
   const taeSummary = getTAESummary() || {};
   const taeExitCount = getExitEventCount();
   const taeWinRatePct = Number(taeSummary.overall_win_rate);
@@ -329,12 +331,16 @@ function getDeployReadinessSnapshot() {
     taeWinRatePct: Number.isFinite(taeWinRatePct) ? taeWinRatePct : null,
     minTaeSamplesForFullStage: cfgNow.minTaeSamplesForFullStage,
     minTaeWinRateForFullStage: cfgNow.minTaeWinRateForFullStage,
+    worktreeClean: worktree.clean,
+    worktreeDirtyCount: worktree.dirtyCount,
+    worktreeCheckAvailable: worktree.available,
   });
 
   return {
     cfgNow,
     cbState,
     guard,
+    worktree,
     failedOps,
     taeExitCount,
     taeWinRatePct: Number.isFinite(taeWinRatePct) ? taeWinRatePct : null,
@@ -1293,6 +1299,38 @@ bot.onText(/\/library/, (msg) => {
   bot.sendMessage(msg.chat.id, text, { parse_mode: 'HTML' });
 });
 
+// /strategy_report — per-strategy performance: trades, win rate, avg PnL, confidence
+bot.onText(/\/strategy_report/, (msg) => {
+  if (msg.from.id !== ALLOWED_ID) return;
+  const chatId = msg.chat.id;
+  const library = loadLibrary();
+  const strategies = library.strategies || [];
+
+  if (strategies.length === 0) {
+    bot.sendMessage(chatId, `📊 Strategy library kosong.`, { parse_mode: 'HTML' });
+    return;
+  }
+
+  let text = `📊 <b>Strategy Performance Report</b>\n\n`;
+
+  for (const s of strategies) {
+    const history = Array.isArray(s.performanceHistory) ? s.performanceHistory : [];
+    const trades   = history.length;
+    const wins     = history.filter(p => p.profitable).length;
+    const winRate  = trades > 0 ? ((wins / trades) * 100).toFixed(0) : '—';
+    const avgPnl   = trades > 0
+      ? (history.reduce((sum, p) => sum + (Number(p.pnlPct) || 0), 0) / trades).toFixed(2)
+      : '—';
+    const conf     = typeof s.confidence === 'number' ? (s.confidence * 100).toFixed(0) + '%' : '—';
+
+    text += `<b>${escapeHTML(s.name)}</b> <i>(${escapeHTML(s.id)})</i>\n`;
+    text += `  Trades: ${trades} | Win: ${winRate}% | Avg PnL: ${avgPnl}% | Conf: ${conf}\n\n`;
+  }
+
+  text += `<i>Confidence diperbarui otomatis setelah 3+ trade.</i>`;
+  bot.sendMessage(chatId, text, { parse_mode: 'HTML' });
+});
+
 // Research sessions state
 const researchSessions = new Map();
 
@@ -1584,6 +1622,38 @@ bot.onText(/\/claim(?:\s+(\S+))?/, async (msg, match) => {
   }
 });
 
+// /claim_fees <positionAddress> — alias for /claim (ergonomic Telegram shorthand)
+bot.onText(/\/claim_fees(?:\s+(\S+))?/, async (msg, match) => {
+  if (msg.from.id !== ALLOWED_ID) return;
+  const chatId = msg.chat.id;
+  const positionAddress = match[1]?.trim();
+  if (!positionAddress) {
+    bot.sendMessage(chatId, `ℹ️ Gunakan: <code>/claim_fees &lt;position_address&gt;</code>`, { parse_mode: 'HTML' });
+    return;
+  }
+
+  const openPos = getOpenPositions();
+  const pos = openPos.find(p => p.position_address === positionAddress);
+  if (!pos) {
+    bot.sendMessage(chatId, `❌ Posisi <code>${escapeHTML(positionAddress)}</code> tidak ditemukan di open positions.`, { parse_mode: 'HTML' });
+    return;
+  }
+
+  bot.sendMessage(chatId, `💸 Claiming fees untuk <code>${escapeHTML(positionAddress.slice(0, 8))}...</code>`, { parse_mode: 'HTML' }).catch(() => { });
+  try {
+    await claimFees(pos.pool_address, pos.position_address);
+    bot.sendMessage(chatId,
+      `✅ <b>Claim berhasil</b>\n\n` +
+      `Position: <code>${escapeHTML(pos.position_address)}</code>\n` +
+      `Pool: <code>${escapeHTML(pos.pool_address)}</code>\n\n` +
+      `<i>Tip: jalankan /status untuk lihat update fee/PnL terbaru.</i>`,
+      { parse_mode: 'HTML' }
+    ).catch(() => { });
+  } catch (e) {
+    bot.sendMessage(chatId, `❌ Claim gagal: <code>${escapeHTML(e.message)}</code>`, { parse_mode: 'HTML' }).catch(() => { });
+  }
+});
+
 // /rollback or /safemode — harden runtime before intervention/deploy
 bot.onText(/\/(?:rollback|safemode)/, (msg) => {
   if (msg.from.id !== ALLOWED_ID) return;
@@ -1760,10 +1830,17 @@ bot.onText(/\/preflight/, async (msg) => {
   const chatId = msg.chat.id;
   try {
     const snap = getDeployReadinessSnapshot();
-    const { readiness, cfgNow, guard, cbState, taeExitCount, taeWinRatePct } = snap;
+    const { readiness, cfgNow, guard, cbState, taeExitCount, taeWinRatePct, worktree } = snap;
     const blockersText = readiness.blockers.length ? readiness.blockers.join('\n') : 'none';
     const warningsText = readiness.warnings.length ? readiness.warnings.join('\n') : 'none';
     const status = readiness.ready ? '✅ READY' : '⛔ BLOCKED';
+    const worktreeLabel = worktree.available
+      ? `${worktree.clean ? 'CLEAN' : `DIRTY (${worktree.dirtyCount})`}`
+      : 'UNKNOWN';
+    const worktreeSample = (worktree.sample || []).length
+      ? `\nDirty Sample:\n${worktree.sample.join('\n')}`
+      : '';
+    const worktreeError = worktree.error ? `\nCheck Error: ${worktree.error}` : '';
 
     const text = [
       `🧪 <b>Preflight Check</b>`,
@@ -1775,6 +1852,7 @@ bot.onText(/\/preflight/, async (msg) => {
       `Circuit Breaker: <code>${cbState.state}</code>`,
       `Pending Reconcile: <code>${guard.pendingReconcile}</code>`,
       `Manual Review Open: <code>${guard.manualReviewOpen}</code>`,
+      `Worktree: <code>${worktreeLabel}</code>`,
       `TAE Samples: <code>${taeExitCount}</code>`,
       `TAE Win Rate: <code>${Number.isFinite(taeWinRatePct) ? `${taeWinRatePct.toFixed(1)}%` : 'N/A'}</code>`,
       ``,
@@ -1782,6 +1860,8 @@ bot.onText(/\/preflight/, async (msg) => {
       `<pre><code>${escapeHTML(blockersText)}</code></pre>`,
       `<b>Warnings</b>`,
       `<pre><code>${escapeHTML(warningsText)}</code></pre>`,
+      `<b>Worktree Detail</b>`,
+      `<pre><code>${escapeHTML(`${worktreeLabel}${worktreeSample}${worktreeError}`)}</code></pre>`,
       `<i>Tip: gunakan /health untuk incident detail, /rollback untuk safe-mode cepat.</i>`,
     ].join('\n');
     await bot.sendMessage(chatId, text, { parse_mode: 'HTML' });

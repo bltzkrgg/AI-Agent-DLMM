@@ -57,6 +57,9 @@ const DEFAULTS = {
   outOfRangeWaitMinutes: 30,
   outOfRangeBinsToClose: 10, // Tutup posisi jika OOR lebih dari N bins
   maxHoldHours: 6,           // Force close position after 6h — dead capital cleanup
+  slCircuitBreakerCount: 3,
+  slCircuitBreakerWindowMin: 60,
+  slCircuitBreakerPauseMin: 60,
   minFeeClaimUsd: 1.0,
 
   // OOR-specific pool cooldown
@@ -174,6 +177,9 @@ const CONFIG_BOUNDS = {
   outOfRangeWaitMinutes: { min: 1, max: 1440 },
   outOfRangeBinsToClose: { min: 1, max: 200 },
   maxHoldHours: { min: 1, max: 168 },
+  slCircuitBreakerCount: { min: 2, max: 20 },
+  slCircuitBreakerWindowMin: { min: 5, max: 1440 },
+  slCircuitBreakerPauseMin: { min: 5, max: 1440 },
   oorCooldownTriggerCount: { min: 1, max: 20 },
   oorCooldownHours: { min: 1, max: 168 },
   minFeeClaimUsd: { min: 0.01, max: 1000 },

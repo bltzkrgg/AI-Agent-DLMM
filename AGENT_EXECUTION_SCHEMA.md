@@ -1,671 +1,241 @@
-# AGENT EXECUTION SCHEMA: Deep Fishing SOL DLMM Strategy
+# Agent Execution Schema
 
-**Status:** Detailed execution flow for -86% to -94% single-position deployment  
-**Date:** 2026-04-14
-
----
-
-## 🎯 OVERVIEW
-
-Agent flow untuk **satu posisi** dengan strategi Deep Fishing:
-```
-SIGNAL DETECTION → POOL SELECTION → BIN CALCULATION → BIN CHUNKING → EXECUTION
-```
+Generalized decision taxonomy and structured decision context for entry, hold, and exit flows.
 
 ---
 
-## PHASE 1: SIGNAL DETECTION & ENTRY CONFIRMATION
+## What Changed (2026-04-19)
 
-### Step 1.1: Monitor Supertrend Trend State
+| Module | Change |
+|--------|--------|
+| `src/agents/hunterAlpha.js` | Gates entry with `classifyMarketRegime()` — emits `REGIME_BEAR_DEFENSE` policy block |
+| `src/agents/healerAlpha.js` | Max-hold forced exit emits `exitTrigger: MAX_HOLD_EXIT` (not EXPIRED) |
+| `src/agents/healerAlpha.js` | Calls `recordStrategyPerformance()` on close — updates `strategy-library.json` performanceHistory |
+| `src/runtime/state.js` | `hunter-circuit-breaker` + `recent-sl-events` persisted to `runtime-state.json` (survives restart) |
+| `src/strategies/strategyManager.js` | `Deep Fishing` added to BASELINE_STRATEGIES |
+| `src/strategies/strategyManager.js` | `parseStrategyParameters`: `strategyType` now derives from `deploy.strategyType` or strategy type mapping |
 
-```javascript
-// Track previous and current trend state
-const prevTrend = hunterAlpha.supertrend?.trend;  // From last scan (15m)
-const currentTrend = calculateSupertrend(candles)[trend];
+---
 
-// Every scan cycle, compare:
-const isTrendFlip = prevTrend !== currentTrend;
+## Canonical Reason Code Table
 
-Example:
-  prevTrend = 'BEARISH'    ← Last 15m candle closed bearish
-  currentTrend = 'BULLISH' ← Current 15m candle now bullish
-  isTrendFlip = TRUE ✅     ← SIGNAL DETECTED
-```
+> Single source of truth. All docs and operator messages reference these exact codes.
 
-### Step 1.2: Wait for 15m Candle Close Confirmation
+### Entry Codes — emitted by `hunterAlpha.js`
 
-```
-Timeline:
-T=0s   Supertrend flip detected
-       Price touches above Supertrend line (intra-candle)
-       ❌ NOT YET - wait for candle close
+| Code | Description | Condition | Where Emitted |
+|------|-------------|-----------|---------------|
+| `SUPERTREND_BULL` | Supertrend 15m in BULLISH state | supertrend.trend === 'BULLISH' | hunterAlpha — entry evaluation |
+| `HTF_CONFIRMED` | 1h timeframe momentum aligned | momentum aligned with 15m signal | hunterAlpha — entry evaluation |
+| `ATR_OK` | Volatility sufficient for IL protection | atrPct > minAtrPctForEntry | hunterAlpha — entry evaluation |
+| `FEE_VELOCITY_UP` | Fee accumulation trend positive | consecutive rising feeTvlRatio samples | hunterAlpha — entry evaluation |
+| `SMART_WALLET_HIT` | Smart money accumulation detected | whale_wallet_activity > threshold | hunterAlpha — smart wallet scan |
+| `DARWIN_SCORE_HIGH` | AI-adjusted entry confidence high | darwinScore > 0.65 | hunterAlpha — darwin scoring |
 
-T=5s   Price still above Supertrend but candle not closed
-       ❌ NOT YET - wait for candle close
+### Hold Codes — emitted by `healerAlpha.js`
 
-T=15m  Candle CLOSES with Close Price > Supertrend line
-       ✅ CONFIRMED - Ready to deploy
+| Code | Description | Condition | Where Emitted |
+|------|-------------|-----------|---------------|
+| `TREND_RECOVERY_HOLD` | Trend recovering but not reversed | supertrend stable, price recovering | healerAlpha — hold decision |
+| `TP_TRAILING_ACTIVE` | Trailing take-profit in motion | trailingTriggerPct achieved, monitoring peak | healerAlpha — trailing TP path |
+| `BULLISH_CONFLUENCE` | Multiple bullish signals aligned | 3+ entry codes active simultaneously | healerAlpha — hold decision |
 
-T=15m + 2s Execute deployment
-```
+### Exit Codes — emitted as `exitTrigger` / `closeReasonCode` by `healerAlpha.js`
 
-### Step 1.3: Pre-Deployment Price Check
+> ⚠️ **Split naming:** Some watchdog paths emit different values for `exitTrigger` (analytics/DB field) and `closeReasonCode` (DB record). Both columns are authoritative for their respective fields. Do NOT treat them as interchangeable.
 
-```javascript
-// At deployment time, check CURRENT price (may have moved since signal)
-const signalPrice = $2000;      // Price saat flip terdeteksi
-const currentPrice = $2050;     // Price saat siap deploy (5% pump)
+#### Main Loop — `exitTrigger` = `closeReasonCode` (consistent)
 
-// If price moved significantly (>2%), might want to wait for next candle
-// OR proceed with updated price calculation (user preference)
-if (Math.abs(currentPrice - signalPrice) / signalPrice > 0.02) {
-  logger.warn(`Price moved ${(currentPrice-signalPrice)/signalPrice*100}% since signal`);
-  // Option A: Proceed dengan updated price
-  // Option B: Skip dan tunggu next signal
+| Code | Description | Condition | Where Emitted |
+|------|-------------|-----------|---------------|
+| `TRAILING_TAKE_PROFIT` | Peak profit trailing drop exceeded | peak - current > trailingDropPct | healerAlpha — main loop |
+| `TAKE_PROFIT` | Static profit threshold reached | pnlPct >= takeProfitFeePct | healerAlpha — main loop |
+| `MAX_HOLD_EXIT` | Force close after maxHoldHours (dead capital) | positionAge >= maxHoldHours × 60 min | healerAlpha — main loop |
+| `STOP_LOSS` | Drawdown threshold breached | pnlPct < -stopLossPct | healerAlpha — main loop |
+| `OOR_BINS_EXCEEDED` | Price out-of-range bin count exceeded limit | outOfRangeBins >= outOfRangeBinsToClose | healerAlpha — main loop |
+
+#### Watchdog Sub-loops — `exitTrigger` ≠ `closeReasonCode` (⚠️ split)
+
+| exitTrigger | closeReasonCode | Condition | Watchdog |
+|-------------|----------------|-----------|---------|
+| `GUARDIAN_ANGEL_DUMP` | `GUARDIAN_ANGEL_DUMP_EXIT` | Price dump velocity > guardian threshold | guardian watchdog |
+| `ZOMBIE_EXIT` | `ZOMBIE_EXIT_${reason}` (dynamic) | Fees zero + price stagnant | zombie watchdog |
+| `TRAILING_TP_HIT` | `TAE_WATCHDOG_EXIT_${zone}` (dynamic) | Trailing TP hit in TAE zone | TAE watchdog |
+| `SUPERTREND_FLIP` | `TAE_WATCHDOG_MOMENTUM_EXIT_${zone}` (dynamic) | Supertrend flipped BEARISH in TAE zone | TAE watchdog |
+| `OOR_BAILOUT` | `OOR_HARD_EXIT_WATCHDOG` | OOR beyond bail threshold | OOR watchdog |
+| `PANIC_EXIT_BEARISH_OOR` | `PANIC_EXIT_BEARISH_OOR` | OOR + bearish panic — both fields consistent | OOR panic watchdog |
+| `PROFIT_PROTECTION` | `PROFIT_PROTECTION_BEARISH` | Profit threshold + bearish flip detected | profit-protection watchdog |
+
+#### Other Exits — operator initiated (`exitTrigger` = `closeReasonCode`)
+
+| Code | Description | Where Emitted |
+|------|-------------|---------------|
+| `MANUAL_CLOSE` | Operator-initiated close | healerAlpha — tool execution |
+| `AGENT_CLOSE` | AI agent-initiated close | healerAlpha — tool execution |
+| `ZAP_OUT` | Close position + swap all tokens to SOL | healerAlpha — zap_out path |
+
+#### Schema-only — NOT emitted to DB (⚠️ risk P0-A)
+
+| Code | Status | Notes |
+|------|--------|-------|
+| `SL_CLUSTER_THRESHOLD_MET` | Schema-only, not in src | Side-effect of SL cluster → sets circuit breaker in runtime-state.json. The triggering SL close records `STOP_LOSS`, not this code. See P0-A in residual risks. |
+
+### Blocked Codes — emitted by `hunterAlpha.js` (entry blocked, no position opened)
+
+| Code | Description | Condition | Where Emitted |
+|------|-------------|-----------|---------------|
+| `REGIME_BEAR_DEFENSE` | Market regime bearish — hard entry block | classifyMarketRegime() === 'BEAR_DEFENSE' | hunterAlpha — regime check |
+| `CIRCUIT_BREAKER_ACTIVE` | Circuit breaker paused (persisted in runtime-state.json) | hunter-circuit-breaker.pausedUntil > now | hunterAlpha — top of runHunterAlpha |
+| `FAIL_SAFE_UNRELIABLE_DATA` | Oracle/TA data unreliable — all entries blocked | failSafeModeOnDataUnreliable=true AND (!dataReliable OR !taReliable) | hunterAlpha — Phase 2.0b data guard |
+| `TREND_BEARISH` | Supertrend BEARISH signal | supertrend.trend === 'BEARISH' | hunterAlpha — entry evaluation |
+| `ATR_LOW` | Volatility too low for safe entry | atrPct < minAtrPctForEntry | hunterAlpha — entry evaluation |
+| `FEE_VELOCITY_DOWN` | Fee declining — unfavorable entry | 3-sample feeTvlRatio strictly descending | hunterAlpha — entry evaluation |
+| `HTF_NULL_STRICT_ATR` | 1h data missing + ATR below threshold | history null AND atrPct < 2.0 | hunterAlpha — Phase 2.0b guard |
+
+> **`SL_COOLDOWN_ACTIVE` — Healer HOLD-delay only, not a Hunter block.**  
+> This code applies inside `healerAlpha.js` when a recent stop-loss creates a hold delay before the next close decision. It does NOT block hunter from opening new positions. The hunter's equivalent gate is `CIRCUIT_BREAKER_ACTIVE`.
+
+---
+
+## Structured Decision Context Schema
+
+```json
+{
+  "decisionType": "EXIT" | "ENTRY" | "HOLD",
+  "trigger": "STOP_LOSS" | "TAKE_PROFIT" | "SUPERTREND_BULL" | "...",
+  "confidence": 0.92,
+  "blockers": ["SL_COOLDOWN_RECORDED"],
+  "safeguardsApplied": ["SL_COOLDOWN_RECORDED", "POOL_MEMORY_UPDATED"],
+  "fallbackUsed": false,
+  "positionAge": 142,
+  "pnlPct": -10.3,
+  "regimeAtEntry": "BULL_TREND",
+  "regimeAtDecision": "BEAR_DEFENSE",
+  "reasonCodes": ["SUPERTREND_BULL", "FEE_VELOCITY_UP"],
+  "notes": "Supertrend flip detected + drawdown threshold. Stop-loss executed."
 }
 ```
 
----
-
-## PHASE 2: POOL SELECTION LOGIC
-
-### Step 2.1: Filter Available Pools
-
-```
-Inputs:
-  - Token pair (e.g., WETH/SOL)
-  - Liquidity threshold (min $10k)
-  - Active trading pools only
-  - Current price verification
-
-Filter criteria:
-  ✅ Pool exists on Meteora
-  ✅ Has sufficient liquidity for 0.5 SOL deployment
-  ✅ Price data available and recent
-  ✅ No restrictions or paused status
-```
-
-### Step 2.2: BinStep Selection with Adaptive Range Check
-
-```
-Selection Priority: 100 > 125
-
-Strategy:
-  1. Try BinStep 100 → Calculate range width for -86% to -94%
-     
-     If range ≤ 250 bins → SELECT this pool ✅
-     If range > 250 bins → Try BinStep 125 instead
-  
-  2. Try BinStep 125 → Calculate range width
-     
-     If range ≤ 250 bins → SELECT this pool ✅
-     If range > 250 bins → Consider split across positions
-  
-  3. No valid pool → Wait for next scan cycle ⏳
-
-Why adaptive?
-  BinStep 100 = finer precision (more bins needed for -86% to -94%)
-  BinStep 125 = coarser precision (fewer bins for same range)
-  
-  If calculated range too wide (>250), switch to coarser BinStep
-  This keeps transaction complexity manageable
-
-Example:
-┌────────────────────────────────────────────────────┐
-│ WETH/SOL Pool A: BinStep 100                       │
-│   Range for -86% to -94% = 6 bins ≤ 250 ✅        │
-│   → SELECT THIS POOL                               │
-├────────────────────────────────────────────────────┤
-│ WETH/SOL Pool B: BinStep 125 (backup)              │
-│   Range for -86% to -94% = 4 bins ≤ 250 ✅        │
-│   → Use if Pool A unavailable                      │
-├────────────────────────────────────────────────────┤
-│ BONK/SOL Pool: BinStep 200 → SKIP ❌               │
-│   (Not in priority list)                           │
-└────────────────────────────────────────────────────┘
-```
-
-### Step 2.3: Selected Pool State Capture
-
-```javascript
-const selectedPool = {
-  pair: 'WETH/SOL',
-  binStep: 100,                 // or 125 if range > 250 bins
-  currentPrice: 2000,           // Price NOW (at deployment time)
-  activeBin: 10000,             // Which bin contains current price
-  existingLiquidity: 150000,    // $ liquidity in pool
-  feeBps: 250,                  // 2.5% fee tier
-  lastUpdated: Date.now(),
-  rangeWidth: 4,                // bins needed for -86% to -94%
-  maxBinsAllowed: 250           // constraint
-};
-
-logger.info(`Selected: ${selectedPool.pair} with BinStep ${selectedPool.binStep}`);
-logger.info(`Range width: ${selectedPool.rangeWidth} bins (limit: ${selectedPool.maxBinsAllowed})`);
-```
+**Field Descriptions:**
+- **decisionType** — ENTRY, HOLD, EXIT
+- **trigger** — Primary reason code driving decision
+- **confidence** — 0.0–1.0 decision certainty
+- **blockers** — Overriding conditions preventing execution
+- **safeguardsApplied** — Risk management steps taken
+- **fallbackUsed** — Whether fallback logic was invoked
+- **positionAge** — Minutes since entry
+- **pnlPct** — Current P&L percentage
+- **regimeAtEntry** — Market regime at entry time (from `classifyMarketRegime`)
+- **regimeAtDecision** — Current market regime
+- **reasonCodes** — Array of applicable reason codes
+- **notes** — Human-readable summary
 
 ---
 
-## PHASE 3: BIN CALCULATION FOR OFFSETS
+## Flow Examples
 
-### Step 3.1: Offset-to-Bin Conversion
+### Entry Flow
 
-**User Requirement:** -86% to -94% range  
-**Current Price:** $2000  
-**BinStep:** 100 (or 125 if width > 250 bins)
-
-```
-Offset formula:
-  logPriceRatio(offset) = ln(1 - offset/100)
-  logBinFactor = binStep * ln(1.0001)
-  offsetBins = |logPriceRatio / logBinFactor|
-
-Calculation for BinStep = 100:
-  logBinFactor = 100 * ln(1.0001) = 100 * 0.00009999 ≈ 0.01
-
-For offsetMin = -86%:
-  logPriceRatio = ln(1 - (-86/100)) = ln(1.86) ≈ 0.619
-  offsetMinBins = 0.619 / 0.01 ≈ 62 bins below active
-  
-For offsetMax = -94%:
-  logPriceRatio = ln(1 - (-94/100)) = ln(1.94) ≈ 0.663
-  offsetMaxBins = 0.663 / 0.01 ≈ 66 bins below active
-
-Range width = 66 - 62 = 4 bins ✅ (fits in single transaction!)
-
-Comparison with BinStep = 125:
-  logBinFactor = 125 * 0.00009999 ≈ 0.0125
-  offsetMinBins ≈ 49 bins
-  offsetMaxBins ≈ 53 bins
-  Range width = 4 bins (even tighter!)
-```
-
-### Step 3.2: Calculate Bin Range
-
-```javascript
-// Current state (with BinStep 100)
-const activeBin = 10000;
-const offsetMinBins = 62;   // -86% offset
-const offsetMaxBins = 66;   // -94% offset
-
-// Range calculation
-const rangeMax = activeBin - offsetMinBins;  // TOP of range (shallower)
-const rangeMin = activeBin - offsetMaxBins;  // BOTTOM of range (deeper)
-
-// Result
-const binRange = {
-  top: 9938,      // rangeMax (corresponds to -86%)
-  bottom: 9934,   // rangeMin (corresponds to -94%)
-  width: 4        // Total bins for deployment
-};
-
-logger.info(`Deploy range: bin ${binRange.bottom} to ${binRange.top} (width: ${binRange.width})`);
-
-// Check range width constraint
-if (binRange.width > 250) {
-  logger.warn(`Range too wide (${binRange.width} > 250), try BinStep 125`);
-  // Recalculate with BinStep 125
+```json
+{
+  "decisionType": "ENTRY",
+  "trigger": "SUPERTREND_BULL",
+  "confidence": 0.87,
+  "blockers": [],
+  "safeguardsApplied": ["REGIME_CHECK_PASSED", "FEE_VELOCITY_CONFIRMED"],
+  "fallbackUsed": false,
+  "positionAge": 0,
+  "pnlPct": 0,
+  "regimeAtEntry": "BULL_TREND",
+  "regimeAtDecision": "BULL_TREND",
+  "reasonCodes": ["SUPERTREND_BULL", "HTF_CONFIRMED", "FEE_VELOCITY_UP", "ATR_OK"],
+  "notes": "Evil Panda entry: Supertrend BULLISH confirmed, 1h momentum aligned, fees rising. Deploying 0.5 SOL."
 }
 ```
 
-### Step 3.3: Verify Range Against Price
+### Hold Flow
 
-```javascript
-// Convert bins back to price for verification
-const topBinPrice = currentPrice / (1.0001 ** offsetMinBins);
-const bottomBinPrice = currentPrice / (1.0001 ** offsetMaxBins);
-
-// Verification:
-Example (with BinStep 100):
-  Current price: $2000
-  offsetMinBins: 62
-  offsetMaxBins: 66
-  
-  Top bin: $2000 / (1.0001 ^ 62) ≈ $2000 * 0.94 = $1880 ← Wait, this is wrong...
-  
-  Actually for NEGATIVE offsets:
-  Top bin ($2000 at -86%): $2000 - (0.86 * $2000) = $280   ← 86% drop
-  Bottom bin ($2000 at -94%): $2000 - (0.94 * $2000) = $120 ← 94% drop
-  Range: $280 to $120 ✅
-
-// Sanity check
-if (topBinPrice < bottomBinPrice) {
-  logger.error(`Invalid range: top ${topBinPrice} should be > bottom ${bottomBinPrice}`);
-  return null;  // Abort deployment
+```json
+{
+  "decisionType": "HOLD",
+  "trigger": "TREND_RECOVERY_HOLD",
+  "confidence": 0.71,
+  "blockers": [],
+  "safeguardsApplied": ["TRAILING_TP_UPDATED"],
+  "fallbackUsed": false,
+  "positionAge": 73,
+  "pnlPct": 3.2,
+  "regimeAtEntry": "BULL_TREND",
+  "regimeAtDecision": "BULL_TREND",
+  "reasonCodes": ["BULLISH_CONFLUENCE", "TP_TRAILING_ACTIVE"],
+  "notes": "Position in profit. Supertrend stable. Trailing take-profit active at peak +3.2%. Holding for further gains."
 }
+```
 
-// Also check: range width constraint
-if ((rangeMax - rangeMin) > 250) {
-  logger.error(`Range width ${rangeMax - rangeMin} exceeds 250 bins limit`);
-  return null;  // Abort or retry with BinStep 125
+### Exit Flow
+
+```json
+{
+  "decisionType": "EXIT",
+  "trigger": "STOP_LOSS",
+  "confidence": 0.98,
+  "blockers": [],
+  "safeguardsApplied": ["SL_COOLDOWN_RECORDED", "POOL_MEMORY_UPDATED", "CIRCUIT_BREAKER_CHECKED", "POSITION_CLOSED"],
+  "fallbackUsed": false,
+  "positionAge": 142,
+  "pnlPct": -7.8,
+  "regimeAtEntry": "BULL_TREND",
+  "regimeAtDecision": "BEAR_DEFENSE",
+  "reasonCodes": ["STOP_LOSS", "SUPERTREND_FLIP"],
+  "notes": "Stop-loss triggered at -7.8%. Supertrend flipped to BEARISH. Closed position, SL cooldown 120min recorded, circuit breaker count incremented."
 }
 ```
 
 ---
 
-## PHASE 4: BIN CHUNKING STRATEGY
+## Agent Integration Points
 
-### Step 4.1: Chunk Size Constraints
+**Hunter (Entry):**
+- Classify regime: `const regime = classifyMarketRegime(snapshot)`
+- Hard block: `if (regime?.regime === 'BEAR_DEFENSE') → return blocked with policy: 'REGIME_BEAR_DEFENSE'`
+- Check circuit breaker: reads `hunter-circuit-breaker` from `runtime-state.json` (persisted across restart)
+- Build context: populate `decisionType: "ENTRY"` and `reasonCodes`
 
-```
-Solana transaction limits:
-  - Max bins per transaction: ~50 bins (hardcoded constraint)
-  - Max instructions: ~1200 compute units per bin add
-  
-For -86% to -94% range:
-  BinStep 100: 4 bins
-  BinStep 125: ~3-4 bins
-  Max bins per transaction: 50
-  Required transactions: ceil(4 / 50) = 1 transaction ✅
-  
-Deploy strategy: SINGLE CHUNK (all 4 bins in one TX)
-```
-
-### Step 4.2: Amount Allocation Per Chunk
-
-```javascript
-// User config
-const totalDeployAmount = 0.5;  // SOL
-
-// For Deep Fishing strategy with 4 bins (BinStep 100):
-const chunks = [];
-const rangeWidth = 4;  // bins 9934-9938
-
-// Chunk 0 (bins 9934-9938): FULL AMOUNT
-chunks[0] = {
-  binStart: 9934,
-  binEnd: 9938,
-  amountSol: 0.5,      // 100% of budget
-  amountX: 0,          // No other token (single-side SOL)
-  txIndex: 0
-};
-
-// Since range is only 4 bins, no need for additional chunks
-logger.info(`Single chunk deployment: ${chunks[0].amountSol} SOL across ${rangeWidth} bins`);
-```
-
-### Step 4.3: Liquidity Distribution Across Bins
-
-```
-Distribution strategy for Deep Fishing:
-  Goal: Maximize fee capture if price drops to -86% to -94%
-  Approach: EVEN distribution across bins (no weighting)
-
-Example for 4 bins with 0.5 SOL (BinStep 100):
-  Bin 9938: 0.125 SOL  ← Top of range (-86%)
-  Bin 9937: 0.125 SOL
-  Bin 9936: 0.125 SOL
-  Bin 9934: 0.125 SOL  ← Bottom of range (-94%)
-  
-Total: 0.5 SOL spread evenly ✅
-Per-bin: 0.125 SOL
-
-Why even? 
-  - Deep Fishing expects crash to move through entire zone
-  - No specific price prediction within -86% to -94% range
-  - Even distribution gives consistent fee capture
-  - Concentrated liquidity = high APR if volume hits zone
-
-BinStep 125 (3-4 bins): Per-bin amount would be 0.125-0.167 SOL
-  → Even more concentrated = even higher APR potential
-```
+**Healer (Hold/Exit):**
+- Max hold: evaluates `maxHoldTriggered` → emits `exitTrigger: 'MAX_HOLD_EXIT'`, `triggerLabel: 'Max Hold Exit'`
+- After close: calls `recordStrategyPerformance(strategyId, result)` → appends to `strategy-library.json[].performanceHistory` (rolling 50)
+- After SL cluster: writes `hunter-circuit-breaker.pausedUntil` + flushes `runtime-state.json`
+- Log all exits with full context
+- Use `safeguardsApplied` to track risk controls
 
 ---
 
-## PHASE 5: LIVE PRICE TRACKING (During Execution)
+## Wording & Label Mapping
 
-### Step 5.1: Price Movement During Deployment
-
-```
-Scenario: Price moves 5% from signal to execution
-
-Timeline:
-T=15m Signal detected @ $2000
-      offsetMin = -86% → rangeTop = bin 9923
-      offsetMax = -94% → rangeBottom = bin 9917
-
-T=15m+30s Price now $2100 (5% pump)
-      Current calculation STALE
-      ❌ Deploy to old bins = wrong range relative to new price
-
-Required: RECALCULATE
-```
-
-### Step 5.2: Dynamic Offset Recalculation
-
-```javascript
-// Before final deployment, check current price
-const executionPrice = 2100;  // Price at execution time
-const signalPrice = 2000;     // Price at signal time
-
-// If price moved >2%, recalculate
-if (Math.abs(executionPrice - signalPrice) / signalPrice > 0.02) {
-  logger.warn(`Price moved ${((executionPrice-signalPrice)/signalPrice*100).toFixed(1)}%, recalculating...`);
-  
-  // Recalculate offsets from NEW price
-  const newOffsetMinBins = calculateOffsetBins(-86, 80);
-  const newOffsetMaxBins = calculateOffsetBins(-94, 80);
-  
-  // New range based on current active bin
-  const newRangeMax = activeBin - newOffsetMinBins;
-  const newRangeMin = activeBin - newOffsetMaxBins;
-  
-  logger.info(`Updated range: bin ${newRangeMin} to ${newRangeMax}`);
-}
-```
-
-### Step 5.3: Range Validation
-
-```javascript
-// Ensure recalculated range still makes sense
-
-// Check 1: Range width unchanged
-if ((newRangeMax - newRangeMin) === (rangeMax - rangeMin)) {
-  logger.info('Range width maintained after price move ✅');
-} else {
-  logger.warn('Range width changed - verify offset math');
-}
-
-// Check 2: Range still within acceptable limits
-if ((newRangeMax - newRangeMin) > 50) {
-  logger.error('Recalculated range too wide, aborting');
-  return null;
-}
-
-// Check 3: Range not inverted
-if (newRangeMax <= newRangeMin) {
-  logger.error('Invalid range after recalculation, aborting');
-  return null;
-}
-```
+| Machine Code | exitTrigger | closeReasonCode | Telegram Label | Operator Interpretation |
+|-------------|-------------|----------------|---------------|------------------------|
+| `TRAILING_TAKE_PROFIT` | ✅ | = exitTrigger | "Trailing Take Profit" | Main loop — peak drop exceeded |
+| `TAKE_PROFIT` | ✅ | = exitTrigger | "Take Profit" | Main loop — static TP threshold |
+| `MAX_HOLD_EXIT` | ✅ | = exitTrigger | "Max Hold Exit" | Main loop — dead capital cleanup |
+| `STOP_LOSS` | ✅ | = exitTrigger | "Stop-Loss" | Main loop — drawdown threshold |
+| `OOR_BINS_EXCEEDED` | ✅ | = exitTrigger | "OOR Bins Exceeded" | Main loop — OOR bin count exceeded |
+| `GUARDIAN_ANGEL_DUMP` | ✅ | `GUARDIAN_ANGEL_DUMP_EXIT` | "Guardian Dump Exit" | ⚠️ Watchdog split — analytics vs DB differ |
+| `ZOMBIE_EXIT` | ✅ | `ZOMBIE_EXIT_${reason}` | "Zombie Exit" | ⚠️ Watchdog split — closeReasonCode dynamic |
+| `TRAILING_TP_HIT` | ✅ | `TAE_WATCHDOG_EXIT_${zone}` | "Trailing TP Hit" | ⚠️ Watchdog split — TAE zone appended to DB code |
+| `SUPERTREND_FLIP` | ✅ | `TAE_WATCHDOG_MOMENTUM_EXIT_${zone}` | "Supertrend Flip" | ⚠️ Watchdog split — TAE zone appended to DB code |
+| `OOR_BAILOUT` | ✅ | `OOR_HARD_EXIT_WATCHDOG` | "OOR Bailout" | ⚠️ Watchdog split — DB code is static string |
+| `PANIC_EXIT_BEARISH_OOR` | ✅ | = exitTrigger | "Panic OOR Exit" | Watchdog — both fields consistent ✅ |
+| `PROFIT_PROTECTION` | ✅ | `PROFIT_PROTECTION_BEARISH` | "Profit Protection" | ⚠️ Watchdog split — DB code has \_BEARISH suffix |
+| `MANUAL_CLOSE` | ✅ | = exitTrigger | (no Telegram alert) | Operator-initiated close |
+| `AGENT_CLOSE` | ✅ | = exitTrigger | "AGENT_CLOSE" | AI agent-initiated close |
+| `ZAP_OUT` | ✅ | = exitTrigger | (zap flow) | Close + swap to SOL |
+| `REGIME_BEAR_DEFENSE` | policy block | — | "Regime BEAR_DEFENSE: …" | Hunter blocked — bearish regime |
+| `CIRCUIT_BREAKER_ACTIVE` | policy block | — | "Circuit Breaker Active" | Hunter blocked — persisted pause state |
+| `FAIL_SAFE_UNRELIABLE_DATA` | policy block | — | (entry skipped) | Hunter blocked — oracle/TA unreliable |
+| `SL_COOLDOWN_ACTIVE` | HOLD code | — | (skip, not closed) | Healer HOLD delay only — NOT a Hunter block |
+| `HTF_NULL_STRICT_ATR` | policy block | — | (skip, not closed) | Hunter blocked — 1h data missing + ATR too low |
+| `SL_CLUSTER_THRESHOLD_MET` | schema-only | — | (side effect) | ⚠️ Not emitted to DB — sets circuit breaker only |
 
 ---
 
-## PHASE 6: TRANSACTION CONSTRUCTION & EXECUTION
-
-### Step 6.1: Build Transaction Instructions
-
-```javascript
-const deployInstructions = [];
-
-for (let i = rangeMin; i <= rangeMax; i++) {
-  const instruction = createAddLiquidityInstruction({
-    pool: selectedPool.address,
-    bin: i,
-    amountY: 0.5 / 6,  // Divided across 6 bins
-    amountX: 0,        // Single-side SOL only
-    user: walletPubkey,
-    position: positionKeypair.publicKey
-  });
-  
-  deployInstructions.push(instruction);
-}
-
-logger.info(`Created ${deployInstructions.length} add-liquidity instructions`);
-```
-
-### Step 6.2: Bundle & Sign Transaction
-
-```javascript
-const transaction = new Transaction()
-  .add(...deployInstructions);
-
-// Serialize and sign
-const serialized = transaction.serialize({ 
-  requireAllSignatures: false 
-});
-
-// Dual signing required
-transaction.sign(
-  walletKeypair,           // Payer
-  positionKeypair          // Position owner
-);
-
-logger.info(`Transaction prepared: ${serialized.length} bytes`);
-```
-
-### Step 6.3: Execute with Retry Logic
-
-```javascript
-const maxRetries = 3;
-let retryCount = 0;
-let success = false;
-
-while (retryCount < maxRetries && !success) {
-  try {
-    const signature = await connection.sendTransaction(transaction, [
-      walletKeypair,
-      positionKeypair
-    ]);
-    
-    // Confirm transaction
-    const confirmation = await connection.confirmTransaction(signature, 'confirmed');
-    
-    if (confirmation.value.err === null) {
-      logger.info(`✅ Position deployed: ${signature}`);
-      success = true;
-      
-      // Record to database
-      await recordDeployment({
-        pool: selectedPool.pair,
-        rangeMin: rangeMin,
-        rangeMax: rangeMax,
-        amount: 0.5,
-        signature: signature,
-        timestamp: Date.now()
-      });
-    }
-  } catch (error) {
-    retryCount++;
-    logger.warn(`Attempt ${retryCount} failed: ${error.message}`);
-    await sleep(1000 * retryCount);  // Exponential backoff
-  }
-}
-
-if (!success) {
-  logger.error('❌ Position deployment failed after 3 attempts');
-}
-```
-
----
-
-## PHASE 7: POST-DEPLOYMENT MONITORING
-
-### Step 7.1: Position State Tracking
-
-```javascript
-const position = {
-  pool: 'WETH/SOL',
-  binStep: 80,
-  rangeMin: 9917,
-  rangeMax: 9923,
-  deployedAmount: 0.5,
-  deployTime: Date.now(),
-  currentPrice: 2100,
-  entryPrice: 2000,
-  status: 'active'
-};
-
-// Monitor for:
-// 1. Fee accumulation
-// 2. Price movement toward range
-// 3. Rebalancing triggers
-```
-
-### Step 7.2: Range Invalidation Check
-
-```javascript
-// If price moves OUT of range, consider what to do
-
-const currentPrice = 2150;
-
-// Case 1: Price above rangeMax (positive move, no trading)
-if (currentPrice > calculateBinPrice(rangeMax)) {
-  logger.info('Price above range - accumulating fees safely');
-}
-
-// Case 2: Price below rangeMin (crash scenario, trading actively)
-if (currentPrice < calculateBinPrice(rangeMin)) {
-  logger.info('⚠️ Price crashed below range - significant trading activity');
-  // Monitor fee generation
-  trackFeeGeneration();
-}
-```
-
----
-
-## COMPLETE FLOW DIAGRAM
-
-```
-┌─────────────────────────────────────────────────────────────────┐
-│ ENTRY PHASE: Signal Detection                                   │
-├─────────────────────────────────────────────────────────────────┤
-│                                                                   │
-│  [Scan 15m candle]                                               │
-│         ↓                                                         │
-│  prevTrend = BEARISH                                             │
-│  currentTrend = BULLISH → FLIP DETECTED ✅                       │
-│         ↓                                                         │
-│  [Wait for candle close]                                         │
-│         ↓                                                         │
-│  Price > Supertrend line AND candle closed ✅                    │
-│         ↓                                                         │
-│  [Check current price - may have moved]                          │
-│         ↓                                                         │
-│  Ready to deploy → PROCEED TO POOL SELECTION                    │
-│                                                                   │
-└─────────────────────────────────────────────────────────────────┘
-                              ↓
-┌─────────────────────────────────────────────────────────────────┐
-│ POOL SELECTION PHASE: Choose Pool & BinStep                     │
-├─────────────────────────────────────────────────────────────────┤
-│                                                                   │
-│  [List available pools for pair]                                 │
-│         ↓                                                         │
-│  [Filter by BinStep priority: 80 > 100 > 125]                   │
-│         ↓                                                         │
-│  ┌─ Try BinStep 80 → FOUND ✅                                    │
-│  │   Select pool, capture state                                  │
-│  │                                                                │
-│  └─> PROCEED TO BIN CALCULATION                                  │
-│                                                                   │
-└─────────────────────────────────────────────────────────────────┘
-                              ↓
-┌─────────────────────────────────────────────────────────────────┐
-│ BIN CALCULATION PHASE: Offset → Bin Range                       │
-├─────────────────────────────────────────────────────────────────┤
-│                                                                   │
-│  Current: $2000, Active Bin: 10000                               │
-│         ↓                                                         │
-│  Calculate offset bins:                                          │
-│    offsetMinBins(-86%) = 77 bins                                 │
-│    offsetMaxBins(-94%) = 83 bins                                 │
-│         ↓                                                         │
-│  Bin range: 10000 - 77 = 9923 (TOP)                              │
-│             10000 - 83 = 9917 (BOTTOM)                           │
-│         ↓                                                         │
-│  Range width: 6 bins ✅                                          │
-│         ↓                                                         │
-│  Verify: $280 (top) to $120 (bottom) ✅                          │
-│                                                                   │
-│  PROCEED TO BIN CHUNKING                                         │
-│                                                                   │
-└─────────────────────────────────────────────────────────────────┘
-                              ↓
-┌─────────────────────────────────────────────────────────────────┐
-│ BIN CHUNKING PHASE: Split for Transaction                       │
-├─────────────────────────────────────────────────────────────────┤
-│                                                                   │
-│  Range width: 6 bins                                             │
-│  Max per TX: 50 bins                                             │
-│         ↓                                                         │
-│  Chunks needed: 1 (fits in single transaction)                   │
-│         ↓                                                         │
-│  Chunk 0:                                                        │
-│    Bins: 9917-9923                                               │
-│    Amount: 0.5 SOL (full)                                        │
-│    Distribution: 0.0833 SOL per bin × 6 bins                    │
-│         ↓                                                         │
-│  PROCEED TO EXECUTION                                            │
-│                                                                   │
-└─────────────────────────────────────────────────────────────────┘
-                              ↓
-┌─────────────────────────────────────────────────────────────────┐
-│ EXECUTION PHASE: Deploy Position                                │
-├─────────────────────────────────────────────────────────────────┤
-│                                                                   │
-│  [Build 6 add-liquidity instructions (1 per bin)]                │
-│         ↓                                                         │
-│  [Create transaction]                                            │
-│         ↓                                                         │
-│  [Check price hasn't moved >2%, recalc if needed]                │
-│         ↓                                                         │
-│  [Serialize + sign with wallet & position key]                   │
-│         ↓                                                         │
-│  [Send transaction]                                              │
-│         ↓                                                         │
-│  [Poll for confirmation]                                         │
-│         ↓                                                         │
-│  ✅ Signature: 5y7X... Position created!                         │
-│         ↓                                                         │
-│  [Record to database]                                            │
-│                                                                   │
-│  POSITION ACTIVE - MONITORING MODE                              │
-│                                                                   │
-└─────────────────────────────────────────────────────────────────┘
-```
-
----
-
-## KEY DECISION POINTS IN FLOW
-
-| Decision | Current | Fallback | Abort |
-|----------|---------|----------|-------|
-| **BinStep Priority** | Found 80? → Use | Try 100, then 125 | BinStep > 125 |
-| **Price Movement** | <2% change? → OK | ≥2% → Recalc | Recalc fails → Abort |
-| **Chunk Count** | ≤50 bins? → 1 TX | >50 → Multi-TX | Can't fit → Abort |
-| **Range Validation** | Valid bins? → Proceed | Invalid → Recalc | Invalid after recalc → Abort |
-| **Transaction** | Confirmed? → Success | Failed → Retry 3x | All retries fail → Abort |
-
----
-
-## PARAMETER SUMMARY FOR SINGLE POSITION
-
-```
-ENTRY:
-  Signal: Supertrend Bullish FLIP (previous BEARISH → current BULLISH)
-  Confirmation: 15m candle CLOSE above Supertrend line
-  Pre-check: Current price vs signal price (>2% = recalc)
-
-POOL SELECTION:
-  Pair: WETH/SOL (or other volatility target)
-  BinStep Priority: 80 > 100 > 125
-  Liquidity minimum: $10k+
-
-BIN CALCULATION:
-  Offset Min: -86% (shallower, upper bound)
-  Offset Max: -94% (deeper, lower bound)
-  Range width: ~6 bins (for BinStep 80)
-
-CHUNKING:
-  Chunks: 1 (fits in single transaction)
-  Distribution: 0.5 SOL evenly across 6 bins
-  Per-bin amount: 0.0833 SOL
-
-EXECUTION:
-  Instructions: 6 (one per bin)
-  Signing: Wallet keypair + Position keypair
-  Confirmation: Monitor signature until 'confirmed'
-  Retry: 3 attempts with exponential backoff
-
-MONITORING:
-  Track: Price position vs range
-  Alert: If price crashes into range (-86% to -94%)
-  Action: Monitor fee generation in crash zone
-```
-
----
-
-**Ready untuk implementasi?** 
-
-Skema ini menunjukkan alur lengkap satu posisi dari signal detection sampai post-deployment monitoring. Semua keputusan dan fallback sudah terdokumentasi.
+**Last Updated:** 2026-04-19
