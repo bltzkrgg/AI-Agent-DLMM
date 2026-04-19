@@ -8,7 +8,7 @@ import { getConfig, getThresholds } from '../config.js';
 import { getTopPools, getPoolInfo, openPosition, getSolPriceUsd } from '../solana/meteora.js';
 import { getWalletBalance, getConnection } from '../solana/wallet.js';
 import { PublicKey } from '@solana/web3.js';
-import { getOpenPositions, getPoolStats, closePositionWithPnl, getStat } from '../db/database.js';
+import { getOpenPositions, getPoolStats, closePositionWithPnl, getStat, recordScreeningEvent } from '../db/database.js';
 import { getLessonsContext } from '../learn/lessons.js';
 import { getStrategy, parseStrategyParameters, getAllStrategies } from '../strategies/strategyManager.js';
 import {
@@ -45,6 +45,41 @@ let _hunterMaxPositionsCap = null; // Global stage-aware cap injected by orchest
 
 export function getCandidates() { return lastCandidates; }
 export function getLastHunterReport() { return lastReport; }
+
+function extractPrimaryFlag(result) {
+  const first = Array.isArray(result?.highFlags) && result.highFlags.length > 0
+    ? result.highFlags[0]
+    : null;
+  return {
+    rule: first?.rule || null,
+    msg: first?.msg || null,
+  };
+}
+
+function auditScreeningResult(result, context = {}) {
+  try {
+    const primary = extractPrimaryFlag(result);
+    recordScreeningEvent({
+      tokenMint: result?.tokenMint || context.tokenMint || null,
+      tokenSymbol: result?.symbol || context.tokenSymbol || null,
+      tokenName: result?.name || context.tokenName || null,
+      poolAddress: context.poolAddress || null,
+      verdict: result?.verdict || 'UNKNOWN',
+      eligible: result?.eligible === true,
+      primaryRule: primary.rule,
+      primaryMessage: primary.msg,
+      gmgnStatus: result?.gmgnStatus || null,
+      vampedSourceStatus: result?.vampedSourceStatus || null,
+      totalFeesSol: result?.totalFeesSol,
+      totalFeesSource: result?.totalFeesSource || null,
+      sourceContext: context.sourceContext || 'hunter',
+      highFlags: result?.highFlags || [],
+      mediumFlags: result?.mediumFlags || [],
+    }).catch(() => {});
+  } catch {
+    // Audit failure must never break decision path.
+  }
+}
 
 function clamp(value, min, max) {
   return Math.min(max, Math.max(min, value));
@@ -276,20 +311,19 @@ async function executeTool(name, input) {
       const allowedBinSteps = activeStrat?.allowedBinSteps || cfg.allowedBinSteps || [100, 125];
       const minTokenFeesSol = cfg.minTokenFeesSol;
       const preFiltered = combined.filter(p => {
-        const tvl = parseTvl(p.tvlStr || p.tvl || 0);
         const fees = p.fees24hRaw || 0;
-        const feeRatio = tvl > 0 ? fees / tvl : 0;
+        const volume24h = p.volume24hRaw || 0;
         const binStep = p.binStep || 0;
 
-        // 📊 LP EFFICIENCY GUARD: Prioritaskan kolam "Gacor" (Volume/TVL Ratio > 0.5)
-        // Kita mau kolam yang sibuk biar fee ngalir terus di jaring 94% kita.
-        const isHighlyProductive = feeRatio >= 0.005; // 0.5% yield per hari (approx > 180% APR)
+        // Fokus filter dipindah ke kualitas token (Dex + GMGN), bukan TVL/Liquidity gate.
+        const minVolume24h = thresholds.minVolume24h || cfg.minVolume24h || 0;
+        const volumePasses = minVolume24h <= 0 || volume24h >= minVolume24h;
 
         // 🏰 HERITAGE FILTER v76.0 (Kecerdasan Sultan)
         const minTotalFeesSol = cfg.minTotalFeesSol || 30.0;
         const heritageMode = cfg.heritageModeEnabled !== false;
 
-        const isMomentumPass = (minTokenFeesSol <= 0 || fees >= minTokenFeesSol) && isHighlyProductive;
+        const isMomentumPass = (minTokenFeesSol <= 0 || fees >= minTokenFeesSol);
         const isHeritagePass = heritageMode && (p.totalFeesEstimated >= minTotalFeesSol);
 
         // 🐼 EVIL PANDA GATE 1: Pool age <72h (freshness edge)
@@ -299,19 +333,10 @@ async function executeTool(name, input) {
           : null;
         const agePasses = poolAgeHours === null || poolAgeHours <= maxPoolAgeDays * 24;
 
-        // 🐼 EVIL PANDA GATE 2: Volume/TVL >20x (hyper-active only)
-        const minVolumeTvlRatio = cfg.minVolumeTvlRatio ?? 20;
-        const volume24h = p.volume24hRaw || 0;
-        const volumeTvlRatio = tvl > 0 ? volume24h / tvl : 0;
-        const volumeRatioPasses = volumeTvlRatio >= minVolumeTvlRatio;
-
         return (
           allowedBinSteps.includes(binStep) &&
-          tvl >= thresholds.minTvl &&
-          tvl <= thresholds.maxTvl &&
-          feeRatio >= thresholds.minFeeActiveTvlRatio &&
+          volumePasses &&
           agePasses &&
-          volumeRatioPasses &&
           (isMomentumPass || isHeritagePass) &&
           !isOnCooldown(p.address)
         );
@@ -476,6 +501,12 @@ async function executeTool(name, input) {
         input.token_name || '',
         input.token_symbol || ''
       );
+      auditScreeningResult(result, {
+        tokenMint: input.token_mint || null,
+        tokenName: input.token_name || null,
+        tokenSymbol: input.token_symbol || null,
+        sourceContext: 'hunter_tool_screen_token',
+      });
 
       // Kirim hasil ke user untuk semua verdict:
       // - AVOID  → user perlu tahu kenapa ditolak
@@ -496,7 +527,7 @@ async function executeTool(name, input) {
         highFlags: (result.highFlags || []).map(f => f.msg),
         mediumFlags: (result.mediumFlags || []).map(f => f.msg),
         gmgnStatus: result.gmgnStatus || 'UNKNOWN',
-        gmgnDegradedMode: result.gmgnDegradedMode === true,
+        gmgnFallbackFeesUsed: result.gmgnFallbackFeesUsed === true,
         gmgnIssues: (result.gmgnRejects || []).map(f => f.msg),
         tokenAgeMinutes: result.tokenAgeMinutes,
         priceImpact: result.priceImpact,
@@ -1045,14 +1076,13 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null, opt
       getSocialSignals().catch(() => [])
     ]);
 
-    let rejTvl = 0, rejBin = 0, rejMcap = 0, rejCooldown = 0;
+    let rejFlow = 0, rejBin = 0, rejMcap = 0, rejCooldown = 0;
 
     // --- SULTAN RADAR MAPPING (v75.3) --- 
     // Kita petakan koin yang Lolos (Matched) dan yang Disingkirkan (Vetoed)
     const radarSnapshot = rawPools.map(p => {
       const cfg = getConfig();
       const thresholds = getThresholds();
-      const tvl = p.liquidityRaw || 0;
       const binStep = p.binStep || 0;
       const activeStrat = getStrategy(cfg.activeStrategy || 'Evil Panda');
       const allowed = activeStrat?.allowedBinSteps || cfg.allowedBinSteps || [100, 125];
@@ -1064,25 +1094,10 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null, opt
         matched = false;
         reason = `Reject: Bin Step ${binStep} not in allowed list [${allowed.join(', ')}] for strategy`;
         rejBin++;
-      } else if (tvl < thresholds.minTvl || tvl > thresholds.maxTvl) {
-        matched = false;
-        reason = `Reject: TVL $${(tvl / 1000).toFixed(1)}k di luar rentang $${(thresholds.minTvl / 1000).toFixed(1)}k-$${(thresholds.maxTvl / 1000).toFixed(1)}k`;
-        rejTvl++;
       } else if (p.volume24hRaw < thresholds.minVolume24h) {
         matched = false;
         reason = `Reject: Volume $${(p.volume24hRaw / 1000).toFixed(1)}k terlalu sepi`;
-        rejTvl++;
-      } else if ((() => {
-        const vol = p.volume24hRaw || 0;
-        const ratio = tvl > 0 ? vol / tvl : 0;
-        const minRatio = cfg.minVolumeTvlRatio ?? 20;
-        return ratio < minRatio;
-      })()) {
-        const vol = p.volume24hRaw || 0;
-        const ratio = tvl > 0 ? (vol / tvl).toFixed(1) : 0;
-        matched = false;
-        reason = `Reject: Volume/TVL ${ratio}x < ${cfg.minVolumeTvlRatio ?? 20}x (butuh hyper-active pool)`;
-        rejTvl++;
+        rejFlow++;
       } else if (p.createdAt && (() => {
         const ageHours = (Date.now() - new Date(p.createdAt).getTime()) / (1000 * 60 * 60);
         return ageHours > (cfg.maxPoolAgeDays ?? 3) * 24;
@@ -1090,7 +1105,7 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null, opt
         const ageH = ((Date.now() - new Date(p.createdAt).getTime()) / (1000 * 60 * 60)).toFixed(0);
         matched = false;
         reason = `Reject: Pool sudah ${ageH}h (max ${(cfg.maxPoolAgeDays ?? 3) * 24}h freshness rule)`;
-        rejTvl++;
+        rejFlow++;
       } else if (p.mcap && p.mcap < thresholds.minMcap) {
         matched = false;
         reason = `Reject: Mcap $${(p.mcap / 1000).toFixed(1)}k terlalu kecil`;
@@ -1222,6 +1237,12 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null, opt
       let security = null;
       try {
         security = await screenToken(p.tokenX || p.tokenY, p.name);
+        auditScreeningResult(security, {
+          tokenMint: p.tokenX || p.tokenY || null,
+          tokenName: p.name || null,
+          poolAddress: p.address || null,
+          sourceContext: 'hunter_precompute',
+        });
       } catch (e) {
         console.warn(`[cost-guard] Security check failed for ${p.name}:`, e.message);
       }
@@ -1279,7 +1300,7 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null, opt
         await notifyFn(
           `⚠️ <b>Discovery Result:</b> 0/${rawTotal} candidates matched.\n\n` +
           `• Candidates Scanned: <b>${rawTotal}</b>\n` +
-          `• Rejected: <code>BinStep: ${rejBin} | TVL/Vol: ${rejTvl} | Mcap: ${rejMcap} | Cooldown: ${rejCooldown}</code>\n` +
+          `• Rejected: <code>BinStep: ${rejBin} | Flow/Freshness: ${rejFlow} | Mcap: ${rejMcap} | Cooldown: ${rejCooldown}</code>\n` +
           `• Technical Hard-Gate (Trend): <b>${basicFilteredCount - trendFilteredCount}</b> non-Bullish\n` +
           `• API/Data Status: ${trendRejectedCount === 0 && basicFilteredCount > 0 ? '❌ All APIs Failed' : '✅ APIs Linked'}\n\n` +
           `<i>Market sepertinya sedang sideways/bearish. Sniper tetap disiplin.</i>`

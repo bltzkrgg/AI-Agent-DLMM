@@ -384,8 +384,8 @@ GUNAKAN PARAMETER INI SECARA PERSIS — JANGAN KARANG ANGKA SENDIRI:
 
 POOL FILTER (semua harus terpenuhi):
   • Pool age       : <${cfg.maxPoolAgeDays * 24} jam (${cfg.maxPoolAgeDays} hari max) — freshness edge
-  • Volume/TVL     : >${cfg.minVolumeTvlRatio}x (hyper-active gate, pool sepi = skip)
-  • TVL            : $${cfg.minTvl.toLocaleString('en-US')}–$${cfg.maxTvl.toLocaleString('en-US')} (lo bisa dominasi likuiditas)
+  • GMGN gate      : fail-closed (GMGN error/timeout = skip)
+  • GMGN redflags  : Top10/Dev/Insider/Phishing/Bundling/LP burn/CTO/Vamped/Dev-rug-history
   • binStep        : ${(cfg.allowedBinSteps || [100, 125]).join(' atau ')} (meme/volatile SOL pairs)
   • Fee tier       : 0.25%+ (minimal worth the gas)
   • Min mcap       : $${cfg.minMcap.toLocaleString('en-US')}

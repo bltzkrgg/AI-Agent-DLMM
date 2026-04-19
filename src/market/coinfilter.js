@@ -2,6 +2,7 @@ import { fetchWithTimeout, safeNum, withExponentialBackoff } from '../utils/safe
 import { getConfig } from '../config.js';
 import { getJupiterPrice } from '../utils/jupiter.js';
 import { getGmgnTokenInfo, getGmgnSecurity } from '../utils/gmgn.js';
+import { getExternalVampedStatus } from '../utils/vampedSource.js';
 
 const DEXSCREENER_BASE = 'https://api.dexscreener.com';
 const JUPITER_TOKEN_BASE = 'https://tokens.jup.ag';
@@ -22,6 +23,163 @@ const JUSTICE_PATTERNS = [
 const CTO_PATTERNS = [
   /\bcto\b/i, /community takeover/i,
 ];
+
+function getByPath(obj, path) {
+  if (!obj || !path) return undefined;
+  return path.split('.').reduce((acc, key) => (acc == null ? undefined : acc[key]), obj);
+}
+
+function pickFirstNumber(objs, paths = []) {
+  for (const path of paths) {
+    for (const obj of objs) {
+      const raw = getByPath(obj, path);
+      const num = Number(raw);
+      if (Number.isFinite(num)) return num;
+    }
+  }
+  return null;
+}
+
+function pickFirstBoolean(objs, paths = []) {
+  for (const path of paths) {
+    for (const obj of objs) {
+      const raw = getByPath(obj, path);
+      if (typeof raw === 'boolean') return raw;
+      if (raw === 1 || raw === '1' || String(raw).toLowerCase() === 'true') return true;
+      if (raw === 0 || raw === '0' || String(raw).toLowerCase() === 'false') return false;
+    }
+  }
+  return null;
+}
+
+function pickFirstString(objs, paths = []) {
+  for (const path of paths) {
+    for (const obj of objs) {
+      const raw = getByPath(obj, path);
+      if (typeof raw === 'string' && raw.trim()) return raw.trim();
+    }
+  }
+  return null;
+}
+
+function toRate(value) {
+  const normalized = Number(
+    typeof value === 'string'
+      ? value.replace(/[%,$\s]/g, '')
+      : value
+  );
+  if (!Number.isFinite(normalized)) return null;
+  if (normalized < 0) return null;
+  return normalized > 1 ? normalized / 100 : normalized;
+}
+
+function parseSolFromText(text) {
+  if (!text || typeof text !== 'string') return null;
+  const normalized = text.replace(/,/g, '');
+  const m = normalized.match(/([0-9]+(?:\.[0-9]+)?)\s*SOL\b/i);
+  if (!m) return null;
+  const v = Number(m[1]);
+  return Number.isFinite(v) ? v : null;
+}
+
+function extractGmgnTotalFeesSol(info, sec) {
+  const objs = [info, sec];
+  const total = pickFirstNumber(objs, [
+    'stat.total_fees_sol',
+    'total_fees_sol',
+    'total_fee',
+    'stat.total_fee',
+    'fees.total_sol',
+    'fee.total_sol',
+  ]);
+  if (Number.isFinite(total) && total >= 0) {
+    return { totalFeesSol: total, source: 'gmgn_total_field' };
+  }
+
+  const priority = pickFirstNumber(objs, [
+    'stat.priority_tip_sol',
+    'priority_tip_sol',
+    'fees.priority_tip_sol',
+    'fee.priority_tip_sol',
+  ]);
+  const trading = pickFirstNumber(objs, [
+    'stat.trading_fees_sol',
+    'trading_fees_sol',
+    'fees.trading_fees_sol',
+    'fee.trading_fees_sol',
+  ]);
+
+  if (Number.isFinite(priority) || Number.isFinite(trading)) {
+    return {
+      totalFeesSol: (Number.isFinite(priority) ? priority : 0) + (Number.isFinite(trading) ? trading : 0),
+      source: 'gmgn_priority_plus_trading',
+    };
+  }
+
+  // UI fallback text parser (contoh: "Prio & Tip & Trading Fees 1,375.74 SOL")
+  const feesText = pickFirstString(objs, [
+    'stat.total_fees_text',
+    'stat.fees_text',
+    'fees.text',
+    'fee.text',
+    'display.total_fees',
+    'display.totalFees',
+    'tooltip.total_fees',
+    'tooltip.totalFees',
+  ]);
+  const parsedTextFees = parseSolFromText(feesText);
+  if (Number.isFinite(parsedTextFees)) {
+    return { totalFeesSol: parsedTextFees, source: 'gmgn_text_total_fees' };
+  }
+
+  return { totalFeesSol: null, source: 'missing' };
+}
+
+function isVampedCoin(info, sec) {
+  const flag = pickFirstBoolean([info, sec], [
+    'dev.vamped_flag',
+    'dev.is_vamped',
+    'stat.is_vamped',
+    'is_vamped',
+    'vamped',
+  ]);
+  if (flag === true) return true;
+
+  // UI/tag fallback (contoh label: "Vamped by RapidLaunch")
+  const vampedLabel = pickFirstString([info, sec], [
+    'dev.vamped_label',
+    'dev.vamped_text',
+    'stat.vamped_text',
+    'flags.vamped_text',
+    'risk.vamped_text',
+    'risk_label',
+    'riskLabel',
+    'tag_text',
+    'tags_text',
+  ]);
+  if (vampedLabel && /vamped\s+by\s+rapidlaunch/i.test(vampedLabel)) return true;
+
+  const tagCandidates = []
+    .concat(Array.isArray(info?.tags) ? info.tags : [])
+    .concat(Array.isArray(sec?.tags) ? sec.tags : [])
+    .concat(Array.isArray(info?.flags) ? info.flags : [])
+    .concat(Array.isArray(sec?.flags) ? sec.flags : [])
+    .concat(Array.isArray(info?.risk_tags) ? info.risk_tags : [])
+    .concat(Array.isArray(sec?.risk_tags) ? sec.risk_tags : []);
+  if (tagCandidates.some((t) => {
+    if (typeof t === 'string') return /vamped\s+by\s+rapidlaunch/i.test(t);
+    if (t && typeof t === 'object') {
+      const label = String(t.label || t.name || t.text || '').toLowerCase();
+      return /vamped\s+by\s+rapidlaunch/.test(label);
+    }
+    return false;
+  })) return true;
+
+  const launchpadText = `${String(info?.launchpad || '')} ${String(info?.launchpad_platform || '')} ${String(sec?.launchpad || '')}`.toLowerCase();
+  if (/rapidlaunch/.test(launchpadText) && (/\bvamped\b/.test(launchpadText) || /liquidity\s+vampire/.test(launchpadText))) return true;
+
+  return false;
+}
 
 // ─── Data fetchers ───────────────────────────────────────────────
 
@@ -51,6 +209,7 @@ async function getDexScreenerInfo(tokenMint) {
       priceChange6h: safeNum(best.priceChange?.h6),
       priceChange24h: safeNum(best.priceChange?.h24),
       volume24h: safeNum(best.volume?.h24),
+      fees24h: safeNum(best.fees?.h24 ?? best.fees24h ?? 0),
       priceUsd: safeNum(best.priceUsd),
       buys1h: safeNum(txns1h.buys),
       sells1h: safeNum(txns1h.sells),
@@ -123,11 +282,6 @@ function step3_priceHealth(dex, thresholds = {}) {
   else if (dex.priceChange1h < -10)
     warnings.push({ rule: 'PRICE_CORRECTION', msg: `Harga terkoreksi ${dex.priceChange1h}% (1h) — Monitor area support` });
 
-  if (dex.liquidity < 10000)
-    rejects.push({ rule: 'LOW_LIQUIDITY', msg: `Liquidity $${dex.liquidity.toFixed(0)} (<$10k) — pool terlalu kecil, risiko slippage ekstrem` });
-  else if (dex.liquidity < 20000)
-    warnings.push({ rule: 'THIN_LIQUIDITY', msg: `Liquidity $${dex.liquidity.toFixed(0)} ($10k-$20k) — tipis, perhatikan slippage` });
-
   if (dex.priceChange24h > 250)
     warnings.push({ rule: 'BUBBLE_DETECTED', msg: `Harga naik ${dex.priceChange24h.toFixed(0)}% dalam 24h — Volatilitas masif, siap meraup fee` });
 
@@ -177,14 +331,6 @@ function step5_txnAnalysis(dex) {
       warnings.push({ rule: 'HEAVY_SELLING_1H', msg: `${(sellRatio * 100).toFixed(0)}% txn h1 adalah SELL` });
   }
 
-  // Anti-Wash Trading Guard (Volume : TVL Ratio)
-  if (dex.volume24h && dex.liquidity && dex.liquidity > 0) {
-    const volTvlRatio = dex.volume24h / dex.liquidity;
-    if (volTvlRatio >= 100) {
-      rejects.push({ rule: 'WASH_TRADING_DETECTED', msg: `Rasio Vol/TVL tidak wajar (${volTvlRatio.toFixed(1)}x) — Indikasi kuat bot wash trading / thin liquidity trap` });
-    }
-  }
-
   // Final Spike Protection: Berubah ke warning agar bisa jaring koin liar
   if (dex.priceChangeM5 > 15)
     warnings.push({ rule: 'PRICE_SPIKE_M5', msg: `Harga meledak ${dex.priceChangeM5.toFixed(1)}% dlm 5 menit — Momentum kuat, siap tangkap volatilitas` });
@@ -220,16 +366,6 @@ function step7_organicScore(dex, jup, thresholds) {
     if ((dex.buys24h + dex.sells24h) >= 500) score += 20; // Pool super aktif
     else if ((dex.buys24h + dex.sells24h) >= 100) score += 10;
 
-    // --- UPGRADE: Volume-to-TVL Ratio Penalty (Anti-Wash Trading) ---
-    if (dex.volume24h > 0 && dex.liquidityUsd > 0) {
-      const ratio = dex.volume24h / dex.liquidityUsd;
-      const maxRatio = thresholds.maxVolumeTvlRatio || 70;
-      if (ratio > maxRatio) {
-        score -= 50; // Penalti berat jika sudah lewat batas aman
-      } else if (ratio > (maxRatio / 2)) {
-        score -= 25; // Penalti menengah jika rasio mulai tidak wajar
-      }
-    }
   }
 
   if (dex) {
@@ -417,36 +553,62 @@ function step11_slippageCheck(sim, maxImpact = 2.5) {
   return { rejects, warnings };
 }
 
-function step13_volumeTurnoverRatio(dex, thresholds) {
-  const rejects = [];
-  const maxRatio = thresholds.maxVolumeTvlRatio || 150; // Increased from 70 to 150 for Hyper-Active pools
-
-  if (dex && dex.volume24h && dex.liquidityUsd > 0) {
-    const ratio = dex.volume24h / dex.liquidityUsd;
-    if (ratio > maxRatio) {
-      rejects.push({
-        rule: 'VOLUME_TO_TVL_ANOMALY',
-        msg: `Rasio Vol/TVL tidak wajar (${ratio.toFixed(1)}x > ${maxRatio}x) — Indikasi kuat bot wash trading / thin liquidity trap`
-      });
-    }
-  }
-  return rejects;
-}
-
-function step14_feeIntegrity(dex, solPrice, thresholds) {
+function step14_feeIntegrity({ info, sec, dex, solPrice, thresholds }) {
   const rejects = [];
   const minFeesSol = thresholds.minTokenFeesSol || 0;
+  let totalFeesSol = null;
+  let feeSource = 'unknown';
+  let usedFallback = false;
 
-  if (minFeesSol > 0 && dex && dex.fees24h && solPrice > 0) {
-    const feesSol = dex.fees24h / solPrice;
-    if (feesSol < minFeesSol) {
+  if (minFeesSol <= 0) return { rejects, totalFeesSol, feeSource, usedFallback };
+
+  const gmgnFees = extractGmgnTotalFeesSol(info, sec);
+  if (Number.isFinite(gmgnFees.totalFeesSol)) {
+    totalFeesSol = gmgnFees.totalFeesSol;
+    feeSource = gmgnFees.source;
+    if (totalFeesSol < minFeesSol) {
       rejects.push({
-        rule: 'FEE_VOLUME_INSUFFICIENT',
-        msg: `Total Fee 24 jam rendah (${feesSol.toFixed(2)} SOL < ${minFeesSol} SOL) — Volume terdeteksi kurang organik`
+        rule: 'GMGN_TOTAL_FEES_LOW',
+        msg: `Total fees GMGN rendah (${totalFeesSol.toFixed(2)} SOL < ${minFeesSol} SOL).`
       });
     }
+    return { rejects, totalFeesSol, feeSource, usedFallback };
   }
-  return rejects;
+
+  // Fallback sementara (disetujui user): gunakan rule lama saat field GMGN fee kosong.
+  if (dex && solPrice > 0) {
+    const dexFees24h = Number.isFinite(dex.fees24h) && dex.fees24h > 0
+      ? dex.fees24h
+      : (Number.isFinite(dex.volume24h) && dex.volume24h > 0 ? dex.volume24h * 0.0025 : 0); // 0.25% conservative fee proxy
+
+    if (dexFees24h <= 0) {
+      rejects.push({
+        rule: 'FEE_FALLBACK_DATA_MISSING',
+        msg: 'Fallback fee data tidak tersedia (Dex fees/volume kosong) — fail-closed.'
+      });
+      return { rejects, totalFeesSol, feeSource: 'missing', usedFallback };
+    }
+
+    totalFeesSol = dexFees24h / solPrice;
+    feeSource = Number.isFinite(dex.fees24h) && dex.fees24h > 0
+      ? 'dex_fees24h_fallback'
+      : 'dex_volume_proxy_fallback';
+    usedFallback = true;
+    if (totalFeesSol < minFeesSol) {
+      rejects.push({
+        rule: 'FEE_VOLUME_INSUFFICIENT',
+        msg: `Fallback fee rendah (${totalFeesSol.toFixed(2)} SOL < ${minFeesSol} SOL).`
+      });
+    }
+    return { rejects, totalFeesSol, feeSource, usedFallback };
+  }
+
+  rejects.push({
+    rule: 'GMGN_TOTAL_FEES_MISSING',
+    msg: 'Data total fees GMGN kosong dan fallback fee Dex tidak tersedia — fail-closed.'
+  });
+  feeSource = 'missing';
+  return { rejects, totalFeesSol, feeSource, usedFallback };
 }
 
 // ─── Step 12: GMGN On-Chain Security ─────────────────────────────
@@ -457,26 +619,37 @@ function step12_gmgnSecurity(info, sec) {
   const rejects = [];
   const warnings = [];
 
-  // No data from either endpoint → skip entirely
-  if (!info && !sec) return { rejects, warnings };
+  // Strict mode: GMGN wajib ada untuk keputusan entry
+  if (!info) rejects.push({ rule: 'GMGN_INFO_MISSING', msg: 'GMGN info tidak tersedia — fail-closed.' });
+  if (!sec) rejects.push({ rule: 'GMGN_SECURITY_MISSING', msg: 'GMGN security tidak tersedia — fail-closed.' });
+  if (!info || !sec) return { rejects, warnings, fallbackFlags: { vampedFallback: false } };
 
   // ─── From token info ─────────────────────────────────────────
   if (info) {
     // CTO Coin (Community Takeover) — original dev abandoned, risky in early phase
-    if (info.dev?.cto_flag === 1) {
+    const ctoFlag = info.dev?.cto_flag;
+    if (ctoFlag == null) {
+      rejects.push({ rule: 'GMGN_CTO_DATA_MISSING', msg: 'Data CTO flag GMGN kosong — fail-closed.' });
+    } else if (Number(ctoFlag) === 1) {
       rejects.push({ rule: 'GMGN_CTO_COIN', msg: 'CTO Coin (dev.cto_flag=1) — dev original kabur, risiko manipulasi oleh komunitas/dev baru' });
     }
 
     // Phishing / Entrapment trader pattern
     const entrapment = info.stat?.top_entrapment_trader_percentage;
-    if (entrapment != null && entrapment > 0.30) {
-      rejects.push({ rule: 'GMGN_PHISHING_RISK', msg: `Entrapment traders ${(entrapment * 100).toFixed(1)}% > 30% — pola jebakan terorganisir` });
+    const entrapmentRate = toRate(entrapment);
+    if (entrapmentRate == null) {
+      rejects.push({ rule: 'GMGN_PHISHING_DATA_MISSING', msg: 'Data phishing/entrapment GMGN kosong — fail-closed.' });
+    } else if (entrapmentRate > 0.30) {
+      rejects.push({ rule: 'GMGN_PHISHING_RISK', msg: `Entrapment traders ${(entrapmentRate * 100).toFixed(1)}% > 30% — pola jebakan terorganisir` });
     }
 
     // Top 10 concentration
     const top10 = info.stat?.top_10_holder_rate;
-    if (top10 != null && top10 > 0.35) {
-      rejects.push({ rule: 'GMGN_TOP10_CONCENTRATED', msg: `Top 10 holders ${(top10 * 100).toFixed(1)}% > 35% — risiko whale dump` });
+    const top10Rate = toRate(top10);
+    if (top10Rate == null) {
+      rejects.push({ rule: 'GMGN_TOP10_DATA_MISSING', msg: 'Data top 10 holder GMGN kosong — fail-closed.' });
+    } else if (top10Rate > 0.30) {
+      rejects.push({ rule: 'GMGN_TOP10_CONCENTRATED', msg: `Top 10 holders ${(top10Rate * 100).toFixed(1)}% > 30% — risiko whale dump` });
     }
   }
 
@@ -499,25 +672,43 @@ function step12_gmgnSecurity(info, sec) {
     }
 
     // Rat Traders / Insider Front-running (HARD REJECT L6)
-    const insiderRate = sec.rat_trader_amount_rate;
-    if (insiderRate != null && insiderRate > 0) {
-      rejects.push({ rule: 'GMGN_INSIDER_DETECTED', msg: `Insider/rat trader terdeteksi di volume (${(insiderRate * 100).toFixed(1)}%) — REJECT` });
+    const insiderRate = sec.rat_trader_amount_rate ?? info?.stat?.top_rat_trader_percentage;
+    const insiderRatio = toRate(insiderRate);
+    if (insiderRatio == null) {
+      rejects.push({ rule: 'GMGN_INSIDER_DATA_MISSING', msg: 'Data insider GMGN kosong — fail-closed.' });
+    } else if (insiderRatio > 0) {
+      rejects.push({ rule: 'GMGN_INSIDER_DETECTED', msg: `Insider/rat trader terdeteksi di volume (${(insiderRatio * 100).toFixed(1)}%) — REJECT` });
     }
 
-    // Bundling (Tighter threshold 50%)
-    const bundlerRate = sec.bundler_trader_amount_rate;
-    if (bundlerRate != null && bundlerRate > 0.50) {
-      rejects.push({ rule: 'GMGN_BUNDLED', msg: `Bundling ${(bundlerRate * 100).toFixed(1)}% > 50% — dominasi gerombolan tertentu` });
+    // Creator/dev concentration
+    const creatorRate = toRate(sec.creator_balance_rate ?? info?.stat?.dev_team_hold_rate ?? info?.stat?.creator_hold_rate);
+    if (creatorRate == null) {
+      rejects.push({ rule: 'GMGN_DEV_HOLD_DATA_MISSING', msg: 'Data kepemilikan dev/creator kosong — fail-closed.' });
+    } else if (creatorRate > 0.05) {
+      rejects.push({ rule: 'GMGN_DEV_HOLD_HIGH', msg: `Kepemilikan dev ${(creatorRate * 100).toFixed(1)}% > 5% — risiko dump` });
+    }
+
+    // Bundling threshold 60%
+    const bundlerRate = sec.bundler_trader_amount_rate ?? info?.stat?.top_bundler_trader_percentage;
+    const bundlerRatio = toRate(bundlerRate);
+    if (bundlerRatio == null) {
+      rejects.push({ rule: 'GMGN_BUNDLER_DATA_MISSING', msg: 'Data bundler GMGN kosong — fail-closed.' });
+    } else if (bundlerRatio > 0.60) {
+      rejects.push({ rule: 'GMGN_BUNDLED', msg: `Bundling ${(bundlerRatio * 100).toFixed(1)}% > 60% — dominasi gerombolan tertentu` });
     }
 
     // LP burn status
-    if (sec.burn_status != null && sec.burn_status !== '' && sec.burn_status !== 'burn') {
+    if (sec.burn_status == null || sec.burn_status === '') {
+      rejects.push({ rule: 'GMGN_LP_BURN_DATA_MISSING', msg: 'Data burn status LP kosong — fail-closed.' });
+    } else if (sec.burn_status !== 'burn') {
       rejects.push({ rule: 'GMGN_LP_NOT_BURNED', msg: `LP tidak dibakar (status: "${sec.burn_status}") — risiko tarik likuiditas (Rug)` });
     }
 
     // Rug risk score
-    const rugRatio = sec.rug_ratio;
-    if (rugRatio != null && rugRatio > 0.30) {
+    const rugRatio = sec.rug_ratio ?? info?.dev?.rug_ratio;
+    if (rugRatio == null) {
+      rejects.push({ rule: 'GMGN_RUG_HISTORY_DATA_MISSING', msg: 'Data riwayat rug dev kosong — fail-closed.' });
+    } else if (rugRatio > 0.30) {
       rejects.push({ rule: 'GMGN_RUG_HISTORY', msg: `Rug risk score ${rugRatio.toFixed(2)} > 0.30 — deployer mencurigakan` });
     }
 
@@ -545,7 +736,37 @@ function step12_gmgnSecurity(info, sec) {
     }
   }
 
-  return { rejects, warnings };
+  // Vamped fallback: jika indikator explicit tidak ada, pakai proxy rules lama sementara
+  const hasExplicitVamped = isVampedCoin(info, sec);
+  if (hasExplicitVamped === true) {
+    rejects.push({ rule: 'GMGN_VAMPED_COIN', msg: 'Vamped coin terdeteksi (liquidity vampire) — REJECT' });
+  } else {
+    const hasRawVampedField = pickFirstBoolean([info, sec], [
+      'dev.vamped_flag',
+      'dev.is_vamped',
+      'stat.is_vamped',
+      'is_vamped',
+      'vamped',
+    ]);
+    const proxyTriggered = (
+      info?.dev?.cto_flag === 1 ||
+      (Number(sec?.rug_ratio ?? info?.dev?.rug_ratio) > 0.30) ||
+      (toRate(sec?.bundler_trader_amount_rate ?? info?.stat?.top_bundler_trader_percentage) > 0.60) ||
+      (toRate(sec?.rat_trader_amount_rate ?? info?.stat?.top_rat_trader_percentage) > 0)
+    );
+    if (hasRawVampedField == null && proxyTriggered) {
+      rejects.push({ rule: 'GMGN_VAMPED_PROXY_RED', msg: 'Vamped indicator GMGN kosong — proxy redflag aktif (CTO/RUG/Bundler/Insider).' });
+    }
+  }
+
+  const hasRawVampedField = pickFirstBoolean([info, sec], [
+    'dev.vamped_flag',
+    'dev.is_vamped',
+    'stat.is_vamped',
+    'is_vamped',
+    'vamped',
+  ]);
+  return { rejects, warnings, fallbackFlags: { vampedFallback: hasRawVampedField == null && hasExplicitVamped !== true } };
 }
 
 // ─── Main filter function ────────────────────────────────────────
@@ -558,13 +779,12 @@ export async function screenToken(tokenMint, tokenName = '', tokenSymbol = '', o
     minVolume24h: cfg.minVolume24h,
     minOrganic: cfg.minOrganic,
     maxImpact: cfg.maxPriceImpactPct,
-    maxVolumeTvlRatio: cfg.maxVolumeTvlRatio,
     minTokenFeesSol: cfg.minTokenFeesSol,
   };
 
   const deployAmount = cfg.deployAmountSol || 0.1;
 
-  const [dexResult, jupResult, authResult, simResult, gmgnInfoResult, gmgnSecResult, solPriceResult] = await Promise.allSettled([
+  const [dexResult, jupResult, authResult, simResult, gmgnInfoResult, gmgnSecResult, solPriceResult, vampedStatusResult] = await Promise.allSettled([
     getDexScreenerInfo(tokenMint),
     getJupiterData(tokenMint),
     getOnChainAuthority(tokenMint),
@@ -572,6 +792,7 @@ export async function screenToken(tokenMint, tokenName = '', tokenSymbol = '', o
     getGmgnTokenInfo(tokenMint),
     getGmgnSecurity(tokenMint),
     getJupiterPrice('So11111111111111111111111111111111111111112'),
+    getExternalVampedStatus(tokenMint, cfg),
   ]);
 
   const dex  = dexResult.status  === 'fulfilled' ? dexResult.value  : null;
@@ -594,7 +815,9 @@ export async function screenToken(tokenMint, tokenName = '', tokenSymbol = '', o
 
   const gmgnInfo = gmgnInfoResult.status === 'fulfilled' ? gmgnInfoResult.value : null;
   const gmgnSec  = gmgnSecResult.status  === 'fulfilled' ? gmgnSecResult.value  : null;
-  const gmgnDegraded = cfg.gmgnDegradedModeEnabled !== false && gmgnStatus !== 'ACTIVE';
+  const vampedSource = vampedStatusResult.status === 'fulfilled'
+    ? vampedStatusResult.value
+    : { status: 'ERROR', isVamped: null, source: 'external', reason: 'promise_rejected' };
 
   const name   = tokenName   || dex?.name   || jup?.name   || '';
   const symbol = tokenSymbol || dex?.symbol || jup?.symbol || '';
@@ -607,59 +830,7 @@ export async function screenToken(tokenMint, tokenName = '', tokenSymbol = '', o
   const s6  = step6_tokenSafety(jup);
   const s7  = step7_organicScore(dex, jup, thresholds);
   const s12 = step12_gmgnSecurity(gmgnInfo, gmgnSec);
-  const s13 = step13_volumeTurnoverRatio(dex, thresholds);
-  const s14 = step14_feeIntegrity(dex, solPrice, thresholds);
-  const degradedRejects = [];
-  const degradedWarnings = [];
-
-  if (gmgnDegraded) {
-    const minMcap = Math.max(thresholds.minMcap || 0, safeNum(cfg.gmgnDegradedMinMcap, 400000));
-    const minVolume = Math.max(thresholds.minVolume24h || 0, safeNum(cfg.gmgnDegradedMinVolume24h, 1500000));
-    const minAge = Math.max(0, safeNum(cfg.gmgnDegradedMinTokenAgeMinutes, 180));
-
-    degradedWarnings.push({
-      rule: 'GMGN_DEGRADED_MODE',
-      msg: `GMGN ${gmgnStatus} — mode konservatif aktif (mcap≥$${minMcap.toLocaleString()}, vol24h≥$${minVolume.toLocaleString()}, age≥${minAge}m).`,
-    });
-
-    const currMcap = safeNum(dex?.fdv, 0);
-    const currVol = safeNum(dex?.volume24h, 0);
-    const currAge = safeNum(s4.ageMinutes, 0);
-
-    if (currMcap <= 0) {
-      degradedRejects.push({
-        rule: 'GMGN_DEGRADED_MCAP_MISSING',
-        msg: 'GMGN degraded: data mcap tidak tersedia, fail-closed.',
-      });
-    } else if (currMcap < minMcap) {
-      degradedRejects.push({
-        rule: 'GMGN_DEGRADED_MCAP',
-        msg: `GMGN degraded: mcap $${currMcap.toLocaleString()} < $${minMcap.toLocaleString()}.`,
-      });
-    }
-    if (currVol <= 0) {
-      degradedRejects.push({
-        rule: 'GMGN_DEGRADED_VOLUME_MISSING',
-        msg: 'GMGN degraded: data volume24h tidak tersedia, fail-closed.',
-      });
-    } else if (currVol < minVolume) {
-      degradedRejects.push({
-        rule: 'GMGN_DEGRADED_VOLUME',
-        msg: `GMGN degraded: volume24h $${currVol.toLocaleString()} < $${minVolume.toLocaleString()}.`,
-      });
-    }
-    if (s4.ageMinutes == null) {
-      degradedRejects.push({
-        rule: 'GMGN_DEGRADED_TOKEN_AGE_MISSING',
-        msg: 'GMGN degraded: data usia token tidak tersedia, fail-closed.',
-      });
-    } else if (currAge < minAge) {
-      degradedRejects.push({
-        rule: 'GMGN_DEGRADED_TOKEN_AGE',
-        msg: `GMGN degraded: usia token ${currAge}m < ${minAge}m.`,
-      });
-    }
-  }
+  const s14 = step14_feeIntegrity({ info: gmgnInfo, sec: gmgnSec, dex, solPrice, thresholds });
 
   // Obelisk Handle: Manual MCAP calculation if DexScreener is lagging
   let mcap = dex?.fdv || null;
@@ -686,20 +857,25 @@ export async function screenToken(tokenMint, tokenName = '', tokenSymbol = '', o
     ...s9.rejects,
     ...s10,         
     ...s11.rejects, 
-    // ...s12.rejects, <-- GMGN Security stays as Warning (Fees = Security)
-    ...s13, 
-    ...s14, // minTokenFeesSol Gate
-    ...degradedRejects,
+    ...(gmgnStatus !== 'ACTIVE'
+      ? [{ rule: 'GMGN_UNAVAILABLE_FAIL_CLOSED', msg: `GMGN status=${gmgnStatus} — entry diblokir (fail-closed).` }]
+      : []),
+    ...s12.rejects,
+    ...s14.rejects,
+    ...(cfg.vampedSourceEnabled === true && cfg.vampedSourceFailClosed === true && vampedSource.status !== 'OK'
+      ? [{ rule: 'VAMPED_SOURCE_UNAVAILABLE', msg: `Vamped source ${vampedSource.status} (${vampedSource.reason || 'unknown'}) — fail-closed.` }]
+      : []),
+    ...(cfg.vampedSourceEnabled === true && vampedSource.status === 'OK' && vampedSource.isVamped === true
+      ? [{ rule: 'VAMPED_SOURCE_DETECTED', msg: 'Token ditandai VAMPED oleh source eksternal (RapidLaunch/provider).' }]
+      : []),
   ];
   const allWarnings = [
     ...s1.warnings, 
     ...s3.warnings, 
     ...s5.warnings, 
     ...s6.warnings, 
-    ...s11.warnings, 
-    ...s12.warnings, 
-    ...s12.rejects,  // GMGN security stays here
-    ...degradedWarnings,
+    ...s11.warnings,
+    ...s12.warnings,
   ];
 
   let verdict = allRejects.length > 0 ? 'AVOID' : (allWarnings.length > 0 ? 'CAUTION' : 'PASS');
@@ -715,7 +891,12 @@ export async function screenToken(tokenMint, tokenName = '', tokenSymbol = '', o
     gmgnStatus, // ACTIVE, DISABLED, ERROR, UNKNOWN
     gmgnRejects: s12.rejects,
     gmgnWarnings: s12.warnings,
-    gmgnDegradedMode: gmgnDegraded,
+    gmgnFallbackFeesUsed: s14.usedFallback,
+    totalFeesSol: s14.totalFeesSol,
+    totalFeesSource: s14.feeSource,
+    vampedSourceStatus: vampedSource.status,
+    vampedSourceReason: vampedSource.reason,
+    isVampedBySource: vampedSource.isVamped === true,
     sources: {
       dexscreener: !!dex,
       jupiter: !!(jup?.found),
@@ -739,6 +920,18 @@ export function formatScreenResult(result) {
   text += `📊 Organic score: *${result.organicScore}/100*\n`;
   if (result.mcap) text += `💰 Mcap: $${result.mcap.toLocaleString()}\n`;
   if (result.tokenAgeMinutes != null) text += `⏱ Usia token: ${fmtDuration(result.tokenAgeMinutes)}\n`;
+  if (Number.isFinite(result.totalFeesSol)) {
+    text += `💸 Total Fees: ${result.totalFeesSol.toFixed(2)} SOL (${result.totalFeesSource || 'unknown'})\n`;
+    if (result.gmgnFallbackFeesUsed) {
+      text += `⚠️ Fee source fallback (Dex) dipakai karena field GMGN belum lengkap.\n`;
+    }
+  }
+  if (result.vampedSourceStatus) {
+    text += `🧛 Vamped Source: ${result.vampedSourceStatus}`;
+    if (result.isVampedBySource) text += ' (VAMPED)';
+    if (result.vampedSourceReason) text += ` — ${result.vampedSourceReason}`;
+    text += '\n';
+  }
 
   // ─── GMGN Security Block ──────────────────────────────────────
   if (result.gmgnStatus === 'DISABLED') {

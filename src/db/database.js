@@ -263,6 +263,26 @@ db.exec(`
     metadata TEXT,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP
   );
+
+  CREATE TABLE IF NOT EXISTS screening_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    token_mint TEXT,
+    token_symbol TEXT,
+    token_name TEXT,
+    pool_address TEXT,
+    verdict TEXT NOT NULL,
+    eligible INTEGER NOT NULL DEFAULT 0,
+    primary_rule TEXT,
+    primary_message TEXT,
+    gmgn_status TEXT,
+    vamped_source_status TEXT,
+    total_fees_sol REAL,
+    total_fees_source TEXT,
+    source_context TEXT,
+    high_flags TEXT,
+    medium_flags TEXT,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+  );
 `);
 
 db.exec(`
@@ -277,6 +297,9 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_pnl_div_pos_created ON pnl_divergence_events(position_address, created_at);
   CREATE INDEX IF NOT EXISTS idx_pnl_div_created_at ON pnl_divergence_events(created_at);
   CREATE INDEX IF NOT EXISTS idx_cb_events_triggered_at ON circuit_breaker_events(triggered_at);
+  CREATE INDEX IF NOT EXISTS idx_screening_events_token_created ON screening_events(token_mint, created_at);
+  CREATE INDEX IF NOT EXISTS idx_screening_events_verdict_created ON screening_events(verdict, created_at);
+  CREATE INDEX IF NOT EXISTS idx_screening_events_created ON screening_events(created_at);
 `);
 
 // Migrasi kolom — setiap ALTER dijalankan sendiri supaya error satu tidak block yang lain
@@ -528,6 +551,73 @@ export function recordPnlDivergenceEvent({
       metadata ? safeStringify(metadata) : null,
     );
   });
+}
+
+export function recordScreeningEvent({
+  tokenMint = null,
+  tokenSymbol = null,
+  tokenName = null,
+  poolAddress = null,
+  verdict = 'UNKNOWN',
+  eligible = false,
+  primaryRule = null,
+  primaryMessage = null,
+  gmgnStatus = null,
+  vampedSourceStatus = null,
+  totalFeesSol = null,
+  totalFeesSource = null,
+  sourceContext = 'hunter',
+  highFlags = [],
+  mediumFlags = [],
+}) {
+  return runInQueue(() => db.prepare(`
+    INSERT INTO screening_events (
+      token_mint,
+      token_symbol,
+      token_name,
+      pool_address,
+      verdict,
+      eligible,
+      primary_rule,
+      primary_message,
+      gmgn_status,
+      vamped_source_status,
+      total_fees_sol,
+      total_fees_source,
+      source_context,
+      high_flags,
+      medium_flags
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    tokenMint,
+    tokenSymbol,
+    tokenName,
+    poolAddress,
+    verdict,
+    eligible ? 1 : 0,
+    primaryRule,
+    primaryMessage,
+    gmgnStatus,
+    vampedSourceStatus,
+    Number.isFinite(totalFeesSol) ? totalFeesSol : null,
+    totalFeesSource,
+    sourceContext,
+    safeStringify(Array.isArray(highFlags) ? highFlags : []),
+    safeStringify(Array.isArray(mediumFlags) ? mediumFlags : []),
+  ));
+}
+
+export function getRecentScreeningEvents(limit = 50) {
+  return db.prepare(`
+    SELECT *
+    FROM screening_events
+    ORDER BY created_at DESC
+    LIMIT ?
+  `).all(limit).map((row) => ({
+    ...row,
+    high_flags: safeJsonParse(row.high_flags, []),
+    medium_flags: safeJsonParse(row.medium_flags, []),
+  }));
 }
 
 export function getConversationHistory(limit = 20) {

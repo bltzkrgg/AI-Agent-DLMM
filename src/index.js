@@ -63,7 +63,7 @@ const bootCfg = getConfig();
 // ─── Validate env ────────────────────────────────────────────────
 const { missing } = validateRuntimeEnv({
   requireTrading: true,
-  requireGmgn: bootCfg.gmgnDegradedModeEnabled === false,
+  requireGmgn: true,
 });
 if (missing.length > 0) {
   console.error(`❌ Missing env vars: ${missing.join(', ')}`);
@@ -1897,8 +1897,6 @@ bot.onText(/\/setconfig(?:\s+(\S+))?(?:\s+(.+))?/, (msg, match) => {
       `minOrganic               = ${cfg.minOrganic}`,
       `minMcap                  = ${cfg.minMcap}`,
       `minVolume24h             = ${cfg.minVolume24h}`,
-      `minTvl                   = ${cfg.minTvl}`,
-      `maxTvl                   = ${cfg.maxTvl}`,
       `minTokenFeesSol          = ${cfg.minTokenFeesSol}`,
       `minTotalFeesSol          = ${cfg.minTotalFeesSol}`,
       `heritageModeEnabled      = ${cfg.heritageModeEnabled}`,
@@ -1913,10 +1911,6 @@ bot.onText(/\/setconfig(?:\s+(\S+))?(?:\s+(.+))?/, (msg, match) => {
       `failSafeModeOnDataUnreliable= ${cfg.failSafeModeOnDataUnreliable}`,
       `minPriceSourcesForEntry  = ${cfg.minPriceSourcesForEntry}`,
       `oracleMaxPriceDivergencePct= ${cfg.oracleMaxPriceDivergencePct}`,
-      `gmgnDegradedModeEnabled  = ${cfg.gmgnDegradedModeEnabled}`,
-      `gmgnDegradedMinMcap      = ${cfg.gmgnDegradedMinMcap}`,
-      `gmgnDegradedMinVolume24h = ${cfg.gmgnDegradedMinVolume24h}`,
-      `gmgnDegradedMinTokenAgeMinutes= ${cfg.gmgnDegradedMinTokenAgeMinutes}`,
       `minTaeSamplesForFullStage= ${cfg.minTaeSamplesForFullStage}`,
       `minTaeWinRateForFullStage= ${cfg.minTaeWinRateForFullStage}`,
     ];

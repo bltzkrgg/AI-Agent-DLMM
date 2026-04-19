@@ -8,13 +8,23 @@ import { getPoolSmartMoney } from '../market/lpAgent.js';
 
 const DEXSCREENER_BASE = 'https://api.dexscreener.com';
 const METEORA_DATAPI = 'https://dlmm-api.meteora.ag';
+const BIRDEYE_BASE = 'https://public-api.birdeye.so';
 
 // ─── 1. OHLCV — Price Snapshot (DexScreener) ────────────────────
 // Rerouted to DexScreener as the primary source for price/volatility logic.
 // Oracle: OHLCV + TA dari DexScreener untuk Evil Panda entry/exit.
 
 export async function getOHLCV(tokenMint, poolAddress = null) {
-  return buildOHLCVFromDexScreener(tokenMint, poolAddress);
+  const dex = await buildOHLCVFromDexScreener(tokenMint, poolAddress);
+  if (!poolAddress) return dex;
+
+  // Fallback to Birdeye only when 15m historical TA from Dex is unavailable.
+  // Keep Dex as the default source to preserve existing behavior.
+  const needFallback = !dex || dex?.historySuccess !== true || dex?.ta?.supertrend?.source === 'Momentum-Proxy';
+  if (!needFallback) return dex;
+
+  const birdeye = await buildOHLCVFromBirdeye(tokenMint, dex);
+  return birdeye || dex;
 }
 
 // ─── 2. On-Chain Signals (Helius) ────────────────────────────────
@@ -197,6 +207,7 @@ export function computeSnapshotQuality({
   const taSource = ohlcv?.ta?.supertrend?.source || 'unknown';
 
   if (taSource === 'DexScreener-15m') taConfidence += 0.24;
+  else if (taSource === 'Birdeye-15m') taConfidence += 0.22;
   else if (taSource === 'Momentum-Proxy') taConfidence += 0.12;
   if (ohlcv?.historySuccess) taConfidence += 0.10;
   if (sentiment && Number.isFinite(sentiment.buyPressurePct)) taConfidence += 0.08;
@@ -263,6 +274,121 @@ export function computeSnapshotQuality({
     },
     issues,
   };
+}
+
+async function getHistoryOHLCVFromBirdeye(tokenMint, lookbackHours = 12) {
+  const apiKey = process.env.BIRDEYE_API_KEY;
+  if (!apiKey || !tokenMint) return null;
+
+  try {
+    const now = Math.floor(Date.now() / 1000);
+    const timeFrom = now - (Math.max(2, lookbackHours) * 3600);
+    const res = await fetchWithTimeout(
+      `${BIRDEYE_BASE}/defi/ohlcv?address=${tokenMint}&type=15m&time_from=${timeFrom}&time_to=${now}`,
+      {
+        headers: {
+          'X-API-KEY': apiKey,
+          'x-chain': 'solana',
+          Accept: 'application/json',
+        },
+      },
+      8000
+    );
+    if (!res.ok) return null;
+    const json = await res.json().catch(() => null);
+    const items = json?.data?.items || json?.data?.candles || [];
+    if (!Array.isArray(items) || items.length === 0) return null;
+
+    const mapped = items.map((c) => {
+      const rawTime = safeNum(c.unixTime ?? c.t ?? c.time, NaN);
+      const time = rawTime > 1e12 ? Math.floor(rawTime / 1000) : rawTime;
+      return {
+        time,
+        open: safeNum(c.o ?? c.open),
+        high: safeNum(c.h ?? c.high),
+        low: safeNum(c.l ?? c.low),
+        close: safeNum(c.c ?? c.close),
+        volume: safeNum(c.v ?? c.volume ?? 0),
+      };
+    }).filter((c) =>
+      Number.isFinite(c.time) &&
+      Number.isFinite(c.close) &&
+      c.close > 0
+    ).sort((a, b) => a.time - b.time);
+
+    if (mapped.length === 0) return null;
+    return mapped;
+  } catch {
+    return null;
+  }
+}
+
+async function buildOHLCVFromBirdeye(tokenMint, dexFallback = null) {
+  try {
+    const history = await getHistoryOHLCVFromBirdeye(tokenMint, 12);
+    if (!Array.isArray(history) || history.length < 12) return null;
+
+    const closedCandles = history.slice(0, -1);
+    if (closedCandles.length < 10) return null;
+
+    const last = closedCandles[closedCandles.length - 1];
+    const first = closedCandles[0];
+    const maxHigh = Math.max(...closedCandles.map((c) => c.high));
+    const minLow = Math.min(...closedCandles.map((c) => c.low));
+    const range24hPct = last.close > 0 ? Math.abs(((maxHigh - minLow) / last.close) * 100) : 0;
+    const priceChangeM5 = dexFallback?.priceChangeM5 ?? 0;
+    const priceChangeH1 = dexFallback?.priceChangeH1 ?? 0;
+    const buyVolume = safeNum(dexFallback?.buyVolume ?? 0);
+    const sellVolume = safeNum(dexFallback?.sellVolume ?? 0);
+
+    const st = ta.calculateSupertrend(closedCandles, 10, 3);
+    return {
+      tokenMint,
+      timeframe: '15m',
+      source: 'birdeye-ohlcv',
+      currentPrice: safeNum(last.close),
+      priceChangeM5,
+      priceChangeH1,
+      high24h: safeNum(maxHigh),
+      low24h: safeNum(minLow),
+      range24hPct: parseFloat(range24hPct.toFixed(2)),
+      buyVolume,
+      sellVolume,
+      trend: (priceChangeM5 > 1.5 && priceChangeH1 > 0) ? 'UPTREND'
+        : (priceChangeM5 < -1.5 && priceChangeH1 < 0) ? 'DOWNTREND'
+          : 'SIDEWAYS',
+      volatilityCategory: range24hPct > 20 ? 'HIGH' : range24hPct > 7 ? 'MEDIUM' : 'LOW',
+      ta: {
+        supertrend: {
+          trend: st?.trend || 'NEUTRAL',
+          value: Number.isFinite(st?.value) ? st.value : last.close,
+          atr: Number.isFinite(st?.atr) ? st.atr : null,
+          changed: Boolean(st?.changed),
+          source: 'Birdeye-15m',
+        },
+        candleCount: closedCandles.length,
+        historySuccess: true,
+        "Evil Panda": {
+          entry: {
+            triggered: st?.trend === 'BULLISH',
+            reason: st?.trend === 'BULLISH'
+              ? `EVIL PANDA TREND: Supertrend 15m bullish (${closedCandles.length} candles, Birdeye fallback).`
+              : null,
+          },
+          exit: {
+            triggered: st?.trend === 'BEARISH',
+            reason: st?.trend === 'BEARISH'
+              ? 'TREND EXIT: Supertrend 15m bearish (Birdeye fallback).'
+              : null,
+          },
+        },
+      },
+      historySuccess: true,
+      historyWindowSec: safeNum(last.time - first.time),
+    };
+  } catch {
+    return null;
+  }
 }
 
 // ─── OHLCV Build helper ──────────────────────────────────────────
@@ -588,4 +714,14 @@ export async function getMarketSnapshot(tokenMint, poolAddress = null) {
 export async function fetchCandles() { return null; }
 export async function getMultiTFScore() { return { score: 0.5, validCount: 0 }; }
 export async function fetchMultiTFOHLCV() { return {}; }
-export async function getOKXData() { return { available: false, reason: 'Source removed per consolidation' }; }
+export async function getOKXData() {
+  const apiKey = process.env.OKX_API_KEY || '';
+  if (!apiKey) {
+    return { available: false, reason: 'OKX_API_KEY missing' };
+  }
+  return {
+    available: true,
+    mode: 'api_key_only',
+    reason: 'OKX credentials in simple mode (API key only) loaded',
+  };
+}

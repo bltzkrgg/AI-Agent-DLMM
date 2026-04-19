@@ -38,17 +38,21 @@ const DEFAULTS = {
   activeModel: null,
 
   // Screening thresholds — Evil Panda: hunt fresh hyper-active pools
-  minFeeActiveTvlRatio: 0.05,
-  minTvl: 1000,
-  maxTvl: 15000,
   maxPoolAgeDays: 3,          // Reject pools older than 3 days (72h freshness rule)
-  minVolumeTvlRatio: 20,      // Reject if Volume/TVL < 20x (hyper-active gate)
   minOrganic: 55,
   minBinStep: 100,            // Minimal 100 bin step (Hukum 3)
   allowedBinSteps: [100, 125], // Daftar Bin Step spesifik yang diijinkan (Saklek Mode)
   minTotalFeesSol: 30.0,     // Ambang batas Heritage (Total Fee seumur hidup)
   heritageModeEnabled: true, // Aktifkan saringan riwayat sultan
   minTokenAgeMinutes: 0,     // Min usia token sejak launch (0 = disabled) — Supertrend sudah jadi gate alami
+  // External vamped source (RapidLaunch/provider lain)
+  // Default OFF agar backward-compatible; aktifkan saat endpoint siap.
+  vampedSourceEnabled: false,
+  vampedSourceFailClosed: true,
+  vampedSourceUrlTemplate: '', // contoh: https://api.vendor.com/v1/vamped?chain=sol&address={mint}
+  vampedSourceApiKey: '',
+  vampedSourceTimeoutMs: 7000,
+  vampedSourceCacheTtlSec: 300,
 
   // Position management
   takeProfitFeePct: 5,
@@ -96,7 +100,7 @@ const DEFAULTS = {
   // Coin selection thresholds (USD, via GeckoTerminal + DexScreener)
   minMcap: 250000,           // Min market cap ($) — null data → skip
   maxMcap: 0,                // Max market cap ($, 0 = disabled)
-  minVolume24h: 20000,       // Min 24h volume ($) — ratio gate (minVolumeTvlRatio) is primary filter
+  minVolume24h: 20000,       // Min 24h volume ($)
 
   // Strategy-specific tuning. Base identity is 'Evil Panda Master'.
   strategyOverrides: {
@@ -122,7 +126,7 @@ const DEFAULTS = {
   lpAgentRelayEnabled: true,
   publicApiKey: null,
   agentMeridianApiUrl: 'https://api.agentmeridian.xyz/api',
-  maxVolumeTvlRatio: 70,       // Rasio Volume/TVL maksimal (Safety against wash-trade)
+  okxApiKey: process.env.OKX_API_KEY || '',
   minTokenFeesSol: 30,         // Minimal fee 24 jam dalam SOL untuk momentum filter
   slippageBps: 100,            // Slippage tolerance dalam basis points (100 = 1%)
 
@@ -136,10 +140,6 @@ const DEFAULTS = {
   oracleMaxPriceDivergencePct: 3.0, // Maks divergence Dex vs Jupiter sebelum data ditandai risky
   minPriceSourcesForEntry: 2, // Minimum sumber harga yang valid untuk entry otomatis
   failSafeModeOnDataUnreliable: true, // Blok entry baru jika quality oracle tidak reliable
-  gmgnDegradedModeEnabled: true, // Jika GMGN down/unknown, pakai screening konservatif
-  gmgnDegradedMinMcap: 400000, // Batas mcap minimal saat GMGN degraded
-  gmgnDegradedMinVolume24h: 1500000, // Batas volume minimal saat GMGN degraded
-  gmgnDegradedMinTokenAgeMinutes: 180, // Token age minimal saat GMGN degraded
   minTaeSamplesForFullStage: 10, // Minimum sample exit sebelum stage full dianggap matang
   minTaeWinRateForFullStage: 45, // Minimum win rate (%) exit tracker untuk lolos gate stage full
 };
@@ -155,11 +155,7 @@ const CONFIG_BOUNDS = {
   managementIntervalMin: { min: 1, max: 1440 },
   screeningIntervalMin: { min: 5, max: 1440 },
   positionUpdateIntervalMin: { min: 1, max: 1440 },
-  minFeeActiveTvlRatio: { min: 0.001, max: 1 },
-  minTvl: { min: 100, max: 10000000 },
-  maxTvl: { min: 1000, max: 100000000 },
   maxPoolAgeDays: { min: 0.1, max: 365 },
-  minVolumeTvlRatio: { min: 0, max: 1000 },
   minOrganic: { min: 0, max: 100 },
   minBinStep: { min: 1, max: 400 },
   minTokenFeesSol: { min: 0, max: 10000 },
@@ -199,6 +195,12 @@ const CONFIG_BOUNDS = {
   maxPriceImpactPct: { min: 0.1, max: 5 },
   maxBinsPerPosition: { min: 20, max: 150 },
   minTokenAgeMinutes: { min: 0, max: 1440 },
+  vampedSourceEnabled: { type: 'boolean' },
+  vampedSourceFailClosed: { type: 'boolean' },
+  vampedSourceUrlTemplate: { type: 'string' },
+  vampedSourceApiKey: { type: 'string' },
+  vampedSourceTimeoutMs: { min: 1000, max: 60000 },
+  vampedSourceCacheTtlSec: { min: 1, max: 86400 },
   dailyLossLimitUsd: { min: 0, max: 1000 },
   allowedBinSteps: { type: 'array' }, // Custom handling logic in updateConfig
 
@@ -212,16 +214,12 @@ const CONFIG_BOUNDS = {
   oracleMaxPriceDivergencePct: { min: 0.5, max: 25.0 },
   minPriceSourcesForEntry: { min: 1, max: 3 },
   failSafeModeOnDataUnreliable: { type: 'boolean' },
-  gmgnDegradedModeEnabled: { type: 'boolean' },
-  gmgnDegradedMinMcap: { min: 0, max: 10000000000 },
-  gmgnDegradedMinVolume24h: { min: 0, max: 1000000000 },
-  gmgnDegradedMinTokenAgeMinutes: { min: 0, max: 1440 },
   minTaeSamplesForFullStage: { min: 0, max: 1000 },
   minTaeWinRateForFullStage: { min: 0, max: 100 },
   
   lastEvolutionTradeCount: { min: 0, max: 1000000 },
   llmWeightHints: { type: 'object' },
-  maxVolumeTvlRatio: { min: 1, max: 1000 },
+  okxApiKey: { type: 'string' },
   slippageBps: { min: 10, max: 1000 },
   managementModel: { type: 'string' },
   hunterModel: { type: 'string' },
@@ -397,9 +395,6 @@ export function updateConfig(updates) {
 export function getThresholds() {
   const cfg = getConfig();
   return {
-    minFeeActiveTvlRatio: cfg.minFeeActiveTvlRatio,
-    minTvl: cfg.minTvl,
-    maxTvl: cfg.maxTvl,
     minVolume24h: cfg.minVolume24h,
     minOrganic: cfg.minOrganic,
     takeProfitFeePct: cfg.takeProfitFeePct,

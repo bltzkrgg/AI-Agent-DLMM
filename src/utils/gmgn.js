@@ -16,6 +16,43 @@ import { fetchWithTimeout } from './safeJson.js';
 
 const GMGN_HOST   = 'https://openapi.gmgn.ai';
 const GMGN_CHAIN  = 'sol';
+const GMGN_MAX_RPS = 2;
+const GMGN_MIN_INTERVAL_MS = Math.ceil(1000 / GMGN_MAX_RPS);
+const GMGN_CACHE_TTL_MS = 90_000;
+
+let _gmgnLastRequestAt = 0;
+let _gmgnQueue = Promise.resolve();
+const _gmgnCache = new Map();
+
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+function cacheKey(subPath, address) {
+  return `${subPath}:${address || ''}`;
+}
+
+function getCached(subPath, address) {
+  const key = cacheKey(subPath, address);
+  const item = _gmgnCache.get(key);
+  if (!item) return null;
+  if ((Date.now() - item.ts) > GMGN_CACHE_TTL_MS) {
+    _gmgnCache.delete(key);
+    return null;
+  }
+  return item.value;
+}
+
+function setCached(subPath, address, value) {
+  const key = cacheKey(subPath, address);
+  _gmgnCache.set(key, { ts: Date.now(), value });
+}
+
+function runSerialized(task) {
+  const run = _gmgnQueue.then(task, task);
+  _gmgnQueue = run.catch(() => {});
+  return run;
+}
 
 // ─── Auth query builder ──────────────────────────────────────────
 
@@ -44,43 +81,50 @@ async function gmgnFetch(subPath, extraParams = {}) {
     return null;
   }
 
-  try {
-    const url = buildUrl(subPath, extraParams);
-    const res = await fetchWithTimeout(url, {
-      headers: {
-        'X-APIKEY': apiKey,
-        'Content-Type': 'application/json',
-      },
-    }, 8000);
+  return runSerialized(async () => {
+    const sinceLast = Date.now() - _gmgnLastRequestAt;
+    const waitMs = Math.max(0, GMGN_MIN_INTERVAL_MS - sinceLast);
+    if (waitMs > 0) await sleep(waitMs);
 
-    if (res.status === 429) {
-      console.warn('[gmgn] Rate limited (429) — skipping, will retry next cycle.');
+    try {
+      const url = buildUrl(subPath, extraParams);
+      _gmgnLastRequestAt = Date.now();
+      const res = await fetchWithTimeout(url, {
+        headers: {
+          'X-APIKEY': apiKey,
+          'Content-Type': 'application/json',
+        },
+      }, 8000);
+
+      if (res.status === 429) {
+        console.warn('[gmgn] Rate limited (429) — skipping, will retry next cycle.');
+        return null;
+      }
+
+      if (!res.ok) {
+        console.warn(`[gmgn] HTTP ${res.status} for ${subPath} — skipping.`);
+        return null;
+      }
+
+      const json = await res.json().catch(() => null);
+      if (!json) {
+        console.warn(`[gmgn] Non-JSON response for ${subPath} — skipping.`);
+        return null;
+      }
+
+      if (json.code !== 0) {
+        // API returned a business error (e.g. invalid address format)
+        console.warn(`[gmgn] API error code=${json.code} msg=${json.message || json.error || 'unknown'} path=${subPath}`);
+        return null;
+      }
+
+      return json.data || null;
+
+    } catch (e) {
+      console.warn(`[gmgn] ${subPath} failed: ${e.message} — skipping (non-blocking).`);
       return null;
     }
-
-    if (!res.ok) {
-      console.warn(`[gmgn] HTTP ${res.status} for ${subPath} — skipping.`);
-      return null;
-    }
-
-    const json = await res.json().catch(() => null);
-    if (!json) {
-      console.warn(`[gmgn] Non-JSON response for ${subPath} — skipping.`);
-      return null;
-    }
-
-    if (json.code !== 0) {
-      // API returned a business error (e.g. invalid address format)
-      console.warn(`[gmgn] API error code=${json.code} msg=${json.message || json.error || 'unknown'} path=${subPath}`);
-      return null;
-    }
-
-    return json.data || null;
-
-  } catch (e) {
-    console.warn(`[gmgn] ${subPath} failed: ${e.message} — skipping (non-blocking).`);
-    return null;
-  }
+  });
 }
 
 // ─── Public API ──────────────────────────────────────────────────
@@ -97,7 +141,11 @@ async function gmgnFetch(subPath, extraParams = {}) {
  */
 export async function getGmgnTokenInfo(mint) {
   if (!mint || typeof mint !== 'string') return null;
-  return gmgnFetch('/v1/token/info', { address: mint });
+  const cached = getCached('/v1/token/info', mint);
+  if (cached) return cached;
+  const data = await gmgnFetch('/v1/token/info', { address: mint });
+  if (data) setCached('/v1/token/info', mint, data);
+  return data;
 }
 
 /**
@@ -118,5 +166,9 @@ export async function getGmgnTokenInfo(mint) {
  */
 export async function getGmgnSecurity(mint) {
   if (!mint || typeof mint !== 'string') return null;
-  return gmgnFetch('/v1/token/security', { address: mint });
+  const cached = getCached('/v1/token/security', mint);
+  if (cached) return cached;
+  const data = await gmgnFetch('/v1/token/security', { address: mint });
+  if (data) setCached('/v1/token/security', mint, data);
+  return data;
 }

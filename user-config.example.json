@@ -8,8 +8,6 @@
       "maxPositions": 1,
       "stopLossPct": 3,
       "maxHoldHours": 4,
-      "maxTvl": 100000,
-      "minVolumeTvlRatio": 30,
       "dailyLossLimitUsd": 10
     },
     "balanced": {
@@ -19,8 +17,6 @@
       "maxPositions": 3,
       "stopLossPct": 5,
       "maxHoldHours": 6,
-      "maxTvl": 500000,
-      "minVolumeTvlRatio": 20,
       "dailyLossLimitUsd": 25
     },
     "aggressive_experimental": {
@@ -30,8 +26,6 @@
       "maxPositions": 5,
       "stopLossPct": 8,
       "maxHoldHours": 12,
-      "maxTvl": 2000000,
-      "minVolumeTvlRatio": 10,
       "dailyLossLimitUsd": 50
     }
   },
@@ -55,12 +49,7 @@
   "positionUpdateIntervalMin": 5,
   "autoScreeningEnabled": false,
 
-  "minFeeActiveTvlRatio": 0.01,
-  "minTvl": 10000,
-  "maxTvl": 500000,
   "maxPoolAgeDays": 3,
-  "minVolumeTvlRatio": 20,
-  "maxVolumeTvlRatio": 70,
   "minOrganic": 55,
   "minBinStep": 100,
   "allowedBinSteps": [100, 125],
@@ -71,6 +60,12 @@
   "minTokenFeesSol": 1.0,
   "minTotalFeesSol": 30.0,
   "heritageModeEnabled": true,
+  "vampedSourceEnabled": false,
+  "vampedSourceFailClosed": true,
+  "vampedSourceUrlTemplate": "",
+  "vampedSourceApiKey": "",
+  "vampedSourceTimeoutMs": 7000,
+  "vampedSourceCacheTtlSec": 300,
 
   "takeProfitFeePct": 5,
   "stopLossPct": 5,
@@ -115,11 +110,6 @@
   "oracleMaxPriceDivergencePct": 3.0,
   "minPriceSourcesForEntry": 2,
   "failSafeModeOnDataUnreliable": true,
-
-  "gmgnDegradedModeEnabled": true,
-  "gmgnDegradedMinMcap": 400000,
-  "gmgnDegradedMinVolume24h": 1500000,
-  "gmgnDegradedMinTokenAgeMinutes": 180,
 
   "hourlyPulseEnabled": false,
 
