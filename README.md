@@ -67,12 +67,51 @@ Contoh baseline aman:
   "requireConfirmation": true,
   "deployAmountSol": 0.05,
   "allowedBinSteps": [100, 125],
+  "minTokenFeesSol": 0,
+  "gmgnMinTotalFeesSol": 30,
+  "executionRejectNonRefundableFees": true,
   "autoHarvestEnabled": true,      // Auto-tarik profit fee ke SOL
   "autoHarvestThresholdSol": 0.04, // Threshold panen otomatis (SOL)
   "enableSimulationShield": true,  // Aktifkan blokir transaksi gagal
   "hourlyPulseEnabled": true       // Aktifkan laporan performa tiap jam
 }
 ```
+
+### Token-Centric Flow (Updated)
+Arsitektur screening terbaru berfokus ke token (bukan pool-first):
+
+1. **Dex Pre-Filter (wajib lolos dulu)**  
+   - `minMcap`  
+   - `minVolume24h`  
+   - narrative/logo basic validation
+2. **GMGN Security Gate (utama)**  
+   - holder/dev/insider/bundler/phishing/rug/tax/wash/cto/vamped
+   - fees token via `gmgnMinTotalFeesSol`
+3. **Meteora Execution Readiness (eksekusi)**  
+   - pool available & compatible  
+   - slippage/impact safety  
+   - hard reject non-refundable fees (`executionRejectNonRefundableFees=true`)
+
+Jika token gagal di Gate Dex, GMGN tidak dipanggil (`SKIPPED_DEX_GATE`) untuk hemat latency & API cost.
+
+### GMGN Thresholds (Configurable)
+Semua threshold utama GMGN bisa di-tune dari `user-config.json`:
+
+- `gmgnMinTotalFeesSol`
+- `gmgnTop10HolderMaxPct`
+- `gmgnDevHoldMaxPct`
+- `gmgnInsiderMaxPct`
+- `gmgnBundlerMaxPct`
+- `gmgnPhishingMaxPct`
+- `gmgnRugRatioMax`
+- `gmgnWashTradeMaxPct`
+- `gmgnRequireBurnedLp`
+- `gmgnRequireZeroTax`
+- `gmgnBlockCto`
+- `gmgnBlockVamped`
+- `gmgnFailClosedCritical`
+
+Catatan: `minTokenFeesSol` sekarang mode legacy (default `0`) agar gate fee utama tetap token-centric via GMGN.
 
 ---
 
