@@ -14,6 +14,8 @@ Generalized decision taxonomy and structured decision context for entry, hold, a
 | `src/runtime/state.js` | `hunter-circuit-breaker` + `recent-sl-events` persisted to `runtime-state.json` (survives restart) |
 | `src/strategies/strategyManager.js` | `Deep Fishing` added to BASELINE_STRATEGIES |
 | `src/strategies/strategyManager.js` | `parseStrategyParameters`: `strategyType` now derives from `deploy.strategyType` or strategy type mapping |
+| `src/agents/hunterAlpha.js` | Phase 2.05 Entry Confirmation Layer added — 5 sequential gates: green candle, wick ratio, volume vs MA, optional breakout, HTF alignment |
+| `src/config.js` | 10 new `entry*` config keys added with validator schema |
 
 ---
 
@@ -94,6 +96,37 @@ Generalized decision taxonomy and structured decision context for entry, hold, a
 
 > **`SL_COOLDOWN_ACTIVE` — Healer HOLD-delay only, not a Hunter block.**  
 > This code applies inside `healerAlpha.js` when a recent stop-loss creates a hold delay before the next close decision. It does NOT block hunter from opening new positions. The hunter's equivalent gate is `CIRCUIT_BREAKER_ACTIVE`.
+
+---
+
+## Phase 2.05 Entry Confirmation Layer
+
+After the Supertrend gate passes, each candidate goes through a second layer of 15m candle-based checks before a position is opened. All checks run against `computeEntrySignalsFromCandles()`, with automatic fallback to oracle snapshot values when fewer than 12 closed candles are available.
+
+### Gate Order (evaluated sequentially — first fail = skip pool)
+
+| Gate | Config Key(s) | Default | Logic | Skip Condition |
+|------|--------------|---------|-------|----------------|
+| **Green candle + body** | `entryRequireGreenCandle`, `entryMinGreenBodyPct` | `true`, `0.2%` | Last closed 15m candle must be bullish with body ≥ `entryMinGreenBodyPct` | `!isGreen \|\| bodyPct < minBodyPct` |
+| **Upper wick ratio** | `entryMaxUpperWickBodyRatio` | `2.5×` | Wick above `max(open,close)` must not exceed `entryMaxUpperWickBodyRatio × body` | `upperWickBodyRatio > maxWickRatio` |
+| **Volume confirmation** | `entryRequireVolumeConfirm`, `entryMinVolumeRatio`, `entryVolumeLookbackCandles` | `true`, `1.1×`, `20` | Last candle volume ≥ `entryMinVolumeRatio × rolling avg` | `volumeRatio < minVolRatio` |
+| **Breakout confirm** | `entryRequireBreakoutConfirm`, `entryBreakoutLookbackCandles` | `false`, `96` | **Opt-in only.** Previous + current close must both exceed the rolling `entryBreakoutLookbackCandles`-candle high | `breakoutConfirm === false` (only checked when flag is `true`) |
+| **HTF alignment** | `entryRequireHtfAlignment`, `entryHtfAllowNeutral` | `true`, `true` | 1h Supertrend (derived by aggregating 4× 15m candles) must be BULLISH, or NEUTRAL when `entryHtfAllowNeutral=true`. BEARISH always rejected | `htfTrend === 'BEARISH'` (or `=== 'NEUTRAL'` when `allowNeutral=false`) |
+
+### Fallback Behaviour (< 12 closed candles)
+
+When `computeEntrySignalsFromCandles()` returns `ready: false`, the following proxy values are used:
+
+| Signal | Fallback Source |
+|--------|----------------|
+| `isGreen` | `ohlcv.priceChangeM5 > 0` |
+| `bodyPct` | `Math.abs(ohlcv.priceChangeM5)` |
+| `upperWickBodyRatio` | `0` (always passes wick gate) |
+| `volumeRatio` | `1` (may fail volume gate if `entryMinVolumeRatio > 1`) |
+| `breakoutConfirm` | `false` (always fails breakout gate if opt-in enabled) |
+| `htfTrend` | `ohlcv.priceChangeH1 >= 0 ? 'BULLISH' : 'BEARISH'` |
+
+> **Operator note:** When relying on fallback (cold start, low-history pools), the volume gate becomes the most likely blocker — `volumeRatio=1` fails the default threshold `1.1`. Disable `entryRequireVolumeConfirm` or lower `entryMinVolumeRatio` to `0.8` for pools with sparse history.
 
 ---
 
@@ -238,4 +271,4 @@ Generalized decision taxonomy and structured decision context for entry, hold, a
 
 ---
 
-**Last Updated:** 2026-04-19
+**Last Updated:** 2026-04-20

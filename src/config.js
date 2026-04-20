@@ -49,6 +49,16 @@ const DEFAULTS = {
   maxOhlcvStaleMinutes15m: 90, // Maks umur candle 15m sebelum dianggap stale
   maxOhlcvStaleMinutes1h: 180, // Maks umur candle 1h (cadangan HTF)
   minAtrPctForEntry: 2.0,      // Minimal ATR% untuk entry supaya tidak masuk market terlalu flat
+  entryRequireGreenCandle: true, // Wajib candle 15m terakhir hijau saat evaluasi entry
+  entryMinGreenBodyPct: 0.2,     // Minimal body candle hijau (% dari open)
+  entryMaxUpperWickBodyRatio: 2.5, // Hindari candle hijau dengan wick atas terlalu panjang
+  entryRequireVolumeConfirm: true, // Volume candle entry harus >= rata-rata rolling volume
+  entryMinVolumeRatio: 1.1,      // Rasio min volume candle vs average volume
+  entryVolumeLookbackCandles: 20, // Lookback candle untuk baseline volume
+  entryRequireBreakoutConfirm: false, // Opsional: wajib breakout + 1-candle confirmation
+  entryBreakoutLookbackCandles: 96, // Lookback breakout (96x15m ~= 24h)
+  entryRequireHtfAlignment: true, // Wajib konfirmasi HTF (1h) sebelum entry
+  entryHtfAllowNeutral: true,     // HTF boleh NEUTRAL (tetap tolak BEARISH)
   // External vamped source (RapidLaunch/provider lain)
   // Default OFF agar backward-compatible; aktifkan saat endpoint siap.
   vampedSourceEnabled: false,
@@ -134,7 +144,21 @@ const DEFAULTS = {
   publicApiKey: null,
   agentMeridianApiUrl: 'https://api.agentmeridian.xyz/api',
   okxApiKey: process.env.OKX_API_KEY || '',
-  minTokenFeesSol: 30,         // Minimal fee 24 jam dalam SOL untuk momentum filter
+  minTokenFeesSol: 0,          // Legacy gate (pool-centric). Set 0 untuk token-centric pipeline.
+  gmgnMinTotalFeesSol: 30,     // Minimum total fees token (SOL) berdasarkan GMGN
+  gmgnTop10HolderMaxPct: 30,   // Reject jika Top 10 holder > X%
+  gmgnDevHoldMaxPct: 5,        // Reject jika dev/creator hold > X%
+  gmgnInsiderMaxPct: 0,        // Reject jika insider/rat trader > X%
+  gmgnBundlerMaxPct: 60,       // Reject jika bundler > X%
+  gmgnPhishingMaxPct: 30,      // Reject jika entrapment/phishing proxy > X%
+  gmgnRugRatioMax: 0.30,       // Reject jika rug ratio > X (0-1)
+  gmgnWashTradeMaxPct: 35,     // Reject jika wash trading > X%
+  gmgnRequireBurnedLp: true,   // Wajib LP burned
+  gmgnRequireZeroTax: true,    // Wajib pajak 0/0
+  gmgnBlockCto: true,          // Reject CTO coin
+  gmgnBlockVamped: true,       // Reject vamped coin/proxy
+  gmgnFailClosedCritical: true, // Data critical GMGN missing => reject
+  executionRejectNonRefundableFees: true, // Reject pool dengan non-refundable fees
   slippageBps: 100,            // Slippage tolerance dalam basis points (100 = 1%)
 
   // Professional Yield & IQ Suite
@@ -169,6 +193,20 @@ const CONFIG_BOUNDS = {
   minOrganic: { min: 0, max: 100 },
   minBinStep: { min: 1, max: 400 },
   minTokenFeesSol: { min: 0, max: 10000 },
+  gmgnMinTotalFeesSol: { min: 0, max: 1000000 },
+  gmgnTop10HolderMaxPct: { min: 0, max: 100 },
+  gmgnDevHoldMaxPct: { min: 0, max: 100 },
+  gmgnInsiderMaxPct: { min: 0, max: 100 },
+  gmgnBundlerMaxPct: { min: 0, max: 100 },
+  gmgnPhishingMaxPct: { min: 0, max: 100 },
+  gmgnRugRatioMax: { min: 0, max: 1 },
+  gmgnWashTradeMaxPct: { min: 0, max: 100 },
+  gmgnRequireBurnedLp: { type: 'boolean' },
+  gmgnRequireZeroTax: { type: 'boolean' },
+  gmgnBlockCto: { type: 'boolean' },
+  gmgnBlockVamped: { type: 'boolean' },
+  gmgnFailClosedCritical: { type: 'boolean' },
+  executionRejectNonRefundableFees: { type: 'boolean' },
   minTotalFeesSol: { min: 0, max: 1000000 },
   minDailyFeeYieldPct: { min: 0, max: 20 },
   heritageModeEnabled: { type: 'boolean' },
@@ -212,6 +250,16 @@ const CONFIG_BOUNDS = {
   maxOhlcvStaleMinutes15m: { min: 5, max: 720 },
   maxOhlcvStaleMinutes1h: { min: 15, max: 1440 },
   minAtrPctForEntry: { min: 0, max: 20 },
+  entryRequireGreenCandle: { type: 'boolean' },
+  entryMinGreenBodyPct: { min: 0, max: 10 },
+  entryMaxUpperWickBodyRatio: { min: 0.5, max: 10 },
+  entryRequireVolumeConfirm: { type: 'boolean' },
+  entryMinVolumeRatio: { min: 0.5, max: 5 },
+  entryVolumeLookbackCandles: { min: 5, max: 200 },
+  entryRequireBreakoutConfirm: { type: 'boolean' },
+  entryBreakoutLookbackCandles: { min: 20, max: 500 },
+  entryRequireHtfAlignment: { type: 'boolean' },
+  entryHtfAllowNeutral: { type: 'boolean' },
   vampedSourceEnabled: { type: 'boolean' },
   vampedSourceFailClosed: { type: 'boolean' },
   vampedSourceUrlTemplate: { type: 'string' },

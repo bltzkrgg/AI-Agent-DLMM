@@ -410,6 +410,81 @@ After transitioning from shadow → canary → full:
 
 ---
 
+## Phase 2.05 Entry Confirmation — Tuning Guide
+
+Five sequential gates are evaluated after the Supertrend 15m BULLISH check. Each can be tuned or disabled independently via `user-config.json`.
+
+### Conservative preset (capital protection, fewer entries)
+```json
+"entryRequireGreenCandle":    true,
+"entryMinGreenBodyPct":       0.4,
+"entryMaxUpperWickBodyRatio": 1.5,
+"entryRequireVolumeConfirm":  true,
+"entryMinVolumeRatio":        1.3,
+"entryVolumeLookbackCandles": 20,
+"entryRequireBreakoutConfirm": true,
+"entryBreakoutLookbackCandles": 96,
+"entryRequireHtfAlignment":   true,
+"entryHtfAllowNeutral":       false
+```
+*Effect: all 5 gates active, breakout required, NEUTRAL HTF rejected. Fewer entries but higher confidence.*
+
+### Balanced preset (default — good starting point)
+```json
+"entryRequireGreenCandle":    true,
+"entryMinGreenBodyPct":       0.2,
+"entryMaxUpperWickBodyRatio": 2.5,
+"entryRequireVolumeConfirm":  true,
+"entryMinVolumeRatio":        1.1,
+"entryVolumeLookbackCandles": 20,
+"entryRequireBreakoutConfirm": false,
+"entryBreakoutLookbackCandles": 96,
+"entryRequireHtfAlignment":   true,
+"entryHtfAllowNeutral":       true
+```
+*Effect: breakout opt-in disabled, NEUTRAL HTF allowed. Good balance of confirmation vs opportunity.*
+
+### Aggressive preset (max entries — canary/shadow only)
+```json
+"entryRequireGreenCandle":    false,
+"entryMinGreenBodyPct":       0.0,
+"entryMaxUpperWickBodyRatio": 5.0,
+"entryRequireVolumeConfirm":  false,
+"entryMinVolumeRatio":        0.8,
+"entryVolumeLookbackCandles": 10,
+"entryRequireBreakoutConfirm": false,
+"entryBreakoutLookbackCandles": 48,
+"entryRequireHtfAlignment":   false,
+"entryHtfAllowNeutral":       true
+```
+*Effect: most gates disabled/relaxed. Use in shadow/canary mode only — NOT for live capital.*
+
+### Per-gate tuning reference
+
+| Gate | Key | Relax (more entries) | Tighten (fewer, higher quality) |
+|------|-----|---------------------|--------------------------------|
+| Green candle | `entryRequireGreenCandle` | Set `false` | Keep `true` |
+| Body size | `entryMinGreenBodyPct` | Lower (0.1) | Raise (0.5–1.0) |
+| Wick filter | `entryMaxUpperWickBodyRatio` | Raise (4.0–5.0) | Lower (1.0–1.5) |
+| Volume confirm | `entryRequireVolumeConfirm` | Set `false` | Keep `true` |
+| Volume threshold | `entryMinVolumeRatio` | Lower (0.8) | Raise (1.3–1.5) |
+| Volume lookback | `entryVolumeLookbackCandles` | Lower (5–10) | Raise (30–50) |
+| Breakout confirm | `entryRequireBreakoutConfirm` | Keep `false` (opt-in) | Set `true` |
+| Breakout window | `entryBreakoutLookbackCandles` | Lower (48) | Raise (192) |
+| HTF alignment | `entryRequireHtfAlignment` | Set `false` | Keep `true` |
+| HTF neutral | `entryHtfAllowNeutral` | Keep `true` | Set `false` |
+
+### Diagnosing "too few entries" with Phase 2.05 active
+
+If the agent has Supertrend BULLISH but still no entries, check which gate is firing:
+1. Enable debug: `HUNTER_DEBUG=1 npm start` — logs which gate rejects each pool
+2. Most common cause on new/low-history pools: **volume gate** (`volumeRatio=1` < default 1.1)
+   - Fix: lower `entryMinVolumeRatio` to `0.9` or set `entryRequireVolumeConfirm: false`
+3. Second most common: **HTF BEARISH** when 1h trend diverges from 15m
+   - Fix: set `entryHtfAllowNeutral: true` (already default) or `entryRequireHtfAlignment: false`
+
+---
+
 ## Telegram Operator Commands
 
 | Command | Description |

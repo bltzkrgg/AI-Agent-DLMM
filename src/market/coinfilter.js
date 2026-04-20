@@ -555,7 +555,9 @@ function step11_slippageCheck(sim, maxImpact = 2.5) {
 
 function step14_feeIntegrity({ info, sec, dex, solPrice, thresholds }) {
   const rejects = [];
-  const minFeesSol = thresholds.minTokenFeesSol || 0;
+  const minFeesSol = Number.isFinite(thresholds.gmgnMinTotalFeesSol)
+    ? thresholds.gmgnMinTotalFeesSol
+    : (thresholds.minTokenFeesSol || 0);
   let totalFeesSol = null;
   let feeSource = 'unknown';
   let usedFallback = false;
@@ -615,41 +617,53 @@ function step14_feeIntegrity({ info, sec, dex, solPrice, thresholds }) {
 // "Trip Wire" logic: rejects only when GMGN CONFIRMS a bad signal.
 // null values = data unavailable = proceed (no blocking on absence of evidence).
 
-function step12_gmgnSecurity(info, sec) {
+function step12_gmgnSecurity(info, sec, thresholds = {}) {
   const rejects = [];
   const warnings = [];
+  const failClosed = thresholds.gmgnFailClosedCritical !== false;
+  const top10Max = (Number(thresholds.gmgnTop10HolderMaxPct ?? 30) / 100);
+  const devHoldMax = (Number(thresholds.gmgnDevHoldMaxPct ?? 5) / 100);
+  const insiderMax = (Number(thresholds.gmgnInsiderMaxPct ?? 0) / 100);
+  const bundlerMax = (Number(thresholds.gmgnBundlerMaxPct ?? 60) / 100);
+  const phishingMax = (Number(thresholds.gmgnPhishingMaxPct ?? 30) / 100);
+  const rugRatioMax = Number(thresholds.gmgnRugRatioMax ?? 0.30);
+  const washTradeMax = Number(thresholds.gmgnWashTradeMaxPct ?? 35);
+  const requireBurnedLp = thresholds.gmgnRequireBurnedLp !== false;
+  const requireZeroTax = thresholds.gmgnRequireZeroTax !== false;
+  const blockCto = thresholds.gmgnBlockCto !== false;
+  const blockVamped = thresholds.gmgnBlockVamped !== false;
 
   // Strict mode: GMGN wajib ada untuk keputusan entry
-  if (!info) rejects.push({ rule: 'GMGN_INFO_MISSING', msg: 'GMGN info tidak tersedia — fail-closed.' });
-  if (!sec) rejects.push({ rule: 'GMGN_SECURITY_MISSING', msg: 'GMGN security tidak tersedia — fail-closed.' });
+  if (!info && failClosed) rejects.push({ rule: 'GMGN_INFO_MISSING', msg: 'GMGN info tidak tersedia — fail-closed.' });
+  if (!sec && failClosed) rejects.push({ rule: 'GMGN_SECURITY_MISSING', msg: 'GMGN security tidak tersedia — fail-closed.' });
   if (!info || !sec) return { rejects, warnings, fallbackFlags: { vampedFallback: false } };
 
   // ─── From token info ─────────────────────────────────────────
   if (info) {
     // CTO Coin (Community Takeover) — original dev abandoned, risky in early phase
     const ctoFlag = info.dev?.cto_flag;
-    if (ctoFlag == null) {
+    if (ctoFlag == null && failClosed && blockCto) {
       rejects.push({ rule: 'GMGN_CTO_DATA_MISSING', msg: 'Data CTO flag GMGN kosong — fail-closed.' });
-    } else if (Number(ctoFlag) === 1) {
+    } else if (blockCto && Number(ctoFlag) === 1) {
       rejects.push({ rule: 'GMGN_CTO_COIN', msg: 'CTO Coin (dev.cto_flag=1) — dev original kabur, risiko manipulasi oleh komunitas/dev baru' });
     }
 
     // Phishing / Entrapment trader pattern
     const entrapment = info.stat?.top_entrapment_trader_percentage;
     const entrapmentRate = toRate(entrapment);
-    if (entrapmentRate == null) {
+    if (entrapmentRate == null && failClosed) {
       rejects.push({ rule: 'GMGN_PHISHING_DATA_MISSING', msg: 'Data phishing/entrapment GMGN kosong — fail-closed.' });
-    } else if (entrapmentRate > 0.30) {
-      rejects.push({ rule: 'GMGN_PHISHING_RISK', msg: `Entrapment traders ${(entrapmentRate * 100).toFixed(1)}% > 30% — pola jebakan terorganisir` });
+    } else if (entrapmentRate > phishingMax) {
+      rejects.push({ rule: 'GMGN_PHISHING_RISK', msg: `Entrapment traders ${(entrapmentRate * 100).toFixed(1)}% > ${(phishingMax * 100).toFixed(1)}% — pola jebakan terorganisir` });
     }
 
     // Top 10 concentration
     const top10 = info.stat?.top_10_holder_rate;
     const top10Rate = toRate(top10);
-    if (top10Rate == null) {
+    if (top10Rate == null && failClosed) {
       rejects.push({ rule: 'GMGN_TOP10_DATA_MISSING', msg: 'Data top 10 holder GMGN kosong — fail-closed.' });
-    } else if (top10Rate > 0.30) {
-      rejects.push({ rule: 'GMGN_TOP10_CONCENTRATED', msg: `Top 10 holders ${(top10Rate * 100).toFixed(1)}% > 30% — risiko whale dump` });
+    } else if (top10Rate > top10Max) {
+      rejects.push({ rule: 'GMGN_TOP10_CONCENTRATED', msg: `Top 10 holders ${(top10Rate * 100).toFixed(1)}% > ${(top10Max * 100).toFixed(1)}% — risiko whale dump` });
     }
   }
 
@@ -674,42 +688,42 @@ function step12_gmgnSecurity(info, sec) {
     // Rat Traders / Insider Front-running (HARD REJECT L6)
     const insiderRate = sec.rat_trader_amount_rate ?? info?.stat?.top_rat_trader_percentage;
     const insiderRatio = toRate(insiderRate);
-    if (insiderRatio == null) {
+    if (insiderRatio == null && failClosed) {
       rejects.push({ rule: 'GMGN_INSIDER_DATA_MISSING', msg: 'Data insider GMGN kosong — fail-closed.' });
-    } else if (insiderRatio > 0) {
+    } else if (insiderRatio > insiderMax) {
       rejects.push({ rule: 'GMGN_INSIDER_DETECTED', msg: `Insider/rat trader terdeteksi di volume (${(insiderRatio * 100).toFixed(1)}%) — REJECT` });
     }
 
     // Creator/dev concentration
     const creatorRate = toRate(sec.creator_balance_rate ?? info?.stat?.dev_team_hold_rate ?? info?.stat?.creator_hold_rate);
-    if (creatorRate == null) {
+    if (creatorRate == null && failClosed) {
       rejects.push({ rule: 'GMGN_DEV_HOLD_DATA_MISSING', msg: 'Data kepemilikan dev/creator kosong — fail-closed.' });
-    } else if (creatorRate > 0.05) {
-      rejects.push({ rule: 'GMGN_DEV_HOLD_HIGH', msg: `Kepemilikan dev ${(creatorRate * 100).toFixed(1)}% > 5% — risiko dump` });
+    } else if (creatorRate > devHoldMax) {
+      rejects.push({ rule: 'GMGN_DEV_HOLD_HIGH', msg: `Kepemilikan dev ${(creatorRate * 100).toFixed(1)}% > ${(devHoldMax * 100).toFixed(1)}% — risiko dump` });
     }
 
     // Bundling threshold 60%
     const bundlerRate = sec.bundler_trader_amount_rate ?? info?.stat?.top_bundler_trader_percentage;
     const bundlerRatio = toRate(bundlerRate);
-    if (bundlerRatio == null) {
+    if (bundlerRatio == null && failClosed) {
       rejects.push({ rule: 'GMGN_BUNDLER_DATA_MISSING', msg: 'Data bundler GMGN kosong — fail-closed.' });
-    } else if (bundlerRatio > 0.60) {
-      rejects.push({ rule: 'GMGN_BUNDLED', msg: `Bundling ${(bundlerRatio * 100).toFixed(1)}% > 60% — dominasi gerombolan tertentu` });
+    } else if (bundlerRatio > bundlerMax) {
+      rejects.push({ rule: 'GMGN_BUNDLED', msg: `Bundling ${(bundlerRatio * 100).toFixed(1)}% > ${(bundlerMax * 100).toFixed(1)}% — dominasi gerombolan tertentu` });
     }
 
     // LP burn status
-    if (sec.burn_status == null || sec.burn_status === '') {
+    if (requireBurnedLp && (sec.burn_status == null || sec.burn_status === '') && failClosed) {
       rejects.push({ rule: 'GMGN_LP_BURN_DATA_MISSING', msg: 'Data burn status LP kosong — fail-closed.' });
-    } else if (sec.burn_status !== 'burn') {
+    } else if (requireBurnedLp && sec.burn_status !== 'burn') {
       rejects.push({ rule: 'GMGN_LP_NOT_BURNED', msg: `LP tidak dibakar (status: "${sec.burn_status}") — risiko tarik likuiditas (Rug)` });
     }
 
     // Rug risk score
     const rugRatio = sec.rug_ratio ?? info?.dev?.rug_ratio;
-    if (rugRatio == null) {
+    if (rugRatio == null && failClosed) {
       rejects.push({ rule: 'GMGN_RUG_HISTORY_DATA_MISSING', msg: 'Data riwayat rug dev kosong — fail-closed.' });
-    } else if (rugRatio > 0.30) {
-      rejects.push({ rule: 'GMGN_RUG_HISTORY', msg: `Rug risk score ${rugRatio.toFixed(2)} > 0.30 — deployer mencurigakan` });
+    } else if (rugRatio > rugRatioMax) {
+      rejects.push({ rule: 'GMGN_RUG_HISTORY', msg: `Rug risk score ${rugRatio.toFixed(2)} > ${rugRatioMax.toFixed(2)} — deployer mencurigakan` });
     }
 
     // 🎭 METADATA SECURITY: Anti-Bunglon (Hard Reject)
@@ -720,7 +734,7 @@ function step12_gmgnSecurity(info, sec) {
     // 💸 ZERO TAX SHIELD: Anti-Pajak Siluman (Irit Mode Level Max)
     const buyTax = parseFloat(sec.buy_tax || 0);
     const sellTax = parseFloat(sec.sell_tax || 0);
-    if (buyTax > 0 || sellTax > 0) {
+    if (requireZeroTax && (buyTax > 0 || sellTax > 0)) {
       rejects.push({ rule: 'GMGN_TAX_DETECTED', msg: `Pajak terdeteksi (Beli: ${buyTax}%, Jual: ${sellTax}%) — Gak Irit, skip!` });
     }
 
@@ -731,14 +745,14 @@ function step12_gmgnSecurity(info, sec) {
 
     // 🎭 WASH-TRADE GUARD: Anti-Volume Palsu
     const washRate = parseFloat(sec.wash_trading_percentage || 0);
-    if (washRate > 35) {
+    if (washRate > washTradeMax) {
       rejects.push({ rule: 'GMGN_WASH_TRADE', msg: `Wash trading tinggi (${washRate.toFixed(1)}%) — manipulasi volume oleh dev` });
     }
   }
 
   // Vamped fallback: jika indikator explicit tidak ada, pakai proxy rules lama sementara
   const hasExplicitVamped = isVampedCoin(info, sec);
-  if (hasExplicitVamped === true) {
+  if (blockVamped && hasExplicitVamped === true) {
     rejects.push({ rule: 'GMGN_VAMPED_COIN', msg: 'Vamped coin terdeteksi (liquidity vampire) — REJECT' });
   } else {
     const hasRawVampedField = pickFirstBoolean([info, sec], [
@@ -749,12 +763,12 @@ function step12_gmgnSecurity(info, sec) {
       'vamped',
     ]);
     const proxyTriggered = (
-      info?.dev?.cto_flag === 1 ||
-      (Number(sec?.rug_ratio ?? info?.dev?.rug_ratio) > 0.30) ||
-      (toRate(sec?.bundler_trader_amount_rate ?? info?.stat?.top_bundler_trader_percentage) > 0.60) ||
-      (toRate(sec?.rat_trader_amount_rate ?? info?.stat?.top_rat_trader_percentage) > 0)
+      (blockCto && info?.dev?.cto_flag === 1) ||
+      (Number(sec?.rug_ratio ?? info?.dev?.rug_ratio) > rugRatioMax) ||
+      (toRate(sec?.bundler_trader_amount_rate ?? info?.stat?.top_bundler_trader_percentage) > bundlerMax) ||
+      (toRate(sec?.rat_trader_amount_rate ?? info?.stat?.top_rat_trader_percentage) > insiderMax)
     );
-    if (hasRawVampedField == null && proxyTriggered) {
+    if (blockVamped && hasRawVampedField == null && proxyTriggered) {
       rejects.push({ rule: 'GMGN_VAMPED_PROXY_RED', msg: 'Vamped indicator GMGN kosong — proxy redflag aktif (CTO/RUG/Bundler/Insider).' });
     }
   }
@@ -780,17 +794,28 @@ export async function screenToken(tokenMint, tokenName = '', tokenSymbol = '', o
     minOrganic: cfg.minOrganic,
     maxImpact: cfg.maxPriceImpactPct,
     minTokenFeesSol: cfg.minTokenFeesSol,
+    gmgnMinTotalFeesSol: cfg.gmgnMinTotalFeesSol,
+    gmgnTop10HolderMaxPct: cfg.gmgnTop10HolderMaxPct,
+    gmgnDevHoldMaxPct: cfg.gmgnDevHoldMaxPct,
+    gmgnInsiderMaxPct: cfg.gmgnInsiderMaxPct,
+    gmgnBundlerMaxPct: cfg.gmgnBundlerMaxPct,
+    gmgnPhishingMaxPct: cfg.gmgnPhishingMaxPct,
+    gmgnRugRatioMax: cfg.gmgnRugRatioMax,
+    gmgnWashTradeMaxPct: cfg.gmgnWashTradeMaxPct,
+    gmgnRequireBurnedLp: cfg.gmgnRequireBurnedLp,
+    gmgnRequireZeroTax: cfg.gmgnRequireZeroTax,
+    gmgnBlockCto: cfg.gmgnBlockCto,
+    gmgnBlockVamped: cfg.gmgnBlockVamped,
+    gmgnFailClosedCritical: cfg.gmgnFailClosedCritical,
   };
 
   const deployAmount = cfg.deployAmountSol || 0.1;
 
-  const [dexResult, jupResult, authResult, simResult, gmgnInfoResult, gmgnSecResult, solPriceResult, vampedStatusResult] = await Promise.allSettled([
+  const [dexResult, jupResult, authResult, simResult, solPriceResult, vampedStatusResult] = await Promise.allSettled([
     getDexScreenerInfo(tokenMint),
     getJupiterData(tokenMint),
     getOnChainAuthority(tokenMint),
     getSlippageSimulation(tokenMint, deployAmount),
-    getGmgnTokenInfo(tokenMint),
-    getGmgnSecurity(tokenMint),
     getJupiterPrice('So11111111111111111111111111111111111111112'),
     getExternalVampedStatus(tokenMint, cfg),
   ]);
@@ -800,21 +825,6 @@ export async function screenToken(tokenMint, tokenName = '', tokenSymbol = '', o
   const auth = authResult.status === 'fulfilled' ? authResult.value : { mintAuthority: true, freezeAuthority: true };
   const sim  = simResult.status  === 'fulfilled' ? simResult.value  : null;
   const solPrice = solPriceResult.status === 'fulfilled' ? solPriceResult.value : 0;
-
-  // ─── GMGN API Health Logic ────────────────────────────────────
-  const hasGmgnKey = !!process.env.GMGN_API_KEY;
-  let gmgnStatus = 'ACTIVE';
-
-  if (!hasGmgnKey) {
-    gmgnStatus = 'DISABLED';
-  } else if (gmgnInfoResult.status === 'rejected' || gmgnSecResult.status === 'rejected') {
-    gmgnStatus = 'ERROR';
-  } else if (!gmgnInfoResult.value && !gmgnSecResult.value) {
-    gmgnStatus = 'UNKNOWN';
-  }
-
-  const gmgnInfo = gmgnInfoResult.status === 'fulfilled' ? gmgnInfoResult.value : null;
-  const gmgnSec  = gmgnSecResult.status  === 'fulfilled' ? gmgnSecResult.value  : null;
   const vampedSource = vampedStatusResult.status === 'fulfilled'
     ? vampedStatusResult.value
     : { status: 'ERROR', isVamped: null, source: 'external', reason: 'promise_rejected' };
@@ -829,8 +839,6 @@ export async function screenToken(tokenMint, tokenName = '', tokenSymbol = '', o
   const s5  = step5_txnAnalysis(dex);
   const s6  = step6_tokenSafety(jup);
   const s7  = step7_organicScore(dex, jup, thresholds);
-  const s12 = step12_gmgnSecurity(gmgnInfo, gmgnSec);
-  const s14 = step14_feeIntegrity({ info: gmgnInfo, sec: gmgnSec, dex, solPrice, thresholds });
 
   // Obelisk Handle: Manual MCAP calculation if DexScreener is lagging
   let mcap = dex?.fdv || null;
@@ -846,18 +854,81 @@ export async function screenToken(tokenMint, tokenName = '', tokenSymbol = '', o
   const s10 = step10_authorityCheck(auth);
   const s11 = step11_slippageCheck(sim, thresholds.maxImpact);
 
-  const allRejects = [
-    ...s1.rejects,  // Logo filter REINSTATED as Hard Reject
-    ...s2,          
-    ...s3.rejects,  
+  // Short-circuit: token gagal gate Dex/basic => jangan panggil GMGN
+  const preGmgnRejects = [
+    ...s1.rejects,
+    ...s2,
+    ...s3.rejects,
     ...s4.rejects,
-    ...s5.rejects,  
-    ...s6.rejects,  
-    ...s7.rejects,  
+    ...s5.rejects,
+    ...s6.rejects,
+    ...s7.rejects,
     ...s9.rejects,
-    ...s10,         
-    ...s11.rejects, 
-    ...(gmgnStatus !== 'ACTIVE'
+    ...s10,
+    ...s11.rejects,
+  ];
+  const preGmgnWarnings = [
+    ...s1.warnings,
+    ...s3.warnings,
+    ...s5.warnings,
+    ...s6.warnings,
+    ...s11.warnings,
+  ];
+
+  if (preGmgnRejects.length > 0) {
+    return {
+      tokenMint, name, symbol,
+      verdict: 'AVOID',
+      eligible: false,
+      highFlags: preGmgnRejects,
+      mediumFlags: preGmgnWarnings,
+      organicScore: s7.score, mcap: s9.mcap,
+      tokenAgeMinutes: s4.ageMinutes ?? null,
+      priceImpact: sim?.priceImpactBuy,
+      priceImpactSell: sim?.priceImpactSell,
+      devAddress: null,
+      gmgnStatus: 'SKIPPED_DEX_GATE',
+      gmgnRejects: [],
+      gmgnWarnings: [],
+      gmgnFallbackFeesUsed: false,
+      totalFeesSol: null,
+      totalFeesSource: 'not_checked',
+      vampedSourceStatus: vampedSource.status,
+      vampedSourceReason: vampedSource.reason,
+      isVampedBySource: vampedSource.isVamped === true,
+      sources: {
+        dexscreener: !!dex,
+        jupiter: !!(jup?.found),
+        helius: (authResult.status === 'fulfilled'),
+        gmgn: false,
+      },
+    };
+  }
+
+  const [gmgnInfoResult, gmgnSecResult] = await Promise.allSettled([
+    getGmgnTokenInfo(tokenMint),
+    getGmgnSecurity(tokenMint),
+  ]);
+
+  // ─── GMGN API Health Logic ────────────────────────────────────
+  const hasGmgnKey = !!process.env.GMGN_API_KEY;
+  let gmgnStatus = 'ACTIVE';
+  if (!hasGmgnKey) {
+    gmgnStatus = 'DISABLED';
+  } else if (gmgnInfoResult.status === 'rejected' || gmgnSecResult.status === 'rejected') {
+    gmgnStatus = 'ERROR';
+  } else if (!gmgnInfoResult.value && !gmgnSecResult.value) {
+    gmgnStatus = 'UNKNOWN';
+  }
+
+  const gmgnInfo = gmgnInfoResult.status === 'fulfilled' ? gmgnInfoResult.value : null;
+  const gmgnSec  = gmgnSecResult.status  === 'fulfilled' ? gmgnSecResult.value  : null;
+  const s12 = step12_gmgnSecurity(gmgnInfo, gmgnSec, thresholds);
+  const s14 = step14_feeIntegrity({ info: gmgnInfo, sec: gmgnSec, dex, solPrice, thresholds });
+
+  const allRejects = [
+    ...preGmgnRejects,
+    ...((thresholds.gmgnFailClosedCritical !== false) && gmgnStatus !== 'ACTIVE'
       ? [{ rule: 'GMGN_UNAVAILABLE_FAIL_CLOSED', msg: `GMGN status=${gmgnStatus} — entry diblokir (fail-closed).` }]
       : []),
     ...s12.rejects,
@@ -870,11 +941,7 @@ export async function screenToken(tokenMint, tokenName = '', tokenSymbol = '', o
       : []),
   ];
   const allWarnings = [
-    ...s1.warnings, 
-    ...s3.warnings, 
-    ...s5.warnings, 
-    ...s6.warnings, 
-    ...s11.warnings,
+    ...preGmgnWarnings,
     ...s12.warnings,
   ];
 
@@ -937,6 +1004,9 @@ export function formatScreenResult(result) {
   if (result.gmgnStatus === 'DISABLED') {
     text += `\n🛡️ *GMGN Security: 🔌 Disabled*\n`;
     text += `_API key tidak ditemukan. Set GMGN_API_KEY di .env._\n`;
+  } else if (result.gmgnStatus === 'SKIPPED_DEX_GATE') {
+    text += `\n🛡️ *GMGN Security: ⏭️ Skipped*\n`;
+    text += `_Token gagal Dex/basic gate, GMGN tidak dipanggil untuk hemat waktu/API._\n`;
   } else if (result.gmgnStatus === 'ERROR') {
     text += `\n🛡️ *GMGN Security: ⚠️ API Error*\n`;
     text += `_Request ke GMGN gagal (timeout/down)._\n`;

@@ -62,6 +62,17 @@ export async function getDLMMPoolData(poolAddress) {
     const feeApr = safeNum((pool.fee_tvl_ratio?.['24h'] ?? 0) * 100 * 365);
     const binStep = safeNum(pool.pool_config?.bin_step ?? pool.bin_step ?? 0);
     const feeTvlRatio = tvl > 0 ? fees24h / tvl : 0;
+    const nonRefundableFlags = [
+      pool?.pool_config?.non_refundable_fees,
+      pool?.pool_config?.non_refundable_fee,
+      pool?.pool_config?.is_non_refundable_fee,
+      pool?.pool_config?.refundable_fee === false ? true : null,
+      pool?.non_refundable_fees,
+      pool?.non_refundable_fee,
+      pool?.is_non_refundable_fee,
+      pool?.fee_refundable === false ? true : null,
+    ];
+    const hasNonRefundableFees = nonRefundableFlags.some((v) => v === true || v === 1 || String(v).toLowerCase() === 'true');
 
     const feeAprCategory = feeApr >= 100 ? 'HIGH' : feeApr >= 30 ? 'MEDIUM' : 'LOW';
 
@@ -83,6 +94,7 @@ export async function getDLMMPoolData(poolAddress) {
       createdAt,
       totalFeesEstimated: parseFloat(totalFeesEstimated.toFixed(2)),
       poolAgeDays: parseFloat(ageDays.toFixed(2)),
+      hasNonRefundableFees,
     };
   } catch { return null; }
 }

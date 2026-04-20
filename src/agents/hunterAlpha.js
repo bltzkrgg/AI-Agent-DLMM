@@ -17,7 +17,7 @@ import {
   evaluateStrategyReadiness as libEvaluateReadiness,
   classifyMarketRegime,
 } from '../market/strategyLibrary.js';
-import { fetchCandles, getMarketSnapshot, getOHLCV, getMultiTFScore, getSentiment } from '../market/oracle.js';
+import { fetchCandles, getMarketSnapshot, getOHLCV, getMultiTFScore, getSentiment, getHistoryOHLCV, getDLMMPoolData } from '../market/oracle.js';
 import { getSocialSignals, getTokenSocialScore } from '../market/socialScanner.js';
 import { getInstinctsContext } from '../market/memory.js';
 import { getStrategyIntelligenceContext } from '../market/strategyPerformance.js';
@@ -32,6 +32,7 @@ import { discoverPools as lpAgentDiscoverPools, enrichPools as lpAgentEnrichPool
 import { runEvolutionCycle } from '../learn/evolve.js';
 import { checkMaxDrawdown, requestConfirmation, validateStrategyForMarket } from '../safety/safetyManager.js';
 import { getRuntimeState, setRuntimeState, flushRuntimeState } from '../runtime/state.js';
+import { calculateSupertrend } from '../utils/ta.js';
 
 // ─── State ───────────────────────────────────────────────────────
 
@@ -107,6 +108,80 @@ function computeAdaptiveDeployAmount({ cfg, poolInfo, snapshot }) {
 
   const adjusted = clamp(baseAmount * multiplier, 0.01, baseAmount);
   return Number(adjusted.toFixed(4));
+}
+
+function aggregateCandlesTo1h(candles = []) {
+  if (!Array.isArray(candles) || candles.length < 4) return [];
+  const out = [];
+  for (let i = 0; i + 3 < candles.length; i += 4) {
+    const group = candles.slice(i, i + 4);
+    out.push({
+      time: group[0].time,
+      open: group[0].open,
+      high: Math.max(...group.map(c => safeNum(c.high))),
+      low: Math.min(...group.map(c => safeNum(c.low))),
+      close: group[group.length - 1].close,
+      volume: group.reduce((s, c) => s + safeNum(c.volume), 0),
+    });
+  }
+  return out.filter((c) => Number.isFinite(c.open) && Number.isFinite(c.close) && c.close > 0);
+}
+
+export function computeEntrySignalsFromCandles(candles15m = [], cfg = {}) {
+  const closed = Array.isArray(candles15m) ? candles15m.slice(0, -1) : [];
+  if (closed.length < 12) {
+    return { ready: false, reason: 'Not enough candles for entry confirmation' };
+  }
+
+  const last = closed[closed.length - 1];
+  const prev = closed[closed.length - 2];
+  const open = safeNum(last.open);
+  const close = safeNum(last.close);
+  const high = safeNum(last.high);
+  const isGreen = close > open;
+  const bodyPct = open > 0 ? Math.abs((close - open) / open) * 100 : 0;
+  const upperWick = Math.max(0, high - Math.max(open, close));
+  const bodyAbs = Math.max(Math.abs(close - open), 1e-12);
+  const upperWickBodyRatio = upperWick / bodyAbs;
+
+  const volLookback = Math.max(5, Number(cfg.entryVolumeLookbackCandles || 20));
+  const volWindow = closed.slice(-(volLookback + 1), -1);
+  const avgVolume = volWindow.length > 0
+    ? volWindow.reduce((s, c) => s + safeNum(c.volume), 0) / volWindow.length
+    : 0;
+  const lastVolume = safeNum(last.volume);
+  const volumeRatio = avgVolume > 0 ? lastVolume / avgVolume : 1;
+
+  const breakoutLookback = Math.max(20, Number(cfg.entryBreakoutLookbackCandles || 96));
+  const prePrevWindow = closed.slice(-(breakoutLookback + 2), -2);
+  const prevBreakoutLevel = prePrevWindow.length > 0
+    ? Math.max(...prePrevWindow.map(c => safeNum(c.close)))
+    : safeNum(prev.close);
+  const breakoutPrev = safeNum(prev.close) > prevBreakoutLevel;
+  const breakoutConfirm = breakoutPrev && close > prevBreakoutLevel;
+
+  const htf1h = aggregateCandlesTo1h(closed);
+  let htfTrend = 'NEUTRAL';
+  if (htf1h.length >= 10) {
+    const st1h = calculateSupertrend(htf1h, 10, 3);
+    htfTrend = st1h?.trend || 'NEUTRAL';
+  } else if (htf1h.length >= 2) {
+    const htfPrev = safeNum(htf1h[htf1h.length - 2].close);
+    const htfLast = safeNum(htf1h[htf1h.length - 1].close);
+    if (htfLast > htfPrev) htfTrend = 'BULLISH';
+    else if (htfLast < htfPrev) htfTrend = 'BEARISH';
+  }
+
+  return {
+    ready: true,
+    isGreen,
+    bodyPct,
+    upperWickBodyRatio,
+    volumeRatio,
+    breakoutConfirm,
+    htfTrend,
+    breakoutLevel: prevBreakoutLevel,
+  };
 }
 
 // --- Kode Zombie Diamputasi (Baris 43-149) ---
@@ -308,7 +383,9 @@ async function executeTool(name, input) {
 
       // Filter dasar — binStep difilter via allowlist dari active strategy (dynamic)
       const activeStrat = getStrategy(cfg.activeStrategy || 'Evil Panda');
-      const allowedBinSteps = activeStrat?.allowedBinSteps || cfg.allowedBinSteps || [100, 125];
+      const allowedBinSteps = (Array.isArray(cfg.allowedBinSteps) && cfg.allowedBinSteps.length > 0)
+        ? cfg.allowedBinSteps
+        : (activeStrat?.allowedBinSteps || [100, 125]);
       const minTokenFeesSol = cfg.minTokenFeesSol;
       const preFiltered = combined.filter(p => {
         const fees = p.fees24hRaw || 0;
@@ -1085,7 +1162,9 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null, opt
       const thresholds = getThresholds();
       const binStep = p.binStep || 0;
       const activeStrat = getStrategy(cfg.activeStrategy || 'Evil Panda');
-      const allowed = activeStrat?.allowedBinSteps || cfg.allowedBinSteps || [100, 125];
+      const allowed = (Array.isArray(cfg.allowedBinSteps) && cfg.allowedBinSteps.length > 0)
+        ? cfg.allowedBinSteps
+        : (activeStrat?.allowedBinSteps || [100, 125]);
 
       let matched = true;
       let reason = 'Target Locked via Hybrid Scan';
@@ -1202,13 +1281,15 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null, opt
     // Fetch pool memory + multi-TF + smart wallets + sentiment in parallel
     const totalToEnrich = filtered.length;
     let processed = 0;
+    let rejNonRefundable = 0;
 
     const enriched = await Promise.all(filtered.map(async (p) => {
-      const [memResult, ohlcvResult, swResult, sentResult] = await Promise.allSettled([
+      const [memResult, ohlcvResult, swResult, sentResult, dlmmResult] = await Promise.allSettled([
         Promise.resolve(getPoolStats(p.address)),
         getOHLCV(p.tokenX || p.tokenY, p.address),
         checkSmartWalletsOnPool(p.address),
-        getSentiment(p.tokenX || p.tokenY)
+        getSentiment(p.tokenX || p.tokenY),
+        getDLMMPoolData(p.address),
       ]);
 
       processed++;
@@ -1220,15 +1301,71 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null, opt
       const ohlcv = ohlcvResult.status === 'fulfilled' ? ohlcvResult.value : null;
       const sw = swResult.status === 'fulfilled' ? swResult.value : null;
       const sent = sentResult.status === 'fulfilled' ? sentResult.value : null;
+      const dlmm = dlmmResult.status === 'fulfilled' ? dlmmResult.value : null;
 
       const marketSent = sent?.sentiment || 'NEUTRAL';
       const trend = ohlcv?.ta?.supertrend?.trend || 'NEUTRAL';
+      if (cfg.executionRejectNonRefundableFees !== false && dlmm?.hasNonRefundableFees === true) {
+        rejNonRefundable++;
+        if (process.env.HUNTER_DEBUG) console.log(`[hunter] Skipping ${p.name} - POOL_NON_REFUNDABLE_FEES`);
+        return null;
+      }
 
       // ─── Phase 2.0: Technical Hard-Gate ─────────────────────────
       // Sesuai filosofi Evil Panda: Jangan pernah entry kalau 15m Bearish.
       if (trend !== 'BULLISH') {
         if (process.env.HUNTER_DEBUG) console.log(`[hunter] Skipping ${p.name} - Supertrend 15m is ${trend}`);
         return null;
+      }
+
+      // ─── Phase 2.05: Entry Confirmation Layer (15m + HTF) ──────
+      const cfgNow = getConfig();
+      const history15m = await getHistoryOHLCV(p.address).catch(() => null);
+      const entrySignals = computeEntrySignalsFromCandles(history15m || [], cfgNow);
+      const fallbackBodyPct = Math.abs(safeNum(ohlcv?.priceChangeM5, 0));
+      const fallbackHtfTrend = safeNum(ohlcv?.priceChangeH1, 0) >= 0 ? 'BULLISH' : 'BEARISH';
+
+      const signalIsGreen = entrySignals.ready ? entrySignals.isGreen : safeNum(ohlcv?.priceChangeM5, 0) > 0;
+      const signalBodyPct = entrySignals.ready ? entrySignals.bodyPct : fallbackBodyPct;
+      const signalUpperWickBodyRatio = entrySignals.ready ? entrySignals.upperWickBodyRatio : 0;
+      const signalVolumeRatio = entrySignals.ready ? entrySignals.volumeRatio : 1;
+      const signalBreakoutConfirm = entrySignals.ready ? entrySignals.breakoutConfirm : false;
+      const signalHtfTrend = entrySignals.ready ? entrySignals.htfTrend : fallbackHtfTrend;
+
+      if (cfgNow.entryRequireGreenCandle !== false) {
+        const minBodyPct = Math.max(0, Number(cfgNow.entryMinGreenBodyPct ?? 0.2));
+        if (!signalIsGreen || signalBodyPct < minBodyPct) {
+          if (process.env.HUNTER_DEBUG) console.log(`[hunter] Skipping ${p.name} - green/body confirm failed (green=${signalIsGreen}, body=${signalBodyPct.toFixed(3)}%)`);
+          return null;
+        }
+      }
+
+      const maxWickRatio = Math.max(0.5, Number(cfgNow.entryMaxUpperWickBodyRatio ?? 2.5));
+      if (signalUpperWickBodyRatio > maxWickRatio) {
+        if (process.env.HUNTER_DEBUG) console.log(`[hunter] Skipping ${p.name} - upper wick too long (${signalUpperWickBodyRatio.toFixed(2)}x > ${maxWickRatio}x)`);
+        return null;
+      }
+
+      if (cfgNow.entryRequireVolumeConfirm !== false) {
+        const minVolRatio = Math.max(0.5, Number(cfgNow.entryMinVolumeRatio ?? 1.1));
+        if (signalVolumeRatio < minVolRatio) {
+          if (process.env.HUNTER_DEBUG) console.log(`[hunter] Skipping ${p.name} - volume confirm failed (${signalVolumeRatio.toFixed(2)}x < ${minVolRatio}x)`);
+          return null;
+        }
+      }
+
+      if (cfgNow.entryRequireBreakoutConfirm === true && !signalBreakoutConfirm) {
+        if (process.env.HUNTER_DEBUG) console.log(`[hunter] Skipping ${p.name} - breakout confirmation missing`);
+        return null;
+      }
+
+      if (cfgNow.entryRequireHtfAlignment !== false) {
+        const allowNeutral = cfgNow.entryHtfAllowNeutral !== false;
+        const htfPass = signalHtfTrend === 'BULLISH' || (allowNeutral && signalHtfTrend === 'NEUTRAL');
+        if (!htfPass) {
+          if (process.env.HUNTER_DEBUG) console.log(`[hunter] Skipping ${p.name} - HTF alignment failed (${signalHtfTrend})`);
+          return null;
+        }
       }
 
       // ─── Phase 2.1: LLM Cost Guard (Static Security Filter) ─────
@@ -1282,6 +1419,16 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null, opt
           bullishTFs: ohlcv.ta.supertrend?.trend === 'BULLISH' ? '1/1' : '0/1',
           breakdown: `15m:${ohlcv.ta.supertrend?.trend === 'BULLISH' ? '✅' : '❌'}`
         } : null,
+        entrySignals: {
+          green: Boolean(signalIsGreen),
+          bodyPct: Number(signalBodyPct.toFixed(3)),
+          volumeRatio: Number(signalVolumeRatio.toFixed(3)),
+          breakoutConfirmed: Boolean(signalBreakoutConfirm),
+          htfTrend: signalHtfTrend,
+        },
+        executionFlags: {
+          nonRefundableFees: dlmm?.hasNonRefundableFees === true,
+        },
         smartWallet: sw?.found
           ? { wallets: sw.matches.map(m => m.label), confidence: sw.confidence }
           : null,
@@ -1297,10 +1444,11 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null, opt
 
     if (finalEnriched.length === 0) {
       if (notifyFn) {
+        const nonRefundText = rejNonRefundable > 0 ? ` | NonRefundable: ${rejNonRefundable}` : '';
         await notifyFn(
           `⚠️ <b>Discovery Result:</b> 0/${rawTotal} candidates matched.\n\n` +
           `• Candidates Scanned: <b>${rawTotal}</b>\n` +
-          `• Rejected: <code>BinStep: ${rejBin} | Flow/Freshness: ${rejFlow} | Mcap: ${rejMcap} | Cooldown: ${rejCooldown}</code>\n` +
+          `• Rejected: <code>BinStep: ${rejBin} | Flow/Freshness: ${rejFlow} | Mcap: ${rejMcap} | Cooldown: ${rejCooldown}${nonRefundText}</code>\n` +
           `• Technical Hard-Gate (Trend): <b>${basicFilteredCount - trendFilteredCount}</b> non-Bullish\n` +
           `• API/Data Status: ${trendRejectedCount === 0 && basicFilteredCount > 0 ? '❌ All APIs Failed' : '✅ APIs Linked'}\n\n` +
           `<i>Market sepertinya sedang sideways/bearish. Sniper tetap disiplin.</i>`
