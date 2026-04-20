@@ -21,14 +21,20 @@ const maxBearishFpr = Number(getArg('--max-bearish-fpr', '0.95'));
 const maxBullishFnr = Number(getArg('--max-bullish-fnr', '1.00'));
 const strict = getArg('--strict', 'true') !== 'false';
 
-function classifyProxy(meta = {}) {
-  const p5m = Number(meta.priceChangeM5 ?? 0);
-  const p1h = Number(meta.priceChangeH1 ?? 0);
-  const bp = Number(meta.buyPressurePct ?? 50);
-  const isBullish = (p1h > 1.0 && bp > 55) || (p5m > 3 && p1h > -1);
-  const isBearish = (p1h < -5 || bp < 35);
-  if (isBullish) return 'BULLISH';
-  if (isBearish) return 'BEARISH';
+function classifyProxy(candles, idx) {
+  const cur = candles[idx];
+  if (!cur || idx <= 0) return 'NEUTRAL';
+  const prev1 = candles[idx - 1];
+  const prev4 = candles[idx - 4] ?? prev1;
+  const prev8 = candles[idx - 8] ?? prev4;
+
+  const r15 = prev1?.close > 0 ? ((cur.close - prev1.close) / prev1.close) * 100 : 0;
+  const r1h = prev4?.close > 0 ? ((cur.close - prev4.close) / prev4.close) * 100 : r15;
+  const r2h = prev8?.close > 0 ? ((cur.close - prev8.close) / prev8.close) * 100 : r1h;
+
+  // Candle-only proxy so Birdeye OHLCV can be evaluated without custom meta fields.
+  if ((r1h >= 0.6 && r15 >= -0.25) || (r2h >= 1.2 && r15 >= -0.4)) return 'BULLISH';
+  if ((r1h <= -0.8 && r15 <= 0.2) || (r2h <= -1.5 && r15 <= 0.4)) return 'BEARISH';
   return 'NEUTRAL';
 }
 
@@ -83,7 +89,7 @@ function computeMetrics(candles) {
   for (let i = WINDOW; i < candles.length; i++) {
     const window = candles.slice(i - WINDOW, i);
     const st = calculateSupertrend(window, 10, 3);
-    const proxy = classifyProxy(candles[i]._meta);
+    const proxy = classifyProxy(candles, i);
     rows.push({ st: st.trend, proxy, match: st.trend === proxy });
   }
 

@@ -17,3 +17,4 @@ strategyPerformance.json
 *.db-shm
 *.db-wal
 npm-debug.log
+data/
