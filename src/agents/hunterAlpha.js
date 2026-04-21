@@ -1398,6 +1398,7 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null, opt
         txns24hRaw: safeNum(basePool.txns24hRaw || fallbackTxns),
         binStep: safeNum(basePool.binStep || 0),
         ageHours: Number.isFinite(t.ageHours) ? Number(t.ageHours.toFixed(2)) : null,
+        prefilterRejected,
         isMatched: matched,
         vetoReason: reason,
         prefilterSecurity: security,
@@ -1412,8 +1413,10 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null, opt
       .sort((a, b) => b.darwinScore - a.darwinScore)
       .slice(0, 6);
 
-    // radarDisplay: Koin terpilih (Matched + Vetoed terbaik) untuk Dashboard Mac
+    // radarDisplay: tampilkan hanya token yang lolos Dex prefilter (mcap+volume)
+    // agar radar fokus pada kandidat yang memang layak diproses lanjut.
     const radarDisplay = radarSnapshot
+      .filter((p) => p.prefilterRejected !== true)
       .sort((a, b) => {
         if (a.isMatched !== b.isMatched) return b.isMatched ? 1 : -1;
         return b.volume24hRaw - a.volume24hRaw;
