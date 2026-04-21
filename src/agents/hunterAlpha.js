@@ -115,6 +115,8 @@ async function fetchDexGateMetrics(tokenMint) {
     return {
       volume24h: volume24hMax,
       mcap: mcapMax,
+      liquidityUsd: safeNum(best?.liquidity?.usd),
+      txns24h: safeNum(best?.txns?.h24?.buys) + safeNum(best?.txns?.h24?.sells),
       pairAddress: best?.pairAddress || null,
       pairCreatedAt: newestPairCreatedAt,
       pairName: `${best?.baseToken?.symbol || ''}-${best?.quoteToken?.symbol || ''}`.replace(/^-|-$/g, ''),
@@ -1228,73 +1230,77 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null, opt
     // 2) Baru Meteora dipanggil untuk token yang lolos (execution venue)
     const dexSeeds = await discoverDexTokenSeeds(80);
     const seedLimit = Math.max(10, Number(cfg.dexSeedSampleLimit || 40));
-    const seedSample = dexSeeds.slice(0, seedLimit);
-
-    let rejDexPreFilter = 0, rejDexAge = 0, rejSecurity = 0, rejNoPool = 0, rejCooldown = 0;
-    const tokenGate = await Promise.all(seedSample.map(async (s) => {
-      const dexGate = await fetchDexGateMetrics(s.mint);
-    // Prefilter murni mengikuti config runtime agar fleksibel sesuai style operator.
     const minVol = Number(cfg.minVolume24h || 0);
     const minMcap = Number(cfg.minMcap || 0);
+
+    // Stage 1: probe semua seed Dex lalu prefilter tegas (mcap + volume) sebelum masuk GMGN.
+    const dexSeedMetrics = await Promise.all(dexSeeds.map(async (s) => {
+      const dexGate = await fetchDexGateMetrics(s.mint);
       const gateVolume = safeNum(dexGate?.volume24h);
       const gateMcap = safeNum(dexGate?.mcap);
+      const createdAt = safeNum(dexGate?.pairCreatedAt);
+      const ageHours = createdAt > 0 ? ((Date.now() - createdAt) / (1000 * 60 * 60)) : null;
 
+      let prefilterRejected = false;
+      let prefilterReason = null;
       if (!dexGate) {
-        rejDexPreFilter++;
-        return {
-          mint: s.mint,
-          symbol: s.symbol || '',
-          name: s.symbol || s.mint.slice(0, 6),
-          security: null,
-          prefilterRejected: true,
-          prefilterReason: 'VETO [DEX_DATA_UNAVAILABLE]: data Dex tidak tersedia di tahap pre-filter.',
-          stageFunnel: {
-            stage1_dex_gate: 'FAIL',
-            stage2_gmgn_availability: 'SKIPPED',
-            stage3_gmgn_security: 'SKIPPED',
-            stage4_fee_integrity: 'SKIPPED',
-            final: 'REJECTED',
-          },
-        };
+        prefilterRejected = true;
+        prefilterReason = 'VETO [DEX_DATA_UNAVAILABLE]: data Dex tidak tersedia di tahap pre-filter.';
+      } else if (minVol > 0 && gateVolume < minVol) {
+        prefilterRejected = true;
+        prefilterReason = `VETO [BELOW_MIN_VOLUME_24H]: Volume 24h $${gateVolume.toLocaleString()} < min $${minVol.toLocaleString()}`;
+      } else if (minMcap > 0 && gateMcap > 0 && gateMcap < minMcap) {
+        prefilterRejected = true;
+        prefilterReason = `VETO [BELOW_MIN_MCAP]: Mcap $${gateMcap.toLocaleString()} < min $${minMcap.toLocaleString()}`;
       }
 
-      if (minVol > 0 && gateVolume < minVol) {
-        rejDexPreFilter++;
-        return {
-          mint: s.mint,
-          symbol: s.symbol || '',
-          name: s.symbol || s.mint.slice(0, 6),
-          security: null,
-          prefilterRejected: true,
-          prefilterReason: `VETO [BELOW_MIN_VOLUME_24H]: Volume 24h $${gateVolume.toLocaleString()} < min $${minVol.toLocaleString()}`,
-          stageFunnel: {
-            stage1_dex_gate: 'FAIL',
-            stage2_gmgn_availability: 'SKIPPED',
-            stage3_gmgn_security: 'SKIPPED',
-            stage4_fee_integrity: 'SKIPPED',
-            final: 'REJECTED',
-          },
-        };
-      }
+      return {
+        ...s,
+        dexGate,
+        gateVolume,
+        gateMcap,
+        ageHours,
+        prefilterRejected,
+        prefilterReason,
+      };
+    }));
 
-      if (minMcap > 0 && gateMcap > 0 && gateMcap < minMcap) {
-        rejDexPreFilter++;
-        return {
-          mint: s.mint,
-          symbol: s.symbol || '',
-          name: s.symbol || s.mint.slice(0, 6),
-          security: null,
-          prefilterRejected: true,
-          prefilterReason: `VETO [BELOW_MIN_MCAP]: Mcap $${gateMcap.toLocaleString()} < min $${minMcap.toLocaleString()}`,
-          stageFunnel: {
-            stage1_dex_gate: 'FAIL',
-            stage2_gmgn_availability: 'SKIPPED',
-            stage3_gmgn_security: 'SKIPPED',
-            stage4_fee_integrity: 'SKIPPED',
-            final: 'REJECTED',
-          },
-        };
-      }
+    // Kandidat prefilter-pass diprioritaskan sesuai style UI Dex: fresh dulu, lalu volume besar.
+    const prefilterPassed = dexSeedMetrics
+      .filter((s) => !s.prefilterRejected)
+      .sort((a, b) => {
+        const aAge = Number.isFinite(a.ageHours) ? a.ageHours : Number.POSITIVE_INFINITY;
+        const bAge = Number.isFinite(b.ageHours) ? b.ageHours : Number.POSITIVE_INFINITY;
+        if (aAge !== bAge) return aAge - bAge;
+        return safeNum(b.gateVolume) - safeNum(a.gateVolume);
+      });
+
+    const seedSample = prefilterPassed.slice(0, seedLimit);
+    const prefilterRejectedList = dexSeedMetrics.filter((s) => s.prefilterRejected);
+    let rejDexPreFilter = prefilterRejectedList.length;
+    let rejDexAge = 0, rejSecurity = 0, rejNoPool = 0, rejCooldown = 0;
+
+    // Token gate list dimulai dari hasil prefilter fail supaya radar bisa audit stage-1 dengan jelas.
+    const tokenGate = prefilterRejectedList.map((s) => ({
+      mint: s.mint,
+      symbol: s.symbol || '',
+      name: s.symbol || s.mint.slice(0, 6),
+      security: null,
+      prefilterRejected: true,
+      prefilterReason: s.prefilterReason || 'VETO [DEX_PREFILTER]: token gagal pre-filter Dex.',
+      dexGate: s.dexGate || null,
+      ageHours: s.ageHours,
+      stageFunnel: {
+        stage1_dex_gate: 'FAIL',
+        stage2_gmgn_availability: 'SKIPPED',
+        stage3_gmgn_security: 'SKIPPED',
+        stage4_fee_integrity: 'SKIPPED',
+        final: 'REJECTED',
+      },
+    }));
+
+    const tokenGatePassed = await Promise.all(seedSample.map(async (s) => {
+      const dexGate = s.dexGate || null;
 
       const security = await screenToken(s.mint, s.symbol || '').catch(() => null);
       if (security) {
@@ -1313,11 +1319,15 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null, opt
         symbol: s.symbol || security?.symbol || '',
         name: security?.name || s.symbol || s.mint.slice(0, 6),
         security,
+        dexGate,
+        ageHours: s.ageHours,
         prefilterRejected: false,
         prefilterReason: null,
         stageFunnel: security?.stageFunnel || null,
       };
     }));
+
+    tokenGate.push(...tokenGatePassed);
 
     const approvedMints = tokenGate
       .filter((t) => !t.prefilterRejected && t.security?.eligible)
@@ -1343,6 +1353,7 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null, opt
     const radarSnapshot = tokenGate.map((t) => {
       const security = t.security;
       const prefilterRejected = t.prefilterRejected === true;
+      const dexGate = t.dexGate || null;
       const candidates = poolsByMint.get(t.mint) || [];
       const bestPool = candidates
         .sort((a, b) => safeNum(b.volume24hRaw) - safeNum(a.volume24hRaw))[0] || null;
@@ -1370,17 +1381,23 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null, opt
       }
 
       const basePool = bestPool || {};
+      const fallbackMcap = safeNum(dexGate?.mcap || security?.mcap);
+      const fallbackVol = safeNum(dexGate?.volume24h);
+      const fallbackLiq = safeNum(dexGate?.liquidityUsd);
+      const fallbackTxns = safeNum(dexGate?.txns24h);
       return {
         ...basePool,
         tokenX: basePool.tokenX || t.mint,
         tokenY: basePool.tokenY || WSOL_MINT,
         address: basePool.address || t.mint,
         name: basePool.name || `${t.symbol || t.name || 'TOKEN'}-SOL`,
-        mcap: safeNum(basePool.mcap || security?.mcap),
-        volume24hRaw: safeNum(basePool.volume24hRaw || 0),
+        mcap: safeNum(basePool.mcap || fallbackMcap),
+        volume24hRaw: safeNum(basePool.volume24hRaw || fallbackVol),
         fees24hRaw: safeNum(basePool.fees24hRaw || 0),
-        liquidityRaw: safeNum(basePool.liquidityRaw || 0),
+        liquidityRaw: safeNum(basePool.liquidityRaw || fallbackLiq),
+        txns24hRaw: safeNum(basePool.txns24hRaw || fallbackTxns),
         binStep: safeNum(basePool.binStep || 0),
+        ageHours: Number.isFinite(t.ageHours) ? Number(t.ageHours.toFixed(2)) : null,
         isMatched: matched,
         vetoReason: reason,
         prefilterSecurity: security,
@@ -1419,15 +1436,25 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null, opt
         activeCount: openPositions.length,
         totalNetProfitSol: (openPositions.reduce((acc, p) => acc + (parseFloat(p.pnl_sol) || 0), 0)).toFixed(4),
         totalRentSaved: safeNum(rentSaved).toFixed(4),
+        prefilter: {
+          seeded: dexSeeds.length,
+          pass: prefilterPassed.length,
+          rejected: prefilterRejectedList.length,
+          minVolume24h: minVol,
+          minMcap: minMcap,
+          sort: 'age_asc_then_volume_desc',
+        },
         candidates: radarDisplay.map(p => ({
           address: p.address,
           name: p.name,
           tvl: p.liquidityRaw,
           vol24h: p.volume24hRaw,
+          txns24h: p.txns24hRaw || 0,
           fees: p.fees24hRaw,
           totalFees: p.totalFeesEstimated, // New: Heritage Awareness v76.0
           binStep: p.binStep,
           mcap: p.mcap,
+          ageHours: Number.isFinite(p.ageHours) ? p.ageHours : null,
           score: p.darwinScore,
           volTvlRatio: (p.volume24hRaw / (p.liquidityRaw || 1)).toFixed(2),
           isMatched: p.isMatched,
@@ -1624,7 +1651,7 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null, opt
         const nonRefundText = rejNonRefundable > 0 ? ` | NonRefundable: ${rejNonRefundable}` : '';
         await notifyFn(
           `⚠️ <b>Discovery Result:</b> 0/${rawTotal} candidates matched.\n\n` +
-          `• Candidates Seeded (Dex): <b>${dexSeeds.length}</b> | Token Screened: <b>${rawTotal}</b> | Executable Pools: <b>${executablePoolsCount}</b>\n` +
+          `• Candidates Seeded (Dex): <b>${dexSeeds.length}</b> | Prefilter Pass: <b>${prefilterPassed.length}</b> | Token Screened: <b>${seedSample.length}</b> | Executable Pools: <b>${executablePoolsCount}</b>\n` +
           `• Rejected: <code>Dex Pre-Filter: ${rejDexPreFilter} | Dex Age: ${rejDexAge} | Dex/GMGN Security: ${rejSecurity} | No Meteora Pool: ${rejNoPool} | Cooldown: ${rejCooldown}${nonRefundText}</code>\n` +
           `• Technical Hard-Gate (Trend): <b>${basicFilteredCount - trendFilteredCount}</b> non-Bullish\n` +
           `• API/Data Status: ${trendRejectedCount === 0 && basicFilteredCount > 0 ? '❌ All APIs Failed' : '✅ APIs Linked'}\n\n` +
