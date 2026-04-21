@@ -272,7 +272,7 @@ function step1_basicValidation(dex, jup) {
     return { rejects, warnings };
   }
   if (!dex.hasImage) rejects.push({ rule: 'NO_LOGO', msg: 'Token tidak punya logo — REJECT' });
-  if (!dex.hasSocials) warnings.push({ rule: 'NO_SOCIAL_LINKS', msg: 'Token tidak punya social links — perlu verifikasi manual' });
+  if (!dex.hasSocials) rejects.push({ rule: 'NO_PROFILE', msg: 'Token tidak punya profile/sosial resmi — REJECT' });
   return { rejects, warnings };
 }
 

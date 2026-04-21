@@ -165,6 +165,11 @@
   "requireSignalReportForLive": true,
   "signalReportMaxAgeHours": 24,
   "signalReportPath": "data/signal-accuracy-report.json",
+  "signalAutoRefreshEnabled": true,
+  "signalAutoRefreshIntervalMin": 180,
+  "signalAutoRefreshFailureLimit": 3,
+  "signalAutoRefreshInputs": "/tmp/candles/batch1.json,/tmp/candles/batch2.json",
+  "signalConservativeMaxPositions": 1,
 
   "managementModel": "meta-llama/llama-3.3-70b-instruct:free",
   "screeningModel": "meta-llama/llama-3.3-70b-instruct:free",

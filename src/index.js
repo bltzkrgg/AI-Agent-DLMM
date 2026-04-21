@@ -2,6 +2,7 @@ import 'dotenv/config';
 import TelegramBot from 'node-telegram-bot-api';
 import cron from 'node-cron';
 import { PublicKey } from '@solana/web3.js';
+import { spawn } from 'child_process';
 import { writeFileSync, readFileSync, existsSync, unlinkSync, createReadStream } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
@@ -254,6 +255,12 @@ let _screeningBusy = 0;
 const LOCK_TIMEOUT_MS = 15 * 60 * 1000; // 15 menit
 let _lastEntryGuardAlertAt = 0;
 let _lastEntryGuardAlertMsg = '';
+let _signalRefreshBusy = false;
+let _lastSignalRefreshAt = 0;
+let _signalRefreshFailCount = 0;
+let _lastSignalRefreshError = '';
+let _lastSignalConservativeAlertAt = 0;
+let _lastSignalBlockedAlertAt = 0;
 
 function isAutonomyPaused(cfg = getConfig()) {
   return String(cfg?.autonomyMode || 'active').toLowerCase() === 'paused';
@@ -307,6 +314,90 @@ async function maybeNotifyEntryGuard(reasons, { force = false } = {}) {
   await notify(`⏸️ Entry Guard aktif: ${escapeHTML(msg)}`).catch(() => { });
 }
 
+async function refreshSignalReportInternal({ force = false } = {}) {
+  const cfgNow = getConfig();
+  if (cfgNow.signalAutoRefreshEnabled === false) return { skipped: true, reason: 'disabled' };
+  if (_signalRefreshBusy) return { skipped: true, reason: 'busy' };
+
+  const intervalMs = Math.max(5, Number(cfgNow.signalAutoRefreshIntervalMin || 180)) * 60 * 1000;
+  if (!force && _lastSignalRefreshAt > 0 && (Date.now() - _lastSignalRefreshAt) < intervalMs) {
+    return { skipped: true, reason: 'cooldown' };
+  }
+
+  const inputsRaw = String(cfgNow.signalAutoRefreshInputs || '').trim();
+  if (!inputsRaw) return { skipped: true, reason: 'no_inputs' };
+
+  _signalRefreshBusy = true;
+  _lastSignalRefreshAt = Date.now();
+
+  const scriptPath = join(__dirname, '../scripts/buildSignalAccuracyReport.js');
+  const args = [scriptPath, '--inputs', inputsRaw, '--strict', 'false'];
+
+  const result = await new Promise((resolve) => {
+    const child = spawn(process.execPath, args, { cwd: join(__dirname, '..') });
+    let stderr = '';
+    child.stderr?.on('data', (chunk) => { stderr += String(chunk || ''); });
+    child.on('error', (err) => resolve({ ok: false, error: err?.message || 'spawn_failed' }));
+    child.on('close', (code) => {
+      if (code === 0) resolve({ ok: true });
+      else resolve({ ok: false, error: stderr.trim() || `signal_report_exit_${code}` });
+    });
+  });
+
+  _signalRefreshBusy = false;
+  if (result.ok) {
+    _signalRefreshFailCount = 0;
+    _lastSignalRefreshError = '';
+  } else {
+    _signalRefreshFailCount += 1;
+    _lastSignalRefreshError = result.error || 'signal refresh failed';
+  }
+  return result;
+}
+
+async function ensureSignalReportFresh() {
+  const cfgNow = getConfig();
+  if (cfgNow.signalAutoRefreshEnabled === false) {
+    return { mode: 'normal', report: getSignalReportHealth({ reportPath: cfgNow.signalReportPath, maxAgeHours: cfgNow.signalReportMaxAgeHours }) };
+  }
+
+  let report = getSignalReportHealth({
+    reportPath: cfgNow.signalReportPath,
+    maxAgeHours: cfgNow.signalReportMaxAgeHours,
+  });
+
+  const staleOrInvalid = (!report.available || !report.passed || report.stale);
+  if (staleOrInvalid) {
+    await refreshSignalReportInternal({ force: true });
+    report = getSignalReportHealth({
+      reportPath: cfgNow.signalReportPath,
+      maxAgeHours: cfgNow.signalReportMaxAgeHours,
+    });
+  }
+
+  const hardFailLimit = Math.max(1, Number(cfgNow.signalAutoRefreshFailureLimit || 3));
+  const stillBad = (!report.available || !report.passed || report.stale);
+  const blocked = stillBad && _signalRefreshFailCount >= hardFailLimit;
+
+  if (blocked) {
+    return {
+      mode: 'blocked',
+      reason: `Signal auto-refresh gagal ${_signalRefreshFailCount}x (limit ${hardFailLimit})`,
+      report,
+    };
+  }
+
+  if (stillBad) {
+    return {
+      mode: 'conservative',
+      reason: `Signal report belum fresh/lolos, mode konservatif aktif (${_signalRefreshFailCount}/${hardFailLimit} fail)`,
+      report,
+    };
+  }
+
+  return { mode: 'normal', report };
+}
+
 function getDeployReadinessSnapshot() {
   const cfgNow = getConfig();
   const cbState = circuitBreaker.getState();
@@ -344,6 +435,9 @@ function getDeployReadinessSnapshot() {
     signalReportPassed: signalReport.passed,
     signalReportAgeHours: signalReport.ageHours,
     signalReportMaxAgeHours: cfgNow.signalReportMaxAgeHours,
+    signalAutoRefreshEnabled: cfgNow.signalAutoRefreshEnabled !== false,
+    signalAutoRefreshFailureCount: _signalRefreshFailCount,
+    signalAutoRefreshFailureLimit: cfgNow.signalAutoRefreshFailureLimit,
   });
 
   return {
@@ -355,6 +449,12 @@ function getDeployReadinessSnapshot() {
     taeExitCount,
     taeWinRatePct: Number.isFinite(taeWinRatePct) ? taeWinRatePct : null,
     signalReport,
+    signalRefresh: {
+      busy: _signalRefreshBusy,
+      lastRunAt: _lastSignalRefreshAt || null,
+      failCount: _signalRefreshFailCount,
+      lastError: _lastSignalRefreshError || null,
+    },
     readiness,
   };
 }
@@ -509,6 +609,16 @@ async function runAutoScreening() {
 
   const liveCfg = getConfig();
   if (!liveCfg.autoScreeningEnabled) return;
+  const signalState = await ensureSignalReportFresh();
+  if (signalState.mode === 'blocked') {
+    console.log(`⏭ Auto-screening skip — ${signalState.reason}`);
+    const now = Date.now();
+    if (now - _lastSignalBlockedAlertAt > 30 * 60 * 1000) {
+      _lastSignalBlockedAlertAt = now;
+      await notify(`⛔ Auto-screening pause: ${escapeHTML(signalState.reason)}`).catch(() => { });
+    }
+    return;
+  }
   const guard = summarizeEntryGuard();
   if (!guard.entryAllowed) {
     console.log(`⏭ Auto-screening skip — Entry Guard aktif (${guard.reasons.join(' | ')})`);
@@ -536,9 +646,12 @@ async function runAutoScreening() {
   }
 
   const openPos = getOpenPositions();
-  const stageMax = guard.stageMaxPositions;
-  if (openPos.length >= stageMax) {
-    console.log(`⏭ Hunter skip — slot penuh (${openPos.length}/${stageMax}) [stage:${guard.stage}]`);
+  const conservativeMax = Math.max(1, Number(liveCfg.signalConservativeMaxPositions || 1));
+  const effectiveMax = signalState.mode === 'conservative'
+    ? Math.min(guard.stageMaxPositions, conservativeMax)
+    : guard.stageMaxPositions;
+  if (openPos.length >= effectiveMax) {
+    console.log(`⏭ Hunter skip — slot penuh (${openPos.length}/${effectiveMax}) [stage:${guard.stage}${signalState.mode === 'conservative' ? '|signal=conservative' : ''}]`);
     return;
   }
 
@@ -560,8 +673,15 @@ async function runAutoScreening() {
   _screeningBusy = Date.now();
   _hunterBusy = Date.now();
   try {
+    if (signalState.mode === 'conservative') {
+      const now = Date.now();
+      if (now - _lastSignalConservativeAlertAt > 30 * 60 * 1000) {
+        _lastSignalConservativeAlertAt = now;
+        await notify(`⚠️ Signal report belum fresh/lolos. Hunter jalan mode konservatif (${openPos.length}/${effectiveMax} posisi max).`).catch(() => { });
+      }
+    }
     await runHunterAlpha(notify, bot, ALLOWED_ID, {
-      maxPositionsCap: stageMax,
+      maxPositionsCap: effectiveMax,
     });
   } catch (e) {
     console.error('Auto-screening error:', e.message);
@@ -1937,6 +2057,11 @@ bot.onText(/\/setconfig(?:\s+(\S+))?(?:\s+(.+))?/, (msg, match) => {
       `oracleMaxPriceDivergencePct= ${cfg.oracleMaxPriceDivergencePct}`,
       `minTaeSamplesForFullStage= ${cfg.minTaeSamplesForFullStage}`,
       `minTaeWinRateForFullStage= ${cfg.minTaeWinRateForFullStage}`,
+      `signalAutoRefreshEnabled = ${cfg.signalAutoRefreshEnabled}`,
+      `signalAutoRefreshIntervalMin= ${cfg.signalAutoRefreshIntervalMin}`,
+      `signalAutoRefreshFailureLimit= ${cfg.signalAutoRefreshFailureLimit}`,
+      `signalConservativeMaxPositions= ${cfg.signalConservativeMaxPositions}`,
+      `signalAutoRefreshInputs  = ${cfg.signalAutoRefreshInputs}`,
     ];
     return bot.sendMessage(chatId,
       `⚙️ <b>Config Saat Ini</b>\n\n<pre><code>${lines.join('\n')}</code></pre>\n\n<i>Ubah: <code>/setconfig key value</code></i>`,

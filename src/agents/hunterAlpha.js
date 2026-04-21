@@ -98,11 +98,25 @@ async function fetchDexGateMetrics(tokenMint) {
     const pairs = Array.isArray(json?.pairs) ? json.pairs : [];
     if (!pairs.length) return null;
     const best = pairs.sort((a, b) => safeNum(b?.liquidity?.usd) - safeNum(a?.liquidity?.usd))[0];
+    const volumeValues = pairs.map((p) => safeNum(p?.volume?.h24)).filter((v) => Number.isFinite(v) && v > 0);
+    const mcapValues = pairs.map((p) => safeNum(p?.fdv)).filter((v) => Number.isFinite(v) && v > 0);
+    const createdAtValues = pairs
+      .map((p) => safeNum(p?.pairCreatedAt))
+      .filter((v) => Number.isFinite(v) && v > 0);
+
+    // Token-first prefilter:
+    // - volume: gunakan MAX antar pair (hindari false reject saat pair liquidity-terbesar punya vol kecil)
+    // - mcap: gunakan MAX antar pair yang valid
+    // - age: gunakan pair TERBARU (timestamp terbesar) agar "fresh breakout" tidak ketahan pair lama
+    const volume24hMax = volumeValues.length ? Math.max(...volumeValues) : safeNum(best?.volume?.h24);
+    const mcapMax = mcapValues.length ? Math.max(...mcapValues) : safeNum(best?.fdv);
+    const newestPairCreatedAt = createdAtValues.length ? Math.max(...createdAtValues) : (safeNum(best?.pairCreatedAt || 0) || null);
+
     return {
-      volume24h: safeNum(best?.volume?.h24),
-      mcap: safeNum(best?.fdv),
+      volume24h: volume24hMax,
+      mcap: mcapMax,
       pairAddress: best?.pairAddress || null,
-      pairCreatedAt: safeNum(best?.pairCreatedAt || 0) || null,
+      pairCreatedAt: newestPairCreatedAt,
       pairName: `${best?.baseToken?.symbol || ''}-${best?.quoteToken?.symbol || ''}`.replace(/^-|-$/g, ''),
     };
   } catch {
@@ -1221,13 +1235,8 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null, opt
       const dexGate = await fetchDexGateMetrics(s.mint);
       const minVol = Number(cfg.minVolume24h || 0);
       const minMcap = Number(cfg.minMcap || 0);
-      const minAgeHours = Math.max(0, Number(cfg.dexMinAgeHours ?? 0));
-      const maxAgeHours = Math.max(minAgeHours, Number(cfg.dexMaxAgeHours ?? 168));
-      const requireKnownAge = cfg.dexRequireKnownAge === true;
       const gateVolume = safeNum(dexGate?.volume24h);
       const gateMcap = safeNum(dexGate?.mcap);
-      const createdAt = safeNum(dexGate?.pairCreatedAt);
-      const ageHours = createdAt > 0 ? ((Date.now() - createdAt) / (1000 * 60 * 60)) : null;
 
       if (!dexGate) {
         rejDexPreFilter++;
@@ -1276,44 +1285,6 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null, opt
           security: null,
           prefilterRejected: true,
           prefilterReason: `VETO [BELOW_MIN_MCAP]: Mcap $${gateMcap.toLocaleString()} < min $${minMcap.toLocaleString()}`,
-          stageFunnel: {
-            stage1_dex_gate: 'FAIL',
-            stage2_gmgn_availability: 'SKIPPED',
-            stage3_gmgn_security: 'SKIPPED',
-            stage4_fee_integrity: 'SKIPPED',
-            final: 'REJECTED',
-          },
-        };
-      }
-
-      if (requireKnownAge && ageHours == null) {
-        rejDexAge++;
-        return {
-          mint: s.mint,
-          symbol: s.symbol || '',
-          name: s.symbol || s.mint.slice(0, 6),
-          security: null,
-          prefilterRejected: true,
-          prefilterReason: 'VETO [AGE_DATA_MISSING]: Pair age tidak tersedia di Dex.',
-          stageFunnel: {
-            stage1_dex_gate: 'FAIL',
-            stage2_gmgn_availability: 'SKIPPED',
-            stage3_gmgn_security: 'SKIPPED',
-            stage4_fee_integrity: 'SKIPPED',
-            final: 'REJECTED',
-          },
-        };
-      }
-
-      if (ageHours != null && (ageHours < minAgeHours || ageHours > maxAgeHours)) {
-        rejDexAge++;
-        return {
-          mint: s.mint,
-          symbol: s.symbol || '',
-          name: s.symbol || s.mint.slice(0, 6),
-          security: null,
-          prefilterRejected: true,
-          prefilterReason: `VETO [AGE_OUT_OF_RANGE]: Usia ${ageHours.toFixed(1)}h di luar range ${minAgeHours}-${maxAgeHours}h`,
           stageFunnel: {
             stage1_dex_gate: 'FAIL',
             stage2_gmgn_availability: 'SKIPPED',

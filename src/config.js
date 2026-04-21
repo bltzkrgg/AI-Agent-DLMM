@@ -180,6 +180,11 @@ const DEFAULTS = {
   requireSignalReportForLive: true, // Wajib ada rapor akurasi sinyal sebelum live deploy
   signalReportMaxAgeHours: 24,      // Maks umur report akurasi sinyal
   signalReportPath: 'data/signal-accuracy-report.json',
+  signalAutoRefreshEnabled: true,   // Auto-refresh rapor sinyal dari dalam bot (tanpa cron eksternal)
+  signalAutoRefreshIntervalMin: 180, // Jeda minimum antar auto-refresh rapor sinyal
+  signalAutoRefreshFailureLimit: 3, // Jika gagal beruntun >= limit, entry baru diblokir
+  signalAutoRefreshInputs: '/tmp/candles/batch1.json,/tmp/candles/batch2.json', // Input default untuk generator rapor
+  signalConservativeMaxPositions: 1, // Batas posisi saat mode konservatif karena rapor sinyal bermasalah
 };
 
 const KNOWN_CONFIG_KEYS = new Set(Object.keys(DEFAULTS));
@@ -292,6 +297,11 @@ const CONFIG_BOUNDS = {
   requireSignalReportForLive: { type: 'boolean' },
   signalReportMaxAgeHours: { min: 1, max: 168 },
   signalReportPath: { type: 'string' },
+  signalAutoRefreshEnabled: { type: 'boolean' },
+  signalAutoRefreshIntervalMin: { min: 5, max: 1440 },
+  signalAutoRefreshFailureLimit: { min: 1, max: 20 },
+  signalAutoRefreshInputs: { type: 'string' },
+  signalConservativeMaxPositions: { min: 1, max: 20 },
   
   lastEvolutionTradeCount: { min: 0, max: 1000000 },
   llmWeightHints: { type: 'object' },

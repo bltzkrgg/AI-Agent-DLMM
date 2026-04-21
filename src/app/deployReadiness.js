@@ -24,6 +24,9 @@ export function evaluateDeployReadiness(input = {}) {
     signalReportPassed = false,
     signalReportAgeHours = null,
     signalReportMaxAgeHours = 24,
+    signalAutoRefreshEnabled = false,
+    signalAutoRefreshFailureCount = 0,
+    signalAutoRefreshFailureLimit = 3,
   } = input;
 
   const blockers = [];
@@ -95,17 +98,37 @@ export function evaluateDeployReadiness(input = {}) {
   }
 
   if (!dryRun && signalReportRequired) {
+    const canUseConservativeFallback = (
+      signalAutoRefreshEnabled === true &&
+      Number(signalAutoRefreshFailureCount || 0) < Math.max(1, Number(signalAutoRefreshFailureLimit || 3))
+    );
+
     if (!signalReportAvailable) {
-      blockers.push('Rapor akurasi sinyal belum tersedia.');
-      score -= 15;
+      if (canUseConservativeFallback) {
+        warnings.push('Rapor akurasi sinyal belum tersedia. Bot akan masuk mode konservatif sambil auto-refresh.');
+        score -= 6;
+      } else {
+        blockers.push('Rapor akurasi sinyal belum tersedia.');
+        score -= 15;
+      }
     } else {
       if (signalReportPassed !== true) {
-        blockers.push('Rapor akurasi sinyal belum lolos threshold.');
-        score -= 12;
+        if (canUseConservativeFallback) {
+          warnings.push('Rapor akurasi sinyal belum lolos threshold. Bot akan masuk mode konservatif sambil auto-refresh.');
+          score -= 6;
+        } else {
+          blockers.push('Rapor akurasi sinyal belum lolos threshold.');
+          score -= 12;
+        }
       }
       if (!Number.isFinite(signalReportAgeHours) || signalReportAgeHours > signalReportMaxAgeHours) {
-        blockers.push(`Rapor akurasi sinyal stale (> ${signalReportMaxAgeHours} jam).`);
-        score -= 10;
+        if (canUseConservativeFallback) {
+          warnings.push(`Rapor akurasi sinyal stale (> ${signalReportMaxAgeHours} jam). Bot akan masuk mode konservatif sambil auto-refresh.`);
+          score -= 5;
+        } else {
+          blockers.push(`Rapor akurasi sinyal stale (> ${signalReportMaxAgeHours} jam).`);
+          score -= 10;
+        }
       }
     }
   } else if (signalReportAvailable && signalReportPassed !== true) {
