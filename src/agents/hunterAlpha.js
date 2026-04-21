@@ -102,6 +102,7 @@ async function fetchDexGateMetrics(tokenMint) {
       volume24h: safeNum(best?.volume?.h24),
       mcap: safeNum(best?.fdv),
       pairAddress: best?.pairAddress || null,
+      pairCreatedAt: safeNum(best?.pairCreatedAt || 0) || null,
       pairName: `${best?.baseToken?.symbol || ''}-${best?.quoteToken?.symbol || ''}`.replace(/^-|-$/g, ''),
     };
   } catch {
@@ -1215,13 +1216,18 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null, opt
     const seedLimit = Math.max(10, Number(cfg.dexSeedSampleLimit || 40));
     const seedSample = dexSeeds.slice(0, seedLimit);
 
-    let rejDexPreFilter = 0, rejSecurity = 0, rejNoPool = 0, rejCooldown = 0;
+    let rejDexPreFilter = 0, rejDexAge = 0, rejSecurity = 0, rejNoPool = 0, rejCooldown = 0;
     const tokenGate = await Promise.all(seedSample.map(async (s) => {
       const dexGate = await fetchDexGateMetrics(s.mint);
       const minVol = Number(cfg.minVolume24h || 0);
       const minMcap = Number(cfg.minMcap || 0);
+      const minAgeHours = Math.max(0, Number(cfg.dexMinAgeHours ?? 0));
+      const maxAgeHours = Math.max(minAgeHours, Number(cfg.dexMaxAgeHours ?? 168));
+      const requireKnownAge = cfg.dexRequireKnownAge === true;
       const gateVolume = safeNum(dexGate?.volume24h);
       const gateMcap = safeNum(dexGate?.mcap);
+      const createdAt = safeNum(dexGate?.pairCreatedAt);
+      const ageHours = createdAt > 0 ? ((Date.now() - createdAt) / (1000 * 60 * 60)) : null;
 
       if (!dexGate) {
         rejDexPreFilter++;
@@ -1270,6 +1276,44 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null, opt
           security: null,
           prefilterRejected: true,
           prefilterReason: `VETO [BELOW_MIN_MCAP]: Mcap $${gateMcap.toLocaleString()} < min $${minMcap.toLocaleString()}`,
+          stageFunnel: {
+            stage1_dex_gate: 'FAIL',
+            stage2_gmgn_availability: 'SKIPPED',
+            stage3_gmgn_security: 'SKIPPED',
+            stage4_fee_integrity: 'SKIPPED',
+            final: 'REJECTED',
+          },
+        };
+      }
+
+      if (requireKnownAge && ageHours == null) {
+        rejDexAge++;
+        return {
+          mint: s.mint,
+          symbol: s.symbol || '',
+          name: s.symbol || s.mint.slice(0, 6),
+          security: null,
+          prefilterRejected: true,
+          prefilterReason: 'VETO [AGE_DATA_MISSING]: Pair age tidak tersedia di Dex.',
+          stageFunnel: {
+            stage1_dex_gate: 'FAIL',
+            stage2_gmgn_availability: 'SKIPPED',
+            stage3_gmgn_security: 'SKIPPED',
+            stage4_fee_integrity: 'SKIPPED',
+            final: 'REJECTED',
+          },
+        };
+      }
+
+      if (ageHours != null && (ageHours < minAgeHours || ageHours > maxAgeHours)) {
+        rejDexAge++;
+        return {
+          mint: s.mint,
+          symbol: s.symbol || '',
+          name: s.symbol || s.mint.slice(0, 6),
+          security: null,
+          prefilterRejected: true,
+          prefilterReason: `VETO [AGE_OUT_OF_RANGE]: Usia ${ageHours.toFixed(1)}h di luar range ${minAgeHours}-${maxAgeHours}h`,
           stageFunnel: {
             stage1_dex_gate: 'FAIL',
             stage2_gmgn_availability: 'SKIPPED',
@@ -1609,7 +1653,7 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null, opt
         await notifyFn(
           `⚠️ <b>Discovery Result:</b> 0/${rawTotal} candidates matched.\n\n` +
           `• Candidates Seeded (Dex): <b>${dexSeeds.length}</b> | Token Screened: <b>${rawTotal}</b> | Executable Pools: <b>${executablePoolsCount}</b>\n` +
-          `• Rejected: <code>Dex Pre-Filter: ${rejDexPreFilter} | Dex/GMGN Security: ${rejSecurity} | No Meteora Pool: ${rejNoPool} | Cooldown: ${rejCooldown}${nonRefundText}</code>\n` +
+          `• Rejected: <code>Dex Pre-Filter: ${rejDexPreFilter} | Dex Age: ${rejDexAge} | Dex/GMGN Security: ${rejSecurity} | No Meteora Pool: ${rejNoPool} | Cooldown: ${rejCooldown}${nonRefundText}</code>\n` +
           `• Technical Hard-Gate (Trend): <b>${basicFilteredCount - trendFilteredCount}</b> non-Bullish\n` +
           `• API/Data Status: ${trendRejectedCount === 0 && basicFilteredCount > 0 ? '❌ All APIs Failed' : '✅ APIs Linked'}\n\n` +
           `<i>Market sepertinya sedang sideways/bearish. Sniper tetap disiplin.</i>`

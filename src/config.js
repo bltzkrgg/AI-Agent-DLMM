@@ -43,6 +43,9 @@ const DEFAULTS = {
   minBinStep: 100,            // Minimal 100 bin step (Hukum 3)
   allowedBinSteps: [100, 125], // Daftar Bin Step spesifik yang diijinkan (Saklek Mode)
   dexSeedSampleLimit: 40,      // Jumlah token Dex yang discreen per siklus Hunter (token-first)
+  dexMinAgeHours: 0,           // Min usia pair Dex (jam)
+  dexMaxAgeHours: 168,         // Max usia pair Dex (jam) = 7 hari
+  dexRequireKnownAge: false,   // true: token tanpa data age Dex langsung ditolak
   minTotalFeesSol: 30.0,     // Ambang batas Heritage (Total Fee seumur hidup)
   minDailyFeeYieldPct: 1.0,  // Minimum fee/TVL harian (%) agar entry Evil Panda tetap worth it
   heritageModeEnabled: true, // Aktifkan saringan riwayat sultan
@@ -270,6 +273,9 @@ const CONFIG_BOUNDS = {
   dailyLossLimitUsd: { min: 0, max: 1000 },
   allowedBinSteps: { type: 'array' }, // Custom handling logic in updateConfig
   dexSeedSampleLimit: { min: 10, max: 200 },
+  dexMinAgeHours: { min: 0, max: 720 },
+  dexMaxAgeHours: { min: 1, max: 720 },
+  dexRequireKnownAge: { type: 'boolean' },
 
   // Professional Suite Bounds
   autoHarvestThresholdSol: { min: 0.005, max: 1.0 },
