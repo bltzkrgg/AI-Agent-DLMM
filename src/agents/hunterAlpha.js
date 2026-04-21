@@ -22,7 +22,7 @@ import { getSocialSignals, getTokenSocialScore } from '../market/socialScanner.j
 import { getInstinctsContext } from '../market/memory.js';
 import { getStrategyIntelligenceContext } from '../market/strategyPerformance.js';
 import { screenToken, formatScreenResult } from '../market/coinfilter.js';
-import { parseTvl, safeNum, stringify, escapeHTML, getConservativeSlippage } from '../utils/safeJson.js';
+import { parseTvl, safeNum, stringify, escapeHTML, getConservativeSlippage, fetchWithTimeout } from '../utils/safeJson.js';
 import { kv, hr, codeBlock, shortAddr } from '../utils/table.js';
 import { getDarwinWeights, captureSignals } from '../market/signalWeights.js';
 import { isOnCooldown, getPoolMemoryContext, recordDeployment } from '../market/poolMemory.js';
@@ -46,6 +46,48 @@ let _hunterMaxPositionsCap = null; // Global stage-aware cap injected by orchest
 
 export function getCandidates() { return lastCandidates; }
 export function getLastHunterReport() { return lastReport; }
+
+const DEXSCREENER_BASE = 'https://api.dexscreener.com';
+const WSOL_MINT = 'So11111111111111111111111111111111111111112';
+
+async function discoverDexTokenSeeds(limit = 40) {
+  const seeds = [];
+  const seen = new Set();
+  const endpoints = [
+    `${DEXSCREENER_BASE}/token-profiles/latest/v1`,
+    `${DEXSCREENER_BASE}/token-boosts/latest/v1`,
+  ];
+
+  for (const url of endpoints) {
+    try {
+      const res = await fetchWithTimeout(url, {}, 7000);
+      if (!res.ok) continue;
+      const json = await res.json().catch(() => null);
+      if (!Array.isArray(json)) continue;
+      for (const row of json) {
+        const chain = String(row?.chainId || row?.chain || '').toLowerCase();
+        const mint = String(
+          row?.tokenAddress ||
+          row?.address ||
+          row?.baseTokenAddress ||
+          ''
+        ).trim();
+        if (!mint || (chain && chain !== 'solana')) continue;
+        if (seen.has(mint)) continue;
+        seen.add(mint);
+        seeds.push({
+          mint,
+          symbol: row?.tokenSymbol || row?.symbol || '',
+          source: url.includes('boosts') ? 'dex_boosts' : 'dex_profiles',
+        });
+        if (seeds.length >= limit) return seeds;
+      }
+    } catch {
+      // non-blocking, continue other endpoints
+    }
+  }
+  return seeds;
+}
 
 function extractPrimaryFlag(result) {
   const first = Array.isArray(result?.highFlags) && result.highFlags.length > 0
@@ -1141,57 +1183,70 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null, opt
     }
   };
 
-  await updatePulse(`🔍 <b>Radar Sweep: Scanning Meteora DLMM...</b>`);
+  await updatePulse(`🔍 <b>Radar Sweep: Dex Seed → GMGN Gate → Meteora Execute...</b>`);
 
   let preComputedContext = '';
   try {
-    const thresholds = getThresholds();
     const weights = getDarwinWeights(); // adaptive weights dari data nyata
-    // --- Hybrid Discovery Layer ---
-    const [rawPools, socialSignals] = await Promise.all([
+    // --- Token-first Discovery Layer (Dex seed, Meteora as execution venue) ---
+    const [rawPools, dexSeeds] = await Promise.all([
       import('../solana/meteora.js').then(m => m.getDiscoveryPools(40)),
-      getSocialSignals().catch(() => [])
+      discoverDexTokenSeeds(50),
     ]);
 
-    let rejFlow = 0, rejBin = 0, rejMcap = 0, rejCooldown = 0;
+    const poolByMint = new Map();
+    for (const p of (rawPools || [])) {
+      const baseMint = p.tokenX && p.tokenX !== WSOL_MINT ? p.tokenX
+        : (p.tokenY && p.tokenY !== WSOL_MINT ? p.tokenY : null);
+      if (!baseMint) continue;
+      const existing = poolByMint.get(baseMint);
+      if (!existing || safeNum(p.volume24hRaw) > safeNum(existing.volume24hRaw)) {
+        poolByMint.set(baseMint, p);
+      }
+    }
+
+    const seededPools = [];
+    const seededSeen = new Set();
+    for (const s of dexSeeds) {
+      const matchPool = poolByMint.get(s.mint);
+      if (!matchPool || seededSeen.has(matchPool.address)) continue;
+      seededSeen.add(matchPool.address);
+      seededPools.push({ ...matchPool, _seedSource: s.source });
+    }
+
+    const discoveryFallbackUsed = seededPools.length === 0;
+    const discoveryUniverse = discoveryFallbackUsed ? (rawPools || []) : seededPools;
+
+    let rejSecurity = 0, rejCooldown = 0;
 
     // --- SULTAN RADAR MAPPING (v75.3) --- 
     // Kita petakan koin yang Lolos (Matched) dan yang Disingkirkan (Vetoed)
-    const radarSnapshot = rawPools.map(p => {
+    const radarSnapshotRaw = await Promise.all(discoveryUniverse.slice(0, 25).map(async (p) => {
       const cfg = getConfig();
-      const thresholds = getThresholds();
-      const binStep = p.binStep || 0;
-      const activeStrat = getStrategy(cfg.activeStrategy || 'Evil Panda');
-      const allowed = (Array.isArray(cfg.allowedBinSteps) && cfg.allowedBinSteps.length > 0)
-        ? cfg.allowedBinSteps
-        : (activeStrat?.allowedBinSteps || [100, 125]);
+      const tokenMint = p.tokenX && p.tokenX !== WSOL_MINT ? p.tokenX : p.tokenY;
 
-      let matched = true;
-      let reason = 'Target Locked via Hybrid Scan';
+      const security = await screenToken(tokenMint, p.name).catch(() => null);
+      if (security) {
+        auditScreeningResult(security, {
+          tokenMint: tokenMint || null,
+          tokenName: p.name || null,
+          poolAddress: p.address || null,
+          sourceContext: 'hunter_token_first_seed',
+        });
+      }
 
-      if (!allowed.includes(binStep)) {
-        matched = false;
-        reason = `Reject: Bin Step ${binStep} not in allowed list [${allowed.join(', ')}] for strategy`;
-        rejBin++;
-      } else if (p.volume24hRaw < thresholds.minVolume24h) {
-        matched = false;
-        reason = `Reject: Volume $${(p.volume24hRaw / 1000).toFixed(1)}k terlalu sepi`;
-        rejFlow++;
-      } else if (p.createdAt && (() => {
-        const ageHours = (Date.now() - new Date(p.createdAt).getTime()) / (1000 * 60 * 60);
-        return ageHours > (cfg.maxPoolAgeDays ?? 3) * 24;
-      })()) {
-        const ageH = ((Date.now() - new Date(p.createdAt).getTime()) / (1000 * 60 * 60)).toFixed(0);
-        matched = false;
-        reason = `Reject: Pool sudah ${ageH}h (max ${(cfg.maxPoolAgeDays ?? 3) * 24}h freshness rule)`;
-        rejFlow++;
-      } else if (p.mcap && p.mcap < thresholds.minMcap) {
-        matched = false;
-        reason = `Reject: Mcap $${(p.mcap / 1000).toFixed(1)}k terlalu kecil`;
-        rejMcap++;
-      } else if (isOnCooldown(p.address)) {
-        matched = false;
-        reason = `Reject: Koin sedang dalam masa cooldown`;
+      const onCd = isOnCooldown(p.address);
+      const matched = Boolean(security?.eligible) && !onCd;
+      let reason = 'PASS: Dex+GMGN gate clean';
+      if (!security) {
+        reason = 'VETO: Screening error/unavailable';
+        rejSecurity++;
+      } else if (!security.eligible) {
+        const first = security.highFlags?.[0];
+        reason = `VETO [${first?.rule || 'SECURITY_REJECT'}]: ${first?.msg || 'Token gagal gate keamanan.'}`;
+        rejSecurity++;
+      } else if (onCd) {
+        reason = 'VETO [POOL_COOLDOWN]: pool/token dalam masa cooldown';
         rejCooldown++;
       }
 
@@ -1199,9 +1254,12 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null, opt
         ...p,
         isMatched: matched,
         vetoReason: reason,
-        darwinScore: calculateDarwinScore(p, weights, 'NEUTRAL')
+        prefilterSecurity: security,
+        stageFunnel: security?.stageFunnel || null,
+        darwinScore: calculateDarwinScore(p, weights, 'NEUTRAL'),
       };
-    });
+    }));
+    const radarSnapshot = radarSnapshotRaw.filter(Boolean);
 
     // filtered: Hanya yang benar-benar lolos untuk diproses LLM (Hemat Cost)
     const filtered = radarSnapshot
@@ -1225,7 +1283,6 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null, opt
       const dashboardFile = join(__dirname, '../web/dashboard_data.json');
       const walBalRaw = await getWalletBalance().catch(() => '0');
       const openPositions = await getOpenPositions();
-      const thresholds = getThresholds();
       const rentSaved = getStat('total_rent_reclaimed_sol') || 0;
 
       const dashboardSnapshot = {
@@ -1247,7 +1304,8 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null, opt
           volTvlRatio: (p.volume24hRaw / (p.liquidityRaw || 1)).toFixed(2),
           isMatched: p.isMatched,
           isHeritage: p.isHeritageMatch,   // New: Tag Sultan Multiday
-          vetoReason: p.vetoReason
+          vetoReason: p.vetoReason,
+          stageFunnel: p.stageFunnel
         })),
         sentiment: 'BULLISH'
       };
@@ -1371,18 +1429,7 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null, opt
       // ─── Phase 2.1: LLM Cost Guard (Static Security Filter) ─────
       // Run full audit for top candidates BEFORE sending to LLM.
       // This saves 10k-50k tokens by rejecting rugs during pre-screening.
-      let security = null;
-      try {
-        security = await screenToken(p.tokenX || p.tokenY, p.name);
-        auditScreeningResult(security, {
-          tokenMint: p.tokenX || p.tokenY || null,
-          tokenName: p.name || null,
-          poolAddress: p.address || null,
-          sourceContext: 'hunter_precompute',
-        });
-      } catch (e) {
-        console.warn(`[cost-guard] Security check failed for ${p.name}:`, e.message);
-      }
+      const security = p.prefilterSecurity || { verdict: 'UNKNOWN' };
 
 
       // Update darwinScore dengan Sentiment & TA
@@ -1437,7 +1484,7 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null, opt
     }));
 
     // --- Filter obvious rejects & Technical Hard-Gate ---
-    const rawTotal = rawPools.length;
+    const rawTotal = discoveryUniverse.length;
     const basicFilteredCount = filtered.length;
     const finalEnriched = enriched.filter(p => p !== null);
     const trendFilteredCount = finalEnriched.length;
@@ -1448,8 +1495,8 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null, opt
         const nonRefundText = rejNonRefundable > 0 ? ` | NonRefundable: ${rejNonRefundable}` : '';
         await notifyFn(
           `⚠️ <b>Discovery Result:</b> 0/${rawTotal} candidates matched.\n\n` +
-          `• Candidates Scanned: <b>${rawTotal}</b>\n` +
-          `• Rejected: <code>BinStep: ${rejBin} | Flow/Freshness: ${rejFlow} | Mcap: ${rejMcap} | Cooldown: ${rejCooldown}${nonRefundText}</code>\n` +
+          `• Candidates Seeded (Dex): <b>${dexSeeds.length}</b> | Executable Pools: <b>${rawTotal}</b>${discoveryFallbackUsed ? ' (fallback: Meteora-only)' : ''}\n` +
+          `• Rejected: <code>Dex/GMGN Security: ${rejSecurity} | Cooldown: ${rejCooldown}${nonRefundText}</code>\n` +
           `• Technical Hard-Gate (Trend): <b>${basicFilteredCount - trendFilteredCount}</b> non-Bullish\n` +
           `• API/Data Status: ${trendRejectedCount === 0 && basicFilteredCount > 0 ? '❌ All APIs Failed' : '✅ APIs Linked'}\n\n` +
           `<i>Market sepertinya sedang sideways/bearish. Sniper tetap disiplin.</i>`
