@@ -121,7 +121,7 @@ const DEFAULTS = {
   // Coin selection thresholds (USD, via GeckoTerminal + DexScreener)
   minMcap: 250000,           // Min market cap ($) — null data → skip
   maxMcap: 0,                // Max market cap ($, 0 = disabled)
-  minVolume24h: 20000,       // Min 24h volume ($)
+  minVolume24h: 1000000,     // Min 24h volume ($) — hard floor strategi Dex pre-filter
 
   // Strategy-specific tuning. Base identity is 'Evil Panda Master'.
   strategyOverrides: {

@@ -1233,8 +1233,9 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null, opt
     let rejDexPreFilter = 0, rejDexAge = 0, rejSecurity = 0, rejNoPool = 0, rejCooldown = 0;
     const tokenGate = await Promise.all(seedSample.map(async (s) => {
       const dexGate = await fetchDexGateMetrics(s.mint);
-      const minVol = Number(cfg.minVolume24h || 0);
-      const minMcap = Number(cfg.minMcap || 0);
+    // Prefilter murni mengikuti config runtime agar fleksibel sesuai style operator.
+    const minVol = Number(cfg.minVolume24h || 0);
+    const minMcap = Number(cfg.minMcap || 0);
       const gateVolume = safeNum(dexGate?.volume24h);
       const gateMcap = safeNum(dexGate?.mcap);
 
