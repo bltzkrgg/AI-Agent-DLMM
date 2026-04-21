@@ -89,6 +89,26 @@ async function discoverDexTokenSeeds(limit = 40) {
   return seeds;
 }
 
+async function fetchDexGateMetrics(tokenMint) {
+  if (!tokenMint) return null;
+  try {
+    const res = await fetchWithTimeout(`${DEXSCREENER_BASE}/latest/dex/tokens/${tokenMint}`, {}, 7000);
+    if (!res.ok) return null;
+    const json = await res.json().catch(() => null);
+    const pairs = Array.isArray(json?.pairs) ? json.pairs : [];
+    if (!pairs.length) return null;
+    const best = pairs.sort((a, b) => safeNum(b?.liquidity?.usd) - safeNum(a?.liquidity?.usd))[0];
+    return {
+      volume24h: safeNum(best?.volume?.h24),
+      mcap: safeNum(best?.fdv),
+      pairAddress: best?.pairAddress || null,
+      pairName: `${best?.baseToken?.symbol || ''}-${best?.quoteToken?.symbol || ''}`.replace(/^-|-$/g, ''),
+    };
+  } catch {
+    return null;
+  }
+}
+
 function extractPrimaryFlag(result) {
   const first = Array.isArray(result?.highFlags) && result.highFlags.length > 0
     ? result.highFlags[0]
@@ -1195,8 +1215,71 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null, opt
     const seedLimit = Math.max(10, Number(cfg.dexSeedSampleLimit || 40));
     const seedSample = dexSeeds.slice(0, seedLimit);
 
-    let rejSecurity = 0, rejNoPool = 0, rejCooldown = 0;
+    let rejDexPreFilter = 0, rejSecurity = 0, rejNoPool = 0, rejCooldown = 0;
     const tokenGate = await Promise.all(seedSample.map(async (s) => {
+      const dexGate = await fetchDexGateMetrics(s.mint);
+      const minVol = Number(cfg.minVolume24h || 0);
+      const minMcap = Number(cfg.minMcap || 0);
+      const gateVolume = safeNum(dexGate?.volume24h);
+      const gateMcap = safeNum(dexGate?.mcap);
+
+      if (!dexGate) {
+        rejDexPreFilter++;
+        return {
+          mint: s.mint,
+          symbol: s.symbol || '',
+          name: s.symbol || s.mint.slice(0, 6),
+          security: null,
+          prefilterRejected: true,
+          prefilterReason: 'VETO [DEX_DATA_UNAVAILABLE]: data Dex tidak tersedia di tahap pre-filter.',
+          stageFunnel: {
+            stage1_dex_gate: 'FAIL',
+            stage2_gmgn_availability: 'SKIPPED',
+            stage3_gmgn_security: 'SKIPPED',
+            stage4_fee_integrity: 'SKIPPED',
+            final: 'REJECTED',
+          },
+        };
+      }
+
+      if (minVol > 0 && gateVolume < minVol) {
+        rejDexPreFilter++;
+        return {
+          mint: s.mint,
+          symbol: s.symbol || '',
+          name: s.symbol || s.mint.slice(0, 6),
+          security: null,
+          prefilterRejected: true,
+          prefilterReason: `VETO [BELOW_MIN_VOLUME_24H]: Volume 24h $${gateVolume.toLocaleString()} < min $${minVol.toLocaleString()}`,
+          stageFunnel: {
+            stage1_dex_gate: 'FAIL',
+            stage2_gmgn_availability: 'SKIPPED',
+            stage3_gmgn_security: 'SKIPPED',
+            stage4_fee_integrity: 'SKIPPED',
+            final: 'REJECTED',
+          },
+        };
+      }
+
+      if (minMcap > 0 && gateMcap > 0 && gateMcap < minMcap) {
+        rejDexPreFilter++;
+        return {
+          mint: s.mint,
+          symbol: s.symbol || '',
+          name: s.symbol || s.mint.slice(0, 6),
+          security: null,
+          prefilterRejected: true,
+          prefilterReason: `VETO [BELOW_MIN_MCAP]: Mcap $${gateMcap.toLocaleString()} < min $${minMcap.toLocaleString()}`,
+          stageFunnel: {
+            stage1_dex_gate: 'FAIL',
+            stage2_gmgn_availability: 'SKIPPED',
+            stage3_gmgn_security: 'SKIPPED',
+            stage4_fee_integrity: 'SKIPPED',
+            final: 'REJECTED',
+          },
+        };
+      }
+
       const security = await screenToken(s.mint, s.symbol || '').catch(() => null);
       if (security) {
         auditScreeningResult(security, {
@@ -1214,11 +1297,14 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null, opt
         symbol: s.symbol || security?.symbol || '',
         name: security?.name || s.symbol || s.mint.slice(0, 6),
         security,
+        prefilterRejected: false,
+        prefilterReason: null,
+        stageFunnel: security?.stageFunnel || null,
       };
     }));
 
     const approvedMints = tokenGate
-      .filter((t) => t.security?.eligible)
+      .filter((t) => !t.prefilterRejected && t.security?.eligible)
       .map((t) => t.mint);
 
     // 2) Meteora dipanggil belakangan, hanya untuk token yang lolos gate
@@ -1240,13 +1326,16 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null, opt
 
     const radarSnapshot = tokenGate.map((t) => {
       const security = t.security;
+      const prefilterRejected = t.prefilterRejected === true;
       const candidates = poolsByMint.get(t.mint) || [];
       const bestPool = candidates
         .sort((a, b) => safeNum(b.volume24hRaw) - safeNum(a.volume24hRaw))[0] || null;
 
       let matched = false;
       let reason = 'PASS: Dex+GMGN gate clean';
-      if (!security) {
+      if (prefilterRejected) {
+        reason = t.prefilterReason || 'VETO [DEX_PREFILTER]: token gagal pre-filter Dex.';
+      } else if (!security) {
         reason = 'VETO [SCREENING_UNAVAILABLE]: screening gagal, token dilewati.';
       } else if (!security.eligible) {
         const first = security.highFlags?.[0];
@@ -1279,7 +1368,7 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null, opt
         isMatched: matched,
         vetoReason: reason,
         prefilterSecurity: security,
-        stageFunnel: security?.stageFunnel || null,
+        stageFunnel: t.stageFunnel || security?.stageFunnel || null,
         darwinScore: calculateDarwinScore(basePool, weights, 'NEUTRAL'),
       };
     });
@@ -1520,7 +1609,7 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null, opt
         await notifyFn(
           `⚠️ <b>Discovery Result:</b> 0/${rawTotal} candidates matched.\n\n` +
           `• Candidates Seeded (Dex): <b>${dexSeeds.length}</b> | Token Screened: <b>${rawTotal}</b> | Executable Pools: <b>${executablePoolsCount}</b>\n` +
-          `• Rejected: <code>Dex/GMGN Security: ${rejSecurity} | No Meteora Pool: ${rejNoPool} | Cooldown: ${rejCooldown}${nonRefundText}</code>\n` +
+          `• Rejected: <code>Dex Pre-Filter: ${rejDexPreFilter} | Dex/GMGN Security: ${rejSecurity} | No Meteora Pool: ${rejNoPool} | Cooldown: ${rejCooldown}${nonRefundText}</code>\n` +
           `• Technical Hard-Gate (Trend): <b>${basicFilteredCount - trendFilteredCount}</b> non-Bullish\n` +
           `• API/Data Status: ${trendRejectedCount === 0 && basicFilteredCount > 0 ? '❌ All APIs Failed' : '✅ APIs Linked'}\n\n` +
           `<i>Market sepertinya sedang sideways/bearish. Sniper tetap disiplin.</i>`
