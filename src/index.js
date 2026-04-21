@@ -1915,6 +1915,7 @@ bot.onText(/\/setconfig(?:\s+(\S+))?(?:\s+(.+))?/, (msg, match) => {
       `minOrganic               = ${cfg.minOrganic}`,
       `minMcap                  = ${cfg.minMcap}`,
       `minVolume24h             = ${cfg.minVolume24h}`,
+      `dexSeedSampleLimit       = ${cfg.dexSeedSampleLimit}`,
       `minTokenFeesSol          = ${cfg.minTokenFeesSol}`,
       `minTotalFeesSol          = ${cfg.minTotalFeesSol}`,
       `gmgnMinTotalFeesSol      = ${cfg.gmgnMinTotalFeesSol}`,

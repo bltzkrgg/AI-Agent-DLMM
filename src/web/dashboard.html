@@ -219,6 +219,15 @@
                         </div>
                         <div class="veto-reason">
                             ${p.isMatched ? '✅ Position Active & Sync with TAE' : '⚠️ ' + (p.vetoReason || 'Filter Blocked')}
+                            ${(!p.isMatched && p.stageFunnel)
+                                ? `<div style="margin-top:6px;font-size:0.75em;color:var(--text-dim);">
+                                    Dex:${p.stageFunnel.stage1_dex_gate || '-'} ·
+                                    GMGN-API:${p.stageFunnel.stage2_gmgn_availability || '-'} ·
+                                    GMGN-Sec:${p.stageFunnel.stage3_gmgn_security || '-'} ·
+                                    Fee:${p.stageFunnel.stage4_fee_integrity || '-'}
+                                  </div>`
+                                : ''
+                            }
                         </div>
                         <a href="https://app.meteora.ag/dlmm/${p.address}" target="_blank" class="btn-view">VIEW ON METEORA</a>
                     `;

@@ -1188,78 +1188,101 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null, opt
   let preComputedContext = '';
   try {
     const weights = getDarwinWeights(); // adaptive weights dari data nyata
-    // --- Token-first Discovery Layer (Dex seed, Meteora as execution venue) ---
-    const [rawPools, dexSeeds] = await Promise.all([
-      import('../solana/meteora.js').then(m => m.getDiscoveryPools(40)),
-      discoverDexTokenSeeds(50),
-    ]);
+    // --- Token-first Discovery Layer ---
+    // 1) Dex seed -> screen_token (Dex+GMGN) terlebih dulu
+    // 2) Baru Meteora dipanggil untuk token yang lolos (execution venue)
+    const dexSeeds = await discoverDexTokenSeeds(80);
+    const seedLimit = Math.max(10, Number(cfg.dexSeedSampleLimit || 40));
+    const seedSample = dexSeeds.slice(0, seedLimit);
 
-    const poolByMint = new Map();
-    for (const p of (rawPools || [])) {
-      const baseMint = p.tokenX && p.tokenX !== WSOL_MINT ? p.tokenX
-        : (p.tokenY && p.tokenY !== WSOL_MINT ? p.tokenY : null);
-      if (!baseMint) continue;
-      const existing = poolByMint.get(baseMint);
-      if (!existing || safeNum(p.volume24hRaw) > safeNum(existing.volume24hRaw)) {
-        poolByMint.set(baseMint, p);
-      }
-    }
-
-    const seededPools = [];
-    const seededSeen = new Set();
-    for (const s of dexSeeds) {
-      const matchPool = poolByMint.get(s.mint);
-      if (!matchPool || seededSeen.has(matchPool.address)) continue;
-      seededSeen.add(matchPool.address);
-      seededPools.push({ ...matchPool, _seedSource: s.source });
-    }
-
-    const discoveryFallbackUsed = seededPools.length === 0;
-    const discoveryUniverse = discoveryFallbackUsed ? (rawPools || []) : seededPools;
-
-    let rejSecurity = 0, rejCooldown = 0;
-
-    // --- SULTAN RADAR MAPPING (v75.3) --- 
-    // Kita petakan koin yang Lolos (Matched) dan yang Disingkirkan (Vetoed)
-    const radarSnapshotRaw = await Promise.all(discoveryUniverse.slice(0, 25).map(async (p) => {
-      const cfg = getConfig();
-      const tokenMint = p.tokenX && p.tokenX !== WSOL_MINT ? p.tokenX : p.tokenY;
-
-      const security = await screenToken(tokenMint, p.name).catch(() => null);
+    let rejSecurity = 0, rejNoPool = 0, rejCooldown = 0;
+    const tokenGate = await Promise.all(seedSample.map(async (s) => {
+      const security = await screenToken(s.mint, s.symbol || '').catch(() => null);
       if (security) {
         auditScreeningResult(security, {
-          tokenMint: tokenMint || null,
-          tokenName: p.name || null,
-          poolAddress: p.address || null,
+          tokenMint: s.mint || null,
+          tokenName: security?.name || null,
+          poolAddress: null,
           sourceContext: 'hunter_token_first_seed',
         });
       }
+      if (!security || !security.eligible) {
+        rejSecurity++;
+      }
+      return {
+        mint: s.mint,
+        symbol: s.symbol || security?.symbol || '',
+        name: security?.name || s.symbol || s.mint.slice(0, 6),
+        security,
+      };
+    }));
 
-      const onCd = isOnCooldown(p.address);
-      const matched = Boolean(security?.eligible) && !onCd;
+    const approvedMints = tokenGate
+      .filter((t) => t.security?.eligible)
+      .map((t) => t.mint);
+
+    // 2) Meteora dipanggil belakangan, hanya untuk token yang lolos gate
+    let rawPools = [];
+    if (approvedMints.length > 0) {
+      rawPools = await import('../solana/meteora.js').then(m => m.getDiscoveryPools(80)).catch(() => []);
+    }
+
+    const poolsByMint = new Map();
+    for (const p of (rawPools || [])) {
+      const mints = [p.tokenX, p.tokenY].filter((m) => m && m !== WSOL_MINT);
+      for (const mint of mints) {
+        if (!approvedMints.includes(mint)) continue;
+        const list = poolsByMint.get(mint) || [];
+        list.push(p);
+        poolsByMint.set(mint, list);
+      }
+    }
+
+    const radarSnapshot = tokenGate.map((t) => {
+      const security = t.security;
+      const candidates = poolsByMint.get(t.mint) || [];
+      const bestPool = candidates
+        .sort((a, b) => safeNum(b.volume24hRaw) - safeNum(a.volume24hRaw))[0] || null;
+
+      let matched = false;
       let reason = 'PASS: Dex+GMGN gate clean';
       if (!security) {
-        reason = 'VETO: Screening error/unavailable';
-        rejSecurity++;
+        reason = 'VETO [SCREENING_UNAVAILABLE]: screening gagal, token dilewati.';
       } else if (!security.eligible) {
         const first = security.highFlags?.[0];
-        reason = `VETO [${first?.rule || 'SECURITY_REJECT'}]: ${first?.msg || 'Token gagal gate keamanan.'}`;
-        rejSecurity++;
-      } else if (onCd) {
-        reason = 'VETO [POOL_COOLDOWN]: pool/token dalam masa cooldown';
+        const funnel = security.stageFunnel
+          ? ` (Dex=${security.stageFunnel.stage1_dex_gate}, GMGN=${security.stageFunnel.stage3_gmgn_security}, Fee=${security.stageFunnel.stage4_fee_integrity})`
+          : '';
+        reason = `VETO [${first?.rule || 'SECURITY_REJECT'}]: ${first?.msg || 'Token gagal gate keamanan.'}${funnel}`;
+      } else if (!bestPool) {
+        reason = 'VETO [NO_METEORA_EXEC_POOL]: token lolos, tapi belum ada pool Meteora yang executable.';
+        rejNoPool++;
+      } else if (isOnCooldown(bestPool.address)) {
+        reason = 'VETO [POOL_COOLDOWN]: pool/token dalam masa cooldown.';
         rejCooldown++;
+      } else {
+        matched = true;
       }
 
+      const basePool = bestPool || {};
       return {
-        ...p,
+        ...basePool,
+        tokenX: basePool.tokenX || t.mint,
+        tokenY: basePool.tokenY || WSOL_MINT,
+        address: basePool.address || t.mint,
+        name: basePool.name || `${t.symbol || t.name || 'TOKEN'}-SOL`,
+        mcap: safeNum(basePool.mcap || security?.mcap),
+        volume24hRaw: safeNum(basePool.volume24hRaw || 0),
+        fees24hRaw: safeNum(basePool.fees24hRaw || 0),
+        liquidityRaw: safeNum(basePool.liquidityRaw || 0),
+        binStep: safeNum(basePool.binStep || 0),
         isMatched: matched,
         vetoReason: reason,
         prefilterSecurity: security,
         stageFunnel: security?.stageFunnel || null,
-        darwinScore: calculateDarwinScore(p, weights, 'NEUTRAL'),
+        darwinScore: calculateDarwinScore(basePool, weights, 'NEUTRAL'),
       };
-    }));
-    const radarSnapshot = radarSnapshotRaw.filter(Boolean);
+    });
 
     // filtered: Hanya yang benar-benar lolos untuk diproses LLM (Hemat Cost)
     const filtered = radarSnapshot
@@ -1484,7 +1507,8 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null, opt
     }));
 
     // --- Filter obvious rejects & Technical Hard-Gate ---
-    const rawTotal = discoveryUniverse.length;
+    const rawTotal = radarSnapshot.length;
+    const executablePoolsCount = radarSnapshot.filter((p) => p.address && p.address !== p.tokenX).length;
     const basicFilteredCount = filtered.length;
     const finalEnriched = enriched.filter(p => p !== null);
     const trendFilteredCount = finalEnriched.length;
@@ -1495,8 +1519,8 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null, opt
         const nonRefundText = rejNonRefundable > 0 ? ` | NonRefundable: ${rejNonRefundable}` : '';
         await notifyFn(
           `⚠️ <b>Discovery Result:</b> 0/${rawTotal} candidates matched.\n\n` +
-          `• Candidates Seeded (Dex): <b>${dexSeeds.length}</b> | Executable Pools: <b>${rawTotal}</b>${discoveryFallbackUsed ? ' (fallback: Meteora-only)' : ''}\n` +
-          `• Rejected: <code>Dex/GMGN Security: ${rejSecurity} | Cooldown: ${rejCooldown}${nonRefundText}</code>\n` +
+          `• Candidates Seeded (Dex): <b>${dexSeeds.length}</b> | Token Screened: <b>${rawTotal}</b> | Executable Pools: <b>${executablePoolsCount}</b>\n` +
+          `• Rejected: <code>Dex/GMGN Security: ${rejSecurity} | No Meteora Pool: ${rejNoPool} | Cooldown: ${rejCooldown}${nonRefundText}</code>\n` +
           `• Technical Hard-Gate (Trend): <b>${basicFilteredCount - trendFilteredCount}</b> non-Bullish\n` +
           `• API/Data Status: ${trendRejectedCount === 0 && basicFilteredCount > 0 ? '❌ All APIs Failed' : '✅ APIs Linked'}\n\n` +
           `<i>Market sepertinya sedang sideways/bearish. Sniper tetap disiplin.</i>`

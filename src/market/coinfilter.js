@@ -398,15 +398,30 @@ function step7_organicScore(dex, jup, thresholds) {
   return { rejects, warnings, score };
 }
 
+function step8_volumeFilter(dex, thresholds) {
+  const rejects = [];
+  if (!dex) return { rejects, volume24h: null };
+  const minVolume24h = Number(thresholds.minVolume24h || 0);
+  const volume24h = safeNum(dex.volume24h);
+  if (minVolume24h > 0 && volume24h < minVolume24h) {
+    rejects.push({
+      rule: 'BELOW_MIN_VOLUME_24H',
+      msg: `Volume 24h $${volume24h.toLocaleString()} < min $${minVolume24h.toLocaleString()}`,
+    });
+  }
+  return { rejects, volume24h };
+}
+
 function step9_mcapFilter(dexFdv, thresholds) {
   const rejects = [];
+  const warnings = [];
   const minMcap = thresholds.minMcap;
   const maxMcap = thresholds.maxMcap;
   const mcap = dexFdv || null;
 
   if (mcap === null) {
-    rejects.push({ rule: 'MISSING_MCAP', msg: 'Data Market Cap tidak tersedia (Kosong) — Risiko dev belum revoke mint atau data on-chain cacat' });
-    return { rejects, mcap: null, skipped: false };
+    warnings.push({ rule: 'MISSING_MCAP', msg: 'Data Market Cap kosong — lanjut dengan guard lain (volume/GMGN).' });
+    return { rejects, warnings, mcap: null, skipped: true };
   }
 
   if (minMcap > 0 && mcap < minMcap)
@@ -414,7 +429,7 @@ function step9_mcapFilter(dexFdv, thresholds) {
   if (maxMcap > 0 && mcap > maxMcap)
     rejects.push({ rule: 'ABOVE_MAX_MCAP', msg: `Mcap $${mcap.toLocaleString()} > max $${maxMcap.toLocaleString()}` });
 
-  return { rejects, mcap, skipped: false };
+  return { rejects, warnings, mcap, skipped: false };
 }
 
 // ─── Main filter function ────────────────────────────────────────
@@ -853,10 +868,14 @@ export async function screenToken(tokenMint, tokenName = '', tokenSymbol = '', o
   const s1  = step1_basicValidation(dex, jup);
   const s2  = step2_narrativeFilter(name, symbol);
   const s3  = step3_priceHealth(dex, thresholds);
-  const s4  = step4_tokenAge(dex, cfg.minTokenAgeMinutes || 60);
+  const minTokenAgeMinutes = Number.isFinite(Number(cfg.minTokenAgeMinutes))
+    ? Number(cfg.minTokenAgeMinutes)
+    : 60;
+  const s4  = step4_tokenAge(dex, minTokenAgeMinutes);
   const s5  = step5_txnAnalysis(dex);
   const s6  = step6_tokenSafety(jup);
   const s7  = step7_organicScore(dex, jup, thresholds);
+  const s8  = step8_volumeFilter(dex, thresholds);
 
   // Obelisk Handle: Manual MCAP calculation if DexScreener is lagging
   let mcap = dex?.fdv || null;
@@ -881,6 +900,7 @@ export async function screenToken(tokenMint, tokenName = '', tokenSymbol = '', o
     ...s5.rejects,
     ...s6.rejects,
     ...s7.rejects,
+    ...s8.rejects,
     ...s9.rejects,
     ...s10,
     ...s11.rejects,
@@ -890,6 +910,7 @@ export async function screenToken(tokenMint, tokenName = '', tokenSymbol = '', o
     ...s3.warnings,
     ...s5.warnings,
     ...s6.warnings,
+    ...s9.warnings,
     ...s11.warnings,
   ];
 
