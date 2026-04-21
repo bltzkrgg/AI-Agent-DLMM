@@ -1405,7 +1405,8 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null, opt
           verdict: security.verdict,
           eligible: security.eligible,
           gmgnStatus: security.gmgnStatus,
-          highFlags: (security.highFlags || []).map(f => f.msg)
+          highFlags: (security.highFlags || []).map(f => f.msg),
+          stageFunnel: security.stageFunnel || null,
         } : { verdict: 'UNKNOWN' },
         socialHype: p.socialSignal ? `🔥 Discord Impact: ${p.socialSignal.intensity}/10` : 'Neutral',
         feeToTvlPct: tvl > 0 ? ((p.fees24hRaw || 0) / tvl * 100).toFixed(2) + '%' : '0%',
@@ -1466,8 +1467,22 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null, opt
     // Send brief rejection report for transparency
     const rejected = finalEnriched.filter(p => p.security.verdict === 'AVOID');
     if (rejected.length > 0 && notifyFn) {
+      const reasonCount = new Map();
+      for (const p of rejected) {
+        const rule = String(p?.security?.highFlags?.[0]?.rule || 'UNKNOWN');
+        reasonCount.set(rule, (reasonCount.get(rule) || 0) + 1);
+      }
+      const topReasons = [...reasonCount.entries()]
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, 3);
       let rejMsg = `🛡️ <b>Quick Filter: Removed ${rejected.length} risky/low-liq coins (Saved LLM cost):</b>\n`;
-      rejected.forEach(p => rejMsg += `• ${p.name}: ${p.security.highFlags[0] || 'Unknown risk'}\n`);
+      topReasons.forEach(([rule, count]) => {
+        rejMsg += `• ${rule}: ${count}\n`;
+      });
+      const hint = topReasons.some(([rule]) => String(rule).startsWith('GMGN_'))
+        ? `\n💡 Hint: bisa tuning threshold GMGN via <code>/setconfig</code>.`
+        : '';
+      rejMsg += hint;
       await notifyFn(rejMsg);
     }
 
@@ -1475,6 +1490,37 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null, opt
       const smartWalletHits = finalEnriched.filter(p => p.smartWallet?.wallets?.length > 0).length;
       const highTFAlign = finalEnriched.filter(p => (p.multiTF?.score || 0) >= 0.67).length;
       const heritageHits = finalEnriched.filter(p => p.isHeritageMatch).length;
+      const funnelAgg = {
+        stage1_pass: 0, stage1_fail: 0,
+        stage2_pass: 0, stage2_fail: 0, stage2_skipped: 0,
+        stage3_pass: 0, stage3_fail: 0, stage3_skipped: 0,
+        stage4_pass: 0, stage4_fail: 0, stage4_skipped: 0,
+        final_passed: 0, final_rejected: 0,
+      };
+      for (const p of finalEnriched) {
+        const f = p.security?.stageFunnel;
+        if (!f) continue;
+        const s1 = String(f.stage1_dex_gate || '').toUpperCase();
+        const s2 = String(f.stage2_gmgn_availability || '').toUpperCase();
+        const s3 = String(f.stage3_gmgn_security || '').toUpperCase();
+        const s4 = String(f.stage4_fee_integrity || '').toUpperCase();
+        const fin = String(f.final || '').toUpperCase();
+        if (s1 === 'PASS') funnelAgg.stage1_pass++; else if (s1 === 'FAIL') funnelAgg.stage1_fail++;
+        if (s2 === 'PASS') funnelAgg.stage2_pass++; else if (s2 === 'FAIL') funnelAgg.stage2_fail++; else if (s2 === 'SKIPPED') funnelAgg.stage2_skipped++;
+        if (s3 === 'PASS') funnelAgg.stage3_pass++; else if (s3 === 'FAIL') funnelAgg.stage3_fail++; else if (s3 === 'SKIPPED') funnelAgg.stage3_skipped++;
+        if (s4 === 'PASS') funnelAgg.stage4_pass++; else if (s4 === 'FAIL') funnelAgg.stage4_fail++; else if (s4 === 'SKIPPED') funnelAgg.stage4_skipped++;
+        if (fin === 'PASSED') funnelAgg.final_passed++; else if (fin === 'REJECTED') funnelAgg.final_rejected++;
+      }
+      const funnelText = (funnelAgg.stage1_pass + funnelAgg.stage1_fail) > 0
+        ? (
+          `\n🧭 Funnel:\n` +
+          `• S1 Dex Gate → PASS ${funnelAgg.stage1_pass} | FAIL ${funnelAgg.stage1_fail}\n` +
+          `• S2 GMGN API → PASS ${funnelAgg.stage2_pass} | FAIL ${funnelAgg.stage2_fail} | SKIP ${funnelAgg.stage2_skipped}\n` +
+          `• S3 GMGN Sec → PASS ${funnelAgg.stage3_pass} | FAIL ${funnelAgg.stage3_fail} | SKIP ${funnelAgg.stage3_skipped}\n` +
+          `• S4 Fee Gate → PASS ${funnelAgg.stage4_pass} | FAIL ${funnelAgg.stage4_fail} | SKIP ${funnelAgg.stage4_skipped}\n` +
+          `• Final → PASS ${funnelAgg.final_passed} | REJECT ${funnelAgg.final_rejected}`
+        )
+        : '';
 
       await notifyFn(
         `📊 <b>Pre-screening selesai</b>\n` +
@@ -1482,6 +1528,8 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null, opt
         (heritageHits > 0 ? `🏰 Heritage Sultan (Multiday): <b>${heritageHits} pool</b>\n` : '') +
         (highTFAlign > 0 ? `📈 Multi-TF kuat (≥4 TF): ${highTFAlign} pool\n` : '') +
         (smartWalletHits > 0 ? `🎯 Smart wallet detected: ${smartWalletHits} pool\n` : '') +
+        funnelText +
+        `\n` +
         (viable.length === 0 ? `🛑 <i>Skipping AI: Tidak ada kandidat sehat untuk dianalisis.</i>` : `<i>Menjalankan analisis mendalam (Top ${Math.min(10, viable.length)})...</i>`)
       );
     }

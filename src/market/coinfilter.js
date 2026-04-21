@@ -24,6 +24,24 @@ const CTO_PATTERNS = [
   /\bcto\b/i, /community takeover/i,
 ];
 
+function buildOperatorHints(result) {
+  const hints = [];
+  const hasRule = (prefix) => (result.highFlags || []).some((f) => String(f.rule || '').startsWith(prefix));
+  if (hasRule('GMGN_UNAVAILABLE') || hasRule('GMGN_INFO_MISSING') || hasRule('GMGN_SECURITY_MISSING')) {
+    hints.push('GMGN sedang gangguan. Opsi aman: tunggu API pulih. Opsi adaptif: set `gmgnFailClosedCritical=false` sementara.');
+  }
+  if (hasRule('GMGN_TOTAL_FEES_LOW')) {
+    hints.push('Token fee terlalu tipis. Turunkan `gmgnMinTotalFeesSol` kalau ingin lebih agresif.');
+  }
+  if (hasRule('TOKEN_TOO_NEW')) {
+    hints.push('Token terlalu baru. Turunkan `minTokenAgeMinutes` jika mau buru early momentum.');
+  }
+  if (hasRule('BELOW_MIN_MCAP') || hasRule('MISSING_MCAP')) {
+    hints.push('Gate market cap terlalu ketat/kurang data. Tuning `minMcap` sesuai style entry.');
+  }
+  return hints.slice(0, 2);
+}
+
 function getByPath(obj, path) {
   if (!obj || !path) return undefined;
   return path.split('.').reduce((acc, key) => (acc == null ? undefined : acc[key]), obj);
@@ -876,6 +894,13 @@ export async function screenToken(tokenMint, tokenName = '', tokenSymbol = '', o
   ];
 
   if (preGmgnRejects.length > 0) {
+    const stageFunnel = {
+      stage1_dex_gate: 'FAIL',
+      stage2_gmgn_availability: 'SKIPPED',
+      stage3_gmgn_security: 'SKIPPED',
+      stage4_fee_integrity: 'SKIPPED',
+      final: 'REJECTED',
+    };
     return {
       tokenMint, name, symbol,
       verdict: 'AVOID',
@@ -896,6 +921,8 @@ export async function screenToken(tokenMint, tokenName = '', tokenSymbol = '', o
       vampedSourceStatus: vampedSource.status,
       vampedSourceReason: vampedSource.reason,
       isVampedBySource: vampedSource.isVamped === true,
+      stageFunnel,
+      operatorHints: [],
       sources: {
         dexscreener: !!dex,
         jupiter: !!(jup?.found),
@@ -946,8 +973,15 @@ export async function screenToken(tokenMint, tokenName = '', tokenSymbol = '', o
   ];
 
   let verdict = allRejects.length > 0 ? 'AVOID' : (allWarnings.length > 0 ? 'CAUTION' : 'PASS');
+  const stageFunnel = {
+    stage1_dex_gate: preGmgnRejects.length === 0 ? 'PASS' : 'FAIL',
+    stage2_gmgn_availability: gmgnStatus === 'ACTIVE' ? 'PASS' : 'FAIL',
+    stage3_gmgn_security: s12.rejects.length === 0 ? 'PASS' : 'FAIL',
+    stage4_fee_integrity: s14.rejects.length === 0 ? 'PASS' : 'FAIL',
+    final: allRejects.length === 0 ? 'PASSED' : 'REJECTED',
+  };
 
-  return {
+  const result = {
     tokenMint, name, symbol, verdict, eligible: allRejects.length === 0,
     highFlags: allRejects, mediumFlags: allWarnings,
     organicScore: s7.score, mcap: s9.mcap,
@@ -964,6 +998,7 @@ export async function screenToken(tokenMint, tokenName = '', tokenSymbol = '', o
     vampedSourceStatus: vampedSource.status,
     vampedSourceReason: vampedSource.reason,
     isVampedBySource: vampedSource.isVamped === true,
+    stageFunnel,
     sources: {
       dexscreener: !!dex,
       jupiter: !!(jup?.found),
@@ -971,6 +1006,8 @@ export async function screenToken(tokenMint, tokenName = '', tokenSymbol = '', o
       gmgn: (gmgnStatus === 'ACTIVE'),
     },
   };
+  result.operatorHints = buildOperatorHints(result);
+  return result;
 }
 
 export function formatScreenResult(result) {
@@ -998,6 +1035,10 @@ export function formatScreenResult(result) {
     if (result.isVampedBySource) text += ' (VAMPED)';
     if (result.vampedSourceReason) text += ` — ${result.vampedSourceReason}`;
     text += '\n';
+  }
+
+  if (result.stageFunnel) {
+    text += `\n🧭 *Funnel:* Dex=${result.stageFunnel.stage1_dex_gate} → GMGN-API=${result.stageFunnel.stage2_gmgn_availability} → GMGN-Sec=${result.stageFunnel.stage3_gmgn_security} → Fee=${result.stageFunnel.stage4_fee_integrity} → Final=${result.stageFunnel.final}\n`;
   }
 
   // ─── GMGN Security Block ──────────────────────────────────────
@@ -1038,6 +1079,12 @@ export function formatScreenResult(result) {
   if (nonGmgnWarnings.length > 0) {
     text += `\n🟡 *Peringatan (${nonGmgnWarnings.length}):*\n`;
     nonGmgnWarnings.forEach(f => text += `• ${f.msg}\n`);
+  }
+  if (Array.isArray(result.operatorHints) && result.operatorHints.length > 0) {
+    text += `\n💡 *Saran Cepat:*\n`;
+    result.operatorHints.forEach((h) => {
+      text += `• ${h}\n`;
+    });
   }
 
   if (result.eligible) text += `\n✅ Lolos semua filter — Eligible for DLMM.`;
