@@ -1349,6 +1349,54 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null, opt
       }
     }
 
+    // Fallback: jika token lolos gate tapi tidak muncul di discovery ranking Meteora,
+    // coba validasi langsung pairAddress dari Dex (best-effort, non-blocking).
+    const directPoolChecks = tokenGate
+      .filter((t) => !t.prefilterRejected && t.security?.eligible)
+      .filter((t) => !poolsByMint.get(t.mint)?.length)
+      .map((t) => ({
+        mint: t.mint,
+        symbol: t.symbol,
+        dexGate: t.dexGate || null,
+      }))
+      .filter((x) => !!x.dexGate?.pairAddress)
+      .slice(0, 8);
+
+    if (directPoolChecks.length) {
+      const directResults = await Promise.all(directPoolChecks.map(async (item) => {
+        try {
+          const info = await getPoolInfo(item.dexGate.pairAddress);
+          if (!info || !info.address) return null;
+          const mints = [info.tokenX, info.tokenY].filter((m) => m && m !== WSOL_MINT);
+          if (!mints.includes(item.mint)) return null;
+          return {
+            mint: item.mint,
+            pool: {
+              address: info.address,
+              name: `${item.symbol || 'TOKEN'}-SOL`,
+              tokenX: info.tokenX,
+              tokenY: info.tokenY,
+              binStep: safeNum(info.binStep || 0),
+              liquidityRaw: safeNum(item.dexGate?.liquidityUsd || 0),
+              volume24hRaw: safeNum(item.dexGate?.volume24h || 0),
+              fees24hRaw: 0,
+            },
+          };
+        } catch {
+          return null;
+        }
+      }));
+
+      for (const row of directResults) {
+        if (!row?.pool) continue;
+        const list = poolsByMint.get(row.mint) || [];
+        if (!list.find((p) => p.address === row.pool.address)) {
+          list.push(row.pool);
+          poolsByMint.set(row.mint, list);
+        }
+      }
+    }
+
     const radarSnapshot = tokenGate.map((t) => {
       const security = t.security;
       const prefilterRejected = t.prefilterRejected === true;
@@ -1397,6 +1445,8 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null, opt
         txns24hRaw: safeNum(basePool.txns24hRaw || fallbackTxns),
         binStep: safeNum(basePool.binStep || 0),
         ageHours: Number.isFinite(t.ageHours) ? Number(t.ageHours.toFixed(2)) : null,
+        prefilterMcap: fallbackMcap,
+        prefilterVol24h: fallbackVol,
         prefilterRejected,
         isMatched: matched,
         vetoReason: reason,
@@ -1447,6 +1497,8 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null, opt
         tvl: p.liquidityRaw,
         vol24h: p.volume24hRaw,
         txns24h: p.txns24hRaw || 0,
+        prefilterMcap: safeNum(p.prefilterMcap || 0),
+        prefilterVol24h: safeNum(p.prefilterVol24h || 0),
         fees: p.fees24hRaw,
         totalFees: p.totalFeesEstimated,
         binStep: p.binStep,

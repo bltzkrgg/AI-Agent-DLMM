@@ -2154,8 +2154,10 @@ function formatRadarReportTelegram(snapshot) {
   const st = snapshot.stats || {};
   const rows = (snapshot.candidates || []).slice(0, 12).map((c, idx) => {
     const name = escapeHTML(String(c.name || c.address || 'TOKEN'));
-    const mcap = safeNum(c.mcap).toLocaleString(undefined, { maximumFractionDigits: 0 });
-    const vol = safeNum(c.vol24h).toLocaleString(undefined, { maximumFractionDigits: 0 });
+    const mcapVal = safeNum(c.prefilterMcap || c.mcap);
+    const volVal = safeNum(c.prefilterVol24h || c.vol24h);
+    const mcap = mcapVal.toLocaleString(undefined, { maximumFractionDigits: 0 });
+    const vol = volVal.toLocaleString(undefined, { maximumFractionDigits: 0 });
     const age = Number.isFinite(c.ageHours) ? `${Number(c.ageHours).toFixed(1)}h` : 'n/a';
     const tag = c.isMatched ? 'MATCH' : 'VETO';
     const reason = c.isMatched ? 'ready' : escapeHTML(String(c.vetoReason || 'veto'));
