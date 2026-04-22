@@ -3,13 +3,13 @@ import TelegramBot from 'node-telegram-bot-api';
 import cron from 'node-cron';
 import { PublicKey } from '@solana/web3.js';
 import { spawn } from 'child_process';
-import { writeFileSync, readFileSync, existsSync, unlinkSync, createReadStream } from 'fs';
+import { writeFileSync, readFileSync, existsSync, unlinkSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { initSolana, getConnection, getWallet, getWalletBalance, runMidnightSweeper, checkGasReserve } from './solana/wallet.js';
 import { processMessage } from './agent/claude.js';
 import { handleStrategyCommand, isInStrategySession } from './strategies/strategyHandler.js';
-import { runHunterAlpha, getCandidates } from './agents/hunterAlpha.js';
+import { runHunterAlpha, getCandidates, getLastRadarSnapshot } from './agents/hunterAlpha.js';
 import { runHealerAlpha, runPanicWatchdog, executeTool, runSelfHealingSync } from './agents/healerAlpha.js';
 import { learnFromPool, learnFromMultiplePools, loadLessons, pinLesson, unpinLesson, deleteLesson, clearAllLessons, formatLessonsList, getBrainSummary } from './learn/lessons.js';
 import { getConfig, getThresholds, updateConfig, isConfigKeySupported } from './config.js';
@@ -999,7 +999,7 @@ bot.onText(/\/start/, (msg) => {
     `🧠 <b>Brain</b> — Intelligence dashboard\n\n` +
     `<b>Monitoring:</b>\n` +
     `• <code>/status</code> — On-chain position details\n` +
-    `• <code>/getradar</code> — 🛰️ Download Radar to Mac\n` +
+    `• <code>/radar_report</code> — 🛰️ Radar report full di Telegram\n` +
     `• <code>/results</code> — Daily PnL report\n\n` +
     `<b>Control:</b>\n` +
     `• <code>/hunting</code> — 🦅 Sultan Sniper Trigger\n` +
@@ -2146,25 +2146,49 @@ bot.onText(/\/override_range(?:\s+([0-9]*\.?[0-9]+))?(?:\s+(.+))?/, (msg, match)
   );
 });
 
-// /getradar — Kirim file dashboard untuk dibuka di Mac/PC
-bot.onText(/\/getradar/, async (msg) => {
+function formatRadarReportTelegram(snapshot) {
+  if (!snapshot) {
+    return '⚠️ Radar belum tersedia. Jalankan <code>/hunting</code> dulu.';
+  }
+  const pf = snapshot.prefilter || {};
+  const st = snapshot.stats || {};
+  const rows = (snapshot.candidates || []).slice(0, 12).map((c, idx) => {
+    const name = escapeHTML(String(c.name || c.address || 'TOKEN'));
+    const mcap = safeNum(c.mcap).toLocaleString(undefined, { maximumFractionDigits: 0 });
+    const vol = safeNum(c.vol24h).toLocaleString(undefined, { maximumFractionDigits: 0 });
+    const age = Number.isFinite(c.ageHours) ? `${Number(c.ageHours).toFixed(1)}h` : 'n/a';
+    const tag = c.isMatched ? 'MATCH' : 'VETO';
+    const reason = c.isMatched ? 'ready' : escapeHTML(String(c.vetoReason || 'veto'));
+    return `${idx + 1}. <b>${name}</b> | MCAP $${mcap} | VOL $${vol} | AGE ${age} | ${tag}\n   <code>${reason.slice(0, 160)}</code>`;
+  });
+
+  return [
+    '🛰️ <b>Radar Report (Telegram Only)</b>',
+    `<code>Updated:</code> ${escapeHTML(String(snapshot.timestamp || '-'))}`,
+    '',
+    `<b>Dex Prefilter</b>`,
+    `<code>Seeded:</code> ${safeNum(pf.seeded)}`,
+    `<code>Pass:</code> ${safeNum(pf.pass)} | <code>Rejected:</code> ${safeNum(pf.rejected)} | <code>Screened:</code> ${safeNum(pf.screened)}`,
+    `<code>Rules:</code> mcap>=${safeNum(pf.minMcap).toLocaleString()} | vol24h>=${safeNum(pf.minVolume24h).toLocaleString()}`,
+    '',
+    `<b>Pipeline Stats</b>`,
+    `<code>Radar Total:</code> ${safeNum(st.radarTotal)} | <code>Matched:</code> ${safeNum(st.matchedCount)} | <code>Exec Pools:</code> ${safeNum(st.executablePoolsCount)}`,
+    `<code>Rejected:</code> DexPre ${safeNum(st.rejectedDexPrefilter)} | Security ${safeNum(st.rejectedSecurity)} | NoPool ${safeNum(st.rejectedNoPool)} | Cooldown ${safeNum(st.rejectedCooldown)}`,
+    '',
+    '<b>Top Candidates</b>',
+    rows.length ? rows.join('\n') : '<i>Tidak ada kandidat pass di snapshot terakhir.</i>',
+  ].join('\n');
+}
+
+// /radar_report — kirim laporan radar penuh via Telegram text.
+bot.onText(/\/radar_report/, async (msg) => {
   if (msg.from.id !== ALLOWED_ID) return;
   const chatId = msg.chat.id;
-  bot.sendMessage(chatId, '🛰️ <b>Menyiapkan Radar Sultan (All-in-One)...</b>', { parse_mode: 'HTML' });
-
-  try {
-    const sultanRadarPath = join(__dirname, '../src/web/radar_sultan.html');
-
-    if (existsSync(sultanRadarPath)) {
-      await bot.sendDocument(chatId, createReadStream(sultanRadarPath), { 
-        caption: '🐼 Sultan Radar (v75.9) — LANGSUNG BUKA di Mac Bos (Real-time Sync!)' 
-      }, { contentType: 'text/html' });
-    } else {
-      bot.sendMessage(chatId, '⚠️ Radar Sultan belum digenerate. Silakan jalankan <code>/hunting</code> dulu biar datanya keisi, Bos!', { parse_mode: 'HTML' });
-    }
-  } catch (e) {
-    bot.sendMessage(chatId, `❌ Gagal mengambil radar: <code>${escapeHTML(e.message)}</code>`, { parse_mode: 'HTML' });
-  }
+  const snapshot = getLastRadarSnapshot();
+  const report = formatRadarReportTelegram(snapshot);
+  await sendLong(chatId, report, { parse_mode: 'HTML' }).catch(() => {
+    bot.sendMessage(chatId, report, { parse_mode: 'HTML' }).catch(() => {});
+  });
 });
 
 // NOTE:

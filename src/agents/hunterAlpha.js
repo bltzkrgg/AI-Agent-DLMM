@@ -1,8 +1,5 @@
 'use strict';
 
-import { writeFileSync, readFileSync, existsSync } from 'fs';
-import { join } from 'path';
-import { fileURLToPath } from 'url';
 import { createMessage, resolveModel } from '../agent/provider.js';
 import { getConfig, getThresholds } from '../config.js';
 import { getTopPools, getPoolInfo, openPosition, getSolPriceUsd } from '../solana/meteora.js';
@@ -38,6 +35,7 @@ import { calculateSupertrend } from '../utils/ta.js';
 
 let lastCandidates = [];
 let lastReport = null;
+let lastRadarSnapshot = null;
 let hunterNotifyFn = null;
 let hunterBotRef = null;
 let hunterAllowedId = null;
@@ -46,6 +44,7 @@ let _hunterMaxPositionsCap = null; // Global stage-aware cap injected by orchest
 
 export function getCandidates() { return lastCandidates; }
 export function getLastHunterReport() { return lastReport; }
+export function getLastRadarSnapshot() { return lastRadarSnapshot; }
 
 const DEXSCREENER_BASE = 'https://api.dexscreener.com';
 const WSOL_MINT = 'So11111111111111111111111111111111111111112';
@@ -1424,75 +1423,53 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null, opt
       .slice(0, 15);
 
     lastCandidates = filtered;
-
-    // --- DASHBOARD EXPORT (Tactical Panda Radar) ---
-    try {
-      const __dirname = fileURLToPath(new URL('.', import.meta.url));
-      const dashboardFile = join(__dirname, '../web/dashboard_data.json');
-      const walBalRaw = await getWalletBalance().catch(() => '0');
-      const openPositions = await getOpenPositions();
-      const rentSaved = getStat('total_rent_reclaimed_sol') || 0;
-
-      const dashboardSnapshot = {
-        timestamp: new Date().toISOString(),
-        walletBalance: safeNum(walBalRaw).toFixed(4),
-        activeCount: openPositions.length,
-        totalNetProfitSol: (openPositions.reduce((acc, p) => acc + (parseFloat(p.pnl_sol) || 0), 0)).toFixed(4),
-        totalRentSaved: safeNum(rentSaved).toFixed(4),
-        prefilter: {
-          seeded: dexSeeds.length,
-          pass: prefilterPassed.length,
-          rejected: prefilterRejectedList.length,
-          minVolume24h: minVol,
-          minMcap: minMcap,
-          sort: 'age_asc_then_volume_desc',
-        },
-        candidates: radarDisplay.map(p => ({
-          address: p.address,
-          name: p.name,
-          tvl: p.liquidityRaw,
-          vol24h: p.volume24hRaw,
-          txns24h: p.txns24hRaw || 0,
-          fees: p.fees24hRaw,
-          totalFees: p.totalFeesEstimated, // New: Heritage Awareness v76.0
-          binStep: p.binStep,
-          mcap: p.mcap,
-          ageHours: Number.isFinite(p.ageHours) ? p.ageHours : null,
-          score: p.darwinScore,
-          volTvlRatio: (p.volume24hRaw / (p.liquidityRaw || 1)).toFixed(2),
-          isMatched: p.isMatched,
-          isHeritage: p.isHeritageMatch,   // New: Tag Sultan Multiday
-          vetoReason: p.vetoReason,
-          stageFunnel: p.stageFunnel
-        })),
-        sentiment: 'BULLISH'
-      };
-
-      // --- SULTAN PORTABLE RADAR (v75.6) ---
-      // Injeksi data (all-in-one) agar bisa dibuka di Mac tanpa CORS issues
-      const rootDir = process.cwd();
-      const templatePath = join(rootDir, 'src/web/dashboard.html');
-      const sultanRadarPath = join(rootDir, 'src/web/radar_sultan.html');
-
-      if (existsSync(templatePath)) {
-        let htmlStr = readFileSync(templatePath, 'utf8');
-        // Gunakan REGEX agar anti-gagal terhadap spasi/indentasi
-        const injectionRegex = /window\.SULTAN_RADAR_DATA\s*=\s*null;/;
-        const injectionValue = `window.SULTAN_RADAR_DATA = ${JSON.stringify(dashboardSnapshot, null, 2)};`;
-
-        if (injectionRegex.test(htmlStr)) {
-          htmlStr = htmlStr.replace(injectionRegex, injectionValue);
-          writeFileSync(sultanRadarPath, htmlStr);
-        } else {
-          console.warn('[hunter] Injection point not found in template!');
-        }
-      }
-
-      // Keep JSON for legacy/API support
-      writeFileSync(dashboardFile, JSON.stringify(dashboardSnapshot, null, 2));
-    } catch (dErr) {
-      console.warn('[hunter] Dashboard export failed:', dErr.message);
-    }
+    const walBalRaw = await getWalletBalance().catch(() => '0');
+    const openPositions = await getOpenPositions();
+    const rentSaved = getStat('total_rent_reclaimed_sol') || 0;
+    lastRadarSnapshot = {
+      timestamp: new Date().toISOString(),
+      walletBalance: safeNum(walBalRaw).toFixed(4),
+      activeCount: openPositions.length,
+      totalNetProfitSol: (openPositions.reduce((acc, p) => acc + (parseFloat(p.pnl_sol) || 0), 0)).toFixed(4),
+      totalRentSaved: safeNum(rentSaved).toFixed(4),
+      prefilter: {
+        seeded: dexSeeds.length,
+        pass: prefilterPassed.length,
+        rejected: prefilterRejectedList.length,
+        screened: seedSample.length,
+        minVolume24h: minVol,
+        minMcap: minMcap,
+        sort: 'age_asc_then_volume_desc',
+      },
+      candidates: radarDisplay.map(p => ({
+        address: p.address,
+        name: p.name,
+        tvl: p.liquidityRaw,
+        vol24h: p.volume24hRaw,
+        txns24h: p.txns24hRaw || 0,
+        fees: p.fees24hRaw,
+        totalFees: p.totalFeesEstimated,
+        binStep: p.binStep,
+        mcap: p.mcap,
+        ageHours: Number.isFinite(p.ageHours) ? p.ageHours : null,
+        score: p.darwinScore,
+        volTvlRatio: (p.volume24hRaw / (p.liquidityRaw || 1)).toFixed(2),
+        isMatched: p.isMatched,
+        isHeritage: p.isHeritageMatch,
+        vetoReason: p.vetoReason,
+        stageFunnel: p.stageFunnel
+      })),
+      sentiment: 'BULLISH',
+      stats: {
+        radarTotal: radarSnapshot.length,
+        executablePoolsCount: radarSnapshot.filter((p) => p.address && p.address !== p.tokenX).length,
+        matchedCount: radarSnapshot.filter((p) => p.isMatched).length,
+        rejectedDexPrefilter: rejDexPreFilter,
+        rejectedSecurity: rejSecurity,
+        rejectedNoPool: rejNoPool,
+        rejectedCooldown: rejCooldown,
+      },
+    };
 
     // Fetch pool memory + multi-TF + smart wallets + sentiment in parallel
     const totalToEnrich = filtered.length;
