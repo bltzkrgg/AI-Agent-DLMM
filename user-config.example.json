@@ -174,9 +174,10 @@
   "signalAutoRefreshInputs": "/tmp/candles/batch1.json,/tmp/candles/batch2.json",
   "signalConservativeMaxPositions": 1,
 
-  "managementModel": "meta-llama/llama-3.3-70b-instruct:free",
-  "screeningModel": "meta-llama/llama-3.3-70b-instruct:free",
-  "generalModel": "meta-llama/llama-3.3-70b-instruct:free",
+  "managementModel": "deepseek/deepseek-v3.2",
+  "screeningModel": "nvidia/nemotron-3-super-120b-a12b:free",
+  "generalModel": "nvidia/nemotron-nano-9b-v2:free",
+  "activeModel": null,
 
   "lpAgentRelayEnabled": true,
   "okxApiKey": "",
