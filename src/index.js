@@ -2159,7 +2159,9 @@ function formatRadarReportTelegram(snapshot) {
     const age = Number.isFinite(c.ageHours) ? `${Number(c.ageHours).toFixed(1)}h` : 'n/a';
     const tag = c.isMatched ? 'MATCH' : 'VETO';
     const reason = c.isMatched ? 'ready' : escapeHTML(String(c.vetoReason || 'veto'));
-    return `${idx + 1}. <b>${name}</b> | MCAP $${mcap} | VOL $${vol} | AGE ${age} | ${tag}\n   <code>${reason.slice(0, 160)}</code>`;
+    const flags = Array.isArray(c.securityFlags) ? c.securityFlags.filter(Boolean).slice(0, 4) : [];
+    const flagsLine = flags.length ? `\n   <code>FLAGS: ${escapeHTML(flags.join(' | '))}</code>` : '';
+    return `${idx + 1}. <b>${name}</b> | MCAP $${mcap} | VOL $${vol} | AGE ${age} | ${tag}\n   <code>${reason.slice(0, 200)}</code>${flagsLine}`;
   });
 
   return [

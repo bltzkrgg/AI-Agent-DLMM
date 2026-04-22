@@ -1457,6 +1457,12 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null, opt
         isMatched: p.isMatched,
         isHeritage: p.isHeritageMatch,
         vetoReason: p.vetoReason,
+        securityFlags: Array.isArray(p.prefilterSecurity?.highFlags)
+          ? p.prefilterSecurity.highFlags
+            .map((f) => String(f?.rule || '').trim())
+            .filter(Boolean)
+            .slice(0, 5)
+          : [],
         stageFunnel: p.stageFunnel
       })),
       sentiment: 'BULLISH',
