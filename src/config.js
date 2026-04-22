@@ -43,6 +43,9 @@ const DEFAULTS = {
   minBinStep: 100,            // Minimal 100 bin step (Hukum 3)
   allowedBinSteps: [100, 125], // Daftar Bin Step spesifik yang diijinkan (Saklek Mode)
   dexSeedSampleLimit: 40,      // Jumlah token Dex yang discreen per siklus Hunter (token-first)
+  meteoraDiscoveryLimit: 180,  // Cakupan scan discovery pool Meteora per siklus (lebih besar = lebih kecil false NO_POOL)
+  noPoolPendingTtlMinutes: 120, // Simpan token lolos gate tapi belum ada exec pool selama N menit untuk recheck
+  noPoolReplayLimit: 12,       // Jumlah token pending NO_POOL yang direplay per siklus
   dexMinAgeHours: 0,           // Min usia pair Dex (jam)
   dexMaxAgeHours: 168,         // Max usia pair Dex (jam) = 7 hari
   dexRequireKnownAge: false,   // true: token tanpa data age Dex langsung ditolak
@@ -278,6 +281,9 @@ const CONFIG_BOUNDS = {
   dailyLossLimitUsd: { min: 0, max: 1000 },
   allowedBinSteps: { type: 'array' }, // Custom handling logic in updateConfig
   dexSeedSampleLimit: { min: 10, max: 200 },
+  meteoraDiscoveryLimit: { min: 50, max: 500 },
+  noPoolPendingTtlMinutes: { min: 5, max: 720 },
+  noPoolReplayLimit: { min: 0, max: 100 },
   dexMinAgeHours: { min: 0, max: 720 },
   dexMaxAgeHours: { min: 1, max: 720 },
   dexRequireKnownAge: { type: 'boolean' },

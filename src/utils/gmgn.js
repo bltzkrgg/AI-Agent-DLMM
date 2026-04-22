@@ -12,6 +12,7 @@
  */
 
 import { randomUUID } from 'crypto';
+import { setDefaultResultOrder } from 'dns';
 import { fetchWithTimeout } from './safeJson.js';
 
 const GMGN_HOST   = 'https://openapi.gmgn.ai';
@@ -21,10 +22,12 @@ const GMGN_MIN_INTERVAL_MS = Math.ceil(1000 / GMGN_MAX_RPS);
 const GMGN_CACHE_TTL_MS = 90_000;
 const GMGN_DEFAULT_TIMEOUT_MS = 8000;
 const GMGN_DEFAULT_MAX_RETRIES = 2;
+const GMGN_DEFAULT_REQUEST_DELAY_MS = GMGN_MIN_INTERVAL_MS;
 
 let _gmgnLastRequestAt = 0;
 let _gmgnQueue = Promise.resolve();
 const _gmgnCache = new Map();
+let _dnsIpv4Forced = false;
 
 function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
@@ -56,6 +59,16 @@ function runSerialized(task) {
   return run;
 }
 
+function ensureIpv4First() {
+  if (_dnsIpv4Forced) return;
+  try {
+    setDefaultResultOrder('ipv4first');
+    _dnsIpv4Forced = true;
+  } catch {
+    // best-effort; continue without hard fail
+  }
+}
+
 // ─── Auth query builder ──────────────────────────────────────────
 
 function buildAuthParams() {
@@ -83,6 +96,8 @@ async function gmgnFetch(subPath, extraParams = {}) {
     return null;
   }
 
+  ensureIpv4First();
+
   return runSerialized(async () => {
     const maxRetries = Number.isFinite(Number(process.env.GMGN_MAX_RETRIES))
       ? Math.max(0, Number(process.env.GMGN_MAX_RETRIES))
@@ -90,10 +105,13 @@ async function gmgnFetch(subPath, extraParams = {}) {
     const timeoutMs = Number.isFinite(Number(process.env.GMGN_TIMEOUT_MS))
       ? Math.max(1000, Number(process.env.GMGN_TIMEOUT_MS))
       : GMGN_DEFAULT_TIMEOUT_MS;
+    const requestDelayMs = Number.isFinite(Number(process.env.GMGN_REQUEST_DELAY_MS))
+      ? Math.max(GMGN_MIN_INTERVAL_MS, Number(process.env.GMGN_REQUEST_DELAY_MS))
+      : GMGN_DEFAULT_REQUEST_DELAY_MS;
 
     for (let attempt = 0; attempt <= maxRetries; attempt++) {
       const sinceLast = Date.now() - _gmgnLastRequestAt;
-      const waitMs = Math.max(0, GMGN_MIN_INTERVAL_MS - sinceLast);
+      const waitMs = Math.max(0, requestDelayMs - sinceLast);
       if (waitMs > 0) await sleep(waitMs);
 
       try {
@@ -102,12 +120,38 @@ async function gmgnFetch(subPath, extraParams = {}) {
         const res = await fetchWithTimeout(url, {
           headers: {
             'X-APIKEY': apiKey,
+            'X-API-KEY': apiKey,
             'Content-Type': 'application/json',
+            'Accept': 'application/json',
+            'User-Agent': 'AI-Agent-DLMM/1.0',
           },
         }, timeoutMs);
 
         const raw = await res.text().catch(() => '');
-        const json = raw ? JSON.parse(raw) : null;
+        const openApiIpv6Error = /OpenAPI does not support IPv6/i.test(raw);
+        if (openApiIpv6Error) {
+          if (attempt < maxRetries) {
+            const backoffMs = Math.min(10_000, 1_000 * Math.pow(2, attempt));
+            await sleep(backoffMs);
+            continue;
+          }
+          console.warn(`[gmgn] ${subPath} blocked by IPv6-only path after retries — skipping.`);
+          return null;
+        }
+        let json = null;
+        if (raw) {
+          try {
+            json = JSON.parse(raw);
+          } catch {
+            if (attempt < maxRetries) {
+              const backoffMs = Math.min(6_000, 700 * Math.pow(2, attempt));
+              await sleep(backoffMs);
+              continue;
+            }
+            console.warn(`[gmgn] ${subPath} non-JSON response after retries — skipping.`);
+            return null;
+          }
+        }
 
         if (res.status === 429) {
           if (attempt < maxRetries) {
@@ -150,7 +194,7 @@ async function gmgnFetch(subPath, extraParams = {}) {
 
         return json.data || null;
       } catch (e) {
-        const retryable = /timeout|network|fetch|socket|econn|eai_again|terminated/i.test(String(e?.message || ''));
+        const retryable = /timeout|network|fetch|socket|econn|eai_again|terminated|enotfound|OpenAPI does not support IPv6/i.test(String(e?.message || ''));
         if (retryable && attempt < maxRetries) {
           const backoffMs = Math.min(10_000, 800 * Math.pow(2, attempt));
           await sleep(backoffMs);

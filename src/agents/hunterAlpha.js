@@ -41,6 +41,43 @@ let hunterBotRef = null;
 let hunterAllowedId = null;
 let _hunterTargetCount = null; // Local caches for tool output (shared across rounds)
 let _hunterMaxPositionsCap = null; // Global stage-aware cap injected by orchestrator (index)
+const _noPoolPending = new Map(); // mint -> { mint, symbol, dexGate, firstSeenAt, lastSeenAt }
+
+function pruneNoPoolPending(cfg = getConfig()) {
+  const ttlMin = Math.max(5, Number(cfg.noPoolPendingTtlMinutes || 120));
+  const ttlMs = ttlMin * 60 * 1000;
+  const now = Date.now();
+  for (const [mint, item] of _noPoolPending.entries()) {
+    if (!item?.lastSeenAt || (now - item.lastSeenAt) > ttlMs) {
+      _noPoolPending.delete(mint);
+    }
+  }
+}
+
+function listNoPoolPending(cfg = getConfig()) {
+  pruneNoPoolPending(cfg);
+  return Array.from(_noPoolPending.values())
+    .sort((a, b) => (b.lastSeenAt || 0) - (a.lastSeenAt || 0));
+}
+
+function upsertNoPoolPending({ mint, symbol, dexGate }, cfg = getConfig()) {
+  if (!mint) return;
+  pruneNoPoolPending(cfg);
+  const now = Date.now();
+  const prev = _noPoolPending.get(mint);
+  _noPoolPending.set(mint, {
+    mint,
+    symbol: symbol || prev?.symbol || '',
+    dexGate: dexGate || prev?.dexGate || null,
+    firstSeenAt: prev?.firstSeenAt || now,
+    lastSeenAt: now,
+  });
+}
+
+function removeNoPoolPending(mint) {
+  if (!mint) return;
+  _noPoolPending.delete(mint);
+}
 
 export function getCandidates() { return lastCandidates; }
 export function getLastHunterReport() { return lastReport; }
@@ -1276,6 +1313,17 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null, opt
 
     const seedSample = prefilterPassed.slice(0, seedLimit);
     const prefilterRejectedList = dexSeedMetrics.filter((s) => s.prefilterRejected);
+    const pendingReplayLimit = Math.max(0, Number(cfg.noPoolReplayLimit || 12));
+    const pendingReplay = listNoPoolPending(cfg)
+      .filter((p) => !seedSample.some((s) => s.mint === p.mint))
+      .slice(0, pendingReplayLimit)
+      .map((p) => ({
+        mint: p.mint,
+        symbol: p.symbol || '',
+        dexGate: p.dexGate || null,
+        ageHours: null,
+        source: 'no_pool_pending_replay',
+      }));
     let rejDexPreFilter = prefilterRejectedList.length;
     let rejDexAge = 0, rejSecurity = 0, rejNoPool = 0, rejCooldown = 0;
 
@@ -1328,6 +1376,36 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null, opt
 
     tokenGate.push(...tokenGatePassed);
 
+    if (pendingReplay.length) {
+      const replayGate = await Promise.all(pendingReplay.map(async (s) => {
+        const security = await screenToken(s.mint, s.symbol || '').catch(() => null);
+        if (security) {
+          auditScreeningResult(security, {
+            tokenMint: s.mint || null,
+            tokenName: security?.name || null,
+            poolAddress: null,
+            sourceContext: 'hunter_no_pool_replay',
+          });
+        }
+        if (!security || !security.eligible) {
+          rejSecurity++;
+          removeNoPoolPending(s.mint);
+        }
+        return {
+          mint: s.mint,
+          symbol: s.symbol || security?.symbol || '',
+          name: security?.name || s.symbol || s.mint.slice(0, 6),
+          security,
+          dexGate: s.dexGate || null,
+          ageHours: null,
+          prefilterRejected: false,
+          prefilterReason: null,
+          stageFunnel: security?.stageFunnel || null,
+        };
+      }));
+      tokenGate.push(...replayGate);
+    }
+
     const approvedMints = tokenGate
       .filter((t) => !t.prefilterRejected && t.security?.eligible)
       .map((t) => t.mint);
@@ -1335,7 +1413,8 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null, opt
     // 2) Meteora dipanggil belakangan, hanya untuk token yang lolos gate
     let rawPools = [];
     if (approvedMints.length > 0) {
-      rawPools = await import('../solana/meteora.js').then(m => m.getDiscoveryPools(80)).catch(() => []);
+      const discoveryLimit = Math.max(50, Number(cfg.meteoraDiscoveryLimit || 180));
+      rawPools = await import('../solana/meteora.js').then(m => m.getDiscoveryPools(discoveryLimit)).catch(() => []);
     }
 
     const poolsByMint = new Map();
@@ -1408,22 +1487,27 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null, opt
       let matched = false;
       let reason = 'PASS: Dex+GMGN gate clean';
       if (prefilterRejected) {
+        removeNoPoolPending(t.mint);
         reason = t.prefilterReason || 'VETO [DEX_PREFILTER]: token gagal pre-filter Dex.';
       } else if (!security) {
+        removeNoPoolPending(t.mint);
         reason = 'VETO [SCREENING_UNAVAILABLE]: screening gagal, token dilewati.';
       } else if (!security.eligible) {
+        removeNoPoolPending(t.mint);
         const first = security.highFlags?.[0];
         const funnel = security.stageFunnel
           ? ` (Dex=${security.stageFunnel.stage1_dex_gate}, GMGN=${security.stageFunnel.stage3_gmgn_security}, Fee=${security.stageFunnel.stage4_fee_integrity})`
           : '';
         reason = `VETO [${first?.rule || 'SECURITY_REJECT'}]: ${first?.msg || 'Token gagal gate keamanan.'}${funnel}`;
       } else if (!bestPool) {
+        upsertNoPoolPending({ mint: t.mint, symbol: t.symbol || t.name, dexGate }, cfg);
         reason = 'VETO [NO_METEORA_EXEC_POOL]: token lolos, tapi belum ada pool Meteora yang executable.';
         rejNoPool++;
       } else if (isOnCooldown(bestPool.address)) {
         reason = 'VETO [POOL_COOLDOWN]: pool/token dalam masa cooldown.';
         rejCooldown++;
       } else {
+        removeNoPoolPending(t.mint);
         matched = true;
       }
 
@@ -1487,6 +1571,8 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null, opt
         pass: prefilterPassed.length,
         rejected: prefilterRejectedList.length,
         screened: seedSample.length,
+        replayedPending: pendingReplay.length,
+        pendingQueueSize: listNoPoolPending(cfg).length,
         minVolume24h: minVol,
         minMcap: minMcap,
         sort: 'age_asc_then_volume_desc',
