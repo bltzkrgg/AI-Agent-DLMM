@@ -41,20 +41,69 @@ let hunterBotRef = null;
 let hunterAllowedId = null;
 let _hunterTargetCount = null; // Local caches for tool output (shared across rounds)
 let _hunterMaxPositionsCap = null; // Global stage-aware cap injected by orchestrator (index)
+const NO_POOL_PENDING_STATE_KEY = 'hunter-no-pool-pending';
 const _noPoolPending = new Map(); // mint -> { mint, symbol, dexGate, firstSeenAt, lastSeenAt }
+let _noPoolPendingLoaded = false;
+
+function normalizeNoPoolPendingItem(mint, item) {
+  if (!mint || typeof mint !== 'string') return null;
+  if (!item || typeof item !== 'object') return null;
+  const now = Date.now();
+  const firstSeenAt = Number.isFinite(Number(item.firstSeenAt)) ? Number(item.firstSeenAt) : now;
+  const lastSeenAt = Number.isFinite(Number(item.lastSeenAt)) ? Number(item.lastSeenAt) : firstSeenAt;
+  return {
+    mint,
+    symbol: typeof item.symbol === 'string' ? item.symbol : '',
+    dexGate: item.dexGate && typeof item.dexGate === 'object' ? item.dexGate : null,
+    firstSeenAt,
+    lastSeenAt,
+  };
+}
+
+function ensureNoPoolPendingLoaded() {
+  if (_noPoolPendingLoaded) return;
+  const stored = getRuntimeState(NO_POOL_PENDING_STATE_KEY, {});
+  if (stored && typeof stored === 'object' && !Array.isArray(stored)) {
+    for (const [mint, item] of Object.entries(stored)) {
+      const normalized = normalizeNoPoolPendingItem(mint, item);
+      if (normalized) _noPoolPending.set(mint, normalized);
+    }
+  }
+  _noPoolPendingLoaded = true;
+}
+
+function persistNoPoolPending() {
+  ensureNoPoolPendingLoaded();
+  const payload = {};
+  for (const [mint, item] of _noPoolPending.entries()) {
+    payload[mint] = {
+      mint: item.mint,
+      symbol: item.symbol || '',
+      dexGate: item.dexGate || null,
+      firstSeenAt: item.firstSeenAt,
+      lastSeenAt: item.lastSeenAt,
+    };
+  }
+  setRuntimeState(NO_POOL_PENDING_STATE_KEY, payload);
+}
 
 function pruneNoPoolPending(cfg = getConfig()) {
+  ensureNoPoolPendingLoaded();
   const ttlMin = Math.max(5, Number(cfg.noPoolPendingTtlMinutes || 120));
   const ttlMs = ttlMin * 60 * 1000;
   const now = Date.now();
+  let changed = false;
   for (const [mint, item] of _noPoolPending.entries()) {
     if (!item?.lastSeenAt || (now - item.lastSeenAt) > ttlMs) {
       _noPoolPending.delete(mint);
+      changed = true;
     }
   }
+  if (changed) persistNoPoolPending();
 }
 
 function listNoPoolPending(cfg = getConfig()) {
+  ensureNoPoolPendingLoaded();
   pruneNoPoolPending(cfg);
   return Array.from(_noPoolPending.values())
     .sort((a, b) => (b.lastSeenAt || 0) - (a.lastSeenAt || 0));
@@ -62,6 +111,7 @@ function listNoPoolPending(cfg = getConfig()) {
 
 function upsertNoPoolPending({ mint, symbol, dexGate }, cfg = getConfig()) {
   if (!mint) return;
+  ensureNoPoolPendingLoaded();
   pruneNoPoolPending(cfg);
   const now = Date.now();
   const prev = _noPoolPending.get(mint);
@@ -72,11 +122,15 @@ function upsertNoPoolPending({ mint, symbol, dexGate }, cfg = getConfig()) {
     firstSeenAt: prev?.firstSeenAt || now,
     lastSeenAt: now,
   });
+  persistNoPoolPending();
 }
 
 function removeNoPoolPending(mint) {
   if (!mint) return;
-  _noPoolPending.delete(mint);
+  ensureNoPoolPendingLoaded();
+  if (_noPoolPending.delete(mint)) {
+    persistNoPoolPending();
+  }
 }
 
 export function getCandidates() { return lastCandidates; }

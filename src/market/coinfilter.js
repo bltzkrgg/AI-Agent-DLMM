@@ -91,6 +91,16 @@ function toRate(value) {
   return normalized > 1 ? normalized / 100 : normalized;
 }
 
+function formatRatePct(value) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return 'N/A';
+  if (Math.abs(n) < 1e-9) return '0%';
+  const pct = n * 100;
+  if (Math.abs(pct) < 0.1) return `${pct.toFixed(3)}%`;
+  if (Math.abs(pct) < 1) return `${pct.toFixed(2)}%`;
+  return `${pct.toFixed(1)}%`;
+}
+
 function parseSolFromText(text) {
   if (!text || typeof text !== 'string') return null;
   const normalized = text.replace(/,/g, '');
@@ -724,7 +734,10 @@ function step12_gmgnSecurity(info, sec, thresholds = {}) {
     if (insiderRatio == null && failClosed) {
       rejects.push({ rule: 'GMGN_INSIDER_DATA_MISSING', msg: 'Data insider GMGN kosong — fail-closed.' });
     } else if (insiderRatio > insiderMax) {
-      rejects.push({ rule: 'GMGN_INSIDER_DETECTED', msg: `Insider/rat trader terdeteksi di volume (${(insiderRatio * 100).toFixed(1)}%) — REJECT` });
+      rejects.push({
+        rule: 'GMGN_INSIDER_DETECTED',
+        msg: `Insider/rat trader terdeteksi di volume (${formatRatePct(insiderRatio)}) > batas ${formatRatePct(insiderMax)} — REJECT`,
+      });
     }
 
     // Creator/dev concentration
