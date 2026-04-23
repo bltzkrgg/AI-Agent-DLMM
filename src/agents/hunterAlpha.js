@@ -1322,10 +1322,10 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null, opt
     } else {
       // Access updateStatus if the transport provides it
       // hunterBotRef and hunterNotifyFn are cached in state
-      if (hunterBotRef && statusMsgId) {
+      if (hunterBotRef && statusMsgId && hunterAllowedId) {
         try {
-          await bot.editMessageText(text, {
-            chat_id: chatId,
+          await hunterBotRef.editMessageText(text, {
+            chat_id: hunterAllowedId,
             message_id: statusMsgId,
             parse_mode: 'HTML'
           });
@@ -1913,6 +1913,7 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null, opt
         `tech={trendNonBullish:${rejTrendNonBullish},waitBreakST:${rejWaitBreakSupertrend},entryConfirm:${rejEntryConfirm}}, ` +
         `api=${technicalRejectedCount === 0 && basicFilteredCount > 0 ? 'all_failed' : 'linked'}`
       );
+      await updatePulse(`✅ <b>Radar Sweep Completed</b> — 0 final candidate. Gunakan <code>/radar_report</code>.`);
       return null;
     }
 
@@ -2006,6 +2007,7 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null, opt
       };
       lastDeploySummary = deploySummary;
       if (lastRadarSnapshot) lastRadarSnapshot.deployment = deploySummary;
+      await updatePulse(`✅ <b>Radar Sweep Completed</b> — tidak ada kandidat viable. Cek <code>/radar_report</code>.`);
       _hunterTargetCount = null;
       _hunterMaxPositionsCap = null;
       return null;
@@ -2163,6 +2165,10 @@ Use Indonesian for reasoning. Stay technical, precise, and fast.`;
   };
   lastDeploySummary = deploySummary;
   if (lastRadarSnapshot) lastRadarSnapshot.deployment = deploySummary;
+  await updatePulse(
+    `✅ <b>Radar Sweep Completed</b> — Deploy new: <b>${deployNew}</b> | Blocked: <b>${deployBlocked}</b> | Failed: <b>${deployFailed}</b>. ` +
+    `Lihat <code>/radar_report</code>`
+  );
   lastReport = { report, timestamp: new Date().toISOString() };
   _hunterTargetCount = null; // reset setelah selesai
   _hunterMaxPositionsCap = null;
