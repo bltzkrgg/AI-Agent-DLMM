@@ -426,6 +426,33 @@ export function getResumablePartialDeployment(poolAddress, strategyUsed = null) 
   return db.prepare(`${baseSql} ORDER BY updated_at DESC LIMIT 1`).get(poolAddress);
 }
 
+export function getResumablePartialDeploymentByPosition(positionAddress) {
+  if (!positionAddress) return null;
+  return db.prepare(`
+    SELECT *
+    FROM positions
+    WHERE position_address = ?
+      AND status = 'open'
+      AND position_secret_key IS NOT NULL
+      AND (
+        is_partial = 1
+        OR lifecycle_state IN ('deploying', 'open_partial')
+        OR (deploy_total_bins > 0 AND deploy_filled_bins < deploy_total_bins)
+      )
+    LIMIT 1
+  `).get(positionAddress);
+}
+
+export function getPositionByAddress(positionAddress) {
+  if (!positionAddress) return null;
+  return db.prepare(`
+    SELECT *
+    FROM positions
+    WHERE position_address = ?
+    LIMIT 1
+  `).get(positionAddress);
+}
+
 export function getPartialOpenPositions(limit = 20) {
   return db.prepare(`
     SELECT *
@@ -537,12 +564,24 @@ export function updatePositionStatus(positionAddress, status) {
   return runInQueue(() => db.prepare(`UPDATE positions SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE position_address = ?`).run(status, positionAddress));
 }
 
-export async function updatePositionLifecycle(positionAddress, lifecycleState) {
-  return runInQueue(() => db.prepare(`
-    UPDATE positions
-    SET lifecycle_state = ?, updated_at = CURRENT_TIMESTAMP
-    WHERE position_address = ?
-  `).run(lifecycleState, positionAddress));
+export async function updatePositionLifecycle(positionAddress, lifecycleState, options = {}) {
+  const force = options?.force === true;
+  return runInQueue(() => {
+    if (lifecycleState === 'open' && !force) {
+      // Guard: manual_review tidak boleh ke-overwrite ke open secara tidak sengaja.
+      return db.prepare(`
+        UPDATE positions
+        SET lifecycle_state = ?, updated_at = CURRENT_TIMESTAMP
+        WHERE position_address = ?
+          AND IFNULL(lifecycle_state, '') != 'manual_review'
+      `).run(lifecycleState, positionAddress);
+    }
+    return db.prepare(`
+      UPDATE positions
+      SET lifecycle_state = ?, updated_at = CURRENT_TIMESTAMP
+      WHERE position_address = ?
+    `).run(lifecycleState, positionAddress);
+  });
 }
 
 export function getClosedPositions() {

@@ -9,6 +9,7 @@ import db, {
   updatePositionLifecycle,
   runInQueue,
   getResumablePartialDeployment,
+  getResumablePartialDeploymentByPosition,
   updatePositionDeploymentProgress,
 } from '../db/database.js';
 import { updatePositionRuntimeState } from '../app/positionRuntimeState.js';
@@ -804,7 +805,12 @@ async function _openPositionLogic(poolAddress, tokenXAmount, tokenYAmount, price
     }
   }
 
-  const resumable = getResumablePartialDeployment(poolAddress, strategyName || null);
+  const resumePositionAddress = typeof deployOptions?.resumePositionAddress === 'string'
+    ? deployOptions.resumePositionAddress.trim()
+    : '';
+  const resumable = resumePositionAddress
+    ? getResumablePartialDeploymentByPosition(resumePositionAddress)
+    : getResumablePartialDeployment(poolAddress, strategyName || null);
   let posKp = null;
   let resumeFilledBins = 0;
   let resumeDeployedSol = 0;
@@ -869,6 +875,21 @@ async function _openPositionLogic(poolAddress, tokenXAmount, tokenYAmount, price
     accountExists = info !== null;
     if (accountExists) console.log(`[meteora] AEGIS RECOVER: Alamat posisi ${posKp.publicKey.toString()} sudah ada on-chain. Menggunakan akun yang ada.`);
   } catch { /* proceed with fallback */ }
+
+  if (isResuming && !accountExists) {
+    await updatePositionLifecycle(posKp.publicKey.toString(), 'manual_review').catch(() => {});
+    await enqueueReconcileIssue({
+      issueType: 'RESUME_ACCOUNT_MISSING',
+      entityId: posKp.publicKey.toString(),
+      payload: {
+        poolAddress,
+        positionAddress: posKp.publicKey.toString(),
+        strategyName: strategyName || null,
+      },
+      notes: 'Resume diminta tetapi akun posisi tidak ditemukan on-chain. Cegah redeploy buta.',
+    }).catch(() => {});
+    throw new Error(`RESUME_ACCOUNT_MISSING: position ${posKp.publicKey.toString()} not found on-chain`);
+  }
 
   // ── Pre-Save Position Object (Watchtower) ──────────────────────
   // We register the position in DB BEFORE sending transactions.

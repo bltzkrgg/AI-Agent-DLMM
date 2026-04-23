@@ -5,7 +5,17 @@ import { getConfig, getThresholds } from '../config.js';
 import { getTopPools, getPoolInfo, openPosition, getSolPriceUsd } from '../solana/meteora.js';
 import { getWalletBalance, getConnection } from '../solana/wallet.js';
 import { PublicKey } from '@solana/web3.js';
-import { getOpenPositions, getPoolStats, closePositionWithPnl, getStat, recordScreeningEvent, getPartialOpenPositions } from '../db/database.js';
+import {
+  getOpenPositions,
+  getPoolStats,
+  closePositionWithPnl,
+  getStat,
+  recordScreeningEvent,
+  getPartialOpenPositions,
+  getPositionByAddress,
+  updatePositionStatus,
+  updatePositionLifecycle,
+} from '../db/database.js';
 import { getLessonsContext } from '../learn/lessons.js';
 import { getStrategy, parseStrategyParameters, getAllStrategies } from '../strategies/strategyManager.js';
 import {
@@ -169,6 +179,22 @@ async function runPartialDeploymentHealing(notifyFn, cfg = getConfig()) {
     );
 
     try {
+      // Deterministic + safe: verify posisi masih ada di chain sebelum healing.
+      const chainInfo = await getConnection().getAccountInfo(new PublicKey(pos.position_address)).catch(() => null);
+      if (!chainInfo) {
+        // Posisi sudah hilang (manual close / reconciled). Jangan heal ulang.
+        await updatePositionStatus(pos.position_address, 'closed').catch(() => {});
+        await updatePositionLifecycle(pos.position_address, 'closed_reconciled', { force: true }).catch(() => {});
+        continue;
+      }
+
+      const freshPos = getPositionByAddress(pos.position_address);
+      if (!freshPos || freshPos.status !== 'open') continue;
+      if (!['deploying', 'open_partial', 'manual_review'].includes(String(freshPos.lifecycle_state || ''))) {
+        // Tidak dalam state partial lagi → tidak perlu healing.
+        continue;
+      }
+
       await openPosition(
         pos.pool_address,
         0,
@@ -177,6 +203,7 @@ async function runPartialDeploymentHealing(notifyFn, cfg = getConfig()) {
         pos.strategy_used || null,
         {
           maxBinsPerTx: Number(pos.deploy_chunk_max_bins || cfg.deployChunkMaxBins || 69),
+          resumePositionAddress: pos.position_address,
         },
       );
       healed++;
