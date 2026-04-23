@@ -2152,6 +2152,9 @@ function formatRadarReportTelegram(snapshot) {
   }
   const pf = snapshot.prefilter || {};
   const st = snapshot.stats || {};
+  const dep = snapshot.deployment || {};
+  const depStageText = String(dep.stage || 'unknown');
+  const depStatus = dep.anyRealDeploy === true ? 'YES' : 'NO';
   const rows = (snapshot.candidates || []).slice(0, 12).map((c, idx) => {
     const name = escapeHTML(String(c.name || c.address || 'TOKEN'));
     const mcapVal = safeNum(c.prefilterMcap || c.mcap);
@@ -2178,6 +2181,11 @@ function formatRadarReportTelegram(snapshot) {
     `<b>Pipeline Stats</b>`,
     `<code>Radar Total:</code> ${safeNum(st.radarTotal)} | <code>Matched:</code> ${safeNum(st.matchedCount)} | <code>Exec Pools:</code> ${safeNum(st.executablePoolsCount)}`,
     `<code>Rejected:</code> DexPre ${safeNum(st.rejectedDexPrefilter)} | Security ${safeNum(st.rejectedSecurity)} | NoPool ${safeNum(st.rejectedNoPool)} | Cooldown ${safeNum(st.rejectedCooldown)}`,
+    '',
+    `<b>Deployment Status</b>`,
+    `<code>Attempted:</code> ${safeNum(dep.attempted)} | <code>New:</code> ${safeNum(dep.newDeploy)} | <code>Already:</code> ${safeNum(dep.alreadyDeployed)}`,
+    `<code>Blocked:</code> ${safeNum(dep.blocked)} | <code>Failed:</code> ${safeNum(dep.failed)} | <code>Real Deploy:</code> ${depStatus}`,
+    `<code>Stage:</code> ${escapeHTML(depStageText)}`,
     '',
     '<b>Top Candidates</b>',
     rows.length ? rows.join('\n') : '<i>Tidak ada kandidat pass di snapshot terakhir.</i>',

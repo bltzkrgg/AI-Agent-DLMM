@@ -36,6 +36,7 @@ import { calculateSupertrend } from '../utils/ta.js';
 let lastCandidates = [];
 let lastReport = null;
 let lastRadarSnapshot = null;
+let lastDeploySummary = null;
 let hunterNotifyFn = null;
 let hunterBotRef = null;
 let hunterAllowedId = null;
@@ -136,6 +137,7 @@ function removeNoPoolPending(mint) {
 export function getCandidates() { return lastCandidates; }
 export function getLastHunterReport() { return lastReport; }
 export function getLastRadarSnapshot() { return lastRadarSnapshot; }
+export function getLastDeploySummary() { return lastDeploySummary; }
 
 const DEXSCREENER_BASE = 'https://api.dexscreener.com';
 const WSOL_MINT = 'So11111111111111111111111111111111111111112';
@@ -1889,6 +1891,18 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null, opt
     const technicalRejectedCount = rejTrendNonBullish + rejWaitBreakSupertrend + rejEntryConfirm;
 
     if (finalEnriched.length === 0) {
+      const deploySummary = {
+        timestamp: new Date().toISOString(),
+        attempted: 0,
+        newDeploy: 0,
+        alreadyDeployed: 0,
+        blocked: 0,
+        failed: 0,
+        anyRealDeploy: false,
+        stage: 'technical_block',
+      };
+      lastDeploySummary = deploySummary;
+      if (lastRadarSnapshot) lastRadarSnapshot.deployment = deploySummary;
       if (notifyFn) {
         const nonRefundText = rejNonRefundable > 0 ? ` | NonRefundable: ${rejNonRefundable}` : '';
         await notifyFn(
@@ -1981,6 +1995,18 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null, opt
 
     // Early Exit: Jika tidak ada pool layak, jangan panggil LLM (hemat API cost)
     if (viable.length === 0) {
+      const deploySummary = {
+        timestamp: new Date().toISOString(),
+        attempted: 0,
+        newDeploy: 0,
+        alreadyDeployed: 0,
+        blocked: 0,
+        failed: 0,
+        anyRealDeploy: false,
+        stage: 'security_block',
+      };
+      lastDeploySummary = deploySummary;
+      if (lastRadarSnapshot) lastRadarSnapshot.deployment = deploySummary;
       _hunterTargetCount = null;
       _hunterMaxPositionsCap = null;
       return null;
@@ -2063,6 +2089,11 @@ Use Indonesian for reasoning. Stay technical, precise, and fast.`;
   let rounds = 0;
   // Track apakah ada deploy nyata (bukan alreadyDeployed) — untuk suppress noise report
   let anyRealDeploy = false;
+  let deployAttempted = 0;
+  let deployNew = 0;
+  let deployAlready = 0;
+  let deployBlocked = 0;
+  let deployFailed = 0;
 
   while (response.stop_reason === 'tool_use' && rounds < MAX_ROUNDS) {
     rounds++;
@@ -2079,10 +2110,23 @@ Use Indonesian for reasoning. Stay technical, precise, and fast.`;
 
       // Deteksi apakah ini deploy nyata (bukan alreadyDeployed)
       if (toolUse.name === 'deploy_position') {
+        deployAttempted++;
         try {
           const parsed = JSON.parse(result);
-          if (parsed.success && !parsed.alreadyDeployed) anyRealDeploy = true;
-        } catch { /* ignore parse error */ }
+          if (parsed?.success === true) {
+            if (parsed.alreadyDeployed) deployAlready++;
+            else {
+              anyRealDeploy = true;
+              deployNew++;
+            }
+          } else if (parsed?.blocked === true) {
+            deployBlocked++;
+          } else {
+            deployFailed++;
+          }
+        } catch {
+          deployFailed++;
+        }
       }
 
       toolResults.push({ type: 'tool_result', tool_use_id: toolUse.id, content: result });
@@ -2108,6 +2152,18 @@ Use Indonesian for reasoning. Stay technical, precise, and fast.`;
   }
 
   const report = response.content.filter(b => b.type === 'text').map(b => b.text).join('\n');
+  const deploySummary = {
+    timestamp: new Date().toISOString(),
+    attempted: deployAttempted,
+    newDeploy: deployNew,
+    alreadyDeployed: deployAlready,
+    blocked: deployBlocked,
+    failed: deployFailed,
+    anyRealDeploy,
+    stage: 'executed',
+  };
+  lastDeploySummary = deploySummary;
+  if (lastRadarSnapshot) lastRadarSnapshot.deployment = deploySummary;
   lastReport = { report, timestamp: new Date().toISOString() };
   _hunterTargetCount = null; // reset setelah selesai
   _hunterMaxPositionsCap = null;
