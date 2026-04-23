@@ -1381,6 +1381,9 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null, opt
     const seedLimit = Math.max(10, Number(cfg.dexSeedSampleLimit || 40));
     const minVol = Number(cfg.minVolume24h || 0);
     const minMcap = Number(cfg.minMcap || 0);
+    const minAgeHours = Math.max(0, Number(cfg.dexMinAgeHours || 0));
+    const maxAgeHours = Math.max(minAgeHours, Number(cfg.dexMaxAgeHours || 720));
+    const requireKnownAge = cfg.dexRequireKnownAge === true;
 
     // Stage 1: probe semua seed Dex lalu prefilter tegas (mcap + volume) sebelum masuk GMGN.
     const dexSeedMetrics = await Promise.all(dexSeeds.map(async (s) => {
@@ -1388,18 +1391,31 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null, opt
       const gateVolume = safeNum(dexGate?.volume24h);
       const gateMcap = safeNum(dexGate?.mcap);
       const createdAt = safeNum(dexGate?.pairCreatedAt);
-      const ageHours = createdAt > 0 ? ((Date.now() - createdAt) / (1000 * 60 * 60)) : null;
+      const ageHoursRaw = createdAt > 0 ? ((Date.now() - createdAt) / (1000 * 60 * 60)) : null;
+      const ageHours = Number.isFinite(ageHoursRaw) ? Math.max(0, ageHoursRaw) : null;
 
       let prefilterRejected = false;
       let prefilterReason = null;
+      let prefilterRejectCode = null;
       if (!dexGate) {
         prefilterRejected = true;
+        prefilterRejectCode = 'DEX_DATA_UNAVAILABLE';
         prefilterReason = 'VETO [DEX_DATA_UNAVAILABLE]: data Dex tidak tersedia di tahap pre-filter.';
+      } else if (!Number.isFinite(ageHours) && requireKnownAge) {
+        prefilterRejected = true;
+        prefilterRejectCode = 'DEX_AGE_UNKNOWN';
+        prefilterReason = 'VETO [DEX_AGE_UNKNOWN]: umur pair Dex tidak tersedia (dexRequireKnownAge=true).';
+      } else if (Number.isFinite(ageHours) && (ageHours < minAgeHours || ageHours > maxAgeHours)) {
+        prefilterRejected = true;
+        prefilterRejectCode = 'DEX_AGE_OUT_OF_RANGE';
+        prefilterReason = `VETO [DEX_AGE_OUT_OF_RANGE]: Age ${ageHours.toFixed(2)}h di luar window ${minAgeHours}-${maxAgeHours}h.`;
       } else if (minVol > 0 && gateVolume < minVol) {
         prefilterRejected = true;
+        prefilterRejectCode = 'BELOW_MIN_VOLUME_24H';
         prefilterReason = `VETO [BELOW_MIN_VOLUME_24H]: Volume 24h $${gateVolume.toLocaleString()} < min $${minVol.toLocaleString()}`;
       } else if (minMcap > 0 && gateMcap > 0 && gateMcap < minMcap) {
         prefilterRejected = true;
+        prefilterRejectCode = 'BELOW_MIN_MCAP';
         prefilterReason = `VETO [BELOW_MIN_MCAP]: Mcap $${gateMcap.toLocaleString()} < min $${minMcap.toLocaleString()}`;
       }
 
@@ -1410,6 +1426,7 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null, opt
         gateMcap,
         ageHours,
         prefilterRejected,
+        prefilterRejectCode,
         prefilterReason,
       };
     }));
@@ -1437,8 +1454,12 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null, opt
         ageHours: null,
         source: 'no_pool_pending_replay',
       }));
-    let rejDexPreFilter = prefilterRejectedList.length;
-    let rejDexAge = 0, rejSecurity = 0, rejNoPool = 0, rejCooldown = 0;
+    const ageRejectedList = prefilterRejectedList.filter((s) =>
+      s.prefilterRejectCode === 'DEX_AGE_OUT_OF_RANGE' || s.prefilterRejectCode === 'DEX_AGE_UNKNOWN'
+    );
+    let rejDexAge = ageRejectedList.length;
+    let rejDexPreFilter = Math.max(0, prefilterRejectedList.length - rejDexAge);
+    let rejSecurity = 0, rejNoPool = 0, rejCooldown = 0;
 
     // Token gate list dimulai dari hasil prefilter fail supaya radar bisa audit stage-1 dengan jelas.
     const tokenGate = prefilterRejectedList.map((s) => ({
@@ -1667,13 +1688,16 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null, opt
       .sort((a, b) => b.darwinScore - a.darwinScore)
       .slice(0, 6);
 
-    // radarDisplay: tampilkan hanya token yang lolos Dex prefilter (mcap+volume)
+    // radarDisplay: tampilkan hanya token yang lolos Dex prefilter (age+mcap+volume)
     // agar radar fokus pada kandidat yang memang layak diproses lanjut.
     const radarDisplay = radarSnapshot
       .filter((p) => p.prefilterRejected !== true)
       .sort((a, b) => {
         if (a.isMatched !== b.isMatched) return b.isMatched ? 1 : -1;
-        return b.volume24hRaw - a.volume24hRaw;
+        const aAge = Number.isFinite(a.ageHours) ? a.ageHours : Number.POSITIVE_INFINITY;
+        const bAge = Number.isFinite(b.ageHours) ? b.ageHours : Number.POSITIVE_INFINITY;
+        if (aAge !== bAge) return aAge - bAge;
+        return safeNum(b.volume24hRaw) - safeNum(a.volume24hRaw);
       })
       .slice(0, 15);
 
@@ -1688,14 +1712,20 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null, opt
       totalNetProfitSol: (openPositions.reduce((acc, p) => acc + (parseFloat(p.pnl_sol) || 0), 0)).toFixed(4),
       totalRentSaved: safeNum(rentSaved).toFixed(4),
       prefilter: {
+        seedSource: 'dex_api_seed',
         seeded: dexSeeds.length,
         pass: prefilterPassed.length,
         rejected: prefilterRejectedList.length,
+        rejectedAge: ageRejectedList.length,
+        rejectedNonAge: Math.max(0, prefilterRejectedList.length - ageRejectedList.length),
         screened: seedSample.length,
         replayedPending: pendingReplay.length,
         pendingQueueSize: listNoPoolPending(cfg).length,
         minVolume24h: minVol,
         minMcap: minMcap,
+        minAgeHours,
+        maxAgeHours,
+        requireKnownAge,
         sort: 'age_asc_then_volume_desc',
       },
       candidates: radarDisplay.map(p => ({
@@ -1730,6 +1760,7 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null, opt
         executablePoolsCount: radarSnapshot.filter((p) => p.address && p.address !== p.tokenX).length,
         matchedCount: radarSnapshot.filter((p) => p.isMatched).length,
         rejectedDexPrefilter: rejDexPreFilter,
+        rejectedDexAge: rejDexAge,
         rejectedSecurity: rejSecurity,
         rejectedNoPool: rejNoPool,
         rejectedCooldown: rejCooldown,
