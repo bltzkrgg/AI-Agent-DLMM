@@ -1903,17 +1903,16 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null, opt
       };
       lastDeploySummary = deploySummary;
       if (lastRadarSnapshot) lastRadarSnapshot.deployment = deploySummary;
-      if (notifyFn) {
-        const nonRefundText = rejNonRefundable > 0 ? ` | NonRefundable: ${rejNonRefundable}` : '';
-        await notifyFn(
-          `⚠️ <b>Discovery Result:</b> 0/${rawTotal} candidates matched.\n\n` +
-          `• Candidates Seeded (Dex): <b>${dexSeeds.length}</b> | Prefilter Pass: <b>${prefilterPassed.length}</b> | Token Screened: <b>${seedSample.length}</b> | Executable Pools: <b>${executablePoolsCount}</b>\n` +
-          `• Rejected: <code>Dex Pre-Filter: ${rejDexPreFilter} | Dex Age: ${rejDexAge} | Dex/GMGN Security: ${rejSecurity} | No Meteora Pool: ${rejNoPool} | Cooldown: ${rejCooldown}${nonRefundText}</code>\n` +
-          `• Technical Hard-Gate: Trend non-Bullish <b>${rejTrendNonBullish}</b> | Wait Break Supertrend <b>${rejWaitBreakSupertrend}</b> | Entry Confirm Failed <b>${rejEntryConfirm}</b>\n` +
-          `• API/Data Status: ${technicalRejectedCount === 0 && basicFilteredCount > 0 ? '❌ All APIs Failed' : '✅ APIs Linked'}\n\n` +
-          `<i>Market sepertinya sedang sideways/bearish. Sniper tetap disiplin.</i>`
-        );
-      }
+      // Opsi operasional: suppress notifikasi raw "Discovery Result" agar
+      // kanal Telegram fokus ke laporan /radar_report yang lebih konsisten.
+      const nonRefundText = rejNonRefundable > 0 ? ` | NonRefundable: ${rejNonRefundable}` : '';
+      console.log(
+        `[hunter] Discovery 0 match (suppressed): seeded=${dexSeeds.length}, prefilterPass=${prefilterPassed.length}, ` +
+        `screened=${seedSample.length}, execPools=${executablePoolsCount}, rej={dexPre:${rejDexPreFilter},dexAge:${rejDexAge},` +
+        `security:${rejSecurity},noPool:${rejNoPool},cooldown:${rejCooldown}${nonRefundText}}, ` +
+        `tech={trendNonBullish:${rejTrendNonBullish},waitBreakST:${rejWaitBreakSupertrend},entryConfirm:${rejEntryConfirm}}, ` +
+        `api=${technicalRejectedCount === 0 && basicFilteredCount > 0 ? 'all_failed' : 'linked'}`
+      );
       return null;
     }
 
