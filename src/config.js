@@ -101,6 +101,15 @@ const DEFAULTS = {
   proactiveExitEnabled: true,
   proactiveExitMinProfitPct: 1.0,
   proactiveExitBearishConfidence: 0.7,
+  evilPandaDisableTrendKillSwitch: true, // Khusus Evil Panda: nonaktifkan kill-switch berbasis trend/supertrend di watchdog
+  evilPandaBypassToxicIlGuard: true,      // Khusus Evil Panda: jangan pakai Toxic IL vs HODL sebagai auto-close
+  panicOorLossPct: 10,                   // Panic exit OOR jika loss <= -X% (strategi umum)
+  evilPandaPanicOorLossPct: 35,          // Panic exit OOR khusus Evil Panda (lebih longgar untuk deep range)
+  evilPandaIgnoreZombieFeeWhenOorUpper: true, // Jangan zombie-close Evil Panda saat OOR atas (safe park in SOL)
+  evilPandaRetracementCapZone1Pct: 4.0,  // Retracement cap watchdog untuk Panda saat pnl<10
+  evilPandaRetracementCapZone2Pct: 8.0,  // Retracement cap watchdog untuk Panda saat pnl 10-30
+  evilPandaRetracementCapZone3Pct: 12.0, // Retracement cap watchdog untuk Panda saat pnl>=30
+  evilPandaAllowAutoCompound: false,     // Default OFF agar shape deep-range Panda tidak terdistorsi saat harvest
   maxPriceImpactPct: 1.5,     // Maksimal price impact (%) yang diijinkan saat simulasi swap
   maxLpDominancePct: 20,      // Max % dari pool TVL yang boleh dimiliki bot — cegah jadi LP dominan
   maxBinsPerPosition: 125,   // Kapasitas bin maksimal sesuai skema (80-125)
@@ -248,6 +257,15 @@ const CONFIG_BOUNDS = {
   maxLpDominancePct: { min: 1, max: 100 },
   proactiveExitMinProfitPct: { min: 0.1, max: 100 },
   proactiveExitBearishConfidence: { min: 0.5, max: 1.0 },
+  evilPandaDisableTrendKillSwitch: { type: 'boolean' },
+  evilPandaBypassToxicIlGuard: { type: 'boolean' },
+  panicOorLossPct: { min: 1, max: 100 },
+  evilPandaPanicOorLossPct: { min: 1, max: 100 },
+  evilPandaIgnoreZombieFeeWhenOorUpper: { type: 'boolean' },
+  evilPandaRetracementCapZone1Pct: { min: 0.5, max: 30 },
+  evilPandaRetracementCapZone2Pct: { min: 0.5, max: 30 },
+  evilPandaRetracementCapZone3Pct: { min: 0.5, max: 30 },
+  evilPandaAllowAutoCompound: { type: 'boolean' },
   darwinWindowDays: { min: 7, max: 365 },
   darwinRecalcEvery: { min: 1, max: 50 },
   minMcap: { min: 0, max: 100000000 },

@@ -436,10 +436,14 @@ export async function executeTool(name, input, notifyFn = null) {
             const minProfit         = cfg.proactiveExitMinProfitPct      ?? 1.0;
             const bearishThreshold  = cfg.proactiveExitBearishConfidence ?? 0.7;
             const proactiveEnabled  = cfg.proactiveExitEnabled !== false;
+            const strategyProfile   = getStrategy(pos.strategy_used);
+            const isEvilPandaMode   = strategyProfile?.exit?.mode === 'evil_panda_confluence' || pos.strategy_used === 'Evil Panda';
+            const disableTrendKillSwitch = isEvilPandaMode && cfg.evilPandaDisableTrendKillSwitch !== false;
+            const bypassToxicIlGuard = isEvilPandaMode && cfg.evilPandaBypassToxicIlGuard !== false;
             
             // ── Technical Sniper Exit (Evil Panda / Supertrend) ──────
             const taExit = analysis.snapshot?.ta?.['Evil Panda']?.exit || analysis.snapshot?.ta?.[pos.strategy_used]?.exit;
-            if (pos.strategy_used === 'Evil Panda') {
+            if (!disableTrendKillSwitch && isEvilPandaMode) {
               // Sniper Technical Exit:
               // - Jika Trend Reversal (Bearish), WAJIB exit secepatnya untuk cut loss / lock profit.
               const isSupertrendBearish = stTrend === 'BEARISH';
@@ -476,7 +480,6 @@ export async function executeTool(name, input, notifyFn = null) {
             }
 
             // ── Unified Stop Loss Guard (Maha Bersih v20) ──
-            const strategyProfile = getStrategy(pos.strategy_used);
             const strategySl = strategyProfile?.exit?.emergencyStopLossPct;
             
             const slCheck = checkStopLoss({ ...pos, pnlPct }, strategySl);
@@ -496,7 +499,7 @@ export async function executeTool(name, input, notifyFn = null) {
             // ── Toxic IL Safeguard (Aegis v1.0) ──
             const cfgIlLimitPct = Math.abs(Number(getConfig().maxILvsHodlPct ?? 5));
             const toxicIlThreshold = -(cfgIlLimitPct / 100); // configurable, default -5% Yield vs HODL
-            if (!proactiveCloseRecommended && yieldVsHodlSol <= toxicIlThreshold && pnlPct < -2) {
+            if (!proactiveCloseRecommended && !bypassToxicIlGuard && yieldVsHodlSol <= toxicIlThreshold && pnlPct < -2) {
               proactiveCloseRecommended = true;
               proactiveWarning = `🤢 TOXIC IL DETECTED: Yield vs HODL is ${(yieldVsHodlSol * 100).toFixed(2)}% (limit -${cfgIlLimitPct.toFixed(2)}%). LP is bleeding relative to HODL. Exiting to preserve capital.`;
             }
@@ -1649,12 +1652,19 @@ export async function runHealerAlpha(notifyFn) {
     await Promise.all(openPositionsRel.map(async (pos) => {
       try {
         const addr = pos.position_address;
+        const strategyProfile = getStrategy(pos.strategy_used);
+        const isEvilPandaMode = strategyProfile?.exit?.mode === 'evil_panda_confluence' || pos.strategy_used === 'Evil Panda';
         const analysis = await analyzeMarket(pos.token_x, pos.pool_address, { pnlPct: 0 });
         const snapshot = analysis?.snapshot;
         const ta = snapshot?.ta?.['Evil Panda'] || snapshot?.ta?.[pos.strategy_used];
         const taConfidence = snapshot?.quality?.taConfidence ?? 0.5;
         const taReliable = taConfidence >= minTaConfidence;
         
+        // Evil Panda is a deep LPer strategy: don't force-close via generic TA sweep.
+        if (isEvilPandaMode) {
+          return;
+        }
+
         if (ta?.exit?.triggered && taReliable) {
           console.log(`[healer] AEGIS PRIORITY EXIT: Technical trigger for ${addr.slice(0,8)} - Reason: ${ta.exit.reason}`);
           const triggerLabel = ta.exit.shadowExit ? 'SHADOW EXIT' : 'TECHNICAL EXIT';
@@ -1738,8 +1748,9 @@ ALUR KERJA SINKRONISASI TAE-LP:
 2. Untuk setiap posisi, timbang Sinyal TAE + Efisiensi LP:
 
    A. MASTER SIGNAL (TAE Exit):
-      - Jika Supertrend 15m Flip Merah ATAU RSI menukik tajam dari Overbought (>85) -> WAJIB ZAP_OUT ke SOL.
-      - Filosofi: "Jangan melawan trend, amankan modal di SOL."
+      - Untuk strategi non-Panda: jika Supertrend 15m flip merah ATAU RSI menukik tajam dari overbought (>85) -> boleh ZAP_OUT ke SOL.
+      - Untuk Evil Panda (deep LPer): jangan pakai flip merah sebagai kill-switch otomatis; prioritaskan fee extraction + risk guard berbasis drawdown/OOR.
+      - Filosofi: jangan over-trading; amankan modal TANPA memotong edge LPer terlalu cepat.
 
    B. LP EFFICIENCY GUARD (Irit Biaya Swap):
       - JANGAN TERJEBAK OVER-TRADING. Setiap Zap Out itu mahal.
@@ -1783,7 +1794,11 @@ Gunakan Bahasa Indonesia. Selalu explain kenapa HOLD atau CLOSE.`;
       const isLowFees = (snap?.unclaimedFeesUsd || 0) < (deployedSol * 0.03);
       const isHealthyPnL = (analysis?.pnlPct || 0) > -2.0;
 
-      if (isOOR || !isHealthyPnL || !isLowFees || ta?.supertrend?.trend === 'BEARISH') {
+      const strategyProfile = getStrategy(pos.strategy_used);
+      const isEvilPandaMode = strategyProfile?.exit?.mode === 'evil_panda_confluence' || pos.strategy_used === 'Evil Panda';
+      const bearishNeedsReview = !isEvilPandaMode && ta?.supertrend?.trend === 'BEARISH';
+
+      if (isOOR || !isHealthyPnL || !isLowFees || bearishNeedsReview) {
         needsDeliberation = true;
         break;
       }
@@ -1905,8 +1920,15 @@ export async function runPanicWatchdog(notifyFn) {
       const runtimeState = getPositionRuntimeState(addr);
       
       const strategyProfile = getStrategy(pos.strategy_used);
+      const isEvilPandaMode = strategyProfile?.exit?.mode === 'evil_panda_confluence' || pos.strategy_used === 'Evil Panda';
+      const disableTrendKillSwitch = isEvilPandaMode && cfg.evilPandaDisableTrendKillSwitch !== false;
       const feeSol = match.feeCollectedSol || 0;
       const feeRatio = feeSol / (pos.deployed_sol || 0.001);
+      const currentPrice = Number(match?.currentPrice);
+      const lowerPrice = Number(match?.lowerPrice);
+      const upperPrice = Number(match?.upperPrice);
+      const isOORLower = !match.inRange && Number.isFinite(currentPrice) && Number.isFinite(lowerPrice) && currentPrice < lowerPrice;
+      const isOORUpper = !match.inRange && Number.isFinite(currentPrice) && Number.isFinite(upperPrice) && currentPrice > upperPrice;
 
       const now = Date.now();
       const posAgeMin = getPositionAgeMinutes(pos);
@@ -2018,9 +2040,14 @@ export async function runPanicWatchdog(notifyFn) {
       }
 
       const isZombieVol = vol24h > 0 && vol24h < 400000;
+      const ignoreZombieFeeBecauseSafeUpperPark =
+        isEvilPandaMode &&
+        isOORUpper &&
+        cfg.evilPandaIgnoreZombieFeeWhenOorUpper !== false;
+      const zombieFeeShouldExit = isZombieFee && !ignoreZombieFeeBecauseSafeUpperPark;
 
-      if (isZombieFee || isZombieVol) {
-        const reason = isZombieFee ? "FEE_STAGNATION" : "LOW_VOLUME_FLOOR";
+      if (zombieFeeShouldExit || isZombieVol) {
+        const reason = zombieFeeShouldExit ? "FEE_STAGNATION" : "LOW_VOLUME_FLOOR";
         const msg = `🧟 *ZOMBIE POOL EXTERMINATED!*\n\n` +
                    `• Posisi: \`${shortAddr(pos.position_address)}\`\n` +
                    `• Alasan: ${reason === "FEE_STAGNATION" ? "Mati Suri (1 jam tanpa fee)" : "Volume Drop (< $400k)"}\n` +
@@ -2078,7 +2105,12 @@ export async function runPanicWatchdog(notifyFn) {
       }
 
       let triggerPct = 1.0;
-      let retracementCap = pnlPct < 10 ? 1.5 : pnlPct < 30 ? 3.5 : 7.0;
+      const pandaZone1Cap = Math.max(0.5, Number(cfg.evilPandaRetracementCapZone1Pct ?? 4.0));
+      const pandaZone2Cap = Math.max(0.5, Number(cfg.evilPandaRetracementCapZone2Pct ?? 8.0));
+      const pandaZone3Cap = Math.max(0.5, Number(cfg.evilPandaRetracementCapZone3Pct ?? 12.0));
+      let retracementCap = isEvilPandaMode
+        ? (pnlPct < 10 ? pandaZone1Cap : pnlPct < 30 ? pandaZone2Cap : pandaZone3Cap)
+        : (pnlPct < 10 ? 1.5 : pnlPct < 30 ? 3.5 : 7.0);
       isLPerPatienceEnabled = pnlPct >= 10;
 
       // 🐼 LP-IDENTITY: Sinkronisasi TAE dengan Mindset LP
@@ -2168,7 +2200,7 @@ export async function runPanicWatchdog(notifyFn) {
 
         if (isLPerPatienceEnabled && isTrendBullish) {
           console.log(`[watchdog] Trailing hit in ${zone} (+${pnlPct.toFixed(2)}%), but holding because TREND is BULLISH.`);
-        } else if (taReliable && !isTrendBullish) {
+        } else if (!disableTrendKillSwitch && taReliable && !isTrendBullish) {
           const msg = `🎯 *ADAPTIVE ZAP OUT!* (${zone})\n\n` +
                      `• Exit @ PnL: +${pnlPct.toFixed(2)}%\n` +
                      `• Trend: ${isTrendBearish ? 'BEARISH' : 'NEUTRAL'}\n\n` +
@@ -2224,7 +2256,6 @@ export async function runPanicWatchdog(notifyFn) {
           continue;
         }
 
-      const isOORLower = !match.inRange && match.currentPrice < match.lowerPrice;
       const trackedOorAt = runtimeState.oorSince;
       const oorMinutes = trackedOorAt ? Math.floor((Date.now() - trackedOorAt) / 60000) : 0;
       
@@ -2325,7 +2356,10 @@ export async function runPanicWatchdog(notifyFn) {
           if (harvestedTotal > 0) {
             const harvestedUsd = harvestedTotal * await getSolPriceUsd().catch(() => 150);
 
-            if (cfg.autoHarvestCompound) {
+            const shouldCompoundHarvest =
+              cfg.autoHarvestCompound &&
+              (!isEvilPandaMode || cfg.evilPandaAllowAutoCompound === true);
+            if (shouldCompoundHarvest) {
               // ─── Compound: reinvest back into same position ──────────
               try {
                 const compResult = await addLiquidityToPosition(pos.pool_address, pos.position_address, harvestedTotal);
@@ -2358,12 +2392,19 @@ export async function runPanicWatchdog(notifyFn) {
         }
       }
 
-      const emergencyOorLoss = isOORLower && pnlPct <= -10;
-      if ((taReliable && isTrendBearish && isOORLower) || emergencyOorLoss) {
+      const basePanicOorLossPct = Math.abs(Number(cfg.panicOorLossPct ?? 10));
+      const evilPandaPanicOorLossPct = Math.abs(Number(cfg.evilPandaPanicOorLossPct ?? 35));
+      const panicLossThresholdPct = isEvilPandaMode ? evilPandaPanicOorLossPct : basePanicOorLossPct;
+      const emergencyOorLoss = isOORLower && pnlPct <= -panicLossThresholdPct;
+      const trendPanicKill = !disableTrendKillSwitch && taReliable && isTrendBearish && isOORLower;
+      if (trendPanicKill || emergencyOorLoss) {
+        const panicReasonText = trendPanicKill
+          ? 'Trend 15m BEARISH & Price < Lower Range'
+          : `OOR loss breached (${pnlPct.toFixed(2)}% <= -${panicLossThresholdPct.toFixed(2)}%)`;
         const msg = `🚨 <b>PANIC EXIT EXECUTED!</b> (Critical Dump)\n\n` +
                    `• Posisi: <code>${escapeHTML(shortAddr(pos.position_address))}</code>\n` +
                    `• Pool: <code>${escapeHTML(shortAddr(pos.pool_address))}</code>\n` +
-                   `• Alasan: <i>Trend 15m BEARISH &amp; Price &lt; Lower Range</i>\n` +
+                   `• Alasan: <i>${escapeHTML(panicReasonText)}</i>\n` +
                    `• PnL: <code>${pnlPct > 0 ? '+' : ''}${pnlPct.toFixed(2)}%</code>\n\n` +
                    `⚠️ <i>Sistem menutup posisi secara otomatis untuk mengamankan sisa SOL.</i>`;
 
@@ -2391,7 +2432,7 @@ export async function runPanicWatchdog(notifyFn) {
           feeVelocityIncreasing: isFeeVelocityIncreasing ? 1 : 0,
           lperPatienceActive: isLPerPatienceEnabled ? 1 : 0,
           profitOrLoss: pnlPct > 0 ? 'PROFIT' : pnlPct < 0 ? 'LOSS' : 'BREAKEVEN',
-          exitReason: `Critical dump: Trend bearish + price below range. Emergency liquidation to protect capital.`,
+          exitReason: `Critical dump: ${panicReasonText}. Emergency liquidation to protect capital.`,
           closeReasonCode: 'PANIC_EXIT_BEARISH_OOR'
         });
 
@@ -2429,7 +2470,7 @@ export async function runPanicWatchdog(notifyFn) {
 
       // Skenario 2: PROFIT PROTECTION (Profit + Trend Bearish)
       // Kalau lu udah profit biarpun dikit, tapi trend-nya flip, mending bungkus.
-      if (taReliable && isTrendBearish && pnlPct >= 0.5) {
+      if (!disableTrendKillSwitch && taReliable && isTrendBearish && pnlPct >= 0.5) {
         const msg = `🛡️ <b>PROFIT PROTECTION:</b> (Trend Flip)\n\n` +
                    `• Posisi: <code>${escapeHTML(shortAddr(pos.position_address))}</code>\n` +
                    `• Alasan: <i>Trend Bearish detected while in profit.</i>\n` +

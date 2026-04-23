@@ -19,8 +19,8 @@
         "priceOffsetMax": 94
       },
       "exit": {
-        "takeProfit": "Supertrend flip to BEARISH or profit threshold met",
-        "stopLoss": "5-8% drawdown or supertrend flip",
+        "takeProfit": "Trailing/TP thresholds met while preserving LP fee edge",
+        "stopLoss": "Drawdown/OOR emergency guard only (not supertrend flip kill-switch)",
         "maxHoldHours": 6
       },
       "binStep": [100, 125],
@@ -47,7 +47,7 @@
       },
       "exit": {
         "takeProfit": "Price crashes into zone OR 4-6 hours elapsed",
-        "stopLoss": "Supertrend flip + 2 candles confirmation",
+        "stopLoss": "Drawdown/OOR emergency guard with deep-range tolerance",
         "maxHoldHours": 6
       },
       "binStep": [80, 100, 125],
