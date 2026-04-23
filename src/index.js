@@ -683,6 +683,15 @@ async function runAutoScreening() {
     await runHunterAlpha(notify, bot, ALLOWED_ID, {
       maxPositionsCap: effectiveMax,
     });
+    // Auto-send full radar report after each autoscreen cycle.
+    // This keeps Telegram output self-contained without requiring /radar_report command.
+    const snapshot = getLastRadarSnapshot();
+    if (snapshot) {
+      const report = formatRadarReportTelegram(snapshot);
+      await sendLong(ALLOWED_ID, report, { parse_mode: 'HTML' }).catch(() => {
+        bot.sendMessage(ALLOWED_ID, report, { parse_mode: 'HTML' }).catch(() => {});
+      });
+    }
   } catch (e) {
     console.error('Auto-screening error:', e.message);
     notify(`❌ Auto-screening error: ${e.message}`).catch(() => { });
