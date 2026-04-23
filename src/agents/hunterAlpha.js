@@ -187,7 +187,17 @@ async function fetchDexGateMetrics(tokenMint) {
     const json = await res.json().catch(() => null);
     const pairs = Array.isArray(json?.pairs) ? json.pairs : [];
     if (!pairs.length) return null;
-    const best = pairs.sort((a, b) => safeNum(b?.liquidity?.usd) - safeNum(a?.liquidity?.usd))[0];
+    const byLiquidityDesc = [...pairs].sort((a, b) => safeNum(b?.liquidity?.usd) - safeNum(a?.liquidity?.usd));
+    const best = byLiquidityDesc[0];
+    const meteoraPairs = pairs.filter((p) => {
+      const sig = `${String(p?.dexId || '')} ${String(p?.labels || '')}`.toLowerCase();
+      return sig.includes('meteora') || sig.includes('dlmm');
+    });
+    const meteoraByLiquidity = [...meteoraPairs].sort((a, b) => safeNum(b?.liquidity?.usd) - safeNum(a?.liquidity?.usd));
+    const meteoraPairAddresses = meteoraByLiquidity
+      .map((p) => String(p?.pairAddress || '').trim())
+      .filter(Boolean)
+      .slice(0, 3);
     const volumeValues = pairs.map((p) => safeNum(p?.volume?.h24)).filter((v) => Number.isFinite(v) && v > 0);
     const mcapValues = pairs.map((p) => safeNum(p?.fdv)).filter((v) => Number.isFinite(v) && v > 0);
     const createdAtValues = pairs
@@ -207,7 +217,10 @@ async function fetchDexGateMetrics(tokenMint) {
       mcap: mcapMax,
       liquidityUsd: safeNum(best?.liquidity?.usd),
       txns24h: safeNum(best?.txns?.h24?.buys) + safeNum(best?.txns?.h24?.sells),
-      pairAddress: best?.pairAddress || null,
+      pairAddress: meteoraPairAddresses[0] || best?.pairAddress || null,
+      pairAddressFallback: best?.pairAddress || null,
+      meteoraPairAddresses,
+      hasMeteoraPair: meteoraPairAddresses.length > 0,
       pairCreatedAt: newestPairCreatedAt,
       pairName: `${best?.baseToken?.symbol || ''}-${best?.quoteToken?.symbol || ''}`.replace(/^-|-$/g, ''),
     };
@@ -1491,33 +1504,39 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null, opt
         mint: t.mint,
         symbol: t.symbol,
         dexGate: t.dexGate || null,
+        pairAddresses: Array.isArray(t.dexGate?.meteoraPairAddresses) && t.dexGate.meteoraPairAddresses.length
+          ? t.dexGate.meteoraPairAddresses
+          : (t.dexGate?.pairAddress ? [t.dexGate.pairAddress] : []),
       }))
-      .filter((x) => !!x.dexGate?.pairAddress)
+      .filter((x) => x.pairAddresses.length > 0)
       .slice(0, 8);
 
     if (directPoolChecks.length) {
       const directResults = await Promise.all(directPoolChecks.map(async (item) => {
-        try {
-          const info = await getPoolInfo(item.dexGate.pairAddress);
-          if (!info || !info.address) return null;
-          const mints = [info.tokenX, info.tokenY].filter((m) => m && m !== WSOL_MINT);
-          if (!mints.includes(item.mint)) return null;
-          return {
-            mint: item.mint,
-            pool: {
-              address: info.address,
-              name: `${item.symbol || 'TOKEN'}-SOL`,
-              tokenX: info.tokenX,
-              tokenY: info.tokenY,
-              binStep: safeNum(info.binStep || 0),
-              liquidityRaw: safeNum(item.dexGate?.liquidityUsd || 0),
-              volume24hRaw: safeNum(item.dexGate?.volume24h || 0),
-              fees24hRaw: 0,
-            },
-          };
-        } catch {
-          return null;
+        for (const addr of item.pairAddresses.slice(0, 3)) {
+          try {
+            const info = await getPoolInfo(addr);
+            if (!info || !info.address) continue;
+            const mints = [info.tokenX, info.tokenY].filter((m) => m && m !== WSOL_MINT);
+            if (!mints.includes(item.mint)) continue;
+            return {
+              mint: item.mint,
+              pool: {
+                address: info.address,
+                name: `${item.symbol || 'TOKEN'}-SOL`,
+                tokenX: info.tokenX,
+                tokenY: info.tokenY,
+                binStep: safeNum(info.binStep || 0),
+                liquidityRaw: safeNum(item.dexGate?.liquidityUsd || 0),
+                volume24hRaw: safeNum(item.dexGate?.volume24h || 0),
+                fees24hRaw: 0,
+              },
+            };
+          } catch {
+            // try next pair address
+          }
         }
+        return null;
       }));
 
       for (const row of directResults) {
@@ -1555,7 +1574,9 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null, opt
         reason = `VETO [${first?.rule || 'SECURITY_REJECT'}]: ${first?.msg || 'Token gagal gate keamanan.'}${funnel}`;
       } else if (!bestPool) {
         upsertNoPoolPending({ mint: t.mint, symbol: t.symbol || t.name, dexGate }, cfg);
-        reason = 'VETO [NO_METEORA_EXEC_POOL]: token lolos, tapi belum ada pool Meteora yang executable.';
+        reason = (dexGate?.hasMeteoraPair === false)
+          ? 'VETO [NO_METEORA_EXEC_POOL]: token lolos gate, tapi di Dex belum ada pair Meteora/DLMM.'
+          : 'VETO [NO_METEORA_EXEC_POOL]: token lolos, tapi belum ada pool Meteora yang executable.';
         rejNoPool++;
       } else if (isOnCooldown(bestPool.address)) {
         reason = 'VETO [POOL_COOLDOWN]: pool/token dalam masa cooldown.';
