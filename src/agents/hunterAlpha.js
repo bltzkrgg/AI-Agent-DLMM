@@ -360,6 +360,13 @@ export function computeEntrySignalsFromCandles(candles15m = [], cfg = {}) {
   const supertrendValue = Number.isFinite(st15m?.value) ? safeNum(st15m.value) : NaN;
   const lastClose = safeNum(close);
   const closeAboveSupertrend = Number.isFinite(supertrendValue) ? (lastClose > supertrendValue) : false;
+  const supertrendDistancePct = Number.isFinite(supertrendValue) && supertrendValue > 0
+    ? ((lastClose - supertrendValue) / supertrendValue) * 100
+    : NaN;
+  const maxDistancePct = Math.max(0.1, Number(cfg.entrySupertrendMaxDistancePct ?? 5));
+  const proximityPass = Number.isFinite(supertrendDistancePct)
+    ? supertrendDistancePct <= maxDistancePct
+    : false;
 
   return {
     ready: true,
@@ -374,6 +381,9 @@ export function computeEntrySignalsFromCandles(candles15m = [], cfg = {}) {
     supertrendValue,
     lastClose,
     closeAboveSupertrend,
+    supertrendDistancePct,
+    maxDistancePct,
+    proximityPass,
   };
 }
 
@@ -1003,9 +1013,10 @@ async function executeTool(name, input) {
       const strategyProfile = getStrategy(strategy.name);
       deployOptions = { ...(strategyProfile?.parameters || {}), ...(strategyProfile?.deploy || {}) };
       strategyEval = null;
+      let snapshot = null;
 
       try {
-        const snapshot = await getMarketSnapshot(poolInfo.tokenX, input.pool_address);
+        snapshot = await getMarketSnapshot(poolInfo.tokenX, input.pool_address);
         const regimeInfo = classifyMarketRegime(snapshot);
         if (regimeInfo?.regime === 'BEAR_DEFENSE') {
           return JSON.stringify({
@@ -1062,6 +1073,29 @@ async function executeTool(name, input) {
       // Dynamic range — strategyEval.deployOptions sudah di-merge ke deployOptions di atas.
       // Fallback: deployOptions.priceRangePct → strategy params → generic 10%.
       targetPriceRangePct = deployOptions?.priceRangePct ?? stratParams.priceRangePercent ?? 10;
+
+      // LPer Retest Mode: enforce one-sided SOL + SPOT metadata and map bin placement near ST support.
+      // This metadata is non-breaking and helps keep deploy semantics explicit.
+      const modeNow = String(getConfig().entryGateMode || 'lper_retest');
+      deployOptions = {
+        ...deployOptions,
+        entryGateMode: modeNow,
+        lperPositionType: 'one-sided',
+        lperBaseToken: 'SOL',
+        lperShape: 'SPOT',
+      };
+
+      const currentPrice = Number(snapshot?.price?.current || snapshot?.price?.price || 0);
+      const stSupport = Number(snapshot?.ta?.supertrend?.value || 0);
+      const binPct = Number(poolInfo?.binStep || 0) / 100;
+      if (!Number.isFinite(deployOptions.fixedBinsBelow) && Number.isFinite(currentPrice) && currentPrice > 0 && Number.isFinite(stSupport) && stSupport > 0 && Number.isFinite(binPct) && binPct > 0) {
+        const stDistancePct = ((currentPrice - stSupport) / stSupport) * 100;
+        if (stDistancePct > 0) {
+          const binsTowardSupport = Math.max(2, Math.min(250, Math.ceil((stDistancePct / binPct) + 2)));
+          deployOptions.fixedBinsBelow = binsTowardSupport;
+          deployOptions.binPadding = -1;
+        }
+      }
 
       // Strategy vs pool warning (non-blocking)
       try {
@@ -1155,7 +1189,8 @@ async function executeTool(name, input) {
       try {
         if (hunterNotifyFn && result.success) {
           const tpTarget = strategyProfile?.exit?.takeProfitPct ?? cfg.takeProfitFeePct ?? 5;
-          const slTarget = strategyProfile?.exit?.emergencyStopLossPct ?? cfg.stopLossPct ?? 5;
+          const liveThresholds = getThresholds();
+          const slTarget = strategyProfile?.exit?.emergencyStopLossPct ?? liveThresholds.stopLossPct ?? cfg.stopLossPct ?? 5;
           const trailAct = strategyProfile?.exit?.trailingTriggerPct ?? cfg.trailingTriggerPct ?? 3.0;
           const nPos = result.positionCount ?? 1;
 
@@ -1752,11 +1787,7 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null, opt
       const fallbackBodyPct = Math.abs(safeNum(ohlcv?.priceChangeM5, 0));
       const fallbackHtfTrend = safeNum(ohlcv?.priceChangeH1, 0) >= 0 ? 'BULLISH' : 'BEARISH';
 
-      const signalIsGreen = entrySignals.ready ? entrySignals.isGreen : safeNum(ohlcv?.priceChangeM5, 0) > 0;
-      const signalBodyPct = entrySignals.ready ? entrySignals.bodyPct : fallbackBodyPct;
-      const signalUpperWickBodyRatio = entrySignals.ready ? entrySignals.upperWickBodyRatio : 0;
       const signalVolumeRatio = entrySignals.ready ? entrySignals.volumeRatio : 1;
-      const signalBreakoutConfirm = entrySignals.ready ? entrySignals.breakoutConfirm : false;
       const signalHtfTrend = entrySignals.ready ? entrySignals.htfTrend : fallbackHtfTrend;
       const signalStValue = entrySignals.ready
         ? safeNum(entrySignals.supertrendValue, NaN)
@@ -1764,7 +1795,13 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null, opt
       const signalClose = entrySignals.ready
         ? safeNum(entrySignals.lastClose, NaN)
         : safeNum(ohlcv?.currentPrice, NaN);
+      const signalStDistancePct = entrySignals.ready
+        ? safeNum(entrySignals.supertrendDistancePct, NaN)
+        : (Number.isFinite(signalStValue) && signalStValue > 0 && Number.isFinite(signalClose)
+          ? ((signalClose - signalStValue) / signalStValue) * 100
+          : NaN);
       const breakMinPct = Math.max(0, Number(cfgNow.entrySupertrendBreakMinPct ?? 0));
+      const maxDistancePct = Math.max(0.1, Number(cfgNow.entrySupertrendMaxDistancePct ?? 5));
       const breakThreshold = Number.isFinite(signalStValue)
         ? signalStValue * (1 + (breakMinPct / 100))
         : NaN;
@@ -1780,19 +1817,14 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null, opt
         return null;
       }
 
-      if (cfgNow.entryRequireGreenCandle !== false) {
-        const minBodyPct = Math.max(0, Number(cfgNow.entryMinGreenBodyPct ?? 0.2));
-        if (!signalIsGreen || signalBodyPct < minBodyPct) {
-          rejEntryConfirm++;
-          if (process.env.HUNTER_DEBUG) console.log(`[hunter] Skipping ${p.name} - green/body confirm failed (green=${signalIsGreen}, body=${signalBodyPct.toFixed(3)}%)`);
-          return null;
+      // LPer Retest rule:
+      // Entry only when price already breaks above ST but not too stretched from ST support.
+      if (!Number.isFinite(signalStDistancePct) || signalStDistancePct > maxDistancePct) {
+        rejWaitBreakSupertrend++;
+        if (process.env.HUNTER_DEBUG) {
+          const distanceText = Number.isFinite(signalStDistancePct) ? signalStDistancePct.toFixed(3) : 'n/a';
+          console.log(`[hunter] Waiting ${p.name} - WAIT_FOR_PULLBACK (stDistance=${distanceText}% > max=${maxDistancePct.toFixed(2)}%)`);
         }
-      }
-
-      const maxWickRatio = Math.max(0.5, Number(cfgNow.entryMaxUpperWickBodyRatio ?? 2.5));
-      if (signalUpperWickBodyRatio > maxWickRatio) {
-        rejEntryConfirm++;
-        if (process.env.HUNTER_DEBUG) console.log(`[hunter] Skipping ${p.name} - upper wick too long (${signalUpperWickBodyRatio.toFixed(2)}x > ${maxWickRatio}x)`);
         return null;
       }
 
@@ -1803,12 +1835,6 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null, opt
           if (process.env.HUNTER_DEBUG) console.log(`[hunter] Skipping ${p.name} - volume confirm failed (${signalVolumeRatio.toFixed(2)}x < ${minVolRatio}x)`);
           return null;
         }
-      }
-
-      if (cfgNow.entryRequireBreakoutConfirm === true && !signalBreakoutConfirm) {
-        rejEntryConfirm++;
-        if (process.env.HUNTER_DEBUG) console.log(`[hunter] Skipping ${p.name} - breakout confirmation missing`);
-        return null;
       }
 
       if (cfgNow.entryRequireHtfAlignment !== false) {
@@ -1863,16 +1889,19 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null, opt
           breakdown: `15m:${ohlcv.ta.supertrend?.trend === 'BULLISH' ? '✅' : '❌'}`
         } : null,
         entrySignals: {
-          green: Boolean(signalIsGreen),
-          bodyPct: Number(signalBodyPct.toFixed(3)),
+          green: entrySignals.ready ? Boolean(entrySignals.isGreen) : false,
+          bodyPct: Number((entrySignals.ready ? entrySignals.bodyPct : fallbackBodyPct).toFixed(3)),
           volumeRatio: Number(signalVolumeRatio.toFixed(3)),
-          breakoutConfirmed: Boolean(signalBreakoutConfirm),
+          breakoutConfirmed: entrySignals.ready ? Boolean(entrySignals.breakoutConfirm) : false,
           htfTrend: signalHtfTrend,
           supertrendBreakConfirmed: Number.isFinite(signalClose) && Number.isFinite(breakThreshold)
             ? signalClose > breakThreshold
             : false,
           supertrendClose: Number.isFinite(signalClose) ? Number(signalClose.toFixed(10)) : null,
           supertrendBreakLevel: Number.isFinite(breakThreshold) ? Number(breakThreshold.toFixed(10)) : null,
+          supertrendDistancePct: Number.isFinite(signalStDistancePct) ? Number(signalStDistancePct.toFixed(3)) : null,
+          supertrendMaxDistancePct: Number(maxDistancePct.toFixed(3)),
+          supertrendProximityPass: Number.isFinite(signalStDistancePct) ? signalStDistancePct <= maxDistancePct : false,
         },
         executionFlags: {
           nonRefundableFees: dlmm?.hasNonRefundableFees === true,

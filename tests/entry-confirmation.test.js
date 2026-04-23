@@ -293,20 +293,14 @@ test('computeEntrySignals: respects custom entryVolumeLookbackCandles config', (
 
 const hunterSrc = readFileSync(join(repoRoot, 'src/agents/hunterAlpha.js'), 'utf-8');
 
-test('gate: green candle check uses entryRequireGreenCandle config flag', () => {
-  assert.match(hunterSrc, /entryRequireGreenCandle/);
-  // Gate should be disabled when flag is explicitly false
-  assert.match(hunterSrc, /entryRequireGreenCandle\s*!==\s*false/);
+test('gate: lper_retest mode reads entryGateMode + entrySupertrendMaxDistancePct', () => {
+  assert.match(hunterSrc, /entryGateMode/);
+  assert.match(hunterSrc, /entrySupertrendMaxDistancePct/);
 });
 
-test('gate: green candle check enforces entryMinGreenBodyPct threshold', () => {
-  assert.match(hunterSrc, /entryMinGreenBodyPct/);
-  assert.match(hunterSrc, /signalBodyPct\s*<\s*minBodyPct/);
-});
-
-test('gate: upper wick reject uses entryMaxUpperWickBodyRatio', () => {
-  assert.match(hunterSrc, /entryMaxUpperWickBodyRatio/);
-  assert.match(hunterSrc, /signalUpperWickBodyRatio\s*>\s*maxWickRatio/);
+test('gate: lper_retest waits for pullback when price too far above supertrend', () => {
+  assert.match(hunterSrc, /signalStDistancePct\s*>\s*maxDistancePct/);
+  assert.match(hunterSrc, /WAIT_FOR_PULLBACK/);
 });
 
 test('gate: volume confirm gate uses entryRequireVolumeConfirm flag', () => {
@@ -319,10 +313,9 @@ test('gate: volume confirm gate enforces entryMinVolumeRatio threshold', () => {
   assert.match(hunterSrc, /signalVolumeRatio\s*<\s*minVolRatio/);
 });
 
-test('gate: breakout confirm only fires when entryRequireBreakoutConfirm === true (opt-in)', () => {
-  // The gate must be opt-in (=== true check, not !== false)
-  assert.match(hunterSrc, /entryRequireBreakoutConfirm\s*===\s*true/);
-  assert.match(hunterSrc, /!signalBreakoutConfirm/);
+test('gate: breakout confirm is not used as hard reject in lper_retest mode', () => {
+  assert.doesNotMatch(hunterSrc, /entryRequireBreakoutConfirm\s*===\s*true/);
+  assert.doesNotMatch(hunterSrc, /!signalBreakoutConfirm/);
 });
 
 test('gate: HTF alignment gate uses entryRequireHtfAlignment flag', () => {
@@ -337,9 +330,9 @@ test('gate: HTF alignment respects entryHtfAllowNeutral — NEUTRAL allowed when
 });
 
 test('gate: fallback when candles unavailable uses priceChangeM5 as green proxy', () => {
-  // When entrySignals.ready is false, code must fall back to ohlcv.priceChangeM5
-  assert.match(hunterSrc, /entrySignals\.ready\s*\?\s*entrySignals\.isGreen/);
-  assert.match(hunterSrc, /priceChangeM5.*>\s*0/);
+  // LPer mode no longer hard-gates by green candle, but fallback proxy remains for reporting.
+  assert.match(hunterSrc, /fallbackBodyPct/);
+  assert.match(hunterSrc, /priceChangeM5/);
 });
 
 test('gate: fallback when candles unavailable uses priceChangeH1 as HTF proxy', () => {

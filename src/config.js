@@ -56,14 +56,11 @@ const DEFAULTS = {
   maxOhlcvStaleMinutes15m: 90, // Maks umur candle 15m sebelum dianggap stale
   maxOhlcvStaleMinutes1h: 180, // Maks umur candle 1h (cadangan HTF)
   minAtrPctForEntry: 2.0,      // Minimal ATR% untuk entry supaya tidak masuk market terlalu flat
-  entryRequireGreenCandle: true, // Wajib candle 15m terakhir hijau saat evaluasi entry
-  entryMinGreenBodyPct: 0.2,     // Minimal body candle hijau (% dari open)
-  entryMaxUpperWickBodyRatio: 2.5, // Hindari candle hijau dengan wick atas terlalu panjang
+  entryGateMode: 'lper_retest',  // lper_retest: close > ST + proximity guard (LPer mode)
+  entrySupertrendMaxDistancePct: 5, // Tahan entry jika harga terlalu jauh di atas ST (wait pullback)
   entryRequireVolumeConfirm: true, // Volume candle entry harus >= rata-rata rolling volume
   entryMinVolumeRatio: 1.1,      // Rasio min volume candle vs average volume
   entryVolumeLookbackCandles: 20, // Lookback candle untuk baseline volume
-  entryRequireBreakoutConfirm: false, // Opsional: wajib breakout + 1-candle confirmation
-  entryBreakoutLookbackCandles: 96, // Lookback breakout (96x15m ~= 24h)
   entryRequireHtfAlignment: true, // Wajib konfirmasi HTF (1h) sebelum entry
   entryHtfAllowNeutral: true,     // HTF boleh NEUTRAL (tetap tolak BEARISH)
   entrySupertrendBreakMinPct: 0,  // Buffer break di atas garis Supertrend 15m (0 = strict close > ST)
@@ -263,14 +260,11 @@ const CONFIG_BOUNDS = {
   maxOhlcvStaleMinutes15m: { min: 5, max: 720 },
   maxOhlcvStaleMinutes1h: { min: 15, max: 1440 },
   minAtrPctForEntry: { min: 0, max: 20 },
-  entryRequireGreenCandle: { type: 'boolean' },
-  entryMinGreenBodyPct: { min: 0, max: 10 },
-  entryMaxUpperWickBodyRatio: { min: 0.5, max: 10 },
+  entryGateMode: { type: 'string' },
+  entrySupertrendMaxDistancePct: { min: 0.1, max: 20 },
   entryRequireVolumeConfirm: { type: 'boolean' },
   entryMinVolumeRatio: { min: 0.5, max: 5 },
   entryVolumeLookbackCandles: { min: 5, max: 200 },
-  entryRequireBreakoutConfirm: { type: 'boolean' },
-  entryBreakoutLookbackCandles: { min: 20, max: 500 },
   entryRequireHtfAlignment: { type: 'boolean' },
   entryHtfAllowNeutral: { type: 'boolean' },
   entrySupertrendBreakMinPct: { min: 0, max: 5 },
