@@ -11,12 +11,11 @@ import { processMessage } from './agent/claude.js';
 import { handleStrategyCommand, isInStrategySession } from './strategies/strategyHandler.js';
 import { runHunterAlpha, getCandidates, getLastRadarSnapshot } from './agents/hunterAlpha.js';
 import { runHealerAlpha, runPanicWatchdog, executeTool, runSelfHealingSync } from './agents/healerAlpha.js';
-import { learnFromPool, learnFromMultiplePools, loadLessons, pinLesson, unpinLesson, deleteLesson, clearAllLessons, formatLessonsList, getBrainSummary } from './learn/lessons.js';
+import { getBrainSummary } from './learn/lessons.js';
 import { getConfig, getThresholds, updateConfig, isConfigKeySupported } from './config.js';
 import { handleConfirmationReply, getSafetyStatus, setStartingBalanceUsd } from './safety/safetyManager.js';
 import { evolveFromTrades, getMemoryStats, getInstinctsContext } from './market/memory.js';
-import { extractStrategiesFromArticle, summarizeArticle } from './market/researcher.js';
-import { getLibraryStats, loadLibrary } from './market/strategyLibrary.js';
+import { loadLibrary } from './market/strategyLibrary.js';
 import { screenToken, formatScreenResult } from './market/coinfilter.js';
 import { safeNum, escapeHTML } from './utils/safeJson.js';
 import { getOpenPositions, getPositionStats, listPendingReconcileIssues, listRecentFailedOperations } from './db/database.js';
@@ -42,7 +41,6 @@ import { DbBackup } from './db/backup.js';
 import { initializeRpcManager, getRpcMetrics } from './utils/helius.js';
 import { CircuitBreaker } from './safety/circuitBreaker.js';
 import { createMessageTransport } from './telegram/messageTransport.js';
-import { performGitPull, performNpmInstall, performPostUpdateChecks } from './utils/shell.js';
 
 // ─── PID lock — cegah multiple instance ─────────────────────────
 const PID_FILE = new URL('../../bot.pid', import.meta.url).pathname;
@@ -1002,32 +1000,23 @@ bot.onText(/\/tae_stats/, async (msg) => {
 bot.onText(/\/start/, (msg) => {
   if (msg.from.id !== ALLOWED_ID) return;
   bot.sendMessage(msg.chat.id,
-    `🦞 <b>AI-Agent-DLMM</b> <code>[LIVE]</code>\n\n` +
-    `🐼 <b>Hunter</b> — Adaptive Panda logic\n` +
-    `🩺 <b>Healer</b> — Autonomous position management\n` +
-    `🧠 <b>Brain</b> — Intelligence dashboard\n\n` +
-    `<b>Monitoring:</b>\n` +
-    `• <code>/status</code> — On-chain position details\n` +
-    `• <code>/radar_report</code> — 🛰️ Radar report full di Telegram\n` +
-    `• <code>/results</code> — Daily PnL report\n\n` +
-    `<b>Control:</b>\n` +
-    `• <code>/hunting</code> — 🦅 Sultan Sniper Trigger\n` +
-    `• <code>/heal</code> — 🩺 Position Management\n` +
-    `• <code>/claim &lt;position&gt;</code> — 💸 Claim fees manual\n` +
-    `• <code>/zap &lt;addr&gt;</code> — 🆘 Emergency Exit\n` +
-    `• <code>/check &lt;mint&gt;</code> — 🔍 RugCheck\n` +
-    `• <code>/autoscreen on|off</code> — Toggle Autonomy\n` +
-    `• <code>/pause</code> / <code>/resume</code> — Pause/lanjut loop otonom\n` +
-    `• <code>/stage [shadow|canary|full]</code> — Deployment Gate\n` +
-    `• <code>/override_range &lt;pct&gt; [strategy]</code> — Override range entry\n` +
-    `• <code>/rollback</code> — Safe-mode rollback cepat\n` +
-    `• <code>/dryrun on|off</code> — Toggle Simulation\n\n` +
-    `<b>Brain &amp; Evolution:</b>\n` +
-    `<code>/brain</code> <code>/lessons</code> <code>/evolve</code> <code>/evolve_memory</code> <code>/poolmemory</code>\n\n` +
-    `<b>Admin:</b>\n` +
-    `<code>/setconfig</code> <code>/safety</code> <code>/providers</code> <code>/model</code> <code>/health</code> <code>/preflight</code>\n` +
-    `<code>/system_update</code> — 🚀 Upgrade Aegis Supreme (v75.9)\n\n` +
-    `<i>Atau chat bebas untuk instruksi manual!</i>`,
+    `🦞 <b>AI-Agent-DLMM</b> <code>[LIVE OPS]</code>\n\n` +
+    `<b>Core (Pakai Harian)</b>\n` +
+    `• <code>/autoscreen on|off</code> — Start/stop auto screening\n` +
+    `• <code>/pause</code> / <code>/resume</code> — Pause/lanjut mode otonom\n` +
+    `• <code>/status</code> — Posisi aktif + PnL on-chain\n` +
+    `• <code>/radar_report</code> — Laporan radar lengkap (Telegram-only)\n` +
+    `• <code>/preflight</code> — Cek readiness sebelum mode live\n` +
+    `• <code>/health</code> — Ringkasan kesehatan sistem\n` +
+    `• <code>/setconfig</code> — Ubah config runtime (tanpa restart)\n` +
+    `• <code>/claim_fees &lt;position&gt;</code> — Claim fee manual\n` +
+    `• <code>/zap &lt;addr&gt;</code> — Emergency close\n` +
+    `• <code>/check &lt;mint&gt;</code> — Cek cepat 1 token\n\n` +
+    `<b>Opsional (Debug / Tuning)</b>\n` +
+    `• <code>/hunting</code> <code>/heal</code> <code>/providers</code>\n` +
+    `• <code>/stage</code> <code>/override_range</code> <code>/dryrun</code>\n` +
+    `• <code>/results</code> <code>/strategy_report</code> <code>/tae_stats</code>\n\n` +
+    `<i>Command advanced/research disembunyikan dari menu ini agar operasi lebih simple.</i>`,
     { parse_mode: 'HTML' }
   );
 });
@@ -1313,11 +1302,6 @@ bot.onText(/\/zap(?:\s+(\S+))?/, async (msg, match) => {
   setTimeout(() => bot.removeListener('message', confirmHandler), 30000);
 });
 
-bot.onText(/\/pools/, async (msg) => {
-  if (msg.from.id !== ALLOWED_ID) return;
-  await handleMessage(msg, 'Analisa dan tampilkan 5 pool DLMM terbaik berdasarkan fee APR saat ini');
-});
-
 bot.onText(/\/(hunt|hunting)/, async (msg) => {
   if (msg.from.id !== ALLOWED_ID) return;
   const now = Date.now();
@@ -1361,84 +1345,6 @@ bot.onText(/\/check(?:\s+(.+))?/, async (msg, match) => {
   } catch (e) { bot.sendMessage(chatId, `❌ <code>${escapeHTML(e.message)}</code>`, { parse_mode: 'HTML' }); }
 });
 
-bot.onText(/\/system_update/, (msg) => {
-  if (msg.from.id !== ALLOWED_ID) return;
-  const chatId = msg.chat.id;
-
-  const text = `🔄 <b>SYSTEM UPDATE &amp; RESTART</b>\n\n` +
-    `Anda akan melakukan pembaruan sistem:\n` +
-    `1. Ambil kode terbaru (<code>git pull</code>)\n` +
-    `2. Update dependensi (<code>npm install</code>)\n` +
-    `3. Jalankan migrasi database otomatis\n` +
-    `4. Restart bot (via PM2)\n\n` +
-    `⚠️ <b>PERINGATAN</b>: Pastikan bot berjalan menggunakan PM2 di VPS agar bisa restart otomatis.\n\n` +
-    `Ketik <code>GAS UPDATE</code> untuk mengeksekusi pembaruan.`;
-
-  bot.sendMessage(chatId, text, { parse_mode: 'HTML' });
-
-  const updateHandler = async (cMsg) => {
-    if (cMsg.from.id === ALLOWED_ID && cMsg.text === 'GAS UPDATE' && cMsg.chat.id === chatId) {
-      bot.removeListener('message', updateHandler);
-      bot.sendMessage(chatId, '📥 <b>Memulai Update...</b>', { parse_mode: 'HTML' });
-
-      try {
-        // Step 1: Git Pull
-        bot.sendMessage(chatId, '📡 <code>git pull</code> dalam proses...', { parse_mode: 'HTML' });
-        const gitResult = await performGitPull();
-        bot.sendMessage(chatId, `✅ <b>Git Pull Success:</b>\n<pre><code>${gitResult}</code></pre>`, { parse_mode: 'HTML' });
-
-        // Step 2: NPM Install
-        bot.sendMessage(chatId, '📦 <code>npm install</code> dalam proses (Mungkin agak lama)...', { parse_mode: 'HTML' });
-        await performNpmInstall();
-        bot.sendMessage(chatId, '✅ <b>NPM Install Success.</b>', { parse_mode: 'HTML' });
-
-        // Step 3: Post-update health checks (block restart jika gagal)
-        bot.sendMessage(chatId, '🧪 Menjalankan post-update checks (<code>lint + readiness tests</code>)...', { parse_mode: 'HTML' });
-        const checksOutput = await performPostUpdateChecks();
-        const preview = escapeHTML((checksOutput || '').slice(-3500));
-        bot.sendMessage(chatId, `✅ <b>Post-update checks passed</b>\n<pre><code>${preview || 'OK'}</code></pre>`, { parse_mode: 'HTML' });
-
-        // Step 4: Restart
-        bot.sendMessage(chatId, '🚀 <b>Memicu Restart Sistem...</b> Bot akan offline sebentar.', { parse_mode: 'HTML' });
-
-        setTimeout(() => {
-          process.exit(0); // Trigger PM2 Restart
-        }, 1000);
-
-      } catch (err) {
-        bot.sendMessage(chatId, `❌ <b>Update Gagal:</b>\n\n<code>${escapeHTML(err.message)}</code>`, { parse_mode: 'HTML' });
-      }
-    } else if (cMsg.from.id === ALLOWED_ID && cMsg.chat.id === chatId && cMsg.text !== 'GAS UPDATE' && !cMsg.text.startsWith('/')) {
-      bot.removeListener('message', updateHandler);
-      bot.sendMessage(chatId, '❌ Update dibatalkan.');
-    }
-  };
-
-  bot.on('message', updateHandler);
-  setTimeout(() => bot.removeListener('message', updateHandler), 60000); // 1 minute timeout
-});
-
-bot.onText(/\/library/, (msg) => {
-  if (msg.from.id !== ALLOWED_ID) return;
-  const ROOT = join(__dirname, '../data');
-  const DATA_FILES = [
-    join(ROOT, 'memory.json'),
-    join(ROOT, 'lessons.json'),
-    join(ROOT, 'strategyPerformance.json'),
-    join(__dirname, '../strategy-library.json'),
-  ];
-  const stats = getLibraryStats();
-  let text = `📚 <b>Strategy Library</b>\n\n`;
-  text += `Total: ${stats.totalStrategies} | Built-in: ${stats.builtinCount} | Research: ${stats.researchedCount}\n`;
-  text += `Last updated: ${stats.lastUpdated ? new Date(stats.lastUpdated).toLocaleString() : 'Belum ada'}\n\n`;
-  text += `<b>Top Strategi:</b>\n`;
-  stats.topStrategies.forEach((s, i) => {
-    text += `${i + 1}. ${escapeHTML(s.name)} (<i>${escapeHTML(s.type)}</i>) — ${(s.confidence * 100).toFixed(0)}%\n`;
-  });
-  text += `\n<i>/research untuk tambah strategi dari artikel</i>`;
-  bot.sendMessage(msg.chat.id, text, { parse_mode: 'HTML' });
-});
-
 // /strategy_report — per-strategy performance: trades, win rate, avg PnL, confidence
 bot.onText(/\/strategy_report/, async (msg) => {
   if (msg.from.id !== ALLOWED_ID) return;
@@ -1471,47 +1377,6 @@ bot.onText(/\/strategy_report/, async (msg) => {
   await sendLong(chatId, text);
 });
 
-// Research sessions state
-const researchSessions = new Map();
-
-bot.onText(/\/research/, async (msg) => {
-  if (msg.from.id !== ALLOWED_ID) return;
-  const chatId = msg.chat.id;
-  const inlineText = msg.text.replace('/research', '').trim();
-  if (inlineText.length > 100) {
-    await processResearchArticle(chatId, inlineText);
-    return;
-  }
-  researchSessions.set(msg.from.id, true);
-  bot.sendMessage(chatId,
-    `🔬 <b>Research Mode Aktif</b>\n\nPaste artikel strategi DLMM sekarang.\n<i>/cancel untuk batal.</i>`,
-    { parse_mode: 'HTML' }
-  );
-});
-
-async function processResearchArticle(chatId, articleText) {
-  bot.sendMessage(chatId, '🔬 Menganalisa artikel...');
-  try {
-    const summary = await summarizeArticle(articleText);
-    const result = await extractStrategiesFromArticle(articleText);
-    let text = `📰 <b>Ringkasan:</b>\n${escapeHTML(summary)}\n\n`;
-    if (result.extracted.length === 0) {
-      text += `⚠️ ${escapeHTML(result.message)}`;
-    } else {
-      text += `✅ <b>${result.extracted.length} Strategi Ditemukan:</b>\n\n`;
-      result.extracted.forEach((s, i) => {
-        text += `<b>${i + 1}. ${escapeHTML(s.name)}</b> (<i>${escapeHTML(s.type)}</i>)\n`;
-        text += `📊 Market: ${escapeHTML(s.marketConditions?.trend?.join(', '))}\n`;
-        text += `🎯 Entry: ${escapeHTML(s.entryConditions)}\n`;
-        text += `🚪 Exit: ${escapeHTML(s.exitConditions)}\n\n`;
-      });
-      text += `<i>Strategi aktif di Library dan akan dipakai Hunter Alpha.</i>`;
-    }
-    bot.sendMessage(chatId, text, { parse_mode: 'HTML' });
-  } catch (e) { bot.sendMessage(chatId, `❌ <code>${escapeHTML(e.message)}</code>`, { parse_mode: 'HTML' }); }
-}
-
-
 bot.onText(/\/evolve/, async (msg) => {
   if (msg.from.id !== ALLOWED_ID) return;
   const chatId = msg.chat.id;
@@ -1533,85 +1398,6 @@ bot.onText(/\/evolve/, async (msg) => {
     bot.sendMessage(chatId, text, { parse_mode: 'HTML' });
   } catch (e) { bot.sendMessage(msg.chat.id, `❌ <code>${escapeHTML(e.message)}</code>`, { parse_mode: 'HTML' }); }
 });
-
-bot.onText(/\/learn(?:\s+(.+))?/, async (msg, match) => {
-  if (msg.from.id !== ALLOWED_ID) return;
-  const chatId = msg.chat.id;
-  const poolArg = match[1]?.trim();
-  bot.sendMessage(chatId, '📚 Mempelajari top LPers...');
-  try {
-    if (poolArg) {
-      const lessons = await learnFromPool(poolArg);
-      bot.sendMessage(chatId,
-        `✅ <b>${lessons.length} lessons baru:</b>\n\n` + lessons.map((l, i) => `${i + 1}. ${escapeHTML(l.lesson)}`).join('\n\n'),
-        { parse_mode: 'HTML' }
-      );
-    } else {
-      const candidates = getCandidates();
-      if (!candidates.length) { bot.sendMessage(chatId, '⚠️ Jalankan /hunt dulu.'); return; }
-      const { lessons, errors } = await learnFromMultiplePools(candidates.slice(0, 3).map(c => c.address));
-      let text = `✅ <b>${lessons.length} lessons dari ${Math.min(3, candidates.length)} pool:</b>\n\n`;
-      text += lessons.slice(0, 6).map((l, i) => `${i + 1}. ${escapeHTML(l.lesson)}`).join('\n\n');
-      if (errors.length) text += `\n\n⚠️ ${errors.length} pool gagal`;
-      bot.sendMessage(chatId, text, { parse_mode: 'HTML' });
-    }
-  } catch (e) { bot.sendMessage(chatId, `❌ <code>${escapeHTML(e.message)}</code>`, { parse_mode: 'HTML' }); }
-});
-
-bot.onText(/\/lessons/, (msg) => {
-  if (msg.from.id !== ALLOWED_ID) return;
-  sendLong(msg.chat.id, formatLessonsList(), { parse_mode: 'HTML' }).catch(() => { });
-});
-
-// /pinlesson <index> — pin lesson ke tier 1 (selalu masuk prompt)
-bot.onText(/\/pinlesson(?:\s+(\d+))?/, (msg, match) => {
-  if (msg.from.id !== ALLOWED_ID) return;
-  const idx = match[1] ? parseInt(match[1]) - 1 : null; // 1-based dari user
-  if (idx === null || isNaN(idx)) {
-    bot.sendMessage(msg.chat.id, '❓ Gunakan: <code>/pinlesson &lt;nomor&gt;</code> (lihat nomor di /lessons)', { parse_mode: 'HTML' });
-    return;
-  }
-  const result = pinLesson(idx);
-  if (!result.ok) {
-    bot.sendMessage(msg.chat.id, `❌ <code>${escapeHTML(result.reason)}</code>`, { parse_mode: 'HTML' });
-  } else {
-    bot.sendMessage(msg.chat.id, `📌 <b>Lesson di-pin!</b>\n\n<i>"${escapeHTML(result.lesson)}"</i>\n\nLesson ini akan selalu masuk ke prompt agent.`, { parse_mode: 'HTML' });
-  }
-});
-
-// /unpinlesson <index>
-bot.onText(/\/unpinlesson(?:\s+(\d+))?/, (msg, match) => {
-  if (msg.from.id !== ALLOWED_ID) return;
-  const idx = match[1] ? parseInt(match[1]) - 1 : null;
-  if (idx === null || isNaN(idx)) {
-    bot.sendMessage(msg.chat.id, '❓ Gunakan: <code>/unpinlesson &lt;nomor&gt;</code>', { parse_mode: 'HTML' });
-    return;
-  }
-  const result = unpinLesson(idx);
-  bot.sendMessage(msg.chat.id, result.ok ? '✅ <b>Lesson di-unpin.</b>' : `❌ <code>${escapeHTML(result.reason)}</code>`, { parse_mode: 'HTML' });
-});
-
-bot.onText(/\/deletelesson(?:\s+(\d+))?/, (msg, match) => {
-  if (msg.from.id !== ALLOWED_ID) return;
-  const idx = match[1] ? parseInt(match[1]) - 1 : null;
-  if (idx === null || isNaN(idx)) {
-    bot.sendMessage(msg.chat.id, '❓ Gunakan: <code>/deletelesson &lt;nomor&gt;</code> (lihat nomor di /lessons)', { parse_mode: 'HTML' });
-    return;
-  }
-  const result = deleteLesson(idx);
-  if (result.ok) {
-    bot.sendMessage(msg.chat.id, `✅ Lesson dihapus: <i>${escapeHTML(result.lesson)}</i>`, { parse_mode: 'HTML' });
-  } else {
-    bot.sendMessage(msg.chat.id, `❌ <code>${escapeHTML(result.reason)}</code>`, { parse_mode: 'HTML' });
-  }
-});
-
-bot.onText(/\/clearlessons/, (msg) => {
-  if (msg.from.id !== ALLOWED_ID) return;
-  const result = clearAllLessons();
-  bot.sendMessage(msg.chat.id, result.ok ? '🗑️ <b>Semua lessons telah dihapus.</b>' : `❌ <code>${escapeHTML(result.reason || 'Gagal menghapus lessons.')}</code>`, { parse_mode: 'HTML' });
-});
-
 
 bot.onText(/\/safety/, (msg) => {
   if (msg.from.id !== ALLOWED_ID) return;
@@ -1730,39 +1516,7 @@ bot.onText(/\/resume$/, (msg) => {
   }
 });
 
-// /claim <positionAddress> — manual fee claim untuk posisi tertentu
-bot.onText(/\/claim(?:\s+(\S+))?/, async (msg, match) => {
-  if (msg.from.id !== ALLOWED_ID) return;
-  const chatId = msg.chat.id;
-  const positionAddress = match[1]?.trim();
-  if (!positionAddress) {
-    bot.sendMessage(chatId, `ℹ️ Gunakan: <code>/claim &lt;position_address&gt;</code>`, { parse_mode: 'HTML' });
-    return;
-  }
-
-  const openPos = getOpenPositions();
-  const pos = openPos.find(p => p.position_address === positionAddress);
-  if (!pos) {
-    bot.sendMessage(chatId, `❌ Posisi <code>${escapeHTML(positionAddress)}</code> tidak ditemukan di open positions.`, { parse_mode: 'HTML' });
-    return;
-  }
-
-  bot.sendMessage(chatId, `💸 Claiming fees untuk <code>${escapeHTML(positionAddress.slice(0, 8))}...</code>`, { parse_mode: 'HTML' }).catch(() => { });
-  try {
-    await claimFees(pos.pool_address, pos.position_address);
-    bot.sendMessage(chatId,
-      `✅ <b>Claim berhasil</b>\n\n` +
-      `Position: <code>${escapeHTML(pos.position_address)}</code>\n` +
-      `Pool: <code>${escapeHTML(pos.pool_address)}</code>\n\n` +
-      `<i>Tip: jalankan /status untuk lihat update fee/PnL terbaru.</i>`,
-      { parse_mode: 'HTML' }
-    ).catch(() => { });
-  } catch (e) {
-    bot.sendMessage(chatId, `❌ Claim gagal: <code>${escapeHTML(e.message)}</code>`, { parse_mode: 'HTML' }).catch(() => { });
-  }
-});
-
-// /claim_fees <positionAddress> — alias for /claim (ergonomic Telegram shorthand)
+// /claim_fees <positionAddress> — manual fee claim command
 bot.onText(/\/claim_fees(?:\s+(\S+))?/, async (msg, match) => {
   if (msg.from.id !== ALLOWED_ID) return;
   const chatId = msg.chat.id;
@@ -2326,13 +2080,6 @@ bot.on('message', async (msg) => {
 
 
   if (handleConfirmationReply(msg.text)) return;
-
-  if (researchSessions.has(msg.from.id)) {
-    researchSessions.delete(msg.from.id);
-    await processResearchArticle(msg.chat.id, msg.text);
-    return;
-  }
-
   if (isInStrategySession(msg.from.id)) {
     handleStrategyCommand(bot, msg, ALLOWED_ID);
     return;
