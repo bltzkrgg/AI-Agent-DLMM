@@ -354,6 +354,11 @@ export function computeEntrySignalsFromCandles(candles15m = [], cfg = {}) {
     else if (htfLast < htfPrev) htfTrend = 'BEARISH';
   }
 
+  const st15m = calculateSupertrend(closed, 10, 3);
+  const supertrendValue = Number.isFinite(st15m?.value) ? safeNum(st15m.value) : NaN;
+  const lastClose = safeNum(close);
+  const closeAboveSupertrend = Number.isFinite(supertrendValue) ? (lastClose > supertrendValue) : false;
+
   return {
     ready: true,
     isGreen,
@@ -363,6 +368,10 @@ export function computeEntrySignalsFromCandles(candles15m = [], cfg = {}) {
     breakoutConfirm,
     htfTrend,
     breakoutLevel: prevBreakoutLevel,
+    supertrendTrend: st15m?.trend || 'NEUTRAL',
+    supertrendValue,
+    lastClose,
+    closeAboveSupertrend,
   };
 }
 
@@ -1694,6 +1703,9 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null, opt
     const totalToEnrich = filtered.length;
     let processed = 0;
     let rejNonRefundable = 0;
+    let rejTrendNonBullish = 0;
+    let rejWaitBreakSupertrend = 0;
+    let rejEntryConfirm = 0;
 
     const enriched = await Promise.all(filtered.map(async (p) => {
       const [memResult, ohlcvResult, swResult, sentResult, dlmmResult] = await Promise.allSettled([
@@ -1726,6 +1738,7 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null, opt
       // ─── Phase 2.0: Technical Hard-Gate ─────────────────────────
       // Sesuai filosofi Evil Panda: Jangan pernah entry kalau 15m Bearish.
       if (trend !== 'BULLISH') {
+        rejTrendNonBullish++;
         if (process.env.HUNTER_DEBUG) console.log(`[hunter] Skipping ${p.name} - Supertrend 15m is ${trend}`);
         return null;
       }
@@ -1743,10 +1756,32 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null, opt
       const signalVolumeRatio = entrySignals.ready ? entrySignals.volumeRatio : 1;
       const signalBreakoutConfirm = entrySignals.ready ? entrySignals.breakoutConfirm : false;
       const signalHtfTrend = entrySignals.ready ? entrySignals.htfTrend : fallbackHtfTrend;
+      const signalStValue = entrySignals.ready
+        ? safeNum(entrySignals.supertrendValue, NaN)
+        : safeNum(ohlcv?.ta?.supertrend?.value, NaN);
+      const signalClose = entrySignals.ready
+        ? safeNum(entrySignals.lastClose, NaN)
+        : safeNum(ohlcv?.currentPrice, NaN);
+      const breakMinPct = Math.max(0, Number(cfgNow.entrySupertrendBreakMinPct ?? 0));
+      const breakThreshold = Number.isFinite(signalStValue)
+        ? signalStValue * (1 + (breakMinPct / 100))
+        : NaN;
+
+      // Wajib close di atas garis Supertrend 15m sebelum entry one-sided SOL.
+      if (!Number.isFinite(signalClose) || !Number.isFinite(breakThreshold) || signalClose <= breakThreshold) {
+        rejWaitBreakSupertrend++;
+        if (process.env.HUNTER_DEBUG) {
+          const thresholdText = Number.isFinite(breakThreshold) ? breakThreshold.toFixed(10) : 'n/a';
+          const closeText = Number.isFinite(signalClose) ? signalClose.toFixed(10) : 'n/a';
+          console.log(`[hunter] Waiting ${p.name} - WAIT_BREAK_SUPERTREND (close=${closeText} <= stBreak=${thresholdText})`);
+        }
+        return null;
+      }
 
       if (cfgNow.entryRequireGreenCandle !== false) {
         const minBodyPct = Math.max(0, Number(cfgNow.entryMinGreenBodyPct ?? 0.2));
         if (!signalIsGreen || signalBodyPct < minBodyPct) {
+          rejEntryConfirm++;
           if (process.env.HUNTER_DEBUG) console.log(`[hunter] Skipping ${p.name} - green/body confirm failed (green=${signalIsGreen}, body=${signalBodyPct.toFixed(3)}%)`);
           return null;
         }
@@ -1754,6 +1789,7 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null, opt
 
       const maxWickRatio = Math.max(0.5, Number(cfgNow.entryMaxUpperWickBodyRatio ?? 2.5));
       if (signalUpperWickBodyRatio > maxWickRatio) {
+        rejEntryConfirm++;
         if (process.env.HUNTER_DEBUG) console.log(`[hunter] Skipping ${p.name} - upper wick too long (${signalUpperWickBodyRatio.toFixed(2)}x > ${maxWickRatio}x)`);
         return null;
       }
@@ -1761,12 +1797,14 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null, opt
       if (cfgNow.entryRequireVolumeConfirm !== false) {
         const minVolRatio = Math.max(0.5, Number(cfgNow.entryMinVolumeRatio ?? 1.1));
         if (signalVolumeRatio < minVolRatio) {
+          rejEntryConfirm++;
           if (process.env.HUNTER_DEBUG) console.log(`[hunter] Skipping ${p.name} - volume confirm failed (${signalVolumeRatio.toFixed(2)}x < ${minVolRatio}x)`);
           return null;
         }
       }
 
       if (cfgNow.entryRequireBreakoutConfirm === true && !signalBreakoutConfirm) {
+        rejEntryConfirm++;
         if (process.env.HUNTER_DEBUG) console.log(`[hunter] Skipping ${p.name} - breakout confirmation missing`);
         return null;
       }
@@ -1775,6 +1813,7 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null, opt
         const allowNeutral = cfgNow.entryHtfAllowNeutral !== false;
         const htfPass = signalHtfTrend === 'BULLISH' || (allowNeutral && signalHtfTrend === 'NEUTRAL');
         if (!htfPass) {
+          rejEntryConfirm++;
           if (process.env.HUNTER_DEBUG) console.log(`[hunter] Skipping ${p.name} - HTF alignment failed (${signalHtfTrend})`);
           return null;
         }
@@ -1827,6 +1866,11 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null, opt
           volumeRatio: Number(signalVolumeRatio.toFixed(3)),
           breakoutConfirmed: Boolean(signalBreakoutConfirm),
           htfTrend: signalHtfTrend,
+          supertrendBreakConfirmed: Number.isFinite(signalClose) && Number.isFinite(breakThreshold)
+            ? signalClose > breakThreshold
+            : false,
+          supertrendClose: Number.isFinite(signalClose) ? Number(signalClose.toFixed(10)) : null,
+          supertrendBreakLevel: Number.isFinite(breakThreshold) ? Number(breakThreshold.toFixed(10)) : null,
         },
         executionFlags: {
           nonRefundableFees: dlmm?.hasNonRefundableFees === true,
@@ -1842,8 +1886,7 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null, opt
     const executablePoolsCount = radarSnapshot.filter((p) => p.address && p.address !== p.tokenX).length;
     const basicFilteredCount = filtered.length;
     const finalEnriched = enriched.filter(p => p !== null);
-    const trendFilteredCount = finalEnriched.length;
-    const trendRejectedCount = basicFilteredCount - finalEnriched.length;
+    const technicalRejectedCount = rejTrendNonBullish + rejWaitBreakSupertrend + rejEntryConfirm;
 
     if (finalEnriched.length === 0) {
       if (notifyFn) {
@@ -1852,8 +1895,8 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null, opt
           `⚠️ <b>Discovery Result:</b> 0/${rawTotal} candidates matched.\n\n` +
           `• Candidates Seeded (Dex): <b>${dexSeeds.length}</b> | Prefilter Pass: <b>${prefilterPassed.length}</b> | Token Screened: <b>${seedSample.length}</b> | Executable Pools: <b>${executablePoolsCount}</b>\n` +
           `• Rejected: <code>Dex Pre-Filter: ${rejDexPreFilter} | Dex Age: ${rejDexAge} | Dex/GMGN Security: ${rejSecurity} | No Meteora Pool: ${rejNoPool} | Cooldown: ${rejCooldown}${nonRefundText}</code>\n` +
-          `• Technical Hard-Gate (Trend): <b>${basicFilteredCount - trendFilteredCount}</b> non-Bullish\n` +
-          `• API/Data Status: ${trendRejectedCount === 0 && basicFilteredCount > 0 ? '❌ All APIs Failed' : '✅ APIs Linked'}\n\n` +
+          `• Technical Hard-Gate: Trend non-Bullish <b>${rejTrendNonBullish}</b> | Wait Break Supertrend <b>${rejWaitBreakSupertrend}</b> | Entry Confirm Failed <b>${rejEntryConfirm}</b>\n` +
+          `• API/Data Status: ${technicalRejectedCount === 0 && basicFilteredCount > 0 ? '❌ All APIs Failed' : '✅ APIs Linked'}\n\n` +
           `<i>Market sepertinya sedang sideways/bearish. Sniper tetap disiplin.</i>`
         );
       }

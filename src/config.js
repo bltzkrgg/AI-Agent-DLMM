@@ -66,6 +66,7 @@ const DEFAULTS = {
   entryBreakoutLookbackCandles: 96, // Lookback breakout (96x15m ~= 24h)
   entryRequireHtfAlignment: true, // Wajib konfirmasi HTF (1h) sebelum entry
   entryHtfAllowNeutral: true,     // HTF boleh NEUTRAL (tetap tolak BEARISH)
+  entrySupertrendBreakMinPct: 0,  // Buffer break di atas garis Supertrend 15m (0 = strict close > ST)
   // External vamped source (RapidLaunch/provider lain)
   // Default OFF agar backward-compatible; aktifkan saat endpoint siap.
   vampedSourceEnabled: false,
@@ -272,6 +273,7 @@ const CONFIG_BOUNDS = {
   entryBreakoutLookbackCandles: { min: 20, max: 500 },
   entryRequireHtfAlignment: { type: 'boolean' },
   entryHtfAllowNeutral: { type: 'boolean' },
+  entrySupertrendBreakMinPct: { min: 0, max: 5 },
   vampedSourceEnabled: { type: 'boolean' },
   vampedSourceFailClosed: { type: 'boolean' },
   vampedSourceUrlTemplate: { type: 'string' },
