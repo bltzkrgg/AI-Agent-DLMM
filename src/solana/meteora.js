@@ -1,4 +1,4 @@
-import DLMM, { chunkBinRange } from '@meteora-ag/dlmm';
+import DLMM from '@meteora-ag/dlmm';
 import { PublicKey, Keypair, Transaction, ComputeBudgetProgram, VersionedTransaction, SystemProgram, TransactionMessage } from '@solana/web3.js';
 import BN from 'bn.js';
 import { getConnection, getWallet } from './wallet.js';
@@ -190,6 +190,16 @@ function binPrice(activeBinPrice, binStep, binOffset) {
 function toDisplayPrice(rawPrice, isSOLPair) {
   if (!rawPrice || rawPrice === 0) return 0;
   return isSOLPair ? 1 / rawPrice : rawPrice;
+}
+
+function buildBinChunksByMaxSize(rangeMin, rangeMax, maxBinsPerChunk) {
+  const safeMax = Math.max(1, Math.floor(maxBinsPerChunk));
+  const chunks = [];
+  for (let start = rangeMin; start <= rangeMax; start += safeMax) {
+    const end = Math.min(rangeMax, start + safeMax - 1);
+    chunks.push({ lowerBinId: start, upperBinId: end });
+  }
+  return chunks;
 }
 
 // ─── Pool Info ───────────────────────────────────────────────────
@@ -786,16 +796,22 @@ async function _openPositionLogic(poolAddress, tokenXAmount, tokenYAmount, price
   const totalBins = (rangeMax - rangeMin) + 1;
 
   // Meteora PositionV2 supports up to 1,400 bins.
-  // We chunk for Transaction Size Safety (Solana ~1232 byte limit).
-  // Aegis: Balanced safety margin to 100 bins per chunk (Efficiency over fragmentation)
-  let binChunks = totalBins <= 100
+  // For TX-size safety, we intentionally chunk deployment into smaller segments.
+  // Important: 1 Bin Array ≈ 70 bins, so we keep chunk <= 69 to avoid packet bloat.
+  const maxBinsPerTx = Math.max(
+    20,
+    Math.min(
+      69,
+      Math.floor(Number(deployOptions?.maxBinsPerTx ?? cfg.deployChunkMaxBins ?? 69)),
+    ),
+  );
+  let binChunks = totalBins <= maxBinsPerTx
     ? [{ lowerBinId: rangeMin, upperBinId: rangeMax }]
-    : chunkBinRange(rangeMin, rangeMax);
+    : buildBinChunksByMaxSize(rangeMin, rangeMax, maxBinsPerTx);
 
-  // Sentinel v61.4: Guard against chunkBinRange returning null/undefined
-  // This can happen on edge case volatility pools. Fallback to single chunk deployment.
+  // Guard against invalid chunk result.
   if (!Array.isArray(binChunks) || binChunks.length === 0) {
-    console.warn(`[meteora] chunkBinRange returned invalid (${typeof binChunks}), fallback to single chunk`);
+    console.warn(`[meteora] bin chunking returned invalid (${typeof binChunks}), fallback to single chunk`);
     binChunks = [{ lowerBinId: rangeMin, upperBinId: rangeMax }];
   }
 

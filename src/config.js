@@ -46,6 +46,7 @@ const DEFAULTS = {
   meteoraDiscoveryLimit: 180,  // Cakupan scan discovery pool Meteora per siklus (lebih besar = lebih kecil false NO_POOL)
   noPoolPendingTtlMinutes: 120, // Simpan token lolos gate tapi belum ada exec pool selama N menit untuk recheck
   noPoolReplayLimit: 12,       // Jumlah token pending NO_POOL yang direplay per siklus
+  deployChunkMaxBins: 69,      // Maks bins per TX deploy (jaga ukuran paket Solana, depth tetap bisa multi-TX)
   dexMinAgeHours: 0,           // Min usia pair Dex (jam)
   dexMaxAgeHours: 168,         // Max usia pair Dex (jam) = 7 hari
   dexRequireKnownAge: false,   // true: token tanpa data age Dex langsung ditolak
@@ -106,6 +107,7 @@ const DEFAULTS = {
   panicOorLossPct: 10,                   // Panic exit OOR jika loss <= -X% (strategi umum)
   evilPandaPanicOorLossPct: 35,          // Panic exit OOR khusus Evil Panda (lebih longgar untuk deep range)
   evilPandaIgnoreZombieFeeWhenOorUpper: true, // Jangan zombie-close Evil Panda saat OOR atas (safe park in SOL)
+  oorUpperDistanceMaxPct: 50,            // Jika OOR atas dan jarak ke upper boundary > X%, tutup untuk bebaskan modal
   evilPandaRetracementCapZone1Pct: 4.0,  // Retracement cap watchdog untuk Panda saat pnl<10
   evilPandaRetracementCapZone2Pct: 8.0,  // Retracement cap watchdog untuk Panda saat pnl 10-30
   evilPandaRetracementCapZone3Pct: 12.0, // Retracement cap watchdog untuk Panda saat pnl>=30
@@ -262,6 +264,7 @@ const CONFIG_BOUNDS = {
   panicOorLossPct: { min: 1, max: 100 },
   evilPandaPanicOorLossPct: { min: 1, max: 100 },
   evilPandaIgnoreZombieFeeWhenOorUpper: { type: 'boolean' },
+  oorUpperDistanceMaxPct: { min: 0, max: 500 },
   evilPandaRetracementCapZone1Pct: { min: 0.5, max: 30 },
   evilPandaRetracementCapZone2Pct: { min: 0.5, max: 30 },
   evilPandaRetracementCapZone3Pct: { min: 0.5, max: 30 },
@@ -300,6 +303,7 @@ const CONFIG_BOUNDS = {
   meteoraDiscoveryLimit: { min: 50, max: 500 },
   noPoolPendingTtlMinutes: { min: 5, max: 720 },
   noPoolReplayLimit: { min: 0, max: 100 },
+  deployChunkMaxBins: { min: 20, max: 69 },
   dexMinAgeHours: { min: 0, max: 720 },
   dexMaxAgeHours: { min: 1, max: 720 },
   dexRequireKnownAge: { type: 'boolean' },

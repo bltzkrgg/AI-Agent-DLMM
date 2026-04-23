@@ -2044,6 +2044,75 @@ export async function runPanicWatchdog(notifyFn) {
         isEvilPandaMode &&
         isOORUpper &&
         cfg.evilPandaIgnoreZombieFeeWhenOorUpper !== false;
+      const oorUpperDistancePct =
+        isOORUpper && Number.isFinite(upperPrice) && upperPrice > 0
+          ? ((currentPrice - upperPrice) / upperPrice) * 100
+          : 0;
+      const oorUpperDistanceMaxPct = Math.max(0, Number(cfg.oorUpperDistanceMaxPct ?? 50));
+
+      // Moon trap guard: jika harga terbang terlalu jauh di atas upper net, lepaskan modal.
+      if (
+        isEvilPandaMode &&
+        isOORUpper &&
+        oorUpperDistanceMaxPct > 0 &&
+        Number.isFinite(oorUpperDistancePct) &&
+        oorUpperDistancePct >= oorUpperDistanceMaxPct
+      ) {
+        const msg = `🚀 *OOR UPPER CAPITAL RELEASE*\n\n` +
+          `• Posisi: \`${shortAddr(pos.position_address)}\`\n` +
+          `• Jarak OOR Atas: ${oorUpperDistancePct.toFixed(2)}% (batas: ${oorUpperDistanceMaxPct.toFixed(2)}%)\n` +
+          `• Aksi: tutup posisi untuk bebaskan modal ke setup baru.\n` +
+          `• PnL: ${pnlPct.toFixed(2)}%`;
+
+        await notifyFn?.(msg);
+
+        recordExitEvent({
+          positionAddress: pos.position_address,
+          poolAddress: pos.pool_address,
+          tokenMint: pos.token_mint,
+          entryTime: pos.created_at,
+          entryPrice: pos.entry_price || 0,
+          exitTime: new Date().toISOString(),
+          exitPrice,
+          holdMinutes: Math.floor((Date.now() - new Date(pos.created_at)) / 60000),
+          pnlPct: pnlPct,
+          pnlUsd: posSnapshot.pnlUsd,
+          feesClaimedUsd: posSnapshot.feesUsd,
+          totalReturnUsd: (posSnapshot.pnlUsd || 0) + (posSnapshot.feesUsd || 0),
+          exitTrigger: 'OOR_UPPER_CAPITAL_RELEASE',
+          exitZone: zone || 'UNKNOWN',
+          exitRetracement: 0,
+          exitRetracementCap: 0,
+          feeRatioAtExit: feeRatio || 0,
+          feeVelocityIncreasing: isFeeVelocityIncreasing ? 1 : 0,
+          lperPatienceActive: isLPerPatienceEnabled ? 1 : 0,
+          profitOrLoss: pnlPct > 0 ? 'PROFIT' : pnlPct < 0 ? 'LOSS' : 'BREAKEVEN',
+          exitReason: `OOR upper distance ${oorUpperDistancePct.toFixed(2)}% >= ${oorUpperDistanceMaxPct.toFixed(2)}%`,
+          closeReasonCode: 'OOR_UPPER_DISTANCE_EXCEEDED'
+        });
+
+        await closePositionDLMM(pos.pool_address, pos.position_address, {
+          pnlUsd: posSnapshot.pnlUsd, pnlPct: posSnapshot.pnlPct, feesUsd: posSnapshot.feesUsd,
+          closeReason: 'OOR_UPPER_DISTANCE_EXCEEDED', lifecycleState: 'closed_oor_upper'
+        }, { isUrgent: true });
+        await recordPoolCloseOutcome(pos.pool_address, pnlPct, 'OOR_UPPER_DISTANCE_EXCEEDED', pos.strategy_used);
+
+        if (!isDryRun()) {
+          await new Promise(r => setTimeout(r, 2000));
+          try {
+            const snapshot = await getMarketSnapshot(pos.token_mint, pos.pool_address);
+            const vol = snapshot?.price?.volatility24h || 0;
+            const slippage = getConservativeSlippage(vol);
+            await swapAllToSOL(pos.token_mint, slippage, { isUrgent: true });
+            await closeTokenAccount(pos.token_mint).catch(() => {});
+          } catch (e) {
+            if (e.message.includes('LIQUIDITY_TRAP')) {
+              await notifyLiquidityTrap(pos.token_mint, e.message, notifyFn);
+            }
+          }
+        }
+        continue;
+      }
       const zombieFeeShouldExit = isZombieFee && !ignoreZombieFeeBecauseSafeUpperPark;
 
       if (zombieFeeShouldExit || isZombieVol) {

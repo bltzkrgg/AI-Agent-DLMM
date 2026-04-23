@@ -134,6 +134,17 @@ function removeNoPoolPending(mint) {
   }
 }
 
+function isTxTooLargeDeployError(err) {
+  const msg = String(err?.message || err || '').toLowerCase();
+  return (
+    msg.includes('transaction too large') ||
+    msg.includes('encoding overruns uint8array') ||
+    msg.includes('versionedtransaction too large') ||
+    msg.includes('1232') ||
+    msg.includes('packet too large')
+  );
+}
+
 export function getCandidates() { return lastCandidates; }
 export function getLastHunterReport() { return lastReport; }
 export function getLastRadarSnapshot() { return lastRadarSnapshot; }
@@ -1172,6 +1183,56 @@ async function executeTool(name, input) {
           ),
         }));
       } catch (deployErr) {
+        // Adaptive fallback: jika TX terlalu besar (1232-byte class error),
+        // retry sekali dengan chunking per-TX (tanpa memotong kedalaman net).
+        if (isTxTooLargeDeployError(deployErr)) {
+          const fallbackOptions = {
+            ...deployOptions,
+            maxBinsPerTx: 69,
+            technicalReasoning: `${deployOptions?.technicalReasoning || ''} | tx-size-fallback:chunked-69bins`.trim(),
+          };
+
+          try {
+            if (hunterNotifyFn) {
+              await hunterNotifyFn(
+                `⚠️ <b>Deploy Retry (TX Size Fallback)</b>\n\n` +
+                `Pool: <code>${escapeHTML(input.pool_address.slice(0, 8))}...</code>\n` +
+                `Error awal: <code>${escapeHTML(deployErr.message)}</code>\n` +
+                `Aksi: retry dengan <code>maxBinsPerTx=69</code> (multi-TX, binStep tetap 100/125, depth tetap).`
+              ).catch(() => {});
+            }
+
+            ({ result } = await executeControlledOperation({
+              operationType: 'OPEN_POSITION',
+              entityId: input.pool_address,
+              payload: {
+                poolAddress: input.pool_address,
+                tokenXAmount,
+                tokenYAmount,
+                priceRangePct: targetPriceRangePct,
+                strategy: strategy.name,
+                deployOptions: fallbackOptions,
+              },
+              metadata: { source: 'hunter_alpha', strategy: strategy.name, retry: 'tx_size_fallback' },
+              policy: { isEntryOperation: true, entryMaxPositions: effectiveMaxPos },
+              execute: () => openPosition(
+                input.pool_address,
+                tokenXAmount,
+                tokenYAmount,
+                targetPriceRangePct,
+                strategy.name,
+                fallbackOptions,
+              ),
+            }));
+          } catch (retryErr) {
+            deployErr = retryErr;
+          }
+        }
+
+        if (result?.success) {
+          // Retry fallback succeeded → lanjut flow normal
+          // no-op
+        } else {
         // Kirim notif gagal supaya user tidak stuck di "Deploying..." tanpa follow-up
         if (hunterNotifyFn) {
           hunterNotifyFn(
@@ -1182,6 +1243,7 @@ async function executeTool(name, input) {
           ).catch(() => { });
         }
         throw deployErr; // re-throw agar AI tahu dan bisa report
+        }
       }
 
       // Notifikasi & recording — dikurung try/catch agar error Telegram
