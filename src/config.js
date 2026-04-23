@@ -157,6 +157,7 @@ const DEFAULTS = {
   gmgnBundlerMaxPct: 60,       // Reject jika bundler > X%
   gmgnPhishingMaxPct: 30,      // Reject jika entrapment/phishing proxy > X%
   gmgnRugRatioMax: 0.30,       // Reject jika rug ratio > X (0-1)
+  gmgnRugHistoryMissingFailClosed: false, // Jika true, data rug history kosong => reject (strict)
   gmgnWashTradeMaxPct: 35,     // Reject jika wash trading > X%
   gmgnRequireBurnedLp: true,   // Wajib LP burned
   gmgnRequireZeroTax: true,    // Wajib pajak 0/0
@@ -210,6 +211,7 @@ const CONFIG_BOUNDS = {
   gmgnBundlerMaxPct: { min: 0, max: 100 },
   gmgnPhishingMaxPct: { min: 0, max: 100 },
   gmgnRugRatioMax: { min: 0, max: 1 },
+  gmgnRugHistoryMissingFailClosed: { type: 'boolean' },
   gmgnWashTradeMaxPct: { min: 0, max: 100 },
   gmgnRequireBurnedLp: { type: 'boolean' },
   gmgnRequireZeroTax: { type: 'boolean' },

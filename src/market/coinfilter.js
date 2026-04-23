@@ -670,6 +670,7 @@ function step12_gmgnSecurity(info, sec, thresholds = {}) {
   const bundlerMax = (Number(thresholds.gmgnBundlerMaxPct ?? 60) / 100);
   const phishingMax = (Number(thresholds.gmgnPhishingMaxPct ?? 30) / 100);
   const rugRatioMax = Number(thresholds.gmgnRugRatioMax ?? 0.30);
+  const rugHistoryMissingFailClosed = thresholds.gmgnRugHistoryMissingFailClosed === true;
   const washTradeMax = Number(thresholds.gmgnWashTradeMaxPct ?? 35);
   const requireBurnedLp = thresholds.gmgnRequireBurnedLp !== false;
   const requireZeroTax = thresholds.gmgnRequireZeroTax !== false;
@@ -766,8 +767,12 @@ function step12_gmgnSecurity(info, sec, thresholds = {}) {
 
     // Rug risk score
     const rugRatio = sec.rug_ratio ?? info?.dev?.rug_ratio;
-    if (rugRatio == null && failClosed) {
-      rejects.push({ rule: 'GMGN_RUG_HISTORY_DATA_MISSING', msg: 'Data riwayat rug dev kosong — fail-closed.' });
+    if (rugRatio == null) {
+      if (failClosed && rugHistoryMissingFailClosed) {
+        rejects.push({ rule: 'GMGN_RUG_HISTORY_DATA_MISSING', msg: 'Data riwayat rug dev kosong — fail-closed.' });
+      } else {
+        warnings.push({ rule: 'GMGN_RUG_HISTORY_DATA_MISSING', msg: 'Data riwayat rug dev kosong — treated as neutral (pass).' });
+      }
     } else if (rugRatio > rugRatioMax) {
       rejects.push({ rule: 'GMGN_RUG_HISTORY', msg: `Rug risk score ${rugRatio.toFixed(2)} > ${rugRatioMax.toFixed(2)} — deployer mencurigakan` });
     }
@@ -847,6 +852,7 @@ export async function screenToken(tokenMint, tokenName = '', tokenSymbol = '', o
     gmgnBundlerMaxPct: cfg.gmgnBundlerMaxPct,
     gmgnPhishingMaxPct: cfg.gmgnPhishingMaxPct,
     gmgnRugRatioMax: cfg.gmgnRugRatioMax,
+    gmgnRugHistoryMissingFailClosed: cfg.gmgnRugHistoryMissingFailClosed,
     gmgnWashTradeMaxPct: cfg.gmgnWashTradeMaxPct,
     gmgnRequireBurnedLp: cfg.gmgnRequireBurnedLp,
     gmgnRequireZeroTax: cfg.gmgnRequireZeroTax,
