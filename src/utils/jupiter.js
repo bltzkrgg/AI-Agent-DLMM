@@ -20,6 +20,13 @@ async function getJupiterQuote(tokenMint, outMint, amount, slippage) {
   return await quoteRes.json();
 }
 
+export async function getSwapQuoteToSol(tokenMint, amount, overrideSlippageBps = null) {
+  const cfg = getConfig();
+  const WSOL = 'So11111111111111111111111111111111111111112';
+  const slippage = overrideSlippageBps || cfg.slippageBps || 100;
+  return getJupiterQuote(tokenMint, WSOL, amount, slippage);
+}
+
 /**
  * Jupiter V6 Swap Utility — Zero Dust liquidity management
  */

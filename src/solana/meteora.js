@@ -2,7 +2,15 @@ import DLMM from '@meteora-ag/dlmm';
 import { PublicKey, Keypair, Transaction, ComputeBudgetProgram, VersionedTransaction, SystemProgram, TransactionMessage } from '@solana/web3.js';
 import BN from 'bn.js';
 import { getConnection, getWallet } from './wallet.js';
-import db, { savePosition, closePositionWithPnl, enqueueReconcileIssue, updatePositionLifecycle, runInQueue } from '../db/database.js';
+import db, {
+  savePosition,
+  closePositionWithPnl,
+  enqueueReconcileIssue,
+  updatePositionLifecycle,
+  runInQueue,
+  getResumablePartialDeployment,
+  updatePositionDeploymentProgress,
+} from '../db/database.js';
 import { updatePositionRuntimeState } from '../app/positionRuntimeState.js';
 import { fetchWithTimeout, safeNum, withRetry, withExponentialBackoff, stringify, getConservativeSlippage } from '../utils/safeJson.js';
 import { toLamports, fromLamports, sumBigInts } from '../utils/units.js';
@@ -10,7 +18,7 @@ import { resolveTokens, WSOL_MINT } from '../utils/tokenMeta.js';
 import { getRecommendedPriorityFee } from '../utils/helius.js';
 import { isDryRun, getConfig } from '../config.js';
 import { getWalletPositions as getLPAgentPositions, isLPAgentEnabled } from '../market/lpAgent.js';
-import { swapToSol } from '../utils/jupiter.js';
+import { swapToSol, getSwapQuoteToSol } from '../utils/jupiter.js';
 import { getTokenBalance } from './wallet.js';
 import { getMarketSnapshot } from '../market/oracle.js';
 import crypto from 'crypto';
@@ -111,6 +119,13 @@ function toBN(amount, decimals) {
 
   const combined = intPart + decPart;
   return new BN(combined.replace(/^0+/, '') || '0');
+}
+
+function toRawAmountString(amountLike, decimals) {
+  const n = safeNum(amountLike);
+  if (!Number.isFinite(n) || n <= 0) return '0';
+  const scaled = Math.floor(n * Math.pow(10, decimals));
+  return String(Math.max(0, scaled));
 }
 
 // ─── TX confirmation via polling ─────────────────────────────────
@@ -789,9 +804,34 @@ async function _openPositionLogic(poolAddress, tokenXAmount, tokenYAmount, price
     }
   }
 
-  // ── Unified deterministic position recovery ─────────────────────
-  const totalXBN = toBN(tokenXAmount, xDecimals);
-  const totalYBN = toBN(tokenYAmount, yDecimals);
+  const resumable = getResumablePartialDeployment(poolAddress, strategyName || null);
+  let posKp = null;
+  let resumeFilledBins = 0;
+  let resumeDeployedSol = 0;
+  let targetDeploySol = safeNum(tokenYAmount);
+  let isResuming = false;
+
+  if (resumable?.position_secret_key) {
+    try {
+      posKp = Keypair.fromSecretKey(Uint8Array.from(Buffer.from(resumable.position_secret_key, 'base64')));
+      if (Number.isFinite(resumable.deploy_range_min) && Number.isFinite(resumable.deploy_range_max)) {
+        rangeMin = Number(resumable.deploy_range_min);
+        rangeMax = Number(resumable.deploy_range_max);
+      }
+      resumeFilledBins = Math.max(0, Number(resumable.deploy_filled_bins || 0));
+      resumeDeployedSol = Math.max(0, safeNum(resumable.deployed_sol));
+      targetDeploySol = Math.max(
+        resumeDeployedSol,
+        safeNum(resumable.deploy_target_sol || tokenYAmount),
+      );
+      isResuming = true;
+      console.log(`[meteora] RESUME DEPLOY: ${resumable.position_address?.slice(0, 8)} filledBins=${resumeFilledBins}`);
+    } catch (e) {
+      console.warn(`[meteora] Failed to restore resumable keypair, fallback new deploy: ${e.message}`);
+      posKp = null;
+      isResuming = false;
+    }
+  }
 
   const totalBins = (rangeMax - rangeMin) + 1;
 
@@ -815,12 +855,12 @@ async function _openPositionLogic(poolAddress, tokenXAmount, tokenYAmount, price
     binChunks = [{ lowerBinId: rangeMin, upperBinId: rangeMax }];
   }
 
-  // ── Random keypair per deploy ────────────────────────────────────
-  // DB (Watchtower) is the crash-recovery source of truth — position_address is
-  // persisted before any TX is sent, so recovery reads from DB not from key derivation.
-  // The old sha256(wallet+pool+strategy) seed limited us to one active position per
-  // pool and would derive the wrong keypair if strategy name changed across deploys.
-  const posKp = Keypair.generate();
+  // ── Keypair management ────────────────────────────────────────────
+  // New deploy: generate + persist secret key.
+  // Resume deploy: restore existing keypair from DB so missing chunks can continue.
+  if (!posKp) {
+    posKp = Keypair.generate();
+  }
 
   // Aegis Recovery: Check if the position account already exists (partial previous deploy)
   let accountExists = false;
@@ -833,7 +873,7 @@ async function _openPositionLogic(poolAddress, tokenXAmount, tokenYAmount, price
   // ── Pre-Save Position Object (Watchtower) ──────────────────────
   // We register the position in DB BEFORE sending transactions.
   // This ensures recovery if the first chunk lands but the bot crashes.
-  if (!accountExists) {
+  if (!accountExists && !isResuming) {
     await savePosition({
       pool_address: poolAddress,
       position_address: posKp.publicKey.toString(),
@@ -846,16 +886,66 @@ async function _openPositionLogic(poolAddress, tokenXAmount, tokenYAmount, price
       entry_price: parseFloat(toDisplayPrice(rawActivePrice, isSOLPair).toFixed(10)),
       strategy_used: strategyName,
       token_x_symbol: xMeta.symbol,
+      position_secret_key: Buffer.from(posKp.secretKey).toString('base64'),
+      deploy_target_sol: targetDeploySol,
+      deploy_total_bins: totalBins,
+      deploy_filled_bins: 0,
+      deploy_chunk_max_bins: maxBinsPerTx,
+      deploy_range_min: rangeMin,
+      deploy_range_max: rangeMax,
+      is_partial: 1,
       lifecycle_state: 'deploying'
     });
   }
 
   const allTxHashes = [];
-  let totalSucceededSol = 0;
+  let totalSucceededSol = resumeDeployedSol;
+  let filledBins = resumeFilledBins;
+  const remainingTargetSol = Math.max(0, targetDeploySol - resumeDeployedSol);
 
   // Proportional chunk allocation tracking — prevents chunks 2+ from deploying zero liquidity
   let allocatedChunkX = new BN(0);
   let allocatedChunkY = new BN(0);
+
+  // Skip chunks already deployed (resume mode).
+  if (filledBins > 0) {
+    let covered = 0;
+    while (binChunks.length > 0) {
+      const c = binChunks[0];
+      const cBins = c.upperBinId - c.lowerBinId + 1;
+      if (covered + cBins <= filledBins) {
+        covered += cBins;
+        binChunks.shift();
+      } else {
+        break;
+      }
+    }
+  }
+
+  if (binChunks.length === 0) {
+    const isStillPartial = totalBins > 0 && filledBins < totalBins;
+    await updatePositionDeploymentProgress(posKp.publicKey.toString(), {
+      deployedSol: totalSucceededSol,
+      deployedUsd: Number.isFinite(totalSucceededSol) ? totalSucceededSol * (await getSolPriceUsd().catch(() => 150)) : null,
+      deployFilledBins: filledBins,
+      deployTotalBins: totalBins,
+      deployTargetSol: targetDeploySol,
+      isPartial: isStillPartial,
+      lifecycleState: isStillPartial ? 'open_partial' : 'open',
+    }).catch(() => {});
+    return {
+      success: true,
+      resumed: true,
+      alreadyComplete: true,
+      positionAddress: posKp.publicKey.toString(),
+      txHashes: [],
+      tokenYAmount: totalSucceededSol,
+    };
+  }
+
+  const totalPendingBins = Math.max(1, binChunks.reduce((s, c) => s + (c.upperBinId - c.lowerBinId + 1), 0));
+  const totalXBN = toBN(tokenXAmount, xDecimals);
+  const totalYBN = toBN(remainingTargetSol, yDecimals);
 
   try {
     for (let ci = 0; ci < binChunks.length; ci++) {
@@ -887,13 +977,13 @@ async function _openPositionLogic(poolAddress, tokenXAmount, tokenYAmount, price
         chunkTotalX = totalXBN.sub(allocatedChunkX);
         chunkTotalY = totalYBN.sub(allocatedChunkY);
       } else {
-        // Proportional share: (chunkBins / totalBins) * totalAmount (integer division)
-        chunkTotalX = totalXBN.mul(new BN(chunkBinsCount)).div(new BN(totalBins));
-        chunkTotalY = totalYBN.mul(new BN(chunkBinsCount)).div(new BN(totalBins));
+        // Proportional share: (chunkBins / totalPendingBins) * remainingAmount (integer division)
+        chunkTotalX = totalXBN.mul(new BN(chunkBinsCount)).div(new BN(totalPendingBins));
+        chunkTotalY = totalYBN.mul(new BN(chunkBinsCount)).div(new BN(totalPendingBins));
         allocatedChunkX = allocatedChunkX.add(chunkTotalX);
         allocatedChunkY = allocatedChunkY.add(chunkTotalY);
       }
-      console.log(`[meteora] Chunk ${ci} allocation: bins=${chunkBinsCount}/${totalBins}, X=${chunkTotalX.toString()}, Y=${chunkTotalY.toString()}`);
+      console.log(`[meteora] Chunk ${ci} allocation: bins=${chunkBinsCount}/${totalPendingBins}, X=${chunkTotalX.toString()}, Y=${chunkTotalY.toString()}`);
 
       let txs;
       const isDipFishing = (tokenXAmount === 0 || tokenXAmount === '0');
@@ -1123,26 +1213,26 @@ async function _openPositionLogic(poolAddress, tokenXAmount, tokenYAmount, price
             // Accurate Lamports conversion for DB
             const chunkYSol = parseFloat(fromLamports(chunkTotalY.toString(), yDecimals));
             totalSucceededSol += chunkYSol;
+            filledBins += chunkBinsCount;
 
             // Aegis: Update DB setiap kali chunk berhasil (Incremental Save)
             const solPriceUsd = await getSolPriceUsd();
             const currentUsd = parseFloat((totalSucceededSol * solPriceUsd).toFixed(2));
+            const isChunkPartial = totalBins > 0 && filledBins < totalBins;
             updatePositionRuntimeState(posKp.publicKey.toString(), {
               totalSucceededSol,
-              status: totalSucceededSol >= tokenYAmount ? 'fully_deployed' : 'partially_deployed'
+              status: isChunkPartial ? 'partially_deployed' : 'fully_deployed',
             });
 
-            // Update database utama
-            const _db = db || globalThis.db;
-            await runInQueue(() => _db.prepare(`
-              UPDATE positions SET 
-                token_y_amount = ?, 
-                deployed_sol = ?, 
-                deployed_usd = ?,
-                lifecycle_state = 'open',
-                updated_at = CURRENT_TIMESTAMP
-              WHERE position_address = ?
-            `).run(totalSucceededSol, totalSucceededSol, currentUsd, posKp.publicKey.toString()));
+            await updatePositionDeploymentProgress(posKp.publicKey.toString(), {
+              deployedSol: totalSucceededSol,
+              deployedUsd: currentUsd,
+              deployFilledBins: filledBins,
+              deployTotalBins: totalBins,
+              deployTargetSol: targetDeploySol,
+              isPartial: isChunkPartial,
+              lifecycleState: isChunkPartial ? 'open_partial' : 'open',
+            });
           } catch (innerErr) {
             console.warn(`[meteora] Simulation/Send for chunk failed: ${innerErr.message}`);
             // Kita throw lagi agar catch luar (line 849/974) menangkap error fatal
@@ -1169,13 +1259,45 @@ async function _openPositionLogic(poolAddress, tokenXAmount, tokenYAmount, price
   } catch (err) {
     if (totalSucceededSol > 0) {
       console.warn(`[meteora] Deployment parsial berhasil (${totalSucceededSol} SOL). Melanjutkan dengan status terdaftar.`);
+      const solPriceUsd = await getSolPriceUsd().catch(() => 150);
+      await updatePositionDeploymentProgress(posKp.publicKey.toString(), {
+        deployedSol: totalSucceededSol,
+        deployedUsd: parseFloat((totalSucceededSol * solPriceUsd).toFixed(2)),
+        deployFilledBins: filledBins,
+        deployTotalBins: totalBins,
+        deployTargetSol: targetDeploySol,
+        isPartial: true,
+        lifecycleState: 'open_partial',
+      }).catch(() => {});
     } else {
       // Hapus jika gagal total tanpa ada dana keluar sama sekali
-      const _db = db || globalThis.db;
-      _db.prepare(`DELETE FROM positions WHERE position_address = ? AND deployed_sol = 0`).run(posKp.publicKey.toString());
+      if (isResuming) {
+        await updatePositionDeploymentProgress(posKp.publicKey.toString(), {
+          deployFilledBins: filledBins,
+          deployTotalBins: totalBins,
+          deployTargetSol: targetDeploySol,
+          isPartial: true,
+          lifecycleState: 'deploying',
+        }).catch(() => {});
+      } else {
+        const _db = db || globalThis.db;
+        _db.prepare(`DELETE FROM positions WHERE position_address = ? AND deployed_sol = 0`).run(posKp.publicKey.toString());
+      }
       throw err;
     }
   }
+
+  const solPriceUsd = await getSolPriceUsd().catch(() => 150);
+  const finalPartial = totalBins > 0 && filledBins < totalBins;
+  await updatePositionDeploymentProgress(posKp.publicKey.toString(), {
+    deployedSol: totalSucceededSol,
+    deployedUsd: parseFloat((totalSucceededSol * solPriceUsd).toFixed(2)),
+    deployFilledBins: filledBins,
+    deployTotalBins: totalBins,
+    deployTargetSol: targetDeploySol,
+    isPartial: finalPartial,
+    lifecycleState: finalPartial ? 'open_partial' : 'open',
+  }).catch(() => {});
 
   const priceUnit = isSOLPair ? `${xMeta.symbol}/SOL` : `${yMeta.symbol}/${xMeta.symbol}`;
 
@@ -1267,6 +1389,53 @@ export async function closePositionDLMM(poolAddress, positionAddress, pnlData = 
 
       const pd = position.positionData;
       const binIdsToRemove = pd.positionBinData?.map(b => b.binId) ?? [];
+      const cfg = getConfig();
+      const maxExitPriceImpactPct = Math.max(0.1, Number(cfg.maxExitPriceImpactPct ?? 5.0));
+
+      // Hard gate: jangan lepas likuiditas jika estimasi swap balik ke SOL terlalu merusak harga.
+      // Ini mencegah posisi berubah jadi zombie bag setelah removeLiquidity.
+      try {
+        const xMint = dlmmPool.tokenX.publicKey.toString();
+        const yMint = dlmmPool.tokenY.publicKey.toString();
+        const [xMeta] = await resolveTokens([xMint, yMint]);
+        const rawAmountX = toRawAmountString(pd.totalXAmount?.toString() || '0', xMeta?.decimals ?? 9);
+        const shouldQuoteX = xMint !== WSOL_MINT && /^[0-9]+$/.test(rawAmountX) && rawAmountX !== '0';
+        if (shouldQuoteX) {
+          const quote = await getSwapQuoteToSol(xMint, rawAmountX);
+          const impact = Number(quote?.priceImpactPct ?? 0);
+          if (Number.isFinite(impact) && impact > maxExitPriceImpactPct) {
+            const reason = `HIGH_PRICE_IMPACT_ABORT: ${impact.toFixed(2)}% > ${maxExitPriceImpactPct.toFixed(2)}%`;
+            await updatePositionLifecycle(positionAddress, 'manual_review').catch(() => {});
+            await enqueueReconcileIssue({
+              issueType: 'HIGH_PRICE_IMPACT_ABORT',
+              entityId: positionAddress,
+              payload: {
+                poolAddress,
+                positionAddress,
+                tokenMint: xMint,
+                priceImpactPct: impact,
+                maxExitPriceImpactPct,
+              },
+              notes: reason,
+            }).catch(() => {});
+            throw new Error(reason);
+          }
+        }
+      } catch (impactErr) {
+        // Jika error dari hard gate atau quote, jangan lanjut removeLiquidity.
+        if (String(impactErr?.message || '').includes('HIGH_PRICE_IMPACT_ABORT')) {
+          throw impactErr;
+        }
+        console.warn(`[closePositionDLMM] Jupiter pre-quote failed, abort close for safety: ${impactErr.message}`);
+        await updatePositionLifecycle(positionAddress, 'manual_review').catch(() => {});
+        await enqueueReconcileIssue({
+          issueType: 'HIGH_PRICE_IMPACT_ABORT',
+          entityId: positionAddress,
+          payload: { poolAddress, positionAddress, error: impactErr.message },
+          notes: 'Pre-exit quote unavailable; close aborted to avoid unsafe swap conditions.',
+        }).catch(() => {});
+        throw new Error(`HIGH_PRICE_IMPACT_ABORT: pre-exit quote unavailable (${impactErr.message})`);
+      }
 
       let removeLiqTx;
 

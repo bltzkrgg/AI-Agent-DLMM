@@ -134,6 +134,14 @@ db.exec(`
     range_efficiency_pct REAL DEFAULT 0,
     strategy_used TEXT,
     close_reason TEXT,
+    position_secret_key TEXT,
+    deploy_target_sol REAL DEFAULT 0,
+    deploy_total_bins INTEGER DEFAULT 0,
+    deploy_filled_bins INTEGER DEFAULT 0,
+    deploy_chunk_max_bins INTEGER DEFAULT 0,
+    deploy_range_min INTEGER,
+    deploy_range_max INTEGER,
+    is_partial INTEGER DEFAULT 0,
     lifecycle_state TEXT DEFAULT 'open',
     pnl_sol REAL DEFAULT 0,
     fees_collected_sol REAL DEFAULT 0,
@@ -313,6 +321,14 @@ const migrations = [
   'ALTER TABLE positions ADD COLUMN range_efficiency_pct REAL DEFAULT 0',
   'ALTER TABLE positions ADD COLUMN deployed_sol REAL DEFAULT 0',
   'ALTER TABLE positions ADD COLUMN token_x_symbol TEXT',
+  'ALTER TABLE positions ADD COLUMN position_secret_key TEXT',
+  'ALTER TABLE positions ADD COLUMN deploy_target_sol REAL DEFAULT 0',
+  'ALTER TABLE positions ADD COLUMN deploy_total_bins INTEGER DEFAULT 0',
+  'ALTER TABLE positions ADD COLUMN deploy_filled_bins INTEGER DEFAULT 0',
+  'ALTER TABLE positions ADD COLUMN deploy_chunk_max_bins INTEGER DEFAULT 0',
+  'ALTER TABLE positions ADD COLUMN deploy_range_min INTEGER',
+  'ALTER TABLE positions ADD COLUMN deploy_range_max INTEGER',
+  'ALTER TABLE positions ADD COLUMN is_partial INTEGER DEFAULT 0',
   "ALTER TABLE positions ADD COLUMN lifecycle_state TEXT DEFAULT 'open'",
   'ALTER TABLE positions ADD COLUMN pnl_sol REAL DEFAULT 0',
   'ALTER TABLE positions ADD COLUMN fees_collected_sol REAL DEFAULT 0',
@@ -362,8 +378,8 @@ for (const sql of migrations) {
 export function savePosition(data) {
   return runInQueue(() => db.prepare(`
     INSERT OR IGNORE INTO positions
-    (pool_address, position_address, token_x, token_y, token_mint, token_x_amount, token_y_amount, deployed_sol, entry_price, deployed_usd, strategy_used, token_x_symbol, lifecycle_state, pnl_sol, fees_collected_sol, updated_at)
-    VALUES (@pool_address, @position_address, @token_x, @token_y, @token_mint, @token_x_amount, @token_y_amount, @deployed_sol, @entry_price, @deployed_usd, @strategy_used, @token_x_symbol, @lifecycle_state, @pnl_sol, @fees_collected_sol, CURRENT_TIMESTAMP)
+    (pool_address, position_address, token_x, token_y, token_mint, token_x_amount, token_y_amount, deployed_sol, entry_price, deployed_usd, strategy_used, token_x_symbol, position_secret_key, deploy_target_sol, deploy_total_bins, deploy_filled_bins, deploy_chunk_max_bins, deploy_range_min, deploy_range_max, is_partial, lifecycle_state, pnl_sol, fees_collected_sol, updated_at)
+    VALUES (@pool_address, @position_address, @token_x, @token_y, @token_mint, @token_x_amount, @token_y_amount, @deployed_sol, @entry_price, @deployed_usd, @strategy_used, @token_x_symbol, @position_secret_key, @deploy_target_sol, @deploy_total_bins, @deploy_filled_bins, @deploy_chunk_max_bins, @deploy_range_min, @deploy_range_max, @is_partial, @lifecycle_state, @pnl_sol, @fees_collected_sol, CURRENT_TIMESTAMP)
   `).run({
     pool_address: data.pool_address,
     position_address: data.position_address,
@@ -377,10 +393,87 @@ export function savePosition(data) {
     deployed_usd: data.deployed_usd || 0,
     strategy_used: data.strategy_used || null,
     token_x_symbol: data.token_x_symbol || null,
+    position_secret_key: data.position_secret_key || null,
+    deploy_target_sol: data.deploy_target_sol || 0,
+    deploy_total_bins: data.deploy_total_bins || 0,
+    deploy_filled_bins: data.deploy_filled_bins || 0,
+    deploy_chunk_max_bins: data.deploy_chunk_max_bins || 0,
+    deploy_range_min: Number.isFinite(data.deploy_range_min) ? data.deploy_range_min : null,
+    deploy_range_max: Number.isFinite(data.deploy_range_max) ? data.deploy_range_max : null,
+    is_partial: data.is_partial ? 1 : 0,
     lifecycle_state: data.lifecycle_state || 'open',
     pnl_sol: data.pnl_sol || 0,
     fees_collected_sol: data.fees_collected_sol || 0,
   }));
+}
+
+export function getResumablePartialDeployment(poolAddress, strategyUsed = null) {
+  if (!poolAddress) return null;
+  const baseSql = `
+    SELECT * FROM positions
+    WHERE pool_address = ?
+      AND status = 'open'
+      AND position_secret_key IS NOT NULL
+      AND (
+        is_partial = 1
+        OR lifecycle_state IN ('deploying', 'open_partial')
+        OR (deploy_total_bins > 0 AND deploy_filled_bins < deploy_total_bins)
+      )
+  `;
+  if (strategyUsed) {
+    return db.prepare(`${baseSql} AND strategy_used = ? ORDER BY updated_at DESC LIMIT 1`).get(poolAddress, strategyUsed);
+  }
+  return db.prepare(`${baseSql} ORDER BY updated_at DESC LIMIT 1`).get(poolAddress);
+}
+
+export function getPartialOpenPositions(limit = 20) {
+  return db.prepare(`
+    SELECT *
+    FROM positions
+    WHERE status = 'open'
+      AND (
+        is_partial = 1
+        OR lifecycle_state IN ('deploying', 'open_partial')
+        OR (deploy_total_bins > 0 AND deploy_filled_bins < deploy_total_bins)
+      )
+    ORDER BY updated_at DESC
+    LIMIT ?
+  `).all(Math.max(1, Math.floor(limit)));
+}
+
+export function updatePositionDeploymentProgress(positionAddress, {
+  deployedSol,
+  deployedUsd,
+  deployFilledBins,
+  deployTotalBins,
+  deployTargetSol,
+  isPartial,
+  lifecycleState,
+} = {}) {
+  return runInQueue(() => db.prepare(`
+    UPDATE positions
+    SET
+      deployed_sol = COALESCE(?, deployed_sol),
+      token_y_amount = COALESCE(?, token_y_amount),
+      deployed_usd = COALESCE(?, deployed_usd),
+      deploy_filled_bins = COALESCE(?, deploy_filled_bins),
+      deploy_total_bins = COALESCE(?, deploy_total_bins),
+      deploy_target_sol = COALESCE(?, deploy_target_sol),
+      is_partial = COALESCE(?, is_partial),
+      lifecycle_state = COALESCE(?, lifecycle_state),
+      updated_at = CURRENT_TIMESTAMP
+    WHERE position_address = ?
+  `).run(
+    Number.isFinite(deployedSol) ? deployedSol : null,
+    Number.isFinite(deployedSol) ? deployedSol : null,
+    Number.isFinite(deployedUsd) ? deployedUsd : null,
+    Number.isFinite(deployFilledBins) ? deployFilledBins : null,
+    Number.isFinite(deployTotalBins) ? deployTotalBins : null,
+    Number.isFinite(deployTargetSol) ? deployTargetSol : null,
+    typeof isPartial === 'boolean' ? (isPartial ? 1 : 0) : null,
+    lifecycleState || null,
+    positionAddress,
+  ));
 }
 
 export function recordFeesClaimed(positionAddress, { claimedSol = 0, claimedUsd = 0 }) {

@@ -5,7 +5,7 @@ import { getConfig, getThresholds } from '../config.js';
 import { getTopPools, getPoolInfo, openPosition, getSolPriceUsd } from '../solana/meteora.js';
 import { getWalletBalance, getConnection } from '../solana/wallet.js';
 import { PublicKey } from '@solana/web3.js';
-import { getOpenPositions, getPoolStats, closePositionWithPnl, getStat, recordScreeningEvent } from '../db/database.js';
+import { getOpenPositions, getPoolStats, closePositionWithPnl, getStat, recordScreeningEvent, getPartialOpenPositions } from '../db/database.js';
 import { getLessonsContext } from '../learn/lessons.js';
 import { getStrategy, parseStrategyParameters, getAllStrategies } from '../strategies/strategyManager.js';
 import {
@@ -143,6 +143,58 @@ function isTxTooLargeDeployError(err) {
     msg.includes('1232') ||
     msg.includes('packet too large')
   );
+}
+
+async function runPartialDeploymentHealing(notifyFn, cfg = getConfig()) {
+  const healCandidates = getPartialOpenPositions(8)
+    .filter((p) => p?.pool_address && p?.position_address);
+  if (!healCandidates.length) return { scanned: 0, healed: 0, failed: 0 };
+
+  const now = Date.now();
+  const minGapMs = Math.max(2, Number(cfg.managementIntervalMin || 15)) * 60 * 1000;
+  const lastAttemptState = getRuntimeState('hunter-partial-heal-attempts', {});
+  const nextAttemptState = { ...(lastAttemptState || {}) };
+  let healed = 0;
+  let failed = 0;
+
+  for (const pos of healCandidates) {
+    const key = pos.position_address;
+    const lastAttemptAt = Number(nextAttemptState[key] || 0);
+    if (Number.isFinite(lastAttemptAt) && (now - lastAttemptAt) < minGapMs) continue;
+    nextAttemptState[key] = now;
+
+    const targetSol = Math.max(
+      0.01,
+      safeNum(pos.deploy_target_sol || pos.deployed_sol || cfg.deployAmountSol || 0.1),
+    );
+
+    try {
+      await openPosition(
+        pos.pool_address,
+        0,
+        targetSol,
+        10,
+        pos.strategy_used || null,
+        {
+          maxBinsPerTx: Number(pos.deploy_chunk_max_bins || cfg.deployChunkMaxBins || 69),
+        },
+      );
+      healed++;
+    } catch (e) {
+      failed++;
+      console.warn(`[hunter] Partial heal failed for ${pos.position_address?.slice(0, 8)}: ${e.message}`);
+      await notifyFn?.(
+        `⚠️ <b>Partial Deploy Heal Failed</b>\n` +
+        `Pos: <code>${escapeHTML(shortAddr(pos.position_address))}</code>\n` +
+        `Pool: <code>${escapeHTML(shortAddr(pos.pool_address))}</code>\n` +
+        `Error: <code>${escapeHTML(String(e.message || e))}</code>`
+      ).catch(() => {});
+    }
+  }
+
+  setRuntimeState('hunter-partial-heal-attempts', nextAttemptState);
+  await flushRuntimeState().catch(() => {});
+  return { scanned: healCandidates.length, healed, failed };
 }
 
 export function getCandidates() { return lastCandidates; }
@@ -1391,6 +1443,20 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null, opt
   const effectiveMax = _hunterTargetCount != null
     ? Math.min(openPos.length + _hunterTargetCount, maxCap)
     : maxCap;
+
+  // Self-healing for partial deployments runs regardless of entry slot availability.
+  try {
+    const heal = await runPartialDeploymentHealing(hunterNotifyFn, cfg);
+    if (heal.healed > 0) {
+      await hunterNotifyFn?.(
+        `🩹 <b>Partial Deploy Healed</b>\n` +
+        `Scanned: ${heal.scanned} | Healed: ${heal.healed} | Failed: ${heal.failed}`
+      );
+    }
+  } catch (e) {
+    console.warn('[hunter] partial deployment heal loop failed:', e.message);
+  }
+
   if (openPos.length >= effectiveMax) {
     _hunterTargetCount = null;
     _hunterMaxPositionsCap = null;

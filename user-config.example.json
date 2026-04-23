@@ -134,6 +134,7 @@
   "maxOhlcvStaleMinutes1h": 180,
 
   "maxPriceImpactPct": 2.5,
+  "maxExitPriceImpactPct": 5.0,
   "executionRejectNonRefundableFees": true,
   "maxBinsPerPosition": 125,
   "slippageBps": 150,
@@ -144,7 +145,8 @@
   "targetRangePct": 90,
 
   "autoHarvestEnabled": true,
-  "autoHarvestThresholdSol": 0.04,
+  "autoHarvestThresholdSol": 0.1,
+  "harvestEstimatedGasSol": 0.005,
   "autoHarvestCompound": false,
   "minFeeClaimUsd": 1.0,
 

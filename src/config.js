@@ -113,6 +113,7 @@ const DEFAULTS = {
   evilPandaRetracementCapZone3Pct: 12.0, // Retracement cap watchdog untuk Panda saat pnl>=30
   evilPandaAllowAutoCompound: false,     // Default OFF agar shape deep-range Panda tidak terdistorsi saat harvest
   maxPriceImpactPct: 1.5,     // Maksimal price impact (%) yang diijinkan saat simulasi swap
+  maxExitPriceImpactPct: 5.0, // Hard gate close: abort exit jika estimasi swap impact > X%
   maxLpDominancePct: 20,      // Max % dari pool TVL yang boleh dimiliki bot — cegah jadi LP dominan
   maxBinsPerPosition: 125,   // Kapasitas bin maksimal sesuai skema (80-125)
   activePreset: 'supertrend_only', // Mode keputusan: supertrend_only
@@ -180,7 +181,8 @@ const DEFAULTS = {
 
   // Professional Yield & IQ Suite
   autoHarvestEnabled: true,      // Aktifkan penarikan profit otomatis tanpa tutup posisi
-  autoHarvestThresholdSol: 0.04, // Threshold fee (SOL) untuk memicu harvest otomatis
+  autoHarvestThresholdSol: 0.1, // Threshold fee (SOL) untuk memicu harvest otomatis
+  harvestEstimatedGasSol: 0.005, // Estimasi biaya gas harvest (SOL) untuk profit-vs-gas guard
   autoHarvestCompound: false,    // Re-invest harvested fees back into same position instead of realizing
   enableSimulationShield: true,  // Aktifkan pengecekan simulasi ketat sebelum eksekusi
   hourlyPulseEnabled: true,      // Kirim laporan ringkas setiap jam ke Telegram
@@ -278,6 +280,7 @@ const CONFIG_BOUNDS = {
   socialSignalWeight: { min: 1.0, max: 5.0 },
   minSmartMoneyOverlap: { min: 0, max: 10 },
   maxPriceImpactPct: { min: 0.1, max: 5 },
+  maxExitPriceImpactPct: { min: 0.1, max: 20 },
   maxBinsPerPosition: { min: 20, max: 150 },
   minTokenAgeMinutes: { min: 0, max: 1440 },
   maxOhlcvStaleMinutes15m: { min: 5, max: 720 },
@@ -310,6 +313,7 @@ const CONFIG_BOUNDS = {
 
   // Professional Suite Bounds
   autoHarvestThresholdSol: { min: 0.005, max: 1.0 },
+  harvestEstimatedGasSol: { min: 0.0005, max: 0.05 },
   autoHarvestEnabled: { type: 'boolean' },
   autoHarvestCompound: { type: 'boolean' },
   enableSimulationShield: { type: 'boolean' },
