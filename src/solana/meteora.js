@@ -898,6 +898,21 @@ async function _openPositionLogic(poolAddress, tokenXAmount, tokenYAmount, price
     binChunks = [{ lowerBinId: rangeMin, upperBinId: rangeMax }];
   }
 
+  // ── Guard: Bin Array Rent Veto ────────────────────────────────────
+  // Abort BEFORE any DB writes if the range requires new bin array initialization.
+  // Prevents burning ~0.07 SOL/array in non-refundable rent on unprepared pools.
+  if (!isResuming) {
+    try {
+      await assertRangeDoesNotRequireBinArrayInit(connection, poolPubkey, rangeMin, rangeMax);
+    } catch (e) {
+      if (e.message.startsWith('BIN_ARRAY_RENT_REQUIRED')) {
+        console.warn(`[meteora] VETO_NON_REFUNDABLE_RENT: ${e.message}`);
+        return { blocked: true, reason: 'VETO_NON_REFUNDABLE_RENT', detail: e.message };
+      }
+      throw e;
+    }
+  }
+
   // ── Keypair management ────────────────────────────────────────────
   // New deploy: generate + persist secret key.
   // Resume deploy: restore existing keypair from DB so missing chunks can continue.
@@ -1089,40 +1104,14 @@ async function _openPositionLogic(poolAddress, tokenXAmount, tokenYAmount, price
             strategy: { maxBinId: chunk.upperBinId, minBinId: chunk.lowerBinId, strategyType: 0 },
           });
         } else {
-          // Normal case B: use weight-based distribution for balance
-          const binIds = [];
-          for (let b = chunk.lowerBinId; b <= chunk.upperBinId; b++) binIds.push(b);
-
-          // Sentinel: Validate binIds not empty
-          if (binIds.length === 0) {
-            throw new Error(`binIds array is empty for chunk ${ci}: range [${chunk.lowerBinId}, ${chunk.upperBinId}]`);
-          }
-
-          // Obelisk: Precision weight distribution (Sum exactly 10,000)
-          const weightValue = Math.floor(10000 / binIds.length);
-          if (!Number.isFinite(weightValue) || weightValue <= 0) {
-            throw new Error(`Invalid weight calculation in case B: weightValue=${weightValue} for ${binIds.length} bins`);
-          }
-          const weights = new Array(binIds.length).fill(weightValue);
-          const currentSum = weights.reduce((a, b) => a + b, 0);
-          if (currentSum < 10000) {
-            weights[weights.length - 1] += (10000 - currentSum);
-          }
-
-          // Sentinel: Validate weights before passing to SDK
-          if (!Array.isArray(weights) || weights.length === 0 || weights.some(w => !Number.isFinite(w) || w < 0)) {
-            throw new Error(`Invalid weights array in case B: ${stringify(weights)}`);
-          }
-
-          console.log(`[meteora] case B normal add: binIds=${stringify(binIds)}, weights=${stringify(weights)}, totalXAmount=${chunkTotalX.toString()}, totalYAmount=${chunkTotalY.toString()}`);
-
-          txs = await dlmmPool.addLiquidityByWeight({
+          // Normal case B: strategy-based (spot distribution, type 0) — unified with dip-fishing path
+          console.log(`[meteora] case B normal add: range [${chunk.lowerBinId}, ${chunk.upperBinId}], totalX=${chunkTotalX.toString()}, totalY=${chunkTotalY.toString()}`);
+          txs = await dlmmPool.addLiquidityByStrategy({
             positionPubKey: posKp.publicKey,
             user: wallet.publicKey,
             totalXAmount: chunkTotalX,
             totalYAmount: chunkTotalY,
-            binIds,
-            weights,
+            strategy: { maxBinId: chunk.upperBinId, minBinId: chunk.lowerBinId, strategyType: 0 },
           });
         }
       }

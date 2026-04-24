@@ -2040,8 +2040,19 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null, opt
       const trend = ohlcv?.ta?.supertrend?.trend || 'NEUTRAL';
       if (cfg.executionRejectNonRefundableFees !== false && dlmm?.hasNonRefundableFees === true) {
         rejNonRefundable++;
-        if (process.env.HUNTER_DEBUG) console.log(`[hunter] Skipping ${p.name} - POOL_NON_REFUNDABLE_FEES`);
-        return null;
+        console.log(`[hunter] NON_REFUNDABLE_FEES_DETECTED: ${p.name} (${p.address?.slice(0, 8)}) — marked ineligible, excluded from LLM`);
+        return {
+          address: p.address,
+          name: p.name,
+          eligible: false,
+          rejectionReason: 'NON_REFUNDABLE_FEES_DETECTED',
+          security: { verdict: 'SKIP', eligible: false },
+          poolMemory: { verdict: 'SKIP' },
+          executionFlags: { nonRefundableFees: true },
+          smartWallet: null,
+          multiTF: null,
+          entrySignals: {},
+        };
       }
 
       // ─── Phase 2.0: Technical Hard-Gate ─────────────────────────
@@ -2210,13 +2221,14 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null, opt
     }
 
     const viable = finalEnriched.filter(p =>
+      p.eligible !== false &&
       p.poolMemory.verdict !== 'HINDARI' &&
       p.security.verdict !== 'AVOID'
     );
     const skipped = finalEnriched.length - viable.length;
 
     // Send brief rejection report for transparency
-    const rejected = finalEnriched.filter(p => p.security.verdict === 'AVOID');
+    const rejected = finalEnriched.filter(p => p.eligible !== false && p.security.verdict === 'AVOID');
     if (rejected.length > 0 && notifyFn) {
       const reasonCount = new Map();
       for (const p of rejected) {
