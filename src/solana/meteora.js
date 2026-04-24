@@ -768,6 +768,9 @@ async function _openPositionLogic(poolAddress, tokenXAmount, tokenYAmount, price
     const MAX_BINS_LIMIT = 1000;
     rangeMax = Math.min(rangeMax, activeBin.binId - 1); // Strictly Y-only (SOL)
     if (rangeMax - rangeMin > MAX_BINS_LIMIT) {
+      const originalWidth = rangeMax - rangeMin;
+      const coveragePct = ((MAX_BINS_LIMIT / originalWidth) * 100).toFixed(1);
+      console.warn(`[meteora] WARN: Deep-dip range truncated from ${originalWidth} to ${MAX_BINS_LIMIT} bins — only ${coveragePct}% of target coverage achieved. Increase binStep or reduce offset to avoid truncation.`);
       rangeMin = rangeMax - MAX_BINS_LIMIT;
     }
   } else {
@@ -795,7 +798,9 @@ async function _openPositionLogic(poolAddress, tokenXAmount, tokenYAmount, price
     // We clamp the width to 1,000 bins to prevent deployment failure on high-precision pools.
     const MAX_WIDTH = 1000;
     if (rangeMax - rangeMin > MAX_WIDTH) {
-      console.log(`[meteora] Clamp: Wide range truncated from ${rangeMax - rangeMin} bins to ${MAX_WIDTH} bins for transaction stability.`);
+      const originalWidth = rangeMax - rangeMin;
+      const coveragePct = ((MAX_WIDTH / originalWidth) * 100).toFixed(1);
+      console.warn(`[meteora] WARN: Single-side range truncated from ${originalWidth} to ${MAX_WIDTH} bins — only ${coveragePct}% of target coverage achieved for transaction stability.`);
       rangeMin = rangeMax - MAX_WIDTH;
     }
 
@@ -820,10 +825,19 @@ async function _openPositionLogic(poolAddress, tokenXAmount, tokenYAmount, price
   if (resumable?.position_secret_key) {
     try {
       posKp = Keypair.fromSecretKey(Uint8Array.from(Buffer.from(resumable.position_secret_key, 'base64')));
-      if (Number.isFinite(resumable.deploy_range_min) && Number.isFinite(resumable.deploy_range_max)) {
-        rangeMin = Number(resumable.deploy_range_min);
-        rangeMax = Number(resumable.deploy_range_max);
+      if (!Number.isFinite(resumable.deploy_range_min) || !Number.isFinite(resumable.deploy_range_max)) {
+        // Range was not persisted — recalculating would place new chunks in wrong bins.
+        // Lock for manual review to prevent capital misplacement.
+        await updatePositionLifecycle(resumable.position_address, 'manual_review').catch(() => {});
+        await enqueueReconcileIssue({
+          positionAddress: resumable.position_address,
+          poolAddress,
+          reason: 'RESUME_RANGE_MISSING: deploy_range_min/max is NULL in DB. Manual review required before resuming.',
+        }).catch(() => {});
+        throw new Error(`RESUME_RANGE_MISSING: ${resumable.position_address?.slice(0, 8)} has no persisted range — locked for manual_review`);
       }
+      rangeMin = Number(resumable.deploy_range_min);
+      rangeMax = Number(resumable.deploy_range_max);
       resumeFilledBins = Math.max(0, Number(resumable.deploy_filled_bins || 0));
       resumeDeployedSol = Math.max(0, safeNum(resumable.deployed_sol));
       targetDeploySol = Math.max(
@@ -833,6 +847,7 @@ async function _openPositionLogic(poolAddress, tokenXAmount, tokenYAmount, price
       isResuming = true;
       console.log(`[meteora] RESUME DEPLOY: ${resumable.position_address?.slice(0, 8)} filledBins=${resumeFilledBins}`);
     } catch (e) {
+      if (e.message.startsWith('RESUME_RANGE_MISSING')) throw e;
       console.warn(`[meteora] Failed to restore resumable keypair, fallback new deploy: ${e.message}`);
       posKp = null;
       isResuming = false;
@@ -1974,5 +1989,65 @@ export async function getDiscoveryPools(limitPerSort = 20) {
   } catch (e) {
     console.warn('⚠️ [meteora] Hybrid discovery degraded:', e.message);
     return getTopPools(limitPerSort * 2); // Fallback ke top fees
+  }
+}
+
+const DLMM_PROGRAM_ID = new PublicKey('LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo');
+const BINS_PER_ARRAY = 70;
+const BIN_ARRAY_RENT_SOL = 0.07;
+
+/**
+ * Returns the accumulated uncollected fee balance for a specific position in SOL terms.
+ * Wraps getPositionInfo so callers don't need to filter the array themselves.
+ */
+export async function getPositionFeeInfo(poolAddress, positionAddress) {
+  try {
+    const positions = await getPositionInfo(poolAddress);
+    const pos = Array.isArray(positions) ? positions.find((p) => p.address === positionAddress) : null;
+    if (!pos) return { uncollectedFeeSol: 0, feeXRaw: '0', feeYRaw: '0' };
+    return {
+      uncollectedFeeSol: pos.feeCollectedSol ?? 0,
+      feeXRaw: pos.feeX || '0',
+      feeYRaw: pos.feeY || '0',
+    };
+  } catch {
+    return { uncollectedFeeSol: 0, feeXRaw: '0', feeYRaw: '0' };
+  }
+}
+
+/**
+ * Checks that all bin arrays covering [lowerBinId, upperBinId] are already initialized on-chain.
+ * Throws BIN_ARRAY_RENT_REQUIRED if any are missing — caller must abort the deploy.
+ * Returns { safe: true, unchecked: true } optimistically if the RPC call fails.
+ */
+export async function assertRangeDoesNotRequireBinArrayInit(connection, lbPairPubkey, lowerBinId, upperBinId) {
+  try {
+    const lowerArrayIdx = Math.floor(lowerBinId / BINS_PER_ARRAY);
+    const upperArrayIdx = Math.floor(upperBinId / BINS_PER_ARRAY);
+
+    const pdas = [];
+    for (let idx = lowerArrayIdx; idx <= upperArrayIdx; idx++) {
+      const [pda] = PublicKey.findProgramAddressSync(
+        [Buffer.from('bin_array'), lbPairPubkey.toBuffer(), new BN(idx).toArrayLike(Buffer, 'le', 8)],
+        DLMM_PROGRAM_ID,
+      );
+      pdas.push(pda);
+    }
+
+    const accounts = await connection.getMultipleAccountsInfo(pdas);
+    const uninitializedCount = accounts.filter((a) => a === null).length;
+
+    if (uninitializedCount > 0) {
+      const estimatedRentSol = (uninitializedCount * BIN_ARRAY_RENT_SOL).toFixed(3);
+      throw new Error(
+        `BIN_ARRAY_RENT_REQUIRED: ${uninitializedCount} uninitialized bin array(s) in range [${lowerBinId}, ${upperBinId}] — estimated non-refundable rent: ~${estimatedRentSol} SOL`,
+      );
+    }
+
+    return { safe: true, uninitializedCount: 0, checkedArrays: pdas.length };
+  } catch (e) {
+    if (e.message.startsWith('BIN_ARRAY_RENT_REQUIRED')) throw e;
+    console.warn(`[meteora] assertRangeDoesNotRequireBinArrayInit RPC failed, proceeding optimistically: ${e.message}`);
+    return { safe: true, unchecked: true };
   }
 }

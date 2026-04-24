@@ -40,6 +40,7 @@ import { runEvolutionCycle } from '../learn/evolve.js';
 import { checkMaxDrawdown, requestConfirmation, validateStrategyForMarket } from '../safety/safetyManager.js';
 import { getRuntimeState, setRuntimeState, flushRuntimeState } from '../runtime/state.js';
 import { calculateSupertrend } from '../utils/ta.js';
+import { enrichPvpRisk } from '../market/screening.js';
 
 // ─── State ───────────────────────────────────────────────────────
 
@@ -190,7 +191,7 @@ async function runPartialDeploymentHealing(notifyFn, cfg = getConfig()) {
 
       const freshPos = getPositionByAddress(pos.position_address);
       if (!freshPos || freshPos.status !== 'open') continue;
-      if (!['deploying', 'open_partial', 'manual_review'].includes(String(freshPos.lifecycle_state || ''))) {
+      if (!['deploying', 'open_partial'].includes(String(freshPos.lifecycle_state || ''))) {
         // Tidak dalam state partial lagi → tidak perlu healing.
         continue;
       }
@@ -1771,13 +1772,19 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null, opt
       }
     }
 
-    const radarSnapshot = tokenGate.map((t) => {
+    const tokenGateWithPvp = enrichPvpRisk(tokenGate);
+    const radarSnapshot = tokenGateWithPvp.map((t) => {
       const security = t.security;
       const prefilterRejected = t.prefilterRejected === true;
       const dexGate = t.dexGate || null;
       const candidates = poolsByMint.get(t.mint) || [];
       const bestPool = candidates
-        .sort((a, b) => safeNum(b.volume24hRaw) - safeNum(a.volume24hRaw))[0] || null;
+        .sort((a, b) => {
+          const feeRatioA = parseFloat(a.feeToTvlRatio || 0) || (safeNum(a.fees24hRaw) / Math.max(1, safeNum(a.liquidityRaw)));
+          const feeRatioB = parseFloat(b.feeToTvlRatio || 0) || (safeNum(b.fees24hRaw) / Math.max(1, safeNum(b.liquidityRaw)));
+          if (Math.abs(feeRatioA - feeRatioB) > 1e-9) return feeRatioB - feeRatioA;
+          return safeNum(b.volume24hRaw) - safeNum(a.volume24hRaw);
+        })[0] || null;
 
       let matched = false;
       let reason = 'PASS: Dex+GMGN gate clean';
@@ -1800,6 +1807,9 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null, opt
           ? 'VETO [NO_METEORA_EXEC_POOL]: token lolos gate, tapi di Dex belum ada pair Meteora/DLMM.'
           : 'VETO [NO_METEORA_EXEC_POOL]: token lolos, tapi belum ada pool Meteora yang executable.';
         rejNoPool++;
+      } else if (t.pvpRisk?.detected) {
+        removeNoPoolPending(t.mint);
+        reason = `VETO [HIGH_PVP_RISK]: ${t.pvpRisk.reason}`;
       } else if (isOnCooldown(bestPool.address)) {
         reason = 'VETO [POOL_COOLDOWN]: pool/token dalam masa cooldown.';
         rejCooldown++;

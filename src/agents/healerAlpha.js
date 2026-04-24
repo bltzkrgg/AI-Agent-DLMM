@@ -2,7 +2,7 @@
 
 import { createMessage, resolveModel } from '../agent/provider.js';
 import { getConfig, getThresholds, isDryRun } from '../config.js';
-import { getPositionInfo, closePositionDLMM, claimFees, getPoolInfo, getSolPriceUsd, getAllWalletPositions, addLiquidityToPosition } from '../solana/meteora.js';
+import { getPositionInfo, closePositionDLMM, claimFees, getPoolInfo, getSolPriceUsd, getAllWalletPositions, addLiquidityToPosition, getPositionFeeInfo } from '../solana/meteora.js';
 import { getConnection, getWallet, getWalletBalance } from '../solana/wallet.js';
 import { PublicKey } from '@solana/web3.js';
 import { getOpenPositions, closePositionWithPnl, saveNotification, updatePositionLifecycle, savePosition, updateLivePositionStats, updatePositionPeakPnl, recordFeesClaimed, recordPnlDivergenceEvent } from '../db/database.js';
@@ -1499,7 +1499,7 @@ export async function runHealerAlpha(notifyFn) {
         const realizedPnlUsd = parseFloat((safePnlSol * solPriceUsd).toFixed(2));
         const realizedFeesUsd = parseFloat((((match.feeCollectedSol ?? 0) * solPriceUsd)).toFixed(2));
         await updatePositionLifecycle(addr, 'closing');
-        await closePositionDLMM(pos.pool_address, addr, {
+        const closeResult = await closePositionDLMM(pos.pool_address, addr, {
           pnlUsd:      realizedPnlUsd,
           pnlPct,
           feeUsd:      realizedFeesUsd,
@@ -1544,7 +1544,8 @@ export async function runHealerAlpha(notifyFn) {
           await recordPoolCloseOutcome(pos.pool_address, pnlPct, triggerCode, pos.strategy_used);
         } catch (e) { console.warn('[healer] recordPoolCloseOutcome failed after retries:', e?.message); }
 
-        // TAE Tracking: Record exit event for analytics
+        // TAE Tracking: Record exit event for analytics — only after confirmed on-chain close
+        if (closeResult?.success || closeResult?.alreadyClosed)
         try {
           // Fix #2: Compute real TAE exit context (same zone logic as runPanicWatchdog)
           const _deployedSolSafe = pos.deployed_sol > 0 ? pos.deployed_sol : null;
@@ -2355,7 +2356,8 @@ export async function runPanicWatchdog(notifyFn) {
       }
 
       // ─── 🐼 SULTAN HARVEST: Auto-Profit Realization ────────────────
-      const uncollectedFeeSol = match?.feeUncollectedSol ?? 0;
+      const _feeInfo = await getPositionFeeInfo(pos.pool_address, pos.position_address).catch(() => ({ uncollectedFeeSol: 0 }));
+      const uncollectedFeeSol = _feeInfo.uncollectedFeeSol ?? 0;
       const minHarvestFloor   = cfg.autoHarvestThresholdSol || 0.1;
       const estimatedGasSol = Math.max(0.0005, Number(cfg.harvestEstimatedGasSol || 0.005));
       const minEconomicHarvest = estimatedGasSol * 10;
