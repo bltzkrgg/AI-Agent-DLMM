@@ -20,6 +20,7 @@ function initializeDatabase() {
     // Enable WAL mode for better concurrency
     db.pragma('journal_mode = WAL');
     db.pragma('synchronous = NORMAL');
+    db.pragma('busy_timeout = 5000');
     console.log('⚡ SQLite WAL mode enabled');
 
     return db;

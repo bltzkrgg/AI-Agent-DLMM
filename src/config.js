@@ -97,6 +97,9 @@ const DEFAULTS = {
   stopLossPct: 8,
   maxDailyDrawdownPct: 6,
   requireConfirmation: true,
+  maxDailyPriorityFeeSol: 0.2, // Budget cap harian priority fee + tip (SOL)
+  maxTxFailStreak: 8,          // Cooldown trigger jika TX gagal beruntun
+  txFailCooldownMinutes: 20,   // Durasi cooldown setelah fail streak tercapai
 
   // Proactive exit
   proactiveExitEnabled: true,
@@ -258,6 +261,9 @@ const CONFIG_BOUNDS = {
   oorAlertIntervalMin: { min: 1, max: 1440 },
   stopLossPct: { min: 0.1, max: 50 },
   maxDailyDrawdownPct: { min: 0.5, max: 50 },
+  maxDailyPriorityFeeSol: { min: 0.01, max: 10 },
+  maxTxFailStreak: { min: 1, max: 50 },
+  txFailCooldownMinutes: { min: 1, max: 720 },
   maxLpDominancePct: { min: 1, max: 100 },
   proactiveExitMinProfitPct: { min: 0.1, max: 100 },
   proactiveExitBearishConfidence: { min: 0.5, max: 1.0 },

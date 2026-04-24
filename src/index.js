@@ -39,6 +39,7 @@ import { DbBackup } from './db/backup.js';
 import { initializeRpcManager, getRpcMetrics } from './utils/helius.js';
 import { CircuitBreaker } from './safety/circuitBreaker.js';
 import { createMessageTransport } from './telegram/messageTransport.js';
+import { getGasGuardStatus } from './safety/gasGuard.js';
 
 // ─── PID lock — cegah multiple instance ─────────────────────────
 const PID_FILE = new URL('../../bot.pid', import.meta.url).pathname;
@@ -1954,6 +1955,7 @@ bot.onText(/\/providers/, async (msg) => {
     const rpcMetrics = getRpcMetrics();
     const candleMetrics = candleManager?.getMetrics() || { error: 'Candle manager not initialized' };
     const cbState = circuitBreaker.getState();
+    const gasGuard = getGasGuardStatus();
 
     let report = '📡 <b>API Provider &amp; Safety Status</b>\n\n';
 
@@ -1965,6 +1967,19 @@ bot.onText(/\/providers/, async (msg) => {
       report += `Reason: ${cbState.tripReason}\n`;
     }
     report += `Errors: ${cbState.errorCount}, Latencies: ${cbState.latencyCount}\n\n`;
+
+    report += '⛽ <b>TX Gas Guard</b>\n';
+    report += `Daily used: <code>${gasGuard.spentPriorityFeeSol.toFixed(4)} / ${gasGuard.capSol.toFixed(4)} SOL</code>\n`;
+    report += `Fail streak: <code>${gasGuard.txFailStreak}</code>\n`;
+    if (gasGuard.inCooldown) {
+      report += `Status: ⛔ cooldown <code>${gasGuard.cooldownRemainingMin}m</code>\n`;
+    } else {
+      report += 'Status: ✅ active\n';
+    }
+    if (gasGuard.lastFailureReason) {
+      report += `Last fail: <code>${escapeHTML(gasGuard.lastFailureReason)}</code>\n`;
+    }
+    report += '\n';
 
     if (rpcMetrics.providers) {
       report += '🔗 <b>RPC Providers</b>\n';

@@ -10,6 +10,12 @@ import { getConnection, getWallet } from './wallet.js';
 import { fetchWithTimeout, withRetry, withExponentialBackoff, stringify } from '../utils/safeJson.js';
 import { getRecommendedPriorityFee } from '../utils/helius.js';
 import { isDryRun } from '../config.js';
+import {
+  checkAndConsumePriorityFeeBudget,
+  estimatePriorityFeeSol,
+  recordTxFailure,
+  recordTxSuccess,
+} from '../safety/gasGuard.js';
 
 export const SOL_MINT  = 'So11111111111111111111111111111111111111112';
 export const USDC_MINT = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
@@ -262,6 +268,15 @@ export async function swapToSOL(inputMint, amountRaw, slippageBps = 100, options
 
   let txHash = null;
   try {
+    const estFeeSol = estimatePriorityFeeSol({ priorityFeeLamports });
+    const budgetCheck = checkAndConsumePriorityFeeBudget({
+      estimatedSol: estFeeSol,
+      context: 'jupiter.swap',
+    });
+    if (!budgetCheck.allowed) {
+      throw new Error(`TX_GUARD_BLOCKED: ${budgetCheck.reason}`);
+    }
+
     txHash = await connection.sendRawTransaction(finalTx.serialize(), {
       skipPreflight: false,
       maxRetries: 3,
@@ -281,6 +296,7 @@ export async function swapToSOL(inputMint, amountRaw, slippageBps = 100, options
       await new Promise(r => setTimeout(r, 2500));
     }
 
+    recordTxSuccess({ context: 'jupiter.swap' });
     return {
       success: true,
       txHash,
@@ -302,6 +318,7 @@ export async function swapToSOL(inputMint, amountRaw, slippageBps = 100, options
       quotedOutSol: outSol,
     });
     if (likelySuccess) {
+      recordTxSuccess({ context: 'jupiter.swap.assumed_success' });
       return {
         ...likelySuccess,
         inputMint,
@@ -312,6 +329,7 @@ export async function swapToSOL(inputMint, amountRaw, slippageBps = 100, options
         urgent: isUrgent
       };
     }
+    recordTxFailure({ context: 'jupiter.swap', error });
     throw error;
   }
 }

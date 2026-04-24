@@ -22,6 +22,12 @@ import { getWalletPositions as getLPAgentPositions, isLPAgentEnabled } from '../
 import { swapToSol, getSwapQuoteToSol } from '../utils/jupiter.js';
 import { getTokenBalance } from './wallet.js';
 import { getMarketSnapshot } from '../market/oracle.js';
+import {
+  checkAndConsumePriorityFeeBudget,
+  estimatePriorityFeeSol,
+  recordTxFailure,
+  recordTxSuccess,
+} from '../safety/gasGuard.js';
 import crypto from 'crypto';
 
 const METEORA_DLMM_API = 'https://dlmm-api.meteora.ag';
@@ -672,12 +678,28 @@ export async function addLiquidityToPosition(poolAddress, positionAddress, token
         tx.sign(wallet);
       }
 
-      const txHash = await connection.sendRawTransaction(tx.serialize(), {
-        skipPreflight: isVersioned,
-        preflightCommitment: 'confirmed',
-        maxRetries: 1,
+      const estFeeSol = estimatePriorityFeeSol({ microLamports, computeUnits: 400_000 });
+      const feeBudget = checkAndConsumePriorityFeeBudget({
+        estimatedSol: estFeeSol,
+        context: 'meteora.compound',
       });
-      await pollTxConfirm(connection, txHash);
+      if (!feeBudget.allowed) {
+        throw new Error(`TX_GUARD_BLOCKED: ${feeBudget.reason}`);
+      }
+
+      let txHash;
+      try {
+        txHash = await connection.sendRawTransaction(tx.serialize(), {
+          skipPreflight: isVersioned,
+          preflightCommitment: 'confirmed',
+          maxRetries: 1,
+        });
+        await pollTxConfirm(connection, txHash);
+      } catch (sendErr) {
+        recordTxFailure({ context: 'meteora.compound', error: sendErr });
+        throw sendErr;
+      }
+      recordTxSuccess({ context: 'meteora.compound' });
       allTxHashes.push(txHash);
     }
 
@@ -1237,13 +1259,28 @@ async function _openPositionLogic(poolAddress, tokenXAmount, tokenYAmount, price
               console.log(`[meteora] Legacy Transaction: Skipping manual simulation (will use sendRawTransaction preflight)`);
             }
 
-            const txHash = await connection.sendRawTransaction(tx.serialize(), {
-              skipPreflight: isVersioned, // Skip preflight if we already simulated (VersionedTransaction)
-              preflightCommitment: 'confirmed',
-              maxRetries: 1, // manual watchtower retry logic instead of RPC default
+            const estFeeSol = estimatePriorityFeeSol({ microLamports, computeUnits });
+            const feeBudget = checkAndConsumePriorityFeeBudget({
+              estimatedSol: estFeeSol,
+              context: 'meteora.open_chunk',
             });
+            if (!feeBudget.allowed) {
+              throw new Error(`TX_GUARD_BLOCKED: ${feeBudget.reason}`);
+            }
 
-            await pollTxConfirm(connection, txHash);
+            let txHash;
+            try {
+              txHash = await connection.sendRawTransaction(tx.serialize(), {
+                skipPreflight: isVersioned, // Skip preflight if we already simulated (VersionedTransaction)
+                preflightCommitment: 'confirmed',
+                maxRetries: 1, // manual watchtower retry logic instead of RPC default
+              });
+              await pollTxConfirm(connection, txHash);
+            } catch (sendErr) {
+              recordTxFailure({ context: 'meteora.open_chunk', error: sendErr });
+              throw sendErr;
+            }
+            recordTxSuccess({ context: 'meteora.open_chunk' });
             allTxHashes.push(txHash);
 
             // Accurate Lamports conversion for DB
@@ -1537,18 +1574,43 @@ export async function closePositionDLMM(poolAddress, positionAddress, pnlData = 
           tx.sign(wallet);  
         }
 
-        const hash = await connection.sendRawTransaction(tx.serialize(), {
-          skipPreflight: true,
-          maxRetries: 3,
+        const estFeeSol = estimatePriorityFeeSol({
+          microLamports,
+          computeUnits: 400_000,
+          jitoTipLamports: isTxVersioned ? 1_000_000 : 0,
         });
+        const feeBudget = checkAndConsumePriorityFeeBudget({
+          estimatedSol: estFeeSol,
+          context: 'meteora.close',
+        });
+        if (!feeBudget.allowed) {
+          throw new Error(`TX_GUARD_BLOCKED: ${feeBudget.reason}`);
+        }
+
+        let hash;
+        try {
+          hash = await connection.sendRawTransaction(tx.serialize(), {
+            skipPreflight: true,
+            maxRetries: 3,
+          });
+        } catch (sendErr) {
+          recordTxFailure({ context: 'meteora.close', error: sendErr });
+          throw sendErr;
+        }
 
         // 🛡️ Special Polling for Jito Bundles if landing on Block Engine
         if (hash && hash.length > 32) { // rudimentary bundle ID check via length if applicable
            // Note: Since we are using sendRawTransaction to a normal RPC with a tip, 
            // the RPC itself might relay to Jito. Real Jito 'bundleId' is different.
            // However, for now we stick to pollTxConfirm which is robust across RPCs.
-          await pollTxConfirm(connection, hash, 60000);
+          try {
+            await pollTxConfirm(connection, hash, 60000);
+          } catch (confirmErr) {
+            recordTxFailure({ context: 'meteora.close', error: confirmErr });
+            throw confirmErr;
+          }
         }
+        recordTxSuccess({ context: 'meteora.close' });
         hashes.push(hash);
       };
 
@@ -1807,8 +1869,15 @@ export async function closePositionDLMM(poolAddress, positionAddress, pnlData = 
                const { VersionedTransaction } = await import('@solana/web3.js');
                const swapTx = VersionedTransaction.deserialize(Buffer.from(swapResult.swapTransaction, 'base64'));
                swapTx.sign([wallet]);
-               const hash = await connection.sendRawTransaction(swapTx.serialize(), { skipPreflight: true });
-               await pollTxConfirm(connection, hash, 45000);
+               let hash;
+               try {
+                 hash = await connection.sendRawTransaction(swapTx.serialize(), { skipPreflight: true });
+                 await pollTxConfirm(connection, hash, 45000);
+               } catch (swapTxErr) {
+                 recordTxFailure({ context: 'meteora.close.auto_swap', error: swapTxErr });
+                 throw swapTxErr;
+               }
+               recordTxSuccess({ context: 'meteora.close.auto_swap' });
                console.log(`[closePositionDLMM] Auto-Swap Success: ${hash}`);
                txHashes.push(hash);
             } else if (swapResult?.reason) {
@@ -1896,13 +1965,28 @@ export async function claimFees(poolAddress, positionAddress) {
       tx.sign(wallet);
     }
 
-    const txHash = await connection.sendRawTransaction(tx.serialize(), {
-      skipPreflight: false,
-      preflightCommitment: 'confirmed',
-      maxRetries: 3,
+    const estFeeSol = estimatePriorityFeeSol({ microLamports: 300_000, computeUnits: 200_000 });
+    const feeBudget = checkAndConsumePriorityFeeBudget({
+      estimatedSol: estFeeSol,
+      context: 'meteora.claim',
     });
+    if (!feeBudget.allowed) {
+      throw new Error(`TX_GUARD_BLOCKED: ${feeBudget.reason}`);
+    }
 
-    await pollTxConfirm(connection, txHash, 60000);
+    let txHash;
+    try {
+      txHash = await connection.sendRawTransaction(tx.serialize(), {
+        skipPreflight: false,
+        preflightCommitment: 'confirmed',
+        maxRetries: 3,
+      });
+      await pollTxConfirm(connection, txHash, 60000);
+    } catch (claimErr) {
+      recordTxFailure({ context: 'meteora.claim', error: claimErr });
+      throw claimErr;
+    }
+    recordTxSuccess({ context: 'meteora.claim' });
     txHashes.push(txHash);
   }
 

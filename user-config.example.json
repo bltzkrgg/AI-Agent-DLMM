@@ -139,6 +139,9 @@
   "maxBinsPerPosition": 125,
   "slippageBps": 150,
   "maxDailyDrawdownPct": 6,
+  "maxDailyPriorityFeeSol": 0.2,
+  "maxTxFailStreak": 8,
+  "txFailCooldownMinutes": 20,
 
   "activePreset": "supertrend_only",
   "activeStrategy": "Evil Panda",

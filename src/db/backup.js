@@ -1,5 +1,6 @@
 import fs from 'fs';
 import path from 'path';
+import Database from 'better-sqlite3';
 const logger = console; // Fallback ke console jika logger tidak tersedia
 
 export function resolveBackupDir(dbPath, explicitBackupDir = null) {
@@ -45,8 +46,34 @@ export class DbBackup {
         return null;
       }
 
-      // Copy DB file
-      fs.copyFileSync(this.dbPath, backupPath);
+      const runtimeDb = globalThis.db;
+      // Best-effort checkpoint so WAL pages are flushed before snapshot.
+      try {
+        runtimeDb?.pragma?.('wal_checkpoint(PASSIVE)');
+      } catch { /* non-blocking */ }
+
+      // Prefer SQLite-native backup API (WAL-safe snapshot).
+      let usedSafeBackup = false;
+      if (runtimeDb && typeof runtimeDb.backup === 'function') {
+        await runtimeDb.backup(backupPath);
+        usedSafeBackup = true;
+      } else {
+        let tempDb = null;
+        try {
+          tempDb = new Database(this.dbPath, { readonly: true, fileMustExist: true });
+          if (typeof tempDb.backup === 'function') {
+            await tempDb.backup(backupPath);
+            usedSafeBackup = true;
+          }
+        } finally {
+          try { tempDb?.close?.(); } catch { /* noop */ }
+        }
+      }
+
+      // Final fallback (less ideal under WAL, but keep backward compatibility).
+      if (!usedSafeBackup) {
+        fs.copyFileSync(this.dbPath, backupPath);
+      }
       logger.log(`✅ DB backup created: ${backupPath}`);
 
       // Cleanup old backups
@@ -134,6 +161,13 @@ export class DbBackup {
 
       // Restore from backup
       fs.copyFileSync(backupPath, this.dbPath);
+      // Remove stale WAL/SHM to avoid replaying unrelated pages after restore.
+      const walPath = `${this.dbPath}-wal`;
+      const shmPath = `${this.dbPath}-shm`;
+      try {
+        if (fs.existsSync(walPath)) fs.unlinkSync(walPath);
+        if (fs.existsSync(shmPath)) fs.unlinkSync(shmPath);
+      } catch { /* non-blocking cleanup */ }
       logger.log(`✅ DB restored from: ${backupPath}`);
 
       return true;
