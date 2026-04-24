@@ -97,6 +97,8 @@ const DEFAULTS = {
 
   // Safety
   stopLossPct: 8,
+  normalStopLossPct: 10,    // SL % for narrow-range strategies (non-Evil Panda)
+  maxNetLossPct: -15,       // Hard floor: max tolerated Net PnL % across all strategies
   maxDailyDrawdownPct: 6,
   requireConfirmation: true,
   maxDailyPriorityFeeSol: 0.2, // Budget cap harian priority fee + tip (SOL)
@@ -116,6 +118,7 @@ const DEFAULTS = {
   evilPandaRetracementCapZone1Pct: 4.0,  // Retracement cap watchdog untuk Panda saat pnl<10
   evilPandaRetracementCapZone2Pct: 8.0,  // Retracement cap watchdog untuk Panda saat pnl 10-30
   evilPandaRetracementCapZone3Pct: 12.0, // Retracement cap watchdog untuk Panda saat pnl>=30
+  evilPandaBottomToleranceBins: 5,       // Bins below range floor before Evil Panda bin-SL fires
   evilPandaAllowAutoCompound: false,     // Default OFF agar shape deep-range Panda tidak terdistorsi saat harvest
   maxPriceImpactPct: 1.5,     // Maksimal price impact (%) yang diijinkan saat simulasi swap
   maxExitPriceImpactPct: 5.0, // Hard gate close: abort exit jika estimasi swap impact > X%
@@ -183,6 +186,8 @@ const DEFAULTS = {
   gmgnFailClosedCritical: true, // Data critical GMGN missing => reject
   executionRejectNonRefundableFees: true, // Reject pool dengan non-refundable fees
   slippageBps: 100,            // Slippage tolerance dalam basis points (100 = 1%)
+  tvlDropPanicThreshold: 0.5,  // Panic exit jika TVL turun > 50% dari TVL saat entry
+  panicExitSlippageBps: 750,   // Slippage paksa (7.5%) saat panic exit TVL drain
 
   // Professional Yield & IQ Suite
   autoHarvestEnabled: true,      // Aktifkan penarikan profit otomatis tanpa tutup posisi
@@ -262,6 +267,8 @@ const CONFIG_BOUNDS = {
   slCooldownMinutes: { min: 0, max: 10080 },
   oorAlertIntervalMin: { min: 1, max: 1440 },
   stopLossPct: { min: 0.1, max: 50 },
+  normalStopLossPct: { min: 1, max: 50 },
+  maxNetLossPct: { min: -100, max: -1 },
   maxDailyDrawdownPct: { min: 0.5, max: 50 },
   maxDailyPriorityFeeSol: { min: 0.01, max: 10 },
   maxTxFailStreak: { min: 1, max: 50 },
@@ -278,6 +285,7 @@ const CONFIG_BOUNDS = {
   evilPandaRetracementCapZone1Pct: { min: 0.5, max: 30 },
   evilPandaRetracementCapZone2Pct: { min: 0.5, max: 30 },
   evilPandaRetracementCapZone3Pct: { min: 0.5, max: 30 },
+  evilPandaBottomToleranceBins: { min: 0, max: 50 },
   evilPandaAllowAutoCompound: { type: 'boolean' },
   darwinWindowDays: { min: 7, max: 365 },
   darwinRecalcEvery: { min: 1, max: 50 },
@@ -347,6 +355,8 @@ const CONFIG_BOUNDS = {
   llmWeightHints: { type: 'object' },
   okxApiKey: { type: 'string' },
   slippageBps: { min: 10, max: 1000 },
+  tvlDropPanicThreshold: { min: 0.1, max: 0.9 },
+  panicExitSlippageBps: { min: 100, max: 2000 },
   managementModel: { type: 'string' },
   hunterModel: { type: 'string' },
   activePreset: { type: 'string' },

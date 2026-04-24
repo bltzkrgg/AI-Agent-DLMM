@@ -571,18 +571,23 @@ export async function executeTool(name, input, notifyFn = null) {
               proactiveWarning = `🤢 TOXIC IL DETECTED: Yield vs HODL is ${(yieldVsHodlSol * 100).toFixed(2)}% (limit -${cfgIlLimitPct.toFixed(2)}%). LP is bleeding relative to HODL. Exiting to preserve capital.`;
             }
 
-            // ── TVL Velocity Guard (Aegis v1.0) ──
+            // ── TVL Drain Defense (absolute entryTvl-based panic exit) ──
+            // Stores TVL snapshot at first observation as entryTvl in runtimeState.
+            // Panics if TVL has drained more than cfg.tvlDropPanicThreshold from that baseline.
             const currentTvl = analysis.snapshot?.pool?.tvl || 0;
-            const lastTvl = runtimeState.lastTvl ?? currentTvl;
-            const tvlChange = lastTvl > 0 ? (currentTvl - lastTvl) / lastTvl : 0;
-            
-            if (!proactiveCloseRecommended && tvlChange <= -0.20 && currentTvl > 0) {
-              proactiveCloseRecommended = true;
-              proactiveWarning = `⚠️ TVL CRASH: Liquidity dropped ${(tvlChange * 100).toFixed(2)}% rapidly. Possible pool exodus or rug. Emergency exit triggered!`;
+            if (currentTvl > 0) {
+              const entryTvl = runtimeState.entryTvl || currentTvl;
+              if (!runtimeState.entryTvl) {
+                updatePositionRuntimeState(addr, { entryTvl: currentTvl });
+              }
+              const panicThreshold = cfg.tvlDropPanicThreshold ?? 0.5;
+              const tvlDropRatio = entryTvl > 0 ? (entryTvl - currentTvl) / entryTvl : 0;
+              if (!proactiveCloseRecommended && tvlDropRatio >= panicThreshold) {
+                proactiveCloseRecommended = true;
+                proactiveWarning = `🚨 PANIC_EXIT_TVL_DRAIN: TVL crashed ${(tvlDropRatio * 100).toFixed(1)}% from entry ` +
+                  `(${entryTvl.toFixed(0)} → ${currentTvl.toFixed(0)}). Possible rug/pool exodus. Emergency exit!`;
+              }
             }
-
-            // Update TVL for next check
-            updatePositionRuntimeState(addr, { lastTvl: currentTvl });
 
           } catch (e) {
             console.warn(`⚠️ [healer] Aegis check failed for ${addr.slice(0,8)}: ${escapeHTML(e.message)}`);
@@ -1236,20 +1241,48 @@ export async function runHealerAlpha(notifyFn) {
       });
 
       // ── T2.6: Volatility-scaled SL ───────────────────────────────
-      // Scale emergencyStopLossPct up for HIGH volatility tokens so we don't get
-      // stopped out prematurely on normal swings. Uses cached category from prior
-      // analyzeMarket cycle to avoid extra API calls on every check.
       const cachedVolCat = runtimeState.volatilityCategory;
       const volSLMultiplier = cachedVolCat === 'HIGH' ? 1.5
         : cachedVolCat === 'MEDIUM' ? 1.2
         : 1.0;
-      const effectiveSLPct = emergencyStopLossPct * volSLMultiplier;
 
-      const slTriggered = pnlPct <= -Math.abs(effectiveSLPct);
-      const slCheck = {
-        triggered: slTriggered,
-        reason: `PnL ${pnlPct.toFixed(2)}% <= stop loss -${Math.abs(effectiveSLPct).toFixed(2)}%${volSLMultiplier !== 1.0 ? ` (${cachedVolCat} vol ×${volSLMultiplier})` : ''}`,
-      };
+      // ── Strategy-Aware SL ────────────────────────────────────────
+      // Evil Panda: bin-based SL (price must break below range floor by tolerance bins).
+      // Other strategies: pct-based SL using normalStopLossPct (not hardcoded stopLossPct).
+      const isEvilPandaStrategy = pos.strategy_used === 'Evil Panda' || exitMode === 'evil_panda_confluence';
+      let slTriggered = false;
+      let slReason = '';
+
+      if (isEvilPandaStrategy) {
+        const activeBin      = match.activeBinId;
+        const rangeMin       = match.lowerBinId ?? null;
+        const toleranceBins  = cfg.evilPandaBottomToleranceBins ?? 5;
+        if (activeBin != null && rangeMin != null && activeBin < (rangeMin - toleranceBins)) {
+          slTriggered = true;
+          slReason = `Evil Panda bin SL: activeBin ${activeBin} < rangeFloor ${rangeMin} − ${toleranceBins} bins`;
+        }
+      } else {
+        const normalSLPct    = cfg.normalStopLossPct ?? cfg.stopLossPct ?? 10;
+        const effectiveSLPct = normalSLPct * volSLMultiplier;
+        if (pnlPct <= -Math.abs(effectiveSLPct)) {
+          slTriggered = true;
+          slReason = `PnL ${pnlPct.toFixed(2)}% <= stop loss −${Math.abs(effectiveSLPct).toFixed(2)}%${volSLMultiplier !== 1.0 ? ` (${cachedVolCat} vol ×${volSLMultiplier})` : ''}`;
+        }
+      }
+
+      // ── Net-PnL Hard Floor — absolute backstop for all strategies ──
+      // pnlPct from resolvePnlSnapshot already includes claimed+unclaimed fees via
+      // currentValueSol (LP token amounts) + feesClaimed adjustment, so this guard
+      // catches cases where IL exceeds ALL fee income combined.
+      const maxNetLossPct = cfg.maxNetLossPct ?? -15;
+      if (!slTriggered && pnlPct < maxNetLossPct) {
+        slTriggered = true;
+        slReason = `Net PnL ${pnlPct.toFixed(2)}% breached hard floor ${maxNetLossPct}% — IL exceeds all fees`;
+      }
+
+      // Keep emergencyStopLossPct accessible for legacy references below (proactive warning, mildStopLossBreach)
+      const effectiveSLPct = emergencyStopLossPct * volSLMultiplier;
+      const slCheck = { triggered: slTriggered, reason: slReason || `PnL ${pnlPct.toFixed(2)}%` };
 
       // ── T2.7: OOR tracking in main loop ─────────────────────────
       // Mirrors the executeTool.get_all_positions logic so the decision block
