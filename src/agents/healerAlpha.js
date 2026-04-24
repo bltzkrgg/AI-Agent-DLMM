@@ -68,6 +68,13 @@ function shouldEscalateSkippedSwap(swapRes) {
   return true;
 }
 
+function computePoolEfficiency(volume24h, tvl) {
+  if (!tvl || tvl <= 0) return { score: 0, label: 'Unknown' };
+  const score = volume24h / tvl;
+  const label = score > 2.0 ? 'Excellent' : score > 1.0 ? 'Good' : score > 0.2 ? 'Weak' : 'Zombie';
+  return { score, label };
+}
+
 function auditPnlDivergence(event, metadata = null) {
   if (!event || !Number.isFinite(event?.divergencePct)) return;
   recordPnlDivergenceEvent({
@@ -633,6 +640,12 @@ export async function executeTool(name, input, notifyFn = null) {
             proactiveCloseRecommended,
             proactiveWarning,
             smartMoney, // { smartLpCount, avgSmartEfficiency, isTrending, consensusRange }
+            ...(() => {
+              const _poolTvl = analysis?.snapshot?.pool?.tvl || 0;
+              const _poolVol = analysis?.snapshot?.pool?.volume24h || 0;
+              const _eff = computePoolEfficiency(_poolVol, _poolTvl);
+              return { efficiencyScore: _eff.score, efficiencyLabel: _eff.label };
+            })(),
           };
         } catch (e) {
           return { ...pos, error: e.message };
@@ -1200,7 +1213,7 @@ export async function runHealerAlpha(notifyFn) {
       const emergencyStopLossPct = strategyProfile?.exit?.emergencyStopLossPct ?? thresholds.stopLossPct;
       const maxHoldHours      = strategyProfile?.exit?.maxHoldHours ?? thresholds.maxHoldHours ?? 6;
       const maxHoldMinutes    = maxHoldHours * 60;
-      const maxHoldTriggered  = positionAgeMin >= maxHoldMinutes;
+      let maxHoldTriggered    = positionAgeMin >= maxHoldMinutes;
 
       // ── Healer Trailing Shadow State (non-exit, telemetry only) ─────────
       // Trailing exit utama dipusatkan di TAE Watchdog (single source of truth).
@@ -1308,8 +1321,24 @@ export async function runHealerAlpha(notifyFn) {
         }
       }
 
+      // ── Pool Maturity: Anti-Zombie Detection ─────────────────────────
+      // Only check for positions ≥ 6h old without an existing exit trigger.
+      // Calls getPoolInfo lazily to avoid overhead on every young position.
+      let zombieForceClose = false;
+      let _earlyEfficiency = { score: 0, label: 'Unknown' };
+      if (positionAgeMin >= 360 && !trailingTpHit && !tpHit && !slCheck.triggered) {
+        try {
+          const _zombieStats = await getPoolInfo(pos.pool_address);
+          _earlyEfficiency = computePoolEfficiency(_zombieStats?.volume24h || 0, _zombieStats?.tvl || 0);
+          if (_earlyEfficiency.score < 0.2) {
+            zombieForceClose = true;
+            console.warn(`[healer] ZOMBIE_EXIT: Pool efficiency ${_earlyEfficiency.score.toFixed(3)} < 0.2 at age ${positionAgeMin}m — forcing close to free capital`);
+          }
+        } catch { /* non-critical — fall through to normal logic */ }
+      }
+
       // Tidak ada trigger → flag apakah posisi ini butuh LLM, lalu skip
-      if (!trailingTpHit && !tpHit && !slCheck.triggered && !maxHoldTriggered && !oorBinsTriggered && !inventoryForcedClose) {
+      if (!trailingTpHit && !tpHit && !slCheck.triggered && !maxHoldTriggered && !oorBinsTriggered && !inventoryForcedClose && !zombieForceClose) {
         // Posisi butuh LLM jika: out of range, fees tinggi, atau mencapai threshold SL
         if (!match?.inRange) _healerNeedsLLM = true;
         const feePct = (match?.feeCollectedSol || 0) / (pos.deployed_sol || 0.001);
@@ -1415,6 +1444,39 @@ export async function runHealerAlpha(notifyFn) {
         }
       }
 
+      // ── Pool Maturity: Efficiency Veto on Max Hold ───────────────────
+      // Before force-closing on max hold, check if the pool is still highly
+      // efficient. If so, grant a 4-hour grace period instead of exiting.
+      // Prevents premature exit from a "Golden Goose" high-fee pool.
+      let efficiencyVetoActive = false;
+      if (maxHoldTriggered) {
+        const gracePeriodUntil = runtimeState.efficiencyGracePeriodUntil || 0;
+        const inGracePeriod    = gracePeriodUntil > Date.now();
+
+        const _mktPoolTvl = market?.snapshot?.pool?.tvl || 0;
+        const _mktPoolVol = market?.snapshot?.pool?.volume24h || 0;
+        const _mktFeeApr  = market?.snapshot?.pool?.feeApr ?? 0;
+        const _eff = (_mktPoolTvl > 0 || _mktPoolVol > 0)
+          ? computePoolEfficiency(_mktPoolVol, _mktPoolTvl)
+          : _earlyEfficiency; // fall back to early zombie-check data if analyzeMarket had no pool stats
+
+        if (inGracePeriod) {
+          efficiencyVetoActive = true;
+          maxHoldTriggered = false;
+          decision   = 'HOLD';
+          holdReason = `Efficiency grace period active until ${new Date(gracePeriodUntil).toISOString()}`;
+          console.log(`[healer] STAYING_IN: Efficiency grace period active (${shortAddr(addr)}). Holding.`);
+        } else if (_eff.score > 1.5 || _mktFeeApr > 60) {
+          const graceUntil = Date.now() + 4 * 60 * 60 * 1000;
+          updatePositionRuntimeState(addr, { efficiencyGracePeriodUntil: graceUntil });
+          efficiencyVetoActive = true;
+          maxHoldTriggered = false;
+          decision   = 'HOLD';
+          holdReason = `Pool highly efficient (Score: ${_eff.score.toFixed(2)}, FeeAPR: ${_mktFeeApr.toFixed(1)}%, ${_eff.label})`;
+          console.log(`[healer] STAYING_IN: Pool is highly efficient (Score: ${_eff.score.toFixed(2)}, FeeAPR: ${_mktFeeApr.toFixed(1)}%, Label: ${_eff.label}). Grace period granted 4h.`);
+        }
+      }
+
       // Max hold force-close overrides any hold decision
       if (maxHoldTriggered) {
         decision   = 'CLOSE';
@@ -1426,28 +1488,38 @@ export async function runHealerAlpha(notifyFn) {
       }
 
       // Tentukan label + emoji
-      const triggerCode = trailingTpHit      ? 'TRAILING_TAKE_PROFIT'
-        : tpHit                ? 'TAKE_PROFIT'
-        : maxHoldTriggered     ? 'MAX_HOLD_EXIT'
-        : oorBinsTriggered     ? 'OOR_BINS_EXCEEDED'
-        : inventoryForcedClose ? 'INVENTORY_REBALANCE'
+      const triggerCode = trailingTpHit       ? 'TRAILING_TAKE_PROFIT'
+        : tpHit                 ? 'TAKE_PROFIT'
+        : zombieForceClose      ? 'ZOMBIE_EXIT'
+        : efficiencyVetoActive  ? 'EFFICIENCY_VETO'
+        : maxHoldTriggered      ? 'MAX_HOLD_EXIT'
+        : oorBinsTriggered      ? 'OOR_BINS_EXCEEDED'
+        : inventoryForcedClose  ? 'INVENTORY_REBALANCE'
         : 'STOP_LOSS';
       const triggerLabel = triggerCode === 'TRAILING_TAKE_PROFIT' ? 'Trailing Take Profit'
         : triggerCode === 'TAKE_PROFIT'        ? 'Take Profit'
+        : triggerCode === 'ZOMBIE_EXIT'        ? 'Zombie Exit'
+        : triggerCode === 'EFFICIENCY_VETO'    ? 'Efficiency Veto'
         : triggerCode === 'MAX_HOLD_EXIT'      ? 'Max Hold Exit'
         : triggerCode === 'OOR_BINS_EXCEEDED'  ? 'OOR Bins Exceeded'
         : triggerCode === 'INVENTORY_REBALANCE'? 'Inventory Rebalance'
         : 'Stop-Loss';
       const triggerEmoji = trailingTpHit      ? '🎯'
-        : tpHit                ? '💰'
-        : maxHoldTriggered     ? '⏰'
-        : oorBinsTriggered     ? '📍'
-        : inventoryForcedClose ? '⚖️'
+        : tpHit                 ? '💰'
+        : zombieForceClose      ? '🧟'
+        : efficiencyVetoActive  ? '🌿'
+        : maxHoldTriggered      ? '⏰'
+        : oorBinsTriggered      ? '📍'
+        : inventoryForcedClose  ? '⚖️'
         : '🛑';
       const triggerReason = trailingTpHit
         ? `PnL turun dari peak ${tracker.peakPnl.toFixed(2)}% ke ${pnlPct.toFixed(2)}%`
         : tpHit
         ? `PnL ${pnlPct.toFixed(2)}% ≥ target ${strategyTakeProfitPct}%`
+        : zombieForceClose
+        ? `Pool efficiency ${_earlyEfficiency.score.toFixed(3)} < 0.2 at age ${positionAgeMin}m — modal nyangkut`
+        : efficiencyVetoActive
+        ? holdReason
         : maxHoldTriggered
         ? `Position held for ${maxHoldHours}h — force close to unlock capital`
         : oorBinsTriggered
@@ -1478,6 +1550,12 @@ export async function runHealerAlpha(notifyFn) {
         kv('Peak',     `${tracker.peakPnl >= 0 ? '+' : ''}${tracker.peakPnl.toFixed(2)}%`, W),
         kv('Trailing', _trailTag, W),
         kv('Fees',     `+${(match.feeCollectedSol || 0).toFixed(4)}◎`, W),
+        kv('Efficiency', (() => {
+          const _eff = (market?.snapshot?.pool?.tvl > 0 || market?.snapshot?.pool?.volume24h > 0)
+            ? computePoolEfficiency(market?.snapshot?.pool?.volume24h || 0, market?.snapshot?.pool?.tvl || 0)
+            : _earlyEfficiency;
+          return _eff.score > 0 ? `${_eff.score.toFixed(2)}x (${_eff.label})` : '-';
+        })(), W),
       ];
 
       // Market analysis section
