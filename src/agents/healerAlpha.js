@@ -548,8 +548,13 @@ export async function executeTool(name, input, notifyFn = null) {
             const configuredTp = Number(strategyProfile?.exit?.takeProfitPct ?? getConfig().takeProfitFeePct);
             const strategyTp = Number.isFinite(configuredTp) && configuredTp > 0 ? configuredTp : 5.0;
             if (!proactiveCloseRecommended && strategyTp > 0 && pnlPct >= strategyTp) {
-              proactiveCloseRecommended = true;
-              proactiveWarning = `💰 HARD TAKE PROFIT: Keuntungan mencapai target ${strategyTp}% (PnL: ${pnlPct.toFixed(2)}%). Closing to lock profit and re-anchor.`;
+              const liveFeeApr = analysis.snapshot?.pool?.feeApr ?? 0;
+              if (liveFeeApr > 100) {
+                console.log(`[healer] Hard TP deferred — Fee APR ${liveFeeApr.toFixed(1)}% > 100% (fee machine productive). PnL: ${pnlPct.toFixed(2)}%`);
+              } else {
+                proactiveCloseRecommended = true;
+                proactiveWarning = `💰 HARD TAKE PROFIT: Keuntungan mencapai target ${strategyTp}% (PnL: ${pnlPct.toFixed(2)}%). Closing to lock profit and re-anchor.`;
+              }
             }
             // ── Toxic IL Safeguard (Aegis v1.0) ──
             const cfgIlLimitPct = Math.abs(Number(getConfig().maxILvsHodlPct ?? 5));
@@ -968,7 +973,9 @@ export async function executeTool(name, input, notifyFn = null) {
         const poolInfo = await getPoolInfo(input.pool_address);
         const snapshot = await getMarketSnapshot(poolInfo.tokenX, input.pool_address);
         const vol      = snapshot?.price?.volatility24h || 0;
-        const slippage = getConservativeSlippage(vol);
+        const _zapCloseReason = (input.closeReason || '').toUpperCase();
+        const isEmergencyClose = ['PANIC_EXIT', 'STOP_LOSS', 'REGIME_FLIP_BEARISH'].some(t => _zapCloseReason.includes(t));
+        const slippage = isEmergencyClose ? 750 : getConservativeSlippage(vol);
 
         for (const mint of [poolInfo.tokenX, poolInfo.tokenY]) {
           if (!mint || mint === SOL_MINT) continue;
@@ -1664,12 +1671,12 @@ export async function runHealerAlpha(notifyFn) {
                 const swapRes = await executionRetry(async () => {
                   const snapshot = await getMarketSnapshot(pos.token_mint, pos.pool_address);
                   const vol      = snapshot?.price?.volatility24h || 0;
-                  const slippage = getConservativeSlippage(vol);
+                  const slippage = triggerCode === 'STOP_LOSS' ? 750 : getConservativeSlippage(vol);
                   return await swapAllToSOL(mint, slippage);
-                }, { 
-                  maxRetries: 3, 
-                  delayMs: 2000, 
-                  taskName: `ZapOut Swap (${pos.symbol})` 
+                }, {
+                  maxRetries: 3,
+                  delayMs: 2000,
+                  taskName: `ZapOut Swap (${pos.symbol})`
                 });
 
                 if (swapRes && swapRes.success) {
@@ -1706,14 +1713,18 @@ export async function runHealerAlpha(notifyFn) {
             `⚠️ *Auto-Swap Gagal*\n\nPosisi ditutup, tapi token belum dikonversi ke SOL.\nError: ${swapFails.join(', ')}\n_Swap manual di Jupiter/Meteora._`
           );
         }
+        const _feesSolClosed   = match?.feeCollectedSol || 0;
+        const _capGainSol      = _currentValSol - _deployedSol;
+        const _totalReturnSol  = _capGainSol + _feesSolClosed;
         const closedLines = [
           kv('Posisi',   shortAddr(addr), W),
           kv('Strategi', shortStrat(pos.strategy_used || '-'), W),
           hr(40),
           kv('Deploy',   `${_deployedSol.toFixed(4)}◎`, W),
           kv('Return',   `${_currentValSol.toFixed(4)}◎`, W),
-          kv('PnL',      _pnlDisplay, W),
-          kv('Fees',     `+${(match?.feeCollectedSol || 0).toFixed(4)}◎`, W),
+          kv('Cap G/L',  `${_capGainSol >= 0 ? '+' : ''}${_capGainSol.toFixed(4)}◎`, W),
+          kv('Fees',     `+${_feesSolClosed.toFixed(4)}◎`, W),
+          kv('Total',    `${_totalReturnSol >= 0 ? '+' : ''}${_totalReturnSol.toFixed(4)}◎`, W),
           hr(40),
           kv('Trigger',  triggerLabel, W),
           ...(swapMsgs.length > 0 ? [hr(40), kv('Swap', swapMsgs.join(', '), W)] : []),
@@ -2450,6 +2461,14 @@ export async function runPanicWatchdog(notifyFn) {
               cfg.autoHarvestCompound &&
               (!isEvilPandaMode || cfg.evilPandaAllowAutoCompound === true);
             if (shouldCompoundHarvest) {
+              if (harvestedTotal < 0.1) {
+                // Below Meteora's ~0.07 SOL account rent threshold — skip compound to avoid rent burn
+                console.log(`[compound] Harvest ${harvestedTotal.toFixed(4)} SOL < 0.1 SOL min capital — realizing instead`);
+                await recordFeesClaimed(pos.position_address, { claimedSol: harvestedTotal, claimedUsd: harvestedUsd }).catch(() => {});
+                await notifyFn?.(`✅ <b>HARVEST REALIZED!</b> <i>(dust: ${harvestedTotal.toFixed(4)}◎ &lt; 0.1◎ min)</i>\n\n` +
+                  `• Realized: <code>+${harvestedTotal.toFixed(4)} SOL</code>\n` +
+                  `• Status Position: <b>OPEN &amp; Yielding 🎋</b>`, { parse_mode: 'HTML' });
+              } else {
               // ─── Compound: reinvest back into same position ──────────
               try {
                 const compResult = await addLiquidityToPosition(pos.pool_address, pos.position_address, harvestedTotal);
@@ -2468,6 +2487,7 @@ export async function runPanicWatchdog(notifyFn) {
                 await notifyFn?.(`✅ <b>HARVEST SUCCESSFUL!</b> <i>(compound failed, realized instead)</i>\n\n` +
                   `• Realized Profit: <code>+${harvestedTotal.toFixed(4)} SOL</code>\n` +
                   `• Status Position: <b>OPEN &amp; Yielding 🎋</b>`, { parse_mode: 'HTML' });
+              }
               }
             } else {
               // ─── Default: realize fees as profit ────────────────────
