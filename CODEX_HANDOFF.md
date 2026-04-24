@@ -1,255 +1,237 @@
-# Codex Handoff — LP Agent DLMM
-**Date:** 2026-04-19 | **Status:** Engine complete, integration tests pending
+# Codex Handoff - LP Agent DLMM
+**Date:** 2026-04-25 | **Status:** Evil Panda operating doctrine is canonical
+
+This file is the handoff source of truth for AI agents and developers working on the DLMM LP agent. If another document, comment, strategy preset, or old backlog conflicts with this file, this file wins until the conflict is explicitly resolved in code and config.
 
 ---
 
-## 1. What This Codebase Is
+## 1. System Architecture
 
 Autonomous Meteora DLMM liquidity-provision agent on Solana.
 
-Two main agents:
-- **Hunter** (`src/agents/hunterAlpha.js`) — scans pools, classifies market regime, deploys positions
-- **Healer** (`src/agents/healerAlpha.js`) — monitors open positions, fires exit triggers, records performance
+Core runtime:
+- **Hunter** - `src/agents/hunterAlpha.js`: scans pools, applies entry policy, resolves strategy profile, deploys positions.
+- **Healer** - `src/agents/healerAlpha.js`: monitors open positions, evaluates Net-PnL, applies exit policy, records close events.
+- **Strategy Manager** - `src/strategies/strategyManager.js`: parses strategy parameters and resolves deployment shape.
+- **Strategy Handler** - `src/strategies/strategyHandler.js`: orchestrates deploy/close calls through Meteora SDK.
+- **Meteora SDK Adapter** - `src/solana/meteora.js`: DLMM contract integration.
+- **Runtime State** - `src/runtime/state.js`: position/runtime key-value state persisted to `runtime-state.json`.
+- **Config** - `src/config.js`: canonical source for dynamic thresholds and operational tunables.
 
-Key supporting modules:
-- `src/strategies/strategyManager.js` — parses strategy parameters, resolves strategy from library
-- `src/strategies/strategyHandler.js` — orchestrates deploy/close calls via Meteora SDK
-- `src/runtime/state.js` — runtime key-value store, flushed to `runtime-state.json` (persists across restarts)
-- `src/market/strategyLibrary.js` — `recordStrategyPerformance()` updates rolling performance in `strategy-library.json`
-
----
-
-## 2. Current Engine State (DO NOT re-implement these — they are done)
-
-| Feature | Where | Status |
-|---------|-------|--------|
-| `classifyMarketRegime()` gates all hunter entries | `hunterAlpha.js:708` | ✅ Done |
-| `REGIME_BEAR_DEFENSE` hard-blocks entry | `hunterAlpha.js:713` | ✅ Done |
-| Circuit breaker check at top of hunter loop | `hunterAlpha.js:960` | ✅ Done |
-| `MAX_HOLD_EXIT` force-close after `maxHoldHours` | `healerAlpha.js:1137,1316,1324` | ✅ Done |
-| `recordStrategyPerformance()` on every close | `healerAlpha.js:93` | ✅ Done |
-| Circuit breaker state persisted to `runtime-state.json` | `healerAlpha.js:1465 + runtime/state.js` | ✅ Done |
-| `parseStrategyParameters` derives `strategyType` from `deploy.strategyType` or `strategy.type` | `strategyManager.js` | ✅ Done |
-| `Deep Fishing` added to `BASELINE_STRATEGIES` | `strategyManager.js` | ✅ Done |
-
-**Test suite: 65/65 pass** (`npm test`)
+Operational rule: shared behavior belongs in config/helpers. Do not hide trading thresholds inside agent functions.
 
 ---
 
-## 3. Canonical Exit / Block Codes
+## 2. Absolute Operating Doctrine: Evil Panda
 
-These are the exact strings emitted in logs, Telegram, and DB. Do not invent aliases.
+These rules are mandatory for AI agent decisions, developer changes, tests, docs, and operator runbooks.
 
-**Exit triggers (healerAlpha `exitTrigger` field):**
-```
-TRAILING_TAKE_PROFIT   peak - current > trailingDropPct
-TAKE_PROFIT            pnlPct >= takeProfitFeePct
-MAX_HOLD_EXIT          positionAge >= maxHoldHours × 60 min
-STOP_LOSS              pnlPct < -stopLossPct
-OOR_BINS_EXCEEDED      outOfRangeBins >= outOfRangeBinsToClose
-IL_VS_HODL_EXIT        dailyFeeYieldPct < ilPct
-LOW_FEE_YIELD_EXIT     fee stalled 2h+
-VOLUME_COLLAPSE        vol24h / entryVol24h < volCollapseThresholdPct
-ZOMBIE_FEE_STAGNATION  feeTvlRatio unchanged 3+ cycles
-SL_CLUSTER_THRESHOLD_MET  slCount >= slCircuitBreakerCount (sets circuit breaker)
-MANUAL_CLOSE           operator command
-AGENT_CLOSE            AI reasoning close
-ZAP_OUT                close + swap to SOL
-```
+### 2.1 Position Structure
 
-**Entry blocked (hunterAlpha `policy` field):**
-```
-REGIME_BEAR_DEFENSE    classifyMarketRegime() === 'BEAR_DEFENSE'
-CIRCUIT_BREAKER_ACTIVE hunter-circuit-breaker.pausedUntil > now (from runtime-state.json)
-TREND_BEARISH          supertrend.trend === 'BEARISH'
-ATR_LOW                atrPct < minAtrPctForEntry
-FEE_VELOCITY_DOWN      feeTvlRatio 3-sample descending
-HTF_NULL_STRICT_ATR    1h data missing + atrPct < 2.0
-```
+- Evil Panda is a logarithmic DLMM net with depth down to **-94%**.
+- Evil Panda is **pure asset Y (SOL)**.
+- Deployment must preserve the intended single-side SOL posture unless an explicit human-approved migration changes the strategy.
 
-**Important distinction:**
-- `SL_COOLDOWN_ACTIVE` = healer HOLD-delay only (delays close decision inside healer). Does NOT block hunter entry.
-- Hunter entry block = `CIRCUIT_BREAKER_ACTIVE` (reads `hunter-circuit-breaker` key from runtime-state.json).
+### 2.2 Stop-Loss
+
+- Evil Panda stop-loss is **bin-position based only**:
+  - Trigger condition: `activeBin < rangeFloor - toleranceBins`
+  - `rangeFloor` is the lower bin of the deployed Evil Panda range.
+  - `toleranceBins` must be read from `src/config.js`.
+- Percentage-price stop-loss is forbidden for Evil Panda.
+- Any logic equivalent to `pnlPct < -stopLossPct`, price drawdown, or percentage range break must not close Evil Panda as `STOP_LOSS`.
+- Percentage SL may exist only for non-Evil-Panda strategies and must use config-derived values.
+
+### 2.3 Duration
+
+- Evil Panda `maxHoldHours` is overridden to **72 hours**.
+- No profile or runtime default may shorten Evil Panda below 72 hours without explicit human approval.
+- `MAX_HOLD_EXIT` is not a blind close. It is subject to the Efficiency Veto below.
 
 ---
 
-## 4. Config: 3 Deployment Profiles
+## 3. Pool Efficiency & Position Management
 
-Defined in `user-config.example.json` under `_profiles`. Active values are the flat keys below the `_profiles` block. Copy profile values to override:
+### 3.1 Efficiency Veto
 
-| Parameter | Conservative Live | Balanced (default) | Aggressive Experimental |
-|-----------|-------------------|-------------------|------------------------|
-| `dryRun` | `false` | `true` | `false` |
-| `deployAmountSol` | `0.25` | `0.5` | `1.0` |
-| `maxPositions` | `1` | `3` | `5` |
-| `stopLossPct` | `3` | `5` | `8` |
-| `maxHoldHours` | `4` | `6` | `12` |
-| `maxTvl` | `100000` | `500000` | `2000000` |
-| `minVolumeTvlRatio` | `30` | `20` | `10` |
-| `dailyLossLimitUsd` | `10` | `25` | `50` |
+Healer must not close a position only because it exceeded `maxHoldHours` when the pool is still efficient.
+
+Efficiency score:
+
+```text
+efficiencyScore = volume24h / tvl
+```
+
+Veto condition:
+- `efficiencyScore > 1.5`, or
+- `feeApr > 60%`
+
+When the veto applies:
+- Block `MAX_HOLD_EXIT`.
+- Apply a **4-hour grace period**.
+- Re-evaluate after the grace period instead of closing immediately.
+
+### 3.2 Zombie Exit
+
+Force `ZOMBIE_EXIT` when:
+- position age is greater than or equal to **6 hours**, and
+- `efficiencyScore < 0.2`.
+
+Zombie logic must not wait for percentage PnL deterioration when the pool has gone dead.
+
+### 3.3 Net-PnL Only
+
+All position evaluation must use Net-PnL:
+
+```text
+Net-PnL = Capital PnL + Fees Claimed
+```
+
+Do not evaluate profitability, TP, emergency decisions, or performance history using capital-only PnL when claimed fees exist. Fee income is part of the position result.
 
 ---
 
-## 5. Residual Risks (Prioritized)
+## 4. Emergency System & Execution
 
-### P0 — Blocks live capital deployment
+### 4.1 TVL Drain Guard
 
-**P0-A: `SL_CLUSTER_THRESHOLD_MET` not verified as emitted**
-- `healerAlpha.js:1465` sets the circuit breaker state but the exit code that gets recorded in `exit_events` needs verification
-- Check: does the `closeReasonCode` / `exitTrigger` on the triggering SL close actually read `'SL_CLUSTER_THRESHOLD_MET'`? Or does it read `'STOP_LOSS'` (the individual SL) while circuit breaker is a side-effect?
-- Action: grep `recordExitEvent` calls near `setRuntimeState('hunter-circuit-breaker')` — confirm `exitTrigger` value
+Use `entryTvl` as the absolute baseline.
 
-**P0-B: No integration test for full entry→hold→exit cycle**
-- All 65 tests are unit-level (mocked deps)
-- No test verifies: pool discovered → position deployed → healer cycles → exit fires → DB status = closed
-- Risk: silent contract breakage between hunter/healer/meteora/DB
+Trigger:
 
-**P0-C: Zero real performance data**
-- `performanceHistory: []` for all strategies in `strategy-library.json`
-- `darwinScore` and `confidence` adjustments have no signal to work from
-- Agent enters live trading with 0 calibration baseline
+```text
+(entryTvl - currentTvl) / entryTvl > 0.50
+```
 
-### P1 — Degrades autonomy, not blocking
+Required behavior:
+- Exit reason must be `PANIC_EXIT_TVL_DRAIN`.
+- Exit execution must force slippage to **750 bps (7.5%)**.
+- `entryTvl` must be captured from the first reliable pool snapshot for that position and persisted in runtime state.
+- Do not re-baseline `entryTvl` downward after entry.
 
-**P1-A: Supertrend signal accuracy unvalidated**
-- Win rate unknown, false positive rate unknown
-- Entry blindly trusts Supertrend BULLISH flip
-- Action needed: backtest last 100+ 15m candles on a real pool
+### 4.2 Nascent Pool Slippage
 
-**P1-B: PnL source hierarchy untested under failure**
-- 3 sources: LP Agent API → SDK → manual fallback
-- If all error simultaneously: healer evaluates positions with stale PnL
-- Action: add integration test that kills primary source and verifies fallback fires
+Any target pool younger than **1 hour** must force deploy slippage to **750 bps (7.5%)**.
 
-**P1-C: Daily drawdown auto-pause behavior unverified**
-- `dailyLossLimitUsd` check exists in config; verify hunter/healer actually read and enforce it
-- Search: `dailyLossLimitUsd` usage in hunterAlpha.js and healerAlpha.js
-
-### P2 — Operator UX, non-blocking
-
-**P2-A: Telegram /claim_fees, /pause mid-trade, /override_range not implemented**
-- REVIEW_SUMMARY.md flags these; currently only alerts + text commands
-- QC-3 (manual review) requires manual DB edits — should be a Telegram command
-
-**P2-B: No APY dashboard / real fee yield tracking**
-- `performanceHistory` accumulates data but no read path for operator
-- No `/apystats` or `/strategy_report` command
+This is mandatory anti-revert behavior for volatile newborn pools. It must not be replaced by conservative dynamic slippage.
 
 ---
 
-## 6. Codex Action List
+## 5. Contract & Infrastructure Constraints
 
-Execute these in order. Each is independently mergeable.
+### 5.1 DLMM Invariant Violation
 
-### Sprint 1 — Verify & Harden (no new features)
+`autoHarvestCompound: true` is forbidden for straddle positions that cut across the active price when the deposit is single-side.
 
-**Task 1.1 — Confirm `SL_CLUSTER_THRESHOLD_MET` is correctly recorded (P0-A)**
-```
-File: src/agents/healerAlpha.js
-Find:  the block near line 1457–1471 where setRuntimeState('hunter-circuit-breaker') is called
-Check: what exitTrigger / closeReasonCode is passed to recordExitEvent() on the triggering SL close
-Fix:   if it records 'STOP_LOSS' only, add a second recordExitEvent call (or note field) with
-       trigger: 'SL_CLUSTER_THRESHOLD_MET' after the circuit breaker fires
-Verify: unit test in tests/circuit-breaker-persist.test.js already covers persistence;
-        add assertion that exit_events table contains 'SL_CLUSTER_THRESHOLD_MET' on cluster
-```
+Required mode:
+- Always use **Realize** for this shape.
+- Claim fees to wallet.
+- Do not compound harvested fees back into the position.
 
-**Task 1.2 — Integration test: full position lifecycle (P0-B)**
-```
-File: tests/integration/position-lifecycle.test.js (create new)
-Scope: mock Solana/Meteora SDK calls (not real RPC)
-Test cases:
-  - pool discovered by hunter → position opened → DB status = 'active'
-  - healer cycles → STOP_LOSS fires → DB status = 'closed', exitTrigger = 'STOP_LOSS'
-  - healer cycles → maxHoldHours elapsed → DB status = 'closed', exitTrigger = 'MAX_HOLD_EXIT'
-  - hunter blocked by REGIME_BEAR_DEFENSE → no position opened
-  - hunter blocked by CIRCUIT_BREAKER_ACTIVE → no position opened, runtime-state.json has key
-Constraint: do NOT require real Solana RPC — inject mock closePositionDLMM and deployDLMM
-```
+Rationale: Meteora Spot/straddle + single-side compound can hit DLMM invariant violations.
 
-**Task 1.3 — Verify `dailyLossLimitUsd` enforcement (P1-C)**
-```
-Files: src/agents/hunterAlpha.js, src/agents/healerAlpha.js
-Check: grep 'dailyLossLimitUsd' in both files
-If missing in hunter: add check before entry — if dailyLossUsd >= dailyLossLimitUsd, block entry
-Add unit test in tests/safety.test.js: daily loss at limit → entry blocked
-```
+### 5.2 Rent Guard
 
-### Sprint 2 — Signal Validation
+Reject execution when the target price range would require initializing a new Bin Array with non-refundable rent cost of about **0.07 SOL**.
 
-**Task 2.1 — Supertrend backtest (P1-A)**
-```
-File: scripts/backtestSupertrend.js (create new)
-Input: fetch last 200 15m OHLCV candles from DexScreener for a target pool
-Compute: Supertrend(period=10, multiplier=3) on historical data
-Output: signal log — each flip (BULLISH/BEARISH), price at flip, price 1h/4h/24h after flip
-Metric: win rate = % of BULLISH flips where price was higher 4h later
-Report: console table + write to scripts/backtest-results.json
-Do NOT modify hunterAlpha — this is a read-only diagnostic
-```
+This is a pre-execution guard. Do not treat the rent as acceptable slippage or normal gas.
 
-**Task 2.2 — PnL fallback chain integration test (P1-B)**
-```
-File: tests/integration/pnl-fallback.test.js (create new)
-Test: simulate LP Agent API timeout → confirm SDK fallback fires within 5s
-Test: simulate SDK error → confirm manual calculation fallback fires
-Test: all sources fail → verify healer skips close decision (does NOT use stale data)
-```
+### 5.3 Config vs Code
 
-### Sprint 3 — Operator UX
+All dynamic thresholds must be read from `src/config.js`.
 
-**Task 3.1 — Telegram /claim_fees command (P2-A)**
-```
-Search existing Telegram command registry (grep 'registerCommand\|addCommand' in src/)
-Add: /claim_fees [position_address]
-  → calls autoHarvestFees() on specified position (or all active if no arg)
-  → replies with: position address, claimed SOL amount, tx signature
-Add: /pause command if not present (check first — may already exist)
-Constraint: do NOT modify healerAlpha.js directly; use existing command dispatch pattern
-```
+Config-owned values include:
+- slippage thresholds and emergency slippage
+- take-profit and stop-loss thresholds
+- Evil Panda `maxHoldHours`
+- Evil Panda bin tolerance
+- TVL drain threshold
+- pool efficiency thresholds
+- zombie thresholds
+- hold/grace-period limits
+- auto-harvest/compound behavior
 
-**Task 3.2 — Strategy performance report (P2-B)**
-```
-File: add /strategy_report Telegram command
-Reads: strategy-library.json[].performanceHistory
-Output (per strategy):
-  - strategy name
-  - total trades in history (up to 50)
-  - win rate %
-  - avg PnL %
-  - current confidence score
-```
+Forbidden:
+- hardcoding trading parameters inside `src/agents/healerAlpha.js`
+- hardcoding trading parameters inside `src/agents/hunterAlpha.js`
+- adding new strategy thresholds only in docs or strategy comments
+
+If a new threshold is needed, add it to `src/config.js`, validate it there, and consume it from config in the agent.
 
 ---
 
-## 7. Files You Must NOT Touch
+## 6. Canonical Exit / Block Codes
 
-```
-src/agents/healerAlpha.js   — engine is live and tested; changes require full regression
-src/agents/hunterAlpha.js   — same
-src/solana/meteora.js       — Solana SDK integration; changes require devnet test
+Use exact codes in logs, Telegram, DB, and tests. Do not invent aliases.
+
+Exit triggers:
+
+```text
+TRAILING_TAKE_PROFIT
+TAKE_PROFIT
+MAX_HOLD_EXIT
+STOP_LOSS
+OOR_BINS_EXCEEDED
+IL_VS_HODL_EXIT
+LOW_FEE_YIELD_EXIT
+VOLUME_COLLAPSE
+ZOMBIE_EXIT
+ZOMBIE_FEE_STAGNATION
+PANIC_EXIT_TVL_DRAIN
+SL_CLUSTER_THRESHOLD_MET
+MANUAL_CLOSE
+AGENT_CLOSE
+ZAP_OUT
 ```
 
-If a task requires changes in these files, flag for human review first.
+Entry blocked:
+
+```text
+REGIME_BEAR_DEFENSE
+CIRCUIT_BREAKER_ACTIVE
+TREND_BEARISH
+ATR_LOW
+FEE_VELOCITY_DOWN
+HTF_NULL_STRICT_ATR
+RENT_GUARD_BIN_ARRAY_INIT
+```
+
+Important distinction:
+- `SL_COOLDOWN_ACTIVE` is a healer hold-delay only.
+- Hunter entry block remains `CIRCUIT_BREAKER_ACTIVE` when the persisted circuit breaker is active.
+
+---
+
+## 7. Implementation Checklist For Any Agent Change
+
+Before editing `hunterAlpha.js`, `healerAlpha.js`, or Meteora execution code, confirm:
+
+- Evil Panda still uses bin-position SL only.
+- Evil Panda `maxHoldHours` resolves to 72 hours.
+- `MAX_HOLD_EXIT` is vetoed by efficient pools and delayed by the 4-hour grace period.
+- `ZOMBIE_EXIT` fires after 6 hours when `volume24h / tvl < 0.2`.
+- Net-PnL includes claimed fees.
+- TVL drain uses immutable `entryTvl`, exits on >50% drain, and forces 750 bps.
+- Pools younger than 1 hour deploy with 750 bps slippage.
+- Single-side straddle fee handling uses Realize, not compound.
+- Rent Guard blocks new Bin Array rent around 0.07 SOL.
+- New or changed thresholds live in `src/config.js`.
 
 ---
 
 ## 8. Verification Commands
 
+Run after any implementation change that touches strategy, healer, hunter, or execution:
+
 ```bash
-# All tests green before and after each task
 npm test
-
-# Confirm reason codes are consistent across docs (no aliases)
-rg -n "CIRCUIT_BREAKER|SL_CLUSTER_THRESHOLD_MET|MAX_HOLD_EXIT|REGIME_BEAR_DEFENSE|SL_COOLDOWN_ACTIVE" \
-  AGENT_EXECUTION_SCHEMA.md DEPLOYMENT_RUNBOOK.md AGENT_QUICK_REFERENCE.txt
-
-# Check circuit breaker persistence key
-node -e "import('./src/runtime/state.js').then(m => console.log(m.getRuntimeState('hunter-circuit-breaker', null)))"
-
-# Confirm strategyType derives correctly for single_side_y
-npm test -- --test-name-pattern "parseStrategyParameters"
+rg -n "PANIC_EXIT_TVL_DRAIN|ZOMBIE_EXIT|MAX_HOLD_EXIT|STOP_LOSS|autoHarvestCompound|entryTvl|toleranceBins|maxHoldHours|slippageBps" src CODEX_HANDOFF.md
+rg -n "stopLossPct|750|72|1.5|0.2|0.07|60" src/agents/healerAlpha.js src/agents/hunterAlpha.js
 ```
+
+Interpretation:
+- Hardcoded constants in agent files are suspect unless they are config fallbacks being removed or migrated.
+- A passing test suite is required but not sufficient; review the grep output against this handoff.
 
 ---
 
@@ -257,11 +239,10 @@ npm test -- --test-name-pattern "parseStrategyParameters"
 
 | Question | Go to |
 |----------|-------|
-| Why did hunter block entry? | `AGENT_EXECUTION_SCHEMA.md` → Blocked Codes table |
-| Why did healer close a position? | `AGENT_EXECUTION_SCHEMA.md` → Exit Codes table |
-| What are the 3 config profiles? | `user-config.example.json` → `_profiles` block |
-| Circuit breaker tripped in prod | `DEPLOYMENT_RUNBOOK.md` → QC-1 |
-| Daily loss limit hit | `DEPLOYMENT_RUNBOOK.md` → QC-5 |
-| When to promote canary → full | `DEPLOYMENT_RUNBOOK.md` → Staged Rollout Gate |
-| Strategy regime selection logic | `STRATEGY_ANALYSIS.md` |
-| All config parameters explained | `AGENT_QUICK_REFERENCE.txt` |
+| Dynamic threshold source | `src/config.js` |
+| Evil Panda deploy shape | `src/strategies/strategyManager.js`, `src/market/strategyLibrary.js` |
+| Hunter entry and deploy slippage | `src/agents/hunterAlpha.js` |
+| Healer exits and Net-PnL | `src/agents/healerAlpha.js` |
+| DLMM deploy/close execution | `src/solana/meteora.js` |
+| Runtime position state | `src/runtime/state.js`, `runtime-state.json` |
+
