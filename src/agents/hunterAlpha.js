@@ -1100,6 +1100,25 @@ async function executeTool(name, input) {
         }
       }
 
+      // ── Guard: Real-Time Small Pond CE Re-check (Fresh Mcap) ──────
+      // Stale Mcap from screening can be 1-5 min old — for new tokens that's meaningless.
+      // Re-fetch live Mcap from DexScreener right now before committing capital.
+      {
+        const freshDex = await fetchDexGateMetrics(poolInfo.tokenX).catch(() => null);
+        const freshMcap = safeNum(freshDex?.mcap);
+        if (freshMcap > 0 && poolTvlUsd > 0) {
+          const freshRatio = poolTvlUsd / freshMcap;
+          if (freshRatio > 0.20) {
+            return JSON.stringify({
+              blocked: true,
+              reason: `Small Pond Guard (live): TVL/Mcap ${(freshRatio * 100).toFixed(1)}% > 20% — fee terlalu terdilusi. TVL $${poolTvlUsd.toFixed(0)}, Mcap live $${freshMcap.toLocaleString()}. Skip.`,
+              policy: 'CE_REALTIME_REJECT',
+            }, null, 2);
+          }
+          console.log(`[SHARK] CE re-check OK (live): TVL/Mcap ${(freshRatio * 100).toFixed(1)}% — pool tetap layak.`);
+        }
+      }
+
       // Strategy validation sebelum lock — hardlocked ke Evil Panda, tidak ada strategi lain.
       const strategy = getStrategy('Evil Panda');
 
@@ -1191,9 +1210,18 @@ async function executeTool(name, input) {
           deployOptions = { ...deployOptions, ...strategyEval.deployOptions };
         }
         // T1.4: Per-pool slippage at deploy time, not hardcoded strategy default.
-        // Stored in deployOptions.slippageBps so closePositionDLMM can use it as a floor.
+        // Nascent pools (< 1h) have extreme volatility — conservative slippage always reverts.
         const vol24h = snapshot?.price?.volatility24h || 0;
-        deployOptions.slippageBps = getConservativeSlippage(vol24h);
+        const poolAgeHours = poolInfo.createdAt
+          ? (Date.now() - new Date(poolInfo.createdAt).getTime()) / (1000 * 60 * 60)
+          : null;
+        const isNascentPool = Number.isFinite(poolAgeHours) && poolAgeHours < 1;
+        if (isNascentPool) {
+          deployOptions.slippageBps = 750; // 7.5% anti-revert for hyper-volatile new pools
+          console.log(`[SHARK] Nascent pool (${poolAgeHours.toFixed(2)}h) — slippage forced 750bps (7.5%)`);
+        } else {
+          deployOptions.slippageBps = getConservativeSlippage(vol24h);
+        }
       } catch (e) {
         console.warn(`[hunter] Market evaluation failed for ${input.pool_address}:`, e.message);
       }
@@ -1797,6 +1825,13 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null, opt
     }
 
     const tokenGateWithPvp = enrichPvpRisk(tokenGate);
+
+    const computeFeeApr = (p) => {
+      const fees = safeNum(p.fees24hRaw);
+      const liq  = safeNum(p.liquidityRaw || p.liquidityUsd || p.tvl);
+      return (liq > 0 && fees > 0) ? (fees / liq) * 365 : 0;
+    };
+
     const radarSnapshot = tokenGateWithPvp.map((t) => {
       const security = t.security;
       const prefilterRejected = t.prefilterRejected === true;
@@ -1806,11 +1841,16 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null, opt
       const validCandidates = candidates.filter(c =>
         !filterCapitalEfficiency(c).rejected && filterBinStep(c).allowed
       );
-      // Select highest-volume pool among valid candidates
+      // Select wettest pool: Fee APR primary (direct fee yield), 24h volume as fallback
       const bestPool = validCandidates
-        .sort((a, b) => safeNum(b.volume24hRaw) - safeNum(a.volume24hRaw))[0] || null;
+        .sort((a, b) => {
+          const aprA = computeFeeApr(a), aprB = computeFeeApr(b);
+          if (aprA > 0 || aprB > 0) return aprB - aprA;
+          return safeNum(b.volume24hRaw) - safeNum(a.volume24hRaw);
+        })[0] || null;
       if (validCandidates.length > 1 && bestPool) {
-        console.log(`[SHARK] Multiple valid pools for ${t.symbol || t.mint?.slice(0, 8)}. Selecting Pool ${bestPool.address?.slice(0, 8)} with highest 24h Volume: $${safeNum(bestPool.volume24hRaw).toFixed(0)}`);
+        const apr = computeFeeApr(bestPool);
+        console.log(`[SHARK] Multiple valid pools for ${t.symbol || t.mint?.slice(0, 8)}. Selecting Pool ${bestPool.address?.slice(0, 8)} — Fee APR: ${(apr * 100).toFixed(1)}% / 24h Vol: $${safeNum(bestPool.volume24hRaw).toFixed(0)}`);
       }
 
       let matched = false;
