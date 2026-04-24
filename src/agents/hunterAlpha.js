@@ -499,7 +499,7 @@ export function computeEntrySignalsFromCandles(candles15m = [], cfg = {}) {
   const proximityPass = Number.isFinite(supertrendDistancePct)
     ? supertrendDistancePct <= maxDistancePct
     : false;
-  const volumeMomentumPass = volumeRatio >= 1.1; // Volume harus 1.1x rata-rata
+  const volumeMomentumPass = volumeRatio >= 1.5; // Volume harus 1.5x rata-rata (Shark Mode)
 
   return {
     ready: true,
@@ -1176,32 +1176,44 @@ async function executeTool(name, input) {
 
       try {
         snapshot = await getMarketSnapshot(poolInfo.tokenX, input.pool_address);
-        const regimeInfo = classifyMarketRegime(snapshot);
-        if (regimeInfo?.regime === 'BEAR_DEFENSE') {
-          return JSON.stringify({
-            blocked: true,
-            reason: `Regime ${regimeInfo.regime}: ${regimeInfo.notes || 'market bearish-defense mode'}. Entry di-skip.`,
-            policy: 'REGIME_BEAR_DEFENSE',
-            regime: regimeInfo,
-          }, null, 2);
+
+        const isEvilPanda = strategy.name === 'Evil Panda';
+
+        if (!isEvilPanda) {
+          // BEAR_DEFENSE and failSafe checks — bypassed for Evil Panda (predator mode).
+          const regimeInfo = classifyMarketRegime(snapshot);
+          if (regimeInfo?.regime === 'BEAR_DEFENSE') {
+            return JSON.stringify({
+              blocked: true,
+              reason: `Regime ${regimeInfo.regime}: ${regimeInfo.notes || 'market bearish-defense mode'}. Entry di-skip.`,
+              policy: 'REGIME_BEAR_DEFENSE',
+              regime: regimeInfo,
+            }, null, 2);
+          }
+          const failSafeEnabled = cfg.failSafeModeOnDataUnreliable !== false;
+          const dataReliable = snapshot?.quality?.dataReliable !== false;
+          const taReliable = snapshot?.quality?.taReliable === true;
+          const taSource = snapshot?.quality?.taSource || snapshot?.ta?.supertrend?.source || 'unknown';
+          if (failSafeEnabled && (!dataReliable || !taReliable)) {
+            const issueText = (snapshot?.quality?.issues || []).join(' | ') || 'oracle snapshot unreliable';
+            const taIssue = !taReliable
+              ? `TA reliability belum memenuhi syarat (source=${taSource}, minConf=${snapshot?.quality?.minTaConfidence ?? 'n/a'}).`
+              : '';
+            return JSON.stringify({
+              blocked: true,
+              reason: `Fail-safe aktif: data market/TA belum reliable untuk entry. ${issueText} ${taIssue}`.trim(),
+              policy: 'FAIL_SAFE_UNRELIABLE_DATA',
+            }, null, 2);
+          }
+          // Non-Evil-Panda: scale deploy amount adaptively.
+          deployAmountSol = computeAdaptiveDeployAmount({ cfg, poolInfo, snapshot });
+          tokenYAmount = deployAmountSol;
+        } else {
+          // Evil Panda: full capital commitment — no adaptive scaling, no regime gate.
+          deployAmountSol = safeNum(cfg.deployAmountSol) || 0.1;
+          tokenYAmount = deployAmountSol;
+          console.log(`[SHARK] Evil Panda predator mode — deploy 100% config amount: ${deployAmountSol} SOL`);
         }
-        const failSafeEnabled = cfg.failSafeModeOnDataUnreliable !== false;
-        const dataReliable = snapshot?.quality?.dataReliable !== false;
-        const taReliable = snapshot?.quality?.taReliable === true;
-        const taSource = snapshot?.quality?.taSource || snapshot?.ta?.supertrend?.source || 'unknown';
-        if (failSafeEnabled && (!dataReliable || !taReliable)) {
-          const issueText = (snapshot?.quality?.issues || []).join(' | ') || 'oracle snapshot unreliable';
-          const taIssue = !taReliable
-            ? `TA reliability belum memenuhi syarat (source=${taSource}, minConf=${snapshot?.quality?.minTaConfidence ?? 'n/a'}).`
-            : '';
-          return JSON.stringify({
-            blocked: true,
-            reason: `Fail-safe aktif: data market/TA belum reliable untuk entry. ${issueText} ${taIssue}`.trim(),
-            policy: 'FAIL_SAFE_UNRELIABLE_DATA',
-          }, null, 2);
-        }
-        deployAmountSol = computeAdaptiveDeployAmount({ cfg, poolInfo, snapshot });
-        tokenYAmount = deployAmountSol;
         strategyEval = await libEvaluateReadiness({
           strategyName: strategy.name,
           poolAddress: input.pool_address,
@@ -2097,7 +2109,7 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null, opt
 
       // Shark Logic: ST 15m Green + Volume > 1.1x → LANGSUNG DEPLOY. No pullback wait.
       {
-        const minVolRatio = 1.1; // Supertrend 15m green + volume > 1.1x — wajib
+        const minVolRatio = 1.5; // Shark Mode: hanya kolam volume tinggi (1.5x avg)
         if (signalVolumeRatio < minVolRatio) {
           rejEntryConfirm++;
           technicalBlockDetails.push({

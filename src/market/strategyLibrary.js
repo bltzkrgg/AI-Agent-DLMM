@@ -367,20 +367,21 @@ export async function evaluateStrategyReadiness({ strategyName, snapshot, binSte
       };
     }
 
-    // 94% range for all bin steps — matches strategyManager baseline.
-    // Bin count varies by binStep (binStep 100 → ~281 bins, binStep 125 → ~225 bins)
-    // but both are within the 1000-bin TX safety limit and will chunk correctly.
-    const offsetMin = 0.0;  // Upper bound: starts at current price
+    // Range: 1% below price as upper bound, -94% as lower bound.
+    // Pure Y-only (SOL) net — starts 1 bin below active price, no X exposure.
+    // distributionType SPOT ensures even SOL spread across all bins.
+    const offsetMin = 1.0;  // Upper bound: 1% below current price (strictly Y-only)
     const offsetMax = 94.0; // Lower bound: -94% below current price
 
     return {
       ok: true,
       blockers: [],
-      notes: `🎯 Evil Panda Master (v61) Active: Price is Bullish. Deploying Ultimate Wide Jaring (0% to -94%).`,
+      notes: `🎯 Evil Panda Master (v61) Active: Price is Bullish. Deploying Ultimate Wide Jaring (1% to -94%), SPOT distribution.`,
       deployOptions: {
         priceRangePct: offsetMax,
         entryPriceOffsetMin: offsetMin,
         entryPriceOffsetMax: offsetMax,
+        distributionType: 'SPOT',
         slippagePct: 0.5,
       }
     };
