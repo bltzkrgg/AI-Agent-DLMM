@@ -789,16 +789,16 @@ async function executeTool(name, input) {
         };
       }));
 
-      // ─── Efficiency Scorer & Deduplication (Layer 7) ──────────
-      // Jika koin yang sama punya > 1 pool (misal 100 vs 125), 
-      // ambil yang rasionya paling "Gacor" (Volume/TVL tertinggi).
-      const tokenMap = new Map(); // tokenMint -> bestPool
+      // ─── Deduplication (Layer 7) ───────────────────────────────
+      // Jika koin yang sama punya > 1 pool (misal 100 vs 125),
+      // ambil yang volume24hRaw tertinggi — kolam paling ramai = spread fee terbaik.
+      const tokenMap = new Map(); // tokenMint -> bestPool (highest 24h volume)
       for (const p of enriched) {
         const mint = p.tokenX || p.tokenY;
-        const currentRatio = parseFloat(p.feeToTvlRatio);
+        const currentVol = Number(p.volume24hRaw || 0);
         const existing = tokenMap.get(mint);
 
-        if (!existing || currentRatio > parseFloat(existing.feeToTvlRatio)) {
+        if (!existing || currentVol > Number(existing.volume24hRaw || 0)) {
           tokenMap.set(mint, p);
         }
       }
@@ -1782,13 +1782,16 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null, opt
       const prefilterRejected = t.prefilterRejected === true;
       const dexGate = t.dexGate || null;
       const candidates = poolsByMint.get(t.mint) || [];
-      const bestPool = candidates
-        .sort((a, b) => {
-          const feeRatioA = parseFloat(a.feeToTvlRatio || 0) || (safeNum(a.fees24hRaw) / Math.max(1, safeNum(a.liquidityRaw)));
-          const feeRatioB = parseFloat(b.feeToTvlRatio || 0) || (safeNum(b.fees24hRaw) / Math.max(1, safeNum(b.liquidityRaw)));
-          if (Math.abs(feeRatioA - feeRatioB) > 1e-9) return feeRatioB - feeRatioA;
-          return safeNum(b.volume24hRaw) - safeNum(a.volume24hRaw);
-        })[0] || null;
+      // Apply CE + BinStep filters to ALL candidates first — never pick a pool that would be vetoed anyway
+      const validCandidates = candidates.filter(c =>
+        !filterCapitalEfficiency(c).rejected && filterBinStep(c).allowed
+      );
+      // Select highest-volume pool among valid candidates
+      const bestPool = validCandidates
+        .sort((a, b) => safeNum(b.volume24hRaw) - safeNum(a.volume24hRaw))[0] || null;
+      if (validCandidates.length > 1 && bestPool) {
+        console.log(`[SHARK] Multiple valid pools for ${t.symbol || t.mint?.slice(0, 8)}. Selecting Pool ${bestPool.address?.slice(0, 8)} with highest 24h Volume: $${safeNum(bestPool.volume24hRaw).toFixed(0)}`);
+      }
 
       let matched = false;
       let reason = 'PASS: Dex+GMGN gate clean';
@@ -1807,9 +1810,11 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null, opt
         reason = `VETO [${first?.rule || 'SECURITY_REJECT'}]: ${first?.msg || 'Token gagal gate keamanan.'}${funnel}`;
       } else if (!bestPool) {
         upsertNoPoolPending({ mint: t.mint, symbol: t.symbol || t.name, dexGate }, cfg);
-        reason = (dexGate?.hasMeteoraPair === false)
-          ? 'VETO [NO_METEORA_EXEC_POOL]: token lolos gate, tapi di Dex belum ada pair Meteora/DLMM.'
-          : 'VETO [NO_METEORA_EXEC_POOL]: token lolos, tapi belum ada pool Meteora yang executable.';
+        reason = candidates.length > 0
+          ? 'VETO [NO_VALID_EXEC_POOL]: pool ada tapi semua gagal CE/BinStep filter.'
+          : (dexGate?.hasMeteoraPair === false)
+            ? 'VETO [NO_METEORA_EXEC_POOL]: token lolos gate, tapi di Dex belum ada pair Meteora/DLMM.'
+            : 'VETO [NO_METEORA_EXEC_POOL]: token lolos, tapi belum ada pool Meteora yang executable.';
         rejNoPool++;
       } else if (t.pvpRisk?.detected) {
         removeNoPoolPending(t.mint);
@@ -1818,22 +1823,9 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null, opt
         reason = 'VETO [POOL_COOLDOWN]: pool/token dalam masa cooldown.';
         rejCooldown++;
       } else {
-        // ── Capital Efficiency Gate ───────────────────────────────
-        const ceResult = filterCapitalEfficiency(bestPool);
-        if (ceResult.rejected) {
-          removeNoPoolPending(t.mint);
-          reason = `VETO [HIGH_TVL_MCAP_RATIO]: ${ceResult.reason}`;
-        } else {
-          // ── Bin Step Gate ───────────────────────────────────────
-          const bsResult = filterBinStep(bestPool);
-          if (!bsResult.allowed) {
-            removeNoPoolPending(t.mint);
-            reason = `VETO [BIN_STEP_NOT_ALLOWED]: ${bsResult.reason}`;
-          } else {
-            removeNoPoolPending(t.mint);
-            matched = true;
-          }
-        }
+        // CE and BinStep already validated above — bestPool is guaranteed to pass both gates
+        removeNoPoolPending(t.mint);
+        matched = true;
       }
 
       const basePool = bestPool || {};
