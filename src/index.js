@@ -1915,9 +1915,11 @@ function formatRadarReportTelegram(snapshot) {
   }
   const pf = snapshot.prefilter || {};
   const st = snapshot.stats || {};
+  const tech = snapshot.technical || {};
   const dep = snapshot.deployment || {};
   const depStageText = String(dep.stage || 'unknown');
   const depStatus = dep.anyRealDeploy === true ? 'YES' : 'NO';
+  const techDetails = Array.isArray(tech.details) ? tech.details : [];
   const rows = (snapshot.candidates || []).slice(0, 12).map((c, idx) => {
     const name = escapeHTML(String(c.name || c.address || 'TOKEN'));
     const mcapVal = safeNum(c.prefilterMcap || c.mcap);
@@ -1929,7 +1931,21 @@ function formatRadarReportTelegram(snapshot) {
     const reason = c.isMatched ? 'ready' : escapeHTML(String(c.vetoReason || 'veto'));
     const flags = Array.isArray(c.securityFlags) ? c.securityFlags.filter(Boolean).slice(0, 4) : [];
     const flagsLine = flags.length ? `\n   <code>FLAGS: ${escapeHTML(flags.join(' | '))}</code>` : '';
-    return `${idx + 1}. <b>${name}</b> | MCAP $${mcap} | VOL $${vol} | AGE ${age} | ${tag}\n   <code>${reason.slice(0, 200)}</code>${flagsLine}`;
+    const techBlock = techDetails.find((t) => (t?.address && t.address === c.address) || (t?.name && t.name === c.name));
+    let techLine = '';
+    if (c.isMatched && techBlock) {
+      const code = escapeHTML(String(techBlock.code || 'TECHNICAL_BLOCK'));
+      const stClose = Number.isFinite(techBlock.supertrendClose) ? ` close=${techBlock.supertrendClose}` : '';
+      const stBreak = Number.isFinite(techBlock.supertrendBreakLevel) ? ` stBreak=${techBlock.supertrendBreakLevel}` : '';
+      const stDist = Number.isFinite(techBlock.supertrendDistancePct) ? ` dist=${techBlock.supertrendDistancePct}%` : '';
+      const stMax = Number.isFinite(techBlock.supertrendMaxDistancePct) ? ` max=${techBlock.supertrendMaxDistancePct}%` : '';
+      const volRatio = Number.isFinite(techBlock.volumeRatio) ? ` volRatio=${techBlock.volumeRatio}` : '';
+      const volMin = Number.isFinite(techBlock.volumeMinRatio) ? ` minVol=${techBlock.volumeMinRatio}` : '';
+      const htf = techBlock.htfTrend ? ` htf=${escapeHTML(String(techBlock.htfTrend))}` : '';
+      const trend = techBlock.trend ? ` trend=${escapeHTML(String(techBlock.trend))}` : '';
+      techLine = `\n   <code>TECH_BLOCK [${code}]${stClose}${stBreak}${stDist}${stMax}${volRatio}${volMin}${htf}${trend}</code>`;
+    }
+    return `${idx + 1}. <b>${name}</b> | MCAP $${mcap} | VOL $${vol} | AGE ${age} | ${tag}\n   <code>${reason.slice(0, 200)}</code>${flagsLine}${techLine}`;
   });
 
   return [
@@ -1946,6 +1962,7 @@ function formatRadarReportTelegram(snapshot) {
     `<b>Pipeline Stats</b>`,
     `<code>Radar Total:</code> ${safeNum(st.radarTotal)} | <code>Matched:</code> ${safeNum(st.matchedCount)} | <code>Exec Pools:</code> ${safeNum(st.executablePoolsCount)}`,
     `<code>Rejected:</code> DexPre ${safeNum(st.rejectedDexPrefilter)} | DexAge ${safeNum(st.rejectedDexAge)} | Security ${safeNum(st.rejectedSecurity)} | NoPool ${safeNum(st.rejectedNoPool)} | Cooldown ${safeNum(st.rejectedCooldown)}`,
+    `<code>Technical:</code> TrendNonBullish ${safeNum(tech.trendNonBullish)} | WaitBreakST ${safeNum(tech.waitBreakSupertrend)} | EntryConfirmFailed ${safeNum(tech.entryConfirmFailed)}`,
     '',
     `<b>Deployment Status</b>`,
     `<code>Attempted:</code> ${safeNum(dep.attempted)} | <code>New:</code> ${safeNum(dep.newDeploy)} | <code>Already:</code> ${safeNum(dep.alreadyDeployed)}`,
