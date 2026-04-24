@@ -8,21 +8,6 @@ const DEXSCREENER_BASE = 'https://api.dexscreener.com';
 const JUPITER_TOKEN_BASE = 'https://tokens.jup.ag';
 const JUPITER_PRICE_BASE = 'https://api.jup.ag';
 
-// ─── Narrative patterns ──────────────────────────────────────────
-
-const POLITICAL_PATTERNS = [
-  /\btrump\b/i, /\belon\b/i, /\bbaron\b/i, /\bmelania\b/i, /\bbiden\b/i,
-  /\bmaga\b/i, /\bkamala\b/i, /\bpolitical\b/i,
-];
-const CELEBRITY_PATTERNS = [
-  /\bkanye\b/i, /\btaylor swift\b/i, /\bkardashian\b/i,
-];
-const JUSTICE_PATTERNS = [
-  /justice for/i, /save the/i, /\brip\b/i, /remember /i,
-];
-const CTO_PATTERNS = [
-  /\bcto\b/i, /community takeover/i,
-];
 
 function buildOperatorHints(result) {
   const hints = [];
@@ -286,17 +271,18 @@ function step1_basicValidation(dex, jup) {
   return { rejects, warnings };
 }
 
-function step2_narrativeFilter(name, symbol) {
+function step2_narrativeFilter(name, symbol, cfg = {}) {
   const rejects = [];
   const text = `${name} ${symbol}`.toLowerCase();
-  for (const p of POLITICAL_PATTERNS)
-    if (p.test(text)) { rejects.push({ rule: 'POLITICAL_FIGURE', msg: `Political coin: "${name}" — slow rug pattern` }); break; }
-  for (const p of CELEBRITY_PATTERNS)
-    if (p.test(text)) { rejects.push({ rule: 'CELEBRITY_COIN', msg: `Celebrity coin: "${name}" — dev bisa dump kapan saja` }); break; }
-  for (const p of JUSTICE_PATTERNS)
-    if (p.test(text)) { rejects.push({ rule: 'JUSTICE_NARRATIVE', msg: `"Justice/save" narrative: "${name}" — classic rug` }); break; }
-  for (const p of CTO_PATTERNS)
-    if (p.test(text)) { rejects.push({ rule: 'CTO_COIN', msg: `CTO coin: "${name}" — new dev farm fees dan dump` }); break; }
+  const banned = Array.isArray(cfg.bannedNarratives) ? cfg.bannedNarratives : [];
+  for (const word of banned) {
+    if (!word) continue;
+    const pattern = new RegExp(`\\b${word.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i');
+    if (pattern.test(text)) {
+      rejects.push({ rule: 'BANNED_NARRATIVE', msg: `Banned narrative "${word}": "${name}" — rejected by config` });
+      break;
+    }
+  }
   return rejects;
 }
 
@@ -725,7 +711,7 @@ function step12_gmgnSecurity(info, sec, thresholds = {}) {
 
     // Shadow Wallets / Suspected Insiders (HARD REJECT L6)
     const suspectedInsider = sec.suspected_insider_hold_rate;
-    if (suspectedInsider != null && suspectedInsider > 0.15) {
+    if (suspectedInsider != null && suspectedInsider > insiderMax) {
       rejects.push({ rule: 'GMGN_SHADOW_WALLETS', msg: `Shadow Wallets (Insiders) memegang ${(suspectedInsider * 100).toFixed(1)}% supply — REJECT` });
     }
 
@@ -885,7 +871,7 @@ export async function screenToken(tokenMint, tokenName = '', tokenSymbol = '', o
   const symbol = tokenSymbol || dex?.symbol || jup?.symbol || '';
 
   const s1  = step1_basicValidation(dex, jup);
-  const s2  = step2_narrativeFilter(name, symbol);
+  const s2  = step2_narrativeFilter(name, symbol, cfg);
   const s3  = step3_priceHealth(dex, thresholds);
   const minTokenAgeMinutes = Number.isFinite(Number(cfg.minTokenAgeMinutes))
     ? Number(cfg.minTokenAgeMinutes)

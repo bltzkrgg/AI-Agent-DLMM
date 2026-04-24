@@ -255,40 +255,58 @@ export function getLastDeploySummary() { return lastDeploySummary; }
 const DEXSCREENER_BASE = 'https://api.dexscreener.com';
 const WSOL_MINT = 'So11111111111111111111111111111111111111112';
 
-async function discoverDexTokenSeeds(limit = 40) {
+async function discoverGmgnTokenSeeds(limit = 40) {
+  const apiKey = process.env.GMGN_API_KEY;
+  if (!apiKey) {
+    console.warn('[hunter] GMGN_API_KEY not set — seed discovery skipped');
+    return [];
+  }
+
   const seeds = [];
   const seen = new Set();
+  const GMGN_HOST = 'https://openapi.gmgn.ai';
   const endpoints = [
-    `${DEXSCREENER_BASE}/token-profiles/latest/v1`,
-    `${DEXSCREENER_BASE}/token-boosts/latest/v1`,
+    '/v1/tokens/trending',
+    '/v1/tokens/new_pairs',
   ];
 
-  for (const url of endpoints) {
+  for (const subPath of endpoints) {
     try {
-      const res = await fetchWithTimeout(url, {}, 7000);
+      const params = new URLSearchParams({
+        chain: 'sol',
+        limit: String(limit),
+        timestamp: String(Math.floor(Date.now() / 1000)),
+        client_id: `hunter-${Date.now()}`,
+      });
+      const url = `${GMGN_HOST}${subPath}?${params.toString()}`;
+      const res = await fetchWithTimeout(url, {
+        headers: {
+          'X-APIKEY': apiKey,
+          'X-API-KEY': apiKey,
+          'Content-Type': 'application/json',
+          'Accept': 'application/json',
+          'User-Agent': 'AI-Agent-DLMM/1.0',
+        },
+      }, 10000);
       if (!res.ok) continue;
       const json = await res.json().catch(() => null);
-      if (!Array.isArray(json)) continue;
-      for (const row of json) {
-        const chain = String(row?.chainId || row?.chain || '').toLowerCase();
-        const mint = String(
-          row?.tokenAddress ||
-          row?.address ||
-          row?.baseTokenAddress ||
-          ''
-        ).trim();
-        if (!mint || (chain && chain !== 'solana')) continue;
-        if (seen.has(mint)) continue;
+      const list = Array.isArray(json?.data) ? json.data
+        : Array.isArray(json?.data?.list) ? json.data.list
+        : Array.isArray(json?.data?.tokens) ? json.data.tokens
+        : [];
+      for (const row of list) {
+        const mint = String(row?.address || row?.token_address || row?.mint || '').trim();
+        if (!mint || seen.has(mint)) continue;
         seen.add(mint);
         seeds.push({
           mint,
-          symbol: row?.tokenSymbol || row?.symbol || '',
-          source: url.includes('boosts') ? 'dex_boosts' : 'dex_profiles',
+          symbol: row?.symbol || row?.token_symbol || '',
+          source: 'gmgn_trending',
         });
         if (seeds.length >= limit) return seeds;
       }
     } catch {
-      // non-blocking, continue other endpoints
+      // non-blocking
     }
   }
   return seeds;
@@ -322,10 +340,10 @@ async function fetchDexGateMetrics(tokenMint) {
     // Token-first prefilter:
     // - volume: gunakan MAX antar pair (hindari false reject saat pair liquidity-terbesar punya vol kecil)
     // - mcap: gunakan MAX antar pair yang valid
-    // - age: gunakan pair TERBARU (timestamp terbesar) agar "fresh breakout" tidak ketahan pair lama
+    // - age: gunakan pair TERTUA (timestamp terkecil) agar token lama yang buat pool baru tidak lolos filter dexMaxAgeHours
     const volume24hMax = volumeValues.length ? Math.max(...volumeValues) : safeNum(best?.volume?.h24);
     const mcapMax = mcapValues.length ? Math.max(...mcapValues) : safeNum(best?.fdv);
-    const newestPairCreatedAt = createdAtValues.length ? Math.max(...createdAtValues) : (safeNum(best?.pairCreatedAt || 0) || null);
+    const oldestPairCreatedAt = createdAtValues.length ? Math.min(...createdAtValues) : (safeNum(best?.pairCreatedAt || 0) || null);
 
     return {
       volume24h: volume24hMax,
@@ -336,7 +354,7 @@ async function fetchDexGateMetrics(tokenMint) {
       pairAddressFallback: best?.pairAddress || null,
       meteoraPairAddresses,
       hasMeteoraPair: meteoraPairAddresses.length > 0,
-      pairCreatedAt: newestPairCreatedAt,
+      pairCreatedAt: oldestPairCreatedAt,
       pairName: `${best?.baseToken?.symbol || ''}-${best?.quoteToken?.symbol || ''}`.replace(/^-|-$/g, ''),
     };
   } catch {
@@ -1551,7 +1569,7 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null, opt
     // --- Token-first Discovery Layer ---
     // 1) Dex seed -> screen_token (Dex+GMGN) terlebih dulu
     // 2) Baru Meteora dipanggil untuk token yang lolos (execution venue)
-    const dexSeeds = await discoverDexTokenSeeds(80);
+    const dexSeeds = await discoverGmgnTokenSeeds(80);
     const seedLimit = Math.max(10, Number(cfg.dexSeedSampleLimit || 40));
     const minVol = Number(cfg.minVolume24h || 0);
     const minMcap = Number(cfg.minMcap || 0);
@@ -1640,7 +1658,8 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null, opt
       },
     }));
 
-    const tokenGatePassed = await Promise.all(seedSample.map(async (s) => {
+    const tokenGatePassed = [];
+    for (const s of seedSample) {
       const dexGate = s.dexGate || null;
 
       const security = await screenToken(s.mint, s.symbol || '').catch(() => null);
@@ -1655,7 +1674,7 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null, opt
       if (!security || !security.eligible) {
         rejSecurity++;
       }
-      return {
+      tokenGatePassed.push({
         mint: s.mint,
         symbol: s.symbol || security?.symbol || '',
         name: security?.name || s.symbol || s.mint.slice(0, 6),
@@ -1665,8 +1684,9 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null, opt
         prefilterRejected: false,
         prefilterReason: null,
         stageFunnel: security?.stageFunnel || null,
-      };
-    }));
+      });
+      await new Promise(r => setTimeout(r, 300));
+    }
 
     tokenGate.push(...tokenGatePassed);
 
