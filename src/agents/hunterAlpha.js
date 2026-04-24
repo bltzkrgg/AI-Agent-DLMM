@@ -2028,46 +2028,7 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null, opt
         ? signalStValue * (1 + (breakMinPct / 100))
         : NaN;
 
-      // Wajib close di atas garis Supertrend 15m sebelum entry one-sided SOL.
-      if (!Number.isFinite(signalClose) || !Number.isFinite(breakThreshold) || signalClose <= breakThreshold) {
-        rejWaitBreakSupertrend++;
-        technicalBlockDetails.push({
-          address: p.address,
-          name: p.name,
-          code: 'WAIT_BREAK_SUPERTREND',
-          supertrendClose: Number.isFinite(signalClose) ? Number(signalClose.toFixed(10)) : null,
-          supertrendBreakLevel: Number.isFinite(breakThreshold) ? Number(breakThreshold.toFixed(10)) : null,
-          supertrendDistancePct: Number.isFinite(signalStDistancePct) ? Number(signalStDistancePct.toFixed(3)) : null,
-          supertrendMaxDistancePct: Number(maxDistancePct.toFixed(3)),
-        });
-        if (process.env.HUNTER_DEBUG) {
-          const thresholdText = Number.isFinite(breakThreshold) ? breakThreshold.toFixed(10) : 'n/a';
-          const closeText = Number.isFinite(signalClose) ? signalClose.toFixed(10) : 'n/a';
-          console.log(`[hunter] Waiting ${p.name} - WAIT_BREAK_SUPERTREND (close=${closeText} <= stBreak=${thresholdText})`);
-        }
-        return null;
-      }
-
-      // LPer Retest rule:
-      // Entry only when price already breaks above ST but not too stretched from ST support.
-      if (!Number.isFinite(signalStDistancePct) || signalStDistancePct > maxDistancePct) {
-        rejWaitBreakSupertrend++;
-        technicalBlockDetails.push({
-          address: p.address,
-          name: p.name,
-          code: 'WAIT_FOR_PULLBACK',
-          supertrendClose: Number.isFinite(signalClose) ? Number(signalClose.toFixed(10)) : null,
-          supertrendBreakLevel: Number.isFinite(breakThreshold) ? Number(breakThreshold.toFixed(10)) : null,
-          supertrendDistancePct: Number.isFinite(signalStDistancePct) ? Number(signalStDistancePct.toFixed(3)) : null,
-          supertrendMaxDistancePct: Number(maxDistancePct.toFixed(3)),
-        });
-        if (process.env.HUNTER_DEBUG) {
-          const distanceText = Number.isFinite(signalStDistancePct) ? signalStDistancePct.toFixed(3) : 'n/a';
-          console.log(`[hunter] Waiting ${p.name} - WAIT_FOR_PULLBACK (stDistance=${distanceText}% > max=${maxDistancePct.toFixed(2)}%)`);
-        }
-        return null;
-      }
-
+      // Shark Logic: ST 15m Green + Volume > 1.1x → LANGSUNG DEPLOY. No pullback wait.
       {
         const minVolRatio = 1.1; // Supertrend 15m green + volume > 1.1x — wajib
         if (signalVolumeRatio < minVolRatio) {

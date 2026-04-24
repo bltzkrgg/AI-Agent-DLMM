@@ -1280,7 +1280,7 @@ export async function runHealerAlpha(notifyFn) {
           const lpValueSol = pos.deployed_sol + pnlSol; // current LP value in SOL
           const ilSol = Math.max(0, pos.deployed_sol - lpValueSol + feesSol); // IL net of fees
           const lastFlaggedAt = runtimeState.inventoryImbalancedAt || 0;
-          const cooldownPassed = Date.now() - lastFlaggedAt > 60 * 60 * 1000; // 1-jam cooldown
+          const cooldownPassed = Date.now() - lastFlaggedAt > 15 * 60 * 1000; // 15-min cooldown
           if (tokenXPct > 0.85 && ilSol > feesSol && cooldownPassed) {
             inventoryForcedClose = true;
             updatePositionRuntimeState(addr, {
@@ -2135,7 +2135,7 @@ export async function runPanicWatchdog(notifyFn) {
         isOORUpper && Number.isFinite(upperPrice) && upperPrice > 0
           ? ((currentPrice - upperPrice) / upperPrice) * 100
           : 0;
-      const oorUpperDistanceMaxPct = Math.max(0, Number(cfg.oorUpperDistanceMaxPct ?? 50));
+      const oorUpperDistanceMaxPct = Math.max(0, Number(cfg.oorUpperDistanceMaxPct ?? 35));
 
       // Moon trap guard: jika harga terbang terlalu jauh di atas upper net, lepaskan modal.
       if (
