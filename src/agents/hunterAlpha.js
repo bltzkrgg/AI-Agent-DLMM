@@ -40,6 +40,7 @@ import { checkMaxDrawdown, requestConfirmation, validateStrategyForMarket } from
 import { getRuntimeState, setRuntimeState, flushRuntimeState } from '../runtime/state.js';
 import { calculateSupertrend } from '../utils/ta.js';
 import { enrichPvpRisk, filterWashTrading, filterCapitalEfficiency, filterBinStep } from '../market/screening.js';
+import { getGmgnTokenInfo } from '../utils/gmgn.js';
 
 // ─── State ───────────────────────────────────────────────────────
 
@@ -1100,22 +1101,25 @@ async function executeTool(name, input) {
         }
       }
 
-      // ── Guard: Real-Time Small Pond CE Re-check (Fresh Mcap) ──────
+      // ── Guard: Real-Time Small Pond CE Re-check (GMGN Fresh Mcap) ──
       // Stale Mcap from screening can be 1-5 min old — for new tokens that's meaningless.
-      // Re-fetch live Mcap from DexScreener right now before committing capital.
+      // Re-fetch live Mcap from GMGN right now before committing capital.
       {
-        const freshDex = await fetchDexGateMetrics(poolInfo.tokenX).catch(() => null);
-        const freshMcap = safeNum(freshDex?.mcap);
+        const gmgnInfo = await getGmgnTokenInfo(poolInfo.tokenX).catch(() => null);
+        const freshMcap = safeNum(
+          gmgnInfo?.usd_market_cap || gmgnInfo?.market_cap || gmgnInfo?.fdv
+        );
+        const ceLimit = cfg.maxTvlMcapRatio ?? 0.20;
         if (freshMcap > 0 && poolTvlUsd > 0) {
           const freshRatio = poolTvlUsd / freshMcap;
-          if (freshRatio > 0.20) {
+          if (freshRatio > ceLimit) {
             return JSON.stringify({
               blocked: true,
-              reason: `Small Pond Guard (live): TVL/Mcap ${(freshRatio * 100).toFixed(1)}% > 20% — fee terlalu terdilusi. TVL $${poolTvlUsd.toFixed(0)}, Mcap live $${freshMcap.toLocaleString()}. Skip.`,
+              reason: `Small Pond Guard (GMGN live): TVL/Mcap ${(freshRatio * 100).toFixed(1)}% > ${(ceLimit * 100).toFixed(0)}% — fee terlalu terdilusi. TVL $${poolTvlUsd.toFixed(0)}, Mcap GMGN $${freshMcap.toLocaleString()}. Skip.`,
               policy: 'CE_REALTIME_REJECT',
             }, null, 2);
           }
-          console.log(`[SHARK] CE re-check OK (live): TVL/Mcap ${(freshRatio * 100).toFixed(1)}% — pool tetap layak.`);
+          console.log(`[SHARK] CE re-check OK (GMGN live): TVL/Mcap ${(freshRatio * 100).toFixed(1)}% ≤ ${(ceLimit * 100).toFixed(0)}% — pool layak.`);
         }
       }
 

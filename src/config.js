@@ -43,6 +43,7 @@ const DEFAULTS = {
   minBinStep: 100,            // Minimal 100 bin step (Hukum 3)
   allowedBinSteps: [100, 125], // Daftar Bin Step spesifik yang diijinkan (Saklek Mode)
   bannedNarratives: ['kanye', 'taylor', 'trump', 'biden', 'kamala', 'justice', 'bags', 'moo deng', 'pesto'], // Kata kunci narasi yang langsung di-reject
+  maxTvlMcapRatio: 0.20,        // CE Gate: max rasio TVL/Mcap yang diterima (0.20 = 20%)
   dexSeedSampleLimit: 40,      // Jumlah token Dex yang discreen per siklus Hunter (token-first)
   meteoraDiscoveryLimit: 180,  // Cakupan scan discovery pool Meteora per siklus (lebih besar = lebih kecil false NO_POOL)
   noPoolPendingTtlMinutes: 120, // Simpan token lolos gate tapi belum ada exec pool selama N menit untuk recheck
@@ -310,6 +311,7 @@ const CONFIG_BOUNDS = {
   dailyLossLimitUsd: { min: 0, max: 1000 },
   allowedBinSteps: { type: 'array' }, // Custom handling logic in updateConfig
   bannedNarratives: { type: 'array' }, // Custom handling logic in updateConfig
+  maxTvlMcapRatio: { min: 0.01, max: 1.0 },
   dexSeedSampleLimit: { min: 10, max: 200 },
   meteoraDiscoveryLimit: { min: 50, max: 500 },
   noPoolPendingTtlMinutes: { min: 5, max: 720 },
