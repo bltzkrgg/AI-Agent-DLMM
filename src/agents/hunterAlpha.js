@@ -2046,23 +2046,6 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null, opt
         }
       }
 
-      if (cfgNow.entryRequireHtfAlignment !== false) {
-        const allowNeutral = cfgNow.entryHtfAllowNeutral !== false;
-        const htfPass = signalHtfTrend === 'BULLISH' || (allowNeutral && signalHtfTrend === 'NEUTRAL');
-        if (!htfPass) {
-          rejEntryConfirm++;
-          technicalBlockDetails.push({
-            address: p.address,
-            name: p.name,
-            code: 'ENTRY_CONFIRM_FAILED_HTF',
-            volumeRatio: Number(signalVolumeRatio.toFixed(3)),
-            htfTrend: signalHtfTrend,
-            htfAllowNeutral: cfgNow.entryHtfAllowNeutral !== false,
-          });
-          if (process.env.HUNTER_DEBUG) console.log(`[hunter] Skipping ${p.name} - HTF alignment failed (${signalHtfTrend})`);
-          return null;
-        }
-      }
 
       // ─── Phase 2.1: LLM Cost Guard (Static Security Filter) ─────
       // Run full audit for top candidates BEFORE sending to LLM.

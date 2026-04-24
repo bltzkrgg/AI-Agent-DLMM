@@ -1154,7 +1154,7 @@ async function _openPositionLogic(poolAddress, tokenXAmount, tokenYAmount, price
         let computeUnits = totalBins > 50 ? 1_200_000 : 600_000;
         try {
           const recommended = await getRecommendedPriorityFee([poolAddress, xMint, yMint]);
-          if (recommended > 0) microLamports = recommended;
+          if (recommended > 0) microLamports = Math.round(recommended * 1.5);
         } catch { /* fallback */ }
 
         injectPriorityFee(tx, { units: computeUnits, microLamports });
@@ -1888,7 +1888,7 @@ export async function claimFees(poolAddress, positionAddress) {
     }
 
     // Priority fee — safe for both types (Versioned: early return noop)
-    injectPriorityFee(tx, { units: 200_000, microLamports: 200_000 });
+    injectPriorityFee(tx, { units: 200_000, microLamports: 300_000 });
 
     if (isClaimVersioned) {
       tx.sign([wallet]);

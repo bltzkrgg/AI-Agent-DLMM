@@ -196,7 +196,7 @@ export async function swapToSOL(inputMint, amountRaw, slippageBps = 100, options
   let priorityFeeLamports = isUrgent ? 250000 : 50000;
   try {
     const recommended = await getRecommendedPriorityFee([inputMint, SOL_MINT]);
-    priorityFeeLamports = Math.max(priorityFeeLamports, recommended);
+    priorityFeeLamports = Math.max(priorityFeeLamports, Math.round(recommended * 1.5));
   } catch { /* pakai default */ }
 
   // 3. Get swap transaction

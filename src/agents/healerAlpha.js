@@ -1413,6 +1413,10 @@ export async function runHealerAlpha(notifyFn) {
         decision   = 'CLOSE';
         holdReason = '';
       }
+      if (inventoryForcedClose) {
+        decision   = 'CLOSE';
+        holdReason = '';
+      }
 
       // Tentukan label + emoji
       const triggerCode = trailingTpHit      ? 'TRAILING_TAKE_PROFIT'
