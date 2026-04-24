@@ -40,9 +40,25 @@ import { runEvolutionCycle } from '../learn/evolve.js';
 import { checkMaxDrawdown, requestConfirmation, validateStrategyForMarket } from '../safety/safetyManager.js';
 import { getRuntimeState, setRuntimeState, flushRuntimeState } from '../runtime/state.js';
 import { calculateSupertrend } from '../utils/ta.js';
-import { enrichPvpRisk } from '../market/screening.js';
+import { enrichPvpRisk, filterWashTrading } from '../market/screening.js';
 
 // ─── State ───────────────────────────────────────────────────────
+
+// Mutex for partial deployment healing.
+// Prevents two concurrent heal cycles (or a heal cycle + watchdog) from calling
+// openPosition on the same position_address simultaneously, which causes nonce
+// conflicts and double-liquidity on the same bin chunk.
+const _activeHealingLocks = new Set();
+
+function acquireHeal(addr) {
+  if (_activeHealingLocks.has(addr)) return false;
+  _activeHealingLocks.add(addr);
+  return true;
+}
+
+function releaseHeal(addr) {
+  _activeHealingLocks.delete(addr);
+}
 
 let lastCandidates = [];
 let lastReport = null;
@@ -179,6 +195,11 @@ async function runPartialDeploymentHealing(notifyFn, cfg = getConfig()) {
       safeNum(pos.deploy_target_sol || pos.deployed_sol || cfg.deployAmountSol || 0.1),
     );
 
+    if (!acquireHeal(pos.position_address)) {
+      if (process.env.HUNTER_DEBUG) console.log(`[hunter] Heal skipped ${pos.position_address?.slice(0, 8)} — already healing in another cycle`);
+      continue;
+    }
+
     try {
       // Deterministic + safe: verify posisi masih ada di chain sebelum healing.
       const chainInfo = await getConnection().getAccountInfo(new PublicKey(pos.position_address)).catch(() => null);
@@ -217,6 +238,8 @@ async function runPartialDeploymentHealing(notifyFn, cfg = getConfig()) {
         `Pool: <code>${escapeHTML(shortAddr(pos.pool_address))}</code>\n` +
         `Error: <code>${escapeHTML(String(e.message || e))}</code>`
       ).catch(() => {});
+    } finally {
+      releaseHeal(pos.position_address);
     }
   }
 
@@ -723,8 +746,14 @@ async function executeTool(name, input) {
         };
       });
 
+      // Wash Trading Gate: veto pools where fees24h/volume24h < 0.2% (cyclic self-trading signal)
+      const { clean: washClean, vetoed: washVetoed } = filterWashTrading(preFiltered);
+      if (washVetoed.length > 0) {
+        console.warn(`[hunter] WASH_TRADE_VETO: ${washVetoed.length} pool(s) removed — ${washVetoed.map(p => `${p.name || p.address?.slice(0,8)} (${(p.washTradeVeto.feeVolumeRatio * 100).toFixed(4)}%)`).join(', ')}`);
+      }
+
       // Enrich: multi-TF + smart wallet + LP Agent data (parallel, best-effort)
-      const enriched = await Promise.all(preFiltered.map(async p => {
+      const enriched = await Promise.all(washClean.map(async p => {
         let multiTFScore = 0;
         let smartWalletSignal = null;
         let poolMemCtx = '';

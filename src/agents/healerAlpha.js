@@ -1956,13 +1956,18 @@ export async function runPanicWatchdog(notifyFn) {
       const entryPriceVal = parseFloat(pos.entry_price || 0);
       const currentPriceVal = parseFloat(posSnapshot.price || 0);
       const initialSol = parseFloat(pos.deployed_sol || pos.deployed_capital || 0);
-      
+
+      // pnlUsd must be converted to SOL using the SOL/USD price, not the token price.
+      // Dividing by token price gives token-denominated units, which corrupts the Toxic IL guard.
+      const _solPriceUsd = await getSolPriceUsd().catch(() => 150);
+      const _solPrice = _solPriceUsd > 0 ? _solPriceUsd : 150;
+
       // Benchmarking: Berapa SOL kita kalau cuma simpan (HODL) koin/modal awal?
       // Jika koin naik 20%, HODLer punya 'pumping gain'. LPer sering kena 'lag' karena IL.
       const priceChangeRatio = entryPriceVal > 0 ? (currentPriceVal / entryPriceVal) : 1;
       const holdValueSol = initialSol * priceChangeRatio;
-      const lpValueSol = initialSol + (parseFloat(posSnapshot.pnlUsd || 0) / (currentPriceVal || 1));
-      
+      const lpValueSol = initialSol + (parseFloat(posSnapshot.pnlUsd || 0) / _solPrice);
+
       const yieldVsHodl = holdValueSol > 0 ? (lpValueSol / holdValueSol) - 1 : 0;
       const netProfitSol = lpValueSol - initialSol;
 
