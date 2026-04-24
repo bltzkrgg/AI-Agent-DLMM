@@ -991,8 +991,8 @@ export async function executeTool(name, input, notifyFn = null) {
         const poolInfo = await getPoolInfo(input.pool_address);
         const snapshot = await getMarketSnapshot(poolInfo.tokenX, input.pool_address);
         const vol      = snapshot?.price?.volatility24h || 0;
-        const _zapCloseReason = (input.closeReason || '').toUpperCase();
-        const isEmergencyClose = ['PANIC_EXIT', 'STOP_LOSS', 'REGIME_FLIP_BEARISH'].some(t => _zapCloseReason.includes(t));
+        const _zapCloseReason = (input.reasoning || '').toUpperCase();
+        const isEmergencyClose = ['PANIC_EXIT', 'STOP_LOSS', 'REGIME_FLIP_BEARISH', 'TVL_DRAIN'].some(t => _zapCloseReason.includes(t));
         const slippage = isEmergencyClose ? 750 : getConservativeSlippage(vol);
 
         for (const mint of [poolInfo.tokenX, poolInfo.tokenY]) {

@@ -146,7 +146,11 @@ const DEFAULTS = {
 
   // Strategy-specific tuning. Base identity is 'Evil Panda Master'.
   strategyOverrides: {
-    'Evil Panda': {},
+    'Evil Panda': {
+      exit: {
+        maxHoldHours: 72, // Deep net (-94%) needs 3 days to catch price — never close prematurely
+      },
+    },
   },
 
   // Meridian Integration & Evolution
@@ -193,7 +197,7 @@ const DEFAULTS = {
   autoHarvestEnabled: true,      // Aktifkan penarikan profit otomatis tanpa tutup posisi
   autoHarvestThresholdSol: 0.1, // Threshold fee (SOL) untuk memicu harvest otomatis
   harvestEstimatedGasSol: 0.005, // Estimasi biaya gas harvest (SOL) untuk profit-vs-gas guard
-  autoHarvestCompound: false,    // Re-invest harvested fees back into same position instead of realizing
+  autoHarvestCompound: false,    // MUST stay false: Meteora Spot (Type 0) throws Invariant Violation on single-side compound at straddle — always Realize
   enableSimulationShield: true,  // Aktifkan pengecekan simulasi ketat sebelum eksekusi
   hourlyPulseEnabled: true,      // Kirim laporan ringkas setiap jam ke Telegram
   minTaConfidenceForAutoExit: 0.55, // Minimal confidence TA untuk trigger auto-exit berbasis trend
