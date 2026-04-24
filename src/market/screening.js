@@ -2,6 +2,42 @@
 
 const PVP_RIVAL_TVL_MULTIPLIER = 10;
 
+// ─── Capital Efficiency Gate ───────────────────────────────────────
+// Ideal:      TVL/Mcap ≤ 10%  — fee belum terdilusi
+// Acceptable: TVL/Mcap ≤ 20%
+// Reject:     TVL/Mcap > 20%  — terlalu banyak kapital per dollar mcap
+const CE_IDEAL      = 0.10;
+const CE_ACCEPTABLE = 0.20;
+
+export function filterCapitalEfficiency(pool) {
+  const tvl  = parseFloat(pool.liquidityRaw || pool.tvl || pool.liquidityUsd || 0) || 0;
+  const mcap = parseFloat(pool.mcap || 0) || 0;
+  if (mcap <= 0) return { tier: 'unknown', ratio: null, rejected: false };
+  const ratio = tvl / mcap;
+  if (ratio <= CE_IDEAL)      return { tier: 'ideal',      ratio, rejected: false };
+  if (ratio <= CE_ACCEPTABLE) return { tier: 'acceptable', ratio, rejected: false };
+  return {
+    tier: 'reject',
+    ratio,
+    rejected: true,
+    reason: `TVL/Mcap ${(ratio * 100).toFixed(1)}% > 20% — fee terdilusi`,
+  };
+}
+
+// ─── Bin Step Gate ─────────────────────────────────────────────────
+// Hanya [100, 125] yang diizinkan — bin step lain diskualifikasi.
+const ALLOWED_BIN_STEPS = new Set([100, 125]);
+
+export function filterBinStep(pool) {
+  const binStep = Number(pool.binStep || 0);
+  if (ALLOWED_BIN_STEPS.has(binStep)) return { allowed: true, binStep };
+  return {
+    allowed: false,
+    binStep,
+    reason: `Bin step ${binStep} bukan [100, 125] — diskualifikasi`,
+  };
+}
+
 // Minimum legitimate fee-to-volume ratio.
 // Wash traders inflate volume without paying real swap fees — their ratio sits anomalously low.
 // Meteora pools charge 0.2–2% fee tier; organic ratio floor ≈ 0.2% of volume = 0.002.

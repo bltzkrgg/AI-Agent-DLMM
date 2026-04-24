@@ -141,24 +141,27 @@ export function formatModelStatus() {
   return text;
 }
 
-// ─── Startup check — dipanggil saat bot start ─────────────────────
+// ─── Startup check — fire-and-forget, non-blocking ───────────────
+// Tidak memblokir startup. Notifikasi hanya dikirim saat model gagal.
 
-export async function runStartupModelCheck(notifyFn) {
-  try {
-    const result = await testCurrentModel();
-    if (!result.ok) {
-      const freeModels = await fetchFreeModels();
-      let msg = `⚠️ <b>Model tidak bisa dipakai!</b>\n\nModel: <code>${result.model}</code>\nError: ${result.error}\n`;
-      if (freeModels.length > 0) {
-        msg += `\n<b>Ganti model tanpa restart:</b>\n`;
-        freeModels.slice(0, 5).forEach(m => { msg += `• <code>/model ${m}</code>\n`; });
-        msg += `\nAtau set <code>AI_MODEL</code> di .env lalu restart.`;
+export function runStartupModelCheck(notifyFn) {
+  (async () => {
+    try {
+      const result = await testCurrentModel();
+      if (!result.ok) {
+        const freeModels = await fetchFreeModels();
+        let msg = `⚠️ <b>Model tidak bisa dipakai!</b>\n\nModel: <code>${result.model}</code>\nError: ${result.error}\n`;
+        if (freeModels.length > 0) {
+          msg += `\n<b>Ganti model tanpa restart:</b>\n`;
+          freeModels.slice(0, 5).forEach(m => { msg += `• <code>/model ${m}</code>\n`; });
+          msg += `\nAtau set <code>AI_MODEL</code> di .env lalu restart.`;
+        }
+        await notifyFn(msg);
+      } else {
+        console.log(`✅ Model check OK: ${result.model}`);
       }
-      await notifyFn(msg);
-    } else {
-      console.log(`✅ Model check OK: ${result.model}`);
+    } catch (e) {
+      console.error('Startup model check error:', e.message);
     }
-  } catch (e) {
-    console.error('Startup model check error:', e.message);
-  }
+  })();
 }

@@ -2218,6 +2218,6 @@ setTimeout(async () => {
       `/status untuk cek posisi | /start untuk semua commands`,
       { parse_mode: 'HTML' }
     );
-    await runStartupModelCheck(notify);
+    runStartupModelCheck(notify);
   } catch (e) { console.error('Startup error:', e.message); }
 }, 2000);

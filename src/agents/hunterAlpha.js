@@ -25,9 +25,8 @@ import {
   classifyMarketRegime,
 } from '../market/strategyLibrary.js';
 import { fetchCandles, getMarketSnapshot, getOHLCV, getMultiTFScore, getSentiment, getHistoryOHLCV, getDLMMPoolData } from '../market/oracle.js';
-import { getSocialSignals, getTokenSocialScore } from '../market/socialScanner.js';
 import { getInstinctsContext } from '../market/memory.js';
-import { getStrategyIntelligenceContext } from '../market/strategyPerformance.js';
+import { getStrategyIntelligenceContext, getDarwinBinStepBoost } from '../market/strategyPerformance.js';
 import { screenToken, formatScreenResult } from '../market/coinfilter.js';
 import { parseTvl, safeNum, stringify, escapeHTML, getConservativeSlippage, fetchWithTimeout } from '../utils/safeJson.js';
 import { kv, hr, codeBlock, shortAddr } from '../utils/table.js';
@@ -40,7 +39,7 @@ import { runEvolutionCycle } from '../learn/evolve.js';
 import { checkMaxDrawdown, requestConfirmation, validateStrategyForMarket } from '../safety/safetyManager.js';
 import { getRuntimeState, setRuntimeState, flushRuntimeState } from '../runtime/state.js';
 import { calculateSupertrend } from '../utils/ta.js';
-import { enrichPvpRisk, filterWashTrading } from '../market/screening.js';
+import { enrichPvpRisk, filterWashTrading, filterCapitalEfficiency, filterBinStep } from '../market/screening.js';
 
 // ─── State ───────────────────────────────────────────────────────
 
@@ -477,10 +476,11 @@ export function computeEntrySignalsFromCandles(candles15m = [], cfg = {}) {
   const supertrendDistancePct = Number.isFinite(supertrendValue) && supertrendValue > 0
     ? ((lastClose - supertrendValue) / supertrendValue) * 100
     : NaN;
-  const maxDistancePct = Math.max(0.1, Number(cfg.entrySupertrendMaxDistancePct ?? 5));
+  const maxDistancePct = 20; // Antisipasi momentum — beri ruang 20% dari ST
   const proximityPass = Number.isFinite(supertrendDistancePct)
     ? supertrendDistancePct <= maxDistancePct
     : false;
+  const volumeMomentumPass = volumeRatio >= 1.1; // Volume harus 1.1x rata-rata
 
   return {
     ready: true,
@@ -498,6 +498,7 @@ export function computeEntrySignalsFromCandles(candles15m = [], cfg = {}) {
     supertrendDistancePct,
     maxDistancePct,
     proximityPass,
+    volumeMomentumPass,
   };
 }
 
@@ -551,6 +552,10 @@ function calculateDarwinScore(pool, weightsOverride, sentiment = 'NEUTRAL') {
   if (pool.multiTFScore > 0) {
     score += pool.multiTFScore * (w.multiTFScore || 1.5);
   }
+
+  // Bin step performance boost — pools whose bin step histori paling banyak fee
+  const binStepBoost = getDarwinBinStepBoost(pool.binStep);
+  if (binStepBoost !== 1.0) score *= binStepBoost;
 
   // Technical Confluence Filter: Slash score if trend is bearish
   const isGlobalBullish = sentiment === 'BULLISH';
@@ -630,11 +635,6 @@ const HUNTER_TOOLS = [
       },
       required: ['pool_address', 'reasoning'],
     },
-  },
-  {
-    name: 'get_social_signals',
-    description: 'Ambil daftar token trending dari Discord/KOL/Social channels (Meridian-style). Gunakan untuk menemukan early gems sebelum masuk volume screener.',
-    input_schema: { type: 'object', properties: {}, required: [] },
   },
   {
     name: 'run_evolution',
@@ -759,15 +759,13 @@ async function executeTool(name, input) {
         let poolMemCtx = '';
         let marketSent = 'NEUTRAL';
         try {
-          const [mtf, sw, ss, sent] = await Promise.allSettled([
+          const [mtf, sw, sent] = await Promise.allSettled([
             getMultiTFScore(p.tokenX, p.address),
             checkSmartWalletsOnPool(p.address),
-            getTokenSocialScore(p.tokenX || p.tokenY),
             getSentiment(p.tokenX || p.tokenY)
           ]);
           if (mtf.status === 'fulfilled') multiTFScore = mtf.value.score || 0;
           if (sw.status === 'fulfilled' && sw.value.found) smartWalletSignal = sw.value;
-          if (ss.status === 'fulfilled' && ss.value) p.socialSignal = ss.value;
           if (sent.status === 'fulfilled' && sent.value) marketSent = sent.value.sentiment || 'NEUTRAL';
           poolMemCtx = getPoolMemoryContext(p.address);
         } catch { /* best-effort */ }
@@ -1414,15 +1412,6 @@ async function executeTool(name, input) {
       return stringify({ ...result, strategyUsed: strategy?.name, reasoning: input.reasoning }, 2);
     }
 
-    case 'get_social_signals': {
-      const signals = await getSocialSignals();
-      return stringify({
-        source: 'Meridian Social Hivemind',
-        signals: signals.slice(0, 15),
-        note: 'Gunakan mint address ini untuk memanggil screen_token jika belum ada di screen_pools.'
-      }, 2);
-    }
-
     case 'run_evolution': {
       const updates = await runEvolutionCycle();
       return stringify({
@@ -1566,9 +1555,6 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null, opt
     const seedLimit = Math.max(10, Number(cfg.dexSeedSampleLimit || 40));
     const minVol = Number(cfg.minVolume24h || 0);
     const minMcap = Number(cfg.minMcap || 0);
-    const minAgeHours = Math.max(0, Number(cfg.dexMinAgeHours || 0));
-    const maxAgeHours = Math.max(minAgeHours, Number(cfg.dexMaxAgeHours || 720));
-    const requireKnownAge = cfg.dexRequireKnownAge === true;
 
     // Stage 1: probe semua seed Dex lalu prefilter tegas (mcap + volume) sebelum masuk GMGN.
     const dexSeedMetrics = await Promise.all(dexSeeds.map(async (s) => {
@@ -1586,14 +1572,6 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null, opt
         prefilterRejected = true;
         prefilterRejectCode = 'DEX_DATA_UNAVAILABLE';
         prefilterReason = 'VETO [DEX_DATA_UNAVAILABLE]: data Dex tidak tersedia di tahap pre-filter.';
-      } else if (!Number.isFinite(ageHours) && requireKnownAge) {
-        prefilterRejected = true;
-        prefilterRejectCode = 'DEX_AGE_UNKNOWN';
-        prefilterReason = 'VETO [DEX_AGE_UNKNOWN]: umur pair Dex tidak tersedia (dexRequireKnownAge=true).';
-      } else if (Number.isFinite(ageHours) && (ageHours < minAgeHours || ageHours > maxAgeHours)) {
-        prefilterRejected = true;
-        prefilterRejectCode = 'DEX_AGE_OUT_OF_RANGE';
-        prefilterReason = `VETO [DEX_AGE_OUT_OF_RANGE]: Age ${ageHours.toFixed(2)}h di luar window ${minAgeHours}-${maxAgeHours}h.`;
       } else if (minVol > 0 && gateVolume < minVol) {
         prefilterRejected = true;
         prefilterRejectCode = 'BELOW_MIN_VOLUME_24H';
@@ -1639,11 +1617,8 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null, opt
         ageHours: null,
         source: 'no_pool_pending_replay',
       }));
-    const ageRejectedList = prefilterRejectedList.filter((s) =>
-      s.prefilterRejectCode === 'DEX_AGE_OUT_OF_RANGE' || s.prefilterRejectCode === 'DEX_AGE_UNKNOWN'
-    );
-    let rejDexAge = ageRejectedList.length;
-    let rejDexPreFilter = Math.max(0, prefilterRejectedList.length - rejDexAge);
+    let rejDexAge = 0;
+    let rejDexPreFilter = prefilterRejectedList.length;
     let rejSecurity = 0, rejNoPool = 0, rejCooldown = 0;
 
     // Token gate list dimulai dari hasil prefilter fail supaya radar bisa audit stage-1 dengan jelas.
@@ -1843,8 +1818,22 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null, opt
         reason = 'VETO [POOL_COOLDOWN]: pool/token dalam masa cooldown.';
         rejCooldown++;
       } else {
-        removeNoPoolPending(t.mint);
-        matched = true;
+        // ── Capital Efficiency Gate ───────────────────────────────
+        const ceResult = filterCapitalEfficiency(bestPool);
+        if (ceResult.rejected) {
+          removeNoPoolPending(t.mint);
+          reason = `VETO [HIGH_TVL_MCAP_RATIO]: ${ceResult.reason}`;
+        } else {
+          // ── Bin Step Gate ───────────────────────────────────────
+          const bsResult = filterBinStep(bestPool);
+          if (!bsResult.allowed) {
+            removeNoPoolPending(t.mint);
+            reason = `VETO [BIN_STEP_NOT_ALLOWED]: ${bsResult.reason}`;
+          } else {
+            removeNoPoolPending(t.mint);
+            matched = true;
+          }
+        }
       }
 
       const basePool = bestPool || {};
@@ -1910,17 +1899,12 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null, opt
         seeded: dexSeeds.length,
         pass: prefilterPassed.length,
         rejected: prefilterRejectedList.length,
-        rejectedAge: ageRejectedList.length,
-        rejectedNonAge: Math.max(0, prefilterRejectedList.length - ageRejectedList.length),
         screened: seedSample.length,
         replayedPending: pendingReplay.length,
         pendingQueueSize: listNoPoolPending(cfg).length,
         minVolume24h: minVol,
         minMcap: minMcap,
-        minAgeHours,
-        maxAgeHours,
-        requireKnownAge,
-        sort: 'age_asc_then_volume_desc',
+        sort: 'volume_desc',
       },
       candidates: radarDisplay.map(p => ({
         address: p.address,
@@ -2039,7 +2023,7 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null, opt
           ? ((signalClose - signalStValue) / signalStValue) * 100
           : NaN);
       const breakMinPct = Math.max(0, Number(cfgNow.entrySupertrendBreakMinPct ?? 0));
-      const maxDistancePct = Math.max(0.1, Number(cfgNow.entrySupertrendMaxDistancePct ?? 5));
+      const maxDistancePct = 20; // Antisipasi momentum — beri ruang 20% dari ST
       const breakThreshold = Number.isFinite(signalStValue)
         ? signalStValue * (1 + (breakMinPct / 100))
         : NaN;
@@ -2084,8 +2068,8 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null, opt
         return null;
       }
 
-      if (cfgNow.entryRequireVolumeConfirm !== false) {
-        const minVolRatio = Math.max(0.5, Number(cfgNow.entryMinVolumeRatio ?? 1.1));
+      {
+        const minVolRatio = 1.1; // Supertrend 15m green + volume > 1.1x — wajib
         if (signalVolumeRatio < minVolRatio) {
           rejEntryConfirm++;
           technicalBlockDetails.push({
@@ -2148,7 +2132,6 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null, opt
           highFlags: (security.highFlags || []).map(f => f.msg),
           stageFunnel: security.stageFunnel || null,
         } : { verdict: 'UNKNOWN' },
-        socialHype: p.socialSignal ? `🔥 Discord Impact: ${p.socialSignal.intensity}/10` : 'Neutral',
         feeToTvlPct: tvl > 0 ? ((p.fees24hRaw || 0) / tvl * 100).toFixed(2) + '%' : '0%',
         binStep: p.binStep,
         tokenXMint: p.tokenX,

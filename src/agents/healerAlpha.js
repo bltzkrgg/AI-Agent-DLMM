@@ -1264,8 +1264,45 @@ export async function runHealerAlpha(notifyFn) {
       const oorBinsTriggered = oorPricePct !== null && oorPricePctThreshold > 0 && oorPricePct >= oorPricePctThreshold;
       const tpHit   = pnlPct >= strategyTakeProfitPct;
 
+      // ── Inventory Rebalancing Check ──────────────────────────────
+      // Jika posisi OOR dan token X mendominasi >85% dan IL > fees:
+      // → force-close posisi. Auto-swap di close path akan swap token X → SOL.
+      let inventoryForcedClose = false;
+      {
+        const totalXUi = match.totalXUi ?? 0;
+        const totalYUi = match.totalYUi ?? 0;
+        const currentPrice = parseFloat(match.currentPrice || match.displayPrice || 0);
+        if (currentPrice > 0 && (totalXUi > 0 || totalYUi > 0) && !match.inRange) {
+          const xValueSol = totalXUi * currentPrice;
+          const totalValueSol = xValueSol + totalYUi;
+          const tokenXPct = totalValueSol > 0 ? xValueSol / totalValueSol : 0;
+          const feesSol = match.feeCollectedSol ?? 0;
+          const lpValueSol = pos.deployed_sol + pnlSol; // current LP value in SOL
+          const ilSol = Math.max(0, pos.deployed_sol - lpValueSol + feesSol); // IL net of fees
+          const lastFlaggedAt = runtimeState.inventoryImbalancedAt || 0;
+          const cooldownPassed = Date.now() - lastFlaggedAt > 60 * 60 * 1000; // 1-jam cooldown
+          if (tokenXPct > 0.85 && ilSol > feesSol && cooldownPassed) {
+            inventoryForcedClose = true;
+            updatePositionRuntimeState(addr, {
+              inventoryImbalanced: true,
+              inventoryImbalancedAt: Date.now(),
+            });
+            notifyFn?.(
+              `⚠️ <b>Inventory Rebalance — Close & Swap</b>\n\n` +
+              `<code>${shortAddr(addr)}</code>\n` +
+              `Token X: <b>${(tokenXPct * 100).toFixed(1)}%</b> (OOR, IL > Fees)\n` +
+              `IL: <code>◎${ilSol.toFixed(4)}</code> | Fees: <code>◎${feesSol.toFixed(4)}</code>\n` +
+              `<i>Menutup posisi dan swap balik ke SOL...</i>`,
+              { parse_mode: 'HTML' }
+            ).catch(() => {});
+          } else if (tokenXPct <= 0.85) {
+            updatePositionRuntimeState(addr, { inventoryImbalanced: false });
+          }
+        }
+      }
+
       // Tidak ada trigger → flag apakah posisi ini butuh LLM, lalu skip
-      if (!trailingTpHit && !tpHit && !slCheck.triggered && !maxHoldTriggered && !oorBinsTriggered) {
+      if (!trailingTpHit && !tpHit && !slCheck.triggered && !maxHoldTriggered && !oorBinsTriggered && !inventoryForcedClose) {
         // Posisi butuh LLM jika: out of range, fees tinggi, atau mencapai threshold SL
         if (!match?.inRange) _healerNeedsLLM = true;
         const feePct = (match?.feeCollectedSol || 0) / (pos.deployed_sol || 0.001);
@@ -1378,20 +1415,23 @@ export async function runHealerAlpha(notifyFn) {
       }
 
       // Tentukan label + emoji
-      const triggerCode = trailingTpHit   ? 'TRAILING_TAKE_PROFIT'
-        : tpHit             ? 'TAKE_PROFIT'
-        : maxHoldTriggered  ? 'MAX_HOLD_EXIT'
-        : oorBinsTriggered  ? 'OOR_BINS_EXCEEDED'
+      const triggerCode = trailingTpHit      ? 'TRAILING_TAKE_PROFIT'
+        : tpHit                ? 'TAKE_PROFIT'
+        : maxHoldTriggered     ? 'MAX_HOLD_EXIT'
+        : oorBinsTriggered     ? 'OOR_BINS_EXCEEDED'
+        : inventoryForcedClose ? 'INVENTORY_REBALANCE'
         : 'STOP_LOSS';
       const triggerLabel = triggerCode === 'TRAILING_TAKE_PROFIT' ? 'Trailing Take Profit'
-        : triggerCode === 'TAKE_PROFIT' ? 'Take Profit'
-          : triggerCode === 'MAX_HOLD_EXIT' ? 'Max Hold Exit'
-            : triggerCode === 'OOR_BINS_EXCEEDED' ? 'OOR Bins Exceeded'
-              : 'Stop-Loss';
-      const triggerEmoji = trailingTpHit   ? '🎯'
-        : tpHit             ? '💰'
-        : maxHoldTriggered  ? '⏰'
-        : oorBinsTriggered  ? '📍'
+        : triggerCode === 'TAKE_PROFIT'        ? 'Take Profit'
+        : triggerCode === 'MAX_HOLD_EXIT'      ? 'Max Hold Exit'
+        : triggerCode === 'OOR_BINS_EXCEEDED'  ? 'OOR Bins Exceeded'
+        : triggerCode === 'INVENTORY_REBALANCE'? 'Inventory Rebalance'
+        : 'Stop-Loss';
+      const triggerEmoji = trailingTpHit      ? '🎯'
+        : tpHit                ? '💰'
+        : maxHoldTriggered     ? '⏰'
+        : oorBinsTriggered     ? '📍'
+        : inventoryForcedClose ? '⚖️'
         : '🛑';
       const triggerReason = trailingTpHit
         ? `PnL turun dari peak ${tracker.peakPnl.toFixed(2)}% ke ${pnlPct.toFixed(2)}%`
@@ -1401,6 +1441,8 @@ export async function runHealerAlpha(notifyFn) {
         ? `Position held for ${maxHoldHours}h — force close to unlock capital`
         : oorBinsTriggered
         ? `OOR ${outOfRangeBins} bins (threshold: ${oorBinsThreshold}) — force close`
+        : inventoryForcedClose
+        ? `Token X >85% OOR, IL > fees — close & swap balik ke SOL`
         : slCheck.reason;
 
       // ── Terminal-style indicator table ───────────────────────────

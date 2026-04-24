@@ -216,6 +216,59 @@ function generateRecommendations(byStrategy) {
   return recs;
 }
 
+// ─── Bin Step Performance — feed ke DarwinScore ──────────────────
+// Analisis fee/deployed_sol per bin step dari posisi closed.
+// Hunter pakai getDarwinBinStepBoost() untuk boost pool yang bin step-nya histori paling daging.
+
+export function getBinStepPerformance() {
+  const closed = getClosedPositions();
+  const byBinStep = {};
+
+  for (const pos of closed) {
+    const binStep = pos.bin_step || pos.binStep;
+    if (!Number.isFinite(Number(binStep)) || Number(binStep) <= 0) continue;
+    const key = String(Number(binStep));
+    if (!byBinStep[key]) byBinStep[key] = { count: 0, totalFeesSol: 0, totalDeployedSol: 0, totalPnlSol: 0 };
+    const s = byBinStep[key];
+    s.count++;
+    s.totalFeesSol    += pos.fees_collected_sol || 0;
+    s.totalDeployedSol += pos.deployed_sol     || 0;
+    s.totalPnlSol     += pos.pnl_sol           || 0;
+  }
+
+  const result = {};
+  for (const [step, s] of Object.entries(byBinStep)) {
+    result[step] = {
+      count:          s.count,
+      avgFeeRatio:    s.totalDeployedSol > 0 ? s.totalFeesSol / s.totalDeployedSol : 0,
+      avgPnlSol:      s.count > 0 ? s.totalPnlSol / s.count : 0,
+      totalFeesSol:   s.totalFeesSol,
+    };
+  }
+  return result;
+}
+
+// Returns a multiplier [0.8, 1.5] for a given pool's bin step.
+// Pools whose bin step historically yields high fee/capital ratios get a boost.
+export function getDarwinBinStepBoost(binStep) {
+  if (!Number.isFinite(Number(binStep)) || Number(binStep) <= 0) return 1.0;
+  const perf = getBinStepPerformance();
+  const key = String(Number(binStep));
+  const entry = perf[key];
+  if (!entry || entry.count < 3) return 1.0; // not enough data — neutral
+
+  // Compute average fee ratio across all bin steps for normalization
+  const allEntries = Object.values(perf).filter(e => e.count >= 3);
+  if (allEntries.length === 0) return 1.0;
+  const avgFeeRatio = allEntries.reduce((s, e) => s + e.avgFeeRatio, 0) / allEntries.length;
+  if (avgFeeRatio <= 0) return 1.0;
+
+  // Boost: how much better is this bin step vs average?
+  const relativePerf = entry.avgFeeRatio / avgFeeRatio;
+  // Clamp to [0.8, 1.5] so one outlier bin step can't dominate
+  return Math.max(0.8, Math.min(1.5, relativePerf));
+}
+
 // ─── Strategy Intelligence untuk di-inject ke agent ─────────────
 // Dipanggil dari Hunter/Healer supaya AI tahu strategi mana yang works
 

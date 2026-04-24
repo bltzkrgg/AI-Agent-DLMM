@@ -1,6 +1,5 @@
 import { createOperationLog, updateOperationLog } from '../db/database.js';
 import { validateExecutionPolicy } from './executionPolicy.js';
-import { logError, logInfo } from '../utils/logger.js';
 
 function extractTxHashes(result) {
   if (!result) return [];
@@ -42,7 +41,7 @@ export async function executeControlledOperation({
   const operationId = log.lastInsertRowid;
 
   await updateOperationLog(operationId, { status: 'in_progress', metadata });
-  logInfo('operation_started', { operationType, entityId: safeEntityId, operationId });
+  console.log('[executionService] operation_started', { operationType, entityId: safeEntityId, operationId });
 
   try {
     const result = await execute();
@@ -52,7 +51,7 @@ export async function executeControlledOperation({
       metadata,
       txHashes: extractTxHashes(result),
     });
-    logInfo('operation_succeeded', { operationType, entityId: safeEntityId, operationId });
+    console.log('[executionService] operation_succeeded', { operationType, entityId: safeEntityId, operationId });
     return { operationId, result };
   } catch (error) {
     await updateOperationLog(operationId, {
@@ -60,7 +59,7 @@ export async function executeControlledOperation({
       errorMessage: error.message,
       metadata,
     });
-    logError('operation_failed', {
+    console.error('[executionService] operation_failed', {
       operationType,
       entityId: safeEntityId,
       operationId,

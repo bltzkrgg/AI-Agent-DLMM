@@ -33,6 +33,29 @@ function ensureEntryCapacity(maxPositionsOverride = null) {
   }
 }
 
+// ── Aggressive Priority Fee Config ───────────────────────────────
+// Returns microLamports + computeUnits tuned for high-congestion entry.
+// urgent=true: peak volatility — bant gas habis supaya TX langsung landing.
+// urgent=false: normal entry — still aggressive but cost-aware.
+// Callers pass this into injectPriorityFee() or Jupiter swap params.
+
+export function getAggressivePriorityConfig({ urgent = false, largeTx = false } = {}) {
+  const cfg = getConfig();
+  const baseline = urgent
+    ? (cfg.urgentPriorityMicroLamports   ?? 2_000_000)
+    : (cfg.normalPriorityMicroLamports   ?? 750_000);
+
+  // Multiply by 1.5x on top of Helius recommended when the network is hot.
+  // The actual multiplier is applied in meteora.js after fetching recommended fee;
+  // here we set the floor so we never fall below it.
+  return {
+    microLamportsFloor: baseline,
+    computeUnits:       largeTx ? 1_400_000 : urgent ? 1_200_000 : 800_000,
+    heliusMultiplier:   urgent ? 1.5 : 1.2,
+    maxRetries:         urgent ? 5 : 3,
+  };
+}
+
 export function validateExecutionPolicy({
   operationType,
   entityId = null,

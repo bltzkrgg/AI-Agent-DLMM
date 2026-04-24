@@ -34,7 +34,6 @@ const DEFAULT_WEIGHTS = {
   volume:            0.36,
   holderCount:       0.3,
   multiTFScore:      1.5,
-  socialSignal:      1.5,  // baru — discord/social impact
 };
 
 // ─── Load / Save ──────────────────────────────────────────────────
@@ -118,7 +117,6 @@ export function captureSignals(positionAddress, poolData) {
     tvl,
     holderCount:       poolData.holderCount || 0,
     multiTFScore:      poolData.multiTFScore || 0, // di-inject oleh hunter sebelum deploy
-    socialSignal:      poolData.socialSignal ? (poolData.socialSignal.intensity || 5) / 10 : 0,
     darwinScore:       poolData.darwinScore  || 0,
   };
 
@@ -189,7 +187,7 @@ export function recalibrateWeights() {
     return null;
   }
 
-  const signalKeys = ['feeActiveTvlRatio', 'volume', 'tvl', 'holderCount', 'multiTFScore', 'socialSignal'];
+  const signalKeys = ['feeActiveTvlRatio', 'volume', 'tvl', 'holderCount', 'multiTFScore'];
   const liftReport = {};
   const newWeights = { ...current };
 
