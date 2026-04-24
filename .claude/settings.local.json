@@ -79,7 +79,8 @@
       "Bash(rg -n \"claim_fees|strategy_report|MAX_HOLD_EXIT|CIRCUIT_BREAKER_ACTIVE|REGIME_BEAR_DEFENSE\" src/ --include=\"*.js\")",
       "Bash(rg -rn \"CIRCUIT_BREAKER\" src/)",
       "Bash(rg -rn \"circuitBreaker\\\\|circuit.breaker\\\\|circuit_breaker\" src/)",
-      "Bash(rg -rn \"circuit\" src/ --type js)"
+      "Bash(rg -rn \"circuit\" src/ --type js)",
+      "Bash(git *)"
     ]
   }
 }
