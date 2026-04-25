@@ -8,6 +8,8 @@ const METEORA_DISCOVERY_BASE = 'https://pool-discovery-api.datapi.meteora.ag';
 const DEXSCREENER_BASE = 'https://api.dexscreener.com/latest/dex/tokens';
 const OKX_BASE = 'https://web3.okx.com';
 const JUPITER_QUOTE_API = 'https://quote-api.jup.ag/v6/quote';
+const JUPITER_QUOTE_API_FALLBACK = 'https://api.jup.ag/swap/v6/quote';
+const JUPITER_UA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
 const JUPITER_BLACKLIST_TTL_MS = 24 * 60 * 60 * 1000;
 
 const _jupiterFailBlacklist = new Map(); // mint -> { until, reason, ts }
@@ -254,6 +256,30 @@ function isVampedCoin(info, sec) {
   return labels.some((t) => t.includes('vamped'));
 }
 
+async function fetchJupiterQuote(queryString) {
+  const headers = { 'User-Agent': JUPITER_UA };
+  const endpoints = [JUPITER_QUOTE_API, JUPITER_QUOTE_API_FALLBACK];
+  const maxAttempts = 3;
+  let lastRes = null;
+
+  for (const base of endpoints) {
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      try {
+        const res = await fetchWithTimeout(`${base}${queryString}`, { headers }, 12000);
+        if (res.ok) return res;
+        lastRes = res;
+        const label = res.status === 429 ? 'RateLimit' : res.status === 403 ? 'Forbidden' : `HTTP_${res.status}`;
+        console.warn(`[Jupiter] ${label} status=${res.status} attempt=${attempt}/${maxAttempts} endpoint=${base}`);
+        if (res.status === 403) break;
+      } catch (e) {
+        console.warn(`[Jupiter] Error attempt=${attempt}/${maxAttempts} endpoint=${base}: ${e?.message}`);
+      }
+    }
+  }
+
+  return lastRes;
+}
+
 async function runJupiterSimulation(tokenMint, usdAmount, maxImpactPct) {
   await ensureIpv4First();
   const solPrice = await getJupiterPrice(WSOL_MINT).catch(() => null);
@@ -264,13 +290,9 @@ async function runJupiterSimulation(tokenMint, usdAmount, maxImpactPct) {
   const amountLamports = Math.max(1, Math.floor(simSol * 1_000_000_000));
 
   try {
-    const buyRes = await fetchWithTimeout(
-      `${JUPITER_QUOTE_API}?inputMint=${WSOL_MINT}&outputMint=${tokenMint}&amount=${amountLamports}&slippageBps=100`,
-      {},
-      12000,
-    );
-    if (!buyRes.ok) {
-      return { pass: false, reason: `BUY_HTTP_${buyRes.status}`, buyImpact: null, sellImpact: null };
+    const buyRes = await fetchJupiterQuote(`?inputMint=${WSOL_MINT}&outputMint=${tokenMint}&amount=${amountLamports}&slippageBps=100`);
+    if (!buyRes || !buyRes.ok) {
+      return { pass: false, reason: `BUY_HTTP_${buyRes?.status ?? 'UNKNOWN'}`, buyImpact: null, sellImpact: null };
     }
     const buy = await buyRes.json().catch(() => null);
     const buyImpact = safeNum(buy?.priceImpactPct);
@@ -279,13 +301,9 @@ async function runJupiterSimulation(tokenMint, usdAmount, maxImpactPct) {
       return { pass: false, reason: 'BUY_NO_ROUTE', buyImpact, sellImpact: null };
     }
 
-    const sellRes = await fetchWithTimeout(
-      `${JUPITER_QUOTE_API}?inputMint=${tokenMint}&outputMint=${WSOL_MINT}&amount=${outAmount}&slippageBps=100`,
-      {},
-      12000,
-    );
-    if (!sellRes.ok) {
-      return { pass: false, reason: `SELL_HTTP_${sellRes.status}`, buyImpact, sellImpact: null };
+    const sellRes = await fetchJupiterQuote(`?inputMint=${tokenMint}&outputMint=${WSOL_MINT}&amount=${outAmount}&slippageBps=100`);
+    if (!sellRes || !sellRes.ok) {
+      return { pass: false, reason: `SELL_HTTP_${sellRes?.status ?? 'UNKNOWN'}`, buyImpact, sellImpact: null };
     }
     const sell = await sellRes.json().catch(() => null);
     const sellImpact = safeNum(sell?.priceImpactPct);
