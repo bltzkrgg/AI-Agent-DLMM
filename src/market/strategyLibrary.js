@@ -266,7 +266,7 @@ export async function evaluateStrategyReadiness({ strategyName, snapshot, binSte
     const pool = snapshot.pool || {};
     const feeTvlRatio = safeNum(pool.feeTvlRatio);
     const volumeTvlRatio = pool.tvl > 0 ? safeNum(pool.volume24h) / safeNum(pool.tvl) : 0;
-    const history = snapshot.poolAddress ? await getHistoryOHLCV(snapshot.poolAddress).catch(() => null) : null;
+    const history = snapshot.tokenMint ? await getHistoryOHLCV(snapshot.tokenMint).catch(() => null) : null;
     const recentClosedCandles = Array.isArray(history) ? history.slice(0, -1).slice(-2) : [];
     const hasTwoClosedGreenCandles = recentClosedCandles.length === 2
       && recentClosedCandles.every(c => c.close > c.open)

@@ -5,26 +5,53 @@ import { getJupiterPrice } from '../utils/jupiter.js';
 import { getConfig } from '../config.js';
 import * as ta from '../utils/ta.js';
 import { getPoolSmartMoney } from '../market/lpAgent.js';
+import { getGmgnTokenInfo } from '../utils/gmgn.js';
 
-const DEXSCREENER_BASE = 'https://api.dexscreener.com';
 const METEORA_DATAPI = 'https://dlmm-api.meteora.ag';
 const BIRDEYE_BASE = 'https://public-api.birdeye.so';
 
-// ─── 1. OHLCV — Price Snapshot (DexScreener) ────────────────────
-// Rerouted to DexScreener as the primary source for price/volatility logic.
-// Oracle: OHLCV + TA dari DexScreener untuk Evil Panda entry/exit.
+// ─── 1. OHLCV — Price Snapshot (Birdeye primary, Momentum-Proxy fallback) ───
+// Primary: Birdeye 15m real candles + Supertrend for Evil Panda entry/exit.
+// Fallback: Jupiter spot price momentum proxy when Birdeye unavailable.
 
 export async function getOHLCV(tokenMint, poolAddress = null) {
-  const dex = await buildOHLCVFromDexScreener(tokenMint, poolAddress);
-  if (!poolAddress) return dex;
+  const birdeye = await buildOHLCVFromBirdeye(tokenMint);
+  if (birdeye?.historySuccess) return birdeye;
+  return buildMomentumProxyOHLCV(tokenMint);
+}
 
-  // Fallback to Birdeye only when 15m historical TA from Dex is unavailable.
-  // Keep Dex as the default source to preserve existing behavior.
-  const needFallback = !dex || dex?.historySuccess !== true || dex?.ta?.supertrend?.source === 'Momentum-Proxy';
-  if (!needFallback) return dex;
-
-  const birdeye = await buildOHLCVFromBirdeye(tokenMint, dex);
-  return birdeye || dex;
+async function buildMomentumProxyOHLCV(tokenMint) {
+  try {
+    const price = await getJupiterPrice(tokenMint);
+    if (!Number.isFinite(price) || price <= 0) return null;
+    return {
+      tokenMint,
+      timeframe: '15m',
+      source: 'momentum-proxy',
+      currentPrice: price,
+      atrPct: null,
+      priceChangeM5: 0,
+      priceChangeH1: 0,
+      high24h: price,
+      low24h: price,
+      range24hPct: 0,
+      buyVolume: 0,
+      sellVolume: 0,
+      trend: 'SIDEWAYS',
+      volatilityCategory: 'LOW',
+      ta: {
+        supertrend: { trend: 'NEUTRAL', value: price, atr: null, changed: false, source: 'Momentum-Proxy' },
+        candleCount: 0,
+        historySuccess: false,
+        "Evil Panda": {
+          entry: { triggered: false, reason: null },
+          exit: { triggered: false, reason: null },
+        },
+      },
+      historySuccess: false,
+      historyAgeMinutes: null,
+    };
+  } catch { return null; }
 }
 
 function isCandleSeriesStale(candles = [], maxStaleMinutes = 90) {
@@ -153,30 +180,32 @@ async function getMeteoraPoolPriceUsd(poolAddress) {
 
 export async function getSentiment(tokenMint) {
   try {
-    const res = await fetchWithTimeout(
-      `${DEXSCREENER_BASE}/latest/dex/tokens/${tokenMint}`, {}, 8000
-    );
-    if (!res.ok) return null;
-    const data = await res.json();
-    const pairs = data.pairs || [];
-    if (!pairs.length) return null;
-    const best = pairs.sort((a, b) => safeNum(b.liquidity?.usd) - safeNum(a.liquidity?.usd))[0];
-    const txns = best.txns?.h24 || {};
-    const buys = safeNum(txns.buys), sells = safeNum(txns.sells);
-    const total = buys + sells;
-    const buyPressurePct = total > 0 ? safeNum((buys / total * 100).toFixed(1)) : 50;
+    const [priceResult, infoResult] = await Promise.allSettled([
+      getJupiterPrice(tokenMint),
+      getGmgnTokenInfo(tokenMint),
+    ]);
+    const priceUsd = priceResult.status === 'fulfilled' && Number.isFinite(priceResult.value)
+      ? priceResult.value : 0;
+    const info = infoResult.status === 'fulfilled' ? infoResult.value : null;
 
+    const fdv = safeNum(info?.market_cap || info?.fdv || 0);
+    const liquidityUsd = safeNum(info?.liquidity || 0);
+    const symbol = info?.symbol || '';
+
+    if (!priceUsd && !fdv) return null;
     return {
-      tokenSymbol: best.baseToken?.symbol || '',
-      priceUsd: safeNum(best.priceUsd),
-      priceChange5m: safeNum(best.priceChange?.m5),
-      priceChange1h: safeNum(best.priceChange?.h1),
-      priceChange6h: safeNum(best.priceChange?.h6),
-      priceChange24h: safeNum(best.priceChange?.h24),
-      liquidityUsd: safeNum(best.liquidity?.usd),
-      buys24h: buys, sells24h: sells, buyPressurePct,
-      fdv: safeNum(best.fdv),
-      sentiment: buyPressurePct > 60 ? 'BULLISH' : buyPressurePct < 40 ? 'BEARISH' : 'NEUTRAL',
+      tokenSymbol: symbol,
+      priceUsd: priceUsd || safeNum(info?.price || info?.price_usd || 0),
+      priceChange5m: 0,
+      priceChange1h: 0,
+      priceChange6h: 0,
+      priceChange24h: 0,
+      liquidityUsd,
+      buys24h: 0,
+      sells24h: 0,
+      buyPressurePct: 50,
+      fdv,
+      sentiment: 'NEUTRAL',
       fetchedAt: new Date().toISOString(),
     };
   } catch { return null; }
@@ -227,8 +256,7 @@ export function computeSnapshotQuality({
   let taConfidence = 0.35;
   const taSource = ohlcv?.ta?.supertrend?.source || 'unknown';
 
-  if (taSource === 'DexScreener-15m') taConfidence += 0.24;
-  else if (taSource === 'Birdeye-15m') taConfidence += 0.22;
+  if (taSource === 'Birdeye-15m') taConfidence += 0.24;
   else if (taSource === 'Momentum-Proxy') taConfidence += 0.12;
   if (ohlcv?.historySuccess) taConfidence += 0.10;
   if (sentiment && Number.isFinite(sentiment.buyPressurePct)) taConfidence += 0.08;
@@ -420,230 +448,10 @@ async function buildOHLCVFromBirdeye(tokenMint, dexFallback = null) {
   }
 }
 
-// ─── OHLCV Build helper ──────────────────────────────────────────
+// ─── OHLCV History (Birdeye) ─────────────────────────────────────
 
-async function buildOHLCVFromDexScreener(tokenMint, poolAddress = null) {
-  try {
-    const res = await fetchWithTimeout(
-      `${DEXSCREENER_BASE}/latest/dex/tokens/${tokenMint}`, {}, 8000
-    );
-    if (!res.ok) return null;
-    const data = await res.json();
-    const pairs = data.pairs || [];
-    if (!pairs.length) return null;
-
-    // Use matching pool if provided, else best liquidity
-    const best = poolAddress
-      ? (pairs.find(p => p.pairAddress === poolAddress) || pairs.sort((a, b) => safeNum(b.liquidity?.usd) - safeNum(a.liquidity?.usd))[0])
-      : pairs.sort((a, b) => safeNum(b.liquidity?.usd) - safeNum(a.liquidity?.usd))[0];
-
-    const currentPrice = safeNum(best.priceUsd);
-    const priceChangeM5 = safeNum(best.priceChange?.m5);
-    const priceChange1h = safeNum(best.priceChange?.h1);
-    const priceChange24h = safeNum(best.priceChange?.h24);
-    const volume24h = safeNum(best.volume?.h24);
-    const range24hPct = Math.abs(priceChange24h);
-
-    const highDenom = 1 - Math.max(0, priceChange24h) / 100;
-    const lowDenom = 1 + Math.max(0, -priceChange24h) / 100;
-    const high24h = highDenom > 0 ? currentPrice / highDenom : currentPrice * 2;
-    const low24h = lowDenom > 0 ? currentPrice / lowDenom : currentPrice / 2;
-
-    // Volume Delta components (m5 preferred for sniper logic)
-    const txns = best.txns?.m5 || best.txns?.h1 || {};
-    const buys = safeNum(txns.buys);
-    const sells = safeNum(txns.sells);
-
-    const trend = (priceChangeM5 > 1.5 && priceChange1h > 0) ? 'UPTREND'
-      : (priceChangeM5 < -1.5 && priceChange1h < 0) ? 'DOWNTREND'
-        : (priceChangeM5 > 3) ? 'PUMPING'
-          : 'SIDEWAYS';
-
-    const txns24h = best.txns?.h24 || {};
-    const buys24h = safeNum(txns24h.buys);
-    const sells24h = safeNum(txns24h.sells);
-    const total24h = buys24h + sells24h;
-    const buyPressurePct = total24h > 0 ? safeNum((buys24h / total24h * 100).toFixed(1)) : 50;
-
-    const p1h  = priceChange1h || 0;
-    const p5m  = priceChangeM5 || 0;
-    const bp   = buyPressurePct;
-
-    // Momentum proxy fallback (always available from DexScreener latest pair stats).
-    const isBullishProxy = (p1h > 1.0 && bp > 55) || (p5m > 3 && p1h > -1);
-    const isBearishProxy = (p1h < -5 || bp < 35);
-
-    let historySuccess = false;
-    let historyAgeMinutes = null;
-    let taData = {
-      supertrend: {
-        trend: isBullishProxy ? 'BULLISH' : (isBearishProxy ? 'BEARISH' : 'NEUTRAL'),
-        value: currentPrice || 0,
-        source: 'Momentum-Proxy'
-      },
-      candleCount: 0,
-      historySuccess: false,
-      "Evil Panda": {
-        entry: {
-          triggered: isBullishProxy,
-          reason: isBullishProxy ? `EVIL PANDA MOMENTUM: Trend Bullish (1h: ${p1h}%, BP: ${bp}%).` : null
-        },
-        exit: {
-          triggered: isBearishProxy,
-          reason: isBearishProxy ? 'MOMENTUM EXIT: Sell pressure ekstrim.' : null
-        }
-      }
-    };
-
-    // Prefer real 15m Supertrend from OHLCV history when pool address is available.
-    if (poolAddress) {
-      const cfg = getConfig();
-      const history = await getHistoryOHLCV(poolAddress);
-      const closedCandles = Array.isArray(history) ? history.slice(0, -1) : [];
-      const staleHistory = isCandleSeriesStale(closedCandles, cfg.maxOhlcvStaleMinutes15m ?? 90);
-      if (closedCandles.length >= 10 && !staleHistory) {
-        const st = ta.calculateSupertrend(closedCandles, 10, 3);
-        const lastCandle = closedCandles[closedCandles.length - 1];
-        historyAgeMinutes = Number(((Date.now() / 1000 - safeNum(lastCandle?.time, 0)) / 60).toFixed(2));
-        const lastClose = closedCandles[closedCandles.length - 1]?.close || currentPrice || 0;
-        const isBullish = st?.trend === 'BULLISH';
-        const isBearish = st?.trend === 'BEARISH';
-
-        taData = {
-          supertrend: {
-            trend: st?.trend || 'NEUTRAL',
-            value: Number.isFinite(st?.value) ? st.value : lastClose,
-            atr: Number.isFinite(st?.atr) ? st.atr : null,
-            changed: Boolean(st?.changed),
-            source: 'DexScreener-15m'
-          },
-          candleCount: closedCandles.length,
-          historySuccess: true,
-          "Evil Panda": {
-            entry: {
-              triggered: isBullish,
-              reason: isBullish ? `EVIL PANDA TREND: Supertrend 15m bullish (${closedCandles.length} candles).` : null
-            },
-            exit: {
-              triggered: isBearish,
-              reason: isBearish ? 'TREND EXIT: Supertrend 15m bearish.' : null
-            }
-          }
-        };
-        historySuccess = true;
-      } else if (closedCandles.length >= 10 && staleHistory) {
-        console.warn('[oracle] DexScreener OHLCV stale — fallback to Birdeye/proxy');
-      }
-    }
-
-    return {
-      tokenMint,
-      timeframe: '15m',
-      source: 'dexscreener-v1',
-      currentPrice,
-      atrPct: Number.isFinite(taData?.supertrend?.atr) && currentPrice > 0
-        ? Number(((taData.supertrend.atr / currentPrice) * 100).toFixed(3))
-        : null,
-      priceChangeM5,
-      priceChangeH1: priceChange1h,
-      high24h, low24h,
-      range24hPct: parseFloat(range24hPct.toFixed(2)),
-      buyVolume: buys,
-      sellVolume: sells,
-      trend,
-      volatilityCategory: range24hPct > 20 ? 'HIGH' : range24hPct > 7 ? 'MEDIUM' : 'LOW',
-      ta: taData,
-      historySuccess,
-      historyAgeMinutes,
-    };
-  } catch (e) {
-    console.error('[oracle] buildOHLCV failed:', e.message);
-    return null;
-  }
-}
-
-function aggregateCandles(candles, targetMinutes = 15) {
-  if (!candles || candles.length === 0) return [];
-  const targetSeconds = targetMinutes * 60;
-
-  const result = [];
-  let currentGroup = [];
-
-  // DexScreener candles usually come in 1m or 5m increments.
-  // We group them into targetMinutes-sized buckets.
-  for (const c of candles) {
-    if (currentGroup.length === 0) {
-      currentGroup.push(c);
-      continue;
-    }
-
-    // Group by floor(time / targetSeconds)
-    const currentBucket = Math.floor(currentGroup[0].time / targetSeconds);
-    const bucket = Math.floor(c.time / targetSeconds);
-
-    if (bucket === currentBucket) {
-      currentGroup.push(c);
-    } else {
-      result.push({
-        time: currentGroup[0].time,
-        open: currentGroup[0].open,
-        high: Math.max(...currentGroup.map(g => g.high)),
-        low: Math.min(...currentGroup.map(g => g.low)),
-        close: currentGroup[currentGroup.length - 1].close,
-        volume: currentGroup.reduce((s, g) => s + g.volume, 0)
-      });
-      currentGroup = [c];
-    }
-  }
-
-  // PUSH the last (potentially incomplete) bucket so history.slice(0, -1) works predictably
-  if (currentGroup.length > 0) {
-    result.push({
-      time: currentGroup[0].time,
-      open: currentGroup[0].open,
-      high: Math.max(...currentGroup.map(g => g.high)),
-      low: Math.min(...currentGroup.map(g => g.low)),
-      close: currentGroup[currentGroup.length - 1].close,
-      volume: currentGroup.reduce((s, g) => s + g.volume, 0)
-    });
-  }
-
-  return result;
-}
-
-export async function getHistoryOHLCV(poolAddress) {
-  try {
-    // DexScreener V1 OHLCV API (Solana) 
-    // Format: https://api.dexscreener.com/ohlcv/latest/v1/solana/{poolAddress}
-    const res = await fetchWithTimeout(
-      `https://api.dexscreener.com/ohlcv/latest/v1/solana/${poolAddress}?timeframe=15`,
-      {},
-      8000
-    );
-    if (!res.ok) return null;
-    const json = await res.json();
-    const candles = json.candles || [];
-
-    // DexScreener format: { t: timestamp (seconds), o: open, h: high, l: low, c: close, v: volume }
-    const raw = candles.map(c => ({
-      time: c.t, // API v1 returns seconds
-      open: safeNum(c.o),
-      high: safeNum(c.h),
-      low: safeNum(c.l),
-      close: safeNum(c.c),
-      volume: safeNum(c.v)
-    })).sort((a, b) => a.time - b.time);
-
-    // Validate that mapped fields are not all NaN (API shape change guard)
-    const validCandles = raw.filter(c => Number.isFinite(c.close) && c.close > 0);
-    if (raw.length > 0 && validCandles.length === 0) {
-      console.warn('[oracle] DexScreener OHLCV: all candles have invalid close prices — possible API shape change');
-      return null;
-    }
-
-    // Aggregate to 15m for Sniper Bullish Guard
-    return aggregateCandles(validCandles, 15);
-  } catch { return null; }
+export async function getHistoryOHLCV(tokenMint) {
+  return getHistoryOHLCVFromBirdeye(tokenMint, 12);
 }
 
 // ─── Full DLMM Snapshot ──────────────────────────────────────────

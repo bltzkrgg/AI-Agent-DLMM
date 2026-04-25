@@ -63,7 +63,7 @@ export async function fetchWithTimeout(url, options = {}, timeoutMs = 10000) {
 
   // Domains yang PERLU rate limiting (strict free tier)
   const needsRateLimiting = [
-    'api.dexscreener.com',
+    'openapi.gmgn.ai',
   ];
 
   if (needsRateLimiting.includes(hostname) && !skipRateLimiting.includes(hostname)) {

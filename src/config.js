@@ -44,14 +44,14 @@ const DEFAULTS = {
   allowedBinSteps: [100, 125], // Daftar Bin Step spesifik yang diijinkan (Saklek Mode)
   bannedNarratives: ['kanye', 'taylor', 'trump', 'biden', 'kamala', 'justice', 'bags', 'moo deng', 'pesto'], // Kata kunci narasi yang langsung di-reject
   maxTvlMcapRatio: 0.20,        // CE Gate: max rasio TVL/Mcap yang diterima (0.20 = 20%)
-  dexSeedSampleLimit: 40,      // Jumlah token Dex yang discreen per siklus Hunter (token-first)
+  dexSeedSampleLimit: 40,      // Jumlah token GMGN yang discreen per siklus Hunter (token-first via GMGN trending/new_pairs)
   meteoraDiscoveryLimit: 180,  // Cakupan scan discovery pool Meteora per siklus (lebih besar = lebih kecil false NO_POOL)
   noPoolPendingTtlMinutes: 120, // Simpan token lolos gate tapi belum ada exec pool selama N menit untuk recheck
   noPoolReplayLimit: 12,       // Jumlah token pending NO_POOL yang direplay per siklus
   deployChunkMaxBins: 69,      // Maks bins per TX deploy (jaga ukuran paket Solana, depth tetap bisa multi-TX)
-  dexMinAgeHours: 0,           // Min usia pair Dex (jam)
-  dexMaxAgeHours: 168,         // Max usia pair Dex (jam) = 7 hari
-  dexRequireKnownAge: false,   // true: token tanpa data age Dex langsung ditolak
+  dexMinAgeHours: 0,           // Min usia token sejak launch (jam) — diambil dari GMGN created_timestamp
+  dexMaxAgeHours: 168,         // Max usia token (jam) = 7 hari — diambil dari GMGN created_timestamp
+  dexRequireKnownAge: false,   // true: token tanpa data usia GMGN langsung ditolak
   minTotalFeesSol: 30.0,     // Ambang batas Heritage (Total Fee seumur hidup)
   minDailyFeeYieldPct: 1.0,  // Minimum fee/TVL harian (%) agar entry Evil Panda tetap worth it
   heritageModeEnabled: true, // Aktifkan saringan riwayat sultan

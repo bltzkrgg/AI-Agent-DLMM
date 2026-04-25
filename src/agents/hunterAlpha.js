@@ -243,7 +243,6 @@ export function getLastHunterReport() { return lastReport; }
 export function getLastRadarSnapshot() { return lastRadarSnapshot; }
 export function getLastDeploySummary() { return lastDeploySummary; }
 
-const DEXSCREENER_BASE = 'https://api.dexscreener.com';
 const WSOL_MINT = 'So11111111111111111111111111111111111111112';
 
 async function discoverGmgnTokenSeeds(limit = 40) {
@@ -289,10 +288,16 @@ async function discoverGmgnTokenSeeds(limit = 40) {
         const mint = String(row?.address || row?.token_address || row?.mint || '').trim();
         if (!mint || seen.has(mint)) continue;
         seen.add(mint);
+        // Extract market data from seed row to avoid a separate gate metrics call
+        const createdTs = safeNum(row?.created_timestamp || row?.open_timestamp || row?.pair_created_at || 0);
         seeds.push({
           mint,
           symbol: row?.symbol || row?.token_symbol || '',
           source: 'gmgn_trending',
+          seedVolume24h: safeNum(row?.volume_24h || row?.volume24h || 0),
+          seedMcap: safeNum(row?.market_cap || row?.fdv || row?.usd_market_cap || 0),
+          seedLiquidity: safeNum(row?.liquidity || row?.pool_liquidity || 0),
+          seedCreatedAt: createdTs > 0 ? createdTs * 1000 : null, // convert to ms
         });
         if (seeds.length >= limit) return seeds;
       }
@@ -303,50 +308,43 @@ async function discoverGmgnTokenSeeds(limit = 40) {
   return seeds;
 }
 
-async function fetchDexGateMetrics(tokenMint) {
+async function fetchGmgnGateMetrics(tokenMint, seedData = {}) {
   if (!tokenMint) return null;
   try {
-    const res = await fetchWithTimeout(`${DEXSCREENER_BASE}/latest/dex/tokens/${tokenMint}`, {}, 7000);
-    if (!res.ok) return null;
-    const json = await res.json().catch(() => null);
-    const pairs = Array.isArray(json?.pairs) ? json.pairs : [];
-    if (!pairs.length) return null;
-    const byLiquidityDesc = [...pairs].sort((a, b) => safeNum(b?.liquidity?.usd) - safeNum(a?.liquidity?.usd));
-    const best = byLiquidityDesc[0];
-    const meteoraPairs = pairs.filter((p) => {
-      const sig = `${String(p?.dexId || '')} ${String(p?.labels || '')}`.toLowerCase();
-      return sig.includes('meteora') || sig.includes('dlmm');
-    });
-    const meteoraByLiquidity = [...meteoraPairs].sort((a, b) => safeNum(b?.liquidity?.usd) - safeNum(a?.liquidity?.usd));
-    const meteoraPairAddresses = meteoraByLiquidity
-      .map((p) => String(p?.pairAddress || '').trim())
-      .filter(Boolean)
-      .slice(0, 3);
-    const volumeValues = pairs.map((p) => safeNum(p?.volume?.h24)).filter((v) => Number.isFinite(v) && v > 0);
-    const mcapValues = pairs.map((p) => safeNum(p?.fdv)).filter((v) => Number.isFinite(v) && v > 0);
-    const createdAtValues = pairs
-      .map((p) => safeNum(p?.pairCreatedAt))
-      .filter((v) => Number.isFinite(v) && v > 0);
+    // Use seed data if already extracted from GMGN trending response (avoids extra API call)
+    const hasSeedData = seedData.seedMcap > 0 || seedData.seedVolume24h > 0;
+    const info = hasSeedData ? null : await getGmgnTokenInfo(tokenMint).catch(() => null);
 
-    // Token-first prefilter:
-    // - volume: gunakan MAX antar pair (hindari false reject saat pair liquidity-terbesar punya vol kecil)
-    // - mcap: gunakan MAX antar pair yang valid
-    // - age: gunakan pair TERTUA (timestamp terkecil) agar token lama yang buat pool baru tidak lolos filter dexMaxAgeHours
-    const volume24hMax = volumeValues.length ? Math.max(...volumeValues) : safeNum(best?.volume?.h24);
-    const mcapMax = mcapValues.length ? Math.max(...mcapValues) : safeNum(best?.fdv);
-    const oldestPairCreatedAt = createdAtValues.length ? Math.min(...createdAtValues) : (safeNum(best?.pairCreatedAt || 0) || null);
+    const volume24h = seedData.seedVolume24h > 0
+      ? seedData.seedVolume24h
+      : safeNum(info?.volume_24h || info?.stat?.volume_24h || 0);
+    const mcap = seedData.seedMcap > 0
+      ? seedData.seedMcap
+      : safeNum(info?.market_cap || info?.fdv || info?.usd_market_cap || 0);
+    const liquidityUsd = seedData.seedLiquidity > 0
+      ? seedData.seedLiquidity
+      : safeNum(info?.liquidity || 0);
+    const pairCreatedAt = seedData.seedCreatedAt != null
+      ? seedData.seedCreatedAt
+      : (() => {
+          const ts = safeNum(info?.created_timestamp || info?.open_timestamp || 0);
+          return ts > 0 ? ts * 1000 : null; // convert seconds → ms
+        })();
+
+    // Return null only when both mcap and volume are completely absent (non-blocking: prefer pass)
+    if (!volume24h && !mcap && !liquidityUsd) return null;
 
     return {
-      volume24h: volume24hMax,
-      mcap: mcapMax,
-      liquidityUsd: safeNum(best?.liquidity?.usd),
-      txns24h: safeNum(best?.txns?.h24?.buys) + safeNum(best?.txns?.h24?.sells),
-      pairAddress: meteoraPairAddresses[0] || best?.pairAddress || null,
-      pairAddressFallback: best?.pairAddress || null,
-      meteoraPairAddresses,
-      hasMeteoraPair: meteoraPairAddresses.length > 0,
-      pairCreatedAt: oldestPairCreatedAt,
-      pairName: `${best?.baseToken?.symbol || ''}-${best?.quoteToken?.symbol || ''}`.replace(/^-|-$/g, ''),
+      volume24h,
+      mcap,
+      liquidityUsd,
+      txns24h: 0,
+      pairAddress: null,
+      pairAddressFallback: null,
+      meteoraPairAddresses: [],
+      hasMeteoraPair: false,
+      pairCreatedAt,
+      pairName: info?.symbol || seedData.symbol || tokenMint.slice(0, 8),
     };
   } catch {
     return null;
@@ -1557,9 +1555,9 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null, opt
     const minVol = Number(cfg.minVolume24h || 0);
     const minMcap = Number(cfg.minMcap || 0);
 
-    // Stage 1: probe semua seed Dex lalu prefilter tegas (mcap + volume) sebelum masuk GMGN.
+    // Stage 1: probe semua seed GMGN lalu prefilter tegas (mcap + volume) sebelum masuk screening.
     const dexSeedMetrics = await Promise.all(dexSeeds.map(async (s) => {
-      const dexGate = await fetchDexGateMetrics(s.mint);
+      const dexGate = await fetchGmgnGateMetrics(s.mint, s);
       const gateVolume = safeNum(dexGate?.volume24h);
       const gateMcap = safeNum(dexGate?.mcap);
       const createdAt = safeNum(dexGate?.pairCreatedAt);
@@ -1570,10 +1568,9 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null, opt
       let prefilterReason = null;
       let prefilterRejectCode = null;
       if (!dexGate) {
-        prefilterRejected = true;
-        prefilterRejectCode = 'DEX_DATA_UNAVAILABLE';
-        prefilterReason = 'VETO [DEX_DATA_UNAVAILABLE]: data Dex tidak tersedia di tahap pre-filter.';
-      } else if (minVol > 0 && gateVolume < minVol) {
+        // Non-blocking: pass through when GMGN gate data unavailable (no API key or timeout)
+        // Volume/mcap filters below require gate data; skip them if unavailable
+      } else if (minVol > 0 && gateVolume > 0 && gateVolume < minVol) {
         prefilterRejected = true;
         prefilterRejectCode = 'BELOW_MIN_VOLUME_24H';
         prefilterReason = `VETO [BELOW_MIN_VOLUME_24H]: Volume 24h $${gateVolume.toLocaleString()} < min $${minVol.toLocaleString()}`;
@@ -1633,7 +1630,7 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null, opt
       dexGate: s.dexGate || null,
       ageHours: s.ageHours,
       stageFunnel: {
-        stage1_dex_gate: 'FAIL',
+        stage1_gmgn_gate: 'FAIL',
         stage2_gmgn_availability: 'SKIPPED',
         stage3_gmgn_security: 'SKIPPED',
         stage4_fee_integrity: 'SKIPPED',
@@ -2022,7 +2019,8 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null, opt
 
       // ─── Phase 2.05: Entry Confirmation Layer (15m + HTF) ──────
       const cfgNow = getConfig();
-      const history15m = await getHistoryOHLCV(p.address).catch(() => null);
+      const _tokenMintForHistory = [p.tokenX, p.tokenY].find(m => m && m !== WSOL_MINT) || p.tokenX;
+      const history15m = await getHistoryOHLCV(_tokenMintForHistory).catch(() => null);
       const entrySignals = computeEntrySignalsFromCandles(history15m || [], cfgNow);
       const fallbackBodyPct = Math.abs(safeNum(ohlcv?.priceChangeM5, 0));
       const fallbackHtfTrend = safeNum(ohlcv?.priceChangeH1, 0) >= 0 ? 'BULLISH' : 'BEARISH';

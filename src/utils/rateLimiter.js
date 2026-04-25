@@ -67,8 +67,8 @@ export class RateLimiter {
  */
 export const globalRateLimiter = new RateLimiter({
   domainLimits: {
-    // DexScreener — primary market source
-    'api.dexscreener.com': 60,
+    // GMGN — token security oracle (2 RPS serialized in gmgn.js, listed here for reference)
+    'openapi.gmgn.ai': 120,
 
     // Jupiter
     'tokens.jup.ag': 60,
