@@ -214,7 +214,6 @@ async function runPartialDeploymentHealing(notifyFn, cfg = getConfig()) {
         10,
         pos.strategy_used || null,
         {
-          maxBinsPerTx: Number(pos.deploy_chunk_max_bins || cfg.deployChunkMaxBins || 69),
           resumePositionAddress: pos.position_address,
         },
       );
@@ -1340,7 +1339,6 @@ async function executeTool(name, input) {
           ),
         }));
       } catch (deployErr) {
-        // TX size limit (69 bins/TX) is hardcoded in meteora.js — retry here is a no-op double-call
         if (hunterNotifyFn) {
           hunterNotifyFn(
             `❌ <b>Deploy Gagal</b>\n\n` +

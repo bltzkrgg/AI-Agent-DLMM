@@ -566,16 +566,21 @@ export async function getPositionInfo(poolAddress) {
 export async function getSolPriceUsd() {
   try {
     const res = await fetchWithTimeout(
-      'https://api.dexscreener.com/latest/dex/tokens/So11111111111111111111111111111111111111112',
+      'https://api.jup.ag/price/v2?ids=So11111111111111111111111111111111111111112',
       {}, 6000
     );
     if (!res.ok) return 150;
     const data = await res.json();
-    const price = data.pairs?.[0]?.priceUsd;
+    const price = data.data?.['So11111111111111111111111111111111111111112']?.price;
     return price ? parseFloat(price) : 150;
   } catch {
     return 150;
   }
+}
+
+function isEmergencyCloseReason(reason) {
+  const normalized = String(reason || '').toUpperCase();
+  return normalized.includes('PANIC_EXIT') || normalized.includes('TVL_DRAIN');
 }
 
 // ─── Compound: Add Liquidity to Existing Position ───────────────
@@ -1841,11 +1846,15 @@ export async function closePositionDLMM(poolAddress, positionAddress, pnlData = 
             // Logika Irit: Hitung slippage dinamis biar gak rugi price impact.
             // Use deploy-time slippage (stored in options.deploySlippageBps) as a floor
             // to avoid under-slippage when current market is calmer than at deploy time.
-            let slippage = 100; // default 1.0%
-            try {
-              const snapshot = await getMarketSnapshot(xMint, poolAddress);
-              slippage = getConservativeSlippage(snapshot?.price?.volatility24h || 0, isUrgent);
-            } catch { /* fallback 1% */ }
+            const emergencyClose = isEmergencyCloseReason(pnlData.closeReason);
+            const emergencySlippageBps = Math.max(750, Number(cfg.panicExitSlippageBps ?? 750));
+            let slippage = emergencyClose ? emergencySlippageBps : 100; // default 1.0%
+            if (!emergencyClose) {
+              try {
+                const snapshot = await getMarketSnapshot(xMint, poolAddress);
+                slippage = getConservativeSlippage(snapshot?.price?.volatility24h || 0, isUrgent);
+              } catch { /* fallback 1% */ }
+            }
             if (options.deploySlippageBps && options.deploySlippageBps > slippage) {
               slippage = options.deploySlippageBps; // deploy-time slippage is the minimum
             }

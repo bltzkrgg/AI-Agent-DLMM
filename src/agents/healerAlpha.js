@@ -905,7 +905,8 @@ export async function executeTool(name, input, notifyFn = null) {
     case 'zap_out': {
       // Zap Out = close position + guaranteed swap semua token ke SOL
       // Ambil PnL on-chain sebelum close
-      let zapPnlData = { closeReason: 'ZAP_OUT' };
+      const zapReason = (input.reasoning || 'ZAP_OUT').toUpperCase().replace(/ /g, '_');
+      let zapPnlData = { closeReason: zapReason };
       let zapStrategyUsed = null;
       try {
         const lpPnlMap = await getLpPnlMap();
@@ -964,7 +965,7 @@ export async function executeTool(name, input, notifyFn = null) {
         pnl_pct: zapPnlData.pnlPct || 0,
         pnl_usd: zapPnlData.pnlUsd || 0,
         strategy_used: zapPnlData.strategyUsed || 'EVIL_PANDA',
-        close_reason: 'ZAP_OUT',
+        close_reason: zapPnlData.closeReason || 'ZAP_OUT',
         range_efficiency_pct: 50,
       }, currentNotify).catch(e => console.error('Zap Out Post-Mortem error:', e.message));
 
@@ -993,7 +994,8 @@ export async function executeTool(name, input, notifyFn = null) {
         const vol      = snapshot?.price?.volatility24h || 0;
         const _zapCloseReason = (input.reasoning || '').toUpperCase();
         const isEmergencyClose = ['PANIC_EXIT', 'STOP_LOSS', 'REGIME_FLIP_BEARISH', 'TVL_DRAIN'].some(t => _zapCloseReason.includes(t));
-        const slippage = isEmergencyClose ? 750 : getConservativeSlippage(vol);
+        const emergencySlippageBps = Math.max(750, Number(cfg.panicExitSlippageBps ?? 750));
+        const slippage = isEmergencyClose ? emergencySlippageBps : getConservativeSlippage(vol);
 
         for (const mint of [poolInfo.tokenX, poolInfo.tokenY]) {
           if (!mint || mint === SOL_MINT) continue;
@@ -2547,7 +2549,7 @@ export async function runPanicWatchdog(notifyFn) {
 
         await notifyFn?.(msg, { parse_mode: 'HTML' });
 
-        const closeResult = await closeAndRecordExitAtomic({
+        await closeAndRecordExitAtomic({
           pos,
           posSnapshot,
           pnlPct,
@@ -2562,27 +2564,6 @@ export async function runPanicWatchdog(notifyFn) {
           lifecycleState: 'closed_panic',
           isUrgent: true,
         });
-
-        // 🛡️ ZERO DUST PROTOCOL: Instan Swap Balik ke SOL
-        if (closeResult && !isDryRun()) {
-          await new Promise(r => setTimeout(r, 2000)); // Tunggu RPC propagasi
-          try {
-            const snapshot = await getMarketSnapshot(pos.token_mint, pos.pool_address);
-            const vol      = snapshot?.price?.volatility24h || 0;
-            const slippage = getConservativeSlippage(vol);
-            const swapRes = await swapAllToSOL(pos.token_mint, slippage);
-            await closeTokenAccount(pos.token_mint).catch(() => {});
-            if (swapRes.success) {
-              await notifyFn?.(`🔄 <b>Zero Dust:</b> Berhasil swap balik ke <code>${escapeHTML(swapRes.outSol)}</code> SOL.`, { parse_mode: 'HTML' });
-            } else if (swapRes.reason !== 'ZERO_BALANCE') {
-              await notifyFn?.(`⚠️ <b>Zero Dust Gagal:</b> Token masih di wallet. Lakukan swap manual!`, { parse_mode: 'HTML' });
-            }
-          } catch (e) {
-            if (e.message.includes('LIQUIDITY_TRAP')) {
-              await notifyLiquidityTrap(pos.token_mint, e.message, notifyFn);
-            }
-          }
-        }
         continue;
       }
 
@@ -2597,7 +2578,7 @@ export async function runPanicWatchdog(notifyFn) {
 
         await notifyFn?.(msg, { parse_mode: 'HTML' });
 
-        const closeResult = await closeAndRecordExitAtomic({
+        await closeAndRecordExitAtomic({
           pos,
           posSnapshot,
           pnlPct,
@@ -2612,19 +2593,6 @@ export async function runPanicWatchdog(notifyFn) {
           lifecycleState: 'closed_profit_protection',
           isUrgent: true,
         });
-
-        // 🛡️ ZERO DUST PROTOCOL: Instan Swap Balik ke SOL
-        if (closeResult && !isDryRun()) {
-          await new Promise(r => setTimeout(r, 2000));
-          const snapshot = await getMarketSnapshot(pos.token_mint, pos.pool_address);
-          const vol      = snapshot?.price?.volatility24h || 0;
-          const slippage = getConservativeSlippage(vol);
-          const swapRes = await swapAllToSOL(pos.token_mint, slippage);
-          if (swapRes.success) {
-            await closeTokenAccount(pos.token_mint).catch(() => {});
-            await notifyFn?.(`🔄 <b>Zero Dust:</b> Profit dikunci &amp; dikonversi ke SOL.`, { parse_mode: 'HTML' });
-          }
-        }
       }
 
     } catch (e) {
