@@ -1872,6 +1872,7 @@ export async function getTopPools(limit = 10, sortBy = 'fee_24h:desc') {
     if (tokenY !== WSOL_MINT) return null;
     const fees24h = safeNum(pool?.fees?.['24h'] || pool?.fee_24h || pool?.fees24h || 0);
     const tvl = safeNum(pool?.tvl || pool?.liquidity || pool?.liquidity_usd || 0);
+    if (!(tvl > 0)) return null;
     const vol24h = safeNum(pool?.volume?.['24h'] || pool?.volume_24h || pool?.volume24h || 0);
     const ratio24h = safeNum(pool?.fee_tvl_ratio?.['24h'] || (tvl > 0 ? fees24h / tvl : 0));
     const apr24h = ratio24h * 100;

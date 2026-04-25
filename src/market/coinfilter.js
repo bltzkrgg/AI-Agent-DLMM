@@ -200,18 +200,22 @@ async function getBirdeyeMarketInfo(tokenMint) {
   const apiKey = process.env.BIRDEYE_API_KEY;
   if (!apiKey) return null;
   try {
-    const res = await fetchWithTimeout(
-      `${BIRDEYE_BASE}/defi/token_overview?address=${tokenMint}`,
-      {
-        headers: {
-          'X-API-KEY': apiKey,
-          'x-chain': 'solana',
-          Accept: 'application/json',
+    const res = await withExponentialBackoff(async () => {
+      const r = await fetchWithTimeout(
+        `${BIRDEYE_BASE}/defi/token_overview?address=${tokenMint}`,
+        {
+          headers: {
+            'X-API-KEY': apiKey,
+            'x-chain': 'solana',
+            Accept: 'application/json',
+          },
         },
-      },
-      8000,
-    );
-    if (!res.ok) return null;
+        8000,
+      );
+      if (r.status === 429) throw new Error('BIRDEYE_429');
+      if (!r.ok) throw new Error(`BIRDEYE_HTTP_${r.status}`);
+      return r;
+    }, { maxRetries: 3, baseDelay: 1200 });
     const json = await res.json().catch(() => null);
     const data = json?.data || null;
     if (!data) return null;
@@ -520,7 +524,7 @@ async function getOnChainAuthority(tokenMint) {
 
 async function getSlippageSimulation(tokenMint, amountSol) {
   try {
-    ensureIpv4First();
+    await ensureIpv4First();
     const WSOL = 'So11111111111111111111111111111111111111112';
     const amountLamports = Math.floor(amountSol * 1_000_000_000);
 
