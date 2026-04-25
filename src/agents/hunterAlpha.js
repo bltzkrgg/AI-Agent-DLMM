@@ -2,7 +2,7 @@
 
 import { createMessage, resolveModel } from '../agent/provider.js';
 import { getConfig, getThresholds } from '../config.js';
-import { getTopPools, getPoolInfo, openPosition, getSolPriceUsd, getDiscoveryPools } from '../solana/meteora.js';
+import { getTopPools, getPoolInfo, openPosition, getSolPriceUsd } from '../solana/meteora.js';
 import { getWalletBalance, getConnection } from '../solana/wallet.js';
 import { PublicKey } from '@solana/web3.js';
 import {
@@ -27,7 +27,7 @@ import {
 import { fetchCandles, getMarketSnapshot, getOHLCV, getMultiTFScore, getSentiment, getHistoryOHLCV, getDLMMPoolData } from '../market/oracle.js';
 import { getInstinctsContext } from '../market/memory.js';
 import { getStrategyIntelligenceContext, getDarwinBinStepBoost } from '../market/strategyPerformance.js';
-import { screenToken, formatScreenResult } from '../market/coinfilter.js';
+import { screenToken, formatScreenResult, discoverMeteoraDlmmPools } from '../market/coinfilter.js';
 import { parseTvl, safeNum, stringify, escapeHTML, getConservativeSlippage } from '../utils/safeJson.js';
 import { kv, hr, codeBlock, shortAddr } from '../utils/table.js';
 import { getDarwinWeights, captureSignals } from '../market/signalWeights.js';
@@ -419,11 +419,11 @@ export function computeEntrySignalsFromCandles(candles15m = [], cfg = {}) {
   const supertrendDistancePct = Number.isFinite(supertrendValue) && supertrendValue > 0
     ? ((lastClose - supertrendValue) / supertrendValue) * 100
     : NaN;
-  const maxDistancePct = 20; // Antisipasi momentum — beri ruang 20% dari ST
+  const maxDistancePct = Math.max(0.1, Number(cfg.entrySupertrendMaxDistancePct || 20));
   const proximityPass = Number.isFinite(supertrendDistancePct)
     ? supertrendDistancePct <= maxDistancePct
     : false;
-  const volumeMomentumPass = volumeRatio >= 1.5; // Volume harus 1.5x rata-rata (Shark Mode)
+  const volumeMomentumPass = volumeRatio >= Math.max(0.5, Number(cfg.entryMinVolumeRatio || 1.5));
 
   return {
     ready: true,
@@ -1481,45 +1481,59 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null, opt
   let skipModelRun = false;
   try {
     const weights = getDarwinWeights(); // adaptive weights dari data nyata
-    // --- Meteora-first Discovery Layer ---
-    // 1) Meteora pool discovery -> ekstrak token seed non-WSOL
-    // 2) GMGN Gate (mcap/volume/age) -> screen_token
-    const rawPools = await getDiscoveryPools(150).catch((e) => {
-      console.warn('⚠️ [meteora] Hybrid discovery degraded:', e?.message || 'unknown');
-      return [];
-    });
+    // --- Stage 0: Meridian Discovery Path ---
+    // 1) Meteora Pool Discovery API (server-side filter: dlmm + mcap + volume + tvl)
+    // 2) Token waterfall screening per mint (DexScreener/OKX/GMGN/Jupiter)
+    const radarCfg = cfg.radar && typeof cfg.radar === 'object' ? cfg.radar : {};
+    const seedLimit = Math.max(10, Math.min(200, Number(radarCfg.meteoraDiscoveryLimit ?? cfg.meteoraDiscoveryLimit ?? 150)));
+    const discovery = await discoverMeteoraDlmmPools({
+      limit: seedLimit,
+      timeframe: radarCfg.discoveryTimeframe || '5m',
+      category: radarCfg.discoveryCategory || '',
+    }).catch((e) => ({ pools: [], error: e?.message || 'unknown' }));
+    const rawPools = Array.isArray(discovery?.pools) ? discovery.pools : [];
+    if (discovery?.error) {
+      console.warn(`⚠️ [meteora-discovery] Stage-0 degraded: ${discovery.error}`);
+    }
+
     const seedByMint = new Map();
     for (const pool of (rawPools || [])) {
       const tokenCandidates = [
-        { mint: pool?.tokenX, symbol: pool?.tokenXSymbol || '' },
-        { mint: pool?.tokenY, symbol: pool?.tokenYSymbol || '' },
+        { mint: pool?.tokenX, symbol: pool?.tokenXSymbol || '', side: 'x' },
+        { mint: pool?.tokenY, symbol: pool?.tokenYSymbol || '', side: 'y' },
       ];
       for (const item of tokenCandidates) {
         const mint = String(item?.mint || '').trim();
         if (!mint || mint === WSOL_MINT || seedByMint.has(mint)) continue;
+        const seedMcap = safeNum(pool?.mcap || 0);
+        const seedVolume24h = safeNum(pool?.volume24hRaw || 0);
+        const seedLiquidity = safeNum(pool?.liquidityRaw || 0);
+        const rawCreatedAt = safeNum(pool?.tokenCreatedAt || 0);
         seedByMint.set(mint, {
           mint,
           symbol: item?.symbol || '',
-          source: 'meteora_pair_all',
+          source: 'meteora_pool_discovery',
+          seedMcap,
+          seedVolume24h,
+          seedLiquidity,
+          seedCreatedAt: rawCreatedAt > 0 ? rawCreatedAt : null,
+          pairAddress: pool?.address || null,
+          pairAddressFallback: pool?.address || null,
+          meteoraPairAddresses: pool?.address ? [pool.address] : [],
+          hasMeteoraPair: true,
         });
       }
     }
     const gmgnSeeds = Array.from(seedByMint.values());
-    const seedLimit = Math.max(10, Math.min(200, Number(cfg.meteoraDiscoveryLimit ?? 150)));
-    const minVol = Number(cfg.minVolume24h || 0);
-    const minMcap = Number(cfg.minMcap || 0);
-    const minAgeHours = Math.max(0, Number(cfg.gmgnMinAgeHours ?? 0));
-    const maxAgeHours = Math.max(minAgeHours, Number(cfg.gmgnMaxAgeHours ?? 168));
-    const requireKnownAge = cfg.gmgnRequireKnownAge === true;
+    const minVol = Number(radarCfg.minVolume24h ?? cfg.minVolume24h ?? 0);
+    const minMcap = Number(radarCfg.minMcap ?? cfg.minMcap ?? 0);
 
     // Stage 1: probe semua seed GMGN lalu prefilter tegas (mcap + volume) sebelum masuk screening.
     const gmgnSeedMetrics = await Promise.all(gmgnSeeds.map(async (s) => {
       const gmgnGate = await fetchGmgnGateMetrics(s.mint, s);
       const gateVolume = safeNum(gmgnGate?.volume24h);
       const gateMcap = safeNum(gmgnGate?.mcap);
-      const createdAt = safeNum(gmgnGate?.pairCreatedAt);
-      const ageHoursRaw = createdAt > 0 ? ((Date.now() - createdAt) / (1000 * 60 * 60)) : null;
-      const ageHours = Number.isFinite(ageHoursRaw) ? Math.max(0, ageHoursRaw) : null;
+      const ageHours = null;
 
       let prefilterRejected = false;
       let prefilterReason = null;
@@ -1527,18 +1541,6 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null, opt
       if (!gmgnGate) {
         // Non-blocking: pass through when GMGN gate data unavailable (no API key or timeout)
         // Volume/mcap filters below require gate data; skip them if unavailable
-      } else if (requireKnownAge && !Number.isFinite(ageHours)) {
-        prefilterRejected = true;
-        prefilterRejectCode = 'GMGN_AGE_UNKNOWN';
-        prefilterReason = 'VETO [GMGN_AGE_UNKNOWN]: usia token GMGN kosong.';
-      } else if (Number.isFinite(ageHours) && ageHours < minAgeHours) {
-        prefilterRejected = true;
-        prefilterRejectCode = 'GMGN_TOKEN_TOO_NEW';
-        prefilterReason = `VETO [GMGN_TOKEN_TOO_NEW]: usia ${ageHours.toFixed(2)}h < min ${minAgeHours.toFixed(2)}h`;
-      } else if (Number.isFinite(ageHours) && ageHours > maxAgeHours) {
-        prefilterRejected = true;
-        prefilterRejectCode = 'GMGN_TOKEN_TOO_OLD';
-        prefilterReason = `VETO [GMGN_TOKEN_TOO_OLD]: usia ${ageHours.toFixed(2)}h > max ${maxAgeHours.toFixed(2)}h`;
       } else if (minVol > 0 && gateVolume > 0 && gateVolume < minVol) {
         prefilterRejected = true;
         prefilterRejectCode = 'BELOW_MIN_VOLUME_24H';
@@ -1613,7 +1615,7 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null, opt
     for (const s of seedSample) {
       const gmgnGate = s.gmgnGate || null;
 
-      const security = await screenToken(s.mint, s.symbol || '').catch(() => null);
+      const security = await screenToken(s.mint, s.symbol || '', s.symbol || '', { seedData: s }).catch(() => null);
       if (security) {
         auditScreeningResult(security, {
           tokenMint: s.mint || null,
@@ -1643,7 +1645,7 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null, opt
 
     if (pendingReplay.length) {
       const replayGate = await Promise.all(pendingReplay.map(async (s) => {
-        const security = await screenToken(s.mint, s.symbol || '').catch(() => null);
+        const security = await screenToken(s.mint, s.symbol || '', s.symbol || '', { seedData: s }).catch(() => null);
         if (security) {
           auditScreeningResult(security, {
             tokenMint: s.mint || null,
@@ -2007,15 +2009,16 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null, opt
           ? ((signalClose - signalStValue) / signalStValue) * 100
           : NaN);
       const breakMinPct = Math.max(0, Number(cfgNow.entrySupertrendBreakMinPct ?? 0));
-      const maxDistancePct = 20; // Antisipasi momentum — beri ruang 20% dari ST
+      const maxDistancePct = Math.max(0.1, Number(cfgNow.entrySupertrendMaxDistancePct || 20));
       const breakThreshold = Number.isFinite(signalStValue)
         ? signalStValue * (1 + (breakMinPct / 100))
         : NaN;
 
       // Shark Logic: ST 15m Green + Volume > 1.1x → LANGSUNG DEPLOY. No pullback wait.
       {
-        const minVolRatio = 1.5; // Shark Mode: hanya kolam volume tinggi (1.5x avg)
-        if (signalVolumeRatio < minVolRatio) {
+        const requireVolumeConfirm = cfgNow.entryRequireVolumeConfirm !== false;
+        const minVolRatio = Math.max(0.5, Number(cfgNow.entryMinVolumeRatio || 1.5));
+        if (requireVolumeConfirm && signalVolumeRatio < minVolRatio) {
           rejEntryConfirm++;
           technicalBlockDetails.push({
             address: p.address,
@@ -2026,6 +2029,41 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null, opt
             htfTrend: signalHtfTrend,
           });
           if (process.env.HUNTER_DEBUG) console.log(`[hunter] Skipping ${p.name} - volume confirm failed (${signalVolumeRatio.toFixed(2)}x < ${minVolRatio}x)`);
+          return null;
+        }
+      }
+
+      if (Number.isFinite(signalStDistancePct) && signalStDistancePct > maxDistancePct) {
+        rejEntryConfirm++;
+        technicalBlockDetails.push({
+          address: p.address,
+          name: p.name,
+          code: 'WAIT_FOR_PULLBACK',
+          supertrendDistancePct: Number(signalStDistancePct.toFixed(3)),
+          supertrendMaxDistancePct: Number(maxDistancePct.toFixed(3)),
+        });
+        if (process.env.HUNTER_DEBUG) {
+          console.log(`[hunter] Skipping ${p.name} - supertrend distance too far (${signalStDistancePct.toFixed(2)}% > ${maxDistancePct.toFixed(2)}%)`);
+        }
+        return null;
+      }
+
+      const entryRequireHtfAlignment = cfgNow.entryRequireHtfAlignment !== false;
+      if (entryRequireHtfAlignment) {
+        const allowNeutral = cfgNow.entryHtfAllowNeutral !== false;
+        const htfPass = signalHtfTrend === 'BULLISH' || (allowNeutral && signalHtfTrend === 'NEUTRAL');
+        if (!htfPass) {
+          rejEntryConfirm++;
+          technicalBlockDetails.push({
+            address: p.address,
+            name: p.name,
+            code: 'ENTRY_CONFIRM_FAILED_HTF',
+            htfTrend: signalHtfTrend,
+            allowNeutral,
+          });
+          if (process.env.HUNTER_DEBUG) {
+            console.log(`[hunter] Skipping ${p.name} - HTF alignment failed (${signalHtfTrend})`);
+          }
           return null;
         }
       }
