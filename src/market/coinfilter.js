@@ -1,7 +1,7 @@
 import { fetchWithTimeout, safeNum, withExponentialBackoff } from '../utils/safeJson.js';
 import { getConfig } from '../config.js';
 import { getJupiterPrice } from '../utils/jupiter.js';
-import { getGmgnTokenInfo, getGmgnSecurity } from '../utils/gmgn.js';
+import { ensureIpv4First, getGmgnTokenInfo, getGmgnSecurity } from '../utils/gmgn.js';
 import { getExternalVampedStatus } from '../utils/vampedSource.js';
 
 const JUPITER_TOKEN_BASE = 'https://tokens.jup.ag';
@@ -520,6 +520,7 @@ async function getOnChainAuthority(tokenMint) {
 
 async function getSlippageSimulation(tokenMint, amountSol) {
   try {
+    ensureIpv4First();
     const WSOL = 'So11111111111111111111111111111111111111112';
     const amountLamports = Math.floor(amountSol * 1_000_000_000);
 

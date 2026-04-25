@@ -59,7 +59,7 @@ function runSerialized(task) {
   return run;
 }
 
-function ensureIpv4First() {
+export function ensureIpv4First() {
   if (_dnsIpv4Forced) return;
   try {
     setDefaultResultOrder('ipv4first');

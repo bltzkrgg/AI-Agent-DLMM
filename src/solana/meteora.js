@@ -1864,40 +1864,32 @@ export async function claimFees(poolAddress, positionAddress) {
 // ─── Top Pools ───────────────────────────────────────────────────
 
 export async function getTopPools(limit = 10, sortBy = 'fee_24h:desc') {
-  const res = await fetchWithTimeout(
-    `https://dlmm.datapi.meteora.ag/pools?limit=${Math.max(limit * 2, 50)}&sort_by=${sortBy}`,
-    { headers: { Accept: 'application/json' } },
-    10000
-  );
-  if (!res.ok) throw new Error(`Meteora API error: ${res.status}`);
-  const data = await res.json();
-
-  const pools = (data.data || [])
-    .filter(pool => pool.token_y?.address === WSOL_MINT);
-
-  return pools.slice(0, limit).map(pool => {
-    const fees24h = pool.fees?.['24h'] || 0;
-    const apr24h = (pool.fee_tvl_ratio?.['24h'] || 0) * 100;
-    const tvl = pool.tvl || 0;
-    const vol24h = pool.volume?.['24h'] || 0;
-
-    // Heritage Awareness logic v76.0
-    const createdAt = pool.created_at || pool.pool_created_at || new Date().toISOString();
+  const cap = Math.max(limit * 2, 50);
+  const toPoolRow = (pool) => {
+    const tokenX = String(pool?.token_x?.address || pool?.tokenX?.address || pool?.tokenX || pool?.token_x_mint || '').trim();
+    const tokenY = String(pool?.token_y?.address || pool?.tokenY?.address || pool?.tokenY || pool?.token_y_mint || '').trim();
+    if (!tokenX || !tokenY) return null;
+    if (tokenY !== WSOL_MINT) return null;
+    const fees24h = safeNum(pool?.fees?.['24h'] || pool?.fee_24h || pool?.fees24h || 0);
+    const tvl = safeNum(pool?.tvl || pool?.liquidity || pool?.liquidity_usd || 0);
+    const vol24h = safeNum(pool?.volume?.['24h'] || pool?.volume_24h || pool?.volume24h || 0);
+    const ratio24h = safeNum(pool?.fee_tvl_ratio?.['24h'] || (tvl > 0 ? fees24h / tvl : 0));
+    const apr24h = ratio24h * 100;
+    const createdAt = pool?.created_at || pool?.pool_created_at || new Date().toISOString();
     const ageDays = Math.max(0.1, (Date.now() - new Date(createdAt).getTime()) / (1000 * 60 * 60 * 24));
     const totalFeesEstimated = fees24h * (ageDays * 0.6);
-
     return {
-      address: pool.address,
-      name: pool.name || 'Unknown',
+      address: String(pool?.address || pool?.pair_address || pool?.pairAddress || pool?.pool_address || '').trim(),
+      name: pool?.name || 'Unknown',
       apr: apr24h.toFixed(2) + '%',
       feeApr: apr24h.toFixed(2) + '%',
       tvl,
       tvlStr: tvl >= 1e6 ? '$' + (tvl / 1e6).toFixed(2) + 'M' : '$' + (tvl / 1e3).toFixed(1) + 'K',
       fees24h: fees24h >= 1e3 ? '$' + (fees24h / 1e3).toFixed(2) + 'K' : '$' + fees24h.toFixed(2),
       volume24h: vol24h >= 1e6 ? '$' + (vol24h / 1e6).toFixed(2) + 'M' : '$' + (vol24h / 1e3).toFixed(1) + 'K',
-      binStep: pool.pool_config?.bin_step,
-      tokenX: pool.token_x?.address,
-      tokenY: pool.token_y?.address,
+      binStep: safeNum(pool?.pool_config?.bin_step || pool?.bin_step || 0),
+      tokenX,
+      tokenY,
       liquidityRaw: tvl,
       fees24hRaw: fees24h,
       volume24hRaw: vol24h,
@@ -1905,10 +1897,37 @@ export async function getTopPools(limit = 10, sortBy = 'fee_24h:desc') {
       createdAt,
       totalFeesEstimated: parseFloat(totalFeesEstimated.toFixed(2)),
       poolAgeDays: parseFloat(ageDays.toFixed(2)),
-      mcap: pool.base_token_market_cap || pool.quote_token_market_cap || pool.token_x?.market_cap || (tvl * 1.5), // Sultan Fallback: Use token context or TVL proxy
-      feeTvlRatio: pool.fee_tvl_ratio?.['24h'] || 0
+      mcap: safeNum(pool?.base_token_market_cap || pool?.quote_token_market_cap || pool?.token_x?.market_cap || pool?.market_cap || (tvl * 1.5)),
+      feeTvlRatio: ratio24h,
     };
-  });
+  };
+
+  try {
+    const res = await fetchWithTimeout(
+      `https://dlmm.datapi.meteora.ag/pools?limit=${cap}&sort_by=${sortBy}`,
+      { headers: { Accept: 'application/json' } },
+      10000
+    );
+    if (!res.ok) throw new Error(`Meteora API error: ${res.status}`);
+    const data = await res.json();
+    const rows = Array.isArray(data?.data) ? data.data : [];
+    const pools = rows.map(toPoolRow).filter(Boolean);
+    return pools.slice(0, limit);
+  } catch (e) {
+    console.warn(`⚠️ [meteora] datapi failed, trying -api pair/all fallback: ${e.message}`);
+    const alt = await fetchWithTimeout(
+      'https://dlmm-api.meteora.ag/pair/all?limit=100',
+      { headers: { Accept: 'application/json' } },
+      10000
+    );
+    if (!alt.ok) throw new Error(`Meteora fallback API error: ${alt.status}`);
+    const json = await alt.json().catch(() => null);
+    const rows = Array.isArray(json)
+      ? json
+      : Array.isArray(json?.data) ? json.data : Array.isArray(json?.pairs) ? json.pairs : [];
+    const pools = rows.map(toPoolRow).filter(Boolean);
+    return pools.slice(0, limit);
+  }
 }
 
 /**
@@ -1989,7 +2008,7 @@ export async function getDiscoveryPools(limit = 150) {
     }
     return pools;
   } catch (e) {
-    console.warn('⚠️ [meteora] pair/all discovery degraded:', e.message);
+    console.warn('⚠️ [meteora] Hybrid discovery degraded:', e.message);
     return getTopPools(Math.max(20, Math.floor(cap / 2)));
   }
 }

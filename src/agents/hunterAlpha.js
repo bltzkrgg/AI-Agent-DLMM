@@ -1482,7 +1482,10 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null, opt
     // --- Meteora-first Discovery Layer ---
     // 1) Meteora pool discovery -> ekstrak token seed non-WSOL
     // 2) GMGN Gate (mcap/volume/age) -> screen_token
-    const rawPools = await getDiscoveryPools(150).catch(() => []);
+    const rawPools = await getDiscoveryPools(150).catch((e) => {
+      console.warn('⚠️ [meteora] Hybrid discovery degraded:', e?.message || 'unknown');
+      return [];
+    });
     const seedByMint = new Map();
     for (const pool of (rawPools || [])) {
       const tokenCandidates = [
