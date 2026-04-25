@@ -42,6 +42,7 @@ function normalizeConfig(cfg = getConfig()) {
     discoveryCategory: String(read('discoveryCategory', '') || ''),
     discoveryLimit: Math.max(10, Number(read('meteoraDiscoveryLimit', 150)) || 150),
     jupiterSimUsd: Number(read('jupiterSimUsd', 1)) || 1,
+    ageKnownRequired: read('ageKnownRequired', false) === true,
   };
 }
 
@@ -258,7 +259,7 @@ function isVampedCoin(info, sec) {
 
 async function fetchJupiterQuote(queryString) {
   const headers = { 'User-Agent': JUPITER_UA };
-  const endpoints = [JUPITER_QUOTE_API, JUPITER_QUOTE_API_FALLBACK];
+  const endpoints = [JUPITER_QUOTE_API_FALLBACK, JUPITER_QUOTE_API];
   const maxAttempts = 3;
   let lastRes = null;
 

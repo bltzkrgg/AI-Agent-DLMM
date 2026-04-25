@@ -40,7 +40,9 @@
     "gmgnBlockVamped": true,
     "gmgnFailClosedCritical": false,
     "gmgnWashTradeMaxPct": 35,
-    "noPoolReplayLimit": 12
+    "noPoolReplayLimit": 12,
+    "minPoolAgeHours": 0,
+    "maxPoolAgeHours": 2160
   },
 
   "maxPoolAgeDays": 3,

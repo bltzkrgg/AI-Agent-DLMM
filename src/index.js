@@ -1868,6 +1868,7 @@ function formatRadarReportTelegram(snapshot) {
     return '⚠️ Radar belum tersedia. Jalankan <code>/hunting</code> dulu.';
   }
   const pf = snapshot.prefilter || {};
+  const radarLive = getConfig()?.radar || {};
   const st = snapshot.stats || {};
   const tech = snapshot.technical || {};
   const dep = snapshot.deployment || {};
@@ -1932,7 +1933,7 @@ function formatRadarReportTelegram(snapshot) {
     `<code>Source:</code> ${escapeHTML(String(pf.seedSource || 'gmgn_api_seed'))}`,
     `<code>Seeded:</code> ${safeNum(pf.seeded)}`,
     `<code>Pass:</code> ${safeNum(pf.pass)} | <code>Rejected:</code> ${safeNum(pf.rejected)} | <code>Screened:</code> ${safeNum(pf.screened)}`,
-    `<code>Rules:</code> age=${Number.isFinite(Number(pf.minAgeHours)) ? Number(pf.minAgeHours) : 0}-${Number.isFinite(Number(pf.maxAgeHours)) ? Number(pf.maxAgeHours) : 720}h | mcap>=${safeNum(pf.minMcap).toLocaleString()} | vol24h>=${safeNum(pf.minVolume24h).toLocaleString()}`,
+    `<code>Rules:</code> age=${Number.isFinite(Number(pf.minAgeHours)) ? Number(pf.minAgeHours) : (Number.isFinite(Number(radarLive.minPoolAgeHours)) ? Number(radarLive.minPoolAgeHours) : 0)}-${Number.isFinite(Number(pf.maxAgeHours)) ? Number(pf.maxAgeHours) : (Number.isFinite(Number(radarLive.maxPoolAgeHours)) ? Number(radarLive.maxPoolAgeHours) : 2160)}h | mcap>=${safeNum(pf.minMcap).toLocaleString()} | vol24h>=${safeNum(pf.minVolume24h).toLocaleString()}`,
     `<code>Age Known Required:</code> ${pf.requireKnownAge === true ? 'yes' : 'no'}`,
     '',
     `<b>Pipeline Stats</b>`,
