@@ -2226,20 +2226,6 @@ export async function runPanicWatchdog(notifyFn) {
               isUrgent: true,
             });
 
-            if (!isDryRun()) {
-               await new Promise(r => setTimeout(r, 2000));
-               try {
-                 const snapshot = await getMarketSnapshot(pos.token_mint, pos.pool_address);
-                 const vol      = snapshot?.price?.volatility24h || 0;
-                 const slippage = getConservativeSlippage(vol);
-                 await swapAllToSOL(pos.token_mint, slippage, { isUrgent: true });
-                 await closeTokenAccount(pos.token_mint).catch(() => {});
-               } catch (e) {
-                 if (e.message.includes('LIQUIDITY_TRAP')) {
-                   await notifyLiquidityTrap(pos.token_mint, e.message, notifyFn);
-                 }
-               }
-            }
             continue; // Posisi ditutup, lanjut ke loop berikutnya
           }
 
@@ -2295,20 +2281,6 @@ export async function runPanicWatchdog(notifyFn) {
           isUrgent: true,
         });
 
-        if (!isDryRun()) {
-          await new Promise(r => setTimeout(r, 2000));
-          try {
-            const snapshot = await getMarketSnapshot(pos.token_mint, pos.pool_address);
-            const vol = snapshot?.price?.volatility24h || 0;
-            const slippage = getConservativeSlippage(vol);
-            await swapAllToSOL(pos.token_mint, slippage, { isUrgent: true });
-            await closeTokenAccount(pos.token_mint).catch(() => {});
-          } catch (e) {
-            if (e.message.includes('LIQUIDITY_TRAP')) {
-              await notifyLiquidityTrap(pos.token_mint, e.message, notifyFn);
-            }
-          }
-        }
         continue;
       }
       const zombieFeeShouldExit = isZombieFee && !ignoreZombieFeeBecauseSafeUpperPark;
@@ -2338,20 +2310,6 @@ export async function runPanicWatchdog(notifyFn) {
           lifecycleState: 'closed_zombie',
           isUrgent: true,
         });
-        if (!isDryRun()) {
-          await new Promise(r => setTimeout(r, 2000));
-          try {
-            const snapshot = await getMarketSnapshot(pos.token_mint, pos.pool_address);
-            const vol      = snapshot?.price?.volatility24h || 0;
-            const slippage = getConservativeSlippage(vol);
-            await swapAllToSOL(pos.token_mint, slippage, { isUrgent: true });
-            await closeTokenAccount(pos.token_mint).catch(() => {});
-          } catch (e) {
-            if (e.message.includes('LIQUIDITY_TRAP')) {
-              await notifyLiquidityTrap(pos.token_mint, e.message, notifyFn);
-            }
-          }
-        }
         continue;
       }
 
@@ -2420,20 +2378,6 @@ export async function runPanicWatchdog(notifyFn) {
             exitRetracementCap: retracementCap,
           },
         });
-          if (!isDryRun()) {
-            await new Promise(r => setTimeout(r, 2000));
-            try {
-                const snapshot = await getMarketSnapshot(pos.token_mint, pos.pool_address);
-                const vol      = snapshot?.price?.volatility24h || 0;
-                const slippage = getConservativeSlippage(vol);
-                await swapAllToSOL(pos.token_mint, slippage, { isUrgent: true });
-              await closeTokenAccount(pos.token_mint).catch(() => {});
-            } catch (e) {
-              if (e.message.includes('LIQUIDITY_TRAP')) {
-                await notifyLiquidityTrap(pos.token_mint, e.message, notifyFn);
-              }
-            }
-          }
           continue;
         }
 
@@ -2466,20 +2410,6 @@ export async function runPanicWatchdog(notifyFn) {
               exitRetracementCap: retracementCap,
             },
           });
-          if (!isDryRun()) {
-            await new Promise(r => setTimeout(r, 2000));
-            try {
-                const snapshot = await getMarketSnapshot(pos.token_mint, pos.pool_address);
-                const vol      = snapshot?.price?.volatility24h || 0;
-                const slippage = getConservativeSlippage(vol);
-                await swapAllToSOL(pos.token_mint, slippage, { isUrgent: true });
-              await closeTokenAccount(pos.token_mint).catch(() => {});
-            } catch (e) {
-              if (e.message.includes('LIQUIDITY_TRAP')) {
-                await notifyLiquidityTrap(pos.token_mint, e.message, notifyFn);
-              }
-            }
-          }
           continue;
         }
 
@@ -2511,20 +2441,6 @@ export async function runPanicWatchdog(notifyFn) {
           isUrgent: true,
         });
         
-        if (!isDryRun()) {
-          await new Promise(r => setTimeout(r, 2000));
-          try {
-            const snapshot = await getMarketSnapshot(pos.token_mint, pos.pool_address);
-            const vol      = snapshot?.price?.volatility24h || 0;
-            const slippage = getConservativeSlippage(vol);
-            await swapAllToSOL(pos.token_mint, slippage);
-            await closeTokenAccount(pos.token_mint).catch(() => {});
-          } catch (e) {
-            if (e.message.includes('LIQUIDITY_TRAP')) {
-              await notifyLiquidityTrap(pos.token_mint, e.message, notifyFn);
-            }
-          }
-        }
         continue;
       }
 

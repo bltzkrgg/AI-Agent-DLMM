@@ -148,7 +148,8 @@ const DEFAULTS = {
   strategyOverrides: {
     'Evil Panda': {
       exit: {
-        maxHoldHours: 72, // Deep net (-94%) needs 3 days to catch price — never close prematurely
+        maxHoldHours: 72,     // Deep net (-94%) needs 3 days to catch price — never close prematurely
+        takeProfitPct: 15,    // Wide net needs room to breathe before locking profit
       },
     },
   },
