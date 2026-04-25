@@ -123,7 +123,7 @@ async function gmgnFetch(subPath, extraParams = {}) {
             'X-API-KEY': apiKey,
             'Content-Type': 'application/json',
             'Accept': 'application/json',
-            'User-Agent': 'AI-Agent-DLMM/1.0',
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
           },
         }, timeoutMs);
 
@@ -143,6 +143,7 @@ async function gmgnFetch(subPath, extraParams = {}) {
           try {
             json = JSON.parse(raw);
           } catch {
+            console.warn(`[gmgn] ${subPath} non-JSON response. Status: ${res.status}. Body: ${raw.slice(0, 150)}`);
             if (attempt < maxRetries) {
               const backoffMs = Math.min(6_000, 700 * Math.pow(2, attempt));
               await sleep(backoffMs);
