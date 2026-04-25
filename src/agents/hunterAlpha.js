@@ -1477,6 +1477,8 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null, opt
   await updatePulse(`🔍 <b>Radar Sweep: Meteora Seed → GMGN Gate → Meteora Execute...</b>`);
 
   let preComputedContext = '';
+  let forcedFinalReport = '';
+  let skipModelRun = false;
   try {
     const weights = getDarwinWeights(); // adaptive weights dari data nyata
     // --- Meteora-first Discovery Layer ---
@@ -2131,8 +2133,13 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null, opt
         `tech={trendNonBullish:${rejTrendNonBullish},waitBreakST:${rejWaitBreakSupertrend},entryConfirm:${rejEntryConfirm}}, ` +
         `api=${technicalRejectedCount === 0 && basicFilteredCount > 0 ? 'all_failed' : 'linked'}`
       );
-      await updatePulse(`✅ <b>Radar Sweep Completed</b> — 0 final candidate. Gunakan <code>/radar_report</code>.`);
-      return null;
+      forcedFinalReport =
+        `Sweep selesai: 0 koin lolos filter teknis/keamanan.\n` +
+        `Seeded: ${gmgnSeeds.length} | Prefilter pass: ${prefilterPassed.length} | Screened: ${seedSample.length}\n` +
+        `Reject — GMGNPre: ${rejGmgnPreFilter}, GMGNAge: ${rejGmgnAge}, Security: ${rejSecurity}, NoPool: ${rejNoPool}, Cooldown: ${rejCooldown}\n` +
+        `Technical — TrendNonBullish: ${rejTrendNonBullish}, WaitBreakST: ${rejWaitBreakSupertrend}, EntryConfirmFailed: ${rejEntryConfirm}`;
+      skipModelRun = true;
+      await updatePulse(`✅ <b>Radar Sweep Completed</b> — 0 final candidate. Laporan tetap dikirim ke Telegram.`);
     }
 
     const viable = finalEnriched.filter(p =>
@@ -2226,10 +2233,14 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null, opt
       };
       lastDeploySummary = deploySummary;
       if (lastRadarSnapshot) lastRadarSnapshot.deployment = deploySummary;
-      await updatePulse(`✅ <b>Radar Sweep Completed</b> — tidak ada kandidat viable. Cek <code>/radar_report</code>.`);
-      _hunterTargetCount = null;
-      _hunterMaxPositionsCap = null;
-      return null;
+      if (!forcedFinalReport) {
+        forcedFinalReport =
+          `Sweep selesai: 0 koin lolos filter teknis/keamanan.\n` +
+          `Radar total: ${rawTotal} | Final enriched: ${finalEnriched.length} | Viable: ${viable.length}\n` +
+          `Reject — Security/Health filter aktif, tidak ada kandidat sehat untuk eksekusi.`;
+      }
+      skipModelRun = true;
+      await updatePulse(`✅ <b>Radar Sweep Completed</b> — tidak ada kandidat viable. Laporan tetap dikirim ke Telegram.`);
     }
 
     // Cap kandidat ke 10 pool terbaik saja (hemat API context)
@@ -2297,13 +2308,18 @@ Use Indonesian for reasoning. Stay technical, precise, and fast.`;
     }
   ];
 
-  let response = await createMessage({
-    model: resolveModel(cfg.screeningModel),
-    maxTokens: 4096,
-    system: systemPrompt,
-    tools: HUNTER_TOOLS,
-    messages,
-  });
+  let response = skipModelRun
+    ? {
+        content: [{ type: 'text', text: forcedFinalReport || 'Sweep selesai: 0 koin lolos filter teknis/keamanan.' }],
+        stop_reason: 'end_turn',
+      }
+    : await createMessage({
+        model: resolveModel(cfg.screeningModel),
+        maxTokens: 4096,
+        system: systemPrompt,
+        tools: HUNTER_TOOLS,
+        messages,
+      });
 
   const MAX_ROUNDS = 20;
   let rounds = 0;
@@ -2371,23 +2387,41 @@ Use Indonesian for reasoning. Stay technical, precise, and fast.`;
     await notifyFn(`⚠️ <b>Hunter Alpha</b> — batas ${MAX_ROUNDS} putaran tercapai, loop dihentikan paksa.`);
   }
 
-  const report = response.content.filter(b => b.type === 'text').map(b => b.text).join('\n');
-  const deploySummary = {
-    timestamp: new Date().toISOString(),
-    attempted: deployAttempted,
-    newDeploy: deployNew,
-    alreadyDeployed: deployAlready,
-    blocked: deployBlocked,
-    failed: deployFailed,
-    anyRealDeploy,
-    stage: 'executed',
-  };
+  let report = response.content.filter(b => b.type === 'text').map(b => b.text).join('\n');
+  if (forcedFinalReport && !skipModelRun) {
+    report = report ? `${forcedFinalReport}\n\n${report}` : forcedFinalReport;
+  }
+  const deploySummary = skipModelRun
+    ? (lastDeploySummary || {
+        timestamp: new Date().toISOString(),
+        attempted: 0,
+        newDeploy: 0,
+        alreadyDeployed: 0,
+        blocked: 0,
+        failed: 0,
+        anyRealDeploy: false,
+        stage: 'technical_block',
+      })
+    : {
+        timestamp: new Date().toISOString(),
+        attempted: deployAttempted,
+        newDeploy: deployNew,
+        alreadyDeployed: deployAlready,
+        blocked: deployBlocked,
+        failed: deployFailed,
+        anyRealDeploy,
+        stage: 'executed',
+      };
   lastDeploySummary = deploySummary;
   if (lastRadarSnapshot) lastRadarSnapshot.deployment = deploySummary;
-  await updatePulse(
-    `✅ <b>Radar Sweep Completed</b> — Deploy new: <b>${deployNew}</b> | Blocked: <b>${deployBlocked}</b> | Failed: <b>${deployFailed}</b>. ` +
-    `Lihat <code>/radar_report</code>`
-  );
+  if (skipModelRun) {
+    await updatePulse(`✅ <b>Radar Sweep Completed</b> — 0 kandidat viable. Laporan final sudah dikirim ke Telegram.`);
+  } else {
+    await updatePulse(
+      `✅ <b>Radar Sweep Completed</b> — Deploy new: <b>${deployNew}</b> | Blocked: <b>${deployBlocked}</b> | Failed: <b>${deployFailed}</b>. ` +
+      `Lihat <code>/radar_report</code>`
+    );
+  }
   lastReport = { report, timestamp: new Date().toISOString() };
   _hunterTargetCount = null; // reset setelah selesai
   _hunterMaxPositionsCap = null;
@@ -2402,13 +2436,7 @@ Use Indonesian for reasoning. Stay technical, precise, and fast.`;
   );
 
   // Noise = report is "Nothing found" and NO real deploys were made this round
-  const reportIsNoise = !anyRealDeploy && (
-    report.toLowerCase().includes('no pools found') ||
-    report.toLowerCase().includes('nothing found') ||
-    report.toLowerCase().includes('no promising') ||
-    report.toLowerCase().includes('no pools that match') ||
-    report.toLowerCase().includes('tidak ada pool')
-  );
+  const reportIsNoise = false;
 
   if (notifyFn && !reportIsNoise && !reportIsRefusal) {
     await notifyFn(`🦅 <b>Hunter Alpha Report</b>\n\n${escapeHTML(report)}`);
