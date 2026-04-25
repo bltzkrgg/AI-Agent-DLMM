@@ -2,7 +2,7 @@
 
 import { createMessage, resolveModel } from '../agent/provider.js';
 import { getConfig, getThresholds, isDryRun } from '../config.js';
-import { getPositionInfo, closePositionDLMM, claimFees, getPoolInfo, getSolPriceUsd, getAllWalletPositions, addLiquidityToPosition, getPositionFeeInfo } from '../solana/meteora.js';
+import { getPositionInfo, closePositionDLMM, claimFees, getPoolInfo, getSolPriceUsd, getAllWalletPositions, getPositionFeeInfo } from '../solana/meteora.js';
 import { getConnection, getWallet, getWalletBalance } from '../solana/wallet.js';
 import { PublicKey } from '@solana/web3.js';
 import { getOpenPositions, closePositionWithPnl, saveNotification, updatePositionLifecycle, savePosition, updateLivePositionStats, updatePositionPeakPnl, recordFeesClaimed, recordPnlDivergenceEvent } from '../db/database.js';
@@ -2485,46 +2485,11 @@ export async function runPanicWatchdog(notifyFn) {
 
           if (harvestedTotal > 0) {
             const harvestedUsd = harvestedTotal * await getSolPriceUsd().catch(() => 150);
-
-            const shouldCompoundHarvest =
-              cfg.autoHarvestCompound &&
-              (!isEvilPandaMode || cfg.evilPandaAllowAutoCompound === true);
-            if (shouldCompoundHarvest) {
-              if (harvestedTotal < 0.1) {
-                // Below Meteora's ~0.07 SOL account rent threshold — skip compound to avoid rent burn
-                console.log(`[compound] Harvest ${harvestedTotal.toFixed(4)} SOL < 0.1 SOL min capital — realizing instead`);
-                await recordFeesClaimed(pos.position_address, { claimedSol: harvestedTotal, claimedUsd: harvestedUsd }).catch(() => {});
-                await notifyFn?.(`✅ <b>HARVEST REALIZED!</b> <i>(dust: ${harvestedTotal.toFixed(4)}◎ &lt; 0.1◎ min)</i>\n\n` +
-                  `• Realized: <code>+${harvestedTotal.toFixed(4)} SOL</code>\n` +
-                  `• Status Position: <b>OPEN &amp; Yielding 🎋</b>`, { parse_mode: 'HTML' });
-              } else {
-              // ─── Compound: reinvest back into same position ──────────
-              try {
-                const compResult = await addLiquidityToPosition(pos.pool_address, pos.position_address, harvestedTotal);
-                if (compResult?.success) {
-                  await notifyFn?.(`♻️ <b>HARVEST COMPOUNDED!</b>\n\n` +
-                    `• Re-invested: <code>+${harvestedTotal.toFixed(4)} SOL</code>\n` +
-                    `• Position: <code>${escapeHTML(shortAddr(pos.position_address))}</code>\n` +
-                    `• Status: <b>OPEN &amp; Growing 🌱</b>`, { parse_mode: 'HTML' });
-                } else {
-                  // Compound failed (dry-run or skipped) — fall back to realize
-                  await recordFeesClaimed(pos.position_address, { claimedSol: harvestedTotal, claimedUsd: harvestedUsd }).catch(() => {});
-                }
-              } catch (compErr) {
-                console.error(`[compound] Failed to compound — falling back to realize:`, compErr.message);
-                await recordFeesClaimed(pos.position_address, { claimedSol: harvestedTotal, claimedUsd: harvestedUsd }).catch(() => {});
-                await notifyFn?.(`✅ <b>HARVEST SUCCESSFUL!</b> <i>(compound failed, realized instead)</i>\n\n` +
-                  `• Realized Profit: <code>+${harvestedTotal.toFixed(4)} SOL</code>\n` +
-                  `• Status Position: <b>OPEN &amp; Yielding 🎋</b>`, { parse_mode: 'HTML' });
-              }
-              }
-            } else {
-              // ─── Default: realize fees as profit ────────────────────
-              await recordFeesClaimed(pos.position_address, { claimedSol: harvestedTotal, claimedUsd: harvestedUsd }).catch(() => {});
-              await notifyFn?.(`✅ <b>HARVEST SUCCESSFUL!</b>\n\n` +
-                `• Realized Profit: <code>+${harvestedTotal.toFixed(4)} SOL</code>\n` +
-                `• Status Position: <b>OPEN &amp; Yielding 🎋</b>`, { parse_mode: 'HTML' });
-            }
+            // Compound path is permanently disabled for Hybrid Shark.
+            await recordFeesClaimed(pos.position_address, { claimedSol: harvestedTotal, claimedUsd: harvestedUsd }).catch(() => {});
+            await notifyFn?.(`✅ <b>HARVEST SUCCESSFUL!</b>\n\n` +
+              `• Realized Profit: <code>+${harvestedTotal.toFixed(4)} SOL</code>\n` +
+              `• Status Position: <b>OPEN &amp; Yielding 🎋</b>`, { parse_mode: 'HTML' });
           }
         } catch (harvestErr) {
           console.error(`❌ [harvest] Gagal harvest otonom:`, harvestErr.message);

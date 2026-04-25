@@ -99,6 +99,7 @@ const DEFAULTS = {
   stopLossPct: 8,
   normalStopLossPct: 10,    // SL % for narrow-range strategies (non-Evil Panda)
   maxNetLossPct: -15,       // Hard floor: max tolerated Net PnL % across all strategies
+  panicExitSlippageBps: 750, // Slippage paksa (7.5%) untuk aksi darurat (panic/tvl drain)
   maxDailyDrawdownPct: 6,
   requireConfirmation: true,
   maxDailyPriorityFeeSol: 0.2, // Budget cap harian priority fee + tip (SOL)
@@ -114,7 +115,7 @@ const DEFAULTS = {
   panicOorLossPct: 10,                   // Panic exit OOR jika loss <= -X% (strategi umum)
   evilPandaPanicOorLossPct: 35,          // Panic exit OOR khusus Evil Panda (lebih longgar untuk deep range)
   evilPandaIgnoreZombieFeeWhenOorUpper: true, // Jangan zombie-close Evil Panda saat OOR atas (safe park in SOL)
-  oorUpperDistanceMaxPct: 50,            // Jika OOR atas dan jarak ke upper boundary > X%, tutup untuk bebaskan modal
+  oorUpperDistanceMaxPct: 30,            // Jika OOR atas dan jarak ke upper boundary > X%, tutup untuk bebaskan modal
   evilPandaRetracementCapZone1Pct: 4.0,  // Retracement cap watchdog untuk Panda saat pnl<10
   evilPandaRetracementCapZone2Pct: 8.0,  // Retracement cap watchdog untuk Panda saat pnl 10-30
   evilPandaRetracementCapZone3Pct: 12.0, // Retracement cap watchdog untuk Panda saat pnl>=30
@@ -191,8 +192,7 @@ const DEFAULTS = {
   gmgnFailClosedCritical: true, // Data critical GMGN missing => reject
   executionRejectNonRefundableFees: true, // Reject pool dengan non-refundable fees
   slippageBps: 100,            // Slippage tolerance dalam basis points (100 = 1%)
-  tvlDropPanicThreshold: 0.5,  // Panic exit jika TVL turun > 50% dari TVL saat entry
-  panicExitSlippageBps: 750,   // Slippage paksa (7.5%) saat panic exit TVL drain
+  tvlDropPanicThreshold: 0.35, // Panic exit jika TVL turun > 35% dari TVL saat entry
 
   // Professional Yield & IQ Suite
   autoHarvestEnabled: true,      // Aktifkan penarikan profit otomatis tanpa tutup posisi
