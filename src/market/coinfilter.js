@@ -215,7 +215,7 @@ async function getBirdeyeMarketInfo(tokenMint) {
       if (r.status === 429) throw new Error('BIRDEYE_429');
       if (!r.ok) throw new Error(`BIRDEYE_HTTP_${r.status}`);
       return r;
-    }, { maxRetries: 3, baseDelay: 1200 });
+    }, { maxRetries: 3, baseDelay: 1500 });
     const json = await res.json().catch(() => null);
     const data = json?.data || null;
     if (!data) return null;
