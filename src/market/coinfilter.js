@@ -1,4 +1,3 @@
-import crypto from 'crypto';
 import { fetchWithTimeout, safeNum, withExponentialBackoff } from '../utils/safeJson.js';
 import { getConfig } from '../config.js';
 import { getJupiterPrice } from '../utils/jupiter.js';
@@ -19,11 +18,7 @@ function nowIso() {
 
 function normalizeConfig(cfg = getConfig()) {
   const radar = cfg?.radar && typeof cfg.radar === 'object' ? cfg.radar : {};
-  const read = (key, fallback) => {
-    if (radar[key] !== undefined) return radar[key];
-    if (cfg[key] !== undefined) return cfg[key];
-    return fallback;
-  };
+  const read = (key, fallback) => (radar[key] !== undefined ? radar[key] : fallback);
   return {
     minMcap: Number(read('minMcap', 250000)) || 250000,
     minVolume24h: Number(read('minVolume24h', 1000000)) || 1000000,
@@ -46,6 +41,23 @@ function normalizeConfig(cfg = getConfig()) {
     discoveryLimit: Math.max(10, Number(read('meteoraDiscoveryLimit', 150)) || 150),
     jupiterSimUsd: Number(read('jupiterSimUsd', 1)) || 1,
   };
+}
+
+function waterfallStatusIcon(status) {
+  const s = String(status || '').toUpperCase();
+  if (s === 'PASS') return '🟢';
+  if (s === 'FAIL') return '🔴';
+  return '⚪';
+}
+
+function buildWaterfallVisual(stageWaterfall, finalStatus = 'SKIPPED') {
+  if (!stageWaterfall) return '[⚪⚪⚪⚪]';
+  return `[${[
+    waterfallStatusIcon(stageWaterfall.stage1PublicData),
+    waterfallStatusIcon(stageWaterfall.stage2GmgnAudit),
+    waterfallStatusIcon(stageWaterfall.stage3Jupiter),
+    waterfallStatusIcon(finalStatus),
+  ].join('')}]`;
 }
 
 export function appendDecision(decisions, line, meta = {}) {
@@ -314,6 +326,7 @@ function buildResult({
   notes,
 }) {
   const rejected = highFlags.length > 0;
+  const finalStatus = rejected ? 'FAIL' : 'PASS';
   return {
     tokenMint,
     name: name || '',
@@ -335,6 +348,7 @@ function buildResult({
     priceImpact: Number.isFinite(priceImpactBuy) ? priceImpactBuy : null,
     priceImpactSell: Number.isFinite(priceImpactSell) ? priceImpactSell : null,
     stageWaterfall,
+    waterfallVisual: buildWaterfallVisual(stageWaterfall, finalStatus),
     stageFunnel: {
       stage1_gmgn_gate: stageWaterfall.stage1PublicData,
       stage2_gmgn_availability: gmgnStatus === 'ACTIVE' ? 'PASS' : (gmgnStatus === 'UNVERIFIED' ? 'SOFT' : 'FAIL'),
@@ -613,7 +627,9 @@ export function formatScreenResult(result) {
   if (Number.isFinite(result?.priceImpactSell)) out += `🧪 Jupiter Sell Impact: ${result.priceImpactSell.toFixed(2)}%\n`;
 
   if (result?.stageWaterfall) {
-    out += `\n🧭 *Waterfall:* S0=${result.stageWaterfall.stage0Discovery} → S1=${result.stageWaterfall.stage1PublicData} → S2=${result.stageWaterfall.stage2GmgnAudit} → S3=${result.stageWaterfall.stage3Jupiter}\n`;
+    const waterfallVisual = result?.waterfallVisual || buildWaterfallVisual(result.stageWaterfall, result?.eligible ? 'PASS' : 'FAIL');
+    out += `\n🧭 *Waterfall:* ${waterfallVisual}\n`;
+    out += `<pre>S1 Public   : ${result.stageWaterfall.stage1PublicData}\nS2 GMGN     : ${result.stageWaterfall.stage2GmgnAudit}\nS3 Jupiter  : ${result.stageWaterfall.stage3Jupiter}\nS4 Final    : ${result.eligible ? 'PASS' : 'FAIL'}</pre>\n`;
   }
 
   if (Array.isArray(result?.highFlags) && result.highFlags.length) {

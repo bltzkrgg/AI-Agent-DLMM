@@ -1485,7 +1485,7 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null, opt
     // 1) Meteora Pool Discovery API (server-side filter: dlmm + mcap + volume + tvl)
     // 2) Token waterfall screening per mint (DexScreener/OKX/GMGN/Jupiter)
     const radarCfg = cfg.radar && typeof cfg.radar === 'object' ? cfg.radar : {};
-    const seedLimit = Math.max(10, Math.min(200, Number(radarCfg.meteoraDiscoveryLimit ?? cfg.meteoraDiscoveryLimit ?? 150)));
+    const seedLimit = Math.max(10, Math.min(200, Number(radarCfg.meteoraDiscoveryLimit ?? 150)));
     const discovery = await discoverMeteoraDlmmPools({
       limit: seedLimit,
       timeframe: radarCfg.discoveryTimeframe || '5m',
@@ -1525,8 +1525,11 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null, opt
       }
     }
     const gmgnSeeds = Array.from(seedByMint.values());
-    const minVol = Number(radarCfg.minVolume24h ?? cfg.minVolume24h ?? 0);
-    const minMcap = Number(radarCfg.minMcap ?? cfg.minMcap ?? 0);
+    const minVol = Number(radarCfg.minVolume24h ?? 1000000);
+    const minMcap = Number(radarCfg.minMcap ?? 250000);
+    const minAgeHours = Number(radarCfg.minAgeHours ?? 0);
+    const maxAgeHours = Number(radarCfg.maxAgeHours ?? 0);
+    const requireKnownAge = radarCfg.requireKnownAge === true;
 
     // Stage 1: probe semua seed GMGN lalu prefilter tegas (mcap + volume) sebelum masuk screening.
     const gmgnSeedMetrics = await Promise.all(gmgnSeeds.map(async (s) => {
@@ -1575,7 +1578,7 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null, opt
 
     const seedSample = prefilterPassed.slice(0, seedLimit);
     const prefilterRejectedList = gmgnSeedMetrics.filter((s) => s.prefilterRejected);
-    const pendingReplayLimit = Math.max(0, Number(cfg.noPoolReplayLimit || 12));
+    const pendingReplayLimit = Math.max(0, Number(radarCfg.noPoolReplayLimit ?? cfg.noPoolReplayLimit ?? 12));
     const pendingReplay = listNoPoolPending(cfg)
       .filter((p) => !seedSample.some((s) => s.mint === p.mint))
       .slice(0, pendingReplayLimit)
@@ -1859,6 +1862,30 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null, opt
     const walBalRaw = await getWalletBalance().catch(() => '0');
     const openPositions = await getOpenPositions();
     const rentSaved = getStat('total_rent_reclaimed_sol') || 0;
+    const funnelStats = {
+      s1: { pass: 0, fail: 0, soft: 0, skipped: 0 },
+      s2: { pass: 0, fail: 0, soft: 0, skipped: 0 },
+      s3: { pass: 0, fail: 0, soft: 0, skipped: 0 },
+      s4: { pass: 0, fail: 0, soft: 0, skipped: 0 },
+    };
+    for (const c of radarDisplay) {
+      const w = c.prefilterSecurity?.stageWaterfall || null;
+      const s1 = c.prefilterRejected ? 'FAIL' : 'PASS';
+      const s2 = w ? String(w.stage1PublicData || '').toUpperCase() : 'SKIPPED';
+      const s3 = w ? String(w.stage2GmgnAudit || '').toUpperCase() : 'SKIPPED';
+      const s4 = w ? String(w.stage3Jupiter || '').toUpperCase() : 'SKIPPED';
+      const bump = (bucket, v) => {
+        if (v === 'PASS') bucket.pass++;
+        else if (v === 'FAIL') bucket.fail++;
+        else if (v === 'SOFT') bucket.soft++;
+        else bucket.skipped++;
+      };
+      bump(funnelStats.s1, s1);
+      bump(funnelStats.s2, s2);
+      bump(funnelStats.s3, s3);
+      bump(funnelStats.s4, s4);
+    }
+
     lastRadarSnapshot = {
       timestamp: new Date().toISOString(),
       walletBalance: safeNum(walBalRaw).toFixed(4),
@@ -1904,7 +1931,8 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null, opt
             .filter(Boolean)
             .slice(0, 5)
           : [],
-        stageFunnel: p.stageFunnel
+        stageFunnel: p.stageFunnel,
+        stageWaterfall: p.prefilterSecurity?.stageWaterfall || null,
       })),
       sentiment: 'BULLISH',
       stats: {
@@ -1917,6 +1945,7 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null, opt
         rejectedNoPool: rejNoPool,
         rejectedCooldown: rejCooldown,
       },
+      funnelStats,
       technical: {
         trendNonBullish: 0,
         waitBreakSupertrend: 0,

@@ -1871,6 +1871,7 @@ function formatRadarReportTelegram(snapshot) {
   const st = snapshot.stats || {};
   const tech = snapshot.technical || {};
   const dep = snapshot.deployment || {};
+  const funnel = snapshot.funnelStats || {};
   const depStageText = String(dep.stage || 'unknown');
   const depStatus = dep.anyRealDeploy === true ? 'YES' : 'NO';
   const techDetails = Array.isArray(tech.details) ? tech.details : [];
@@ -1899,8 +1900,28 @@ function formatRadarReportTelegram(snapshot) {
       const trend = techBlock.trend ? ` trend=${escapeHTML(String(techBlock.trend))}` : '';
       techLine = `\n   <code>TECH_BLOCK [${code}]${stClose}${stBreak}${stDist}${stMax}${volRatio}${volMin}${htf}${trend}</code>`;
     }
-    return `${idx + 1}. <b>${name}</b> | MCAP $${mcap} | VOL $${vol} | AGE ${age} | ${tag}\n   <code>${reason.slice(0, 200)}</code>${flagsLine}${techLine}`;
+    const sf = c.stageWaterfall || {};
+    const stageIcon = (v) => {
+      const s = String(v || '').toUpperCase();
+      if (s === 'PASS') return '🟢';
+      if (s === 'FAIL') return '🔴';
+      return '⚪';
+    };
+    const wf = `[${stageIcon(sf.stage0Discovery || 'PASS')}${stageIcon(sf.stage1PublicData)}${stageIcon(sf.stage2GmgnAudit)}${stageIcon(sf.stage3Jupiter)}]`;
+    return `${idx + 1}. <b>${name}</b> ${wf} | MCAP $${mcap} | VOL $${vol} | AGE ${age} | ${tag}\n   <code>${reason.slice(0, 200)}</code>${flagsLine}${techLine}`;
   });
+
+  const ff = (x) => x && typeof x === 'object' ? x : {};
+  const s1 = ff(funnel.s1);
+  const s2 = ff(funnel.s2);
+  const s3 = ff(funnel.s3);
+  const s4 = ff(funnel.s4);
+  const funnelPre = [
+    `S1 Discovery PASS:${safeNum(s1.pass)} FAIL:${safeNum(s1.fail)} SOFT:${safeNum(s1.soft)} SKIP:${safeNum(s1.skipped)}`,
+    `S2 Public    PASS:${safeNum(s2.pass)} FAIL:${safeNum(s2.fail)} SOFT:${safeNum(s2.soft)} SKIP:${safeNum(s2.skipped)}`,
+    `S3 GMGN      PASS:${safeNum(s3.pass)} FAIL:${safeNum(s3.fail)} SOFT:${safeNum(s3.soft)} SKIP:${safeNum(s3.skipped)}`,
+    `S4 Jupiter   PASS:${safeNum(s4.pass)} FAIL:${safeNum(s4.fail)} SOFT:${safeNum(s4.soft)} SKIP:${safeNum(s4.skipped)}`,
+  ].join('\n');
 
   return [
     '🛰️ <b>Radar Report (Telegram Only)</b>',
@@ -1917,6 +1938,9 @@ function formatRadarReportTelegram(snapshot) {
     `<code>Radar Total:</code> ${safeNum(st.radarTotal)} | <code>Matched:</code> ${safeNum(st.matchedCount)} | <code>Exec Pools:</code> ${safeNum(st.executablePoolsCount)}`,
     `<code>Rejected:</code> GMGNPre ${safeNum(st.rejectedGmgnPrefilter)} | GMGNAge ${safeNum(st.rejectedGmgnAge)} | Security ${safeNum(st.rejectedSecurity)} | NoPool ${safeNum(st.rejectedNoPool)} | Cooldown ${safeNum(st.rejectedCooldown)}`,
     `<code>Technical:</code> TrendNonBullish ${safeNum(tech.trendNonBullish)} | WaitBreakST ${safeNum(tech.waitBreakSupertrend)} | EntryConfirmFailed ${safeNum(tech.entryConfirmFailed)}`,
+    '',
+    `<b>Funnel Statistics</b>`,
+    `<pre><code>${escapeHTML(funnelPre)}</code></pre>`,
     '',
     `<b>Deployment Status</b>`,
     `<code>Attempted:</code> ${safeNum(dep.attempted)} | <code>New:</code> ${safeNum(dep.newDeploy)} | <code>Already:</code> ${safeNum(dep.alreadyDeployed)}`,
