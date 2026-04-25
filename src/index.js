@@ -1936,7 +1936,7 @@ function formatRadarReportTelegram(snapshot) {
     '',
     `<b>Pipeline Stats</b>`,
     `<code>Radar Total:</code> ${safeNum(st.radarTotal)} | <code>Matched:</code> ${safeNum(st.matchedCount)} | <code>Exec Pools:</code> ${safeNum(st.executablePoolsCount)}`,
-    `<code>Rejected:</code> GMGNPre ${safeNum(st.rejectedGmgnPrefilter)} | GMGNAge ${safeNum(st.rejectedGmgnAge)} | Security ${safeNum(st.rejectedSecurity)} | NoPool ${safeNum(st.rejectedNoPool)} | Cooldown ${safeNum(st.rejectedCooldown)}`,
+    `<code>Rejected:</code> Security ${safeNum(st.rejectedSecurity)} | NoPool ${safeNum(st.rejectedNoPool)} | Cooldown ${safeNum(st.rejectedCooldown)}`,
     `<code>Technical:</code> TrendNonBullish ${safeNum(tech.trendNonBullish)} | WaitBreakST ${safeNum(tech.waitBreakSupertrend)} | EntryConfirmFailed ${safeNum(tech.entryConfirmFailed)}`,
     '',
     `<b>Funnel Statistics</b>`,

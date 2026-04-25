@@ -35,7 +35,6 @@ const BASELINE_STRATEGIES = {
     parameters: {
       binStep: 100,
       minMcap: 250000,
-      minVolume24h: 20000,
       timeframe: '15m',           // 15-minute Master Guard
     },
     entry: {

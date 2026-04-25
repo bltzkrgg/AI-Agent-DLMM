@@ -1589,10 +1589,6 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null, opt
         ageHours: null,
         source: 'no_pool_pending_replay',
       }));
-    let rejGmgnAge = prefilterRejectedList.filter((s) =>
-      ['GMGN_AGE_UNKNOWN', 'GMGN_TOKEN_TOO_NEW', 'GMGN_TOKEN_TOO_OLD'].includes(s.prefilterRejectCode)
-    ).length;
-    let rejGmgnPreFilter = prefilterRejectedList.length;
     let rejSecurity = 0, rejNoPool = 0, rejCooldown = 0;
 
     // Token gate list dimulai dari hasil prefilter fail supaya radar bisa audit stage-1 dengan jelas.
@@ -1939,8 +1935,6 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null, opt
         radarTotal: radarSnapshot.length,
         executablePoolsCount: radarSnapshot.filter((p) => p.address && p.address !== p.tokenX).length,
         matchedCount: radarSnapshot.filter((p) => p.isMatched).length,
-        rejectedGmgnPrefilter: rejGmgnPreFilter,
-        rejectedGmgnAge: rejGmgnAge,
         rejectedSecurity: rejSecurity,
         rejectedNoPool: rejNoPool,
         rejectedCooldown: rejCooldown,
@@ -2195,15 +2189,14 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null, opt
       const nonRefundText = rejNonRefundable > 0 ? ` | NonRefundable: ${rejNonRefundable}` : '';
       console.log(
         `[hunter] Discovery 0 match (suppressed): seeded=${gmgnSeeds.length}, prefilterPass=${prefilterPassed.length}, ` +
-        `screened=${seedSample.length}, execPools=${executablePoolsCount}, rej={gmgnPre:${rejGmgnPreFilter},gmgnAge:${rejGmgnAge},` +
-        `security:${rejSecurity},noPool:${rejNoPool},cooldown:${rejCooldown}${nonRefundText}}, ` +
+        `screened=${seedSample.length}, execPools=${executablePoolsCount}, rej={security:${rejSecurity},noPool:${rejNoPool},cooldown:${rejCooldown}${nonRefundText}}, ` +
         `tech={trendNonBullish:${rejTrendNonBullish},waitBreakST:${rejWaitBreakSupertrend},entryConfirm:${rejEntryConfirm}}, ` +
         `api=${technicalRejectedCount === 0 && basicFilteredCount > 0 ? 'all_failed' : 'linked'}`
       );
       forcedFinalReport =
         `Sweep selesai: 0 koin lolos filter teknis/keamanan.\n` +
         `Seeded: ${gmgnSeeds.length} | Prefilter pass: ${prefilterPassed.length} | Screened: ${seedSample.length}\n` +
-        `Reject — GMGNPre: ${rejGmgnPreFilter}, GMGNAge: ${rejGmgnAge}, Security: ${rejSecurity}, NoPool: ${rejNoPool}, Cooldown: ${rejCooldown}\n` +
+        `Reject — Security: ${rejSecurity}, NoPool: ${rejNoPool}, Cooldown: ${rejCooldown}\n` +
         `Technical — TrendNonBullish: ${rejTrendNonBullish}, WaitBreakST: ${rejWaitBreakSupertrend}, EntryConfirmFailed: ${rejEntryConfirm}`;
       skipModelRun = true;
       await updatePulse(`✅ <b>Radar Sweep Completed</b> — 0 final candidate. Laporan tetap dikirim ke Telegram.`);

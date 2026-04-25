@@ -13,8 +13,7 @@ import { readFileSync, writeFileSync, existsSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { safeNum } from '../utils/safeJson.js';
-import { getHistoryOHLCV } from './oracle.js';
-import { getRuntimeCollectionItem, updateRuntimeCollectionItem } from '../runtime/state.js';
+import { updateRuntimeCollectionItem } from '../runtime/state.js';
 import { getStrategyRegimeGuard } from './memory.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -60,10 +59,10 @@ function recordLivePoolProbe(poolAddress, { activeBinId = null, feeTvlRatio = 0 
   }
 
   let feeVelocityOk = true;
-  if (samples.length >= 3) {
-    const last3 = samples.slice(-3).map(s => safeNum(s.feeTvlRatio));
-    const strictlyDescending = last3[0] > last3[1] && last3[1] > last3[2];
-    const meaningfulDrop = last3[2] < last3[0] * 0.8;
+  if (samples.length >= 2) {
+    const last2 = samples.slice(-2).map(s => safeNum(s.feeTvlRatio));
+    const strictlyDescending = last2[0] > last2[1];
+    const meaningfulDrop = last2[1] < last2[0] * 0.8;
     if (strictlyDescending && meaningfulDrop) {
       feeVelocityOk = false;
     }
@@ -266,11 +265,6 @@ export async function evaluateStrategyReadiness({ strategyName, snapshot, binSte
     const pool = snapshot.pool || {};
     const feeTvlRatio = safeNum(pool.feeTvlRatio);
     const volumeTvlRatio = pool.tvl > 0 ? safeNum(pool.volume24h) / safeNum(pool.tvl) : 0;
-    const history = snapshot.tokenMint ? await getHistoryOHLCV(snapshot.tokenMint).catch(() => null) : null;
-    const recentClosedCandles = Array.isArray(history) ? history.slice(0, -1).slice(-2) : [];
-    const hasTwoClosedGreenCandles = recentClosedCandles.length === 2
-      && recentClosedCandles.every(c => c.close > c.open)
-      && recentClosedCandles[1].close >= recentClosedCandles[0].close;
     const liveProbe = recordLivePoolProbe(snapshot.poolAddress, { activeBinId, feeTvlRatio });
     const regimeGuard = getStrategyRegimeGuard({ strategyName, snapshot });
     
@@ -309,7 +303,7 @@ export async function evaluateStrategyReadiness({ strategyName, snapshot, binSte
       };
     }
 
-    if (liveProbe.driftBinsPerMin != null && liveProbe.driftBinsPerMin > 4.0) {
+    if (liveProbe.driftBinsPerMin != null && liveProbe.driftBinsPerMin > 10.0) {
       return {
         ok: false,
         blockers: [`Active-bin drift live terlalu cepat (${liveProbe.driftBinsPerMin.toFixed(2)} bins/min)`],
@@ -343,19 +337,11 @@ export async function evaluateStrategyReadiness({ strategyName, snapshot, binSte
       };
     }
 
-    if (recentClosedCandles.length === 2 && !hasTwoClosedGreenCandles) {
-      return {
-        ok: false,
-        blockers: ['Konfirmasi 2 candle 15m belum valid'],
-        notes: 'Evil Panda sekarang menunggu 2 candle 15m tertutup yang sama-sama hijau dan closing naik sebelum deploy.',
-      };
-    }
-
-    if (liveProbe.sampleCount >= 3 && !liveProbe.feeVelocityOk) {
+    if (liveProbe.sampleCount >= 2 && !liveProbe.feeVelocityOk) {
       return {
         ok: false,
         blockers: ['Fee velocity multi-cycle melemah'],
-        notes: 'Tiga sample terakhir menunjukkan fee/TVL menurun cukup tajam. Evil Panda menunggu aliran fee stabil sebelum entry.',
+        notes: 'Dua sample terakhir menunjukkan fee/TVL menurun cukup tajam. Evil Panda menunggu aliran fee stabil sebelum entry.',
       };
     }
 
