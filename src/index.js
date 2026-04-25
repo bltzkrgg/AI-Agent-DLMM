@@ -27,7 +27,6 @@ import { getTodayResults, formatDailyReport, savePerformanceSnapshot, backupAllD
 import { recordExitEvent, getExitsByTrigger, getExitsByZone, getPatientExitAnalysis, getTAESummary, getTriggerComparison, getExitEventCount } from './db/exitTracking.js';
 import { runStartupModelCheck, formatModelStatus, testModel, testCurrentModel, fetchFreeModels } from './agent/modelCheck.js';
 import { discoverAllModels, formatModelList, listAvailableModels, getModelInfo, initializeModelDiscovery } from './agent/modelDiscovery.js';
-import { runOpportunityScanner } from './market/opportunityScanner.js';
 import { addSmartWallet, removeSmartWallet, formatWalletList } from './market/smartWallets.js';
 import { formatPoolMemoryReport } from './market/poolMemory.js';
 import { recalibrateWeights, formatWeightsReport } from './market/signalWeights.js';
