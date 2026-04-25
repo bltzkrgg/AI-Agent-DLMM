@@ -255,45 +255,56 @@ export async function getGmgnSecurity(mint) {
   return data;
 }
 
-function normalizeDiscoveryRows(payload) {
-  if (!payload) return [];
-  if (Array.isArray(payload?.list)) return payload.list;
-  if (Array.isArray(payload?.tokens)) return payload.tokens;
-  if (Array.isArray(payload)) return payload;
-  return [];
-}
-
 /**
- * Get GMGN discovery seeds for Hunter prefilter.
- * Uses gmgnFetch so IPv4 forcing, retry, and auth are centralized.
+ * Discover seeds dari GMGN (Trending & New Pairs)
+ * Menggunakan public endpoint (karena OpenAPI tidak memiliki rute /v1/tokens/trending)
  */
 export async function getGmgnDiscoverySeeds(limit = 40) {
-  const cap = Math.max(1, Number.isFinite(Number(limit)) ? Number(limit) : 40);
+  const endpoints = [
+    'https://gmgn.ai/defi/quotation/v1/rank/sol/swaps/1h?orderby=swaps&direction=desc',
+    'https://gmgn.ai/defi/quotation/v1/rank/sol/swaps/1h?orderby=open_timestamp&direction=desc'
+  ];
   const seeds = [];
   const seen = new Set();
-  const endpoints = [
-    '/v1/tokens/trending',
-    '/v1/tokens/new_pairs',
-  ];
 
-  for (const path of endpoints) {
-    const data = await gmgnFetch(path, { limit: String(cap) });
-    const rows = normalizeDiscoveryRows(data);
-    for (const row of rows) {
-      const mint = String(row?.address || row?.token_address || row?.mint || '').trim();
-      if (!mint || seen.has(mint)) continue;
-      seen.add(mint);
-      const createdTs = safeNum(row?.created_timestamp || row?.open_timestamp || row?.pair_created_at || 0);
-      seeds.push({
-        mint,
-        symbol: row?.symbol || row?.token_symbol || '',
-        source: 'gmgn_api_seed',
-        seedVolume24h: safeNum(row?.volume_24h || row?.volume24h || 0),
-        seedMcap: safeNum(row?.market_cap || row?.fdv || row?.usd_market_cap || 0),
-        seedLiquidity: safeNum(row?.liquidity || row?.pool_liquidity || 0),
-        seedCreatedAt: createdTs > 0 ? createdTs * 1000 : null,
-      });
-      if (seeds.length >= cap) return seeds;
+  for (const url of endpoints) {
+    try {
+      const res = await fetchWithTimeout(url, {
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+          'Accept': 'application/json'
+        }
+      }, 10000);
+
+      if (!res.ok) {
+        console.warn(`[gmgn] Discovery HTTP ${res.status} for ${url.split('?')[0]}`);
+        continue;
+      }
+
+      const json = await res.json().catch(() => null);
+      // Data GMGN rank ada di dalam json.data.rank
+      const list = json?.data?.rank || [];
+
+      for (const row of list) {
+        const mint = String(row?.address || row?.token_address || row?.mint || '').trim();
+        if (!mint || seen.has(mint)) continue;
+        seen.add(mint);
+
+        const createdTs = Number(row?.open_timestamp || row?.created_timestamp || 0);
+        seeds.push({
+          mint,
+          symbol: row?.symbol || '',
+          source: url.includes('open_timestamp') ? 'gmgn_new_pairs' : 'gmgn_trending',
+          seedVolume24h: Number(row?.volume || row?.volume_24h || 0),
+          seedMcap: Number(row?.market_cap || row?.usd_market_cap || 0),
+          seedLiquidity: Number(row?.liquidity || 0),
+          seedCreatedAt: createdTs > 0 ? createdTs * 1000 : null,
+        });
+
+        if (seeds.length >= limit) return seeds;
+      }
+    } catch (e) {
+      console.warn(`[gmgn] Public discovery failed: ${e.message}`);
     }
   }
   return seeds;
