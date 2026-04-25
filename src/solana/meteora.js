@@ -1915,99 +1915,43 @@ export async function getTopPools(limit = 10, sortBy = 'fee_24h:desc') {
     const pools = rows.map(toPoolRow).filter(Boolean);
     return pools.slice(0, limit);
   } catch (e) {
-    console.warn(`⚠️ [meteora] datapi failed, trying -api pair/all fallback: ${e.message}`);
-    const alt = await fetchWithTimeout(
-      'https://dlmm-api.meteora.ag/pair/all?limit=100',
+    console.warn(`⚠️ [meteora] datapi primary failed, retrying same endpoint: ${e.message}`);
+    const retry = await fetchWithTimeout(
+      `https://dlmm.datapi.meteora.ag/pools?limit=${cap}`,
       { headers: { Accept: 'application/json' } },
       10000
     );
-    if (!alt.ok) throw new Error(`Meteora fallback API error: ${alt.status}`);
-    const json = await alt.json().catch(() => null);
-    const rows = Array.isArray(json)
-      ? json
-      : Array.isArray(json?.data) ? json.data : Array.isArray(json?.pairs) ? json.pairs : [];
+    if (!retry.ok) throw new Error(`Meteora datapi retry error: ${retry.status}`);
+    const data = await retry.json().catch(() => null);
+    const rows = Array.isArray(data?.data) ? data.data : [];
     const pools = rows.map(toPoolRow).filter(Boolean);
     return pools.slice(0, limit);
   }
 }
 
 /**
- * Meteora-first discovery source.
- * Pulls active DLMM pools from public pair endpoint.
+ * Meteora discovery source (datapi only).
+ * Combines multiple sort angles, deduplicated by pool address.
  */
 export async function getDiscoveryPools(limit = 150) {
   const cap = Math.max(10, Number.isFinite(Number(limit)) ? Number(limit) : 150);
   try {
-    const res = await fetchWithTimeout(
-      `https://dlmm.meteora.ag/pair/all?limit=${cap}`,
-      { headers: { Accept: 'application/json' } },
-      10000,
-    );
-    if (!res.ok) throw new Error(`Meteora pair/all HTTP ${res.status}`);
-    const json = await res.json().catch(() => null);
-    const rows = Array.isArray(json)
-      ? json
-      : Array.isArray(json?.data)
-        ? json.data
-        : Array.isArray(json?.pairs)
-          ? json.pairs
-          : [];
-
+    const slice = Math.max(20, Math.floor(cap / 3));
+    const [yieldPools, tvlPools, volPools] = await Promise.all([
+      getTopPools(slice, 'fee_tvl_ratio_24h:desc'),
+      getTopPools(slice, 'tvl:desc'),
+      getTopPools(slice, 'volume_24h:desc'),
+    ]);
+    const combined = [...yieldPools, ...tvlPools, ...volPools];
     const seen = new Set();
-    const pools = [];
-    for (const pool of rows) {
-      const address = String(
-        pool?.address ||
-        pool?.pair_address ||
-        pool?.pairAddress ||
-        pool?.lb_pair ||
-        pool?.pool_address ||
-        ''
-      ).trim();
-      if (!address || seen.has(address)) continue;
-
-      const tokenX = String(
-        pool?.token_x?.address ||
-        pool?.tokenX?.address ||
-        pool?.tokenX ||
-        pool?.token_x_mint ||
-        ''
-      ).trim();
-      const tokenY = String(
-        pool?.token_y?.address ||
-        pool?.tokenY?.address ||
-        pool?.tokenY ||
-        pool?.token_y_mint ||
-        ''
-      ).trim();
-      if (!tokenX || !tokenY) continue;
-
-      const active = pool?.is_active;
-      if (active === false) continue;
-
-      seen.add(address);
-      const tvl = safeNum(pool?.tvl || pool?.liquidity || pool?.liquidity_usd || 0);
-      const volume24h = safeNum(pool?.volume_24h || pool?.volume?.['24h'] || pool?.volume24h || 0);
-      const fees24h = safeNum(pool?.fee_24h || pool?.fees?.['24h'] || pool?.fees24h || 0);
-      const feeApr = tvl > 0 ? (fees24h / tvl) * 365 * 100 : 0;
-      pools.push({
-        address,
-        name: pool?.name || `${pool?.token_x?.symbol || 'TOKEN'}-${pool?.token_y?.symbol || 'TOKEN'}`,
-        tokenX,
-        tokenY,
-        tokenXSymbol: pool?.token_x?.symbol || pool?.tokenX?.symbol || '',
-        tokenYSymbol: pool?.token_y?.symbol || pool?.tokenY?.symbol || '',
-        binStep: safeNum(pool?.bin_step || pool?.pool_config?.bin_step || 0),
-        liquidityRaw: tvl,
-        volume24hRaw: volume24h,
-        fees24hRaw: fees24h,
-        feeAprNum: parseFloat(feeApr.toFixed(2)),
-        mcap: safeNum(pool?.base_token_market_cap || pool?.quote_token_market_cap || pool?.market_cap || 0),
-        createdAt: pool?.created_at || pool?.pool_created_at || null,
-      });
-      if (pools.length >= cap) break;
+    const unique = [];
+    for (const p of combined) {
+      if (!p?.address || seen.has(p.address)) continue;
+      seen.add(p.address);
+      unique.push(p);
+      if (unique.length >= cap) break;
     }
-    return pools;
+    return unique;
   } catch (e) {
     console.warn('⚠️ [meteora] Hybrid discovery degraded:', e.message);
     return getTopPools(Math.max(20, Math.floor(cap / 2)));
