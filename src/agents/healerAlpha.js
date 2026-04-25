@@ -1213,14 +1213,14 @@ export async function runHealerAlpha(notifyFn) {
       const addr   = pos.position_address;
       const runtimeState = getPositionRuntimeState(addr);
       const strategyProfile = getStrategy(pos.strategy_used || '');
-      const positionAgeMin = getPositionAgeMinutes(pos);
+      const positionAgeMin = Math.floor((Date.now() - new Date(pos.created_at)) / 60000);
       const exitMode = strategyProfile?.exit?.mode || 'default';
       const configuredTp = Number(strategyProfile?.exit?.takeProfitPct ?? thresholds.takeProfitFeePct);
       const strategyTakeProfitPct = Number.isFinite(configuredTp) && configuredTp > 0 ? configuredTp : 5.0;
       const emergencyStopLossPct = strategyProfile?.exit?.emergencyStopLossPct ?? thresholds.stopLossPct;
-      const maxHoldHours      = strategyProfile?.exit?.maxHoldHours ?? thresholds.maxHoldHours ?? 6;
-      const maxHoldMinutes    = maxHoldHours * 60;
-      let maxHoldTriggered    = positionAgeMin >= maxHoldMinutes;
+      const maxHoldMinutes = (getConfig().maxHoldHours || 2) * 60;
+      const maxHoldTriggered = positionAgeMin >= maxHoldMinutes;
+      const maxHoldHours = maxHoldMinutes / 60;
 
       // ── Healer Trailing Shadow State (non-exit, telemetry only) ─────────
       // Trailing exit utama dipusatkan di TAE Watchdog (single source of truth).
@@ -1497,7 +1497,6 @@ export async function runHealerAlpha(notifyFn) {
 
         if (inGracePeriod) {
           efficiencyVetoActive = true;
-          maxHoldTriggered = false;
           decision   = 'HOLD';
           holdReason = `Efficiency grace period active until ${new Date(gracePeriodUntil).toISOString()}`;
           console.log(`[healer] STAYING_IN: Efficiency grace period active (${shortAddr(addr)}). Holding.`);
@@ -1505,7 +1504,6 @@ export async function runHealerAlpha(notifyFn) {
           const graceUntil = Date.now() + 4 * 60 * 60 * 1000;
           updatePositionRuntimeState(addr, { efficiencyGracePeriodUntil: graceUntil });
           efficiencyVetoActive = true;
-          maxHoldTriggered = false;
           decision   = 'HOLD';
           holdReason = `Pool highly efficient (Score: ${_eff.score.toFixed(2)}, FeeAPR: ${_mktFeeApr.toFixed(1)}%, ${_eff.label})`;
           console.log(`[healer] STAYING_IN: Pool is highly efficient (Score: ${_eff.score.toFixed(2)}, FeeAPR: ${_mktFeeApr.toFixed(1)}%, Label: ${_eff.label}). Grace period granted 4h.`);
@@ -1516,6 +1514,9 @@ export async function runHealerAlpha(notifyFn) {
       if (maxHoldTriggered) {
         decision   = 'CLOSE';
         holdReason = '';
+        if (efficiencyVetoActive) {
+          decision = 'HOLD';
+        }
       }
       if (inventoryForcedClose) {
         decision   = 'CLOSE';
