@@ -1864,7 +1864,7 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null, opt
       totalNetProfitSol: (openPositions.reduce((acc, p) => acc + (parseFloat(p.pnl_sol) || 0), 0)).toFixed(4),
       totalRentSaved: safeNum(rentSaved).toFixed(4),
       prefilter: {
-        seedSource: 'meteora_pair_all',
+        seedSource: 'meteora_datapi',
         seeded: gmgnSeeds.length,
         pass: prefilterPassed.length,
         rejected: prefilterRejectedList.length,
