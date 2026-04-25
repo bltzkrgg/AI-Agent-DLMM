@@ -1912,35 +1912,85 @@ export async function getTopPools(limit = 10, sortBy = 'fee_24h:desc') {
 }
 
 /**
- * Discovery Hybrid: Ambil pool dari 3 sudut pandang berbeda:
- * 1. Gacor (Yield/Efficiency)
- * 2. Paus (Liquidity/Stability)
- * 3. Trending (Volume/Momentum)
+ * Meteora-first discovery source.
+ * Pulls active DLMM pools from public pair endpoint.
  */
-export async function getDiscoveryPools(limitPerSort = 20) {
+export async function getDiscoveryPools(limit = 150) {
+  const cap = Math.max(10, Number.isFinite(Number(limit)) ? Number(limit) : 150);
   try {
-    const [byYield, byLiquidity, byVolume] = await Promise.all([
-      getTopPools(limitPerSort, 'fee_tvl_ratio_24h:desc'),
-      getTopPools(limitPerSort, 'tvl:desc'),
-      getTopPools(limitPerSort, 'volume_24h:desc')
-    ]);
+    const res = await fetchWithTimeout(
+      `https://dlmm.meteora.ag/pair/all?limit=${cap}`,
+      { headers: { Accept: 'application/json' } },
+      10000,
+    );
+    if (!res.ok) throw new Error(`Meteora pair/all HTTP ${res.status}`);
+    const json = await res.json().catch(() => null);
+    const rows = Array.isArray(json)
+      ? json
+      : Array.isArray(json?.data)
+        ? json.data
+        : Array.isArray(json?.pairs)
+          ? json.pairs
+          : [];
 
-    // Merge & Deduplicate
-    const combined = [...byYield, ...byLiquidity, ...byVolume];
-    const unique = [];
     const seen = new Set();
+    const pools = [];
+    for (const pool of rows) {
+      const address = String(
+        pool?.address ||
+        pool?.pair_address ||
+        pool?.pairAddress ||
+        pool?.lb_pair ||
+        pool?.pool_address ||
+        ''
+      ).trim();
+      if (!address || seen.has(address)) continue;
 
-    for (const p of combined) {
-      if (!seen.has(p.address)) {
-        seen.add(p.address);
-        unique.push(p);
-      }
+      const tokenX = String(
+        pool?.token_x?.address ||
+        pool?.tokenX?.address ||
+        pool?.tokenX ||
+        pool?.token_x_mint ||
+        ''
+      ).trim();
+      const tokenY = String(
+        pool?.token_y?.address ||
+        pool?.tokenY?.address ||
+        pool?.tokenY ||
+        pool?.token_y_mint ||
+        ''
+      ).trim();
+      if (!tokenX || !tokenY) continue;
+
+      const active = pool?.is_active;
+      if (active === false) continue;
+
+      seen.add(address);
+      const tvl = safeNum(pool?.tvl || pool?.liquidity || pool?.liquidity_usd || 0);
+      const volume24h = safeNum(pool?.volume_24h || pool?.volume?.['24h'] || pool?.volume24h || 0);
+      const fees24h = safeNum(pool?.fee_24h || pool?.fees?.['24h'] || pool?.fees24h || 0);
+      const feeApr = tvl > 0 ? (fees24h / tvl) * 365 * 100 : 0;
+      pools.push({
+        address,
+        name: pool?.name || `${pool?.token_x?.symbol || 'TOKEN'}-${pool?.token_y?.symbol || 'TOKEN'}`,
+        tokenX,
+        tokenY,
+        tokenXSymbol: pool?.token_x?.symbol || pool?.tokenX?.symbol || '',
+        tokenYSymbol: pool?.token_y?.symbol || pool?.tokenY?.symbol || '',
+        binStep: safeNum(pool?.bin_step || pool?.pool_config?.bin_step || 0),
+        liquidityRaw: tvl,
+        volume24hRaw: volume24h,
+        fees24hRaw: fees24h,
+        feeAprNum: parseFloat(feeApr.toFixed(2)),
+        mcap: safeNum(pool?.base_token_market_cap || pool?.quote_token_market_cap || pool?.market_cap || 0),
+        createdAt: pool?.created_at || pool?.pool_created_at || null,
+      });
+      if (pools.length >= cap) break;
     }
-
-    return unique;
+    return pools;
   } catch (e) {
-    console.warn('⚠️ [meteora] Hybrid discovery degraded:', e.message);
-    return getTopPools(limitPerSort * 2); // Fallback ke top fees
+    console.warn('⚠️ [meteora] pair/all discovery degraded:', e.message);
+    return getTopPools(Math.max(20, Math.floor(cap / 2)));
   }
 }
 

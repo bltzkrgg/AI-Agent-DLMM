@@ -2,7 +2,7 @@
 
 import { createMessage, resolveModel } from '../agent/provider.js';
 import { getConfig, getThresholds } from '../config.js';
-import { getTopPools, getPoolInfo, openPosition, getSolPriceUsd } from '../solana/meteora.js';
+import { getTopPools, getPoolInfo, openPosition, getSolPriceUsd, getDiscoveryPools } from '../solana/meteora.js';
 import { getWalletBalance, getConnection } from '../solana/wallet.js';
 import { PublicKey } from '@solana/web3.js';
 import {
@@ -40,7 +40,7 @@ import { checkMaxDrawdown, requestConfirmation, validateStrategyForMarket } from
 import { getRuntimeState, setRuntimeState, flushRuntimeState } from '../runtime/state.js';
 import { calculateSupertrend } from '../utils/ta.js';
 import { enrichPvpRisk, filterWashTrading, filterCapitalEfficiency, filterBinStep } from '../market/screening.js';
-import { getGmgnTokenInfo, getGmgnDiscoverySeeds } from '../utils/gmgn.js';
+import { getGmgnTokenInfo } from '../utils/gmgn.js';
 
 // ─── State ───────────────────────────────────────────────────────
 
@@ -1476,15 +1476,32 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null, opt
     }
   };
 
-  await updatePulse(`🔍 <b>Radar Sweep: GMGN Seed → GMGN Gate → Meteora Execute...</b>`);
+  await updatePulse(`🔍 <b>Radar Sweep: Meteora Seed → GMGN Gate → Meteora Execute...</b>`);
 
   let preComputedContext = '';
   try {
     const weights = getDarwinWeights(); // adaptive weights dari data nyata
-    // --- Token-first Discovery Layer ---
-    // 1) GMGN seed -> screen_token terlebih dulu
-    // 2) Baru Meteora dipanggil untuk token yang lolos (execution venue)
-    const gmgnSeeds = await getGmgnDiscoverySeeds(80);
+    // --- Meteora-first Discovery Layer ---
+    // 1) Meteora pool discovery -> ekstrak token seed non-WSOL
+    // 2) GMGN Gate (mcap/volume/age) -> screen_token
+    const rawPools = await getDiscoveryPools(150).catch(() => []);
+    const seedByMint = new Map();
+    for (const pool of (rawPools || [])) {
+      const tokenCandidates = [
+        { mint: pool?.tokenX, symbol: pool?.tokenXSymbol || '' },
+        { mint: pool?.tokenY, symbol: pool?.tokenYSymbol || '' },
+      ];
+      for (const item of tokenCandidates) {
+        const mint = String(item?.mint || '').trim();
+        if (!mint || mint === WSOL_MINT || seedByMint.has(mint)) continue;
+        seedByMint.set(mint, {
+          mint,
+          symbol: item?.symbol || '',
+          source: 'meteora_pair_all',
+        });
+      }
+    }
+    const gmgnSeeds = Array.from(seedByMint.values());
     const seedLimit = Math.max(10, Number(cfg.gmgnSeedSampleLimit ?? 40));
     const minVol = Number(cfg.minVolume24h || 0);
     const minMcap = Number(cfg.minMcap || 0);
@@ -1655,18 +1672,12 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null, opt
       .filter((t) => !t.prefilterRejected && t.security?.eligible)
       .map((t) => t.mint);
 
-    // 2) Meteora dipanggil belakangan, hanya untuk token yang lolos gate
-    let rawPools = [];
-    if (approvedMints.length > 0) {
-      const discoveryLimit = Math.max(50, Number(cfg.meteoraDiscoveryLimit || 180));
-      rawPools = await import('../solana/meteora.js').then(m => m.getDiscoveryPools(discoveryLimit)).catch(() => []);
-    }
-
+    const approvedMintSet = new Set(approvedMints);
     const poolsByMint = new Map();
     for (const p of (rawPools || [])) {
       const mints = [p.tokenX, p.tokenY].filter((m) => m && m !== WSOL_MINT);
       for (const mint of mints) {
-        if (!approvedMints.includes(mint)) continue;
+        if (!approvedMintSet.has(mint)) continue;
         const list = poolsByMint.get(mint) || [];
         list.push(p);
         poolsByMint.set(mint, list);
@@ -1850,7 +1861,7 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null, opt
       totalNetProfitSol: (openPositions.reduce((acc, p) => acc + (parseFloat(p.pnl_sol) || 0), 0)).toFixed(4),
       totalRentSaved: safeNum(rentSaved).toFixed(4),
       prefilter: {
-        seedSource: 'gmgn_api_seed',
+        seedSource: 'meteora_pair_all',
         seeded: gmgnSeeds.length,
         pass: prefilterPassed.length,
         rejected: prefilterRejectedList.length,
