@@ -28,7 +28,7 @@ import { fetchCandles, getMarketSnapshot, getOHLCV, getMultiTFScore, getSentimen
 import { getInstinctsContext } from '../market/memory.js';
 import { getStrategyIntelligenceContext, getDarwinBinStepBoost } from '../market/strategyPerformance.js';
 import { screenToken, formatScreenResult } from '../market/coinfilter.js';
-import { parseTvl, safeNum, stringify, escapeHTML, getConservativeSlippage, fetchWithTimeout } from '../utils/safeJson.js';
+import { parseTvl, safeNum, stringify, escapeHTML, getConservativeSlippage } from '../utils/safeJson.js';
 import { kv, hr, codeBlock, shortAddr } from '../utils/table.js';
 import { getDarwinWeights, captureSignals } from '../market/signalWeights.js';
 import { isOnCooldown, getPoolMemoryContext, recordDeployment } from '../market/poolMemory.js';
@@ -40,7 +40,7 @@ import { checkMaxDrawdown, requestConfirmation, validateStrategyForMarket } from
 import { getRuntimeState, setRuntimeState, flushRuntimeState } from '../runtime/state.js';
 import { calculateSupertrend } from '../utils/ta.js';
 import { enrichPvpRisk, filterWashTrading, filterCapitalEfficiency, filterBinStep } from '../market/screening.js';
-import { getGmgnTokenInfo } from '../utils/gmgn.js';
+import { getGmgnTokenInfo, getGmgnDiscoverySeeds } from '../utils/gmgn.js';
 
 // ─── State ───────────────────────────────────────────────────────
 
@@ -243,69 +243,6 @@ export function getLastRadarSnapshot() { return lastRadarSnapshot; }
 export function getLastDeploySummary() { return lastDeploySummary; }
 
 const WSOL_MINT = 'So11111111111111111111111111111111111111112';
-
-async function discoverGmgnTokenSeeds(limit = 40) {
-  const apiKey = process.env.GMGN_API_KEY;
-  if (!apiKey) {
-    console.warn('[hunter] GMGN_API_KEY not set — seed discovery skipped');
-    return [];
-  }
-
-  const seeds = [];
-  const seen = new Set();
-  const GMGN_HOST = 'https://openapi.gmgn.ai';
-  const endpoints = [
-    '/v1/tokens/trending',
-    '/v1/tokens/new_pairs',
-  ];
-
-  for (const subPath of endpoints) {
-    try {
-      const params = new URLSearchParams({
-        chain: 'sol',
-        limit: String(limit),
-        timestamp: String(Math.floor(Date.now() / 1000)),
-        client_id: `hunter-${Date.now()}`,
-      });
-      const url = `${GMGN_HOST}${subPath}?${params.toString()}`;
-      const res = await fetchWithTimeout(url, {
-        headers: {
-          'X-APIKEY': apiKey,
-          'X-API-KEY': apiKey,
-          'Content-Type': 'application/json',
-          'Accept': 'application/json',
-          'User-Agent': 'AI-Agent-DLMM/1.0',
-        },
-      }, 10000);
-      if (!res.ok) continue;
-      const json = await res.json().catch(() => null);
-      const list = Array.isArray(json?.data) ? json.data
-        : Array.isArray(json?.data?.list) ? json.data.list
-        : Array.isArray(json?.data?.tokens) ? json.data.tokens
-        : [];
-      for (const row of list) {
-        const mint = String(row?.address || row?.token_address || row?.mint || '').trim();
-        if (!mint || seen.has(mint)) continue;
-        seen.add(mint);
-        // Extract market data from seed row to avoid a separate gate metrics call
-        const createdTs = safeNum(row?.created_timestamp || row?.open_timestamp || row?.pair_created_at || 0);
-        seeds.push({
-          mint,
-          symbol: row?.symbol || row?.token_symbol || '',
-          source: 'gmgn_trending',
-          seedVolume24h: safeNum(row?.volume_24h || row?.volume24h || 0),
-          seedMcap: safeNum(row?.market_cap || row?.fdv || row?.usd_market_cap || 0),
-          seedLiquidity: safeNum(row?.liquidity || row?.pool_liquidity || 0),
-          seedCreatedAt: createdTs > 0 ? createdTs * 1000 : null, // convert to ms
-        });
-        if (seeds.length >= limit) return seeds;
-      }
-    } catch {
-      // non-blocking
-    }
-  }
-  return seeds;
-}
 
 async function fetchGmgnGateMetrics(tokenMint, seedData = {}) {
   if (!tokenMint) return null;
@@ -1547,7 +1484,7 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null, opt
     // --- Token-first Discovery Layer ---
     // 1) GMGN seed -> screen_token terlebih dulu
     // 2) Baru Meteora dipanggil untuk token yang lolos (execution venue)
-    const gmgnSeeds = await discoverGmgnTokenSeeds(80);
+    const gmgnSeeds = await getGmgnDiscoverySeeds(80);
     const seedLimit = Math.max(10, Number(cfg.gmgnSeedSampleLimit ?? 40));
     const minVol = Number(cfg.minVolume24h || 0);
     const minMcap = Number(cfg.minMcap || 0);

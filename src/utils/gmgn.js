@@ -253,3 +253,47 @@ export async function getGmgnSecurity(mint) {
   if (data) setCached('/v1/token/security', mint, data);
   return data;
 }
+
+function normalizeDiscoveryRows(payload) {
+  if (!payload) return [];
+  if (Array.isArray(payload?.list)) return payload.list;
+  if (Array.isArray(payload?.tokens)) return payload.tokens;
+  if (Array.isArray(payload)) return payload;
+  return [];
+}
+
+/**
+ * Get GMGN discovery seeds for Hunter prefilter.
+ * Uses gmgnFetch so IPv4 forcing, retry, and auth are centralized.
+ */
+export async function getGmgnDiscoverySeeds(limit = 40) {
+  const cap = Math.max(1, Number.isFinite(Number(limit)) ? Number(limit) : 40);
+  const seeds = [];
+  const seen = new Set();
+  const endpoints = [
+    '/v1/tokens/trending',
+    '/v1/tokens/new_pairs',
+  ];
+
+  for (const path of endpoints) {
+    const data = await gmgnFetch(path, { limit: String(cap) });
+    const rows = normalizeDiscoveryRows(data);
+    for (const row of rows) {
+      const mint = String(row?.address || row?.token_address || row?.mint || '').trim();
+      if (!mint || seen.has(mint)) continue;
+      seen.add(mint);
+      const createdTs = safeNum(row?.created_timestamp || row?.open_timestamp || row?.pair_created_at || 0);
+      seeds.push({
+        mint,
+        symbol: row?.symbol || row?.token_symbol || '',
+        source: 'gmgn_api_seed',
+        seedVolume24h: safeNum(row?.volume_24h || row?.volume24h || 0),
+        seedMcap: safeNum(row?.market_cap || row?.fdv || row?.usd_market_cap || 0),
+        seedLiquidity: safeNum(row?.liquidity || row?.pool_liquidity || 0),
+        seedCreatedAt: createdTs > 0 ? createdTs * 1000 : null,
+      });
+      if (seeds.length >= cap) return seeds;
+    }
+  }
+  return seeds;
+}
