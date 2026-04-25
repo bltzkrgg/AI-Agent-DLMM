@@ -246,3 +246,86 @@ Interpretation:
 | DLMM deploy/close execution | `src/solana/meteora.js` |
 | Runtime position state | `src/runtime/state.js`, `runtime-state.json` |
 
+---
+
+## 10. Hybrid Shark Architecture
+
+**Status:** EXECUTED 2026-04-25; keep as regression checklist  
+**Priority:** P0
+
+These changes transition the bot into a Hybrid Shark setup:
+- GMGN is the discovery and pre-screening source of truth.
+- DexScreener is used for execution TA, especially 15m Supertrend.
+- DexScreener API lag must never throttle token discovery.
+
+### 10.1 Oracle TA Integration: DexScreener Primary
+
+File: `src/market/oracle.js`
+
+Required behavior for `getOHLCV`:
+- Try `buildOHLCVFromDexScreener` first for 15m Supertrend.
+- If DexScreener data is missing, fails to load, or is stale by more than **30 minutes**, fallback to `buildOHLCVFromBirdeye`.
+- If both DexScreener and Birdeye fail, fallback to Momentum-Proxy.
+
+Strict chain:
+
+```text
+DexScreener 15m OHLCV -> Birdeye 15m OHLCV -> Momentum-Proxy
+```
+
+### 10.2 Discovery & Screening: GMGN Only
+
+File: `src/agents/hunterAlpha.js`
+
+Required behavior:
+- Delete `fetchDexGateMetrics` entirely.
+- Refactor the `runHunterAlpha` pre-filter pipeline for market cap, volume, and age to rely exclusively on `getGmgnTokenInfo`.
+- Do not allow DexScreener lag, null responses, stale values, or rate limits to delay discovery.
+- Ensure no DexScreener-derived variables remain in token discovery logic.
+
+File: `src/market/coinfilter.js`
+
+Required behavior:
+- Refactor screening so GMGN and Birdeye are the primary oracles.
+- Remove DexScreener dependencies from screening steps.
+- Any retained DexScreener usage must be execution/TA-only and must not gate discovery.
+
+### 10.3 Critical Fixes & Cleanup
+
+File: `src/agents/healerAlpha.js`
+
+Required behavior:
+- In `zap_out`, use `input.reasoning`, not `input.closeReason`, when deriving emergency close reason and slippage policy.
+- In `runPanicWatchdog`, do not call `swapAllToSOL` manually after `closeAndRecordExitAtomic`.
+- Swap cleanup after a close belongs to `closePositionDLMM` in `src/solana/meteora.js`.
+
+File: `src/solana/meteora.js`
+
+Required behavior:
+- `getSolPriceUsd` must use Jupiter Price API v2:
+
+```text
+https://api.jup.ag/price/v2?ids=So11111111111111111111111111111111111111112
+```
+
+File: `src/agents/hunterAlpha.js`
+
+Required behavior:
+- Delete `isTxTooLargeDeployError`.
+- Remove any 69-bin retry block inside deploy logic.
+- Chunk-size enforcement belongs in `src/solana/meteora.js`, not Hunter.
+
+### 10.4 Agent Directive
+
+When instructed to **Execute Hybrid Shark Refactoring**, implement all points in Section 10 meticulously.
+
+Final audit command:
+
+```bash
+rg -n "fetchDexGateMetrics|isTxTooLargeDeployError|closeReason|api.dexscreener.com|dexGate|DexScreener" src/agents/hunterAlpha.js src/market/coinfilter.js src/market/oracle.js src/agents/healerAlpha.js src/solana/meteora.js
+```
+
+Interpretation:
+- `DexScreener` references may remain only in oracle execution TA, not discovery.
+- `closeReason` may remain in DB/pnl payloads, but zap-out emergency slippage must derive from `input.reasoning`.
+- Hunter must not contain deploy retry chunking for 69-bin transaction-size failures.

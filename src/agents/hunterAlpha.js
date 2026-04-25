@@ -70,7 +70,7 @@ let hunterAllowedId = null;
 let _hunterTargetCount = null; // Local caches for tool output (shared across rounds)
 let _hunterMaxPositionsCap = null; // Global stage-aware cap injected by orchestrator (index)
 const NO_POOL_PENDING_STATE_KEY = 'hunter-no-pool-pending';
-const _noPoolPending = new Map(); // mint -> { mint, symbol, dexGate, firstSeenAt, lastSeenAt }
+const _noPoolPending = new Map(); // mint -> { mint, symbol, gmgnGate, firstSeenAt, lastSeenAt }
 let _noPoolPendingLoaded = false;
 
 function normalizeNoPoolPendingItem(mint, item) {
@@ -82,7 +82,7 @@ function normalizeNoPoolPendingItem(mint, item) {
   return {
     mint,
     symbol: typeof item.symbol === 'string' ? item.symbol : '',
-    dexGate: item.dexGate && typeof item.dexGate === 'object' ? item.dexGate : null,
+    gmgnGate: item.gmgnGate && typeof item.gmgnGate === 'object' ? item.gmgnGate : null,
     firstSeenAt,
     lastSeenAt,
   };
@@ -107,7 +107,7 @@ function persistNoPoolPending() {
     payload[mint] = {
       mint: item.mint,
       symbol: item.symbol || '',
-      dexGate: item.dexGate || null,
+      gmgnGate: item.gmgnGate || null,
       firstSeenAt: item.firstSeenAt,
       lastSeenAt: item.lastSeenAt,
     };
@@ -137,7 +137,7 @@ function listNoPoolPending(cfg = getConfig()) {
     .sort((a, b) => (b.lastSeenAt || 0) - (a.lastSeenAt || 0));
 }
 
-function upsertNoPoolPending({ mint, symbol, dexGate }, cfg = getConfig()) {
+function upsertNoPoolPending({ mint, symbol, gmgnGate }, cfg = getConfig()) {
   if (!mint) return;
   ensureNoPoolPendingLoaded();
   pruneNoPoolPending(cfg);
@@ -146,7 +146,7 @@ function upsertNoPoolPending({ mint, symbol, dexGate }, cfg = getConfig()) {
   _noPoolPending.set(mint, {
     mint,
     symbol: symbol || prev?.symbol || '',
-    dexGate: dexGate || prev?.dexGate || null,
+    gmgnGate: gmgnGate || prev?.gmgnGate || null,
     firstSeenAt: prev?.firstSeenAt || now,
     lastSeenAt: now,
   });
@@ -601,7 +601,7 @@ const HUNTER_TOOLS = [
   },
   {
     name: 'screen_token',
-    description: 'WAJIB sebelum deploy. Filter token via 7-step Coin Filter: narrative, price health, holder check, token safety (DexScreener, BirdEye, OKX).',
+    description: 'WAJIB sebelum deploy. Filter token via Coin Filter: GMGN security, Birdeye/Jupiter market data, holder check, token safety.',
     input_schema: {
       type: 'object',
       properties: {
@@ -665,7 +665,7 @@ async function executeTool(name, input) {
       const cfg = getConfig();
       // ── LP Agent: discover top pools (1 API call, cached 10 menit) ──
       // Berjalan paralel dengan getTopPools untuk hemat waktu
-      const [dexPools, lpAgentPools] = await Promise.allSettled([
+      const [primaryPools, lpAgentPools] = await Promise.allSettled([
         getTopPools(limit * 3),
         isLPAgentEnabled()
           ? lpAgentDiscoverPools({
@@ -679,13 +679,12 @@ async function executeTool(name, input) {
           : Promise.resolve([]),
       ]);
 
-      const rawDex = dexPools.status === 'fulfilled' ? (dexPools.value || []) : [];
+      const rawPrimary = primaryPools.status === 'fulfilled' ? (primaryPools.value || []) : [];
       const rawLP = lpAgentPools.status === 'fulfilled' ? (lpAgentPools.value || []) : [];
 
-      // Merge: LP Agent pools tidak ada di DexScreener → tambahkan sebagai kandidat baru
-      // Pool yang sudah ada di DexScreener → tidak di-double
-      const dexAddresses = new Set(rawDex.map(p => p.address));
-      const lpAgentOnly = rawLP.filter(p => p.address && !dexAddresses.has(p.address)).map(p => ({
+      // Merge LP Agent pools that are not already returned by the primary pool source.
+      const primaryAddresses = new Set(rawPrimary.map(p => p.address));
+      const lpAgentOnly = rawLP.filter(p => p.address && !primaryAddresses.has(p.address)).map(p => ({
         address: p.address,
         name: p.name || p.tokenXSymbol ? `${p.tokenXSymbol}-SOL` : '',
         tokenX: p.tokenX,
@@ -695,7 +694,7 @@ async function executeTool(name, input) {
         binStep: p.binStep,
         _fromLPAgent: true,
       }));
-      const combined = [...rawDex, ...lpAgentOnly];
+      const combined = [...rawPrimary, ...lpAgentOnly];
 
       // ── Satu call enrichment LP Agent untuk semua kandidat ──
       // enrich pools SETELAH merge, zero extra API calls (pakai cache)
@@ -715,7 +714,7 @@ async function executeTool(name, input) {
         const volume24h = p.volume24hRaw || 0;
         const binStep = p.binStep || 0;
 
-        // Fokus filter dipindah ke kualitas token (Dex + GMGN), bukan TVL/Liquidity gate.
+        // Fokus filter dipindah ke kualitas token (GMGN + market data), bukan TVL/Liquidity gate.
         const minVolume24h = thresholds.minVolume24h || cfg.minVolume24h || 0;
         const volumePasses = minVolume24h <= 0 || volume24h >= minVolume24h;
 
@@ -1540,34 +1539,49 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null, opt
     }
   };
 
-  await updatePulse(`🔍 <b>Radar Sweep: Dex Seed → GMGN Gate → Meteora Execute...</b>`);
+  await updatePulse(`🔍 <b>Radar Sweep: GMGN Seed → GMGN Gate → Meteora Execute...</b>`);
 
   let preComputedContext = '';
   try {
     const weights = getDarwinWeights(); // adaptive weights dari data nyata
     // --- Token-first Discovery Layer ---
-    // 1) Dex seed -> screen_token (Dex+GMGN) terlebih dulu
+    // 1) GMGN seed -> screen_token terlebih dulu
     // 2) Baru Meteora dipanggil untuk token yang lolos (execution venue)
-    const dexSeeds = await discoverGmgnTokenSeeds(80);
-    const seedLimit = Math.max(10, Number(cfg.dexSeedSampleLimit || 40));
+    const gmgnSeeds = await discoverGmgnTokenSeeds(80);
+    const seedLimit = Math.max(10, Number(cfg.gmgnSeedSampleLimit ?? 40));
     const minVol = Number(cfg.minVolume24h || 0);
     const minMcap = Number(cfg.minMcap || 0);
+    const minAgeHours = Math.max(0, Number(cfg.gmgnMinAgeHours ?? 0));
+    const maxAgeHours = Math.max(minAgeHours, Number(cfg.gmgnMaxAgeHours ?? 168));
+    const requireKnownAge = cfg.gmgnRequireKnownAge === true;
 
     // Stage 1: probe semua seed GMGN lalu prefilter tegas (mcap + volume) sebelum masuk screening.
-    const dexSeedMetrics = await Promise.all(dexSeeds.map(async (s) => {
-      const dexGate = await fetchGmgnGateMetrics(s.mint, s);
-      const gateVolume = safeNum(dexGate?.volume24h);
-      const gateMcap = safeNum(dexGate?.mcap);
-      const createdAt = safeNum(dexGate?.pairCreatedAt);
+    const gmgnSeedMetrics = await Promise.all(gmgnSeeds.map(async (s) => {
+      const gmgnGate = await fetchGmgnGateMetrics(s.mint, s);
+      const gateVolume = safeNum(gmgnGate?.volume24h);
+      const gateMcap = safeNum(gmgnGate?.mcap);
+      const createdAt = safeNum(gmgnGate?.pairCreatedAt);
       const ageHoursRaw = createdAt > 0 ? ((Date.now() - createdAt) / (1000 * 60 * 60)) : null;
       const ageHours = Number.isFinite(ageHoursRaw) ? Math.max(0, ageHoursRaw) : null;
 
       let prefilterRejected = false;
       let prefilterReason = null;
       let prefilterRejectCode = null;
-      if (!dexGate) {
+      if (!gmgnGate) {
         // Non-blocking: pass through when GMGN gate data unavailable (no API key or timeout)
         // Volume/mcap filters below require gate data; skip them if unavailable
+      } else if (requireKnownAge && !Number.isFinite(ageHours)) {
+        prefilterRejected = true;
+        prefilterRejectCode = 'GMGN_AGE_UNKNOWN';
+        prefilterReason = 'VETO [GMGN_AGE_UNKNOWN]: usia token GMGN kosong.';
+      } else if (Number.isFinite(ageHours) && ageHours < minAgeHours) {
+        prefilterRejected = true;
+        prefilterRejectCode = 'GMGN_TOKEN_TOO_NEW';
+        prefilterReason = `VETO [GMGN_TOKEN_TOO_NEW]: usia ${ageHours.toFixed(2)}h < min ${minAgeHours.toFixed(2)}h`;
+      } else if (Number.isFinite(ageHours) && ageHours > maxAgeHours) {
+        prefilterRejected = true;
+        prefilterRejectCode = 'GMGN_TOKEN_TOO_OLD';
+        prefilterReason = `VETO [GMGN_TOKEN_TOO_OLD]: usia ${ageHours.toFixed(2)}h > max ${maxAgeHours.toFixed(2)}h`;
       } else if (minVol > 0 && gateVolume > 0 && gateVolume < minVol) {
         prefilterRejected = true;
         prefilterRejectCode = 'BELOW_MIN_VOLUME_24H';
@@ -1580,7 +1594,7 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null, opt
 
       return {
         ...s,
-        dexGate,
+        gmgnGate,
         gateVolume,
         gateMcap,
         ageHours,
@@ -1590,8 +1604,8 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null, opt
       };
     }));
 
-    // Kandidat prefilter-pass diprioritaskan sesuai style UI Dex: fresh dulu, lalu volume besar.
-    const prefilterPassed = dexSeedMetrics
+    // Kandidat prefilter-pass diprioritaskan dari GMGN: fresh dulu, lalu volume besar.
+    const prefilterPassed = gmgnSeedMetrics
       .filter((s) => !s.prefilterRejected)
       .sort((a, b) => {
         const aAge = Number.isFinite(a.ageHours) ? a.ageHours : Number.POSITIVE_INFINITY;
@@ -1601,7 +1615,7 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null, opt
       });
 
     const seedSample = prefilterPassed.slice(0, seedLimit);
-    const prefilterRejectedList = dexSeedMetrics.filter((s) => s.prefilterRejected);
+    const prefilterRejectedList = gmgnSeedMetrics.filter((s) => s.prefilterRejected);
     const pendingReplayLimit = Math.max(0, Number(cfg.noPoolReplayLimit || 12));
     const pendingReplay = listNoPoolPending(cfg)
       .filter((p) => !seedSample.some((s) => s.mint === p.mint))
@@ -1609,12 +1623,14 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null, opt
       .map((p) => ({
         mint: p.mint,
         symbol: p.symbol || '',
-        dexGate: p.dexGate || null,
+        gmgnGate: p.gmgnGate || null,
         ageHours: null,
         source: 'no_pool_pending_replay',
       }));
-    let rejDexAge = 0;
-    let rejDexPreFilter = prefilterRejectedList.length;
+    let rejGmgnAge = prefilterRejectedList.filter((s) =>
+      ['GMGN_AGE_UNKNOWN', 'GMGN_TOKEN_TOO_NEW', 'GMGN_TOKEN_TOO_OLD'].includes(s.prefilterRejectCode)
+    ).length;
+    let rejGmgnPreFilter = prefilterRejectedList.length;
     let rejSecurity = 0, rejNoPool = 0, rejCooldown = 0;
 
     // Token gate list dimulai dari hasil prefilter fail supaya radar bisa audit stage-1 dengan jelas.
@@ -1624,8 +1640,8 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null, opt
       name: s.symbol || s.mint.slice(0, 6),
       security: null,
       prefilterRejected: true,
-      prefilterReason: s.prefilterReason || 'VETO [DEX_PREFILTER]: token gagal pre-filter Dex.',
-      dexGate: s.dexGate || null,
+      prefilterReason: s.prefilterReason || 'VETO [GMGN_PREFILTER]: token gagal pre-filter GMGN.',
+      gmgnGate: s.gmgnGate || null,
       ageHours: s.ageHours,
       stageFunnel: {
         stage1_gmgn_gate: 'FAIL',
@@ -1638,7 +1654,7 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null, opt
 
     const tokenGatePassed = [];
     for (const s of seedSample) {
-      const dexGate = s.dexGate || null;
+      const gmgnGate = s.gmgnGate || null;
 
       const security = await screenToken(s.mint, s.symbol || '').catch(() => null);
       if (security) {
@@ -1657,7 +1673,7 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null, opt
         symbol: s.symbol || security?.symbol || '',
         name: security?.name || s.symbol || s.mint.slice(0, 6),
         security,
-        dexGate,
+        gmgnGate,
         ageHours: s.ageHours,
         prefilterRejected: false,
         prefilterReason: null,
@@ -1688,7 +1704,7 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null, opt
           symbol: s.symbol || security?.symbol || '',
           name: security?.name || s.symbol || s.mint.slice(0, 6),
           security,
-          dexGate: s.dexGate || null,
+          gmgnGate: s.gmgnGate || null,
           ageHours: null,
           prefilterRejected: false,
           prefilterReason: null,
@@ -1721,17 +1737,17 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null, opt
     }
 
     // Fallback: jika token lolos gate tapi tidak muncul di discovery ranking Meteora,
-    // coba validasi langsung pairAddress dari Dex (best-effort, non-blocking).
+    // coba validasi langsung pairAddress dari GMGN (best-effort, non-blocking).
     const directPoolChecks = tokenGate
       .filter((t) => !t.prefilterRejected && t.security?.eligible)
       .filter((t) => !poolsByMint.get(t.mint)?.length)
       .map((t) => ({
         mint: t.mint,
         symbol: t.symbol,
-        dexGate: t.dexGate || null,
-        pairAddresses: Array.isArray(t.dexGate?.meteoraPairAddresses) && t.dexGate.meteoraPairAddresses.length
-          ? t.dexGate.meteoraPairAddresses
-          : (t.dexGate?.pairAddress ? [t.dexGate.pairAddress] : []),
+        gmgnGate: t.gmgnGate || null,
+        pairAddresses: Array.isArray(t.gmgnGate?.meteoraPairAddresses) && t.gmgnGate.meteoraPairAddresses.length
+          ? t.gmgnGate.meteoraPairAddresses
+          : (t.gmgnGate?.pairAddress ? [t.gmgnGate.pairAddress] : []),
       }))
       .filter((x) => x.pairAddresses.length > 0)
       .slice(0, 8);
@@ -1752,8 +1768,8 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null, opt
                 tokenX: info.tokenX,
                 tokenY: info.tokenY,
                 binStep: safeNum(info.binStep || 0),
-                liquidityRaw: safeNum(item.dexGate?.liquidityUsd || 0),
-                volume24hRaw: safeNum(item.dexGate?.volume24h || 0),
+                liquidityRaw: safeNum(item.gmgnGate?.liquidityUsd || 0),
+                volume24hRaw: safeNum(item.gmgnGate?.volume24h || 0),
                 fees24hRaw: 0,
               },
             };
@@ -1785,7 +1801,7 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null, opt
     const radarSnapshot = tokenGateWithPvp.map((t) => {
       const security = t.security;
       const prefilterRejected = t.prefilterRejected === true;
-      const dexGate = t.dexGate || null;
+      const gmgnGate = t.gmgnGate || null;
       const candidates = poolsByMint.get(t.mint) || [];
       // Apply CE + BinStep filters to ALL candidates first — never pick a pool that would be vetoed anyway
       const validCandidates = candidates.filter(c =>
@@ -1804,10 +1820,10 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null, opt
       }
 
       let matched = false;
-      let reason = 'PASS: Dex+GMGN gate clean';
+      let reason = 'PASS: GMGN gate clean';
       if (prefilterRejected) {
         removeNoPoolPending(t.mint);
-        reason = t.prefilterReason || 'VETO [DEX_PREFILTER]: token gagal pre-filter Dex.';
+        reason = t.prefilterReason || 'VETO [GMGN_PREFILTER]: token gagal pre-filter GMGN.';
       } else if (!security) {
         removeNoPoolPending(t.mint);
         reason = 'VETO [SCREENING_UNAVAILABLE]: screening gagal, token dilewati.';
@@ -1815,15 +1831,15 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null, opt
         removeNoPoolPending(t.mint);
         const first = security.highFlags?.[0];
         const funnel = security.stageFunnel
-          ? ` (Dex=${security.stageFunnel.stage1_dex_gate}, GMGN=${security.stageFunnel.stage3_gmgn_security}, Fee=${security.stageFunnel.stage4_fee_integrity})`
+          ? ` (GMGN=${security.stageFunnel.stage1_gmgn_gate}, GMGN-Sec=${security.stageFunnel.stage3_gmgn_security}, Fee=${security.stageFunnel.stage4_fee_integrity})`
           : '';
         reason = `VETO [${first?.rule || 'SECURITY_REJECT'}]: ${first?.msg || 'Token gagal gate keamanan.'}${funnel}`;
       } else if (!bestPool) {
-        upsertNoPoolPending({ mint: t.mint, symbol: t.symbol || t.name, dexGate }, cfg);
+        upsertNoPoolPending({ mint: t.mint, symbol: t.symbol || t.name, gmgnGate }, cfg);
         reason = candidates.length > 0
           ? 'VETO [NO_VALID_EXEC_POOL]: pool ada tapi semua gagal CE/BinStep filter.'
-          : (dexGate?.hasMeteoraPair === false)
-            ? 'VETO [NO_METEORA_EXEC_POOL]: token lolos gate, tapi di Dex belum ada pair Meteora/DLMM.'
+          : (gmgnGate?.hasMeteoraPair === false)
+            ? 'VETO [NO_METEORA_EXEC_POOL]: token lolos gate, tapi GMGN belum memberi pair Meteora/DLMM.'
             : 'VETO [NO_METEORA_EXEC_POOL]: token lolos, tapi belum ada pool Meteora yang executable.';
         rejNoPool++;
       } else if (t.pvpRisk?.detected) {
@@ -1839,10 +1855,10 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null, opt
       }
 
       const basePool = bestPool || {};
-      const fallbackMcap = safeNum(dexGate?.mcap || security?.mcap);
-      const fallbackVol = safeNum(dexGate?.volume24h);
-      const fallbackLiq = safeNum(dexGate?.liquidityUsd);
-      const fallbackTxns = safeNum(dexGate?.txns24h);
+      const fallbackMcap = safeNum(gmgnGate?.mcap || security?.mcap);
+      const fallbackVol = safeNum(gmgnGate?.volume24h);
+      const fallbackLiq = safeNum(gmgnGate?.liquidityUsd);
+      const fallbackTxns = safeNum(gmgnGate?.txns24h);
       return {
         ...basePool,
         tokenX: basePool.tokenX || t.mint,
@@ -1873,7 +1889,7 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null, opt
       .sort((a, b) => b.darwinScore - a.darwinScore)
       .slice(0, 6);
 
-    // radarDisplay: tampilkan hanya token yang lolos Dex prefilter (age+mcap+volume)
+    // radarDisplay: tampilkan hanya token yang lolos GMGN prefilter (age+mcap+volume)
     // agar radar fokus pada kandidat yang memang layak diproses lanjut.
     const radarDisplay = radarSnapshot
       .filter((p) => p.prefilterRejected !== true)
@@ -1897,8 +1913,8 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null, opt
       totalNetProfitSol: (openPositions.reduce((acc, p) => acc + (parseFloat(p.pnl_sol) || 0), 0)).toFixed(4),
       totalRentSaved: safeNum(rentSaved).toFixed(4),
       prefilter: {
-        seedSource: 'dex_api_seed',
-        seeded: dexSeeds.length,
+        seedSource: 'gmgn_api_seed',
+        seeded: gmgnSeeds.length,
         pass: prefilterPassed.length,
         rejected: prefilterRejectedList.length,
         screened: seedSample.length,
@@ -1906,6 +1922,9 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null, opt
         pendingQueueSize: listNoPoolPending(cfg).length,
         minVolume24h: minVol,
         minMcap: minMcap,
+        minAgeHours,
+        maxAgeHours,
+        requireKnownAge,
         sort: 'volume_desc',
       },
       candidates: radarDisplay.map(p => ({
@@ -1939,8 +1958,8 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null, opt
         radarTotal: radarSnapshot.length,
         executablePoolsCount: radarSnapshot.filter((p) => p.address && p.address !== p.tokenX).length,
         matchedCount: radarSnapshot.filter((p) => p.isMatched).length,
-        rejectedDexPrefilter: rejDexPreFilter,
-        rejectedDexAge: rejDexAge,
+        rejectedGmgnPrefilter: rejGmgnPreFilter,
+        rejectedGmgnAge: rejGmgnAge,
         rejectedSecurity: rejSecurity,
         rejectedNoPool: rejNoPool,
         rejectedCooldown: rejCooldown,
@@ -2157,8 +2176,8 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null, opt
       // kanal Telegram fokus ke laporan /radar_report yang lebih konsisten.
       const nonRefundText = rejNonRefundable > 0 ? ` | NonRefundable: ${rejNonRefundable}` : '';
       console.log(
-        `[hunter] Discovery 0 match (suppressed): seeded=${dexSeeds.length}, prefilterPass=${prefilterPassed.length}, ` +
-        `screened=${seedSample.length}, execPools=${executablePoolsCount}, rej={dexPre:${rejDexPreFilter},dexAge:${rejDexAge},` +
+        `[hunter] Discovery 0 match (suppressed): seeded=${gmgnSeeds.length}, prefilterPass=${prefilterPassed.length}, ` +
+        `screened=${seedSample.length}, execPools=${executablePoolsCount}, rej={gmgnPre:${rejGmgnPreFilter},gmgnAge:${rejGmgnAge},` +
         `security:${rejSecurity},noPool:${rejNoPool},cooldown:${rejCooldown}${nonRefundText}}, ` +
         `tech={trendNonBullish:${rejTrendNonBullish},waitBreakST:${rejWaitBreakSupertrend},entryConfirm:${rejEntryConfirm}}, ` +
         `api=${technicalRejectedCount === 0 && basicFilteredCount > 0 ? 'all_failed' : 'linked'}`
@@ -2210,7 +2229,7 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null, opt
       for (const p of finalEnriched) {
         const f = p.security?.stageFunnel;
         if (!f) continue;
-        const s1 = String(f.stage1_dex_gate || '').toUpperCase();
+        const s1 = String(f.stage1_gmgn_gate || '').toUpperCase();
         const s2 = String(f.stage2_gmgn_availability || '').toUpperCase();
         const s3 = String(f.stage3_gmgn_security || '').toUpperCase();
         const s4 = String(f.stage4_fee_integrity || '').toUpperCase();
@@ -2224,7 +2243,7 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null, opt
       const funnelText = (funnelAgg.stage1_pass + funnelAgg.stage1_fail) > 0
         ? (
           `\n🧭 Funnel:\n` +
-          `• S1 Dex Gate → PASS ${funnelAgg.stage1_pass} | FAIL ${funnelAgg.stage1_fail}\n` +
+          `• S1 GMGN Gate → PASS ${funnelAgg.stage1_pass} | FAIL ${funnelAgg.stage1_fail}\n` +
           `• S2 GMGN API → PASS ${funnelAgg.stage2_pass} | FAIL ${funnelAgg.stage2_fail} | SKIP ${funnelAgg.stage2_skipped}\n` +
           `• S3 GMGN Sec → PASS ${funnelAgg.stage3_pass} | FAIL ${funnelAgg.stage3_fail} | SKIP ${funnelAgg.stage3_skipped}\n` +
           `• S4 Fee Gate → PASS ${funnelAgg.stage4_pass} | FAIL ${funnelAgg.stage4_fail} | SKIP ${funnelAgg.stage4_skipped}\n` +

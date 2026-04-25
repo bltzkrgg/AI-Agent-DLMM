@@ -4,9 +4,9 @@ import { getJupiterPrice } from '../utils/jupiter.js';
 import { getGmgnTokenInfo, getGmgnSecurity } from '../utils/gmgn.js';
 import { getExternalVampedStatus } from '../utils/vampedSource.js';
 
-const DEXSCREENER_BASE = 'https://api.dexscreener.com';
 const JUPITER_TOKEN_BASE = 'https://tokens.jup.ag';
 const JUPITER_PRICE_BASE = 'https://api.jup.ag';
+const BIRDEYE_BASE = 'https://public-api.birdeye.so';
 
 
 function buildOperatorHints(result) {
@@ -196,41 +196,80 @@ function isVampedCoin(info, sec) {
 
 // ─── Data fetchers ───────────────────────────────────────────────
 
-async function getDexScreenerInfo(tokenMint) {
+async function getBirdeyeMarketInfo(tokenMint) {
+  const apiKey = process.env.BIRDEYE_API_KEY;
+  if (!apiKey) return null;
   try {
     const res = await fetchWithTimeout(
-      `${DEXSCREENER_BASE}/latest/dex/tokens/${tokenMint}`, {}, 8000
+      `${BIRDEYE_BASE}/defi/token_overview?address=${tokenMint}`,
+      {
+        headers: {
+          'X-API-KEY': apiKey,
+          'x-chain': 'solana',
+          Accept: 'application/json',
+        },
+      },
+      8000,
     );
     if (!res.ok) return null;
-    const data = await res.json();
-    const pairs = data.pairs || [];
-    if (!pairs.length) return null;
-    const best = pairs.sort((a, b) =>
-      safeNum(b.liquidity?.usd) - safeNum(a.liquidity?.usd)
-    )[0];
-    const txns1h = best.txns?.h1 || {};
-    const txns24h = best.txns?.h24 || {};
+    const json = await res.json().catch(() => null);
+    const data = json?.data || null;
+    if (!data) return null;
     return {
-      name: best.baseToken?.name || '',
-      symbol: best.baseToken?.symbol || '',
-      hasImage: !!(best.info?.imageUrl),
-      hasSocials: !!(best.info?.socials?.length > 0 || best.info?.websites?.length > 0),
-      liquidity: safeNum(best.liquidity?.usd),
-      fdv: safeNum(best.fdv),
-      priceChangeM5: safeNum(best.priceChange?.m5),
-      priceChange1h: safeNum(best.priceChange?.h1),
-      priceChange6h: safeNum(best.priceChange?.h6),
-      priceChange24h: safeNum(best.priceChange?.h24),
-      volume24h: safeNum(best.volume?.h24),
-      fees24h: safeNum(best.fees?.h24 ?? best.fees24h ?? 0),
-      priceUsd: safeNum(best.priceUsd),
-      buys1h: safeNum(txns1h.buys),
-      sells1h: safeNum(txns1h.sells),
-      buys24h: safeNum(txns24h.buys),
-      sells24h: safeNum(txns24h.sells),
-      pairCreatedAt: best.pairCreatedAt || null, // ms timestamp
+      name: data.name || '',
+      symbol: data.symbol || '',
+      liquidity: safeNum(data.liquidity),
+      fdv: safeNum(data.mc || data.fdv || data.marketCap),
+      priceChangeM5: safeNum(data.priceChange5mPercent),
+      priceChange1h: safeNum(data.priceChange1hPercent),
+      priceChange6h: safeNum(data.priceChange6hPercent),
+      priceChange24h: safeNum(data.priceChange24hPercent),
+      volume24h: safeNum(data.v24hUSD || data.volume24hUSD),
+      priceUsd: safeNum(data.price),
+      pairCreatedAt: null,
     };
-  } catch { return null; }
+  } catch {
+    return null;
+  }
+}
+
+function normalizeGmgnMarket(info, sec, birdeye, jup, fallbackName = '', fallbackSymbol = '') {
+  if (!info && !sec && !birdeye && !jup) return null;
+  const createdRaw = pickFirstNumber([info, sec], [
+    'created_timestamp',
+    'open_timestamp',
+    'pair_created_at',
+    'pool.created_timestamp',
+    'pool.open_timestamp',
+  ]);
+  const pairCreatedAt = createdRaw
+    ? (createdRaw > 1e12 ? createdRaw : createdRaw * 1000)
+    : null;
+  const txns1h = pickFirstNumber([info, sec], ['stat.swaps_1h', 'stat.txns_1h', 'swaps_1h']) || 0;
+  const sells1h = pickFirstNumber([info, sec], ['stat.sells_1h', 'sells_1h']) || 0;
+  const txns24h = pickFirstNumber([info, sec], ['stat.swaps_24h', 'stat.txns_24h', 'swaps_24h']) || 0;
+  const sells24h = pickFirstNumber([info, sec], ['stat.sells_24h', 'sells_24h']) || 0;
+  const totalFees = extractGmgnTotalFeesSol(info, sec);
+  return {
+    name: fallbackName || pickFirstString([info, sec], ['name', 'token.name']) || birdeye?.name || jup?.name || '',
+    symbol: fallbackSymbol || pickFirstString([info, sec], ['symbol', 'token.symbol']) || birdeye?.symbol || jup?.symbol || '',
+    hasImage: Boolean(pickFirstString([info, sec], ['logo', 'logo_url', 'image', 'image_url', 'token.logo'])),
+    hasSocials: Boolean(pickFirstString([info, sec], ['twitter', 'telegram', 'website', 'token.twitter', 'token.website'])),
+    liquidity: pickFirstNumber([info, sec], ['liquidity', 'pool.liquidity', 'liquidity_usd']) || birdeye?.liquidity || 0,
+    fdv: pickFirstNumber([info, sec], ['market_cap', 'fdv', 'usd_market_cap']) || birdeye?.fdv || 0,
+    priceChangeM5: pickFirstNumber([info, sec], ['price_change_5m', 'priceChange.m5', 'stat.price_change_5m']) || birdeye?.priceChangeM5 || 0,
+    priceChange1h: pickFirstNumber([info, sec], ['price_change_1h', 'priceChange.h1', 'stat.price_change_1h']) || birdeye?.priceChange1h || 0,
+    priceChange6h: pickFirstNumber([info, sec], ['price_change_6h', 'priceChange.h6', 'stat.price_change_6h']) || birdeye?.priceChange6h || 0,
+    priceChange24h: pickFirstNumber([info, sec], ['price_change_24h', 'priceChange.h24', 'stat.price_change_24h']) || birdeye?.priceChange24h || 0,
+    volume24h: pickFirstNumber([info, sec], ['volume_24h', 'volume24h', 'stat.volume_24h']) || birdeye?.volume24h || 0,
+    fees24h: Number.isFinite(totalFees.totalFeesSol) ? totalFees.totalFeesSol : 0,
+    priceUsd: pickFirstNumber([info, sec], ['price', 'price_usd', 'usd_price']) || birdeye?.priceUsd || jup?.priceUsd || 0,
+    buys1h: Math.max(0, txns1h - sells1h),
+    sells1h,
+    buys24h: Math.max(0, txns24h - sells24h),
+    sells24h,
+    pairCreatedAt: pairCreatedAt || birdeye?.pairCreatedAt || null,
+  };
 }
 
 async function getJupiterData(tokenMint) {
@@ -259,15 +298,15 @@ async function getJupiterData(tokenMint) {
 
 // ─── Step functions ──────────────────────────────────────────────
 
-function step1_basicValidation(dex, jup) {
+function step1_basicValidation(market, jup) {
   const rejects = [];
   const warnings = [];
-  if (!dex) {
-    rejects.push({ rule: 'NO_DEXSCREENER_DATA', msg: 'Token tidak ditemukan di DexScreener' });
+  if (!market) {
+    rejects.push({ rule: 'NO_MARKET_DATA', msg: 'Data market GMGN/Birdeye tidak tersedia' });
     return { rejects, warnings };
   }
-  if (!dex.hasImage) rejects.push({ rule: 'NO_LOGO', msg: 'Token tidak punya logo — REJECT' });
-  if (!dex.hasSocials) rejects.push({ rule: 'NO_PROFILE', msg: 'Token tidak punya profile/sosial resmi — REJECT' });
+  if (!market.hasImage) warnings.push({ rule: 'NO_LOGO', msg: 'Token tidak punya logo.' });
+  if (!market.hasSocials) warnings.push({ rule: 'NO_PROFILE', msg: 'Token tidak punya profile/sosial resmi.' });
   return { rejects, warnings };
 }
 
@@ -286,18 +325,18 @@ function step2_narrativeFilter(name, symbol, cfg = {}) {
   return rejects;
 }
 
-function step3_priceHealth(dex, thresholds = {}) {
+function step3_priceHealth(market, thresholds = {}) {
   const rejects = [];
   const warnings = [];
-  if (!dex) return { rejects, warnings };
+  if (!market) return { rejects, warnings };
 
-  if (dex.priceChange1h < -20)
-    warnings.push({ rule: 'HEAVY_DUMP_1H', msg: `Harga turun ${dex.priceChange1h}% (1h) — Risiko tinggi, tapi peluang serok buat Panda` });
-  else if (dex.priceChange1h < -10)
-    warnings.push({ rule: 'PRICE_CORRECTION', msg: `Harga terkoreksi ${dex.priceChange1h}% (1h) — Monitor area support` });
+  if (market.priceChange1h < -20)
+    warnings.push({ rule: 'HEAVY_DUMP_1H', msg: `Harga turun ${market.priceChange1h}% (1h) — Risiko tinggi, tapi peluang serok buat Panda` });
+  else if (market.priceChange1h < -10)
+    warnings.push({ rule: 'PRICE_CORRECTION', msg: `Harga terkoreksi ${market.priceChange1h}% (1h) — Monitor area support` });
 
-  if (dex.priceChange24h > 250)
-    warnings.push({ rule: 'BUBBLE_DETECTED', msg: `Harga naik ${dex.priceChange24h.toFixed(0)}% dalam 24h — Volatilitas masif, siap meraup fee` });
+  if (market.priceChange24h > 250)
+    warnings.push({ rule: 'BUBBLE_DETECTED', msg: `Harga naik ${market.priceChange24h.toFixed(0)}% dalam 24h — Volatilitas masif, siap meraup fee` });
 
   return { rejects, warnings };
 }
@@ -305,11 +344,11 @@ function step3_priceHealth(dex, thresholds = {}) {
 // ─── Step 4: Token Minimum Age ──────────────────────────────────
 // Reject tokens that are too new — early minutes have extreme dump risk from
 // bundlers/insiders who bought before launch. Wait for initial distribution to settle.
-function step4_tokenAge(dex, minAgeMinutes = 60) {
+function step4_tokenAge(market, minAgeMinutes = 60) {
   const rejects = [];
-  if (!dex?.pairCreatedAt) return { rejects }; // Data tidak tersedia → skip
+  if (!market?.pairCreatedAt) return { rejects }; // Data tidak tersedia → skip
 
-  const ageMs = Date.now() - dex.pairCreatedAt;
+  const ageMs = Date.now() - market.pairCreatedAt;
   const ageMinutes = Math.floor(ageMs / (1000 * 60));
 
   // Format tampilan yang mudah dibaca (jam + menit)
@@ -330,14 +369,14 @@ function step4_tokenAge(dex, minAgeMinutes = 60) {
   return { rejects, ageMinutes };
 }
 
-function step5_txnAnalysis(dex) {
+function step5_txnAnalysis(market) {
   const rejects = [];
   const warnings = [];
-  if (!dex) return { rejects, warnings };
+  if (!market) return { rejects, warnings };
 
-  const total1h = dex.buys1h + dex.sells1h;
+  const total1h = market.buys1h + market.sells1h;
   if (total1h > 10) {
-    const sellRatio = dex.sells1h / total1h;
+    const sellRatio = market.sells1h / total1h;
     // Sniper Hardening: Ubah jadi Warning biar Panda bisa deteksi capitulation
     if (sellRatio > 0.70)
       warnings.push({ rule: 'EXTREME_SELLING_1H', msg: `${(sellRatio * 100).toFixed(0)}% txn h1 adalah SELL — Potensi capitulation/serok bawah` });
@@ -346,8 +385,8 @@ function step5_txnAnalysis(dex) {
   }
 
   // Final Spike Protection: Berubah ke warning agar bisa jaring koin liar
-  if (dex.priceChangeM5 > 15)
-    warnings.push({ rule: 'PRICE_SPIKE_M5', msg: `Harga meledak ${dex.priceChangeM5.toFixed(1)}% dlm 5 menit — Momentum kuat, siap tangkap volatilitas` });
+  if (market.priceChangeM5 > 15)
+    warnings.push({ rule: 'PRICE_SPIKE_M5', msg: `Harga meledak ${market.priceChangeM5.toFixed(1)}% dlm 5 menit — Momentum kuat, siap tangkap volatilitas` });
 
   return { rejects, warnings };
 }
@@ -362,28 +401,28 @@ function step6_tokenSafety(jup) {
   return { rejects, warnings };
 }
 
-function step7_organicScore(dex, jup, thresholds) {
+function step7_organicScore(market, jup, thresholds) {
   const rejects = [];
   const warnings = [];
   const minOrganic = thresholds.minOrganic;
   let score = 0;
 
-  if (dex?.hasImage) score += 10;
-  if (dex?.hasSocials) score += 10;
+  if (market?.hasImage) score += 10;
+  if (market?.hasSocials) score += 10;
   if (jup?.isStrict) score += 15;
 
-  if (dex) {
-    if (dex.volume24h >= 1000000) score += 30; // Volume Sultan
-    else if (dex.volume24h >= 100000) score += 20;
-    else if (dex.volume24h >= 50000) score += 10;
+  if (market) {
+    if (market.volume24h >= 1000000) score += 30; // Volume Sultan
+    else if (market.volume24h >= 100000) score += 20;
+    else if (market.volume24h >= 50000) score += 10;
 
-    if ((dex.buys24h + dex.sells24h) >= 500) score += 20; // Pool super aktif
-    else if ((dex.buys24h + dex.sells24h) >= 100) score += 10;
+    if ((market.buys24h + market.sells24h) >= 500) score += 20; // Pool super aktif
+    else if ((market.buys24h + market.sells24h) >= 100) score += 10;
 
   }
 
-  if (dex) {
-    if (dex.priceChange1h >= -10) score += 15;
+  if (market) {
+    if (market.priceChange1h >= -10) score += 15;
   }
 
   score = Math.max(0, Math.min(100, score));
@@ -394,11 +433,11 @@ function step7_organicScore(dex, jup, thresholds) {
   return { rejects, warnings, score };
 }
 
-function step8_volumeFilter(dex, thresholds) {
+function step8_volumeFilter(market, thresholds) {
   const rejects = [];
-  if (!dex) return { rejects, volume24h: null };
+  if (!market) return { rejects, volume24h: null };
   const minVolume24h = Number(thresholds.minVolume24h || 0);
-  const volume24h = safeNum(dex.volume24h);
+  const volume24h = safeNum(market.volume24h);
   if (minVolume24h > 0 && volume24h < minVolume24h) {
     rejects.push({
       rule: 'BELOW_MIN_VOLUME_24H',
@@ -408,12 +447,12 @@ function step8_volumeFilter(dex, thresholds) {
   return { rejects, volume24h };
 }
 
-function step9_mcapFilter(dexFdv, thresholds) {
+function step9_mcapFilter(marketCap, thresholds) {
   const rejects = [];
   const warnings = [];
   const minMcap = thresholds.minMcap;
   const maxMcap = thresholds.maxMcap;
-  const mcap = dexFdv || null;
+  const mcap = marketCap || null;
 
   if (mcap === null) {
     warnings.push({ rule: 'MISSING_MCAP', msg: 'Data Market Cap kosong — lanjut dengan guard lain (volume/GMGN).' });
@@ -582,7 +621,7 @@ function step11_slippageCheck(sim, maxImpact = 2.5) {
   return { rejects, warnings };
 }
 
-function step14_feeIntegrity({ info, sec, dex, solPrice, thresholds }) {
+function step14_feeIntegrity({ info, sec, market, solPrice, thresholds }) {
   const rejects = [];
   const minFeesSol = Number.isFinite(thresholds.gmgnMinTotalFeesSol)
     ? thresholds.gmgnMinTotalFeesSol
@@ -606,24 +645,23 @@ function step14_feeIntegrity({ info, sec, dex, solPrice, thresholds }) {
     return { rejects, totalFeesSol, feeSource, usedFallback };
   }
 
-  // Fallback sementara (disetujui user): gunakan rule lama saat field GMGN fee kosong.
-  if (dex && solPrice > 0) {
-    const dexFees24h = Number.isFinite(dex.fees24h) && dex.fees24h > 0
-      ? dex.fees24h
-      : (Number.isFinite(dex.volume24h) && dex.volume24h > 0 ? dex.volume24h * 0.0025 : 0); // 0.25% conservative fee proxy
+  if (market && solPrice > 0) {
+    const marketFees24h = Number.isFinite(market.fees24h) && market.fees24h > 0
+      ? market.fees24h
+      : (Number.isFinite(market.volume24h) && market.volume24h > 0 ? market.volume24h * 0.0025 : 0); // 0.25% conservative fee proxy
 
-    if (dexFees24h <= 0) {
+    if (marketFees24h <= 0) {
       rejects.push({
         rule: 'FEE_FALLBACK_DATA_MISSING',
-        msg: 'Fallback fee data tidak tersedia (Dex fees/volume kosong) — fail-closed.'
+        msg: 'Fallback fee data tidak tersedia (GMGN/Birdeye fees/volume kosong) — fail-closed.'
       });
       return { rejects, totalFeesSol, feeSource: 'missing', usedFallback };
     }
 
-    totalFeesSol = dexFees24h / solPrice;
-    feeSource = Number.isFinite(dex.fees24h) && dex.fees24h > 0
-      ? 'dex_fees24h_fallback'
-      : 'dex_volume_proxy_fallback';
+    totalFeesSol = marketFees24h / solPrice;
+    feeSource = Number.isFinite(market.fees24h) && market.fees24h > 0
+      ? 'gmgn_market_fees24h_fallback'
+      : 'gmgn_market_volume_proxy_fallback';
     usedFallback = true;
     if (totalFeesSol < minFeesSol) {
       rejects.push({
@@ -636,7 +674,7 @@ function step14_feeIntegrity({ info, sec, dex, solPrice, thresholds }) {
 
   rejects.push({
     rule: 'GMGN_TOTAL_FEES_MISSING',
-    msg: 'Data total fees GMGN kosong dan fallback fee Dex tidak tersedia — fail-closed.'
+    msg: 'Data total fees GMGN kosong dan fallback fee GMGN/Birdeye tidak tersedia — fail-closed.'
   });
   feeSource = 'missing';
   return { rejects, totalFeesSol, feeSource, usedFallback };
@@ -849,8 +887,10 @@ export async function screenToken(tokenMint, tokenName = '', tokenSymbol = '', o
 
   const deployAmount = cfg.deployAmountSol || 0.1;
 
-  const [dexResult, jupResult, authResult, simResult, solPriceResult, vampedStatusResult] = await Promise.allSettled([
-    getDexScreenerInfo(tokenMint),
+  const [gmgnInfoResult, gmgnSecResult, birdeyeResult, jupResult, authResult, simResult, solPriceResult, vampedStatusResult] = await Promise.allSettled([
+    getGmgnTokenInfo(tokenMint),
+    getGmgnSecurity(tokenMint),
+    getBirdeyeMarketInfo(tokenMint),
     getJupiterData(tokenMint),
     getOnChainAuthority(tokenMint),
     getSlippageSimulation(tokenMint, deployAmount),
@@ -858,7 +898,9 @@ export async function screenToken(tokenMint, tokenName = '', tokenSymbol = '', o
     getExternalVampedStatus(tokenMint, cfg),
   ]);
 
-  const dex  = dexResult.status  === 'fulfilled' ? dexResult.value  : null;
+  const gmgnInfo = gmgnInfoResult.status === 'fulfilled' ? gmgnInfoResult.value : null;
+  const gmgnSec  = gmgnSecResult.status  === 'fulfilled' ? gmgnSecResult.value  : null;
+  const birdeye  = birdeyeResult.status === 'fulfilled' ? birdeyeResult.value : null;
   const jup  = jupResult.status  === 'fulfilled' ? jupResult.value  : null;
   const auth = authResult.status === 'fulfilled' ? authResult.value : { mintAuthority: true, freezeAuthority: true };
   const sim  = simResult.status  === 'fulfilled' ? simResult.value  : null;
@@ -867,25 +909,25 @@ export async function screenToken(tokenMint, tokenName = '', tokenSymbol = '', o
     ? vampedStatusResult.value
     : { status: 'ERROR', isVamped: null, source: 'external', reason: 'promise_rejected' };
 
-  const name   = tokenName   || dex?.name   || jup?.name   || '';
-  const symbol = tokenSymbol || dex?.symbol || jup?.symbol || '';
+  const market = normalizeGmgnMarket(gmgnInfo, gmgnSec, birdeye, jup, tokenName, tokenSymbol);
+  const name   = tokenName   || market?.name   || jup?.name   || '';
+  const symbol = tokenSymbol || market?.symbol || jup?.symbol || '';
 
-  const s1  = step1_basicValidation(dex, jup);
+  const s1  = step1_basicValidation(market, jup);
   const s2  = step2_narrativeFilter(name, symbol, cfg);
-  const s3  = step3_priceHealth(dex, thresholds);
+  const s3  = step3_priceHealth(market, thresholds);
   const minTokenAgeMinutes = Number.isFinite(Number(cfg.minTokenAgeMinutes))
     ? Number(cfg.minTokenAgeMinutes)
     : 60;
-  const s4  = step4_tokenAge(dex, minTokenAgeMinutes);
-  const s5  = step5_txnAnalysis(dex);
+  const s4  = step4_tokenAge(market, minTokenAgeMinutes);
+  const s5  = step5_txnAnalysis(market);
   const s6  = step6_tokenSafety(jup);
-  const s7  = step7_organicScore(dex, jup, thresholds);
-  const s8  = step8_volumeFilter(dex, thresholds);
+  const s7  = step7_organicScore(market, jup, thresholds);
+  const s8  = step8_volumeFilter(market, thresholds);
 
-  // Obelisk Handle: Manual MCAP calculation if DexScreener is lagging
-  let mcap = dex?.fdv || null;
+  let mcap = market?.fdv || null;
   if (!mcap && auth?.supply && auth?.decimals) {
-    const rawPrice = dex?.priceUsd || (jup?.found ? await getJupiterPrice(tokenMint) : 0);
+    const rawPrice = market?.priceUsd || (jup?.found ? await getJupiterPrice(tokenMint) : 0);
     if (rawPrice > 0) {
       const supplyFixed = auth.supply / Math.pow(10, auth.decimals);
       mcap = rawPrice * supplyFixed;
@@ -896,7 +938,6 @@ export async function screenToken(tokenMint, tokenName = '', tokenSymbol = '', o
   const s10 = step10_authorityCheck(auth);
   const s11 = step11_slippageCheck(sim, thresholds.maxImpact);
 
-  // Short-circuit: token gagal gate Dex/basic => jangan panggil GMGN
   const preGmgnRejects = [
     ...s1.rejects,
     ...s2,
@@ -919,50 +960,6 @@ export async function screenToken(tokenMint, tokenName = '', tokenSymbol = '', o
     ...s11.warnings,
   ];
 
-  if (preGmgnRejects.length > 0) {
-    const stageFunnel = {
-      stage1_dex_gate: 'FAIL',
-      stage2_gmgn_availability: 'SKIPPED',
-      stage3_gmgn_security: 'SKIPPED',
-      stage4_fee_integrity: 'SKIPPED',
-      final: 'REJECTED',
-    };
-    return {
-      tokenMint, name, symbol,
-      verdict: 'AVOID',
-      eligible: false,
-      highFlags: preGmgnRejects,
-      mediumFlags: preGmgnWarnings,
-      organicScore: s7.score, mcap: s9.mcap,
-      tokenAgeMinutes: s4.ageMinutes ?? null,
-      priceImpact: sim?.priceImpactBuy,
-      priceImpactSell: sim?.priceImpactSell,
-      devAddress: null,
-      gmgnStatus: 'SKIPPED_DEX_GATE',
-      gmgnRejects: [],
-      gmgnWarnings: [],
-      gmgnFallbackFeesUsed: false,
-      totalFeesSol: null,
-      totalFeesSource: 'not_checked',
-      vampedSourceStatus: vampedSource.status,
-      vampedSourceReason: vampedSource.reason,
-      isVampedBySource: vampedSource.isVamped === true,
-      stageFunnel,
-      operatorHints: [],
-      sources: {
-        dexscreener: !!dex,
-        jupiter: !!(jup?.found),
-        helius: (authResult.status === 'fulfilled'),
-        gmgn: false,
-      },
-    };
-  }
-
-  const [gmgnInfoResult, gmgnSecResult] = await Promise.allSettled([
-    getGmgnTokenInfo(tokenMint),
-    getGmgnSecurity(tokenMint),
-  ]);
-
   // ─── GMGN API Health Logic ────────────────────────────────────
   const hasGmgnKey = !!process.env.GMGN_API_KEY;
   let gmgnStatus = 'ACTIVE';
@@ -974,10 +971,8 @@ export async function screenToken(tokenMint, tokenName = '', tokenSymbol = '', o
     gmgnStatus = 'UNKNOWN';
   }
 
-  const gmgnInfo = gmgnInfoResult.status === 'fulfilled' ? gmgnInfoResult.value : null;
-  const gmgnSec  = gmgnSecResult.status  === 'fulfilled' ? gmgnSecResult.value  : null;
   const s12 = step12_gmgnSecurity(gmgnInfo, gmgnSec, thresholds);
-  const s14 = step14_feeIntegrity({ info: gmgnInfo, sec: gmgnSec, dex, solPrice, thresholds });
+  const s14 = step14_feeIntegrity({ info: gmgnInfo, sec: gmgnSec, market, solPrice, thresholds });
 
   const allRejects = [
     ...preGmgnRejects,
@@ -1000,7 +995,7 @@ export async function screenToken(tokenMint, tokenName = '', tokenSymbol = '', o
 
   let verdict = allRejects.length > 0 ? 'AVOID' : (allWarnings.length > 0 ? 'CAUTION' : 'PASS');
   const stageFunnel = {
-    stage1_dex_gate: preGmgnRejects.length === 0 ? 'PASS' : 'FAIL',
+    stage1_gmgn_gate: preGmgnRejects.length === 0 ? 'PASS' : 'FAIL',
     stage2_gmgn_availability: gmgnStatus === 'ACTIVE' ? 'PASS' : 'FAIL',
     stage3_gmgn_security: s12.rejects.length === 0 ? 'PASS' : 'FAIL',
     stage4_fee_integrity: s14.rejects.length === 0 ? 'PASS' : 'FAIL',
@@ -1026,7 +1021,8 @@ export async function screenToken(tokenMint, tokenName = '', tokenSymbol = '', o
     isVampedBySource: vampedSource.isVamped === true,
     stageFunnel,
     sources: {
-      dexscreener: !!dex,
+      market: !!market,
+      birdeye: !!birdeye,
       jupiter: !!(jup?.found),
       helius: (authResult.status === 'fulfilled'),
       gmgn: (gmgnStatus === 'ACTIVE'),
@@ -1053,7 +1049,7 @@ export function formatScreenResult(result) {
   if (Number.isFinite(result.totalFeesSol)) {
     text += `💸 Total Fees: ${result.totalFeesSol.toFixed(2)} SOL (${result.totalFeesSource || 'unknown'})\n`;
     if (result.gmgnFallbackFeesUsed) {
-      text += `⚠️ Fee source fallback (Dex) dipakai karena field GMGN belum lengkap.\n`;
+      text += `⚠️ Fee source fallback market dipakai karena field GMGN belum lengkap.\n`;
     }
   }
   if (result.vampedSourceStatus) {
@@ -1064,16 +1060,13 @@ export function formatScreenResult(result) {
   }
 
   if (result.stageFunnel) {
-    text += `\n🧭 *Funnel:* Dex=${result.stageFunnel.stage1_dex_gate} → GMGN-API=${result.stageFunnel.stage2_gmgn_availability} → GMGN-Sec=${result.stageFunnel.stage3_gmgn_security} → Fee=${result.stageFunnel.stage4_fee_integrity} → Final=${result.stageFunnel.final}\n`;
+    text += `\n🧭 *Funnel:* GMGN-Gate=${result.stageFunnel.stage1_gmgn_gate} → GMGN-API=${result.stageFunnel.stage2_gmgn_availability} → GMGN-Sec=${result.stageFunnel.stage3_gmgn_security} → Fee=${result.stageFunnel.stage4_fee_integrity} → Final=${result.stageFunnel.final}\n`;
   }
 
   // ─── GMGN Security Block ──────────────────────────────────────
   if (result.gmgnStatus === 'DISABLED') {
     text += `\n🛡️ *GMGN Security: 🔌 Disabled*\n`;
     text += `_API key tidak ditemukan. Set GMGN_API_KEY di .env._\n`;
-  } else if (result.gmgnStatus === 'SKIPPED_DEX_GATE') {
-    text += `\n🛡️ *GMGN Security: ⏭️ Skipped*\n`;
-    text += `_Token gagal Dex/basic gate, GMGN tidak dipanggil untuk hemat waktu/API._\n`;
   } else if (result.gmgnStatus === 'ERROR') {
     text += `\n🛡️ *GMGN Security: ⚠️ API Error*\n`;
     text += `_Request ke GMGN gagal (timeout/down)._\n`;

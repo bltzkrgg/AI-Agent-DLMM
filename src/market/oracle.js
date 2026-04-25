@@ -10,11 +10,14 @@ import { getGmgnTokenInfo } from '../utils/gmgn.js';
 const METEORA_DATAPI = 'https://dlmm-api.meteora.ag';
 const BIRDEYE_BASE = 'https://public-api.birdeye.so';
 
-// ─── 1. OHLCV — Price Snapshot (Birdeye primary, Momentum-Proxy fallback) ───
-// Primary: Birdeye 15m real candles + Supertrend for Evil Panda entry/exit.
-// Fallback: Jupiter spot price momentum proxy when Birdeye unavailable.
+// ─── 1. OHLCV — Price Snapshot (DexScreener primary, Birdeye fallback, Momentum-Proxy last) ───
+// Primary: DexScreener 15m real candles + Supertrend for Evil Panda entry/exit (30-min stale threshold).
+// Fallback 1: Birdeye 15m candles when DexScreener data absent/stale.
+// Fallback 2: Jupiter spot price momentum proxy when both candle sources fail.
 
 export async function getOHLCV(tokenMint, poolAddress = null) {
+  const dex = await buildOHLCVFromDexScreener(tokenMint);
+  if (dex?.historySuccess) return dex;
   const birdeye = await buildOHLCVFromBirdeye(tokenMint);
   if (birdeye?.historySuccess) return birdeye;
   return buildMomentumProxyOHLCV(tokenMint);
@@ -61,6 +64,131 @@ function isCandleSeriesStale(candles = [], maxStaleMinutes = 90) {
   if (!Number.isFinite(tsSec) || tsSec <= 0) return true;
   const ageMinutes = (Date.now() / 1000 - tsSec) / 60;
   return ageMinutes > Math.max(1, Number(maxStaleMinutes || 90));
+}
+
+async function buildOHLCVFromDexScreener(tokenMint) {
+  try {
+    const staleThreshold = 30;
+
+    // Step 1: resolve the Solana pair address for this token mint
+    const pairRes = await fetchWithTimeout(
+      `https://api.dexscreener.com/latest/dex/tokens/${tokenMint}`,
+      { headers: { Accept: 'application/json' } },
+      6000
+    );
+    if (!pairRes.ok) return null;
+    const pairData = await pairRes.json().catch(() => null);
+    const pairs = pairData?.pairs;
+    if (!Array.isArray(pairs) || pairs.length === 0) return null;
+
+    // Prefer the pair with the highest liquidity (first entry is usually the best)
+    const pairAddress = pairs[0]?.pairAddress;
+    const dexMeta = pairs[0];
+    if (!pairAddress) return null;
+
+    // Step 2: fetch 15m candles
+    const candleRes = await fetchWithTimeout(
+      `https://io.dexscreener.com/dex/candles/v3/solana/${pairAddress}?res=15&cb=1`,
+      { headers: { Accept: 'application/json' } },
+      8000
+    );
+    if (!candleRes.ok) return null;
+    const candleJson = await candleRes.json().catch(() => null);
+
+    // DexScreener v3 candle format: { candles: [[ts_ms, o, h, l, c, v], ...] }
+    const rawCandles = candleJson?.candles ?? candleJson?.data?.candles ?? [];
+    if (!Array.isArray(rawCandles) || rawCandles.length === 0) return null;
+
+    const mapped = rawCandles.map((c) => {
+      // Array form: [time_ms, open, high, low, close, volume]
+      if (Array.isArray(c)) {
+        const tsSec = c[0] > 1e12 ? Math.floor(c[0] / 1000) : Number(c[0]);
+        return { time: tsSec, open: Number(c[1]), high: Number(c[2]), low: Number(c[3]), close: Number(c[4]), volume: Number(c[5] ?? 0) };
+      }
+      // Object form: { time, open, high, low, close, volume }
+      const tsSec = Number(c.time ?? c.t) > 1e12 ? Math.floor(Number(c.time ?? c.t) / 1000) : Number(c.time ?? c.t);
+      return {
+        time: tsSec,
+        open: Number(c.o ?? c.open),
+        high: Number(c.h ?? c.high),
+        low: Number(c.l ?? c.low),
+        close: Number(c.c ?? c.close),
+        volume: Number(c.v ?? c.volume ?? 0),
+      };
+    }).filter((c) => Number.isFinite(c.time) && Number.isFinite(c.close) && c.close > 0)
+      .sort((a, b) => a.time - b.time);
+
+    if (mapped.length < 10) return null;
+
+    const closedCandles = mapped.slice(0, -1);
+    if (closedCandles.length < 10) return null;
+    if (isCandleSeriesStale(closedCandles, staleThreshold)) {
+      console.warn('[oracle] DexScreener OHLCV stale — falling back');
+      return null;
+    }
+
+    const last = closedCandles[closedCandles.length - 1];
+    const first = closedCandles[0];
+    const historyAgeMinutes = Number(((Date.now() / 1000 - last.time) / 60).toFixed(2));
+    const maxHigh = Math.max(...closedCandles.map((c) => c.high));
+    const minLow = Math.min(...closedCandles.map((c) => c.low));
+    const range24hPct = last.close > 0 ? Math.abs(((maxHigh - minLow) / last.close) * 100) : 0;
+
+    const priceChangeM5 = safeNum(dexMeta?.priceChange?.m5 ?? 0);
+    const priceChangeH1 = safeNum(dexMeta?.priceChange?.h1 ?? 0);
+    const buyVolume = safeNum(dexMeta?.txns?.h1?.buys ?? 0);
+    const sellVolume = safeNum(dexMeta?.txns?.h1?.sells ?? 0);
+
+    const st = ta.calculateSupertrend(closedCandles, 10, 3);
+    return {
+      tokenMint,
+      timeframe: '15m',
+      source: 'dexscreener-ohlcv',
+      currentPrice: safeNum(last.close),
+      atrPct: Number.isFinite(st?.atr) && last.close > 0 ? Number(((st.atr / last.close) * 100).toFixed(3)) : null,
+      priceChangeM5,
+      priceChangeH1,
+      high24h: safeNum(maxHigh),
+      low24h: safeNum(minLow),
+      range24hPct: parseFloat(range24hPct.toFixed(2)),
+      buyVolume,
+      sellVolume,
+      trend: (priceChangeM5 > 1.5 && priceChangeH1 > 0) ? 'UPTREND'
+        : (priceChangeM5 < -1.5 && priceChangeH1 < 0) ? 'DOWNTREND'
+          : 'SIDEWAYS',
+      volatilityCategory: range24hPct > 20 ? 'HIGH' : range24hPct > 7 ? 'MEDIUM' : 'LOW',
+      ta: {
+        supertrend: {
+          trend: st?.trend || 'NEUTRAL',
+          value: Number.isFinite(st?.value) ? st.value : last.close,
+          atr: Number.isFinite(st?.atr) ? st.atr : null,
+          changed: Boolean(st?.changed),
+          source: 'DexScreener-15m',
+        },
+        candleCount: closedCandles.length,
+        historySuccess: true,
+        "Evil Panda": {
+          entry: {
+            triggered: st?.trend === 'BULLISH',
+            reason: st?.trend === 'BULLISH'
+              ? `EVIL PANDA TREND: Supertrend 15m bullish (${closedCandles.length} candles, DexScreener).`
+              : null,
+          },
+          exit: {
+            triggered: st?.trend === 'BEARISH',
+            reason: st?.trend === 'BEARISH'
+              ? 'TREND EXIT: Supertrend 15m bearish (DexScreener).'
+              : null,
+          },
+        },
+      },
+      historySuccess: true,
+      historyAgeMinutes,
+      historyWindowSec: safeNum(last.time - first.time),
+    };
+  } catch {
+    return null;
+  }
 }
 
 // ─── 2. On-Chain Signals (Helius) ────────────────────────────────
@@ -176,7 +304,7 @@ async function getMeteoraPoolPriceUsd(poolAddress) {
   }
 }
 
-// ─── 4. DexScreener — Sentiment & Momentum ──────────────────────
+// ─── 4. Sentiment & Momentum ────────────────────────────────────
 
 export async function getSentiment(tokenMint) {
   try {
