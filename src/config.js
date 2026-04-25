@@ -44,7 +44,6 @@ const DEFAULTS = {
   allowedBinSteps: [100, 125], // Daftar Bin Step spesifik yang diijinkan (Saklek Mode)
   bannedNarratives: ['kanye', 'taylor', 'trump', 'biden', 'kamala', 'justice', 'bags', 'moo deng', 'pesto'], // Kata kunci narasi yang langsung di-reject
   maxTvlMcapRatio: 0.20,        // CE Gate: max rasio TVL/Mcap yang diterima (0.20 = 20%)
-  gmgnSeedSampleLimit: 40,     // Jumlah token GMGN yang discreen per siklus Hunter (token-first via GMGN trending/new_pairs)
   meteoraDiscoveryLimit: 180,  // Cakupan scan discovery pool Meteora per siklus (lebih besar = lebih kecil false NO_POOL)
   noPoolPendingTtlMinutes: 120, // Simpan token lolos gate tapi belum ada exec pool selama N menit untuk recheck
   noPoolReplayLimit: 12,       // Jumlah token pending NO_POOL yang direplay per siklus
@@ -52,10 +51,8 @@ const DEFAULTS = {
   gmgnMinAgeHours: 0,          // Min usia token sejak launch (jam) — diambil dari GMGN created_timestamp
   gmgnMaxAgeHours: 168,        // Max usia token (jam) = 7 hari — diambil dari GMGN created_timestamp
   gmgnRequireKnownAge: false,  // true: token tanpa data usia GMGN langsung ditolak
-  minTotalFeesSol: 30.0,     // Ambang batas Heritage (Total Fee seumur hidup)
   minDailyFeeYieldPct: 1.0,  // Minimum fee/TVL harian (%) agar entry Evil Panda tetap worth it
   heritageModeEnabled: true, // Aktifkan saringan riwayat sultan
-  minTokenAgeMinutes: 0,     // Min usia token sejak launch (0 = disabled) — Supertrend sudah jadi gate alami
   maxOhlcvStaleMinutes15m: 90, // Maks umur candle 15m sebelum dianggap stale
   maxOhlcvStaleMinutes1h: 180, // Maks umur candle 1h (cadangan HTF)
   minAtrPctForEntry: 2.0,      // Minimal ATR% untuk entry supaya tidak masuk market terlalu flat
@@ -67,14 +64,6 @@ const DEFAULTS = {
   entryRequireHtfAlignment: true, // Wajib konfirmasi HTF (1h) sebelum entry
   entryHtfAllowNeutral: true,     // HTF boleh NEUTRAL (tetap tolak BEARISH)
   entrySupertrendBreakMinPct: 0,  // Buffer break di atas garis Supertrend 15m (0 = strict close > ST)
-  // External vamped source (RapidLaunch/provider lain)
-  // Default OFF agar backward-compatible; aktifkan saat endpoint siap.
-  vampedSourceEnabled: false,
-  vampedSourceFailClosed: true,
-  vampedSourceUrlTemplate: '', // contoh: https://api.vendor.com/v1/vamped?chain=sol&address={mint}
-  vampedSourceApiKey: '',
-  vampedSourceTimeoutMs: 7000,
-  vampedSourceCacheTtlSec: 300,
 
   // Position management
   takeProfitFeePct: 5,
@@ -164,9 +153,6 @@ const DEFAULTS = {
   minSmartMoneyOverlap: 1,        // Minimum overlapping "SmartWallets" to boost confidence
   useSmartWalletRanges: true,     // Mirror Top LPer ranges in Healer
 
-  // LLM-derived weight hints (written by memory.js evolveFromTrades, blended in signalWeights.js)
-  llmWeightHints: null,
-
   // Adaptive Post-Mortem
   autoPostMortemEnabled: true,     // Enable LLM-based analysis of closed trades
 
@@ -175,7 +161,6 @@ const DEFAULTS = {
   publicApiKey: null,
   agentMeridianApiUrl: 'https://api.agentmeridian.xyz/api',
   okxApiKey: process.env.OKX_API_KEY || '',
-  minTokenFeesSol: 0,          // Legacy gate (pool-centric). Set 0 untuk token-centric pipeline.
   gmgnMinTotalFeesSol: 30,     // Minimum total fees token (SOL) berdasarkan GMGN
   gmgnTop10HolderMaxPct: 30,   // Reject jika Top 10 holder > X%
   gmgnDevHoldMaxPct: 5,        // Reject jika dev/creator hold > X%
@@ -198,7 +183,6 @@ const DEFAULTS = {
   autoHarvestEnabled: true,      // Aktifkan penarikan profit otomatis tanpa tutup posisi
   autoHarvestThresholdSol: 0.1, // Threshold fee (SOL) untuk memicu harvest otomatis
   harvestEstimatedGasSol: 0.005, // Estimasi biaya gas harvest (SOL) untuk profit-vs-gas guard
-  autoHarvestCompound: false,    // MUST stay false: Meteora Spot (Type 0) throws Invariant Violation on single-side compound at straddle — always Realize
   enableSimulationShield: true,  // Aktifkan pengecekan simulasi ketat sebelum eksekusi
   hourlyPulseEnabled: true,      // Kirim laporan ringkas setiap jam ke Telegram
   minTaConfidenceForAutoExit: 0.55, // Minimal confidence TA untuk trigger auto-exit berbasis trend
@@ -231,7 +215,6 @@ const CONFIG_BOUNDS = {
   maxPoolAgeDays: { min: 0.1, max: 365 },
   minOrganic: { min: 0, max: 100 },
   minBinStep: { min: 1, max: 400 },
-  minTokenFeesSol: { min: 0, max: 10000 },
   gmgnMinTotalFeesSol: { min: 0, max: 1000000 },
   gmgnTop10HolderMaxPct: { min: 0, max: 100 },
   gmgnDevHoldMaxPct: { min: 0, max: 100 },
@@ -247,7 +230,6 @@ const CONFIG_BOUNDS = {
   gmgnBlockVamped: { type: 'boolean' },
   gmgnFailClosedCritical: { type: 'boolean' },
   executionRejectNonRefundableFees: { type: 'boolean' },
-  minTotalFeesSol: { min: 0, max: 1000000 },
   minDailyFeeYieldPct: { min: 0, max: 20 },
   heritageModeEnabled: { type: 'boolean' },
   dryRun: { type: 'boolean' },
@@ -303,7 +285,6 @@ const CONFIG_BOUNDS = {
   maxPriceImpactPct: { min: 0.1, max: 5 },
   maxExitPriceImpactPct: { min: 0.1, max: 20 },
   maxBinsPerPosition: { min: 20, max: 150 },
-  minTokenAgeMinutes: { min: 0, max: 1440 },
   maxOhlcvStaleMinutes15m: { min: 5, max: 720 },
   maxOhlcvStaleMinutes1h: { min: 15, max: 1440 },
   minAtrPctForEntry: { min: 0, max: 20 },
@@ -315,17 +296,10 @@ const CONFIG_BOUNDS = {
   entryRequireHtfAlignment: { type: 'boolean' },
   entryHtfAllowNeutral: { type: 'boolean' },
   entrySupertrendBreakMinPct: { min: 0, max: 5 },
-  vampedSourceEnabled: { type: 'boolean' },
-  vampedSourceFailClosed: { type: 'boolean' },
-  vampedSourceUrlTemplate: { type: 'string' },
-  vampedSourceApiKey: { type: 'string' },
-  vampedSourceTimeoutMs: { min: 1000, max: 60000 },
-  vampedSourceCacheTtlSec: { min: 1, max: 86400 },
   dailyLossLimitUsd: { min: 0, max: 1000 },
   allowedBinSteps: { type: 'array' }, // Custom handling logic in updateConfig
   bannedNarratives: { type: 'array' }, // Custom handling logic in updateConfig
   maxTvlMcapRatio: { min: 0.01, max: 1.0 },
-  gmgnSeedSampleLimit: { min: 10, max: 200 },
   meteoraDiscoveryLimit: { min: 50, max: 500 },
   noPoolPendingTtlMinutes: { min: 5, max: 720 },
   noPoolReplayLimit: { min: 0, max: 100 },
@@ -338,7 +312,6 @@ const CONFIG_BOUNDS = {
   autoHarvestThresholdSol: { min: 0.005, max: 1.0 },
   harvestEstimatedGasSol: { min: 0.0005, max: 0.05 },
   autoHarvestEnabled: { type: 'boolean' },
-  autoHarvestCompound: { type: 'boolean' },
   enableSimulationShield: { type: 'boolean' },
   hourlyPulseEnabled: { type: 'boolean' },
   minTaConfidenceForAutoExit: { min: 0.1, max: 0.95 },
@@ -357,7 +330,6 @@ const CONFIG_BOUNDS = {
   signalConservativeMaxPositions: { min: 1, max: 20 },
   
   lastEvolutionTradeCount: { min: 0, max: 1000000 },
-  llmWeightHints: { type: 'object' },
   okxApiKey: { type: 'string' },
   slippageBps: { min: 10, max: 1000 },
   tvlDropPanicThreshold: { min: 0.1, max: 0.9 },

@@ -645,7 +645,6 @@ async function executeTool(name, input) {
       const allowedBinSteps = (Array.isArray(cfg.allowedBinSteps) && cfg.allowedBinSteps.length > 0)
         ? cfg.allowedBinSteps
         : (activeStrat?.allowedBinSteps || [100, 125]);
-      const minTokenFeesSol = cfg.minTokenFeesSol;
       const preFiltered = combined.filter(p => {
         const fees = p.fees24hRaw || 0;
         const volume24h = p.volume24hRaw || 0;
@@ -656,10 +655,10 @@ async function executeTool(name, input) {
         const volumePasses = minVolume24h <= 0 || volume24h >= minVolume24h;
 
         // 🏰 HERITAGE FILTER v76.0 (Kecerdasan Sultan)
-        const minTotalFeesSol = cfg.minTotalFeesSol || 30.0;
+        const minTotalFeesSol = cfg.gmgnMinTotalFeesSol || 30.0;
         const heritageMode = cfg.heritageModeEnabled !== false;
 
-        const isMomentumPass = (minTokenFeesSol <= 0 || fees >= minTokenFeesSol);
+        const isMomentumPass = true;
         const isHeritagePass = heritageMode && (p.totalFeesEstimated >= minTotalFeesSol);
 
         // 🐼 EVIL PANDA GATE 1: Pool age <72h (freshness edge)
@@ -677,9 +676,8 @@ async function executeTool(name, input) {
           !isOnCooldown(p.address)
         );
       }).map(p => {
-        const fees = p.fees24hRaw || 0;
-        const isMomentumPass = (minTokenFeesSol <= 0 || fees >= minTokenFeesSol);
-        const isHeritagePass = (cfg.heritageModeEnabled !== false) && (p.totalFeesEstimated >= (cfg.minTotalFeesSol || 30.0));
+        const isMomentumPass = true;
+        const isHeritagePass = (cfg.heritageModeEnabled !== false) && (p.totalFeesEstimated >= (cfg.gmgnMinTotalFeesSol || 30.0));
 
         return {
           ...p,
@@ -1502,7 +1500,7 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null, opt
       }
     }
     const gmgnSeeds = Array.from(seedByMint.values());
-    const seedLimit = Math.max(10, Number(cfg.gmgnSeedSampleLimit ?? 40));
+    const seedLimit = Math.max(10, Math.min(200, Number(cfg.meteoraDiscoveryLimit ?? 150)));
     const minVol = Number(cfg.minVolume24h || 0);
     const minMcap = Number(cfg.minMcap || 0);
     const minAgeHours = Math.max(0, Number(cfg.gmgnMinAgeHours ?? 0));

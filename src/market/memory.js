@@ -16,7 +16,7 @@ import { readFileSync, writeFileSync, existsSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { createMessage, resolveModel, extractText } from '../agent/provider.js';
-import { getConfig, updateConfig } from '../config.js';
+import { getConfig } from '../config.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -288,7 +288,7 @@ Respond HANYA dengan JSON:
     evolutionRound: (memory.evolutionCount || 0) + 1,
   }));
 
-  // ── Darwin weight recalibration ───────────────────────────────
+  // ── Darwin weight hints (internal memory only) ───────────────
   let appliedWeights = null;
   if (result.darwinWeights && typeof result.darwinWeights === 'object') {
     const WEIGHT_KEYS = ['mcap', 'feeActiveTvlRatio', 'volume', 'holderCount'];
@@ -300,8 +300,7 @@ Respond HANYA dengan JSON:
       }
     }
     if (Object.keys(validated).length === WEIGHT_KEYS.length) {
-      // Store as hints, not override — signalWeights.js owns the statistical weights
-      updateConfig({ llmWeightHints: validated });
+      memory.llmWeightHints = validated;
       appliedWeights = validated;
     }
   }
