@@ -1916,6 +1916,7 @@ function formatRadarReportTelegram(snapshot) {
   const s2 = ff(funnel.s2);
   const s3 = ff(funnel.s3);
   const s4 = ff(funnel.s4);
+  const stageStat = (s) => `P${safeNum(s.pass)} F${safeNum(s.fail)} S${safeNum(s.soft)} K${safeNum(s.skipped)}`;
   const funnelPre = [
     `S1 Discovery PASS:${safeNum(s1.pass)} FAIL:${safeNum(s1.fail)} SOFT:${safeNum(s1.soft)} SKIP:${safeNum(s1.skipped)}`,
     `S2 Public    PASS:${safeNum(s2.pass)} FAIL:${safeNum(s2.fail)} SOFT:${safeNum(s2.soft)} SKIP:${safeNum(s2.skipped)}`,
@@ -1936,7 +1937,7 @@ function formatRadarReportTelegram(snapshot) {
     '',
     `<b>Pipeline Stats</b>`,
     `<code>Radar Total:</code> ${safeNum(st.radarTotal)} | <code>Matched:</code> ${safeNum(st.matchedCount)} | <code>Exec Pools:</code> ${safeNum(st.executablePoolsCount)}`,
-    `<code>Rejected:</code> Security ${safeNum(st.rejectedSecurity)} | NoPool ${safeNum(st.rejectedNoPool)} | Cooldown ${safeNum(st.rejectedCooldown)}`,
+    `<code>Waterfall:</code> S1 ${stageStat(s1)} | S2 ${stageStat(s2)} | S3 ${stageStat(s3)} | S4 ${stageStat(s4)}`,
     `<code>Technical:</code> TrendNonBullish ${safeNum(tech.trendNonBullish)} | WaitBreakST ${safeNum(tech.waitBreakSupertrend)} | EntryConfirmFailed ${safeNum(tech.entryConfirmFailed)}`,
     '',
     `<b>Funnel Statistics</b>`,

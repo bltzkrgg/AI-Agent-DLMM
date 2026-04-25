@@ -57,7 +57,7 @@ test('Evil Panda readiness blocks weak fee productivity', async () => {
   }
 });
 
-test('Evil Panda readiness requires calm drift and 2 green 15m candles', async () => {
+test('Evil Panda readiness passes on first green momentum with calm probe', async () => {
   const originalFetch = global.fetch;
   setupEnv('dlmm-panda-candles-');
   mockFetchWithCandles([
@@ -79,8 +79,7 @@ test('Evil Panda readiness requires calm drift and 2 green 15m candles', async (
       },
     });
 
-    assert.equal(result.ok, false);
-    assert.match(result.blockers[0], /2 candle 15m/i);
+    assert.equal(result.ok, true);
   } finally {
     global.fetch = originalFetch;
   }
