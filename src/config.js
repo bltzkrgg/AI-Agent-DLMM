@@ -70,8 +70,8 @@ const DEFAULTS = {
   maxBinStep:             200,
   minFeeActiveTvlRatio:   0.002,
   minDailyFeeYieldPct:    1.0,
-  maxPoolAgeHours:        2160,
-  maxPoolAgeDays:         3,
+  maxPoolAgeHours:        0,          // 0 = tidak ada batas umur pool (Market Maker mode)
+  // maxPoolAgeDays dihapus — bot sekarang bisa detect pool tua (SOL/USDC, dsb)
   // Parameter discovery (dibaca oleh coinfilter.normalizeConfig — tanpa radar.* layer)
   discoveryTimeframe:     '1h',
   discoveryCategory:      'trending',
@@ -158,8 +158,8 @@ const CONFIG_BOUNDS = {
   maxBinStep:             { min: 1,     max: 400 },
   minFeeActiveTvlRatio:   { min: 0,     max: 1 },
   minDailyFeeYieldPct:    { min: 0,     max: 20 },
-  maxPoolAgeHours:        { min: 1,     max: 87600 },
-  maxPoolAgeDays:         { min: 0.1,   max: 365 },
+  maxPoolAgeHours:        { min: 0,     max: 87600 },
+  // maxPoolAgeDays dihapus dari bounds
   maxAthDistancePct:      { min: 1,     max: 50 },
   dominanceMinPct:        { min: 1,     max: 100 },
   minMcap:                { min: 0,     max: 100_000_000 },
@@ -247,7 +247,9 @@ const NESTED_SECTION_MAP = {
     minVolume24h:          'minVolume24h',
     minHolders:            'minHolders',
     minOrganic:            'minOrganic',
-    maxPoolAgeDays:        'maxPoolAgeDays',
+    minMcap:               'minMcap',
+    maxMcapUsd:            'maxMcapUsd',
+    // maxPoolAgeDays dihapus — tidak ada filter umur pool (Market Maker mode)
   },
 
   // security_gmgn: prefix gmgn* di flat config
@@ -391,7 +393,9 @@ export const SETCONFIG_WHITELIST = {
   minVolume24h:           { section: 'discovery',  type: 'number',  desc: 'Volume 24h minimum (USD)' },
   minHolders:             { section: 'discovery',  type: 'number',  desc: 'Holder minimum token' },
   minOrganic:             { section: 'discovery',  type: 'number',  desc: 'Organic score minimum (0–100)' },
-  maxPoolAgeDays:         { section: 'discovery',  type: 'number',  desc: 'Usia pool maksimum (hari)' },
+  maxPoolAgeDays:         { section: 'discovery',  type: 'number',  desc: '[DEPRECATED] Gunakan maxPoolAgeHours. Umur pool maksimum (hari)' },
+  minMcap:                { section: 'discovery',  type: 'number',  desc: 'Market Cap minimum token (USD, 0 = tidak filter)' },
+  maxMcapUsd:             { section: 'discovery',  type: 'number',  desc: 'Market Cap maksimum token (USD, 0 = tidak filter)' },
   // ── Screening ─────────────────────────────────────────────────────
   autoScreeningEnabled:   { section: 'screening',  type: 'boolean', desc: 'Aktifkan auto-screening berkala (true/false)' },
   screeningIntervalMin:   { section: 'screening',  type: 'number',  desc: 'Interval auto-screening (menit, 5–1440)' },

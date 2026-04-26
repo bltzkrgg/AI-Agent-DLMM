@@ -21,7 +21,8 @@
     "minVolume24h": 1000000,
     "minHolders": 300,
     "minOrganic": 70,
-    "maxPoolAgeDays": 30
+    "minMcap": 0,
+    "maxMcapUsd": 0
   },
   "security_gmgn": {
     "enabled": true,

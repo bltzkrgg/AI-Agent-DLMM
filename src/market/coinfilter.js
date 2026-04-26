@@ -27,11 +27,14 @@ function normalizeConfig(cfg = getConfig()) {
   // Baca langsung dari flat config — tidak ada radar.* layer lagi.
   // Semua kunci sudah di-flatten oleh flattenUserConfig() di config.js.
   return {
-    minMcap:              Number(cfg.minMcap)              || 250000,
+    // Mcap: baca dari config, fallback 0 (tidak filter) agar pool tua seperti SOL/USDC bisa lolos
+    // Atur minMcap dan maxMcapUsd di user-config.json discovery section
+    minMcap:              Number(cfg.minMcap)              || 0,
     minVolume24h:         Number(cfg.minVolume24h)         || 1000000,
     minTvl:               Number(cfg.minTvl)               || 0,
     maxTvl:               Number(cfg.maxTvl)               || 0,
-    maxMcap:              Number(cfg.maxMcap)              || 0,
+    // maxMcapUsd = alias untuk maxMcap (keduanya diterima)
+    maxMcap:              Number(cfg.maxMcapUsd || cfg.maxMcap) || 0,
     minHolders:           Number(cfg.minHolders)           || 0,
     minOrganic:           Number(cfg.minOrganic)           || 55,
     maxPriceImpactPct:    Number(cfg.maxPriceImpactPct)    || 2.5,
