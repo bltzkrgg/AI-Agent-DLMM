@@ -603,7 +603,7 @@ bot.onText(/\/screening/, async (msg) => {
     const lines = await Promise.all(top5.map(async (pool, i) => {
       const symbol  = pool.name || pool.tokenXMint?.slice(0, 8) || 'UNKNOWN';
       const ratio   = ((pool.feeActiveTvlRatio || 0) * 100).toFixed(2);
-      const tvl     = safeNum(pool.tvl || pool.liquidity, 0).toLocaleString('en-US', { maximumFractionDigits: 0 });
+      const tvl     = safeNum(pool.totalTvl || pool.activeTvl, 0).toLocaleString('en-US', { maximumFractionDigits: 0 });
       const binStep = pool.binStep || '?';
 
       // Cek Meridian Supertrend — fail-open jika error
@@ -684,7 +684,7 @@ async function runScreeningLoop() {
       const lines = hotPools.map((p, i) => {
         const sym   = p.name || p.tokenXMint?.slice(0, 8) || 'UNKNOWN';
         const ratio = ((p.feeActiveTvlRatio || 0) * 100).toFixed(2);
-        const tvl   = safeNum(p.tvl || p.liquidity, 0).toLocaleString('en-US', { maximumFractionDigits: 0 });
+        const tvl   = safeNum(p.totalTvl || p.activeTvl, 0).toLocaleString('en-US', { maximumFractionDigits: 0 });
         return `${i + 1}. <b>${escapeHTML(sym)}</b> — <code>${ratio}%</code> fee/TVL | TVL: <code>$${tvl}</code>`;
       });
 
