@@ -1,13 +1,14 @@
 /**
  * Jupiter Swap Integration
  *
- * Swap any SPL token → SOL via Jupiter V6 API.
- * Digunakan setelah claim fees atau close posisi untuk convert profit ke SOL.
+ * Swap any SPL token → SOL via Jupiter V2 API.
+ * Semua request via relayFetch — otomatis bypass ISP jika lpAgentRelayEnabled=true.
  */
 
 import { VersionedTransaction, PublicKey } from '@solana/web3.js';
 import { getConnection, getWallet } from './wallet.js';
 import { fetchWithTimeout, withRetry, withExponentialBackoff, stringify } from '../utils/safeJson.js';
+import { relayFetch } from '../utils/relayFetch.js';
 import { getRecommendedPriorityFee } from '../utils/helius.js';
 import { isDryRun } from '../config.js';
 import {
@@ -42,7 +43,7 @@ async function fetchJupiter(path, options = {}, timeoutMs = 15000) {
       // Use exponential backoff for each provider attempt
       return await withExponentialBackoff(
         async () => {
-          const res = await fetchWithTimeout(url, {
+          const res = await relayFetch(url, {
             ...options,
             headers: getJupiterHeaders(options.headers || {}),
           }, timeoutMs);
@@ -151,7 +152,7 @@ export async function getJupiterQuote(inputMint, outputMint, amountRaw, slippage
     slippageBps: String(slippageBps),
     restrictIntermediateTokens: 'true',
   });
-  const res = await fetchJupiter(`/swap/v1/quote?${quoteParams.toString()}`, {}, 10000);
+  const res = await fetchJupiter(`/swap/v2/quote?${quoteParams.toString()}`, {}, 10000);
   if (!res.ok) {
     const err = await res.text().catch(() => res.status);
     throw new Error(`Jupiter quote failed: ${err}`);
@@ -206,7 +207,7 @@ export async function swapToSOL(inputMint, amountRaw, slippageBps = 100, options
   } catch { /* pakai default */ }
 
   // 3. Get swap transaction
-  const swapRes = await fetchJupiter('/swap/v1/swap', {
+  const swapRes = await fetchJupiter('/swap/v2/swap', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: stringify({
