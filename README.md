@@ -300,13 +300,76 @@ Setiap posisi yang ditutup dicatat ke `harvest.log`:
 
 ## Telegram Commands
 
+### Daftar Perintah
+
 | Command | Fungsi |
 |---|---|
-| `/hunt` | Mulai satu siklus scan → screen → deploy |
-| `/status` | Tampilkan posisi aktif, PnL, dan HWM |
-| `/exit` | Tutup semua posisi aktif (manual) |
-| `/config` | Tampilkan konfigurasi aktif |
-| `/stop` | Hentikan semua loop otonom |
+| `/hunt` | Mulai loop sniper (scan → screen → deploy) |
+| `/status` | Posisi aktif, PnL, balance, HWM |
+| `/stop` | Hentikan loop (posisi tidak otomatis ditutup) |
+| `/exit` | Force-close posisi aktif + swap ke SOL |
+| `/balance` | Cek saldo wallet SOL |
+| `/config` | Tampilkan config per section (Finance/Discovery/Strategy) |
+| `/setconfig [key] [value]` | **Edit config secara live** (lihat panduan di bawah) |
+| `/setconfig ?` | Tampilkan semua key yang bisa diubah |
+| `/dryrun on\|off` | Toggle dry run mode |
+| `/screening` | Scan manual top 5 high-fee pool sekarang |
+| `/briefing` | Laporan 24 jam: funnel screening, PnL, posisi, blacklist |
+| `/evolve` | Analisis harvest.log → saran perbaikan config dari AI |
+| `/evolve apply` | Analisis + auto-terapkan rekomendasi AI ke config |
+| `/blacklist` | Lihat daftar token yang diblokir (SL/rugpull) |
+| `/blacklist rm <mint>` | Hapus token dari blacklist |
+
+---
+
+### Panduan `/setconfig` — Edit Config Live
+
+Gunakan `/setconfig` untuk mengubah parameter **Finance** dan **Discovery** tanpa restart bot. Perubahan efektif di siklus loop berikutnya.
+
+**Format:**
+```
+/setconfig [key] [value]
+/setconfig [section].[key] [value]   ← dot notation
+```
+
+#### Section Finance
+
+| Key | Tipe | Keterangan |
+|---|---|---|
+| `deployAmountSol` | number | Modal SOL per posisi (0.01–50) |
+| `maxPositions` | number | Maks posisi bersamaan (1–20) |
+| `minSolToOpen` | number | Saldo minimum sebelum buka posisi |
+| `gasReserve` | number | Cadangan SOL untuk gas fee |
+| `dailyLossLimitUsd` | number | Batas rugi harian dalam USD |
+| `slippageBps` | number | Slippage tolerance (bps, 10–1000) |
+
+#### Section Discovery
+
+| Key | Tipe | Keterangan |
+|---|---|---|
+| `meteoraDiscoveryLimit` | number | Jumlah pool discan per siklus |
+| `discoveryTimeframe` | string | Timeframe chart: `1m` / `5m` / `15m` / `1h` |
+| `discoveryCategory` | string | Kategori pool: `trending`, `new`, dll |
+| `minTvl` | number | TVL minimum pool (USD) |
+| `maxTvl` | number | TVL maksimum pool (USD) |
+| `minVolume24h` | number | Volume 24h minimum (USD) |
+| `minHolders` | number | Holder minimum token |
+| `minOrganic` | number | Organic score minimum (0–100) |
+| `maxPoolAgeDays` | number | Usia pool maksimum (hari) |
+
+#### Contoh Penggunaan
+
+```
+/setconfig deployAmountSol 1.5         → Modal per posisi menjadi 1.5 SOL
+/setconfig finance.deployAmountSol 0.5 → Sama, pakai dot notation
+/setconfig minTvl 50000                → TVL minimum $50,000
+/setconfig discovery.timeframe 1h      → Ganti timeframe ke 1h
+/setconfig discoveryCategory trending  → Filter hanya pool trending
+/setconfig minOrganic 70               → Naikkan threshold organic
+/setconfig slippageBps 200             → Naikkan slippage ke 2%
+```
+
+> ⚠️ Kunci di luar `finance` dan `discovery` (seperti LLM model, GMGN secret, wallet) **tidak dapat diubah** via Telegram untuk keamanan sistem inti.
 
 ---
 

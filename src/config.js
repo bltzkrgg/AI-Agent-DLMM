@@ -366,6 +366,68 @@ export function isConfigKeySupported(key) {
   return KNOWN_CONFIG_KEYS.has(key);
 }
 
+// ── SETCONFIG_WHITELIST ───────────────────────────────────────────────────────
+// Hanya kunci dalam section ini yang bisa diubah via /setconfig dari Telegram.
+// Ini mencegah user merusak config inti (LLM model, RPC, dsb.).
+// Format: { 'flatKey': 'section.displayKey' } untuk help text
+
+export const SETCONFIG_WHITELIST = {
+  // ── Finance ──────────────────────────────────────────────────────
+  deployAmountSol:        { section: 'finance',    type: 'number',  desc: 'Modal SOL per posisi (0.01–50)' },
+  maxPositions:           { section: 'finance',    type: 'number',  desc: 'Maks posisi bersamaan (1–20)' },
+  minSolToOpen:           { section: 'finance',    type: 'number',  desc: 'Saldo minimum buka posisi' },
+  gasReserve:             { section: 'finance',    type: 'number',  desc: 'Cadangan gas SOL' },
+  dailyLossLimitUsd:      { section: 'finance',    type: 'number',  desc: 'Batas rugi harian (USD)' },
+  maxDailyPriorityFeeSol: { section: 'finance',    type: 'number',  desc: 'Batas fee prioritas/hari' },
+  slippageBps:            { section: 'finance',    type: 'number',  desc: 'Slippage (bps, 10–1000)' },
+  // ── Discovery ─────────────────────────────────────────────────────
+  meteoraDiscoveryLimit:  { section: 'discovery',  type: 'number',  desc: 'Jumlah pool discan per siklus' },
+  discoveryTimeframe:     { section: 'discovery',  type: 'string',  desc: 'Timeframe chart (1m/5m/15m/1h)' },
+  discoveryCategory:      { section: 'discovery',  type: 'string',  desc: 'Kategori pool (trending/new/…)' },
+  minTvl:                 { section: 'discovery',  type: 'number',  desc: 'TVL minimum pool (USD)' },
+  maxTvl:                 { section: 'discovery',  type: 'number',  desc: 'TVL maksimum pool (USD)' },
+  minVolume24h:           { section: 'discovery',  type: 'number',  desc: 'Volume 24h minimum (USD)' },
+  minHolders:             { section: 'discovery',  type: 'number',  desc: 'Holder minimum token' },
+  minOrganic:             { section: 'discovery',  type: 'number',  desc: 'Organic score minimum (0–100)' },
+  maxPoolAgeDays:         { section: 'discovery',  type: 'number',  desc: 'Usia pool maksimum (hari)' },
+};
+
+// ── resolveNestedKey ─────────────────────────────────────────────────────────
+// Resolve input dari /setconfig:
+//   'deployAmountSol'         → { flatKey: 'deployAmountSol', meta }
+//   'finance.deployAmountSol' → { flatKey: 'deployAmountSol', meta }
+//   'discovery.timeframe'     → { flatKey: 'discoveryTimeframe', meta }
+// Return null jika key tidak dikenali atau tidak di whitelist.
+
+export function resolveNestedKey(input) {
+  if (!input || typeof input !== 'string') return null;
+
+  const parts = input.trim().split('.');
+
+  let flatKey;
+  if (parts.length === 1) {
+    // Flat key langsung: 'deployAmountSol'
+    flatKey = parts[0];
+  } else {
+    // Dot notation: 'section.subKey'
+    const [section, subKey] = parts;
+    const sectionMap = NESTED_SECTION_MAP[section];
+    if (!sectionMap) {
+      // Section null = passthrough (e.g. finance, intervals)
+      flatKey = subKey;
+    } else {
+      // Cek di mapping eksplisit (e.g. discovery.timeframe → discoveryTimeframe)
+      flatKey = sectionMap[subKey] || subKey;
+    }
+  }
+
+  // Harus ada di whitelist
+  const meta = SETCONFIG_WHITELIST[flatKey];
+  if (!meta) return null;
+
+  return { flatKey, meta, input };
+}
+
 // ── updateConfig ──────────────────────────────────────────────────────────────
 // updateConfig selalu menulis ke format FLAT untuk kompatibilitas maksimal.
 // Format nested di user-config.json tetap dibaca saat getConfig(), tapi update

@@ -17,7 +17,7 @@ import 'dotenv/config';
 import TelegramBot              from 'node-telegram-bot-api';
 import { existsSync, readFileSync, writeFileSync, unlinkSync } from 'fs';
 import { initSolana, getWalletBalance }   from './solana/wallet.js';
-import { getConfig, updateConfig, isConfigKeySupported } from './config.js';
+import { getConfig, updateConfig, isConfigKeySupported, resolveNestedKey, SETCONFIG_WHITELIST } from './config.js';
 import { runLinearLoop, stopLoop, setNotifyFn, isRunning, getCurrentPosition } from './agents/hunterAlpha.js';
 import { exitPosition, getActivePositionCount, EP_CONFIG } from './sniper/evilPanda.js';
 import { discoverHighFeePoolsMeridian, runMeridianVeto } from './market/meridianVeto.js';
@@ -210,52 +210,158 @@ bot.onText(/\/balance/, async (msg) => {
   bot.sendMessage(msg.chat.id, `💰 Balance: <code>${balance} SOL</code>`, { parse_mode: 'HTML' });
 });
 
-// /config — tampilkan config flat saat ini
+// /config — tampilkan config aktif per section
 bot.onText(/\/config/, (msg) => {
   if (!guard(msg)) return;
   const cfg = getConfig();
-  const lines = [
+  const finance = [
     `deployAmountSol       = ${cfg.deployAmountSol}`,
-    `allowedBinSteps       = ${JSON.stringify(cfg.allowedBinSteps || [100,125])}`,
-    `minVolume24h          = ${cfg.minVolume24h}`,
-    `minMcap               = ${cfg.minMcap}`,
-    `maxPoolAgeHours       = ${cfg.maxPoolAgeHours}`,
+    `maxPositions          = ${cfg.maxPositions}`,
+    `minSolToOpen          = ${cfg.minSolToOpen}`,
+    `gasReserve            = ${cfg.gasReserve}`,
+    `slippageBps           = ${cfg.slippageBps}`,
+    `dailyLossLimitUsd     = ${cfg.dailyLossLimitUsd}`,
+  ].join('\n');
+  const discovery = [
     `meteoraDiscoveryLimit = ${cfg.meteoraDiscoveryLimit}`,
-    `gmgnMinTotalFeesSol   = ${cfg.gmgnMinTotalFeesSol}`,
+    `discoveryTimeframe    = ${cfg.discoveryTimeframe}`,
+    `discoveryCategory     = ${cfg.discoveryCategory}`,
+    `minTvl                = ${cfg.minTvl}`,
+    `maxTvl                = ${cfg.maxTvl}`,
+    `minVolume24h          = ${cfg.minVolume24h}`,
+    `minHolders            = ${cfg.minHolders}`,
+    `minOrganic            = ${cfg.minOrganic}`,
+    `maxPoolAgeDays        = ${cfg.maxPoolAgeDays}`,
+  ].join('\n');
+  const strategy = [
+    `stopLossPct           = ${cfg.stopLossPct}`,
+    `trailingStopPct       = ${cfg.trailingStopPct}`,
+    `atrGuardEnabled       = ${cfg.atrGuardEnabled}`,
+    `atrMultiplier         = ${cfg.atrMultiplier}`,
     `dryRun                = ${cfg.dryRun}`,
-    `autonomyMode          = ${cfg.autonomyMode}`,
-  ];
+    `autoScreeningEnabled  = ${cfg.autoScreeningEnabled}`,
+    `screeningIntervalMin  = ${cfg.screeningIntervalMin}`,
+  ].join('\n');
+
   bot.sendMessage(msg.chat.id,
-    `⚙️ <b>Config (Flat)</b>\n\n<pre><code>${lines.join('\n')}</code></pre>`,
+    `⚙️ <b>Config Aktif</b>\n\n` +
+    `<b>💰 Finance</b>\n<pre><code>${finance}</code></pre>\n` +
+    `<b>🔍 Discovery</b>\n<pre><code>${discovery}</code></pre>\n` +
+    `<b>🎯 Strategy</b>\n<pre><code>${strategy}</code></pre>\n` +
+    `<i>Edit: /setconfig ? untuk lihat key yang bisa diubah</i>`,
     { parse_mode: 'HTML' }
   );
 });
 
-// /setconfig key value — ubah config
+// /setconfig [key] [value] — ubah config finance & discovery secara live
+//
+// Format yang didukung:
+//   /setconfig deployAmountSol 1.5          (flat key)
+//   /setconfig finance.deployAmountSol 1.5  (dot notation)
+//   /setconfig discovery.timeframe 1h       (dot notation, string value)
+//   /setconfig ?                            (tampilkan semua key yang bisa diubah)
+
 bot.onText(/\/setconfig(?:\s+(\S+))?(?:\s+(.+))?/, (msg, match) => {
   if (!guard(msg)) return;
   const chatId = msg.chat.id;
-  const key    = match[1]?.trim();
+  const rawKey = match[1]?.trim();
   const rawVal = match[2]?.trim();
 
-  if (!key || !rawVal) {
-    bot.sendMessage(chatId, `ℹ️ Gunakan: <code>/setconfig key value</code>`, { parse_mode: 'HTML' });
-    return;
-  }
-  if (!isConfigKeySupported(key)) {
-    bot.sendMessage(chatId, `❌ Key <code>${escapeHTML(key)}</code> tidak dikenal.`, { parse_mode: 'HTML' });
+  // /setconfig ? — tampilkan help
+  if (!rawKey || rawKey === '?') {
+    const financeKeys = Object.entries(SETCONFIG_WHITELIST)
+      .filter(([, m]) => m.section === 'finance')
+      .map(([k, m]) => `  <code>${k}</code> — ${m.desc}`)
+      .join('\n');
+    const discoveryKeys = Object.entries(SETCONFIG_WHITELIST)
+      .filter(([, m]) => m.section === 'discovery')
+      .map(([k, m]) => `  <code>${k}</code> — ${m.desc}`)
+      .join('\n');
+    bot.sendMessage(chatId,
+      `⚙️ <b>/setconfig — Kunci yang Bisa Diubah</b>\n\n` +
+      `Format: <code>/setconfig [key] [value]</code>\n` +
+      `atau:   <code>/setconfig [section].[key] [value]</code>\n\n` +
+      `<b>💰 Finance:</b>\n${financeKeys}\n\n` +
+      `<b>🔍 Discovery:</b>\n${discoveryKeys}\n\n` +
+      `<i>Contoh:\n` +
+      `/setconfig deployAmountSol 1.5\n` +
+      `/setconfig discovery.timeframe 1h\n` +
+      `/setconfig minTvl 50000</i>`,
+      { parse_mode: 'HTML' }
+    );
     return;
   }
 
+  if (!rawVal) {
+    bot.sendMessage(chatId,
+      `ℹ️ Gunakan: <code>/setconfig [key] [value]</code>\n` +
+      `Lihat semua key: <code>/setconfig ?</code>`,
+      { parse_mode: 'HTML' }
+    );
+    return;
+  }
+
+  // Resolve key (flat atau dot notation) — harus ada di SETCONFIG_WHITELIST
+  const resolved = resolveNestedKey(rawKey);
+  if (!resolved) {
+    bot.sendMessage(chatId,
+      `❌ Key <code>${escapeHTML(rawKey)}</code> tidak dikenali atau tidak diizinkan.\n` +
+      `Lihat daftar key: <code>/setconfig ?</code>`,
+      { parse_mode: 'HTML' }
+    );
+    return;
+  }
+
+  const { flatKey, meta } = resolved;
+
+  // Parse value sesuai tipe yang diharapkan
   let parsed;
-  if (rawVal === 'true')  parsed = true;
-  else if (rawVal === 'false') parsed = false;
-  else if (!isNaN(rawVal))     parsed = parseFloat(rawVal);
-  else                         parsed = rawVal;
+  if (meta.type === 'number') {
+    parsed = parseFloat(rawVal);
+    if (isNaN(parsed)) {
+      bot.sendMessage(chatId,
+        `❌ <code>${escapeHTML(flatKey)}</code> harus berupa angka, bukan <code>${escapeHTML(rawVal)}</code>.`,
+        { parse_mode: 'HTML' }
+      );
+      return;
+    }
+  } else if (meta.type === 'boolean') {
+    if (rawVal === 'true')        parsed = true;
+    else if (rawVal === 'false') parsed = false;
+    else {
+      bot.sendMessage(chatId,
+        `❌ <code>${escapeHTML(flatKey)}</code> harus <code>true</code> atau <code>false</code>.`,
+        { parse_mode: 'HTML' }
+      );
+      return;
+    }
+  } else {
+    parsed = rawVal; // string as-is
+  }
 
-  const result = updateConfig({ [key]: parsed });
+  // Apply melalui updateConfig (bounds check otomatis)
+  const before = getConfig()[flatKey];
+  const result = updateConfig({ [flatKey]: parsed });
+  const after  = result[flatKey];
+
+  // Cek apakah value benar-benar berubah (bounds rejection)
+  if (after === before && String(parsed) !== String(before)) {
+    bot.sendMessage(chatId,
+      `⚠️ <code>${escapeHTML(flatKey)}</code> ditolak — nilai <code>${escapeHTML(String(parsed))}</code> ` +
+      `di luar batas yang diizinkan.\n` +
+      `<i>${meta.desc}</i>`,
+      { parse_mode: 'HTML' }
+    );
+    return;
+  }
+
   bot.sendMessage(chatId,
-    `✅ <code>${escapeHTML(key)}</code> → <code>${result[key]}</code>`,
+    `✅ <b>Config diupdate!</b>\n\n` +
+    `Kunci  : <code>${escapeHTML(flatKey)}</code>\n` +
+    `Sebelum: <code>${escapeHTML(String(before))}</code>\n` +
+    `Sesudah: <code>${escapeHTML(String(after))}</code>\n\n` +
+    `<i>${meta.desc}</i>\n` +
+    `<i>Efektif di siklus loop berikutnya — tidak perlu restart.</i>`,
     { parse_mode: 'HTML' }
   );
 });
