@@ -121,6 +121,12 @@ const DEFAULTS = {
   activeStrategy:         'Evil Panda',
   smartExitRsi:           90,   // RSI(2) threshold untuk Meridian Smart Exit
   depthPct:               90,   // Depth jaring SOL ke bawah (%)
+  // ATR Guard — dynamic stop loss berbasis volatilitas
+  atrGuardEnabled:        true,   // false = pakai stopLossPct static
+  atrMultiplier:          1.5,    // SL = atrPct * multiplier
+  maxDynamicSl:           20,     // Batas atas SL dinamis (%)
+  // Blacklist
+  blacklistEnabled:       true,   // false = abaikan blacklist lokal
 
   // ── OKX ──────────────────────────────────────────────────────────────────
   okxApiKey: process.env.OKX_API_KEY || '',

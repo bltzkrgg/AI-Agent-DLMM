@@ -25,6 +25,8 @@ import { swapToSol } from '../utils/jupiter.js';
 import { safeNum, withExponentialBackoff, fetchWithTimeout } from '../utils/safeJson.js';
 import { resolveTokens, WSOL_MINT } from '../utils/tokenMeta.js';
 import { getRecommendedPriorityFee } from '../utils/helius.js';
+import { addToBlacklist } from '../learn/tokenBlacklist.js';
+import { getDynamicStopLoss } from '../market/atrGuard.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const HARVEST_LOG = join(__dirname, '../../harvest.log');
@@ -581,7 +583,7 @@ export async function exitPosition(positionPubkey, reason = 'MANUAL') {
     _activePositions.delete(positionPubkey);
     console.log(`[evilPanda] ✅ Position closed: ${positionPubkey.slice(0,8)} | reason=${reason}`);
 
-    // 4. Harvest Log
+    // 4. Harvest Log + Blacklist
     const tokenSymbol = reg.tokenXMint?.slice(0,8) || 'UNKNOWN';
     const finalPnlPct = reg.deploySol > 0
       ? ((solRecovered - reg.deploySol) / reg.deploySol) * 100
@@ -593,6 +595,18 @@ export async function exitPosition(positionPubkey, reason = 'MANUAL') {
       deploySol:      reg.deploySol,
       reason,
     });
+
+    // Tambah ke blacklist jika kena SL / rugpull / rollback
+    const SL_REASONS = ['STOP_LOSS', 'PARTIAL_DEPLOY_ROLLBACK', 'MANUAL_STOP'];
+    if (SL_REASONS.includes(reason) || finalPnlPct <= -10) {
+      const isRug = finalPnlPct <= -15;
+      addToBlacklist(reg.tokenXMint, {
+        token:     tokenSymbol,
+        reason,
+        note:      `PnL ${finalPnlPct.toFixed(2)}%`,
+        permanent: isRug,
+      });
+    }
 
     return { solRecovered };
 

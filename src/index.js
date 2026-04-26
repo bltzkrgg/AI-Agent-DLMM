@@ -22,6 +22,8 @@ import { runLinearLoop, stopLoop, setNotifyFn, isRunning, getCurrentPosition } f
 import { exitPosition, getActivePositionCount, EP_CONFIG } from './sniper/evilPanda.js';
 import { discoverHighFeePoolsMeridian, runMeridianVeto } from './market/meridianVeto.js';
 import { analyzePerformance, formatEvolutionReport }     from './learn/statelessEvolve.js';
+import { generateBriefing }                              from './telegram/briefing.js';
+import { readBlacklist, removeFromBlacklist }            from './learn/tokenBlacklist.js';
 import { validateRuntimeEnv }             from './runtime/env.js';
 import { safeNum, escapeHTML }            from './utils/safeJson.js';
 import { initializeRpcManager }           from './utils/helius.js';
@@ -274,6 +276,65 @@ bot.onText(/\/dryrun(?:\s+(on|off))?/, (msg, match) => {
   updateConfig({ dryRun: enable });
   bot.sendMessage(chatId,
     `${enable ? '🟡' : '🔴'} <b>Dry Run: ${enable ? 'ON' : 'OFF'}</b>`,
+    { parse_mode: 'HTML' }
+  );
+});
+
+// ── /briefing — laporan harian bot ───────────────────────────────
+bot.onText(/\/briefing/, async (msg) => {
+  if (!guard(msg)) return;
+  const chatId = msg.chat.id;
+  bot.sendMessage(chatId, '📋 <b>Generating briefing...</b>', { parse_mode: 'HTML' });
+  try {
+    const report = await generateBriefing(24);
+    await sendLong(chatId, report, { parse_mode: 'HTML' });
+  } catch (e) {
+    bot.sendMessage(chatId,
+      `❌ <b>Briefing error:</b>\n<code>${escapeHTML(e.message)}</code>`,
+      { parse_mode: 'HTML' }
+    );
+  }
+});
+
+// ── /blacklist — lihat dan kelola daftar token terblokir ─────────
+// /blacklist          → tampilkan 10 entry terbaru
+// /blacklist rm <mint> → hapus token dari blacklist
+
+bot.onText(/\/blacklist(?:\s+(rm)\s+(\S+))?/, async (msg, match) => {
+  if (!guard(msg)) return;
+  const chatId  = msg.chat.id;
+  const action  = match[1]?.toLowerCase();
+  const target  = match[2]?.trim();
+
+  if (action === 'rm' && target) {
+    const ok = removeFromBlacklist(target);
+    bot.sendMessage(chatId,
+      ok
+        ? `✅ <code>${escapeHTML(target.slice(0,8))}</code> dihapus dari blacklist.`
+        : `⚠️ Mint <code>${escapeHTML(target.slice(0,8))}</code> tidak ditemukan.`,
+      { parse_mode: 'HTML' }
+    );
+    return;
+  }
+
+  // Tampilkan list
+  const list = readBlacklist();
+  if (list.length === 0) {
+    bot.sendMessage(chatId, '✅ Blacklist kosong.', { parse_mode: 'HTML' });
+    return;
+  }
+
+  const lines = list.slice(0, 10).map((e, i) => {
+    const exp = e.expires
+      ? `exp ${new Date(e.expires).toLocaleDateString('id-ID')}`
+      : 'permanent';
+    return `${i + 1}. <b>${escapeHTML(e.token)}</b> <code>${e.mint?.slice(0,8) || '?'}</code>\n   ${e.reason} · ${exp}`;
+  });
+
+  await sendLong(chatId,
+    `🚫 <b>Token Blacklist</b> (${list.length} total)\n\n` +
+    lines.join('\n\n') +
+    `\n\n<i>Hapus: /blacklist rm &lt;mint&gt;</i>`,
     { parse_mode: 'HTML' }
   );
 });

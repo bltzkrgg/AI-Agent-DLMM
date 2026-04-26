@@ -16,6 +16,8 @@ import { screenToken }            from '../market/coinfilter.js';
 import { runMeridianVeto, discoverHighFeePoolsMeridian } from '../market/meridianVeto.js';
 import { deployPosition, monitorPnL, exitPosition, EP_CONFIG } from '../sniper/evilPanda.js';
 import { getWalletBalance }       from '../solana/wallet.js';
+import { appendDecisionLog }      from '../learn/decisionLog.js';
+import { isBlacklisted }          from '../learn/tokenBlacklist.js';
 
 // ── Pool selector: pilih pool terbaik per-token berdasarkan binStep priority ─────────────
 //
@@ -168,7 +170,17 @@ async function scanAndDeploy() {
 
     console.log(`[hunter] 🔬 Screen: ${tokenSymbol} | binStep=${binStep} | fee/tvl=${(feeRatio*100).toFixed(3)}%`);
 
-    // ── GMGN / Coinfilter screening ───────────────────────────────
+    // ── Blacklist check (sebelum API call apapun) ────────────────
+    if (isBlacklisted(tokenMint)) {
+      console.log(`[hunter] 🚧 ${tokenSymbol}: BLACKLISTED — skip`);
+      appendDecisionLog({ token: tokenSymbol, mint: tokenMint, decision: 'VETO',
+        gate: 'BLACKLIST', reason: 'Token ada di daftar blacklist lokal',
+        pool: pool.address || '', feeRatio });
+      await sleep(1_000);
+      continue;
+    }
+
+    // ── GMGN / Coinfilter screening ─────────────────────────────
     let screenResult;
     try {
       screenResult = await screenToken(tokenMint, tokenSymbol, tokenSymbol);
@@ -179,20 +191,29 @@ async function scanAndDeploy() {
     }
 
     if (!screenResult?.eligible) {
-      console.log(`[hunter] ❌ ${tokenSymbol}: ${screenResult?.verdict || 'FAIL'} (GMGN gate)`);
-      await sleep(5_000);  // Anti-429: jeda 5 detik antar koin
+      const failReason = screenResult?.verdict || 'FAIL';
+      console.log(`[hunter] ❌ ${tokenSymbol}: ${failReason} (GMGN gate)`);
+      appendDecisionLog({ token: tokenSymbol, mint: tokenMint, decision: 'SCREEN_FAIL',
+        gate: 'GMGN', reason: failReason, pool: pool.address || '', feeRatio });
+      await sleep(5_000);
       continue;
     }
 
-    // ── Meridian VETO (Supertrend 15m + ATH + PVP + Dominance) ────────
+    // ── Meridian VETO (Supertrend 15m + ATH + PVP + Dominance) ────
     // Pass `pool` agar dominance check (Gate 4) bisa berjalan
     const vetoResult = await runMeridianVeto({ mint: tokenMint, symbol: tokenSymbol, pool });
     if (vetoResult.veto) {
       console.log(`[hunter] 🚫 ${tokenSymbol}: VETO [${vetoResult.gate}] — ${vetoResult.reason}`);
+      appendDecisionLog({ token: tokenSymbol, mint: tokenMint, decision: 'VETO',
+        gate: vetoResult.gate, reason: vetoResult.reason,
+        pool: pool.address || pool.poolAddress || '', feeRatio });
       await sleep(5_000);
       continue;
     }
     console.log(`[hunter] ✅ Meridian: ${vetoResult.reason}`);
+    appendDecisionLog({ token: tokenSymbol, mint: tokenMint, decision: 'PASS',
+      gate: null, reason: vetoResult.reason,
+      pool: pool.address || pool.poolAddress || '', feeRatio });
 
     // ── Pure Flat Config gate ─────────────────────────────────────
     const passesConfig = checkFlatConfig(pool, cfg);
