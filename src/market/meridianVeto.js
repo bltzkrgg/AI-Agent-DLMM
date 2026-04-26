@@ -338,8 +338,8 @@ export async function discoverHighFeePoolsMeridian({ limit = 50 } = {}) {
 
   const binStepPriority    = Array.isArray(cfg.binStepPriority) ? cfg.binStepPriority.map(Number) : [200, 125, 100];
   const minFeeRatio        = Number(cfg.minFeeActiveTvlRatio) || 0.002;
-  const minMcap            = Number(cfg.minMcap) || 250000;
-  const maxMcap            = Number(cfg.maxMcap) || 0;
+  const minMcap            = cfg.minMcap !== undefined ? Number(cfg.minMcap) : 250000;
+  const maxMcap            = Number(cfg.maxMcapUsd || cfg.maxMcap) || 0;
   const minVol             = Number(cfg.minVolume24h) || 100000;
   const minTvl             = Number(cfg.minTvl) || 0;
   const timeframe          = cfg.discoveryTimeframe || '1h';
