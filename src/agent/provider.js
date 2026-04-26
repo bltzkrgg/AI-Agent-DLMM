@@ -91,50 +91,64 @@ function getHuggingFaceClient() {
 //   3. modelFromConfig  — per-component config (managementModel / screeningModel / generalModel)
 //   4. provider default fallback
 
-// Models that should never be used — they fail silently or return empty responses
+// Models yang diketahui fail silent atau return empty di OpenRouter.
+// Catatan: penggantian model sekarang dilakukan via .env (SCREENING_MODEL / MANAGEMENT_MODEL / AGENT_MODEL).
+// Daftar ini hanya untuk model yang confirm broken, bukan untuk membatasi pilihan user.
 const BLOCKED_MODELS = new Set([
-  'minimax/minimax-m2.5',
+  // Minimax versi non-free terbukti fail silent — versi :free boleh dipakai
   'minimax/minimax-m2.7',
-  'minimax-m2.5',
   'minimax-m2.7',
 ]);
 
 export function resolveModel(modelFromConfig) {
-  // 1. Env var selalu menang — user set di .env = "saya mau model ini"
+  // Penggantian model via .env (SCREENING_MODEL / MANAGEMENT_MODEL / AGENT_MODEL).
+  // Priority (highest → lowest):
+  //   1. AI_MODEL env var  — set di .env, global override semua komponen
+  //   2. cfg.activeModel   — diset via /model command (session-level override)
+  //   3. modelFromConfig   — per-component model (screeningModel/managementModel/agentModel)
+  //   4. cfg.agentModel    — fallback ke model agen utama jika komponen tidak punya model sendiri
+  //   5. Provider default  — last resort
+
+  // 1. AI_MODEL global override
   let model = process.env.AI_MODEL;
   if (model && BLOCKED_MODELS.has(model)) {
-    console.warn(`⚠️ Model "${model}" from AI_MODEL env is blocked. Using safe default instead.`);
+    console.warn(`⚠️ Model "${model}" dari AI_MODEL env diblokir. Pakai safe default.`);
     model = null;
   }
   if (model) return model;
 
   const cfg = getConfig();
-  // 2. /model command override (session-level, hanya berlaku jika AI_MODEL tidak di-set)
+
+  // 2. /model command override (session-level)
   model = cfg.activeModel;
   if (model && BLOCKED_MODELS.has(model)) {
-    console.warn(`⚠️ Model "${model}" from /model command is blocked. Using safe default instead.`);
+    console.warn(`⚠️ Model "${model}" dari /model command diblokir. Pakai safe default.`);
     model = null;
   }
   if (model) return model;
 
-  // 3. Per-component config
+  // 3. Per-component model (dari config / env)
   model = modelFromConfig;
   if (model && BLOCKED_MODELS.has(model)) {
-    console.warn(`⚠️ Model "${model}" from config is blocked. Using safe default instead.`);
+    console.warn(`⚠️ Model "${model}" dari config diblokir. Pakai safe default.`);
     model = null;
   }
   if (model) return model;
 
-  // 4. Provider default (fallthrough if all above are blocked/null)
+  // 4. Fallback ke agentModel (model utama — biasanya paling capable)
+  model = cfg.agentModel;
+  if (model && !BLOCKED_MODELS.has(model)) return model;
+
+  // 5. Provider default — last resort (tidak perlu memblokir deepseek atau model lain di sini)
   const defaults = {
-    openrouter:  'meta-llama/llama-3.3-70b-instruct:free',  // ✅ Verified working (not qwen/qwen3.6-plus:free which no longer exists)
+    openrouter:  'deepseek/deepseek-v3.2',
     anthropic:   'claude-haiku-4-5',
     openai:      'gpt-4o-mini',
     custom:      'gpt-4o-mini',
     groq:        'mixtral-8x7b-32768',
     huggingface: 'mistral-7b-instruct-v0.1',
   };
-  return defaults[PROVIDER] || 'meta-llama/llama-3.3-70b-instruct:free';
+  return defaults[PROVIDER] || 'deepseek/deepseek-v3.2';
 }
 
 // Intelligent fallback chain based on available provider keys
@@ -428,4 +442,9 @@ export async function createMessage({ model, maxTokens = 4096, system, tools, me
 }
 
 const cfg = getConfig();
-console.log(`🤖 AI Provider: ${PROVIDER} | Model: ${resolveModel(cfg?.managementModel)}`);
+console.log(
+  `🤖 AI Provider : ${PROVIDER}\n` +
+  `   Screening  : ${resolveModel(cfg?.screeningModel)}   (SCREENING_MODEL env)\n` +
+  `   Management : ${resolveModel(cfg?.managementModel)}  (MANAGEMENT_MODEL env)\n` +
+  `   Agent      : ${resolveModel(cfg?.agentModel)}       (AGENT_MODEL env)`
+);

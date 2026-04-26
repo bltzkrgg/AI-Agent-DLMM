@@ -30,12 +30,18 @@ const DEFAULTS = {
   autoPauseOnManualReview: true,
   manualReviewPauseThreshold: 1,
 
-  // Models — default ke meta-llama/llama-3.3-70b-instruct:free (proven available), bisa override di .env via AI_MODEL
-  // activeModel: diset via /model command — highest priority, override semua
-  managementModel: 'meta-llama/llama-3.3-70b-instruct:free',
-  screeningModel: 'meta-llama/llama-3.3-70b-instruct:free',
-  generalModel: 'meta-llama/llama-3.3-70b-instruct:free',
-  activeModel: null,
+  // ── LLM Models ─────────────────────────────────────────────────────
+  // Penggantian model dilakukan via variabel lingkungan di .env:
+  //   SCREENING_MODEL   — model untuk screening token (ringan, cepat)
+  //   MANAGEMENT_MODEL  — model untuk manajemen posisi & analisis
+  //   AGENT_MODEL       — model utama agen (paling powerful)
+  // Jika variabel tidak di-set, fallback ke model gratis yang terverifikasi.
+  // Override global session bisa dilakukan via command /model di Telegram.
+  screeningModel:  process.env.SCREENING_MODEL  || 'nvidia/nemotron-3-super-120b-a12b:free',
+  managementModel: process.env.MANAGEMENT_MODEL || 'minimax/minimax-m2.5:free',
+  agentModel:      process.env.AGENT_MODEL      || 'deepseek/deepseek-v3.2',
+  generalModel:    process.env.AGENT_MODEL      || 'deepseek/deepseek-v3.2',
+  activeModel: null, // Diset via /model command — prioritas tertinggi, override semua
 
   // Screening thresholds — Evil Panda: hunt fresh hyper-active pools
   maxPoolAgeDays: 3,          // Reject pools older than 3 days (72h freshness rule)
