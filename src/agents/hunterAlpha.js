@@ -186,13 +186,15 @@ async function scanAndDeploy() {
     const tokenSymbol = pool.tokenXSymbol || pool.name?.split('-')[0] || '';
     const binStep     = pool.binStep || 0;
     const feeRatio    = pool.feeActiveTvlRatio || 0;
+    const mcap        = Math.round(pool.mcap || 0).toLocaleString('en-US');
+    const vol         = Math.round(pool.volume24h || 0).toLocaleString('en-US');
 
     if (!tokenMint) {
       await sleep(5_000);
       continue;
     }
 
-    console.log(`[hunter] 🔬 Screen: ${tokenSymbol} | binStep=${binStep} | fee/tvl=${(feeRatio*100).toFixed(3)}%`);
+    console.log(`[hunter] 🔬 Screen: ${tokenSymbol} | binStep=${binStep} | fee/tvl=${(feeRatio*100).toFixed(3)}% | mcap=$${mcap} | vol=$${vol}`);
 
     // ── Blacklist check (sebelum API call apapun) ────────────────
     if (isBlacklisted(tokenMint)) {
@@ -269,12 +271,15 @@ async function scanAndDeploy() {
   const symbol      = winner.tokenXSymbol || winner.name?.split('-')[0] || poolAddress.slice(0,8);
   const binStep     = winner.binStep || '?';
   const feeRatio    = winner.feeActiveTvlRatio || 0;
+  const mcap        = Math.round(winner.mcap || 0).toLocaleString('en-US');
+  const vol         = Math.round(winner.volume24h || 0).toLocaleString('en-US');
 
   await notify(
     `🎯 <b>Target ditemukan!</b>\n` +
     `Pool: <code>${poolAddress.slice(0,8)}</code>\n` +
     `Token: <b>${symbol}</b> | BinStep: <code>${binStep}</code>\n` +
     `Fee/TVL: <code>${(feeRatio*100).toFixed(3)}%</code>\n` +
+    `MCap: <code>$${mcap}</code> | Vol: <code>$${vol}</code>\n` +
     `Deploy: <code>${cfg2.deployAmountSol || 0.1} SOL</code>\n\n` +
     `⏳ <i>Membuka posisi...</i>`
   );

@@ -604,6 +604,8 @@ bot.onText(/\/screening/, async (msg) => {
       const symbol  = pool.name || pool.tokenXMint?.slice(0, 8) || 'UNKNOWN';
       const ratio   = ((pool.feeActiveTvlRatio || 0) * 100).toFixed(2);
       const tvl     = safeNum(pool.totalTvl || pool.activeTvl, 0).toLocaleString('en-US', { maximumFractionDigits: 0 });
+      const mcap    = safeNum(pool.mcap, 0).toLocaleString('en-US', { maximumFractionDigits: 0 });
+      const vol     = safeNum(pool.volume24h, 0).toLocaleString('en-US', { maximumFractionDigits: 0 });
       const binStep = pool.binStep || '?';
 
       // Cek Meridian Supertrend — fail-open jika error
@@ -619,6 +621,7 @@ bot.onText(/\/screening/, async (msg) => {
       return (
         `<b>${i + 1}. ${escapeHTML(symbol)}</b> [${binStep}]\n` +
         `   Fee/TVL: <code>${ratio}%</code> | TVL: <code>$${tvl}</code>\n` +
+        `   MCap: <code>$${mcap}</code> | Vol: <code>$${vol}</code>\n` +
         `   Meridian: ${stIcon}`
       );
     }));
@@ -685,7 +688,9 @@ async function runScreeningLoop() {
         const sym   = p.name || p.tokenXMint?.slice(0, 8) || 'UNKNOWN';
         const ratio = ((p.feeActiveTvlRatio || 0) * 100).toFixed(2);
         const tvl   = safeNum(p.totalTvl || p.activeTvl, 0).toLocaleString('en-US', { maximumFractionDigits: 0 });
-        return `${i + 1}. <b>${escapeHTML(sym)}</b> — <code>${ratio}%</code> fee/TVL | TVL: <code>$${tvl}</code>`;
+        const mcap  = safeNum(p.mcap, 0).toLocaleString('en-US', { maximumFractionDigits: 0 });
+        const vol   = safeNum(p.volume24h, 0).toLocaleString('en-US', { maximumFractionDigits: 0 });
+        return `${i + 1}. <b>${escapeHTML(sym)}</b> — <code>${ratio}%</code> fee/TVL | TVL: <code>$${tvl}</code>\n      MCap: <code>$${mcap}</code> | Vol: <code>$${vol}</code>`;
       });
 
       await notify(
