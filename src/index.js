@@ -253,13 +253,14 @@ bot.onText(/\/config/, (msg) => {
   );
 });
 
-// /setconfig [key] [value] — ubah config finance & discovery secara live
+// /setconfig [key] [value] — ubah config finance, discovery, dan screening secara live
 //
 // Format yang didukung:
-//   /setconfig deployAmountSol 1.5          (flat key)
-//   /setconfig finance.deployAmountSol 1.5  (dot notation)
-//   /setconfig discovery.timeframe 1h       (dot notation, string value)
-//   /setconfig ?                            (tampilkan semua key yang bisa diubah)
+//   /setconfig deployAmountSol 1.5           (flat key)
+//   /setconfig finance.deployAmountSol 1.5   (dot notation)
+//   /setconfig discovery.timeframe 1h        (dot notation, string)
+//   /setconfig autoScreeningEnabled false    (boolean)
+//   /setconfig ?                             (tampilkan semua key)
 
 bot.onText(/\/setconfig(?:\s+(\S+))?(?:\s+(.+))?/, (msg, match) => {
   if (!guard(msg)) return;
@@ -269,24 +270,23 @@ bot.onText(/\/setconfig(?:\s+(\S+))?(?:\s+(.+))?/, (msg, match) => {
 
   // /setconfig ? — tampilkan help
   if (!rawKey || rawKey === '?') {
-    const financeKeys = Object.entries(SETCONFIG_WHITELIST)
-      .filter(([, m]) => m.section === 'finance')
+    const bySection = (section) => Object.entries(SETCONFIG_WHITELIST)
+      .filter(([, m]) => m.section === section)
       .map(([k, m]) => `  <code>${k}</code> — ${m.desc}`)
       .join('\n');
-    const discoveryKeys = Object.entries(SETCONFIG_WHITELIST)
-      .filter(([, m]) => m.section === 'discovery')
-      .map(([k, m]) => `  <code>${k}</code> — ${m.desc}`)
-      .join('\n');
+
     bot.sendMessage(chatId,
       `⚙️ <b>/setconfig — Kunci yang Bisa Diubah</b>\n\n` +
       `Format: <code>/setconfig [key] [value]</code>\n` +
       `atau:   <code>/setconfig [section].[key] [value]</code>\n\n` +
-      `<b>💰 Finance:</b>\n${financeKeys}\n\n` +
-      `<b>🔍 Discovery:</b>\n${discoveryKeys}\n\n` +
+      `<b>💰 Finance:</b>\n${bySection('finance')}\n\n` +
+      `<b>🔍 Discovery:</b>\n${bySection('discovery')}\n\n` +
+      `<b>📡 Screening:</b>\n${bySection('screening')}\n\n` +
       `<i>Contoh:\n` +
       `/setconfig deployAmountSol 1.5\n` +
       `/setconfig discovery.timeframe 1h\n` +
-      `/setconfig minTvl 50000</i>`,
+      `/setconfig autoScreeningEnabled false\n` +
+      `/setconfig screeningIntervalMin 30</i>`,
       { parse_mode: 'HTML' }
     );
     return;
@@ -326,11 +326,11 @@ bot.onText(/\/setconfig(?:\s+(\S+))?(?:\s+(.+))?/, (msg, match) => {
       return;
     }
   } else if (meta.type === 'boolean') {
-    if (rawVal === 'true')        parsed = true;
-    else if (rawVal === 'false') parsed = false;
+    if      (rawVal === 'true'  || rawVal === 'on'  || rawVal === '1') parsed = true;
+    else if (rawVal === 'false' || rawVal === 'off' || rawVal === '0') parsed = false;
     else {
       bot.sendMessage(chatId,
-        `❌ <code>${escapeHTML(flatKey)}</code> harus <code>true</code> atau <code>false</code>.`,
+        `❌ <code>${escapeHTML(flatKey)}</code> harus <code>true</code>/<code>on</code> atau <code>false</code>/<code>off</code>.`,
         { parse_mode: 'HTML' }
       );
       return;
@@ -344,7 +344,7 @@ bot.onText(/\/setconfig(?:\s+(\S+))?(?:\s+(.+))?/, (msg, match) => {
   const result = updateConfig({ [flatKey]: parsed });
   const after  = result[flatKey];
 
-  // Cek apakah value benar-benar berubah (bounds rejection)
+  // Cek bounds rejection
   if (after === before && String(parsed) !== String(before)) {
     bot.sendMessage(chatId,
       `⚠️ <code>${escapeHTML(flatKey)}</code> ditolak — nilai <code>${escapeHTML(String(parsed))}</code> ` +
@@ -355,6 +355,53 @@ bot.onText(/\/setconfig(?:\s+(\S+))?(?:\s+(.+))?/, (msg, match) => {
     return;
   }
 
+  // ── Efek samping khusus: autoScreeningEnabled ─────────────────────
+  if (flatKey === 'autoScreeningEnabled') {
+    if (after === true) {
+      // Start loop jika belum berjalan
+      if (!_screeningLoopTimer) {
+        runScreeningLoop();
+        bot.sendMessage(chatId,
+          `📡 <b>Auto-Screening: ON</b>\n` +
+          `Loop dimulai — interval <code>${result.screeningIntervalMin || 15} menit</code>.\n\n` +
+          `<i>Screening pertama akan berjalan dalam 30 detik.</i>`,
+          { parse_mode: 'HTML' }
+        );
+      } else {
+        bot.sendMessage(chatId,
+          `📡 <b>Auto-Screening: ON</b>\n` +
+          `Loop sudah berjalan — interval <code>${result.screeningIntervalMin || 15} menit</code>.`,
+          { parse_mode: 'HTML' }
+        );
+      }
+    } else {
+      // Stop loop
+      stopScreeningLoop();
+      bot.sendMessage(chatId,
+        `🔕 <b>Auto-Screening: OFF</b>\n` +
+        `Loop dihentikan. Gunakan <code>/screening</code> untuk scan manual.`,
+        { parse_mode: 'HTML' }
+      );
+    }
+    return;
+  }
+
+  // ── Efek samping khusus: screeningIntervalMin ─────────────────────
+  if (flatKey === 'screeningIntervalMin' && result.autoScreeningEnabled) {
+    // Restart loop dengan interval baru
+    stopScreeningLoop();
+    runScreeningLoop();
+    bot.sendMessage(chatId,
+      `✅ <b>Interval screening diupdate!</b>\n\n` +
+      `Sebelum: <code>${before} menit</code>\n` +
+      `Sesudah: <code>${after} menit</code>\n\n` +
+      `<i>Loop auto-screening di-restart dengan interval baru.</i>`,
+      { parse_mode: 'HTML' }
+    );
+    return;
+  }
+
+  // ── Feedback default untuk semua key lainnya ──────────────────────
   bot.sendMessage(chatId,
     `✅ <b>Config diupdate!</b>\n\n` +
     `Kunci  : <code>${escapeHTML(flatKey)}</code>\n` +

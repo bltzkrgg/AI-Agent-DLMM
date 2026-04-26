@@ -390,6 +390,9 @@ export const SETCONFIG_WHITELIST = {
   minHolders:             { section: 'discovery',  type: 'number',  desc: 'Holder minimum token' },
   minOrganic:             { section: 'discovery',  type: 'number',  desc: 'Organic score minimum (0–100)' },
   maxPoolAgeDays:         { section: 'discovery',  type: 'number',  desc: 'Usia pool maksimum (hari)' },
+  // ── Screening ─────────────────────────────────────────────────────
+  autoScreeningEnabled:   { section: 'screening',  type: 'boolean', desc: 'Aktifkan auto-screening berkala (true/false)' },
+  screeningIntervalMin:   { section: 'screening',  type: 'number',  desc: 'Interval auto-screening (menit, 5–1440)' },
 };
 
 // ── resolveNestedKey ─────────────────────────────────────────────────────────
