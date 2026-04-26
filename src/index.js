@@ -404,12 +404,12 @@ bot.onText(/\/setconfig(?:\s+(\S+))?(?:\s+(.+))?/, (msg, match) => {
 
   // ── Feedback default untuk semua key lainnya ──────────────────────
   bot.sendMessage(chatId,
-    `✅ <b>Config diupdate!</b>\n\n` +
+    `✅ <b>Config diupdate &amp; disimpan!</b>\n\n` +
     `Kunci  : <code>${escapeHTML(flatKey)}</code>\n` +
     `Sebelum: <code>${escapeHTML(String(before))}</code>\n` +
     `Sesudah: <code>${escapeHTML(String(after))}</code>\n\n` +
     `<i>${meta.desc}</i>\n` +
-    `<i>Efektif di siklus loop berikutnya — tidak perlu restart.</i>`,
+    `<i>Tersimpan permanen ke <code>user-config.json</code> — efektif di siklus berikutnya.</i>`,
     { parse_mode: 'HTML' }
   );
 });

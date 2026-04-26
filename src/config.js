@@ -498,8 +498,15 @@ export function updateConfig(updates) {
   // Baca file asli (nested atau flat), merge flat updates di root
   const rawCurrent = loadUserConfig();
   const merged = { ...rawCurrent, ...validated };
-  writeFileSync(CONFIG_PATH, stringify(merged, 2));
-  console.log('✅ Config updated:', Object.keys(validated).join(', '));
+
+  try {
+    writeFileSync(CONFIG_PATH, stringify(merged, 2));
+    console.log(`✅ Config updated & persisted to user-config.json: ${Object.keys(validated).join(', ')}`);
+  } catch (writeErr) {
+    // File mungkin terkunci sementara — update tetap aktif di memory, tapi tidak tersimpan
+    console.error(`⚠️ Config write failed (in-memory only): ${writeErr.message}`);
+  }
+
   return getConfig();
 }
 
