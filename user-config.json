@@ -13,6 +13,18 @@
     "slippageBps": 150
   },
 
+  "discovery": {
+    "meteoraDiscoveryLimit": 180,
+    "timeframe": "1h",
+    "category": "trending",
+    "minTvl": 10000,
+    "maxTvl": 1000000,
+    "minVolume24h": 50000,
+    "minHolders": 100,
+    "minOrganic": 55,
+    "maxPoolAgeDays": 3
+  },
+
   "security_gmgn": {
     "enabled": true,
     "requireBurnedLp": true,
@@ -25,22 +37,21 @@
     "devHoldMaxPct": 5,
     "bundlerMaxPct": 60,
     "minTotalFeesSol": 30,
-    "washTradeMaxPct": 35,
-    "minAgeHours": 0,
-    "maxAgeHours": 168
+    "washTradeMaxPct": 35
   },
 
   "strategy": {
     "name": "Evil Panda",
     "depthPct": 90,
-    "targetBinSteps": [100, 125, 200],
+    "targetBinSteps": [200, 125, 100],
     "binStepPriority": [200, 125, 100],
     "stopLossPct": 10,
     "trailingStopPct": 5.0,
     "trailingTriggerPct": 10,
     "trailingDropPct": 3.0,
     "smartExitRsi": 90,
-    "maxHoldHours": 72
+    "maxHoldHours": 72,
+    "outOfRangeWaitMinutes": 30
   },
 
   "llm": {

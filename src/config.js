@@ -72,6 +72,12 @@ const DEFAULTS = {
   minDailyFeeYieldPct:    1.0,
   maxPoolAgeHours:        2160,
   maxPoolAgeDays:         3,
+  // Parameter discovery (dibaca oleh coinfilter.normalizeConfig — tanpa radar.* layer)
+  discoveryTimeframe:     '1h',
+  discoveryCategory:      'trending',
+  minTvl:                 10000,
+  maxTvl:                 1000000,
+  minHolders:             100,
 
   // ── Meridian API ──────────────────────────────────────────────────────────
   publicApiKey:        '',
@@ -110,8 +116,11 @@ const DEFAULTS = {
   trailingTriggerPct:     10,
   trailingDropPct:        3.0,
   maxHoldHours:           72,
+  outOfRangeWaitMinutes:  30,   // Tunggu N menit OOR sebelum close
   maxDailyPriorityFeeSol: 0.2,
   activeStrategy:         'Evil Panda',
+  smartExitRsi:           90,   // RSI(2) threshold untuk Meridian Smart Exit
+  depthPct:               90,   // Depth jaring SOL ke bawah (%)
 
   // ── OKX ──────────────────────────────────────────────────────────────────
   okxApiKey: process.env.OKX_API_KEY || '',
@@ -173,7 +182,16 @@ const CONFIG_BOUNDS = {
   trailingTriggerPct:     { min: 0.5,   max: 50 },
   trailingDropPct:        { min: 0.1,   max: 20 },
   maxHoldHours:           { min: 1,     max: 168 },
+  outOfRangeWaitMinutes:  { min: 1,     max: 1440 },
   maxDailyPriorityFeeSol: { min: 0.01,  max: 10 },
+  // Discovery bounds
+  discoveryTimeframe:     { type: 'string' },
+  discoveryCategory:      { type: 'string' },
+  minTvl:                 { min: 0,     max: 100_000_000 },
+  maxTvl:                 { min: 0,     max: 100_000_000 },
+  minHolders:             { min: 0,     max: 1_000_000 },
+  smartExitRsi:           { min: 50,    max: 100 },
+  depthPct:               { min: 10,    max: 100 },
   okxApiKey:              { type: 'string' },
 };
 
@@ -199,16 +217,30 @@ const NESTED_SECTION_MAP = {
 
   // strategy: beberapa key memiliki alias
   strategy: {
-    name:              'activeStrategy',     // strategy.name → activeStrategy
-    depthPct:          'depthPct',
-    targetBinSteps:    'allowedBinSteps',    // strategy.targetBinSteps → allowedBinSteps
-    binStepPriority:   'binStepPriority',
-    stopLossPct:       'stopLossPct',
-    trailingStopPct:   'trailingStopPct',
-    trailingTriggerPct:'trailingTriggerPct',
-    trailingDropPct:   'trailingDropPct',
-    smartExitRsi:      'smartExitRsi',       // informasi — EP_CONFIG baca langsung
-    maxHoldHours:      'maxHoldHours',
+    name:               'activeStrategy',
+    depthPct:           'depthPct',
+    targetBinSteps:     'allowedBinSteps',
+    binStepPriority:    'binStepPriority',
+    stopLossPct:        'stopLossPct',
+    trailingStopPct:    'trailingStopPct',
+    trailingTriggerPct: 'trailingTriggerPct',
+    trailingDropPct:    'trailingDropPct',
+    smartExitRsi:       'smartExitRsi',
+    maxHoldHours:       'maxHoldHours',
+    outOfRangeWaitMinutes: 'outOfRangeWaitMinutes',
+  },
+
+  // discovery: parameter pencarian pool Meteora
+  discovery: {
+    meteoraDiscoveryLimit: 'meteoraDiscoveryLimit',
+    timeframe:             'discoveryTimeframe',
+    category:              'discoveryCategory',
+    minTvl:                'minTvl',
+    maxTvl:                'maxTvl',
+    minVolume24h:          'minVolume24h',
+    minHolders:            'minHolders',
+    minOrganic:            'minOrganic',
+    maxPoolAgeDays:        'maxPoolAgeDays',
   },
 
   // security_gmgn: prefix gmgn* di flat config

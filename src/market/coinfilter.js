@@ -26,30 +26,37 @@ function nowIso() {
 }
 
 function normalizeConfig(cfg = getConfig()) {
-  const radar = cfg?.radar && typeof cfg.radar === 'object' ? cfg.radar : {};
-  const read = (key, fallback) => (radar[key] !== undefined ? radar[key] : fallback);
+  // Baca langsung dari flat config — tidak ada radar.* layer lagi.
+  // Semua kunci sudah di-flatten oleh flattenUserConfig() di config.js.
   return {
-    minMcap: Number(read('minMcap', 250000)) || 250000,
-    minVolume24h: Number(read('minVolume24h', 1000000)) || 1000000,
-    minTvl: Number(read('minTvl', 0)) || 0,
-    maxMcap: Number(read('maxMcap', 0)) || 0,
-    maxPriceImpactPct: Number(read('maxPriceImpactPct', 2.5)) || 2.5,
-    gmgnMinTotalFeesSol: Number(read('gmgnMinTotalFeesSol', 30)) || 30,
-    gmgnTop10HolderMaxPct: Number(read('gmgnTop10HolderMaxPct', 30)) || 30,
-    gmgnDevHoldMaxPct: Number(read('gmgnDevHoldMaxPct', 5)) || 5,
-    gmgnInsiderMaxPct: Number(read('gmgnInsiderMaxPct', 0)) || 0,
-    gmgnBundlerMaxPct: Number(read('gmgnBundlerMaxPct', 60)) || 60,
-    gmgnWashTradeMaxPct: Number(read('gmgnWashTradeMaxPct', 35)) || 35,
-    gmgnRequireBurnedLp: read('gmgnRequireBurnedLp', true) !== false,
-    gmgnRequireZeroTax: read('gmgnRequireZeroTax', true) !== false,
-    gmgnBlockCto: read('gmgnBlockCto', false) === true,
-    gmgnBlockVamped: read('gmgnBlockVamped', true) !== false,
-    gmgnWhitelistEnabled: read('gmgnWhitelistEnabled', true) !== false,
-    discoveryTimeframe: String(read('discoveryTimeframe', '5m') || '5m'),
-    discoveryCategory: String(read('discoveryCategory', '') || ''),
-    discoveryLimit: Math.max(10, Number(read('meteoraDiscoveryLimit', 150)) || 150),
-    jupiterSimUsd: Number(read('jupiterSimUsd', 1)) || 1,
-    ageKnownRequired: read('ageKnownRequired', false) === true,
+    minMcap:              Number(cfg.minMcap)              || 250000,
+    minVolume24h:         Number(cfg.minVolume24h)         || 1000000,
+    minTvl:               Number(cfg.minTvl)               || 0,
+    maxTvl:               Number(cfg.maxTvl)               || 0,
+    maxMcap:              Number(cfg.maxMcap)              || 0,
+    minHolders:           Number(cfg.minHolders)           || 0,
+    minOrganic:           Number(cfg.minOrganic)           || 55,
+    maxPriceImpactPct:    Number(cfg.maxPriceImpactPct)    || 2.5,
+    // GMGN Security
+    gmgnEnabled:          cfg.gmgnEnabled !== false,
+    gmgnMinTotalFeesSol:  Number(cfg.gmgnMinTotalFeesSol)  || 30,
+    gmgnTop10HolderMaxPct:Number(cfg.gmgnTop10HolderMaxPct)|| 30,
+    gmgnDevHoldMaxPct:    Number(cfg.gmgnDevHoldMaxPct)    || 5,
+    gmgnInsiderMaxPct:    Number(cfg.gmgnInsiderMaxPct)    || 0,
+    gmgnBundlerMaxPct:    Number(cfg.gmgnBundlerMaxPct)    || 60,
+    gmgnWashTradeMaxPct:  Number(cfg.gmgnWashTradeMaxPct)  || 35,
+    gmgnRequireBurnedLp:  cfg.gmgnRequireBurnedLp !== false,
+    gmgnRequireZeroTax:   cfg.gmgnRequireZeroTax  !== false,
+    gmgnBlockCto:         cfg.gmgnBlockCto        === true,
+    gmgnBlockVamped:      cfg.gmgnBlockVamped     !== false,
+    gmgnFailClosedCritical: cfg.gmgnFailClosedCritical !== false,
+    gmgnWhitelistEnabled: cfg.gmgnWhitelistEnabled !== false,
+    // Discovery
+    discoveryTimeframe:   String(cfg.discoveryTimeframe || '1h'),
+    discoveryCategory:    String(cfg.discoveryCategory  || 'trending'),
+    discoveryLimit:       Math.max(10, Number(cfg.meteoraDiscoveryLimit) || 180),
+    jupiterSimUsd:        Number(cfg.jupiterSimUsd) || 1,
+    ageKnownRequired:     cfg.gmgnRequireKnownAge === true,
   };
 }
 
