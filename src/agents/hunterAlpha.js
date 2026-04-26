@@ -249,10 +249,11 @@ async function monitorLoop(positionPubkey, symbol, poolAddress) {
         `🎉 <b>TAKE PROFIT!</b>\n` +
         `Token: <b>${symbol}</b>\n` +
         `PnL: <code>+${pnlPct.toFixed(2)}%</code>\n` +
-        `Value: <code>${currentValueSol.toFixed(4)} SOL</code>\n\n` +
-        `⏳ <i>Menutup posisi...</i>`
+        `Value: <code>${currentValueSol.toFixed(4)} SOL</code>\n` +
+        (status.exitScenario ? `📊 Skenario <b>${status.exitScenario}</b>: <code>${status.exitReason || ''}</code>\n` : '') +
+        `\n⏳ <i>Menutup posisi...</i>`
       );
-      await safeExit(positionPubkey, 'TAKE_PROFIT');
+      await safeExit(positionPubkey, `TAKE_PROFIT_${status.exitScenario || 'TA'}`);
       return;
     }
 

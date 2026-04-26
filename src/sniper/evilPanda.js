@@ -19,23 +19,21 @@ import BN from 'bn.js';
 import { getConnection, getWallet, getWalletBalance } from '../solana/wallet.js';
 import { getConfig } from '../config.js';
 import { swapToSol } from '../utils/jupiter.js';
-import { safeNum, withExponentialBackoff } from '../utils/safeJson.js';
+import { safeNum, withExponentialBackoff, fetchWithTimeout } from '../utils/safeJson.js';
 import { resolveTokens, WSOL_MINT } from '../utils/tokenMeta.js';
 import { getRecommendedPriorityFee } from '../utils/helius.js';
 
 // ── Evil Panda Hardcoded Strategy ────────────────────────────────
-// Deep-range single-side Y (SOL-only deposit).
-// Bot menyimpan SOL murni di bawah harga aktif — tunggu harga jatuh.
 const EP_CONFIG = {
-  PRICE_RANGE_PCT:    90,    // 90% total range di bawah harga aktif
-  OFFSET_MIN_PCT:      0,    // Mulai dari tepat harga aktif
-  OFFSET_MAX_PCT:     90,    // Sampai 90% di bawah harga aktif
-  MAX_BINS_PER_TX:    69,    // Aman untuk Solana TX size
+  PRICE_RANGE_PCT:    90,
+  OFFSET_MIN_PCT:      0,
+  OFFSET_MAX_PCT:     90,
+  MAX_BINS_PER_TX:    69,
   COMPUTE_UNITS:   400_000,
-  MICRO_LAMPORTS:  200_000,  // Default jika Helius priority fee gagal
-  TAKE_PROFIT_PCT:    15,    // +15% dari modal → exit
-  STOP_LOSS_PCT:      10,    // -10% dari modal → exit
-  MONITOR_INTERVAL_MS: 15_000, // Poll tiap 15 detik
+  MICRO_LAMPORTS:  200_000,
+  STOP_LOSS_PCT:      10,    // Hard SL — prioritas utama, selalu aktif
+  RSI_EXIT_THRESHOLD: 90,    // RSI(2) overbought threshold
+  MONITOR_INTERVAL_MS: 15_000,
 };
 
 // ── In-process position registry ─────────────────────────────────
@@ -235,19 +233,126 @@ export async function deployPosition(poolAddress) {
   }, { maxRetries: 3, baseDelay: 3000 });
 }
 
+// ── Meridian Exit Signal Fetcher ──────────────────────────────────
+//
+// Ambil RSI(2), Bollinger Bands, dan MACD dari Meridian chart-indicators API.
+// Interval: 15_MINUTE, rsiLength: 2 (ultra-sensitive overbought detector).
+// Fail-open: jika API error, return null → caller tetap HOLD.
+
+/**
+ * @typedef {Object} ExitSignal
+ * @property {number|null} rsi          - RSI(2) value
+ * @property {number|null} close        - Harga close candle terakhir
+ * @property {number|null} bbUpper      - Bollinger Band upper
+ * @property {number|null} macdHist     - MACD histogram (positif = hijau)
+ * @property {string}      direction    - Supertrend direction
+ * @property {string}      raw          - Raw reason string
+ */
+
+async function fetchExitSignal(tokenXMint) {
+  const cfg     = getConfig();
+  const apiBase = String(cfg.agentMeridianApiUrl || 'https://api.agentmeridian.xyz/api').replace(/\/+$/, '');
+  const apiKey  = cfg.publicApiKey || '';
+
+  const params = new URLSearchParams({
+    interval:  '15_MINUTE',
+    candles:   '50',
+    rsiLength: '2',
+  });
+
+  const headers = { 'Content-Type': 'application/json' };
+  if (apiKey) headers['x-api-key'] = apiKey;
+
+  try {
+    const res = await fetchWithTimeout(
+      `${apiBase}/chart-indicators/${tokenXMint}?${params.toString()}`,
+      { headers },
+      8000
+    );
+
+    if (!res.ok) {
+      console.warn(`[evilPanda] Exit signal API ${res.status} — fail-open (HOLD)`);
+      return null;
+    }
+
+    const data = await res.json();
+    const latest = data?.latest || {};
+
+    // Extract fields sesuai struktur Meridian buildSignalSummary
+    const rsi      = safeNum(latest?.rsi?.value);                  // RSI(2)
+    const close    = safeNum(latest?.candle?.close);               // Harga close
+    const bbUpper  = safeNum(latest?.bollinger?.upper);            // BB upper band
+    // MACD: Meridian returns latest.macd.histogram
+    const macdHist = safeNum(latest?.macd?.histogram              // preferred field
+      ?? latest?.macd?.hist                                        // alt field
+      ?? latest?.macd?.value);                                     // fallback
+    const direction = String(latest?.supertrend?.direction || 'unknown');
+
+    console.log(`[evilPanda] 📡 ExitSignal RSI=${rsi?.toFixed(1)} close=${close?.toFixed(6)} BB_upper=${bbUpper?.toFixed(6)} MACD_hist=${macdHist?.toFixed(6)} ST=${direction}`);
+
+    return { rsi, close, bbUpper, macdHist, direction };
+
+  } catch (e) {
+    console.warn(`[evilPanda] fetchExitSignal error: ${e.message} — fail-open (HOLD)`);
+    return null;
+  }
+}
+
+// ── Exit Decision Engine ──────────────────────────────────────────
+//
+// Skenario A: RSI(2) >= 90 DAN Close >= BB_Upper
+// Skenario B: RSI(2) >= 90 DAN MACD Histogram > 0 (bar hijau pertama)
+// Jika sinyal tidak tersedia (null) → HOLD, jangan exit karena API down.
+
+function evaluateExitSignal(signal) {
+  if (!signal) return { shouldExit: false, scenario: null, reason: 'Signal unavailable — HOLD' };
+
+  const { rsi, close, bbUpper, macdHist } = signal;
+  const threshold = EP_CONFIG.RSI_EXIT_THRESHOLD; // 90
+
+  const rsiOverbought = rsi != null && rsi >= threshold;
+
+  // Skenario A: RSI overbought + harga menyentuh/melewati BB upper
+  if (rsiOverbought && close != null && bbUpper != null && close >= bbUpper) {
+    return {
+      shouldExit: true,
+      scenario:   'A',
+      reason:     `RSI(2)=${rsi?.toFixed(1)}≥${threshold} + Close=${close?.toFixed(6)}≥BB_Upper=${bbUpper?.toFixed(6)}`,
+    };
+  }
+
+  // Skenario B: RSI overbought + MACD histogram positif (bar hijau)
+  if (rsiOverbought && macdHist != null && macdHist > 0) {
+    return {
+      shouldExit: true,
+      scenario:   'B',
+      reason:     `RSI(2)=${rsi?.toFixed(1)}≥${threshold} + MACD_hist=${macdHist?.toFixed(6)}>0`,
+    };
+  }
+
+  return {
+    shouldExit: false,
+    scenario:   null,
+    reason:     `RSI=${rsi?.toFixed(1) ?? 'n/a'} — kondisi exit belum terpenuhi`,
+  };
+}
+
 // ── 2. monitorPnL ─────────────────────────────────────────────────
 
 /**
  * @typedef {Object} PnLStatus
  * @property {'HOLD'|'TAKE_PROFIT'|'STOP_LOSS'|'ERROR'} action
- * @property {number} currentValueSol
- * @property {number} pnlPct
+ * @property {number}  currentValueSol
+ * @property {number}  pnlPct
  * @property {boolean} inRange
+ * @property {string}  [exitScenario]  - 'A' atau 'B' jika exit dipicu TA
+ * @property {string}  [exitReason]    - Human-readable reason
  */
 
 /**
- * Poll on-chain sekali dan hitung PnL.
- * Dipanggil berulang dari loop while(true) di hunterAlpha.js.
+ * Poll on-chain + Meridian TA sekali, tentukan action.
+ * Priority: Hard SL (-10%) > Skenario TA (A/B).
+ * Fail-open: jika Meridian API down, TA-exit tidak dipicu.
  *
  * @param {string} positionPubkey
  * @returns {Promise<PnLStatus>}
@@ -260,6 +365,7 @@ export async function monitorPnL(positionPubkey) {
   }
 
   try {
+    // ── On-chain: ambil nilai posisi saat ini ──────────────────────
     const connection = getConnection();
     const wallet     = getWallet();
     const dlmmPool   = await DLMM.create(connection, new PublicKey(reg.poolAddress));
@@ -269,7 +375,6 @@ export async function monitorPnL(positionPubkey) {
     const pos = userPositions.find(p => p.publicKey.toString() === positionPubkey);
 
     if (!pos) {
-      // Posisi tidak ditemukan on-chain → mungkin sudah di-close manual
       return { action: 'STOP_LOSS', currentValueSol: 0, pnlPct: -100, inRange: false,
                note: 'Position not found on-chain — assumed closed' };
     }
@@ -277,9 +382,9 @@ export async function monitorPnL(positionPubkey) {
     const pd       = pos.positionData;
     const rawPrice = safeNum(activeBin.pricePerToken);
 
-    const [, yMeta] = await resolveTokens([reg.tokenXMint, reg.tokenYMint]);
-    const yDec = yMeta.decimals;
-    const xDec = 9; // token decimals — approximate, sufficient for PnL calc
+    const [xMeta, yMeta] = await resolveTokens([reg.tokenXMint, reg.tokenYMint]);
+    const xDec = xMeta.decimals || 9;
+    const yDec = yMeta.decimals || 9;
 
     const totalXUi = Number(pd.totalXAmount?.toString() || '0') / Math.pow(10, xDec);
     const totalYUi = Number(pd.totalYAmount?.toString() || '0') / Math.pow(10, yDec);
@@ -290,16 +395,36 @@ export async function monitorPnL(positionPubkey) {
     const pnlPct          = reg.deploySol > 0
       ? ((currentValueSol - reg.deploySol) / reg.deploySol) * 100
       : 0;
-
     const inRange = activeBin.binId >= reg.rangeMin && activeBin.binId <= reg.rangeMax;
 
-    console.log(`[evilPanda] 📊 ${positionPubkey.slice(0,8)} val=${currentValueSol.toFixed(4)}SOL pnl=${pnlPct.toFixed(2)}% inRange=${inRange}`);
+    // ── PRIORITAS 1: Hard Stop Loss (-10%) ────────────────────────
+    // Selalu dicek lebih dulu — tidak perlu API Meridian.
+    if (pnlPct <= -EP_CONFIG.STOP_LOSS_PCT) {
+      console.log(`[evilPanda] 🛑 STOP_LOSS ${positionPubkey.slice(0,8)} pnl=${pnlPct.toFixed(2)}%`);
+      return { action: 'STOP_LOSS', currentValueSol, pnlPct, inRange,
+               exitReason: `Hard SL: PnL=${pnlPct.toFixed(2)}% ≤ -${EP_CONFIG.STOP_LOSS_PCT}%` };
+    }
 
-    let action = 'HOLD';
-    if (pnlPct >= EP_CONFIG.TAKE_PROFIT_PCT) action = 'TAKE_PROFIT';
-    if (pnlPct <= -EP_CONFIG.STOP_LOSS_PCT)  action = 'STOP_LOSS';
+    // ── PRIORITAS 2: Meridian Smart Exit (TA-driven) ──────────────
+    // Fetch RSI(2) + BB + MACD dari Meridian, fail-open jika API down.
+    const signal     = await fetchExitSignal(reg.tokenXMint);
+    const exitDecision = evaluateExitSignal(signal);
 
-    return { action, currentValueSol, pnlPct, inRange };
+    console.log(`[evilPanda] 📊 ${positionPubkey.slice(0,8)} pnl=${pnlPct.toFixed(2)}% val=${currentValueSol.toFixed(4)}SOL | TA: ${exitDecision.reason}`);
+
+    if (exitDecision.shouldExit) {
+      console.log(`[evilPanda] 🎯 TAKE_PROFIT Skenario ${exitDecision.scenario}: ${exitDecision.reason}`);
+      return {
+        action:        'TAKE_PROFIT',
+        currentValueSol,
+        pnlPct,
+        inRange,
+        exitScenario:  exitDecision.scenario,
+        exitReason:    exitDecision.reason,
+      };
+    }
+
+    return { action: 'HOLD', currentValueSol, pnlPct, inRange, exitReason: exitDecision.reason };
 
   } catch (e) {
     console.warn(`[evilPanda] monitorPnL error: ${e.message}`);
