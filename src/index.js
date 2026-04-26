@@ -699,8 +699,6 @@ async function runScreeningLoop() {
     }
   };
 
-  // Jalankan pertama kali setelah 1 interval, lalu per interval dari config
-  setTimeout(tick, intervalMs);
   _screeningLoopTimer = setInterval(tick, intervalMs);
   console.log(`🔍 Screening loop aktif — interval ${intervalMin} menit (${intervalMs / 1000}s)`);
 }
