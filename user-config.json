@@ -2,10 +2,12 @@
   "dryRun": true,
   "autonomyMode": "active",
   "requireConfirmation": true,
+  "autoScreeningEnabled": true,
+
 
   "finance": {
     "deployAmountSol": 0.5,
-    "maxPositions": 3,
+    "maxPositions": 1,
     "minSolToOpen": 0.10,
     "gasReserve": 0.1,
     "dailyLossLimitUsd": 25,
@@ -17,19 +19,19 @@
     "meteoraDiscoveryLimit": 180,
     "timeframe": "1h",
     "category": "trending",
-    "minTvl": 10000,
-    "maxTvl": 1000000,
-    "minVolume24h": 50000,
-    "minHolders": 100,
-    "minOrganic": 55,
-    "maxPoolAgeDays": 3
+    "minTvl": 1000,
+    "maxTvl": 0,
+    "minVolume24h": 1000000,
+    "minHolders": 300,
+    "minOrganic": 70,
+    "maxPoolAgeDays": 30
   },
 
   "security_gmgn": {
     "enabled": true,
     "requireBurnedLp": true,
     "requireZeroTax": true,
-    "blockCto": true,
+    "blockCto": false,
     "blockVamped": true,
     "failClosedCritical": true,
     "top10HolderMaxPct": 30,

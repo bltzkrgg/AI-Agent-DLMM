@@ -20,6 +20,7 @@ import { initSolana, getWalletBalance }   from './solana/wallet.js';
 import { getConfig, updateConfig, isConfigKeySupported } from './config.js';
 import { runLinearLoop, stopLoop, setNotifyFn, isRunning, getCurrentPosition } from './agents/hunterAlpha.js';
 import { exitPosition, getActivePositionCount, EP_CONFIG } from './sniper/evilPanda.js';
+import { discoverHighFeePoolsMeridian, runMeridianVeto } from './market/meridianVeto.js';
 import { validateRuntimeEnv }             from './runtime/env.js';
 import { safeNum, escapeHTML }            from './utils/safeJson.js';
 import { initializeRpcManager }           from './utils/helius.js';
@@ -105,7 +106,8 @@ bot.onText(/\/start/, (msg) => {
     `<b>Commands:</b>\n` +
     `/status    — Status posisi aktif\n` +
     `/hunt      — Mulai loop sniper\n` +
-    `/stop      — Hentikan loop + exit posisi\n` +
+    `/screening — Scan manual top pool sekarang\n` +
+    `/stop      — Hentikan loop\n` +
     `/exit      — Force exit posisi aktif\n` +
     `/balance   — Saldo wallet\n` +
     `/config    — Tampilkan config saat ini\n` +
@@ -274,11 +276,132 @@ bot.onText(/\/dryrun(?:\s+(on|off))?/, (msg, match) => {
   );
 });
 
+// ── /screening — scan manual top pool sekarang ────────────────────
+bot.onText(/\/screening/, async (msg) => {
+  if (!guard(msg)) return;
+  const chatId = msg.chat.id;
+  const cfg    = getConfig();
+
+  bot.sendMessage(chatId,
+    `🔍 <b>Scanning top pools...</b>\nLimit: <code>${cfg.meteoraDiscoveryLimit}</code> pool`,
+    { parse_mode: 'HTML' }
+  );
+
+  try {
+    const pools = await discoverHighFeePoolsMeridian({ limit: cfg.meteoraDiscoveryLimit });
+
+    if (!pools || pools.length === 0) {
+      bot.sendMessage(chatId, 'ℹ️ Tidak ada pool ditemukan saat ini.', { parse_mode: 'HTML' });
+      return;
+    }
+
+    // Urutkan fee_active_tvl_ratio tertinggi, ambil top 5
+    const top5 = [...pools]
+      .sort((a, b) => (b.feeActiveTvlRatio || 0) - (a.feeActiveTvlRatio || 0))
+      .slice(0, 5);
+
+    const lines = await Promise.all(top5.map(async (pool, i) => {
+      const symbol  = pool.name || pool.tokenXMint?.slice(0, 8) || 'UNKNOWN';
+      const ratio   = ((pool.feeActiveTvlRatio || 0) * 100).toFixed(2);
+      const tvl     = safeNum(pool.tvl || pool.liquidity, 0).toLocaleString('en-US', { maximumFractionDigits: 0 });
+      const binStep = pool.binStep || '?';
+
+      // Cek Meridian Supertrend — fail-open jika error
+      let stIcon = '⚪';
+      try {
+        const veto = await runMeridianVeto(pool.tokenXMint || pool.address, pool);
+        if (veto.pass) stIcon = '🟢';
+        else           stIcon = `🔴 ${veto.reason || ''}`.trim();
+      } catch {
+        stIcon = '⚪ (API skip)';
+      }
+
+      return (
+        `<b>${i + 1}. ${escapeHTML(symbol)}</b> [${binStep}]\n` +
+        `   Fee/TVL: <code>${ratio}%</code> | TVL: <code>$${tvl}</code>\n` +
+        `   Meridian: ${stIcon}`
+      );
+    }));
+
+    await sendLong(chatId,
+      `📊 <b>Top 5 High-Fee Pools</b>\n` +
+      `<i>Sorted by Fee/Active-TVL Ratio</i>\n\n` +
+      lines.join('\n\n'),
+      { parse_mode: 'HTML' }
+    );
+
+  } catch (e) {
+    bot.sendMessage(chatId,
+      `❌ <b>Screening error:</b>\n<code>${escapeHTML(e.message)}</code>`,
+      { parse_mode: 'HTML' }
+    );
+  }
+});
+
+// ── Screening Loop ─────────────────────────────────────────────────
+// Berjalan independen dari runLinearLoop.
+// Kirim "Hot Prospect Alert" jika ada pool dengan feeActiveTvlRatio tinggi.
+
+const HOT_FEE_RATIO_THRESHOLD = 0.05; // 5% fee/TVL/hari = sangat aktif
+let   _screeningLoopTimer = null;
+
+async function runScreeningLoop() {
+  const cfg = getConfig();
+  if (!cfg.autoScreeningEnabled) return;
+
+  const intervalMs = (cfg.screeningIntervalMin || 15) * 60 * 1000;
+
+  const tick = async () => {
+    try {
+      const limit = cfg.meteoraDiscoveryLimit || 180;
+      const pools = await discoverHighFeePoolsMeridian({ limit });
+      if (!pools?.length) return;
+
+      // Filter hanya pool yang benar-benar hot
+      const hotPools = pools
+        .filter(p => (p.feeActiveTvlRatio || 0) >= HOT_FEE_RATIO_THRESHOLD)
+        .sort((a, b) => (b.feeActiveTvlRatio || 0) - (a.feeActiveTvlRatio || 0))
+        .slice(0, 3);
+
+      if (hotPools.length === 0) return;
+
+      const lines = hotPools.map((p, i) => {
+        const sym   = p.name || p.tokenXMint?.slice(0, 8) || 'UNKNOWN';
+        const ratio = ((p.feeActiveTvlRatio || 0) * 100).toFixed(2);
+        const tvl   = safeNum(p.tvl || p.liquidity, 0).toLocaleString('en-US', { maximumFractionDigits: 0 });
+        return `${i + 1}. <b>${escapeHTML(sym)}</b> — <code>${ratio}%</code> fee/TVL | TVL: <code>$${tvl}</code>`;
+      });
+
+      await notify(
+        `🔥 <b>Hot Prospect Alert!</b>\n` +
+        `<i>${hotPools.length} pool di atas threshold ${(HOT_FEE_RATIO_THRESHOLD * 100).toFixed(0)}% fee/TVL</i>\n\n` +
+        lines.join('\n') +
+        `\n\n<i>Ketik /hunt untuk mulai loop atau /screening untuk detail.</i>`
+      );
+    } catch (e) {
+      console.warn('[screening-loop] error:', e.message);
+    }
+  };
+
+  // Jalankan pertama kali setelah 30 detik, lalu per interval
+  setTimeout(tick, 30_000);
+  _screeningLoopTimer = setInterval(tick, intervalMs);
+  console.log(`🔍 Screening loop aktif — interval ${cfg.screeningIntervalMin || 15} menit`);
+}
+
+function stopScreeningLoop() {
+  if (_screeningLoopTimer) {
+    clearInterval(_screeningLoopTimer);
+    _screeningLoopTimer = null;
+  }
+}
+
 // ── Graceful Shutdown ─────────────────────────────────────────────
 
 async function shutdown(signal) {
   console.log(`\n🛑 ${signal} — shutting down...`);
   stopLoop();
+  stopScreeningLoop();
   const posKey = getCurrentPosition();
   if (posKey) {
     await notify(`⚠️ <b>Bot shutdown (${signal})</b>\n\nPosisi aktif: <code>${posKey.slice(0,8)}</code>\n<i>Posisi TIDAK ditutup otomatis — cek on-chain!</i>`).catch(() => {});
@@ -314,15 +437,20 @@ setTimeout(async () => {
   try {
     const balance = await getWalletBalance();
     const cfg     = getConfig();
+    const autoScr = cfg.autoScreeningEnabled;
 
     await notify(
       `🚀 <b>Linear Sniper Bot dimulai!</b>\n\n` +
       `💰 Balance: <code>${balance} SOL</code>\n` +
       `📐 Deploy: <code>${cfg.deployAmountSol || 0.1} SOL</code>\n` +
       `🎯 TP: <code>+${EP_CONFIG.TAKE_PROFIT_PCT}%</code> | SL: <code>-${EP_CONFIG.STOP_LOSS_PCT}%</code>\n` +
-      `🔍 DryRun: <code>${cfg.dryRun ? 'ON' : 'OFF'}</code>\n\n` +
-      `Ketik /hunt untuk memulai loop, /start untuk daftar command.`
+      `🔍 DryRun: <code>${cfg.dryRun ? 'ON' : 'OFF'}</code>\n` +
+      `📡 Auto Screening: <code>${autoScr ? `ON (${cfg.screeningIntervalMin}m)` : 'OFF'}</code>\n\n` +
+      `Ketik /hunt untuk mulai loop, /screening untuk scan manual.`
     );
+
+    // Auto-start screening loop jika diaktifkan
+    if (autoScr) runScreeningLoop();
 
     console.log(`✅ Linear Sniper Bot ready. Balance: ${balance} SOL`);
   } catch (e) {
