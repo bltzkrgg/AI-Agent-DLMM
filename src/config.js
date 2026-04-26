@@ -51,6 +51,9 @@ const DEFAULTS = {
   gmgnMinAgeHours: 0,          // Min usia token sejak launch (jam) — diambil dari GMGN created_timestamp
   gmgnMaxAgeHours: 168,        // Max usia token (jam) = 7 hari — diambil dari GMGN created_timestamp
   gmgnRequireKnownAge: false,  // true: token tanpa data usia GMGN langsung ditolak
+  // maxPoolAgeHours: Batas usia pool DLMM (jam) — fallback keras 2160 = 90 hari
+  // Mencegah "Rules: age=0-0h" di Telegram saat JSON corrupt atau kunci hilang
+  maxPoolAgeHours: 2160,       // Default 90 hari (2160 jam) — override via radar.maxPoolAgeHours di user-config.json
   minDailyFeeYieldPct: 1.0,  // Minimum fee/TVL harian (%) agar entry Evil Panda tetap worth it
   heritageModeEnabled: true, // Aktifkan saringan riwayat sultan
   maxOhlcvStaleMinutes15m: 90, // Maks umur candle 15m sebelum dianggap stale
@@ -307,6 +310,8 @@ const CONFIG_BOUNDS = {
   gmgnMinAgeHours: { min: 0, max: 720 },
   gmgnMaxAgeHours: { min: 1, max: 720 },
   gmgnRequireKnownAge: { type: 'boolean' },
+  // maxPoolAgeHours: wajib > 0, fallback keras 2160 ditegakkan di getConfig()
+  maxPoolAgeHours: { min: 1, max: 87600 }, // 1 jam s/d 10 tahun
 
   // Professional Suite Bounds
   autoHarvestThresholdSol: { min: 0.005, max: 1.0 },
@@ -385,6 +390,19 @@ export function getConfig() {
       }
     }
   }
+
+  // -- Meridian Robustness: maxPoolAgeHours fail-safe mapping --
+  // Petakan eksplisit dari userConfig atau userConfig.radar, dengan fallback keras 2160.
+  // Mencegah "Rules: age=0-0h" jika JSON corrupt atau kunci tidak terbaca.
+  const rawMaxPoolAgeHours =
+    user?.radar?.maxPoolAgeHours ||
+    user?.maxPoolAgeHours ||
+    DEFAULTS.maxPoolAgeHours;
+  const parsedMaxPoolAgeHours = Number(rawMaxPoolAgeHours);
+  merged.maxPoolAgeHours = (Number.isFinite(parsedMaxPoolAgeHours) && parsedMaxPoolAgeHours > 0)
+    ? parsedMaxPoolAgeHours
+    : 2160; // hardcoded fallback: 90 hari — JANGAN ubah ke 0
+  // ------------------------------------------------------------
 
   return merged;
 }

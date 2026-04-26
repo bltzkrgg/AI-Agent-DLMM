@@ -7,8 +7,10 @@ const WSOL_MINT = 'So11111111111111111111111111111111111111112';
 const METEORA_DISCOVERY_BASE = 'https://pool-discovery-api.datapi.meteora.ag';
 const DEXSCREENER_BASE = 'https://api.dexscreener.com/latest/dex/tokens';
 const OKX_BASE = 'https://web3.okx.com';
-const JUPITER_QUOTE_API = 'https://quote-api.jup.ag/v6/quote';
-const JUPITER_QUOTE_API_FALLBACK = 'https://api.jup.ag/swap/v6/quote';
+// Primary: api.jup.ag/v6/quote (NO /swap/ path — avoids HTTP 404)
+// Fallback: quote-api.jup.ag/v6/quote (legacy endpoint)
+const JUPITER_QUOTE_API = 'https://api.jup.ag/v6/quote';
+const JUPITER_QUOTE_API_FALLBACK = 'https://quote-api.jup.ag/v6/quote';
 const JUPITER_UA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
 const JUPITER_BLACKLIST_TTL_MS = 24 * 60 * 60 * 1000;
 
@@ -258,8 +260,15 @@ function isVampedCoin(info, sec) {
 }
 
 async function fetchJupiterQuote(queryString) {
-  const headers = { 'User-Agent': JUPITER_UA };
-  const endpoints = [JUPITER_QUOTE_API_FALLBACK, JUPITER_QUOTE_API];
+  const headers = {
+    'User-Agent': JUPITER_UA,
+    'Accept': 'application/json',
+    'Accept-Language': 'en-US,en;q=0.9',
+    'Cache-Control': 'no-cache',
+  };
+  // Primary endpoint first (api.jup.ag/v6/quote — no /swap/ path)
+  // Fallback to legacy quote-api.jup.ag if primary fails
+  const endpoints = [JUPITER_QUOTE_API, JUPITER_QUOTE_API_FALLBACK];
   const maxAttempts = 3;
   let lastRes = null;
 
@@ -271,9 +280,24 @@ async function fetchJupiterQuote(queryString) {
         lastRes = res;
         const label = res.status === 429 ? 'RateLimit' : res.status === 403 ? 'Forbidden' : `HTTP_${res.status}`;
         console.warn(`[Jupiter] ${label} status=${res.status} attempt=${attempt}/${maxAttempts} endpoint=${base}`);
-        if (res.status === 403) break;
+        // 404 means wrong path — skip remaining attempts on this endpoint immediately
+        if (res.status === 404 || res.status === 403) break;
+        // Rate-limited: wait before retry
+        if (res.status === 429 && attempt < maxAttempts) {
+          await new Promise(r => setTimeout(r, 1500 * attempt));
+        }
       } catch (e) {
-        console.warn(`[Jupiter] Error attempt=${attempt}/${maxAttempts} endpoint=${base}: ${e?.message}`);
+        const isNetworkError = e?.message?.includes('ENOTFOUND') ||
+          e?.message?.includes('fetch failed') ||
+          e?.message?.includes('ECONNREFUSED') ||
+          e?.message?.includes('ETIMEDOUT');
+        console.warn(`[Jupiter] ${isNetworkError ? 'NetworkError' : 'Error'} attempt=${attempt}/${maxAttempts} endpoint=${base}: ${e?.message}`);
+        // Exponential backoff for network errors before retrying
+        if (isNetworkError && attempt < maxAttempts) {
+          const backoffMs = Math.pow(2, attempt) * 1000; // 2s, 4s, 8s
+          console.warn(`[Jupiter] Backoff ${backoffMs}ms sebelum retry (ENOTFOUND/network)`);
+          await new Promise(r => setTimeout(r, backoffMs));
+        }
       }
     }
   }
@@ -281,8 +305,11 @@ async function fetchJupiterQuote(queryString) {
   return lastRes;
 }
 
-async function runJupiterSimulation(tokenMint, usdAmount, maxImpactPct) {
-  await ensureIpv4First();
+/**
+ * Eksekusi satu siklus simulasi Jupiter (buy + sell quote).
+ * Dipanggil oleh runJupiterSimulation dengan retry wrapper di luar.
+ */
+async function _executeJupiterSimulation(tokenMint, usdAmount, maxImpactPct) {
   const solPrice = await getJupiterPrice(WSOL_MINT).catch(() => null);
   const simUsd = Number.isFinite(Number(usdAmount)) && Number(usdAmount) > 0 ? Number(usdAmount) : 1;
   const simSol = Number.isFinite(Number(solPrice)) && Number(solPrice) > 0
@@ -290,40 +317,79 @@ async function runJupiterSimulation(tokenMint, usdAmount, maxImpactPct) {
     : 0.01;
   const amountLamports = Math.max(1, Math.floor(simSol * 1_000_000_000));
 
-  try {
-    const buyRes = await fetchJupiterQuote(`?inputMint=${WSOL_MINT}&outputMint=${tokenMint}&amount=${amountLamports}&slippageBps=100`);
-    if (!buyRes || !buyRes.ok) {
-      return { pass: false, reason: `BUY_HTTP_${buyRes?.status ?? 'UNKNOWN'}`, buyImpact: null, sellImpact: null };
-    }
-    const buy = await buyRes.json().catch(() => null);
-    const buyImpact = safeNum(buy?.priceImpactPct);
-    const outAmount = String(buy?.outAmount || '');
-    if (!outAmount || outAmount === '0') {
-      return { pass: false, reason: 'BUY_NO_ROUTE', buyImpact, sellImpact: null };
-    }
-
-    const sellRes = await fetchJupiterQuote(`?inputMint=${tokenMint}&outputMint=${WSOL_MINT}&amount=${outAmount}&slippageBps=100`);
-    if (!sellRes || !sellRes.ok) {
-      return { pass: false, reason: `SELL_HTTP_${sellRes?.status ?? 'UNKNOWN'}`, buyImpact, sellImpact: null };
-    }
-    const sell = await sellRes.json().catch(() => null);
-    const sellImpact = safeNum(sell?.priceImpactPct);
-    if (!Number.isFinite(sellImpact)) {
-      return { pass: false, reason: 'SELL_NO_ROUTE', buyImpact, sellImpact: null };
-    }
-
-    const buyFail = Number.isFinite(buyImpact) && buyImpact > maxImpactPct;
-    const sellFail = Number.isFinite(sellImpact) && sellImpact > Math.max(maxImpactPct * 4, 10);
-    if (buyFail || sellFail) {
-      const reason = buyFail
-        ? `HIGH_PRICE_IMPACT_BUY_${buyImpact.toFixed(2)}`
-        : `HIGH_PRICE_IMPACT_SELL_${sellImpact.toFixed(2)}`;
-      return { pass: false, reason, buyImpact, sellImpact };
-    }
-    return { pass: true, reason: 'PASS', buyImpact, sellImpact };
-  } catch (e) {
-    return { pass: false, reason: e?.message || 'JUPITER_SIM_FAILED', buyImpact: null, sellImpact: null };
+  const buyRes = await fetchJupiterQuote(`?inputMint=${WSOL_MINT}&outputMint=${tokenMint}&amount=${amountLamports}&slippageBps=100`);
+  if (!buyRes || !buyRes.ok) {
+    return { pass: false, reason: `BUY_HTTP_${buyRes?.status ?? 'UNKNOWN'}`, buyImpact: null, sellImpact: null };
   }
+  const buy = await buyRes.json().catch(() => null);
+  const buyImpact = safeNum(buy?.priceImpactPct);
+  const outAmount = String(buy?.outAmount || '');
+  if (!outAmount || outAmount === '0') {
+    return { pass: false, reason: 'BUY_NO_ROUTE', buyImpact, sellImpact: null };
+  }
+
+  const sellRes = await fetchJupiterQuote(`?inputMint=${tokenMint}&outputMint=${WSOL_MINT}&amount=${outAmount}&slippageBps=100`);
+  if (!sellRes || !sellRes.ok) {
+    return { pass: false, reason: `SELL_HTTP_${sellRes?.status ?? 'UNKNOWN'}`, buyImpact, sellImpact: null };
+  }
+  const sell = await sellRes.json().catch(() => null);
+  const sellImpact = safeNum(sell?.priceImpactPct);
+  if (!Number.isFinite(sellImpact)) {
+    return { pass: false, reason: 'SELL_NO_ROUTE', buyImpact, sellImpact: null };
+  }
+
+  const buyFail = Number.isFinite(buyImpact) && buyImpact > maxImpactPct;
+  const sellFail = Number.isFinite(sellImpact) && sellImpact > Math.max(maxImpactPct * 4, 10);
+  if (buyFail || sellFail) {
+    const reason = buyFail
+      ? `HIGH_PRICE_IMPACT_BUY_${buyImpact.toFixed(2)}`
+      : `HIGH_PRICE_IMPACT_SELL_${sellImpact.toFixed(2)}`;
+    return { pass: false, reason, buyImpact, sellImpact };
+  }
+  return { pass: true, reason: 'PASS', buyImpact, sellImpact };
+}
+
+/**
+ * Meridian Robustness: runJupiterSimulation dengan Exponential Backoff Retry.
+ * - Retry hingga 3x jika terjadi error jaringan (ENOTFOUND, fetch failed, dll).
+ * - Backoff: 2s → 4s → 8s sebelum melempar VETO final.
+ * - HTTP error (404, 429, dsb) tidak di-retry di level ini (sudah ditangani fetchJupiterQuote).
+ */
+async function runJupiterSimulation(tokenMint, usdAmount, maxImpactPct) {
+  await ensureIpv4First();
+
+  const MAX_OUTER_RETRIES = 3;
+  const NETWORK_ERROR_PATTERNS = ['ENOTFOUND', 'fetch failed', 'ECONNREFUSED', 'ETIMEDOUT', 'network'];
+
+  for (let attempt = 1; attempt <= MAX_OUTER_RETRIES; attempt++) {
+    try {
+      const result = await _executeJupiterSimulation(tokenMint, usdAmount, maxImpactPct);
+      return result;
+    } catch (e) {
+      const errMsg = e?.message || '';
+      const isNetworkError = NETWORK_ERROR_PATTERNS.some(p => errMsg.includes(p));
+
+      if (isNetworkError && attempt < MAX_OUTER_RETRIES) {
+        const backoffMs = Math.pow(2, attempt) * 1000; // 2s, 4s, 8s
+        console.warn(
+          `[JupiterSim] NetworkError attempt=${attempt}/${MAX_OUTER_RETRIES} (${errMsg}) — ` +
+          `backoff ${backoffMs}ms sebelum retry...`
+        );
+        await new Promise(r => setTimeout(r, backoffMs));
+        continue;
+      }
+
+      // Bukan network error, atau sudah habis retry — lempar VETO
+      const reason = isNetworkError
+        ? `JUPITER_ENOTFOUND_RETRY_EXHAUSTED`
+        : (errMsg || 'JUPITER_SIM_FAILED');
+      console.error(`[JupiterSim] Gagal setelah ${attempt} percobaan: ${reason}`);
+      return { pass: false, reason, buyImpact: null, sellImpact: null };
+    }
+  }
+
+  // Seharusnya tidak tercapai, tapi failsafe
+  return { pass: false, reason: 'JUPITER_SIM_RETRY_EXHAUSTED', buyImpact: null, sellImpact: null };
 }
 
 function buildResult({
