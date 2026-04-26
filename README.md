@@ -27,6 +27,51 @@ SCAN ──► SCREEN ──► VETO ──► DEPLOY ──► MONITOR ──�
 
 ---
 
+🛠️ Tutorial Instalasi Lengkap
+1. Persiapan Awal (Prerequisites)
+Node.js: Wajib versi 20 LTS sampai < 25 (untuk stabilitas library Solana).
+
+Wallet: Gunakan Dedicated Wallet (jangan wallet utama). Isi saldo minimal 0.2 SOL untuk operasional awal.
+
+Helius API Key: Wajib untuk jalur RPC stabil.
+
+---
+2. Langkah Instalasi (Terminal Mac/VPS)
+Bash
+# Clone Repository
+git clone https://github.com/bltzkrgg/AI-Agent-DLMM.git
+cd AI-Agent-DLMM
+
+# Install Dependencies
+npm install
+
+# Setup Environment & Config
+cp env.example .env
+cp user-config.example.json user-config.json
+
+---
+3. Konfigurasi .env (Wajib Diisi)
+Edit file .env dan masukkan data penting lu:
+
+Cuplikan kode
+TELEGRAM_BOT_TOKEN=token_bot_lu
+ALLOWED_TELEGRAM_ID=id_telegram_lu
+HELIUS_API_KEY=api_key_helius_lu
+WALLET_PRIVATE_KEY=private_key_base58_lu
+JUPITER_PROXY_URL=https://jup-proxy.user.workers.dev  # URL Worker lu tadi
+
+# Multi-LLM Setup
+SCREENING_MODEL=nvidia/nemotron-3-super-120b-a12b:free
+MANAGEMENT_MODEL=minimax/minimax-m2.5:free
+AGENT_MODEL=deepseek/deepseek-v3.2
+
+---
+4. Jalankan Bot (Gunakan PM2)
+npm install -g pm2
+pm2 start src/index.js --name "panda-linear"
+pm2 save
+pm2 startup
+
 ## Strategi: Evil Panda
 
 **Evil Panda** adalah strategi LP satu sisi (SOL-only deposit) dengan rentang dalam:
