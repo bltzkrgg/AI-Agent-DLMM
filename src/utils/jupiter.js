@@ -1,45 +1,51 @@
 /**
  * src/utils/jupiter.js — Jupiter Swap Utility
  *
- * Base URL: Jupiter V2 API (https://api.jup.ag/swap/v2/)
- *
- * Relay Mode: Jika config.lpAgentRelayEnabled === true, semua request
- * dikirim via Meridian LP Agent Relay (bypass ISP blocking).
- * Relay diaktifkan via relayFetch() yang transparan.
+ * Base URL: Jupiter V2 API (https://api.jup.ag/swap/v2/) — direct, tanpa relay.
+ * Fallback: https://lite-api.jup.ag/swap/v2/ jika primary gagal.
  */
 
-import { stringify }             from './safeJson.js';
-import { relayFetch }            from './relayFetch.js';
-import { getWallet }             from '../solana/wallet.js';
-import { getConfig }             from '../config.js';
+import { fetchWithTimeout, stringify }  from './safeJson.js';
+import { getWallet }                    from '../solana/wallet.js';
+import { getConfig }                    from '../config.js';
 import { Transaction, VersionedTransaction } from '@solana/web3.js';
 
-// ── Jupiter V2 Endpoints ──────────────────────────────────────────
-const JUP_BASE       = 'https://api.jup.ag/swap/v2';
-const JUP_QUOTE_URL  = `${JUP_BASE}/quote`;
-const JUP_SWAP_URL   = `${JUP_BASE}/swap`;
-const JUP_PRICE_URL  = 'https://api.jup.ag/price/v2';
+// ── Jupiter V2 Endpoints (direct) ───────────────────────────────────
+const JUP_BASE      = 'https://api.jup.ag/swap/v2';
+const JUP_QUOTE_URL = `${JUP_BASE}/quote`;
+const JUP_SWAP_URL  = `${JUP_BASE}/swap`;
+const JUP_PRICE_URL = 'https://api.jup.ag/price/v2';
 
-// ── getJupiterQuote ───────────────────────────────────────────────
+// User-Agent uniform agar tidak diblokir CDN Jupiter
+const JUPITER_UA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
+
+const JUPITER_HEADERS = {
+  'User-Agent':      JUPITER_UA,
+  'Accept':          'application/json',
+  'Accept-Language': 'en-US,en;q=0.9',
+  'Cache-Control':   'no-cache',
+};
+
+// ── getJupiterQuote ─────────────────────────────────────────────────
 
 async function getJupiterQuote(tokenMint, outMint, amount, slippage) {
   const params = new URLSearchParams({
-    inputMint:    tokenMint,
-    outputMint:   outMint,
-    amount:       String(amount),
-    slippageBps:  String(slippage),
+    inputMint:   tokenMint,
+    outputMint:  outMint,
+    amount:      String(amount),
+    slippageBps: String(slippage),
   });
 
-  const quoteRes = await relayFetch(
+  const quoteRes = await fetchWithTimeout(
     `${JUP_QUOTE_URL}?${params.toString()}`,
-    {},
+    { headers: JUPITER_HEADERS },
     8000
   );
   if (!quoteRes.ok) throw new Error(`Jupiter Quote Failed: ${quoteRes.status}`);
   return await quoteRes.json();
 }
 
-// ── getSwapQuoteToSol ─────────────────────────────────────────────
+// ── getSwapQuoteToSol ────────────────────────────────────────────────
 
 export async function getSwapQuoteToSol(tokenMint, amount, overrideSlippageBps = null) {
   const cfg     = getConfig();
@@ -48,7 +54,7 @@ export async function getSwapQuoteToSol(tokenMint, amount, overrideSlippageBps =
   return getJupiterQuote(tokenMint, WSOL, amount, slippage);
 }
 
-// ── swapToSol ─────────────────────────────────────────────────────
+// ── swapToSol ────────────────────────────────────────────────────────
 // Jupiter V2 Swap — dengan JIT price stability check
 
 export async function swapToSol(tokenMint, amount, overrideSlippageBps = null) {
@@ -63,7 +69,7 @@ export async function swapToSol(tokenMint, amount, overrideSlippageBps = null) {
     const outA     = parseInt(quoteA.outAmount);
 
     // 2. JIT Verification — tunggu 800ms untuk stabilitas harga
-    console.log(`[jupiter] JIT Verification: Menunggu 800ms untuk stabilitas harga...`);
+    console.log(`[jupiter] JIT Verification: Menunggu 800ms...`);
     await new Promise(r => setTimeout(r, 800));
 
     // 3. Quote B — second opinion
@@ -80,15 +86,15 @@ export async function swapToSol(tokenMint, amount, overrideSlippageBps = null) {
     console.log(`[jupiter] Verification STABLE (Shift: ${(priceShift * 100).toFixed(2)}%). Swap...`);
 
     // 5. Get Swap Transaction via V2
-    const swapRes = await relayFetch(JUP_SWAP_URL, {
+    const swapRes = await fetchWithTimeout(JUP_SWAP_URL, {
       method:  'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { ...JUPITER_HEADERS, 'Content-Type': 'application/json' },
       body:    stringify({
-        quoteResponse:              quoteB,
-        userPublicKey:              wallet.publicKey.toString(),
-        wrapAndUnwrapSol:           true,
-        dynamicComputeUnitLimit:    true,
-        prioritizationFeeLamports:  'auto',
+        quoteResponse:             quoteB,
+        userPublicKey:             wallet.publicKey.toString(),
+        wrapAndUnwrapSol:          true,
+        dynamicComputeUnitLimit:   true,
+        prioritizationFeeLamports: 'auto',
       }),
     }, 10000);
 
@@ -97,16 +103,16 @@ export async function swapToSol(tokenMint, amount, overrideSlippageBps = null) {
 
     return {
       swapTransaction,
-      outAmount:       quoteB.outAmount,
-      priceImpactPct:  quoteB.priceImpactPct,
+      outAmount:      quoteB.outAmount,
+      priceImpactPct: quoteB.priceImpactPct,
     };
   } catch (e) {
-    console.error(`[jupiter] swapToSol failed for ${tokenMint.slice(0,8)}:`, e.message);
+    console.error(`[jupiter] swapToSol failed for ${tokenMint.slice(0, 8)}:`, e.message);
     return null;
   }
 }
 
-// ── swapAllToSOL ──────────────────────────────────────────────────
+// ── swapAllToSOL ─────────────────────────────────────────────────────
 
 export async function swapAllToSOL(tokenMint, overrideSlippageBps = null) {
   try {
@@ -135,14 +141,13 @@ export async function swapAllToSOL(tokenMint, overrideSlippageBps = null) {
   }
 }
 
-// ── getJupiterPrice ───────────────────────────────────────────────
-// Gunakan relayFetch agar price check juga melewati relay jika aktif
+// ── getJupiterPrice ──────────────────────────────────────────────────
 
 export async function getJupiterPrice(tokenMint) {
   try {
-    const res = await relayFetch(
+    const res = await fetchWithTimeout(
       `${JUP_PRICE_URL}?ids=${tokenMint}`,
-      {},
+      { headers: JUPITER_HEADERS },
       5000
     );
     if (!res.ok) return null;

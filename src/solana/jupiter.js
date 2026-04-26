@@ -1,14 +1,13 @@
 /**
  * Jupiter Swap Integration
  *
- * Swap any SPL token → SOL via Jupiter V2 API.
- * Semua request via relayFetch — otomatis bypass ISP jika lpAgentRelayEnabled=true.
+ * Swap any SPL token → SOL via Jupiter V2 API (direct, tanpa relay proxy).
+ * Fallback: lite-api.jup.ag jika api.jup.ag tidak dapat dijangkau.
  */
 
 import { VersionedTransaction, PublicKey } from '@solana/web3.js';
 import { getConnection, getWallet } from './wallet.js';
 import { fetchWithTimeout, withRetry, withExponentialBackoff, stringify } from '../utils/safeJson.js';
-import { relayFetch, JUPITER_UA } from '../utils/relayFetch.js';
 import { checkCooldown, setCooldown } from '../utils/jupiterCooldown.js';
 import { getRecommendedPriorityFee } from '../utils/helius.js';
 import { isDryRun } from '../config.js';
@@ -29,6 +28,9 @@ export function getJupiterBaseUrls() {
   return ['https://lite-api.jup.ag', 'https://api.jup.ag'];
 }
 
+// User-Agent uniform agar tidak diblokir CDN Jupiter
+const JUPITER_UA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
+
 function getJupiterHeaders(extra = {}) {
   const headers = { ...extra };
   if (JUPITER_API_KEY) headers['x-api-key'] = JUPITER_API_KEY;
@@ -46,10 +48,8 @@ async function fetchJupiter(path, options = {}, timeoutMs = 15000) {
     try {
       return await withExponentialBackoff(
         async () => {
-          const res = await relayFetch(url, {
+          const res = await fetchWithTimeout(url, {
             ...options,
-            // Merge JUPITER_UA dari relayFetch secara otomatis,
-            // tapi caller headers tetap bisa override jika perlu
             headers: {
               'User-Agent':      JUPITER_UA,
               'Accept':          'application/json',

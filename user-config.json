@@ -75,6 +75,6 @@
   "meridian": {
     "publicApiKey": "bWVyaWRpYW4taXMtdGhlLWJlc3QtYWdlbnRz",
     "agentMeridianApiUrl": "https://api.agentmeridian.xyz/api",
-    "lpAgentRelayEnabled": true
+    "lpAgentRelayEnabled": false
   }
 }

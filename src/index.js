@@ -28,7 +28,6 @@ import { validateRuntimeEnv }             from './runtime/env.js';
 import { safeNum, escapeHTML }            from './utils/safeJson.js';
 import { initializeRpcManager }           from './utils/helius.js';
 import { createMessageTransport }         from './telegram/messageTransport.js';
-import { isRelayActive }                  from './utils/relayFetch.js';
 
 // ── PID Lock — cegah multiple instance ───────────────────────────
 const PID_FILE = new URL('../../bot.pid', import.meta.url).pathname;
@@ -708,14 +707,8 @@ setTimeout(async () => {
     const cfg     = getConfig();
     const autoScr = cfg.autoScreeningEnabled;
 
-    // Log relay status ke console
-    const relayOn = isRelayActive();
-    if (relayOn) {
-      console.log(`🌐 Jalur Relay Aktif: Menggunakan Proxy Meridian untuk bypass ISP.`);
-      console.log(`✅ Jupiter V2 & Relay Proxy Enabled (Meridian Protocol Active).`);
-    } else {
-      console.log(`📡 Koneksi Langsung: Relay Meridian tidak aktif. Jupiter V2 direct.`);
-    }
+    // Log startup Jupiter
+    console.log(`✅ Jupiter V2 Direct — api.jup.ag/swap/v2 (fallback: lite-api.jup.ag)`);
 
     await notify(
       `🚀 <b>Linear Sniper Bot dimulai!</b>\n\n` +
@@ -724,8 +717,7 @@ setTimeout(async () => {
       `🎯 TP: <code>+${EP_CONFIG.TAKE_PROFIT_PCT}%</code> | SL: <code>-${EP_CONFIG.STOP_LOSS_PCT}%</code>\n` +
       `🔍 DryRun: <code>${cfg.dryRun ? 'ON' : 'OFF'}</code>\n` +
       `📡 Auto Screening: <code>${autoScr ? `ON (${cfg.screeningIntervalMin}m)` : 'OFF'}</code>\n` +
-      `🌐 Relay ISP Bypass: <code>${relayOn ? `ON — ${cfg.agentMeridianApiUrl}` : 'OFF (direct)'}</code>\n` +
-      `⚡ API Engine: <code>${relayOn ? '✅ Jupiter V2 & Relay Proxy Enabled (Meridian Protocol Active)' : 'Jupiter V2 Direct'}</code>\n\n` +
+      `⚡ API Engine: <code>Jupiter V2 Direct (api.jup.ag/swap/v2)</code>\n\n` +
       `Ketik /hunt untuk mulai loop, /screening untuk scan manual.`
     );
 

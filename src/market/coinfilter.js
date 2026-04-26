@@ -1,5 +1,4 @@
 import { fetchWithTimeout, safeNum, withExponentialBackoff } from '../utils/safeJson.js';
-import { relayFetch, JUPITER_UA }                            from '../utils/relayFetch.js';
 import { checkCooldown, setCooldown }                        from '../utils/jupiterCooldown.js';
 import { getConfig }                                        from '../config.js';
 import { getJupiterPrice }                                  from '../utils/jupiter.js';
@@ -9,12 +8,11 @@ const WSOL_MINT = 'So11111111111111111111111111111111111111112';
 const METEORA_DISCOVERY_BASE = 'https://pool-discovery-api.datapi.meteora.ag';
 const DEXSCREENER_BASE = 'https://api.dexscreener.com/latest/dex/tokens';
 const OKX_BASE = 'https://web3.okx.com';
-// Jupiter V2 API — api.jup.ag/swap/v2 (relay via Meridian jika lpAgentRelayEnabled=true)
-// Fallback: lite-api.jup.ag (gratis, tanpa API key)
+// Jupiter V2 API — direct, tanpa relay proxy
 const JUPITER_QUOTE_API          = 'https://api.jup.ag/swap/v2/quote';
 const JUPITER_QUOTE_API_FALLBACK = 'https://lite-api.jup.ag/swap/v2/quote';
-// JUPITER_UA diimpor dari relayFetch.js agar konsisten di semua modul
-const JUPITER_BLACKLIST_TTL_MS = 24 * 60 * 60 * 1000;
+const JUPITER_UA                 = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
+const JUPITER_BLACKLIST_TTL_MS   = 24 * 60 * 60 * 1000;
 
 const _jupiterFailBlacklist = new Map(); // mint -> { until, reason, ts }
 
@@ -277,16 +275,13 @@ function isVampedCoin(info, sec) {
  * - Backoff otomatis: 800ms base, max 3 retry, per endpoint
  * - 404/403: langsung skip ke endpoint berikutnya (path salah = jangan retry)
  * - 429: baca header retry-after, setCooldown(retryAfterSec) → shared state
- * - ENOTFOUND: relayFetch otomatis route via Meridian proxy jika lpAgentRelayEnabled=true
- * - relayFetch: drop-in pengganti fetchWithTimeout, support exponential backoff + relay
+ * - ENOTFOUND: fallback otomatis ke lite-api.jup.ag (server berbeda)
  */
 async function fetchJupiterQuote(queryString) {
   // ── Shared Global Cooldown Guard (sync dengan solana/jupiter.js) ──
   checkCooldown(); // throw JUPITER_IN_COOLDOWN_Xs jika cooldown aktif
   // ────────────────────────────────────────────────────────────────
 
-  // relayFetch sudah auto-merge JUPITER_DEFAULT_HEADERS, tapi kita
-  // pass eksplisit agar override bisa dilakukan caller jika diperlukan
   const headers = {
     'User-Agent':      JUPITER_UA,
     'Accept':          'application/json',
@@ -300,7 +295,7 @@ async function fetchJupiterQuote(queryString) {
     try {
       const res = await withExponentialBackoff(
         async () => {
-          const r = await relayFetch(`${base}${queryString}`, { headers }, 12000);
+          const r = await fetchWithTimeout(`${base}${queryString}`, { headers }, 12000);
           if (r.ok) return r;
           // 404/403 = path salah, jangan retry — lempar langsung
           if (r.status === 404 || r.status === 403) {
