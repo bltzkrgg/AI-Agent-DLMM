@@ -82,6 +82,7 @@ const DEFAULTS = {
   // ── Meridian API ──────────────────────────────────────────────────────────
   publicApiKey:        '',
   agentMeridianApiUrl: 'https://api.agentmeridian.xyz/api',
+  lpAgentRelayEnabled: false,   // true = route Jupiter/Meteora lewat Meridian relay
   maxAthDistancePct:   15,
   dominanceMinPct:     15,
 
@@ -278,6 +279,7 @@ const NESTED_SECTION_MAP = {
   meridian: {
     publicApiKey:        'publicApiKey',
     agentMeridianApiUrl: 'agentMeridianApiUrl',
+    lpAgentRelayEnabled: 'lpAgentRelayEnabled',
     maxAthDistancePct:   'maxAthDistancePct',
     dominanceMinPct:     'dominanceMinPct',
   },

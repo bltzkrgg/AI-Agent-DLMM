@@ -13,8 +13,8 @@
     "slippageBps": 150
   },
   "discovery": {
-    "meteoraDiscoveryLimit": 180,
-    "timeframe": "1h",
+    "meteoraDiscoveryLimit": 50,
+    "timeframe": "24h",
     "category": "trending",
     "minTvl": 1000,
     "maxTvl": 0,
@@ -41,14 +41,14 @@
     "name": "Evil Panda",
     "depthPct": 90,
     "targetBinSteps": [
-      200,
+      100,
       125,
-      100
+      200
     ],
     "binStepPriority": [
-      200,
+      100,
       125,
-      100
+      200
     ],
     "stopLossPct": 10,
     "trailingStopPct": 5,
@@ -75,7 +75,6 @@
   "meridian": {
     "publicApiKey": "bWVyaWRpYW4taXMtdGhlLWJlc3QtYWdlbnRz",
     "agentMeridianApiUrl": "https://api.agentmeridian.xyz/api",
-    "maxAthDistancePct": 15,
-    "dominanceMinPct": 15
+    "lpAgentRelayEnabled": true
   }
 }
