@@ -21,6 +21,7 @@ import { getConfig, updateConfig, isConfigKeySupported } from './config.js';
 import { runLinearLoop, stopLoop, setNotifyFn, isRunning, getCurrentPosition } from './agents/hunterAlpha.js';
 import { exitPosition, getActivePositionCount, EP_CONFIG } from './sniper/evilPanda.js';
 import { discoverHighFeePoolsMeridian, runMeridianVeto } from './market/meridianVeto.js';
+import { analyzePerformance, formatEvolutionReport }     from './learn/statelessEvolve.js';
 import { validateRuntimeEnv }             from './runtime/env.js';
 import { safeNum, escapeHTML }            from './utils/safeJson.js';
 import { initializeRpcManager }           from './utils/helius.js';
@@ -107,6 +108,7 @@ bot.onText(/\/start/, (msg) => {
     `/status    — Status posisi aktif\n` +
     `/hunt      — Mulai loop sniper\n` +
     `/screening — Scan manual top pool sekarang\n` +
+    `/evolve    — Analisis harvest.log + saran config\n` +
     `/stop      — Hentikan loop\n` +
     `/exit      — Force exit posisi aktif\n` +
     `/balance   — Saldo wallet\n` +
@@ -274,6 +276,42 @@ bot.onText(/\/dryrun(?:\s+(on|off))?/, (msg, match) => {
     `${enable ? '🟡' : '🔴'} <b>Dry Run: ${enable ? 'ON' : 'OFF'}</b>`,
     { parse_mode: 'HTML' }
   );
+});
+
+// ── /evolve — analisis harvest.log + rekomendasi LLM ─────────────
+// /evolve        → preview rekomendasi (tidak ubah config)
+// /evolve apply  → preview + auto-apply perubahan ke user-config.json
+
+bot.onText(/\/evolve(?:\s+(apply))?/, async (msg, match) => {
+  if (!guard(msg)) return;
+  const chatId    = msg.chat.id;
+  const autoApply = match[1]?.toLowerCase() === 'apply';
+
+  await bot.sendMessage(chatId,
+    `🧠 <b>Evolve — Menganalisis harvest.log...</b>\n` +
+    `<i>Mengirim data ke ${getConfig().agentModel || 'Agent Model'}...</i>\n` +
+    (autoApply ? `⚡ Mode: <b>AUTO-APPLY</b>` : `👁 Mode: <b>Preview</b> (gunakan /evolve apply untuk terapkan)`),
+    { parse_mode: 'HTML' }
+  );
+
+  try {
+    const result = await analyzePerformance({ maxEntries: 50, autoApply });
+    const report = formatEvolutionReport(result);
+    await sendLong(chatId, report, { parse_mode: 'HTML' });
+
+    // Jika preview dan ada rekomendasi, tawari apply
+    if (!autoApply && result.ok && result.recommendations.length > 0) {
+      await bot.sendMessage(chatId,
+        `💬 <i>Setuju dengan rekomendasi di atas?\nKetik <code>/evolve apply</code> untuk menerapkan perubahan ke config.</i>`,
+        { parse_mode: 'HTML' }
+      );
+    }
+  } catch (e) {
+    bot.sendMessage(chatId,
+      `❌ <b>Evolve error:</b>\n<code>${escapeHTML(e.message)}</code>`,
+      { parse_mode: 'HTML' }
+    );
+  }
 });
 
 // ── /screening — scan manual top pool sekarang ────────────────────
