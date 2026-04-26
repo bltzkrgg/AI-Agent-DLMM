@@ -17,6 +17,54 @@ import { runMeridianVeto, discoverHighFeePoolsMeridian } from '../market/meridia
 import { deployPosition, monitorPnL, exitPosition, EP_CONFIG } from '../sniper/evilPanda.js';
 import { getWalletBalance }       from '../solana/wallet.js';
 
+// ── Pool selector: pilih pool terbaik per-token berdasarkan binStep priority ─────────────
+//
+// Input : array pool untuk satu token yang sama (tokenXMint identik)
+// Output: satu pool terpilih
+//
+// Urutan prioritas: [200, 125, 100] (fee tertinggi dulu).
+// Jika tidak ada yang cocok, ambil pool dengan binStep tertinggi yang tersedia.
+// Di antara pool dengan binStep sama, pilih yang feeActiveTvlRatio tertinggi.
+
+function selectBestPoolByBinStep(pools, binStepPriority = [200, 125, 100]) {
+  if (!pools || pools.length === 0) return null;
+  if (pools.length === 1) return pools[0];
+
+  // Coba satu per satu priority
+  for (const targetStep of binStepPriority) {
+    const candidates = pools.filter(p => p.binStep === targetStep);
+    if (candidates.length > 0) {
+      // Pilih fee/tvl ratio tertinggi di antara kandidat binStep ini
+      return candidates.sort((a, b) => (b.feeActiveTvlRatio || 0) - (a.feeActiveTvlRatio || 0))[0];
+    }
+  }
+
+  // Fallback: tidak ada yang cocok dengan priority list → ambil binStep tertinggi tersedia
+  return pools.sort((a, b) => b.binStep - a.binStep || (b.feeActiveTvlRatio || 0) - (a.feeActiveTvlRatio || 0))[0];
+}
+
+// ── Group pools by token, kemudian select best per token ─────────────────────────────
+
+function deduplicatePoolsByToken(pools, binStepPriority) {
+  // Group by tokenXMint
+  const byMint = new Map();
+  for (const pool of pools) {
+    const mint = pool.tokenXMint || '';
+    if (!mint) continue;
+    if (!byMint.has(mint)) byMint.set(mint, []);
+    byMint.get(mint).push(pool);
+  }
+
+  // Untuk setiap token, pilih pool terbaik
+  const result = [];
+  for (const [, tokenPools] of byMint) {
+    const best = selectBestPoolByBinStep(tokenPools, binStepPriority);
+    if (best) result.push(best);
+  }
+
+  return result;
+}
+
 // ── Notify helper (diset dari index.js) ──────────────────────────
 let _notifyFn = null;
 export function setNotifyFn(fn) { _notifyFn = fn; }
@@ -78,9 +126,16 @@ async function scanAndDeploy() {
 
   let pools;
   try {
-    // TAHAP 2: Gunakan Meridian High-Fee Hunter discovery
-    // Sort by fee_active_tvl_ratio DESC, prioritas binStep [200, 125, 100]
-    pools = await discoverHighFeePoolsMeridian({ limit });
+    // Ambil semua pool dari Meridian/Meteora (sorted by binStep priority + fee ratio)
+    const rawPools = await discoverHighFeePoolsMeridian({ limit });
+
+    // Deduplikasi: satu token mungkin punya beberapa pool.
+    // Pilih pool terbaik per-token berdasarkan binStep priority [200,125,100].
+    const cfg2          = getConfig();
+    const binPriority   = Array.isArray(cfg2.binStepPriority) ? cfg2.binStepPriority.map(Number) : [200, 125, 100];
+    pools               = deduplicatePoolsByToken(rawPools, binPriority);
+
+    console.log(`[hunter] ${rawPools.length} pool raw → ${pools.length} token unik setelah seleksi binStep`);
   } catch (e) {
     console.warn(`[hunter] discoverHighFeePoolsMeridian gagal: ${e.message}`);
     await sleep(60_000);
@@ -129,8 +184,9 @@ async function scanAndDeploy() {
       continue;
     }
 
-    // ── Meridian VETO (Supertrend 15m + ATH + PVP) ───────────────
-    const vetoResult = await runMeridianVeto({ mint: tokenMint, symbol: tokenSymbol });
+    // ── Meridian VETO (Supertrend 15m + ATH + PVP + Dominance) ────────
+    // Pass `pool` agar dominance check (Gate 4) bisa berjalan
+    const vetoResult = await runMeridianVeto({ mint: tokenMint, symbol: tokenSymbol, pool });
     if (vetoResult.veto) {
       console.log(`[hunter] 🚫 ${tokenSymbol}: VETO [${vetoResult.gate}] — ${vetoResult.reason}`);
       await sleep(5_000);

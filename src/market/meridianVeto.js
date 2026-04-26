@@ -20,10 +20,12 @@ import { getConfig }            from '../config.js';
 import { fetchWithTimeout }     from '../utils/safeJson.js';
 
 const POOL_DISCOVERY_BASE = 'https://pool-discovery-api.datapi.meteora.ag';
+const DLMM_API_BASE       = 'https://dlmm.datapi.meteora.ag';
 const DATAPI_JUP          = 'https://datapi.jup.ag/v1';
 const PVP_MIN_ACTIVE_TVL  = 5_000;
 const PVP_MIN_HOLDERS     = 500;
 const PVP_MIN_GLOBAL_FEES = 30;   // SOL
+const DOMINANCE_MIN_PCT   = 15;   // Pool kita harus ≥ 15% dari total likuiditas token
 
 // ── API helpers ───────────────────────────────────────────────────
 
@@ -106,10 +108,9 @@ export async function checkSupertrendVeto(mint) {
 export async function checkAthDistanceVeto(mint) {
   const cfg = getConfig();
   const maxAthDistancePct = Number(cfg.maxAthDistancePct) || 15;
-  const threshold         = 100 - maxAthDistancePct; // e.g. 85
+  const threshold         = 100 - maxAthDistancePct; // e.g. 85 → VETO jika price > 85% ATH
 
   try {
-    // Coba Meridian price endpoint (sama format OKX di screening.js)
     const base    = getMeridianBase();
     const headers = getMeridianHeaders();
 
@@ -117,7 +118,6 @@ export async function checkAthDistanceVeto(mint) {
     const res = await fetchWithTimeout(url, { headers }, 6000);
 
     if (!res.ok) {
-      // Fallback: Jupiter assets/search untuk price data
       return await checkAthViaJupiter(mint, threshold);
     }
 
@@ -131,7 +131,7 @@ export async function checkAthDistanceVeto(mint) {
     if (priceVsAthPct > threshold) {
       return {
         veto:         true,
-        reason:       `ATH guard: harga ${priceVsAthPct.toFixed(1)}% dari ATH > limit ${threshold}% — terlalu dekat puncak`,
+        reason:       `[TA_ATH_DANGER] Harga ${priceVsAthPct.toFixed(1)}% dari ATH > limit ${threshold}% — terlalu dekat puncak, tidak aman untuk LP`,
         priceVsAthPct,
       };
     }
@@ -164,13 +164,88 @@ async function checkAthViaJupiter(mint, threshold) {
     if (priceVsAthPct > threshold) {
       return {
         veto:         true,
-        reason:       `ATH guard (jup): ${priceVsAthPct.toFixed(1)}% dari ATH > ${threshold}%`,
+        reason:       `[TA_ATH_DANGER] (jup) Harga ${priceVsAthPct.toFixed(1)}% dari ATH > ${threshold}% — euforia puncak`,
         priceVsAthPct,
       };
     }
     return { veto: false, reason: `ATH ok (jup): ${priceVsAthPct.toFixed(1)}%`, priceVsAthPct };
   } catch {
     return { veto: false, reason: 'ATH Jupiter error — PASS', priceVsAthPct: null };
+  }
+}
+
+// ── NEW: Dominance Check (PVP Risk) ───────────────────────────────────────────────
+//
+// Cek apakah pool yang kita pilih memiliki dominasi likuiditas yang cukup.
+// Jika activeTvl pool kita < DOMINANCE_MIN_PCT% dari total likuiditas token
+// di seluruh jaringan → VETO [LOW_DOMINANCE].
+// Sumber data: Meteora DLMM API (semua pool token tersebut, sort by tvl:desc).
+// Fail-open jika API error atau data tidak tersedia.
+
+/**
+ * @param {string} mint        - Token mint (base token)
+ * @param {number} poolTvl     - TVL aktif pool yang kita pilih (USD)
+ * @param {string} [poolAddr]  - Alamat pool kita (untuk exclude dari total jika perlu)
+ * @returns {Promise<{veto: boolean, reason: string, dominancePct?: number}>}
+ */
+export async function checkDominanceVeto(mint, poolTvl, poolAddr) {
+  const minDomPct = DOMINANCE_MIN_PCT; // 15%
+
+  // Jika pool kita tidak punya TVL data — skip (fail-open)
+  if (!mint || !Number.isFinite(poolTvl) || poolTvl <= 0) {
+    return { veto: false, reason: 'TVL data pool tidak tersedia — skip dominance check' };
+  }
+
+  try {
+    // Ambil semua pool DLMM untuk token ini, sorted by TVL DESC
+    const url = `${DLMM_API_BASE}/pools?query=${encodeURIComponent(mint)}&sort_by=${encodeURIComponent('tvl:desc')}&page_size=20`;
+    const res = await fetchWithTimeout(url, {}, 8000);
+
+    if (!res.ok) {
+      console.warn(`[meridianVeto] Dominance API ${res.status} untuk ${mint.slice(0,8)} — PASS`);
+      return { veto: false, reason: `Dominance API ${res.status} — skip check` };
+    }
+
+    const data  = await res.json();
+    const pools = Array.isArray(data?.data) ? data.data : [];
+
+    if (pools.length === 0) {
+      return { veto: false, reason: 'Tidak ada pool lain ditemukan — dominance ok' };
+    }
+
+    // Hitung total TVL semua pool yang mengandung token ini
+    const totalNetworkTvl = pools.reduce((sum, p) => {
+      const tvl = Number(p.tvl || p.active_tvl || 0);
+      return sum + (Number.isFinite(tvl) ? tvl : 0);
+    }, 0);
+
+    if (totalNetworkTvl <= 0) {
+      return { veto: false, reason: 'Total network TVL nol — skip dominance check' };
+    }
+
+    const dominancePct = (poolTvl / totalNetworkTvl) * 100;
+
+    console.log(`[meridianVeto] Dominance: pool=${poolTvl.toFixed(0)} total=${totalNetworkTvl.toFixed(0)} dom=${dominancePct.toFixed(1)}%`);
+
+    if (dominancePct < minDomPct) {
+      return {
+        veto:         true,
+        reason:       `[LOW_DOMINANCE] Pool kita ${dominancePct.toFixed(1)}% dari total likuiditas token ($${Math.round(totalNetworkTvl).toLocaleString()}) — ada pool lebih dominan`,
+        dominancePct,
+        totalNetworkTvl,
+      };
+    }
+
+    return {
+      veto:         false,
+      reason:       `Dominance ok: ${dominancePct.toFixed(1)}% dari total TVL`,
+      dominancePct,
+      totalNetworkTvl,
+    };
+
+  } catch (e) {
+    console.warn(`[meridianVeto] Dominance check error ${mint.slice(0,8)}: ${e.message} — PASS`);
+    return { veto: false, reason: `Dominance error — skip veto` };
   }
 }
 
@@ -362,6 +437,8 @@ function normalizePool(p) {
     feePct:            Number(p.fee_pct || 0),
     feeActiveTvlRatio: parseFloat(feeTvl.toFixed(6)),
     activeTvl:         Number(p.active_tvl || 0),
+    // total_tvl: dipakai oleh dominance check — seluruh TVL pool (bukan hanya active bins)
+    totalTvl:          Number(p.tvl || p.total_tvl || p.active_tvl || 0),
     volume24h:         Number(p.volume || p.volume24h || 0),
     mcap:              Number(p.token_x?.market_cap || p.mcap || 0),
     holders:           Number(p.base_token_holders || p.holders || 0),
@@ -372,7 +449,7 @@ function normalizePool(p) {
     price:             Number(p.pool_price || p.price || 0),
     priceChangePct:    Number(p.pool_price_change_pct || 0),
     priceTrend:        p.price_trend || null,
-    raw:               p, // preserve untuk debugging
+    raw:               p,
   };
 }
 
@@ -382,26 +459,35 @@ function normalizePool(p) {
 // Return pada VETO pertama yang ditemukan.
 
 /**
- * @param {{ mint: string, symbol: string }} token
+ * @param {{ mint: string, symbol: string, pool?: object }} token
  * @returns {Promise<{veto: boolean, reason: string, gate: string|null}>}
  */
 export async function runMeridianVeto(token) {
-  const { mint, symbol } = token;
+  const { mint, symbol, pool } = token;
   const cfg = getConfig();
 
   // Gate 1: Supertrend 15m
   const st = await checkSupertrendVeto(mint);
   if (st.veto) return { veto: true, reason: st.reason, gate: 'SUPERTREND_15M' };
 
-  // Gate 2: ATH Distance
+  // Gate 2: ATH Distance [TA_ATH_DANGER]
   if (cfg.maxAthDistancePct > 0) {
     const ath = await checkAthDistanceVeto(mint);
-    if (ath.veto) return { veto: true, reason: ath.reason, gate: 'ATH_DISTANCE' };
+    if (ath.veto) return { veto: true, reason: ath.reason, gate: 'TA_ATH_DANGER' };
   }
 
-  // Gate 3: PVP Guard
+  // Gate 3: PVP Guard (rival token)
   const pvp = await checkPvpGuardVeto(mint, symbol);
   if (pvp.veto) return { veto: true, reason: pvp.reason, gate: 'PVP_GUARD' };
+
+  // Gate 4: Dominance Check [LOW_DOMINANCE]
+  // Dijalankan hanya jika pool object tersedia (berisi activeTvl)
+  if (pool) {
+    const poolTvl  = Number(pool.activeTvl || pool.totalTvl || 0);
+    const poolAddr = pool.address || '';
+    const dom = await checkDominanceVeto(mint, poolTvl, poolAddr);
+    if (dom.veto) return { veto: true, reason: dom.reason, gate: 'LOW_DOMINANCE' };
+  }
 
   return { veto: false, reason: 'All Meridian gates PASS', gate: null };
 }
