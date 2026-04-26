@@ -5,8 +5,8 @@
  * dikirim melalui Meridian LP Agent Relay untuk bypass ISP blocking.
  *
  * Request Flow (Relay ON):
- *   GET  /swap/v2/quote?...  →  POST relay/proxy {url, method, headers, body}
- *   POST /swap/v2/swap       →  POST relay/proxy {url, method, headers, body}
+ *   GET  /swap/v2/quote?...  →  POST ${agentMeridianApiUrl}/proxy {url, method, headers, body}
+ *   POST /swap/v2/swap       →  POST ${agentMeridianApiUrl}/proxy {url, method, headers, body}
  *
  * Request Flow (Relay OFF):
  *   Langsung ke endpoint Jupiter V2 dengan User-Agent uniform.
@@ -25,7 +25,7 @@ import { fetchWithTimeout } from './safeJson.js';
 const MAX_RETRIES  = 3;
 const BASE_DELAY   = 1000;   // ms
 const MAX_DELAY    = 8000;   // ms
-const TIMEOUT_MS   = 12000;  // per attempt
+const TIMEOUT_MS   = 30000;  // 30 detik — relay memerlukan latency lebih tinggi
 
 // User-Agent uniform — sama dengan yang dipakai coinfilter.js
 // Konsisten di semua modul → menghindari blokir level CDN
@@ -89,22 +89,23 @@ export async function relayFetch(url, options = {}, timeoutMs = TIMEOUT_MS) {
         }, timeoutMs);
       }
 
-      // ── Mode Relay: kirim ke Meridian proxy ──────────────────────
-      // Teruskan mergedHeaders ke dalam relayBody agar proxy server
-      // meneruskan UA yang benar ke Jupiter endpoint
-      const relayUrl  = `${apiBase}/relay/proxy`;
+      // ── Mode Relay: kirim ke Meridian proxy ────────────────────
+      // Rute: POST ${agentMeridianApiUrl}/proxy (bukan /relay/proxy)
+      const relayUrl  = `${apiBase}/proxy`;
       const relayBody = {
-        url,
+        url:     url,                   // URL Jupiter/Meteora asli (full https://)
         method:  options.method || 'GET',
-        headers: mergedHeaders,             // ← UA uniform ke proxy
+        headers: mergedHeaders,         // UA uniform + caller headers
         body:    options.body   || null,
       };
+
+      console.log(`[relay] Forwarding request to: ${url.slice(0, 45)}...`);
 
       const relayOpts = {
         method:  'POST',
         headers: {
           'Content-Type': 'application/json',
-          'x-api-key':    apiKey,           // ← auth ke Meridian relay
+          'x-api-key':    apiKey,       // auth ke Meridian relay
           'Accept':       'application/json',
         },
         body: JSON.stringify(relayBody),
@@ -114,8 +115,10 @@ export async function relayFetch(url, options = {}, timeoutMs = TIMEOUT_MS) {
 
       // Relay membungkus response asli — unwrap jika perlu
       if (!res.ok) {
-        const errText = await res.text().catch(() => res.status);
-        throw new Error(`[relay] HTTP ${res.status}: ${errText}`);
+        const errText = await res.text().catch(() => String(res.status));
+        // Log jelas: sumber error dari relay server, bukan dari Jupiter
+        console.warn(`[relay] Server error (rute: ${relayUrl}): HTTP ${res.status} — ${errText.slice(0, 120)}`);
+        throw new Error(`[relay] HTTP ${res.status}: ${errText.slice(0, 80)}`);
       }
 
       // Tangani relay wrapper {status, body} atau direct JSON response
@@ -132,9 +135,13 @@ export async function relayFetch(url, options = {}, timeoutMs = TIMEOUT_MS) {
 
     } catch (e) {
       lastError = e;
-      // Jangan retry untuk error klien (4xx) — server sudah memberi jawaban pasti
-      if (e.message?.includes('HTTP 4')) break;
-      console.warn(`[relayFetch] Attempt ${attempt + 1} gagal: ${e.message}`);
+      // 4xx dari relay server — jangan retry (jawaban definitif)
+      if (e.message?.includes('[relay] HTTP 4')) {
+        console.warn(`[relay] 4xx definitif — berhenti retry: ${e.message}`);
+        break;
+      }
+      // Error lain (timeout, ENOTFOUND, 5xx) — retry dengan backoff
+      console.warn(`[relayFetch] Attempt ${attempt + 1}/${MAX_RETRIES} gagal (${useRelay ? 'relay' : 'direct'}): ${e.message}`);
     }
   }
 
