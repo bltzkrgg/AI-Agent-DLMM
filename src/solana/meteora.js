@@ -569,7 +569,7 @@ export async function getPositionInfo(poolAddress) {
 export async function getSolPriceUsd() {
   try {
     const res = await fetchWithTimeout(
-      'https://api.jup.ag/price/v2?ids=So11111111111111111111111111111111111111112',
+      'https://api.jup.ag/price/v1?ids=So11111111111111111111111111111111111111112',
       {}, 6000
     );
     if (!res.ok) return 150;

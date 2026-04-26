@@ -9,8 +9,8 @@ const METEORA_DISCOVERY_BASE = 'https://pool-discovery-api.datapi.meteora.ag';
 const DEXSCREENER_BASE = 'https://api.dexscreener.com/latest/dex/tokens';
 const OKX_BASE = 'https://web3.okx.com';
 // Jupiter V2 API — direct, tanpa relay proxy
-const JUPITER_QUOTE_API          = 'https://api.jup.ag/swap/v2/quote';
-const JUPITER_QUOTE_API_FALLBACK = 'https://lite-api.jup.ag/swap/v2/quote';
+const JUPITER_QUOTE_API          = 'https://api.jup.ag/swap/v1/quote';
+const JUPITER_QUOTE_API_FALLBACK = 'https://lite-api.jup.ag/swap/v1/quote';
 const JUPITER_UA                 = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
 const JUPITER_BLACKLIST_TTL_MS   = 24 * 60 * 60 * 1000;
 
@@ -271,7 +271,7 @@ function isVampedCoin(info, sec) {
 
 /**
  * fetchJupiterQuote — menggunakan withExponentialBackoff (utility sistem) per endpoint.
- * - Primary: api.jup.ag/swap/v2/quote | Fallback: lite-api.jup.ag/swap/v2/quote
+ * - Primary: api.jup.ag/swap/v1/quote | Fallback: lite-api.jup.ag/swap/v1/quote
  * - Backoff otomatis: 800ms base, max 3 retry, per endpoint
  * - 404/403: langsung skip ke endpoint berikutnya (path salah = jangan retry)
  * - 429: baca header retry-after, setCooldown(retryAfterSec) → shared state

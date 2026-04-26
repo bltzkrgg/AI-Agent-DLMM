@@ -708,7 +708,7 @@ setTimeout(async () => {
     const autoScr = cfg.autoScreeningEnabled;
 
     // Log startup Jupiter
-    console.log(`✅ Jupiter V2 Direct — api.jup.ag/swap/v2 (fallback: lite-api.jup.ag)`);
+    console.log(`✅ Jupiter V1 Direct — api.jup.ag/swap/v1 (fallback: lite-api.jup.ag)`);
 
     await notify(
       `🚀 <b>Linear Sniper Bot dimulai!</b>\n\n` +
@@ -717,7 +717,7 @@ setTimeout(async () => {
       `🎯 TP: <code>+${EP_CONFIG.TAKE_PROFIT_PCT}%</code> | SL: <code>-${EP_CONFIG.STOP_LOSS_PCT}%</code>\n` +
       `🔍 DryRun: <code>${cfg.dryRun ? 'ON' : 'OFF'}</code>\n` +
       `📡 Auto Screening: <code>${autoScr ? `ON (${cfg.screeningIntervalMin}m)` : 'OFF'}</code>\n` +
-      `⚡ API Engine: <code>Jupiter V2 Direct (api.jup.ag/swap/v2)</code>\n\n` +
+      `⚡ API Engine: <code>Jupiter V1 Direct (api.jup.ag/swap/v1)</code>\n\n` +
       `Ketik /hunt untuk mulai loop, /screening untuk scan manual.`
     );
 

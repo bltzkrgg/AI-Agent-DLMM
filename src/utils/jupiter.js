@@ -1,8 +1,8 @@
 /**
  * src/utils/jupiter.js — Jupiter Swap Utility
  *
- * Base URL: Jupiter V2 API (https://api.jup.ag/swap/v2/) — direct, tanpa relay.
- * Fallback: https://lite-api.jup.ag/swap/v2/ jika primary gagal.
+ * Base URL: Jupiter V2 API (https://api.jup.ag/swap/v1/) — direct, tanpa relay.
+ * Fallback: https://lite-api.jup.ag/swap/v1/ jika primary gagal.
  */
 
 import { fetchWithTimeout, stringify }  from './safeJson.js';
@@ -11,10 +11,10 @@ import { getConfig }                    from '../config.js';
 import { Transaction, VersionedTransaction } from '@solana/web3.js';
 
 // ── Jupiter V2 Endpoints (direct) ───────────────────────────────────
-const JUP_BASE      = 'https://api.jup.ag/swap/v2';
+const JUP_BASE      = 'https://api.jup.ag/swap/v1';
 const JUP_QUOTE_URL = `${JUP_BASE}/quote`;
 const JUP_SWAP_URL  = `${JUP_BASE}/swap`;
-const JUP_PRICE_URL = 'https://api.jup.ag/price/v2';
+const JUP_PRICE_URL = 'https://api.jup.ag/price/v1';
 
 // User-Agent uniform agar tidak diblokir CDN Jupiter
 const JUPITER_UA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';

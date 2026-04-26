@@ -5,8 +5,8 @@
  * dikirim melalui Meridian LP Agent Relay untuk bypass ISP blocking.
  *
  * Request Flow (Relay ON):
- *   GET  /swap/v2/quote?...  →  POST ${agentMeridianApiUrl}/proxy {url, method, headers, body}
- *   POST /swap/v2/swap       →  POST ${agentMeridianApiUrl}/proxy {url, method, headers, body}
+ *   GET  /swap/v1/quote?...  →  POST ${agentMeridianApiUrl}/proxy {url, method, headers, body}
+ *   POST /swap/v1/swap       →  POST ${agentMeridianApiUrl}/proxy {url, method, headers, body}
  *
  * Request Flow (Relay OFF):
  *   Langsung ke endpoint Jupiter V2 dengan User-Agent uniform.

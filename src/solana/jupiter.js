@@ -167,7 +167,7 @@ export async function getJupiterQuote(inputMint, outputMint, amountRaw, slippage
   });
   // Periksa shared cooldown sebelum hit endpoint
   checkCooldown();
-  const res = await fetchJupiter(`/swap/v2/quote?${quoteParams.toString()}`, {}, 10000);
+  const res = await fetchJupiter(`/swap/v1/quote?${quoteParams.toString()}`, {}, 10000);
   if (!res.ok) {
     const err = await res.text().catch(() => res.status);
     throw new Error(`Jupiter quote failed: ${err}`);
@@ -222,7 +222,7 @@ export async function swapToSOL(inputMint, amountRaw, slippageBps = 100, options
   } catch { /* pakai default */ }
 
   // 3. Get swap transaction
-  const swapRes = await fetchJupiter('/swap/v2/swap', {
+  const swapRes = await fetchJupiter('/swap/v1/swap', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: stringify({
