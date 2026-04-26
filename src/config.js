@@ -404,6 +404,46 @@ export function getConfig() {
     : 2160; // hardcoded fallback: 90 hari — JANGAN ubah ke 0
   // ------------------------------------------------------------
 
+  // -- Meridian Robustness: Bangun objek .radar secara eksplisit --
+  // getConfig() SELALU mengembalikan .radar meskipun user-config.json berbentuk FLAT.
+  // Consumer (index.js, coinfilter.js, dll) cukup baca config.radar.xxx
+  // dan nilainya dijamin tersedia dengan fallback keras dari merged (root) config.
+  merged.radar = {
+    // Pool age — sumber kebenaran tunggal, fallback keras 2160
+    maxPoolAgeHours:  merged.maxPoolAgeHours  || 2160,
+    minPoolAgeHours:  Number(user?.radar?.minPoolAgeHours  || user?.minPoolAgeHours  || 0) || 0,
+    // Mcap & volume
+    minMcap:          merged.minMcap          || DEFAULTS.minMcap,
+    maxMcap:          merged.maxMcap          ?? DEFAULTS.maxMcap,
+    minVolume24h:     merged.minVolume24h      || DEFAULTS.minVolume24h,
+    // Discovery
+    meteoraDiscoveryLimit: merged.meteoraDiscoveryLimit || DEFAULTS.meteoraDiscoveryLimit,
+    discoveryTimeframe:    merged.discoveryTimeframe    || '5m',
+    discoveryCategory:     merged.discoveryCategory     || '',
+    // Jupiter
+    jupiterSimUsd:         merged.jupiterSimUsd         || 1,
+    maxPriceImpactPct:     merged.maxPriceImpactPct     || DEFAULTS.maxPriceImpactPct,
+    // GMGN thresholds
+    gmgnMinTotalFeesSol:   merged.gmgnMinTotalFeesSol   || DEFAULTS.gmgnMinTotalFeesSol,
+    gmgnTop10HolderMaxPct: merged.gmgnTop10HolderMaxPct || DEFAULTS.gmgnTop10HolderMaxPct,
+    gmgnDevHoldMaxPct:     merged.gmgnDevHoldMaxPct     || DEFAULTS.gmgnDevHoldMaxPct,
+    gmgnInsiderMaxPct:     merged.gmgnInsiderMaxPct     ?? DEFAULTS.gmgnInsiderMaxPct,
+    gmgnBundlerMaxPct:     merged.gmgnBundlerMaxPct     || DEFAULTS.gmgnBundlerMaxPct,
+    gmgnWashTradeMaxPct:   merged.gmgnWashTradeMaxPct   || DEFAULTS.gmgnWashTradeMaxPct,
+    gmgnRequireBurnedLp:   merged.gmgnRequireBurnedLp   !== false,
+    gmgnRequireZeroTax:    merged.gmgnRequireZeroTax    !== false,
+    gmgnBlockCto:          merged.gmgnBlockCto          === true,
+    gmgnBlockVamped:       merged.gmgnBlockVamped       !== false,
+    gmgnWhitelistEnabled:  merged.gmgnWhitelistEnabled  !== false,
+    // Age known
+    ageKnownRequired:      merged.gmgnRequireKnownAge   === true,
+    // Pass-through semua key user.radar yang tidak tercakup di atas
+    ...(user?.radar && typeof user.radar === 'object' ? user.radar : {}),
+    // Override kembali maxPoolAgeHours agar tidak bisa di-overwrite oleh user.radar ke 0
+    maxPoolAgeHours: merged.maxPoolAgeHours || 2160,
+  };
+  // ------------------------------------------------------------
+
   return merged;
 }
 
