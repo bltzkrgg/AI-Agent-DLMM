@@ -229,9 +229,13 @@ async function scanAndDeploy() {
   }
 
   if (!winner) {
-    console.log('[hunter] Tidak ada kandidat lolos. Tunggu 2 menit...');
-    await notify('🔍 <i>Tidak ada kandidat lolos screening. Scan ulang dalam 2 menit.</i>');
-    await sleep(120_000);
+    // Baca config fresh agar pakai nilai terbaru (tidak hardcode 2 menit)
+    const retryCfg      = getConfig();
+    const retryMin      = Number(retryCfg.screeningIntervalMin) || 15;
+    const retryMs       = retryMin * 60 * 1000;
+    console.log(`[hunter] Tidak ada kandidat lolos. Scan ulang dalam ${retryMin} menit...`);
+    await notify(`🔍 <i>Tidak ada kandidat lolos screening. Scan ulang dalam ${retryMin} menit.</i>`);
+    await sleep(retryMs);
     return;
   }
 

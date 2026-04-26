@@ -598,14 +598,30 @@ const HOT_FEE_RATIO_THRESHOLD = 0.05; // 5% fee/TVL/hari = sangat aktif
 let   _screeningLoopTimer = null;
 
 async function runScreeningLoop() {
-  const cfg = getConfig();
-  if (!cfg.autoScreeningEnabled) return;
+  // Baca config FRESH saat start (bukan dari closure lama)
+  const startCfg   = getConfig();
+  if (!startCfg.autoScreeningEnabled) {
+    console.log('[screening-loop] autoScreeningEnabled=false — loop tidak dijalankan.');
+    return;
+  }
 
-  const intervalMs = (cfg.screeningIntervalMin || 15) * 60 * 1000;
+  // Konversi: config.screeningIntervalMin (angka menit) → milidetik
+  // Fallback eksplisit: 15 menit (bukan 2 menit)
+  const intervalMin = Number(startCfg.screeningIntervalMin) || 15;
+  const intervalMs  = intervalMin * 60 * 1000;
 
   const tick = async () => {
+    // Selalu baca config FRESH setiap tick agar perubahan /setconfig langsung efektif
+    const cfg = getConfig();
+
+    // Guard: hentikan diri sendiri jika dinonaktifkan via /setconfig
+    if (!cfg.autoScreeningEnabled) {
+      stopScreeningLoop();
+      return;
+    }
+
     try {
-      const limit = cfg.meteoraDiscoveryLimit || 180;
+      const limit = Number(cfg.meteoraDiscoveryLimit) || 180;
       const pools = await discoverHighFeePoolsMeridian({ limit });
       if (!pools?.length) return;
 
@@ -635,10 +651,10 @@ async function runScreeningLoop() {
     }
   };
 
-  // Jalankan pertama kali setelah 30 detik, lalu per interval
+  // Jalankan pertama kali setelah 30 detik, lalu per interval dari config
   setTimeout(tick, 30_000);
   _screeningLoopTimer = setInterval(tick, intervalMs);
-  console.log(`🔍 Screening loop aktif — interval ${cfg.screeningIntervalMin || 15} menit`);
+  console.log(`🔍 Screening loop aktif — interval ${intervalMin} menit (${intervalMs / 1000}s)`);
 }
 
 function stopScreeningLoop() {
