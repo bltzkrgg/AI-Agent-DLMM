@@ -1,8 +1,13 @@
 /**
  * src/config.js — Linear Sniper Configuration
  *
- * Pure flat-config. Tidak ada nested objects, tidak ada legacy baggage.
- * Variabel model LLM dibaca dari process.env — ganti di .env tanpa ubah kode.
+ * Mendukung dua format user-config.json:
+ *   - FLAT  : { deployAmountSol: 0.5, ... }            (legacy / manual)
+ *   - NESTED: { finance: { deployAmountSol: 0.5 }, ... } (format baru)
+ *
+ * flattenUserConfig() mendeteksi dan menormalisasi keduanya secara otomatis.
+ * Variabel model LLM: dibaca dari process.env terlebih dulu, fallback ke
+ * user-config.json llm.*, lalu fallback ke DEFAULTS.
  *
  * Modul aktif yang membaca config ini:
  *   - src/agents/hunterAlpha.js  (discovery, screening, deploy)
@@ -21,55 +26,63 @@ import { stringify } from './utils/safeJson.js';
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const CONFIG_PATH = process.env.BOT_CONFIG_PATH || join(__dirname, '../user-config.json');
 
+// ── DEFAULTS ──────────────────────────────────────────────────────────────────
+// Semua nilai default dalam format flat. Nilai ini digunakan jika kunci tidak
+// ditemukan di user-config.json maupun di process.env.
+
 const DEFAULTS = {
 
   // ── Deployment & Sizing ──────────────────────────────────────────────────
-  deployAmountSol:    1.0,    // SOL per posisi yang dibuka
-  maxPositions:       3,      // Maksimum posisi terbuka bersamaan
-  minSolToOpen:       0.10,   // Min saldo SOL sebelum boleh buka posisi
-  gasReserve:         0.03,   // SOL cadangan untuk tx fees
-  dailyLossLimitUsd:  25,     // Batas kerugian harian sebelum Hunter jeda
+  deployAmountSol:    1.0,
+  maxPositions:       3,
+  minSolToOpen:       0.10,
+  gasReserve:         0.03,
+  dailyLossLimitUsd:  25,
 
   // ── Bot Mode ─────────────────────────────────────────────────────────────
-  dryRun:             false,  // true = tidak eksekusi TX apapun
-  deploymentStage:    'full', // shadow | canary | full
-  canaryMaxPositions: 1,
-  autonomyMode:       'active', // active | paused
+  dryRun:               false,
+  deploymentStage:      'full',   // shadow | canary | full
+  canaryMaxPositions:   1,
+  autonomyMode:         'active', // active | paused
   autoScreeningEnabled: false,
 
+  // ── Intervals ────────────────────────────────────────────────────────────
+  managementIntervalMin:    15,
+  screeningIntervalMin:     15,
+  positionUpdateIntervalMin: 5,
+
   // ── LLM Models ───────────────────────────────────────────────────────────
-  // Ganti model via .env tanpa menyentuh kode:
-  //   SCREENING_MODEL   — dipakai Hunter saat evaluasi kandidat token
-  //   MANAGEMENT_MODEL  — dipakai untuk analisis posisi & sinyal keluar
-  //   AGENT_MODEL       — model utama untuk reasoning kompleks
+  // Priority: process.env > user-config.json[llm.*] > DEFAULTS
+  // Ganti model via .env tanpa sentuh kode:
+  //   SCREENING_MODEL, MANAGEMENT_MODEL, AGENT_MODEL
   screeningModel:  process.env.SCREENING_MODEL  || 'nvidia/nemotron-3-super-120b-a12b:free',
   managementModel: process.env.MANAGEMENT_MODEL || 'minimax/minimax-m2.5:free',
   agentModel:      process.env.AGENT_MODEL      || 'deepseek/deepseek-v3.2',
   generalModel:    process.env.AGENT_MODEL      || 'deepseek/deepseek-v3.2',
-  activeModel:     null, // Diset via /model command — override semua
+  activeModel:     null,
 
-  // ── Pool Discovery (hunterAlpha.js + meridianVeto.js) ────────────────────
-  meteoraDiscoveryLimit: 180,        // Pool yang di-scan per siklus
-  binStepPriority:  [200, 125, 100], // Urutan prioritas: fee tertinggi dulu
-  allowedBinSteps:  [100, 125, 200], // Whitelist bin step
-  minBinStep:       100,
-  maxBinStep:       200,
-  minFeeActiveTvlRatio: 0.002,       // Min fee/active_tvl ratio
-  minDailyFeeYieldPct:  1.0,         // Min fee yield harian (%)
-  maxPoolAgeHours:  2160,            // Max usia pool (default 90 hari)
-  maxPoolAgeDays:   3,               // Freshness rule: reject pool > 3 hari
+  // ── Pool Discovery ────────────────────────────────────────────────────────
+  meteoraDiscoveryLimit:  180,
+  binStepPriority:        [200, 125, 100],
+  allowedBinSteps:        [100, 125, 200],
+  minBinStep:             100,
+  maxBinStep:             200,
+  minFeeActiveTvlRatio:   0.002,
+  minDailyFeeYieldPct:    1.0,
+  maxPoolAgeHours:        2160,
+  maxPoolAgeDays:         3,
 
-  // ── Meridian API ─────────────────────────────────────────────────────────
-  publicApiKey:       '',            // API key Agent Meridian
+  // ── Meridian API ──────────────────────────────────────────────────────────
+  publicApiKey:        '',
   agentMeridianApiUrl: 'https://api.agentmeridian.xyz/api',
-  maxAthDistancePct:  15,            // VETO jika harga > 85% ATH
-  dominanceMinPct:    15,            // VETO jika pool < 15% total TVL token
+  maxAthDistancePct:   15,
+  dominanceMinPct:     15,
 
-  // ── GMGN Screening (coinfilter.js) ───────────────────────────────────────
-  minMcap:            250000,
-  maxMcap:            0,             // 0 = disabled
-  minVolume24h:       1000000,
-  minOrganic:         55,
+  // ── GMGN Screening ────────────────────────────────────────────────────────
+  minMcap:                250000,
+  maxMcap:                0,
+  minVolume24h:           1000000,
+  minOrganic:             55,
   gmgnMinTotalFeesSol:    30,
   gmgnTop10HolderMaxPct:  30,
   gmgnDevHoldMaxPct:       5,
@@ -82,27 +95,30 @@ const DEFAULTS = {
   gmgnBlockVamped:        true,
   gmgnFailClosedCritical: true,
   gmgnMinAgeHours:        0,
-  gmgnMaxAgeHours:        168,       // 7 hari
+  gmgnMaxAgeHours:        168,
   gmgnRequireKnownAge:    false,
-  bannedNarratives: ['kanye', 'taylor', 'trump', 'biden', 'kamala', 'justice', 'bags', 'moo deng', 'pesto'],
-  maxTvlMcapRatio:  0.20,
-  maxPriceImpactPct: 1.5,
+  bannedNarratives:       ['kanye', 'taylor', 'trump', 'biden', 'kamala', 'justice', 'bags', 'moo deng', 'pesto'],
+  maxTvlMcapRatio:        0.20,
+  maxPriceImpactPct:      1.5,
 
-  // ── Evil Panda Position Parameters (evilPanda.js) ────────────────────────
-  slippageBps:       150,    // Slippage DLMM TX (150 bps = 1.5%)
-  trailingStopPct:   5.0,    // Trailing SL: exit jika turun X% dari HWM
-  stopLossPct:       10,     // Hard stop loss (%)
-  maxHoldHours:      72,     // Force-close jika posisi > N jam
+  // ── Evil Panda Position ───────────────────────────────────────────────────
+  slippageBps:            150,
+  stopLossPct:            10,
+  trailingStopPct:        5.0,
+  trailingTriggerPct:     10,
+  trailingDropPct:        3.0,
+  maxHoldHours:           72,
   maxDailyPriorityFeeSol: 0.2,
+  activeStrategy:         'Evil Panda',
 
-  // ── OKX API ──────────────────────────────────────────────────────────────
+  // ── OKX ──────────────────────────────────────────────────────────────────
   okxApiKey: process.env.OKX_API_KEY || '',
 
 };
 
 const KNOWN_CONFIG_KEYS = new Set(Object.keys(DEFAULTS));
 
-// ── CONFIG_BOUNDS — batas aman untuk AI-driven updates ───────────────────────
+// ── CONFIG_BOUNDS ─────────────────────────────────────────────────────────────
 const CONFIG_BOUNDS = {
   deployAmountSol:        { min: 0.01,  max: 50 },
   maxPositions:           { min: 1,     max: 20 },
@@ -114,8 +130,9 @@ const CONFIG_BOUNDS = {
   canaryMaxPositions:     { min: 1,     max: 20 },
   autonomyMode:           { type: 'string' },
   autoScreeningEnabled:   { type: 'boolean' },
-
-  // Pool discovery
+  managementIntervalMin:  { min: 1,     max: 1440 },
+  screeningIntervalMin:   { min: 5,     max: 1440 },
+  positionUpdateIntervalMin: { min: 1,  max: 1440 },
   meteoraDiscoveryLimit:  { min: 50,    max: 500 },
   allowedBinSteps:        { type: 'array' },
   binStepPriority:        { type: 'array' },
@@ -125,12 +142,8 @@ const CONFIG_BOUNDS = {
   minDailyFeeYieldPct:    { min: 0,     max: 20 },
   maxPoolAgeHours:        { min: 1,     max: 87600 },
   maxPoolAgeDays:         { min: 0.1,   max: 365 },
-
-  // Meridian
   maxAthDistancePct:      { min: 1,     max: 50 },
   dominanceMinPct:        { min: 1,     max: 100 },
-
-  // GMGN
   minMcap:                { min: 0,     max: 100_000_000 },
   maxMcap:                { min: 0,     max: 10_000_000_000 },
   minVolume24h:           { min: 0,     max: 1_000_000_000 },
@@ -152,16 +165,77 @@ const CONFIG_BOUNDS = {
   bannedNarratives:       { type: 'array' },
   maxTvlMcapRatio:        { min: 0.01,  max: 1.0 },
   maxPriceImpactPct:      { min: 0.1,   max: 5 },
-
-  // Evil Panda
   slippageBps:            { min: 10,    max: 1000 },
-  trailingStopPct:        { min: 0.5,   max: 50 },
   stopLossPct:            { min: 1,     max: 50 },
+  trailingStopPct:        { min: 0.5,   max: 50 },
+  trailingTriggerPct:     { min: 0.5,   max: 50 },
+  trailingDropPct:        { min: 0.1,   max: 20 },
   maxHoldHours:           { min: 1,     max: 168 },
   maxDailyPriorityFeeSol: { min: 0.01,  max: 10 },
-
   okxApiKey:              { type: 'string' },
 };
+
+// ── flattenUserConfig ─────────────────────────────────────────────────────────
+// Mendukung format nested (baru) dan flat (lama) secara transparan.
+//
+// Format nested:
+//   { finance: { deployAmountSol: 0.5 }, strategy: { stopLossPct: 5 } }
+// → flat:
+//   { deployAmountSol: 0.5, stopLossPct: 5 }
+//
+// LLM dari nested `llm.*` hanya dipakai jika process.env tidak di-set.
+
+const NESTED_SECTION_MAP = {
+  finance:   null,    // keys langsung diangkat ke root
+  intervals: null,
+  filters:   null,
+  strategy:  null,
+  llm: {
+    // Mapping: key di `llm` → key flat di config
+    screeningModel:  'screeningModel',
+    managementModel: 'managementModel',
+    agentModel:      'agentModel',
+  },
+  meridian: {
+    publicApiKey:        'publicApiKey',
+    agentMeridianApiUrl: 'agentMeridianApiUrl',
+    maxAthDistancePct:   'maxAthDistancePct',
+    dominanceMinPct:     'dominanceMinPct',
+  },
+};
+
+function flattenUserConfig(raw) {
+  const flat = {};
+
+  for (const [key, value] of Object.entries(raw)) {
+    if (key in NESTED_SECTION_MAP && value && typeof value === 'object' && !Array.isArray(value)) {
+      const mapping = NESTED_SECTION_MAP[key];
+
+      if (mapping === null) {
+        // Semua key di section langsung naik ke root
+        Object.assign(flat, value);
+      } else {
+        // Gunakan mapping eksplisit (misal: llm.agentModel → agentModel)
+        for (const [subKey, flatKey] of Object.entries(mapping)) {
+          if (subKey in value) {
+            flat[flatKey] = value[subKey];
+          }
+        }
+      }
+    } else {
+      // Flat key langsung — kompatibel dengan format lama
+      flat[key] = value;
+    }
+  }
+
+  // process.env selalu override llm config dari file
+  if (process.env.SCREENING_MODEL)  flat.screeningModel  = process.env.SCREENING_MODEL;
+  if (process.env.MANAGEMENT_MODEL) flat.managementModel = process.env.MANAGEMENT_MODEL;
+  if (process.env.AGENT_MODEL)      flat.agentModel      = process.env.AGENT_MODEL;
+  if (process.env.AGENT_MODEL)      flat.generalModel    = process.env.AGENT_MODEL;
+
+  return flat;
+}
 
 // ── JSON helpers ──────────────────────────────────────────────────────────────
 
@@ -183,7 +257,8 @@ function loadUserConfig() {
 // ── getConfig ─────────────────────────────────────────────────────────────────
 
 export function getConfig() {
-  const user   = loadUserConfig();
+  const raw    = loadUserConfig();
+  const user   = flattenUserConfig(raw);
   const merged = { ...DEFAULTS, ...user };
 
   // Lenient numeric parsing — strips trailing units ("1.5 SOL" → 1.5)
@@ -193,7 +268,7 @@ export function getConfig() {
       const clean    = trimmed.replace(/[^-0-9.]/g, '');
       const dotCount = (clean.match(/\./g) || []).length;
       if (dotCount > 1) {
-        console.warn(`[config] Rejected malformed numeric "${key}": "${trimmed}" — using default ${DEFAULTS[key]}`);
+        console.warn(`[config] Rejected malformed numeric "${key}": "${trimmed}" — using default`);
         merged[key] = DEFAULTS[key];
         continue;
       }
@@ -213,6 +288,9 @@ export function isConfigKeySupported(key) {
 }
 
 // ── updateConfig ──────────────────────────────────────────────────────────────
+// updateConfig selalu menulis ke format FLAT untuk kompatibilitas maksimal.
+// Format nested di user-config.json tetap dibaca saat getConfig(), tapi update
+// selalu ditulis sebagai flat key di root JSON.
 
 export function updateConfig(updates) {
   const validated = {};
@@ -253,7 +331,7 @@ export function updateConfig(updates) {
     }
 
     const bounds = CONFIG_BOUNDS[key];
-    if (bounds && typeof value === 'number') {
+    if (bounds && typeof value === 'number' && bounds.min !== undefined) {
       if (value < bounds.min || value > bounds.max) {
         rejected.push(`${key}: ${value} (allowed: ${bounds.min}–${bounds.max})`);
         continue;
@@ -267,8 +345,9 @@ export function updateConfig(updates) {
   }
   if (Object.keys(validated).length === 0) return getConfig();
 
-  const current = loadUserConfig();
-  const merged  = { ...current, ...validated };
+  // Baca file asli (nested atau flat), merge flat updates di root
+  const rawCurrent = loadUserConfig();
+  const merged = { ...rawCurrent, ...validated };
   writeFileSync(CONFIG_PATH, stringify(merged, 2));
   console.log('✅ Config updated:', Object.keys(validated).join(', '));
   return getConfig();

@@ -1,126 +1,57 @@
 {
   "dryRun": true,
-  "deploymentStage": "canary",
-  "canaryMaxPositions": 1,
   "autonomyMode": "active",
-  "requireConfirmation": true,
-  "autoPauseOnManualReview": true,
-  "manualReviewPauseThreshold": 1,
 
-  "deployAmountSol": 0.5,
-  "maxPositions": 3,
-  "minSolToOpen": 0.1,
-  "gasReserve": 0.1,
-  "dailyLossLimitUsd": 25,
-
-  "managementIntervalMin": 10,
-  "screeningIntervalMin": 5,
-  "positionUpdateIntervalMin": 5,
-  "autoScreeningEnabled": true,
-
-  "publicApiKey": "bWVyaWRpYW4taXMtdGhlLWJlc3QtYWdlbnRz",
-  "agentMeridianApiUrl": "https://api.agentmeridian.xyz/api",
-
-  "meteoraDiscoveryLimit": 150,
-  "discoveryTimeframe": "1h",
-  "discoveryCategory": "",
-
-  "minPoolAgeHours": 0,
-  "maxPoolAgeHours": 2160,
-
-  "minMcap": 250000,
-  "maxMcap": 0,
-  "minVolume24h": 1000000,
-  "minTvl": 0,
-  "minFeeActiveTvlRatio": 0.002,
-
-  "binStepPriority": [200, 125, 100],
-  "allowedBinSteps": [100, 125, 200],
-  "minBinStep": 100,
-  "maxBinStep": 200,
-
-  "maxAthDistancePct": 15,
-
-  "maxPriceImpactPct": 2.5,
-  "jupiterSimUsd": 1,
-
-  "gmgnWhitelistEnabled": true,
-  "gmgnTop10HolderMaxPct": 30,
-  "gmgnInsiderMaxPct": 0,
-  "gmgnDevHoldMaxPct": 5,
-  "gmgnBundlerMaxPct": 60,
-  "gmgnMinTotalFeesSol": 30,
-  "gmgnRequireBurnedLp": true,
-  "gmgnRequireZeroTax": true,
-  "gmgnBlockCto": false,
-  "gmgnBlockVamped": true,
-  "gmgnFailClosedCritical": false,
-  "gmgnWashTradeMaxPct": 35,
-
-  "maxPoolAgeDays": 3,
-  "minOrganic": 55,
-  "heritageModeEnabled": true,
-  "noPoolReplayLimit": 12,
-
-  "takeProfitFeePct": 15,
-  "stopLossPct": 10,
-  "trailingTriggerPct": 10,
-  "trailingDropPct": 3,
-  "maxHoldHours": 168,
-  "outOfRangeWaitMinutes": 30,
-  "outOfRangeBinsToClose": 10,
-  "oorCooldownTriggerCount": 3,
-  "oorCooldownHours": 12,
-
-  "targetRangePct": 90,
-  "deployChunkMaxBins": 69,
-
-  "proactiveExitEnabled": true,
-  "proactiveExitMinProfitPct": 1,
-  "proactiveExitBearishConfidence": 0.7,
-  "executionRejectNonRefundableFees": true,
-  "maxBinsPerPosition": 125,
-  "slippageBps": 150,
-  "maxDailyDrawdownPct": 6,
-
-  "activeStrategy": "Evil Panda",
-  "activePreset": "supertrend_break",
-
-  "autoHarvestEnabled": true,
-  "autoHarvestThresholdSol": 0.04,
-  "autoHarvestCompound": false,
-  "minFeeClaimUsd": 1,
-
-  "enableSimulationShield": true,
-  "oracleMaxPriceDivergencePct": 3,
-  "minPriceSourcesForEntry": 2,
-  "failSafeModeOnDataUnreliable": true,
-  "hourlyPulseEnabled": true,
-
-  "signalWeights": {
-    "mcap": 2.5,
-    "feeActiveTvlRatio": 3.5,
-    "volume": 0.36,
-    "holderCount": 0.3
+  "finance": {
+    "deployAmountSol": 0.5,
+    "maxPositions": 3,
+    "minSolToOpen": 0.10,
+    "gasReserve": 0.1,
+    "dailyLossLimitUsd": 25,
+    "maxDailyPriorityFeeSol": 0.2
   },
 
-  "darwinWindowDays": 60,
-  "darwinRecalcEvery": 5,
-  "autonomousEvolutionEnabled": true,
-  "evolveIntervalTrades": 5,
-  "autoPostMortemEnabled": true,
-  "useSocialSignals": true,
-  "socialSignalWeight": 1.5,
-  "minSmartMoneyOverlap": 1,
-  "useSmartWalletRanges": true,
+  "intervals": {
+    "managementIntervalMin": 10,
+    "screeningIntervalMin": 15,
+    "positionUpdateIntervalMin": 5
+  },
 
-  "managementModel": "deepseek/deepseek-v3.2",
-  "screeningModel": "nvidia/nemotron-3-super-120b-a12b:free",
-  "generalModel": "nvidia/nemotron-nano-9b-v2:free",
-  "activeModel": null,
+  "filters": {
+    "minVolume24h": 1000000,
+    "minMcap": 250000,
+    "maxPoolAgeDays": 3,
+    "allowedBinSteps": [100, 125, 200],
+    "binStepPriority": [200, 125, 100],
+    "gmgnRequireBurnedLp": true,
+    "gmgnRequireZeroTax": true,
+    "gmgnBlockCto": true,
+    "gmgnBlockVamped": true,
+    "gmgnFailClosedCritical": true
+  },
 
-  "lpAgentRelayEnabled": true,
-  "strategyOverrides": {
-    "Evil Panda": {}
+  "strategy": {
+    "activeStrategy": "Evil Panda",
+    "depthPct": 90,
+    "stopLossPct": 10,
+    "trailingStopPct": 5.0,
+    "trailingTriggerPct": 10,
+    "trailingDropPct": 3.0,
+    "smartExitRsi": 90,
+    "maxHoldHours": 72,
+    "slippageBps": 150
+  },
+
+  "llm": {
+    "screeningModel": "nvidia/nemotron-3-super-120b-a12b:free",
+    "managementModel": "minimax/minimax-m2.5:free",
+    "agentModel": "deepseek/deepseek-v3.2"
+  },
+
+  "meridian": {
+    "publicApiKey": "bWVyaWRpYW4taXMtdGhlLWJlc3QtYWdlbnRz",
+    "agentMeridianApiUrl": "https://api.agentmeridian.xyz/api",
+    "maxAthDistancePct": 15,
+    "dominanceMinPct": 15
   }
 }

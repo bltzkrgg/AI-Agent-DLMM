@@ -1,240 +1,338 @@
 # AI-Agent-DLMM: Linear Sniper & Evil Panda LP
 
-> Autonomous Liquidity Provider bot untuk Meteora DLMM — arsitektur stateless, RPC-first, zero database.
+> Autonomous Liquidity Provider bot untuk Meteora DLMM — stateless, RPC-first, tanpa database lokal.
 
 ---
 
-## Filosofi: Linear Sniper
+## Daftar Isi
 
-Bot ini bukan multi-strategy engine. Ini adalah **satu mesin, satu tugas**: temukan pool DLMM terbaik, masuk dengan presisi, keluar di waktu yang tepat.
+- [Prasyarat](#prasyarat)
+- [Instalasi](#instalasi)
+- [Konfigurasi .env](#konfigurasi-env)
+- [Konfigurasi Bot (user-config.json)](#konfigurasi-bot)
+- [Menjalankan Bot](#menjalankan-bot)
+- [Cara Kerja Bot](#cara-kerja-bot)
+- [Strategi Evil Panda](#strategi-evil-panda)
+- [Meridian Intelligence (VETO Gates)](#meridian-intelligence)
+- [Smart Exit](#smart-exit)
+- [Telegram Commands](#telegram-commands)
+- [Stack Teknikal](#stack-teknikal)
 
-Alur kerja bersifat sekuensial dan deterministik — tidak ada eksekusi paralel, tidak ada race condition:
+---
 
-```
-SCAN ──► SCREEN ──► VETO ──► DEPLOY ──► MONITOR ──► EXIT ──► RELOAD
-  ▲                                                              │
-  └──────────────────── loop berikutnya ◄───────────────────────┘
-```
+## Prasyarat
 
-| Fase | Modul | Deskripsi |
+| Dependensi | Versi | Keterangan |
 |---|---|---|
-| **SCAN** | `meridianVeto.js` | Discover pool high-fee via Meridian API / Meteora Discovery |
-| **SCREEN** | `coinfilter.js` | Filter GMGN: holders, wash trade, LP burned, tax, bundler |
-| **VETO** | `meridianVeto.js` | 4 gate: Supertrend · ATH Guard · PVP Guard · Dominance |
-| **DEPLOY** | `evilPanda.js` | Buka posisi single-side SOL, chunked transactions |
-| **MONITOR** | `evilPanda.js` | Poll on-chain + Meridian TA setiap 15 detik |
-| **EXIT** | `evilPanda.js` | Withdraw 100% + swap sisa token ke SOL |
+| **Node.js** | **20.x LTS** | Wajib. Download: [nodejs.org](https://nodejs.org) |
+| npm | 10.x | Bundled dengan Node.js 20 |
+| PM2 | 5.x | Opsional, untuk VPS 24/7 |
+| **Helius API Key** | — | **Wajib.** Daftar gratis: [helius.dev](https://helius.dev) |
+| OpenRouter API Key | — | Wajib jika pakai LLM. Daftar: [openrouter.ai](https://openrouter.ai) |
+| Telegram Bot Token | — | Buat via [@BotFather](https://t.me/BotFather) |
 
 ---
 
-🛠️ Tutorial Instalasi Lengkap
-1. Persiapan Awal (Prerequisites)
-Node.js: Wajib versi 20 LTS sampai < 25 (untuk stabilitas library Solana).
+## Instalasi
 
-Wallet: Gunakan Dedicated Wallet (jangan wallet utama). Isi saldo minimal 0.2 SOL untuk operasional awal.
+### 1. Clone Repository
 
-Helius API Key: Wajib untuk jalur RPC stabil.
-
----
-2. Langkah Instalasi (Terminal Mac/VPS)
-Bash
-# Clone Repository
+```bash
 git clone https://github.com/bltzkrgg/AI-Agent-DLMM.git
 cd AI-Agent-DLMM
+```
 
-# Install Dependencies
+### 2. Install Dependensi
+
+```bash
 npm install
+```
 
-# Setup Environment & Config
+### 3. Setup File .env
+
+```bash
 cp env.example .env
-cp user-config.example.json user-config.json
+```
+
+Buka `.env` dan isi minimal 4 variabel wajib ini:
+
+```bash
+HELIUS_API_KEY=isi_helius_api_key_kamu
+WALLET_PRIVATE_KEY=isi_private_key_base58_wallet_bot
+TELEGRAM_BOT_TOKEN=isi_token_dari_BotFather
+ALLOWED_TELEGRAM_ID=isi_user_id_telegram_kamu
+```
+
+> ⚠️ **WAJIB gunakan wallet BARU yang terpisah dari wallet utama.**
+
+### 4. Setup Konfigurasi Bot
+
+```bash
+# user-config.json sudah tersedia di repo dengan nilai default aman (dryRun: true)
+# Edit sesuai kebutuhan:
+nano user-config.json
+```
+
+Minimal yang perlu dikonfirmasi sebelum live:
+```json
+{
+  "dryRun": false,
+  "finance": { "deployAmountSol": 0.5 },
+  "meridian": { "publicApiKey": "isi_meridian_api_key" }
+}
+```
+
+### 5. Verifikasi Koneksi
+
+```bash
+node src/index.js --check
+```
 
 ---
-3. Konfigurasi .env (Wajib Diisi)
-Edit file .env dan masukkan data penting lu:
 
-Cuplikan kode
-TELEGRAM_BOT_TOKEN=token_bot_lu
-ALLOWED_TELEGRAM_ID=id_telegram_lu
-HELIUS_API_KEY=api_key_helius_lu
-WALLET_PRIVATE_KEY=private_key_base58_lu
-JUPITER_PROXY_URL=https://jup-proxy.user.workers.dev  # URL Worker lu tadi
+## Konfigurasi .env
 
-# Multi-LLM Setup
+```bash
+# ─── Telegram ────────────────────────────────────────────────────
+TELEGRAM_BOT_TOKEN=isi_token_dari_BotFather
+ALLOWED_TELEGRAM_ID=isi_user_id_telegram_kamu
+
+# ─── Solana ──────────────────────────────────────────────────────
+HELIUS_API_KEY=isi_helius_api_key
+WALLET_PRIVATE_KEY=isi_private_key_base58
+
+# ─── AI Provider ─────────────────────────────────────────────────
+AI_PROVIDER=openrouter
+OPENROUTER_API_KEY=isi_openrouter_api_key
+
+# ─── LLM Models (opsional — ada fallback gratis) ─────────────────
 SCREENING_MODEL=nvidia/nemotron-3-super-120b-a12b:free
 MANAGEMENT_MODEL=minimax/minimax-m2.5:free
 AGENT_MODEL=deepseek/deepseek-v3.2
 
+# ─── Opsional ────────────────────────────────────────────────────
+OKX_API_KEY=          # Smart money signals
+GMGN_API_KEY=         # Security intelligence
+```
+
 ---
-4. Jalankan Bot (Gunakan PM2)
+
+## Konfigurasi Bot
+
+`user-config.json` menggunakan format nested yang bersih:
+
+```json
+{
+  "dryRun": true,
+  "autonomyMode": "active",
+
+  "finance": {
+    "deployAmountSol": 0.5,
+    "maxPositions": 3,
+    "gasReserve": 0.1,
+    "dailyLossLimitUsd": 25
+  },
+
+  "filters": {
+    "minVolume24h": 1000000,
+    "maxPoolAgeDays": 3,
+    "binStepPriority": [200, 125, 100],
+    "gmgnRequireBurnedLp": true
+  },
+
+  "strategy": {
+    "stopLossPct": 10,
+    "trailingStopPct": 5.0,
+    "maxHoldHours": 72,
+    "slippageBps": 150
+  },
+
+  "meridian": {
+    "publicApiKey": "isi_disini",
+    "maxAthDistancePct": 15
+  }
+}
+```
+
+> Format flat lama tetap kompatibel — bot mendeteksi keduanya otomatis.
+
+---
+
+## Menjalankan Bot
+
+### Mode Development (Lokal)
+
+```bash
+node src/index.js
+```
+
+### Mode Production dengan PM2 (VPS / 24/7)
+
+**Install PM2:**
+```bash
 npm install -g pm2
-pm2 start src/index.js --name "panda-linear"
+```
+
+**Start bot:**
+```bash
+pm2 start src/index.js --name "panda-linear" --interpreter node
+```
+
+**Perintah PM2 penting:**
+```bash
+pm2 status                       # Cek status
+pm2 logs panda-linear            # Log real-time
+pm2 logs panda-linear --lines 50 # 50 baris terakhir
+pm2 restart panda-linear         # Restart
+pm2 stop panda-linear            # Stop
+```
+
+**Auto-start saat server reboot:**
+```bash
+pm2 startup    # ikuti instruksi yang muncul
 pm2 save
-pm2 startup
-
-## Strategi: Evil Panda
-
-**Evil Panda** adalah strategi LP satu sisi (SOL-only deposit) dengan rentang dalam:
-
-```
-Rentang posisi: 0% → -90% di bawah harga aktif
-Deposit:        100% SOL (token Y), 0% token X
-Distribusi:     Spot (merata di seluruh bin)
-Chunk TX:       Max 69 bins per transaksi
 ```
 
-**Target pool:**
-- `binStep` prioritas: **200 → 125 → 100** (fee tertinggi diutamakan)
-- `fee/active_tvl ratio` ≥ 0.2% per hari
-- Pool dominance ≥ 15% total TVL token di jaringan
-- Pool usia ≤ 3 hari (fresh momentum)
-
-**Logika:** Bot menaruh SOL di bawah harga, menunggu harga turun ke dalam range, dan mengumpulkan fee. Saat RSI(2) overbought atau harga reversal, bot keluar dan swap ke SOL.
-
----
-
-## Meridian Intelligence (VETO Gates)
-
-Bot mengintegrasikan API `https://api.agentmeridian.xyz/api` untuk 4 lapisan filter:
-
-### Gate 1 — Supertrend 15m
+**Ecosystem file (opsional):** buat `ecosystem.config.cjs`:
+```js
+module.exports = {
+  apps: [{
+    name:         'panda-linear',
+    script:       'src/index.js',
+    interpreter:  'node',
+    env_file:     '.env',
+    max_restarts:  10,
+    restart_delay: 5000,
+    watch:         false,
+    log_date_format: 'YYYY-MM-DD HH:mm:ss',
+  }],
+};
 ```
-GET /chart-indicators/{mint}?interval=15_MINUTE
-VETO jika supertrend.direction === 'bearish'
-Fail-open: jika API down → PASS
-```
-
-### Gate 2 — ATH Guard `[TA_ATH_DANGER]`
-```
-GET /price-info/{mint}  (fallback: datapi.jup.ag)
-VETO jika harga > (100 - maxAthDistancePct)% dari ATH
-Default: maxAthDistancePct=15 → VETO jika > 85% ATH
-```
-
-### Gate 3 — PVP Guard
-```
-Cari token rival (simbol sama, mint berbeda)
-VETO jika rival punya pool dominan (TVL > $5k + holders > 500)
-```
-
-### Gate 4 — Dominance Check `[LOW_DOMINANCE]`
-```
-GET dlmm.datapi.meteora.ag/pools?query={mint}
-dominancePct = poolTvl / totalNetworkTvl × 100
-VETO jika dominancePct < 15%
+```bash
+pm2 start ecosystem.config.cjs && pm2 save
 ```
 
 ---
 
-## Smart Exit (TAHAP 4)
+## Cara Kerja Bot
 
-`monitorPnL()` berjalan setiap 15 detik dengan priority chain:
+Bot berjalan dalam siklus sekuensial yang deterministik:
 
 ```
-P1: Hard Stop Loss         pnlPct ≤ -10%          → EXIT (tidak butuh API)
-P2: Trailing Stop Loss     (HWM - pnlPct) ≥ 5%    → EXIT (High Water Mark)
-P3: Meridian TA Exit       RSI(2) ≥ 90 + trigger   → EXIT
-    Skenario A: RSI(2) ≥ 90 AND Close ≥ BB_Upper
-    Skenario B: RSI(2) ≥ 90 AND MACD_hist > 0
-    Fail-open: jika Meridian API down → HOLD
+┌─────────────────────────────────────────────────────────────┐
+│                    LINEAR SNIPER LOOP                       │
+│                                                             │
+│  SCAN ──► SCREEN ──► VETO ──► DEPLOY ──► MONITOR ──► EXIT  │
+│    ▲                                                   │    │
+│    └───────────── next cycle ◄────────────────────────┘    │
+└─────────────────────────────────────────────────────────────┘
+```
+
+| Fase | Modul | Aksi |
+|---|---|---|
+| **SCAN** | `meridianVeto.js` | Discover pool high-fee (binStep 200→125→100) |
+| **SCREEN** | `coinfilter.js` | Filter GMGN: LP burned, zero tax, wash trade, bundler |
+| **VETO** | `meridianVeto.js` | 4 gates: Supertrend · ATH · PVP · Dominance |
+| **DEPLOY** | `evilPanda.js` | Buka posisi single-side SOL, chunked TX |
+| **MONITOR** | `evilPanda.js` | Poll on-chain + Meridian TA setiap 15 detik |
+| **EXIT** | `evilPanda.js` | Withdraw 100% → swap token → SOL |
+
+---
+
+## Strategi Evil Panda
+
+LP satu sisi (SOL-only) dengan rentang dalam:
+
+```
+Range:      0% → -90% di bawah harga aktif
+Deposit:    100% SOL (token Y), 0% token X
+Distribusi: Spot (merata di semua bin)
+Chunk TX:   Max 69 bins per transaksi
+```
+
+**Partial Deploy Guard:** Jika chunk TX gagal di tengah-tengah, posisi yang sudah terbuka otomatis di-rollback via `exitPosition('PARTIAL_DEPLOY_ROLLBACK')`.
+
+**Target pool prioritas:**
+
+| Kriteria | Nilai |
+|---|---|
+| Bin Step | **200 → 125 → 100** |
+| Fee/TVL ratio | ≥ 0.2%/hari |
+| Pool dominance | ≥ 15% total TVL token |
+| Usia pool | ≤ 3 hari |
+
+---
+
+## Meridian Intelligence
+
+4 lapisan VETO sebelum deploy:
+
+| Gate | Label | Kondisi VETO |
+|---|---|---|
+| 1 | `SUPERTREND_15M` | Supertrend 15m bearish |
+| 2 | `TA_ATH_DANGER` | Harga > 85% dari ATH |
+| 3 | `PVP_GUARD` | Rival token punya pool dominan |
+| 4 | `LOW_DOMINANCE` | Pool kita < 15% total TVL token |
+
+Semua gate **fail-open** — jika API Meridian down, bot tetap jalan (tidak VETO).
+
+---
+
+## Smart Exit
+
+`monitorPnL()` — priority chain setiap 15 detik:
+
+```
+P1  Hard Stop Loss      PnL ≤ -10%                    → EXIT
+P2  Trailing Stop       (HWM - PnL) ≥ 5%              → EXIT
+P3  Meridian TA
+    Skenario A:         RSI(2) ≥ 90 AND Close ≥ BB Upper → EXIT
+    Skenario B:         RSI(2) ≥ 90 AND MACD hist > 0   → EXIT
+    Fail-open:          API down                         → HOLD
 ```
 
 Setiap posisi yang ditutup dicatat ke `harvest.log`:
 ```
-2026-04-26T12:05:00Z,So11111,ab3f1234,+14.23,0.5000,TAKE_PROFIT_A
-```
-
----
-
-## Arsitektur: Stateless
-
-Bot ini **tidak menggunakan database lokal**. State disimpan in-memory:
-
-```js
-const _activePositions = new Map();
-// Key: positionPubkey
-// Value: { poolAddress, deploySol, deployedAt, tokenXMint, tokenYMint,
-//          rangeMin, rangeMax, hwmPct }
-```
-
-Jika bot di-restart, posisi terbuka di-recover langsung dari on-chain via `getPositionsByUserAndLbPair()`.
-
-**Partial Deploy Guard:** Jika chunk TX gagal di tengah-tengah deploy, posisi yang sudah terbuka otomatis di-rollback via `exitPosition('PARTIAL_DEPLOY_ROLLBACK')`.
-
----
-
-## Konfigurasi
-
-Semua konfigurasi di `user-config.json` (flat, tidak ada nested object).
-
-### Konfigurasi Utama
-
-| Key | Default | Deskripsi |
-|---|---|---|
-| `deployAmountSol` | `1.0` | SOL per posisi |
-| `binStepPriority` | `[200,125,100]` | Urutan prioritas bin step |
-| `maxAthDistancePct` | `15` | ATH guard threshold (%) |
-| `trailingStopPct` | `5.0` | Trailing SL dari High Water Mark |
-| `slippageBps` | `150` | Slippage DLMM (basis points) |
-| `dryRun` | `false` | `true` = simulasi tanpa TX |
-| `publicApiKey` | `''` | API key Meridian |
-
-### Model LLM — ubah via `.env`
-
-```bash
-SCREENING_MODEL=nvidia/nemotron-3-super-120b-a12b:free
-MANAGEMENT_MODEL=minimax/minimax-m2.5:free
-AGENT_MODEL=deepseek/deepseek-v3.2
+2026-04-26T12:05:00Z,TOKEN,ab3f1234,+14.23,0.5000,TAKE_PROFIT_A
 ```
 
 ---
 
 ## Telegram Commands
 
-| Command | Deskripsi |
+| Command | Fungsi |
 |---|---|
-| `/hunt` | Mulai siklus scan → screen → deploy |
-| `/status` | Tampilkan posisi aktif dan PnL real-time |
-| `/exit` | Tutup semua posisi aktif secara manual |
+| `/hunt` | Mulai satu siklus scan → screen → deploy |
+| `/status` | Tampilkan posisi aktif, PnL, dan HWM |
+| `/exit` | Tutup semua posisi aktif (manual) |
 | `/config` | Tampilkan konfigurasi aktif |
 | `/stop` | Hentikan semua loop otonom |
 
 ---
 
-## Persyaratan
-
-```bash
-# .env wajib:
-HELIUS_API_KEY=           # RPC + priority fee
-WALLET_PRIVATE_KEY=       # Wallet khusus bot (bukan wallet utama)
-TELEGRAM_BOT_TOKEN=
-ALLOWED_TELEGRAM_ID=
-OPENROUTER_API_KEY=       # Atau provider LLM lain
-
-# Opsional:
-OKX_API_KEY=
-GMGN_API_KEY=
-```
-
-```bash
-npm install
-npm run dev
-```
-
----
-
-## Stack
+## Stack Teknikal
 
 | Layer | Teknologi |
 |---|---|
-| Blockchain | Solana (Helius RPC) |
+| Blockchain RPC | Solana — Helius |
 | LP Protocol | Meteora DLMM SDK |
 | Intelligence | Meridian API |
-| Screening | GMGN, DexScreener, OKX OnChain |
+| Token Screening | GMGN, DexScreener, OKX |
 | Swap | Jupiter Quote API V6 |
-| LLM | OpenRouter (configurable via .env) |
+| LLM | OpenRouter (via `.env`) |
 | Bot Interface | Telegram Bot API |
+| Process Manager | PM2 |
 
 ---
 
-*Bot ini dirancang untuk operator yang memahami risiko LP di Meteora DLMM. Selalu gunakan wallet terpisah dengan dana yang siap untuk rugi.*
+## Keamanan
+
+- ✅ Wallet **terpisah** khusus bot (bukan wallet utama)
+- ✅ Mulai dengan `"dryRun": true` untuk testing
+- ✅ Pakai `"deploymentStage": "canary"` (max 1 posisi) untuk warm-up
+- ✅ Private key hanya ada di `.env`, tidak pernah di-commit
+- ⚠️ LP di Solana mengandung risiko nyata — deploy hanya dana yang siap hilang
+
+---
+
+*Built for operators who understand DLMM liquidity provision risk.*
