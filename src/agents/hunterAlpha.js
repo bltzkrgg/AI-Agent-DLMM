@@ -12,7 +12,8 @@
 'use strict';
 
 import { getConfig }              from '../config.js';
-import { discoverMeteoraDlmmPools, screenToken } from '../market/coinfilter.js';
+import { screenToken }            from '../market/coinfilter.js';
+import { runMeridianVeto, discoverHighFeePoolsMeridian } from '../market/meridianVeto.js';
 import { deployPosition, monitorPnL, exitPosition, EP_CONFIG } from '../sniper/evilPanda.js';
 import { getWalletBalance }       from '../solana/wallet.js';
 
@@ -72,14 +73,16 @@ async function scanAndDeploy() {
   const cfg    = getConfig();
   const limit  = cfg.meteoraDiscoveryLimit || 50;
 
-  console.log(`[hunter] 🔍 SCAN — discover ${limit} pools...`);
-  await notify('🔍 <b>Scan dimulai.</b> Mencari kandidat pool...');
+  console.log(`[hunter] 🔍 SCAN — High-Fee Hunter (binStep priority: ${(cfg.binStepPriority || [200,125,100]).join('>')} )...`);
+  await notify('🔍 <b>Scan dimulai.</b> Mencari pool dengan fee tertinggi...');
 
   let pools;
   try {
-    pools = await discoverMeteoraDlmmPools({ limit });
+    // TAHAP 2: Gunakan Meridian High-Fee Hunter discovery
+    // Sort by fee_active_tvl_ratio DESC, prioritas binStep [200, 125, 100]
+    pools = await discoverHighFeePoolsMeridian({ limit });
   } catch (e) {
-    console.warn(`[hunter] discoverMeteoraDlmmPools gagal: ${e.message}`);
+    console.warn(`[hunter] discoverHighFeePoolsMeridian gagal: ${e.message}`);
     await sleep(60_000);
     return;
   }
@@ -98,16 +101,19 @@ async function scanAndDeploy() {
   for (const pool of pools) {
     if (!_running) return;
 
-    const tokenMint   = pool.tokenX || pool.mint;
-    const tokenSymbol = pool.name?.split('-')[0] || pool.tokenXSymbol || '';
+    const tokenMint   = pool.tokenXMint || pool.tokenX || pool.mint;
+    const tokenSymbol = pool.tokenXSymbol || pool.name?.split('-')[0] || '';
+    const binStep     = pool.binStep || 0;
+    const feeRatio    = pool.feeActiveTvlRatio || 0;
 
     if (!tokenMint) {
       await sleep(5_000);
       continue;
     }
 
-    console.log(`[hunter] 🔬 Screen: ${tokenSymbol} (${tokenMint.slice(0,8)})`);
+    console.log(`[hunter] 🔬 Screen: ${tokenSymbol} | binStep=${binStep} | fee/tvl=${(feeRatio*100).toFixed(3)}%`);
 
+    // ── GMGN / Coinfilter screening ───────────────────────────────
     let screenResult;
     try {
       screenResult = await screenToken(tokenMint, tokenSymbol, tokenSymbol);
@@ -118,12 +124,21 @@ async function scanAndDeploy() {
     }
 
     if (!screenResult?.eligible) {
-      console.log(`[hunter] ❌ ${tokenSymbol}: ${screenResult?.verdict || 'FAIL'}`);
+      console.log(`[hunter] ❌ ${tokenSymbol}: ${screenResult?.verdict || 'FAIL'} (GMGN gate)`);
       await sleep(5_000);  // Anti-429: jeda 5 detik antar koin
       continue;
     }
 
-    // PASS — cek konfigurasi flat tambahan
+    // ── Meridian VETO (Supertrend 15m + ATH + PVP) ───────────────
+    const vetoResult = await runMeridianVeto({ mint: tokenMint, symbol: tokenSymbol });
+    if (vetoResult.veto) {
+      console.log(`[hunter] 🚫 ${tokenSymbol}: VETO [${vetoResult.gate}] — ${vetoResult.reason}`);
+      await sleep(5_000);
+      continue;
+    }
+    console.log(`[hunter] ✅ Meridian: ${vetoResult.reason}`);
+
+    // ── Pure Flat Config gate ─────────────────────────────────────
     const passesConfig = checkFlatConfig(pool, cfg);
     if (!passesConfig.ok) {
       console.log(`[hunter] ❌ ${tokenSymbol}: config gate — ${passesConfig.reason}`);
@@ -131,7 +146,7 @@ async function scanAndDeploy() {
       continue;
     }
 
-    console.log(`[hunter] ✅ ${tokenSymbol} LOLOS screening!`);
+    console.log(`[hunter] ✅ ${tokenSymbol} LOLOS semua gate! (binStep=${binStep} fee/tvl=${(feeRatio*100).toFixed(3)}%)`);
     winner = pool;
     break;
   }
@@ -144,14 +159,17 @@ async function scanAndDeploy() {
   }
 
   // ── Phase 3: DEPLOY ───────────────────────────────────────────────
-  const cfg2        = getConfig(); // fresh read
-  const poolAddress = winner.address || winner.pool_address;
-  const symbol      = winner.name?.split('-')[0] || winner.tokenXSymbol || poolAddress.slice(0,8);
+  const cfg2        = getConfig();
+  const poolAddress = winner.address || winner.pool_address || winner.pool;
+  const symbol      = winner.tokenXSymbol || winner.name?.split('-')[0] || poolAddress.slice(0,8);
+  const binStep     = winner.binStep || '?';
+  const feeRatio    = winner.feeActiveTvlRatio || 0;
 
   await notify(
     `🎯 <b>Target ditemukan!</b>\n` +
     `Pool: <code>${poolAddress.slice(0,8)}</code>\n` +
-    `Token: <b>${symbol}</b>\n` +
+    `Token: <b>${symbol}</b> | BinStep: <code>${binStep}</code>\n` +
+    `Fee/TVL: <code>${(feeRatio*100).toFixed(3)}%</code>\n` +
     `Deploy: <code>${cfg2.deployAmountSol || 0.1} SOL</code>\n\n` +
     `⏳ <i>Membuka posisi...</i>`
   );
@@ -276,19 +294,24 @@ async function safeExit(positionPubkey, reason) {
 // ── Pure Flat Config Gate ─────────────────────────────────────────
 
 function checkFlatConfig(pool, cfg) {
-  const vol24h   = safeNum(pool.volume24hRaw || pool.volume24h || 0);
+  const vol24h   = safeNum(pool.volume24h || pool.volume24hRaw || 0);
   const minVol   = cfg.minVolume24h || 0;
   const binStep  = pool.binStep || 0;
+  const feeRatio = pool.feeActiveTvlRatio || 0;
+  const minFee   = cfg.minFeeActiveTvlRatio || 0;
 
-  const allowedBinSteps = Array.isArray(cfg.allowedBinSteps) && cfg.allowedBinSteps.length > 0
-    ? cfg.allowedBinSteps.map(Number)
-    : [100, 125];
+  const binStepPriority = Array.isArray(cfg.binStepPriority) && cfg.binStepPriority.length > 0
+    ? cfg.binStepPriority.map(Number)
+    : [200, 125, 100];
 
-  if (minVol > 0 && vol24h < minVol) {
-    return { ok: false, reason: `vol24h ${vol24h} < min ${minVol}` };
+  if (!binStepPriority.includes(binStep)) {
+    return { ok: false, reason: `binStep ${binStep} not in priority list [${binStepPriority}]` };
   }
-  if (!allowedBinSteps.includes(binStep)) {
-    return { ok: false, reason: `binStep ${binStep} not in [${allowedBinSteps}]` };
+  if (minVol > 0 && vol24h < minVol) {
+    return { ok: false, reason: `vol24h $${vol24h.toLocaleString()} < min $${minVol.toLocaleString()}` };
+  }
+  if (minFee > 0 && feeRatio < minFee) {
+    return { ok: false, reason: `fee/tvl ${(feeRatio*100).toFixed(4)}% < min ${(minFee*100).toFixed(4)}%` };
   }
   return { ok: true };
 }

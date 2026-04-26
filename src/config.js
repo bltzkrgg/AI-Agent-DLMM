@@ -41,7 +41,10 @@ const DEFAULTS = {
   maxPoolAgeDays: 3,          // Reject pools older than 3 days (72h freshness rule)
   minOrganic: 55,
   minBinStep: 100,            // Minimal 100 bin step (Hukum 3)
-  allowedBinSteps: [100, 125], // Daftar Bin Step spesifik yang diijinkan (Saklek Mode)
+  allowedBinSteps: [100, 125, 200], // Daftar Bin Step spesifik yang diijinkan
+  binStepPriority: [200, 125, 100], // Urutan prioritas bin step (tertinggi = fee terbesar)
+  minBinStep: 100,                  // Minimal bin step
+  maxBinStep: 200,                  // Maksimal bin step
   bannedNarratives: ['kanye', 'taylor', 'trump', 'biden', 'kamala', 'justice', 'bags', 'moo deng', 'pesto'], // Kata kunci narasi yang langsung di-reject
   maxTvlMcapRatio: 0.20,        // CE Gate: max rasio TVL/Mcap yang diterima (0.20 = 20%)
   meteoraDiscoveryLimit: 180,  // Cakupan scan discovery pool Meteora per siklus (lebih besar = lebih kecil false NO_POOL)
@@ -54,7 +57,13 @@ const DEFAULTS = {
   // maxPoolAgeHours: Batas usia pool DLMM (jam) — fallback keras 2160 = 90 hari
   // Mencegah "Rules: age=0-0h" di Telegram saat JSON corrupt atau kunci hilang
   maxPoolAgeHours: 2160,       // Default 90 hari (2160 jam) — override via radar.maxPoolAgeHours di user-config.json
-  minDailyFeeYieldPct: 1.0,  // Minimum fee/TVL harian (%) agar entry Evil Panda tetap worth it
+  minDailyFeeYieldPct: 1.0,   // Minimum fee/TVL harian (%) agar entry Evil Panda tetap worth it
+  minFeeActiveTvlRatio: 0.002, // Minimum fee/active_tvl ratio (dari Meteora Discovery API)
+
+  // Meridian API integration
+  publicApiKey: '',              // API key Agent Meridian (set di user-config.json)
+  agentMeridianApiUrl: 'https://api.agentmeridian.xyz/api', // Base URL Meridian API
+  maxAthDistancePct: 15,         // VETO jika jarak harga ke ATH < 15% (harga > 85% ATH)
   heritageModeEnabled: true, // Aktifkan saringan riwayat sultan
   maxOhlcvStaleMinutes15m: 90, // Maks umur candle 15m sebelum dianggap stale
   maxOhlcvStaleMinutes1h: 180, // Maks umur candle 1h (cadangan HTF)
