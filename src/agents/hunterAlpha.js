@@ -97,7 +97,13 @@ export async function runLinearLoop() {
   }
   _running = true;
   console.log('[hunter] ▶ Linear Sniper Loop dimulai');
-  await notify('🚀 <b>Linear Sniper aktif.</b> Memulai scan pool...');
+
+  const startCfg = getConfig();
+  if (!startCfg.autoScreeningEnabled) {
+    await notify('🚀 <b>Linear Sniper aktif.</b>\n⚠️ <i>Auto-Screening OFF. Ketik <code>/autoscreen on</code> untuk mulai.</i>');
+  } else {
+    await notify('🚀 <b>Linear Sniper aktif.</b> Memulai scan pool...');
+  }
 
   while (_running) {
     try {
@@ -120,8 +126,15 @@ export function stopLoop() {
 // ── Phase 1: SCAN ─────────────────────────────────────────────────
 
 async function scanAndDeploy() {
-  const cfg    = getConfig();
-  const limit  = cfg.meteoraDiscoveryLimit || 50;
+  const cfg = getConfig();
+
+  // — Gembok: jika auto-screening dimatikan, pause senyap tanpa log
+  if (!cfg.autoScreeningEnabled) {
+    await sleep(10_000);
+    return;
+  }
+
+  const limit = cfg.meteoraDiscoveryLimit || 50;
 
   console.log(`[hunter] 🔍 SCAN — High-Fee Hunter (binStep priority: ${(cfg.binStepPriority || [200,125,100]).join('>')} )...`);
   await notify('🔍 <b>Scan dimulai.</b> Mencari pool dengan fee tertinggi...');
