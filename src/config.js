@@ -81,6 +81,8 @@ const DEFAULTS = {
   takeProfitFeePct: 5,
   trailingTriggerPct: 3.0,   // Aktifkan trailing TP saat PnL >= X%
   trailingDropPct: 1.5,      // Close kalau PnL turun X% dari peak
+  trailingStopPct: 5.0,      // Trailing SL: exit jika PnL turun X% dari High Water Mark
+  slippageBps: 150,          // Slippage dalam basis points untuk semua DLMM TX (150 = 1.5%)
   outOfRangeWaitMinutes: 30,
   outOfRangeBinsToClose: 10, // Tutup posisi jika OOR lebih dari N bins
   maxHoldHours: 6,           // Force close position after 6h — dead capital cleanup

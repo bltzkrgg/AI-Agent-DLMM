@@ -16,12 +16,18 @@
 import DLMM from '@meteora-ag/dlmm';
 import { PublicKey, ComputeBudgetProgram, VersionedTransaction, TransactionMessage } from '@solana/web3.js';
 import BN from 'bn.js';
+import { appendFileSync, mkdirSync } from 'fs';
+import { join, dirname } from 'path';
+import { fileURLToPath } from 'url';
 import { getConnection, getWallet, getWalletBalance } from '../solana/wallet.js';
 import { getConfig } from '../config.js';
 import { swapToSol } from '../utils/jupiter.js';
 import { safeNum, withExponentialBackoff, fetchWithTimeout } from '../utils/safeJson.js';
 import { resolveTokens, WSOL_MINT } from '../utils/tokenMeta.js';
 import { getRecommendedPriorityFee } from '../utils/helius.js';
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const HARVEST_LOG = join(__dirname, '../../harvest.log');
 
 // ── Evil Panda Hardcoded Strategy ────────────────────────────────
 const EP_CONFIG = {
@@ -38,10 +44,32 @@ const EP_CONFIG = {
 
 // ── In-process position registry ─────────────────────────────────
 // Key: positionPubkey (string)
-// Value: { poolAddress, deploySol, deployedAt, tokenXMint, tokenYMint }
+// Value: { poolAddress, deploySol, deployedAt, tokenXMint, tokenYMint,
+//          rangeMin, rangeMax, hwmPct }  ← hwmPct = High Water Mark PnL%
 const _activePositions = new Map();
 
 function nowIso() { return new Date().toISOString(); }
+
+// ── Harvest Log ───────────────────────────────────────────────────
+// Tulis satu baris CSV ke harvest.log tiap posisi ditutup.
+// Format: timestamp,token,pubkey8,pnlPct,deploySol,reason
+
+function appendHarvestLog({ token = 'UNKNOWN', positionPubkey = '', pnlPct = 0, deploySol = 0, reason = 'MANUAL' } = {}) {
+  try {
+    const line = [
+      nowIso(),
+      token,
+      positionPubkey.slice(0, 8),
+      pnlPct.toFixed(4),
+      deploySol.toFixed(6),
+      reason,
+    ].join(',') + '\n';
+    appendFileSync(HARVEST_LOG, line, 'utf8');
+    console.log(`[evilPanda] 📝 Harvest log: ${line.trim()}`);
+  } catch (e) {
+    console.warn(`[evilPanda] harvest.log write error: ${e.message}`);
+  }
+}
 
 // ── Helpers ───────────────────────────────────────────────────────
 
@@ -165,33 +193,28 @@ export async function deployPosition(poolAddress) {
     const posKp = Keypair.generate();
     const positionPubkey = posKp.publicKey.toString();
 
-    // 6. Hitung deposit Y (SOL) dalam lamports — dibagi merata antar chunk
-    const totalLamports    = Math.floor(deploySol * 1e9);
-    const solPerChunk      = Math.floor(totalLamports / chunks.length);
-    const amountYBn        = new BN(String(solPerChunk));
-    const amountXBn        = new BN('0'); // single-side Y
+    // 6. Hitung deposit Y (SOL) — dibagi merata antar chunk
+    const cfg2          = getConfig();
+    const slippageBps   = Number(cfg2.slippageBps) || 150;
+    // Meteora SDK menerima slippage dalam persen (bukan bps): 150bps = 1.5
+    const slippagePct   = slippageBps / 100;
 
-    console.log(`[evilPanda] bins=${totalBins} chunks=${chunks.length} range=[${rangeMin},${rangeMax}] pf=${microLamports}`);
+    const totalLamports = Math.floor(deploySol * 1e9);
+    const solPerChunk   = Math.floor(totalLamports / chunks.length);
+    const amountYBn     = new BN(String(solPerChunk));
+    const amountXBn     = new BN('0'); // single-side Y
 
-    // 7. Kirim per chunk
-    for (let i = 0; i < chunks.length; i++) {
-      const { lowerBinId, upperBinId } = chunks[i];
-      const isFirstChunk = i === 0;
+    console.log(`[evilPanda] bins=${totalBins} chunks=${chunks.length} range=[${rangeMin},${rangeMax}] pf=${microLamports} slip=${slippagePct}%`);
 
-      const txOrTxs = await dlmmPool.initializePositionAndAddLiquidityByStrategy({
-        positionPubKey: posKp.publicKey,
-        user:           wallet.publicKey,
-        totalXAmount:   amountXBn,
-        totalYAmount:   amountYBn,
-        strategy: {
-          maxBinId:         upperBinId,
-          minBinId:         lowerBinId,
-          strategyType:     0, // Spot distribution
-        },
-        slippage: 1,
-      }).catch(async () => {
-        // Fallback: addLiquidityByStrategy jika posisi sudah ada
-        return dlmmPool.addLiquidityByStrategy({
+    // 7. Kirim per chunk — dengan Partial Deploy Guard
+    // Jika chunk manapun gagal setelah retry, otomatis rollback via exitPosition.
+    let chunksConfirmed = 0;
+    try {
+      for (let i = 0; i < chunks.length; i++) {
+        const { lowerBinId, upperBinId } = chunks[i];
+        const isFirstChunk = i === 0;
+
+        const txOrTxs = await dlmmPool.initializePositionAndAddLiquidityByStrategy({
           positionPubKey: posKp.publicKey,
           user:           wallet.publicKey,
           totalXAmount:   amountXBn,
@@ -201,30 +224,67 @@ export async function deployPosition(poolAddress) {
             minBinId:     lowerBinId,
             strategyType: 0,
           },
-          slippage: 1,
-        });
-      });
+          slippage: slippagePct,
+        }).catch(async () =>
+          dlmmPool.addLiquidityByStrategy({
+            positionPubKey: posKp.publicKey,
+            user:           wallet.publicKey,
+            totalXAmount:   amountXBn,
+            totalYAmount:   amountYBn,
+            strategy: {
+              maxBinId:     upperBinId,
+              minBinId:     lowerBinId,
+              strategyType: 0,
+            },
+            slippage: slippagePct,
+          })
+        );
 
-      const txList = Array.isArray(txOrTxs) ? txOrTxs : [txOrTxs];
-
-      for (const tx of txList) {
-        injectPriorityFee(tx, { units: EP_CONFIG.COMPUTE_UNITS, microLamports });
-        const signers = isFirstChunk ? [wallet, posKp] : [wallet];
-        const sig = await connection.sendTransaction(tx, signers, { skipPreflight: false, maxRetries: 3 });
-        await pollTxConfirm(connection, sig);
-        console.log(`[evilPanda] Chunk ${i+1}/${chunks.length} confirmed: ${sig.slice(0,8)}`);
+        const txList = Array.isArray(txOrTxs) ? txOrTxs : [txOrTxs];
+        for (const tx of txList) {
+          injectPriorityFee(tx, { units: EP_CONFIG.COMPUTE_UNITS, microLamports });
+          const signers = isFirstChunk ? [wallet, posKp] : [wallet];
+          const sig = await connection.sendTransaction(tx, signers, { skipPreflight: false, maxRetries: 3 });
+          await pollTxConfirm(connection, sig);
+          console.log(`[evilPanda] Chunk ${i+1}/${chunks.length} confirmed: ${sig.slice(0,8)}`);
+        }
+        chunksConfirmed++;
       }
+    } catch (chunkErr) {
+      // ── Partial Deploy Guard ─────────────────────────────────────────
+      // Ada chunk yang gagal setelah retry. Jika sudah ada chunk yang berhasil
+      // (posisi terbuka sebagian), lakukan rollback otomatis.
+      console.error(`[evilPanda] ⚠️ Chunk gagal setelah ${chunksConfirmed} chunk sukses: ${chunkErr.message}`);
+
+      if (chunksConfirmed > 0) {
+        console.warn(`[evilPanda] 🔄 Partial deploy terdeteksi — memulai rollback otomatis...`);
+        // Daftarkan dulu ke registry agar exitPosition bisa temukan posisi on-chain
+        _activePositions.set(positionPubkey, {
+          poolAddress, deploySol, deployedAt: nowIso(),
+          tokenXMint: xMint, tokenYMint: yMint, rangeMin, rangeMax, hwmPct: 0,
+        });
+        try {
+          await exitPosition(positionPubkey, 'PARTIAL_DEPLOY_ROLLBACK');
+          appendHarvestLog({ token: xMint.slice(0,8), positionPubkey, pnlPct: 0, deploySol, reason: 'PARTIAL_DEPLOY_ROLLBACK' });
+          console.log(`[evilPanda] ✅ Rollback selesai — posisi bersih.`);
+        } catch (rollbackErr) {
+          console.error(`[evilPanda] ❌ Rollback GAGAL: ${rollbackErr.message} — cek posisi manual!`);
+        }
+      }
+      // Re-throw agar withExponentialBackoff tidak retry deployPosition lagi
+      throw new Error(`[evilPanda] Deploy dibatalkan (partial guard): ${chunkErr.message}`);
     }
 
-    // 8. Simpan di registry in-memory
+    // 8. Simpan di registry in-memory (hwmPct = 0 saat pertama buka)
     _activePositions.set(positionPubkey, {
       poolAddress,
       deploySol,
-      deployedAt:   nowIso(),
-      tokenXMint:   xMint,
-      tokenYMint:   yMint,
+      deployedAt:  nowIso(),
+      tokenXMint:  xMint,
+      tokenYMint:  yMint,
       rangeMin,
       rangeMax,
+      hwmPct:      0, // High Water Mark — diperbarui tiap poll di monitorPnL
     });
 
     console.log(`[evilPanda] ✅ Position open: ${positionPubkey.slice(0,8)}`);
@@ -397,12 +457,34 @@ export async function monitorPnL(positionPubkey) {
       : 0;
     const inRange = activeBin.binId >= reg.rangeMin && activeBin.binId <= reg.rangeMax;
 
-    // ── PRIORITAS 1: Hard Stop Loss (-10%) ────────────────────────
-    // Selalu dicek lebih dulu — tidak perlu API Meridian.
+    // ── PRIORITAS 1: Hard Stop Loss ───────────────────────────────────────
     if (pnlPct <= -EP_CONFIG.STOP_LOSS_PCT) {
       console.log(`[evilPanda] 🛑 STOP_LOSS ${positionPubkey.slice(0,8)} pnl=${pnlPct.toFixed(2)}%`);
       return { action: 'STOP_LOSS', currentValueSol, pnlPct, inRange,
                exitReason: `Hard SL: PnL=${pnlPct.toFixed(2)}% ≤ -${EP_CONFIG.STOP_LOSS_PCT}%` };
+    }
+
+    // ── PRIORITAS 2: Trailing Stop Loss (High Water Mark) ─────────────────
+    // Perbarui HWM jika PnL saat ini lebih tinggi dari sebelumnya.
+    // Jika PnL turun > trailingStopPct dari HWM → EXIT.
+    const cfg2           = getConfig();
+    const trailingStopPct = Number(cfg2.trailingStopPct) || 5;
+
+    if (pnlPct > reg.hwmPct) {
+      reg.hwmPct = pnlPct; // update HWM in-place (Map entry adalah referensi)
+      console.log(`[evilPanda] 📈 New HWM: ${reg.hwmPct.toFixed(2)}%`);
+    }
+
+    // Trailing stop aktif hanya jika HWM sudah positif
+    if (reg.hwmPct > 0 && (reg.hwmPct - pnlPct) >= trailingStopPct) {
+      const drawdown = reg.hwmPct - pnlPct;
+      console.log(`[evilPanda] 📉 TRAILING_STOP ${positionPubkey.slice(0,8)} hwm=${reg.hwmPct.toFixed(2)}% pnl=${pnlPct.toFixed(2)}% drop=${drawdown.toFixed(2)}%`);
+      return {
+        action:       'STOP_LOSS',
+        currentValueSol, pnlPct, inRange,
+        exitScenario: 'TRAILING',
+        exitReason:   `Trailing SL: turun ${drawdown.toFixed(2)}% dari HWM ${reg.hwmPct.toFixed(2)}% (limit ${trailingStopPct}%)`,
+      };
     }
 
     // ── PRIORITAS 2: Meridian Smart Exit (TA-driven) ──────────────
@@ -498,6 +580,19 @@ export async function exitPosition(positionPubkey, reason = 'MANUAL') {
     // 3. Bersihkan registry
     _activePositions.delete(positionPubkey);
     console.log(`[evilPanda] ✅ Position closed: ${positionPubkey.slice(0,8)} | reason=${reason}`);
+
+    // 4. Harvest Log
+    const tokenSymbol = reg.tokenXMint?.slice(0,8) || 'UNKNOWN';
+    const finalPnlPct = reg.deploySol > 0
+      ? ((solRecovered - reg.deploySol) / reg.deploySol) * 100
+      : 0;
+    appendHarvestLog({
+      token:          tokenSymbol,
+      positionPubkey,
+      pnlPct:         finalPnlPct,
+      deploySol:      reg.deploySol,
+      reason,
+    });
 
     return { solRecovered };
 
