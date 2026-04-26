@@ -41,10 +41,11 @@ const DEFAULTS = {
 
   // ── Bot Mode ─────────────────────────────────────────────────────────────
   dryRun:               false,
-  deploymentStage:      'full',   // shadow | canary | full
+  deploymentStage:      'full',
   canaryMaxPositions:   1,
-  autonomyMode:         'active', // active | paused
+  autonomyMode:         'active',
   autoScreeningEnabled: false,
+  requireConfirmation:  false, // true = minta konfirmasi Telegram sebelum deploy
 
   // ── Intervals ────────────────────────────────────────────────────────────
   managementIntervalMin:    15,
@@ -83,6 +84,7 @@ const DEFAULTS = {
   maxMcap:                0,
   minVolume24h:           1000000,
   minOrganic:             55,
+  gmgnEnabled:            true,   // Master switch: false = skip semua filter GMGN
   gmgnMinTotalFeesSol:    30,
   gmgnTop10HolderMaxPct:  30,
   gmgnDevHoldMaxPct:       5,
@@ -185,17 +187,56 @@ const CONFIG_BOUNDS = {
 //
 // LLM dari nested `llm.*` hanya dipakai jika process.env tidak di-set.
 
+// ── NESTED_SECTION_MAP ───────────────────────────────────────────────────────
+// Mendefinisikan cara flatten setiap section nested ke flat keys.
+//   null  = semua key di section langsung naik ke root (nama key tidak berubah)
+//   object = mapping eksplisit: { keyDiSection: 'flatKeyDiConfig' }
+
 const NESTED_SECTION_MAP = {
-  finance:   null,    // keys langsung diangkat ke root
+  // Flat passthrough — semua key langsung ke root
+  finance:   null,
   intervals: null,
-  filters:   null,
-  strategy:  null,
+
+  // strategy: beberapa key memiliki alias
+  strategy: {
+    name:              'activeStrategy',     // strategy.name → activeStrategy
+    depthPct:          'depthPct',
+    targetBinSteps:    'allowedBinSteps',    // strategy.targetBinSteps → allowedBinSteps
+    binStepPriority:   'binStepPriority',
+    stopLossPct:       'stopLossPct',
+    trailingStopPct:   'trailingStopPct',
+    trailingTriggerPct:'trailingTriggerPct',
+    trailingDropPct:   'trailingDropPct',
+    smartExitRsi:      'smartExitRsi',       // informasi — EP_CONFIG baca langsung
+    maxHoldHours:      'maxHoldHours',
+  },
+
+  // security_gmgn: prefix gmgn* di flat config
+  security_gmgn: {
+    enabled:            'gmgnEnabled',
+    requireBurnedLp:    'gmgnRequireBurnedLp',
+    requireZeroTax:     'gmgnRequireZeroTax',
+    blockCto:           'gmgnBlockCto',
+    blockVamped:        'gmgnBlockVamped',
+    failClosedCritical: 'gmgnFailClosedCritical',
+    top10HolderMaxPct:  'gmgnTop10HolderMaxPct',
+    insiderMaxPct:      'gmgnInsiderMaxPct',
+    devHoldMaxPct:      'gmgnDevHoldMaxPct',
+    bundlerMaxPct:      'gmgnBundlerMaxPct',
+    minTotalFeesSol:    'gmgnMinTotalFeesSol',
+    washTradeMaxPct:    'gmgnWashTradeMaxPct',
+    minAgeHours:        'gmgnMinAgeHours',
+    maxAgeHours:        'gmgnMaxAgeHours',
+  },
+
+  // llm: override oleh process.env (lihat akhir flattenUserConfig)
   llm: {
-    // Mapping: key di `llm` → key flat di config
     screeningModel:  'screeningModel',
     managementModel: 'managementModel',
     agentModel:      'agentModel',
   },
+
+  // meridian
   meridian: {
     publicApiKey:        'publicApiKey',
     agentMeridianApiUrl: 'agentMeridianApiUrl',

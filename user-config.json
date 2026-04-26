@@ -1,6 +1,7 @@
 {
   "dryRun": true,
   "autonomyMode": "active",
+  "requireConfirmation": true,
 
   "finance": {
     "deployAmountSol": 0.5,
@@ -8,44 +9,50 @@
     "minSolToOpen": 0.10,
     "gasReserve": 0.1,
     "dailyLossLimitUsd": 25,
-    "maxDailyPriorityFeeSol": 0.2
+    "maxDailyPriorityFeeSol": 0.2,
+    "slippageBps": 150
   },
 
-  "intervals": {
-    "managementIntervalMin": 10,
-    "screeningIntervalMin": 15,
-    "positionUpdateIntervalMin": 5
-  },
-
-  "filters": {
-    "minVolume24h": 1000000,
-    "minMcap": 250000,
-    "maxPoolAgeDays": 3,
-    "allowedBinSteps": [100, 125, 200],
-    "binStepPriority": [200, 125, 100],
-    "gmgnRequireBurnedLp": true,
-    "gmgnRequireZeroTax": true,
-    "gmgnBlockCto": true,
-    "gmgnBlockVamped": true,
-    "gmgnFailClosedCritical": true
+  "security_gmgn": {
+    "enabled": true,
+    "requireBurnedLp": true,
+    "requireZeroTax": true,
+    "blockCto": true,
+    "blockVamped": true,
+    "failClosedCritical": true,
+    "top10HolderMaxPct": 30,
+    "insiderMaxPct": 0,
+    "devHoldMaxPct": 5,
+    "bundlerMaxPct": 60,
+    "minTotalFeesSol": 30,
+    "washTradeMaxPct": 35,
+    "minAgeHours": 0,
+    "maxAgeHours": 168
   },
 
   "strategy": {
-    "activeStrategy": "Evil Panda",
+    "name": "Evil Panda",
     "depthPct": 90,
+    "targetBinSteps": [100, 125, 200],
+    "binStepPriority": [200, 125, 100],
     "stopLossPct": 10,
     "trailingStopPct": 5.0,
     "trailingTriggerPct": 10,
     "trailingDropPct": 3.0,
     "smartExitRsi": 90,
-    "maxHoldHours": 72,
-    "slippageBps": 150
+    "maxHoldHours": 72
   },
 
   "llm": {
     "screeningModel": "nvidia/nemotron-3-super-120b-a12b:free",
     "managementModel": "minimax/minimax-m2.5:free",
     "agentModel": "deepseek/deepseek-v3.2"
+  },
+
+  "intervals": {
+    "managementIntervalMin": 10,
+    "screeningIntervalMin": 15,
+    "positionUpdateIntervalMin": 5
   },
 
   "meridian": {
