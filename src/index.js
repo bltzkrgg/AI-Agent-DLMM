@@ -712,8 +712,9 @@ setTimeout(async () => {
     const relayOn = isRelayActive();
     if (relayOn) {
       console.log(`🌐 Jalur Relay Aktif: Menggunakan Proxy Meridian untuk bypass ISP.`);
+      console.log(`✅ Jupiter V2 & Relay Proxy Enabled (Meridian Protocol Active).`);
     } else {
-      console.log(`📡 Koneksi Langsung: Relay Meridian tidak aktif.`);
+      console.log(`📡 Koneksi Langsung: Relay Meridian tidak aktif. Jupiter V2 direct.`);
     }
 
     await notify(
@@ -723,7 +724,8 @@ setTimeout(async () => {
       `🎯 TP: <code>+${EP_CONFIG.TAKE_PROFIT_PCT}%</code> | SL: <code>-${EP_CONFIG.STOP_LOSS_PCT}%</code>\n` +
       `🔍 DryRun: <code>${cfg.dryRun ? 'ON' : 'OFF'}</code>\n` +
       `📡 Auto Screening: <code>${autoScr ? `ON (${cfg.screeningIntervalMin}m)` : 'OFF'}</code>\n` +
-      `🌐 Relay ISP Bypass: <code>${relayOn ? `ON — ${cfg.agentMeridianApiUrl}` : 'OFF (koneksi langsung)'}</code>\n\n` +
+      `🌐 Relay ISP Bypass: <code>${relayOn ? `ON — ${cfg.agentMeridianApiUrl}` : 'OFF (direct)'}</code>\n` +
+      `⚡ API Engine: <code>${relayOn ? '✅ Jupiter V2 & Relay Proxy Enabled (Meridian Protocol Active)' : 'Jupiter V2 Direct'}</code>\n\n` +
       `Ketik /hunt untuk mulai loop, /screening untuk scan manual.`
     );
 

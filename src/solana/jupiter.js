@@ -8,9 +8,10 @@
 import { VersionedTransaction, PublicKey } from '@solana/web3.js';
 import { getConnection, getWallet } from './wallet.js';
 import { fetchWithTimeout, withRetry, withExponentialBackoff, stringify } from '../utils/safeJson.js';
-import { relayFetch } from '../utils/relayFetch.js';
-import { getRecommendedPriorityFee } from '../utils/helius.js';
-import { isDryRun } from '../config.js';
+import { relayFetch }                                    from '../utils/relayFetch.js';
+import { checkCooldown, setCooldown }                    from '../utils/jupiterCooldown.js';
+import { getRecommendedPriorityFee }                     from '../utils/helius.js';
+import { isDryRun }                                      from '../config.js';
 import {
   checkAndConsumePriorityFeeBudget,
   estimatePriorityFeeSol,
@@ -54,8 +55,13 @@ async function fetchJupiter(path, options = {}, timeoutMs = 15000) {
             if ((status === 401 || status === 403) && baseUrl === 'https://api.jup.ag' && !JUPITER_API_KEY) {
               throw new Error('UNAUTHORIZED_PROVIDER');
             }
-            // 429 or 5xx -> retry with backoff
-            if (status === 429 || status >= 500) {
+            // 429 or 5xx → retry with backoff; 429 juga set shared cooldown
+            if (status === 429) {
+              const retryAfter = parseInt(res.headers?.get?.('retry-after') || '0', 10);
+              setCooldown(retryAfter); // ← shared cooldown (sync dengan coinfilter.js)
+              throw new Error('HTTP_429_COOLDOWN_SET');
+            }
+            if (status >= 500) {
               throw new Error(`HTTP_${status}`);
             }
           }
@@ -152,6 +158,8 @@ export async function getJupiterQuote(inputMint, outputMint, amountRaw, slippage
     slippageBps: String(slippageBps),
     restrictIntermediateTokens: 'true',
   });
+  // Periksa shared cooldown sebelum hit endpoint
+  checkCooldown();
   const res = await fetchJupiter(`/swap/v2/quote?${quoteParams.toString()}`, {}, 10000);
   if (!res.ok) {
     const err = await res.text().catch(() => res.status);

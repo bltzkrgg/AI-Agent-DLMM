@@ -1,7 +1,8 @@
 import { fetchWithTimeout, safeNum, withExponentialBackoff } from '../utils/safeJson.js';
-import { relayFetch } from '../utils/relayFetch.js';
-import { getConfig } from '../config.js';
-import { getJupiterPrice } from '../utils/jupiter.js';
+import { relayFetch, JUPITER_UA }                            from '../utils/relayFetch.js';
+import { checkCooldown, setCooldown }                        from '../utils/jupiterCooldown.js';
+import { getConfig }                                        from '../config.js';
+import { getJupiterPrice }                                  from '../utils/jupiter.js';
 import { ensureIpv4First, getGmgnTokenInfo, getGmgnSecurity } from '../utils/gmgn.js';
 
 const WSOL_MINT = 'So11111111111111111111111111111111111111112';
@@ -12,15 +13,13 @@ const OKX_BASE = 'https://web3.okx.com';
 // Fallback: lite-api.jup.ag (gratis, tanpa API key)
 const JUPITER_QUOTE_API          = 'https://api.jup.ag/swap/v2/quote';
 const JUPITER_QUOTE_API_FALLBACK = 'https://lite-api.jup.ag/swap/v2/quote';
-const JUPITER_UA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
+// JUPITER_UA diimpor dari relayFetch.js agar konsisten di semua modul
 const JUPITER_BLACKLIST_TTL_MS = 24 * 60 * 60 * 1000;
 
 const _jupiterFailBlacklist = new Map(); // mint -> { until, reason, ts }
 
-// Global cooldown state untuk HTTP 429 Rate Limit.
-// Semua call ke fetchJupiterQuote akan langsung gagal selama masa cooldown ini
-// agar bot tidak terus-menerus membombardir endpoint yang sedang throttle.
-let _jupiterGlobalCooldownUntil = 0;
+// Global cooldown state dikelola oleh shared module jupiterCooldown.js
+// agar sinkron dengan solana/jupiter.js — import: checkCooldown, setCooldown
 
 function nowIso() {
   return new Date().toISOString();
@@ -277,25 +276,22 @@ function isVampedCoin(info, sec) {
  * - Primary: api.jup.ag/swap/v2/quote | Fallback: lite-api.jup.ag/swap/v2/quote
  * - Backoff otomatis: 800ms base, max 3 retry, per endpoint
  * - 404/403: langsung skip ke endpoint berikutnya (path salah = jangan retry)
- * - 429: baca header retry-after, set _jupiterGlobalCooldownUntil + 5s buffer
+ * - 429: baca header retry-after, setCooldown(retryAfterSec) → shared state
  * - ENOTFOUND: relayFetch otomatis route via Meridian proxy jika lpAgentRelayEnabled=true
  * - relayFetch: drop-in pengganti fetchWithTimeout, support exponential backoff + relay
  */
 async function fetchJupiterQuote(queryString) {
-  // ── Global Cooldown Guard (429 Rate Limit) ──────────────────────
-  const now = Date.now();
-  if (_jupiterGlobalCooldownUntil > now) {
-    const remainSec = Math.ceil((_jupiterGlobalCooldownUntil - now) / 1000);
-    console.warn(`[Jupiter] GlobalCooldown aktif, sisa ${remainSec}s — lempar JUPITER_IN_COOLDOWN`);
-    throw new Error(`JUPITER_IN_COOLDOWN_${remainSec}s`);
-  }
+  // ── Shared Global Cooldown Guard (sync dengan solana/jupiter.js) ──
+  checkCooldown(); // throw JUPITER_IN_COOLDOWN_Xs jika cooldown aktif
   // ────────────────────────────────────────────────────────────────
 
+  // relayFetch sudah auto-merge JUPITER_DEFAULT_HEADERS, tapi kita
+  // pass eksplisit agar override bisa dilakukan caller jika diperlukan
   const headers = {
-    'User-Agent': JUPITER_UA,
-    'Accept': 'application/json',
+    'User-Agent':      JUPITER_UA,
+    'Accept':          'application/json',
     'Accept-Language': 'en-US,en;q=0.9',
-    'Cache-Control': 'no-cache',
+    'Cache-Control':   'no-cache',
   };
   const endpoints = [JUPITER_QUOTE_API, JUPITER_QUOTE_API_FALLBACK];
   let lastRes = null;
@@ -313,14 +309,12 @@ async function fetchJupiterQuote(queryString) {
             err._res = r;
             throw err;
           }
-          // 429 = rate limited — set global cooldown lalu lempar
+          // 429 = rate limited — set shared global cooldown lalu lempar
           if (r.status === 429) {
             const retryAfter = parseInt(r.headers?.get?.('retry-after') || '0', 10);
-            const cooldownMs = (Number.isFinite(retryAfter) && retryAfter > 0 ? retryAfter * 1000 : 60000) + 5000;
-            _jupiterGlobalCooldownUntil = Date.now() + cooldownMs;
-            console.warn(`[Jupiter] HTTP 429 — GlobalCooldown diset ${cooldownMs / 1000}s (retry-after=${retryAfter || 'N/A'})`);
+            setCooldown(retryAfter); // ← shared module (sync dengan solana/jupiter.js)
             const err = new Error(`JUPITER_RATELIMIT_429`);
-            err._skipRetry = true; // jangan retry 429, cooldown sudah diset
+            err._skipRetry = true;
             err._res = r;
             throw err;
           }
