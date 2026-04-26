@@ -109,14 +109,15 @@ bot.onText(/\/start/, (msg) => {
     `<b>Commands:</b>\n` +
     `/status    — Status posisi aktif\n` +
     `/hunt      — Mulai loop sniper\n` +
-    `/screening — Scan manual top pool sekarang\n` +
-    `/evolve    — Analisis harvest.log + saran config\n` +
-    `/stop      — Hentikan loop\n` +
-    `/exit      — Force exit posisi aktif\n` +
-    `/balance   — Saldo wallet\n` +
-    `/config    — Tampilkan config saat ini\n` +
-    `/setconfig — Ubah config (key value)\n` +
-    `/dryrun    — Toggle dry run mode`,
+    `/screening   — Scan manual top pool sekarang\n` +
+    `/autoscreen  — Toggle auto-screening (on/off)\n` +
+    `/evolve      — Analisis harvest.log + saran config\n` +
+    `/stop        — Hentikan loop\n` +
+    `/exit        — Force exit posisi aktif\n` +
+    `/balance     — Saldo wallet\n` +
+    `/config      — Tampilkan config saat ini\n` +
+    `/setconfig   — Ubah config (key value)\n` +
+    `/dryrun      — Toggle dry run mode`,
     { parse_mode: 'HTML' }
   );
 });
@@ -431,6 +432,53 @@ bot.onText(/\/dryrun(?:\s+(on|off))?/, (msg, match) => {
     `${enable ? '🟡' : '🔴'} <b>Dry Run: ${enable ? 'ON' : 'OFF'}</b>`,
     { parse_mode: 'HTML' }
   );
+});
+
+// /autoscreen on|off — Shortcut toggle autoScreeningEnabled
+bot.onText(/\/autoscreen(?:\s+(on|off))?/, (msg, match) => {
+  if (!guard(msg)) return;
+  const chatId = msg.chat.id;
+  const toggle = match[1]?.toLowerCase();
+
+  // Tanpa argumen: tampilkan status saat ini
+  if (!toggle) {
+    const current = getConfig().autoScreeningEnabled;
+    bot.sendMessage(chatId,
+      `📡 Auto-Screening: <code>${current ? 'ON' : 'OFF'}</code>\n\n` +
+      `Gunakan <code>/autoscreen on</code> atau <code>/autoscreen off</code>`,
+      { parse_mode: 'HTML' }
+    );
+    return;
+  }
+
+  const enable = toggle === 'on';
+  const result = updateConfig({ autoScreeningEnabled: enable });
+  const after  = result.autoScreeningEnabled;
+
+  if (after === true) {
+    if (!_screeningLoopTimer) {
+      runScreeningLoop();
+      bot.sendMessage(chatId,
+        `📡 <b>Auto-Screening: ON</b>\n` +
+        `Loop dimulai — interval <code>${result.screeningIntervalMin || 15} menit</code>.\n\n` +
+        `<i>Screening pertama akan berjalan dalam 30 detik.</i>`,
+        { parse_mode: 'HTML' }
+      );
+    } else {
+      bot.sendMessage(chatId,
+        `📡 <b>Auto-Screening: ON</b>\n` +
+        `Loop sudah berjalan — interval <code>${result.screeningIntervalMin || 15} menit</code>.`,
+        { parse_mode: 'HTML' }
+      );
+    }
+  } else {
+    stopScreeningLoop();
+    bot.sendMessage(chatId,
+      `🔕 <b>Auto-Screening: OFF</b>\n` +
+      `Loop dihentikan. Gunakan <code>/screening</code> untuk scan manual.`,
+      { parse_mode: 'HTML' }
+    );
+  }
 });
 
 // ── /briefing — laporan harian bot ───────────────────────────────
