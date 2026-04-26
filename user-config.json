@@ -22,6 +22,8 @@
     "meteoraDiscoveryLimit": 150,
     "discoveryTimeframe": "5m",
     "discoveryCategory": "",
+    "minPoolAgeHours": 0,
+    "maxPoolAgeHours": 2160,
     "minMcap": 250000,
     "maxMcap": 0,
     "minVolume24h": 1000000,
