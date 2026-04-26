@@ -16,6 +16,11 @@ const JUPITER_BLACKLIST_TTL_MS = 24 * 60 * 60 * 1000;
 
 const _jupiterFailBlacklist = new Map(); // mint -> { until, reason, ts }
 
+// Global cooldown state untuk HTTP 429 Rate Limit.
+// Semua call ke fetchJupiterQuote akan langsung gagal selama masa cooldown ini
+// agar bot tidak terus-menerus membombardir endpoint yang sedang throttle.
+let _jupiterGlobalCooldownUntil = 0;
+
 function nowIso() {
   return new Date().toISOString();
 }
@@ -261,12 +266,22 @@ function isVampedCoin(info, sec) {
 
 /**
  * fetchJupiterQuote — menggunakan withExponentialBackoff (utility sistem) per endpoint.
- * - Primary & Fallback keduanya mengarah ke api.jup.ag/v6/quote (tanpa /swap/)
+ * - Primary & Fallback keduanya mengarah ke quote-api.jup.ag/v6/quote (tanpa /swap/)
  * - Backoff otomatis: 800ms base, max 3 retry, per endpoint
  * - 404/403: langsung skip ke endpoint berikutnya (path salah = jangan retry)
+ * - 429: baca header retry-after, set _jupiterGlobalCooldownUntil + 5s buffer
  * - ENOTFOUND/fetch failed: ditangani oleh withExponentialBackoff dengan jeda bertahap
  */
 async function fetchJupiterQuote(queryString) {
+  // ── Global Cooldown Guard (429 Rate Limit) ──────────────────────
+  const now = Date.now();
+  if (_jupiterGlobalCooldownUntil > now) {
+    const remainSec = Math.ceil((_jupiterGlobalCooldownUntil - now) / 1000);
+    console.warn(`[Jupiter] GlobalCooldown aktif, sisa ${remainSec}s — lempar JUPITER_IN_COOLDOWN`);
+    throw new Error(`JUPITER_IN_COOLDOWN_${remainSec}s`);
+  }
+  // ────────────────────────────────────────────────────────────────
+
   const headers = {
     'User-Agent': JUPITER_UA,
     'Accept': 'application/json',
@@ -289,8 +304,17 @@ async function fetchJupiterQuote(queryString) {
             err._res = r;
             throw err;
           }
-          // 429 = rate limited, biarkan backoff retry
-          if (r.status === 429) throw new Error(`JUPITER_RATELIMIT_429`);
+          // 429 = rate limited — set global cooldown lalu lempar
+          if (r.status === 429) {
+            const retryAfter = parseInt(r.headers?.get?.('retry-after') || '0', 10);
+            const cooldownMs = (Number.isFinite(retryAfter) && retryAfter > 0 ? retryAfter * 1000 : 60000) + 5000;
+            _jupiterGlobalCooldownUntil = Date.now() + cooldownMs;
+            console.warn(`[Jupiter] HTTP 429 — GlobalCooldown diset ${cooldownMs / 1000}s (retry-after=${retryAfter || 'N/A'})`);
+            const err = new Error(`JUPITER_RATELIMIT_429`);
+            err._skipRetry = true; // jangan retry 429, cooldown sudah diset
+            err._res = r;
+            throw err;
+          }
           // Lainnya: lempar agar backoff bisa retry
           throw new Error(`JUPITER_HTTP_${r.status}`);
         },
@@ -298,13 +322,13 @@ async function fetchJupiterQuote(queryString) {
       );
       return res;
     } catch (e) {
-      // Jika 404/403 — simpan response dan lanjut ke endpoint berikutnya
+      // Jika 404/403/429 — simpan response dan lanjut ke endpoint berikutnya
       if (e?._skipRetry) {
         console.warn(`[Jupiter] ${e.message} endpoint=${base} — skip ke endpoint berikutnya`);
         lastRes = e._res || null;
         continue;
       }
-      // Semua error lain (ENOTFOUND, 429, dsb) sudah di-backoff oleh withExponentialBackoff
+      // Semua error lain (ENOTFOUND, dsb) sudah di-backoff oleh withExponentialBackoff
       console.warn(`[Jupiter] Gagal setelah backoff endpoint=${base}: ${e?.message}`);
     }
   }

@@ -1637,13 +1637,17 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null, opt
         prefilterReason: null,
         stageFunnel: security?.stageFunnel || null,
       });
-      await new Promise(r => setTimeout(r, 300));
+      // Jeda 2 detik antar token untuk menghindari rate limit Jupiter (429)
+      await new Promise(r => setTimeout(r, 2000));
     }
 
     tokenGate.push(...tokenGatePassed);
 
+    // Replay pendingReplay secara sequential (bukan paralel) dengan jeda 2 detik
+    // agar tidak membombardir Jupiter saat ada banyak token pending.
     if (pendingReplay.length) {
-      const replayGate = await Promise.all(pendingReplay.map(async (s) => {
+      const replayGate = [];
+      for (const s of pendingReplay) {
         const security = await screenToken(s.mint, s.symbol || '', s.symbol || '', { seedData: s }).catch(() => null);
         if (security) {
           auditScreeningResult(security, {
@@ -1657,7 +1661,7 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null, opt
           rejSecurity++;
           removeNoPoolPending(s.mint);
         }
-        return {
+        replayGate.push({
           mint: s.mint,
           symbol: s.symbol || security?.symbol || '',
           name: security?.name || s.symbol || s.mint.slice(0, 6),
@@ -1667,8 +1671,10 @@ export async function runHunterAlpha(notifyFn, bot = null, allowedId = null, opt
           prefilterRejected: false,
           prefilterReason: null,
           stageFunnel: security?.stageFunnel || null,
-        };
-      }));
+        });
+        // Jeda 2 detik antar token untuk menghindari rate limit Jupiter (429)
+        await new Promise(r => setTimeout(r, 2000));
+      }
       tokenGate.push(...replayGate);
     }
 
