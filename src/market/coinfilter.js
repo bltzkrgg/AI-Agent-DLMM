@@ -7,10 +7,10 @@ const WSOL_MINT = 'So11111111111111111111111111111111111111112';
 const METEORA_DISCOVERY_BASE = 'https://pool-discovery-api.datapi.meteora.ag';
 const DEXSCREENER_BASE = 'https://api.dexscreener.com/latest/dex/tokens';
 const OKX_BASE = 'https://web3.okx.com';
-// Primary: api.jup.ag/v6/quote (NO /swap/ path — avoids HTTP 404)
-// Fallback: quote-api.jup.ag/v6/quote (legacy endpoint)
+// Kedua endpoint mengarah ke api.jup.ag/v6/quote (TANPA /swap/) — fix HTTP 404
+// Fallback dipertahankan sebagai safety net jika primary timeout/reject
 const JUPITER_QUOTE_API = 'https://api.jup.ag/v6/quote';
-const JUPITER_QUOTE_API_FALLBACK = 'https://quote-api.jup.ag/v6/quote';
+const JUPITER_QUOTE_API_FALLBACK = 'https://api.jup.ag/v6/quote';
 const JUPITER_UA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
 const JUPITER_BLACKLIST_TTL_MS = 24 * 60 * 60 * 1000;
 
@@ -259,6 +259,13 @@ function isVampedCoin(info, sec) {
   return labels.some((t) => t.includes('vamped'));
 }
 
+/**
+ * fetchJupiterQuote — menggunakan withExponentialBackoff (utility sistem) per endpoint.
+ * - Primary & Fallback keduanya mengarah ke api.jup.ag/v6/quote (tanpa /swap/)
+ * - Backoff otomatis: 800ms base, max 3 retry, per endpoint
+ * - 404/403: langsung skip ke endpoint berikutnya (path salah = jangan retry)
+ * - ENOTFOUND/fetch failed: ditangani oleh withExponentialBackoff dengan jeda bertahap
+ */
 async function fetchJupiterQuote(queryString) {
   const headers = {
     'User-Agent': JUPITER_UA,
@@ -266,39 +273,39 @@ async function fetchJupiterQuote(queryString) {
     'Accept-Language': 'en-US,en;q=0.9',
     'Cache-Control': 'no-cache',
   };
-  // Primary endpoint first (api.jup.ag/v6/quote — no /swap/ path)
-  // Fallback to legacy quote-api.jup.ag if primary fails
   const endpoints = [JUPITER_QUOTE_API, JUPITER_QUOTE_API_FALLBACK];
-  const maxAttempts = 3;
   let lastRes = null;
 
   for (const base of endpoints) {
-    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-      try {
-        const res = await fetchWithTimeout(`${base}${queryString}`, { headers }, 12000);
-        if (res.ok) return res;
-        lastRes = res;
-        const label = res.status === 429 ? 'RateLimit' : res.status === 403 ? 'Forbidden' : `HTTP_${res.status}`;
-        console.warn(`[Jupiter] ${label} status=${res.status} attempt=${attempt}/${maxAttempts} endpoint=${base}`);
-        // 404 means wrong path — skip remaining attempts on this endpoint immediately
-        if (res.status === 404 || res.status === 403) break;
-        // Rate-limited: wait before retry
-        if (res.status === 429 && attempt < maxAttempts) {
-          await new Promise(r => setTimeout(r, 1500 * attempt));
-        }
-      } catch (e) {
-        const isNetworkError = e?.message?.includes('ENOTFOUND') ||
-          e?.message?.includes('fetch failed') ||
-          e?.message?.includes('ECONNREFUSED') ||
-          e?.message?.includes('ETIMEDOUT');
-        console.warn(`[Jupiter] ${isNetworkError ? 'NetworkError' : 'Error'} attempt=${attempt}/${maxAttempts} endpoint=${base}: ${e?.message}`);
-        // Exponential backoff for network errors before retrying
-        if (isNetworkError && attempt < maxAttempts) {
-          const backoffMs = Math.pow(2, attempt) * 1000; // 2s, 4s, 8s
-          console.warn(`[Jupiter] Backoff ${backoffMs}ms sebelum retry (ENOTFOUND/network)`);
-          await new Promise(r => setTimeout(r, backoffMs));
-        }
+    try {
+      const res = await withExponentialBackoff(
+        async () => {
+          const r = await fetchWithTimeout(`${base}${queryString}`, { headers }, 12000);
+          if (r.ok) return r;
+          // 404/403 = path salah, jangan retry — lempar langsung
+          if (r.status === 404 || r.status === 403) {
+            const err = new Error(`JUPITER_HTTP_${r.status}_NO_RETRY`);
+            err._skipRetry = true;
+            err._res = r;
+            throw err;
+          }
+          // 429 = rate limited, biarkan backoff retry
+          if (r.status === 429) throw new Error(`JUPITER_RATELIMIT_429`);
+          // Lainnya: lempar agar backoff bisa retry
+          throw new Error(`JUPITER_HTTP_${r.status}`);
+        },
+        { maxRetries: 3, baseDelay: 800 },
+      );
+      return res;
+    } catch (e) {
+      // Jika 404/403 — simpan response dan lanjut ke endpoint berikutnya
+      if (e?._skipRetry) {
+        console.warn(`[Jupiter] ${e.message} endpoint=${base} — skip ke endpoint berikutnya`);
+        lastRes = e._res || null;
+        continue;
       }
+      // Semua error lain (ENOTFOUND, 429, dsb) sudah di-backoff oleh withExponentialBackoff
+      console.warn(`[Jupiter] Gagal setelah backoff endpoint=${base}: ${e?.message}`);
     }
   }
 
