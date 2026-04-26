@@ -1,26 +1,23 @@
 {
   "dryRun": true,
-  "deploymentStage": "full",
+  "deploymentStage": "canary",
   "canaryMaxPositions": 1,
   "autonomyMode": "active",
   "requireConfirmation": true,
   "autoPauseOnManualReview": true,
   "manualReviewPauseThreshold": 1,
-
   "deployAmountSol": 0.5,
   "maxPositions": 3,
-  "minSolToOpen": 0.10,
+  "minSolToOpen": 0.1,
   "gasReserve": 0.1,
   "dailyLossLimitUsd": 25,
-
   "managementIntervalMin": 10,
-  "screeningIntervalMin": 15,
+  "screeningIntervalMin": 5,
   "positionUpdateIntervalMin": 5,
-  "autoScreeningEnabled": false,
-
+  "autoScreeningEnabled": true,
   "radar": {
     "meteoraDiscoveryLimit": 150,
-    "discoveryTimeframe": "5m",
+    "discoveryTimeframe": "1h",
     "discoveryCategory": "",
     "minPoolAgeHours": 0,
     "maxPoolAgeHours": 2160,
@@ -42,31 +39,29 @@
     "gmgnBlockVamped": true,
     "gmgnFailClosedCritical": false,
     "gmgnWashTradeMaxPct": 35,
-    "noPoolReplayLimit": 12,
-    "minPoolAgeHours": 0,
-    "maxPoolAgeHours": 2160
+    "noPoolReplayLimit": 12
   },
-
   "maxPoolAgeDays": 3,
   "minOrganic": 55,
   "minBinStep": 100,
-  "allowedBinSteps": [100, 125],
+  "allowedBinSteps": [
+    100,
+    125
+  ],
   "heritageModeEnabled": true,
-
   "takeProfitFeePct": 5,
   "stopLossPct": 5,
   "trailingTriggerPct": 10,
-  "trailingDropPct": 3.0,
+  "trailingDropPct": 3,
   "maxHoldHours": 168,
   "outOfRangeWaitMinutes": 30,
   "outOfRangeBinsToClose": 10,
   "oorCooldownTriggerCount": 3,
   "oorCooldownHours": 12,
   "proactiveExitEnabled": true,
-  "proactiveExitMinProfitPct": 1.0,
+  "proactiveExitMinProfitPct": 1,
   "proactiveExitBearishConfidence": 0.7,
   "minTaConfidenceForAutoExit": 0.55,
-
   "maxPriceImpactPct": 2.5,
   "executionRejectNonRefundableFees": true,
   "maxBinsPerPosition": 125,
@@ -75,26 +70,21 @@
   "activePreset": "supertrend_only",
   "activeStrategy": "Evil Panda",
   "targetRangePct": 90,
-
   "autoHarvestEnabled": true,
   "autoHarvestThresholdSol": 0.04,
   "autoHarvestCompound": false,
-  "minFeeClaimUsd": 1.0,
-
+  "minFeeClaimUsd": 1,
   "enableSimulationShield": true,
-  "oracleMaxPriceDivergencePct": 3.0,
+  "oracleMaxPriceDivergencePct": 3,
   "minPriceSourcesForEntry": 2,
   "failSafeModeOnDataUnreliable": true,
-
   "hourlyPulseEnabled": true,
-
   "signalWeights": {
     "mcap": 2.5,
     "feeActiveTvlRatio": 2.3,
     "volume": 0.36,
     "holderCount": 0.3
   },
-
   "darwinWindowDays": 60,
   "darwinRecalcEvery": 5,
   "autonomousEvolutionEnabled": true,
@@ -104,19 +94,15 @@
   "socialSignalWeight": 1.5,
   "minSmartMoneyOverlap": 1,
   "useSmartWalletRanges": true,
-
   "minTaeSamplesForFullStage": 10,
   "minTaeWinRateForFullStage": 45,
-
   "managementModel": "deepseek/deepseek-v3.2",
   "screeningModel": "nvidia/nemotron-3-super-120b-a12b:free",
   "generalModel": "nvidia/nemotron-nano-9b-v2:free",
   "activeModel": null,
-
   "lpAgentRelayEnabled": true,
   "publicApiKey": "bWVyaWRpYW4taXMtdGhlLWJlc3QtYWdlbnRz",
   "agentMeridianApiUrl": "https://api.agentmeridian.xyz/api",
-
   "strategyOverrides": {
     "Evil Panda": {}
   }
