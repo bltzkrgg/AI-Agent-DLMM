@@ -1,2513 +1,299 @@
+/**
+ * src/agents/hunterAlpha.js — Linear Sniper Loop (RPC-First)
+ *
+ * ARSITEKTUR LINEAR (satu thread, berurutan):
+ *
+ *   SCAN → FILTER → DEPLOY → MONITOR (lock) → EXIT → kembali ke SCAN
+ *
+ * Tidak ada paralel. Tidak ada queue. Tidak ada DB.
+ * Satu posisi aktif pada satu waktu.
+ */
+
 'use strict';
 
-import { createMessage, resolveModel } from '../agent/provider.js';
-import { getConfig, getThresholds } from '../config.js';
-import { getTopPools, getPoolInfo, openPosition, getSolPriceUsd } from '../solana/meteora.js';
-import { getWalletBalance, getConnection } from '../solana/wallet.js';
-import { PublicKey } from '@solana/web3.js';
-import {
-  getOpenPositions,
-  getPoolStats,
-  closePositionWithPnl,
-  getStat,
-  recordScreeningEvent,
-  getPartialOpenPositions,
-  getPositionByAddress,
-  updatePositionStatus,
-  updatePositionLifecycle,
-} from '../db/database.js';
-import { getLessonsContext } from '../learn/lessons.js';
-import { getStrategy, parseStrategyParameters, getAllStrategies } from '../strategies/strategyManager.js';
-import {
-  matchStrategyToMarket,
-  getLibraryStats,
-  evaluateStrategyReadiness as libEvaluateReadiness,
-  classifyMarketRegime,
-} from '../market/strategyLibrary.js';
-import { fetchCandles, getMarketSnapshot, getOHLCV, getMultiTFScore, getSentiment, getHistoryOHLCV, getDLMMPoolData } from '../market/oracle.js';
-import { getInstinctsContext } from '../market/memory.js';
-import { getStrategyIntelligenceContext, getDarwinBinStepBoost } from '../market/strategyPerformance.js';
-import { screenToken, formatScreenResult, discoverMeteoraDlmmPools } from '../market/coinfilter.js';
-import { parseTvl, safeNum, stringify, escapeHTML, getConservativeSlippage } from '../utils/safeJson.js';
-import { kv, hr, codeBlock, shortAddr } from '../utils/table.js';
-import { getDarwinWeights, captureSignals } from '../market/signalWeights.js';
-import { isOnCooldown, getPoolMemoryContext, recordDeployment } from '../market/poolMemory.js';
-import { checkSmartWalletsOnPool, formatSmartWalletSignal } from '../market/smartWallets.js';
-import { executeControlledOperation } from '../app/executionService.js';
-import { discoverPools as lpAgentDiscoverPools, enrichPools as lpAgentEnrichPools, isLPAgentEnabled } from '../market/lpAgent.js';
-import { runEvolutionCycle } from '../learn/evolve.js';
-import { checkMaxDrawdown, requestConfirmation, validateStrategyForMarket } from '../safety/safetyManager.js';
-import { getRuntimeState, setRuntimeState, flushRuntimeState } from '../runtime/state.js';
-import { calculateSupertrend } from '../utils/ta.js';
-import { enrichPvpRisk, filterWashTrading, filterCapitalEfficiency, filterBinStep } from '../market/screening.js';
-import { getGmgnTokenInfo } from '../utils/gmgn.js';
+import { getConfig }              from '../config.js';
+import { discoverMeteoraDlmmPools, screenToken } from '../market/coinfilter.js';
+import { deployPosition, monitorPnL, exitPosition, EP_CONFIG } from '../sniper/evilPanda.js';
+import { getWalletBalance }       from '../solana/wallet.js';
 
-// ─── State ───────────────────────────────────────────────────────
-
-// Mutex for partial deployment healing.
-// Prevents two concurrent heal cycles (or a heal cycle + watchdog) from calling
-// openPosition on the same position_address simultaneously, which causes nonce
-// conflicts and double-liquidity on the same bin chunk.
-const _activeHealingLocks = new Set();
-
-function acquireHeal(addr) {
-  if (_activeHealingLocks.has(addr)) return false;
-  _activeHealingLocks.add(addr);
-  return true;
+// ── Notify helper (diset dari index.js) ──────────────────────────
+let _notifyFn = null;
+export function setNotifyFn(fn) { _notifyFn = fn; }
+async function notify(msg) {
+  try { await _notifyFn?.(msg); } catch { /* non-fatal */ }
 }
 
-function releaseHeal(addr) {
-  _activeHealingLocks.delete(addr);
-}
+// ── State ─────────────────────────────────────────────────────────
+let _running   = false;
+let _currentPositionPubkey = null;
 
-let lastCandidates = [];
-let lastReport = null;
-let lastRadarSnapshot = null;
-let lastDeploySummary = null;
-let hunterNotifyFn = null;
-let hunterBotRef = null;
-let hunterAllowedId = null;
-let _hunterTargetCount = null; // Local caches for tool output (shared across rounds)
-let _hunterMaxPositionsCap = null; // Global stage-aware cap injected by orchestrator (index)
-const NO_POOL_PENDING_STATE_KEY = 'hunter-no-pool-pending';
-const _noPoolPending = new Map(); // mint -> { mint, symbol, gmgnGate, firstSeenAt, lastSeenAt }
-let _noPoolPendingLoaded = false;
+export function isRunning()            { return _running; }
+export function getCurrentPosition()   { return _currentPositionPubkey; }
 
-function normalizeNoPoolPendingItem(mint, item) {
-  if (!mint || typeof mint !== 'string') return null;
-  if (!item || typeof item !== 'object') return null;
-  const now = Date.now();
-  const firstSeenAt = Number.isFinite(Number(item.firstSeenAt)) ? Number(item.firstSeenAt) : now;
-  const lastSeenAt = Number.isFinite(Number(item.lastSeenAt)) ? Number(item.lastSeenAt) : firstSeenAt;
-  return {
-    mint,
-    symbol: typeof item.symbol === 'string' ? item.symbol : '',
-    gmgnGate: item.gmgnGate && typeof item.gmgnGate === 'object' ? item.gmgnGate : null,
-    firstSeenAt,
-    lastSeenAt,
-  };
-}
+// ── Delay helper ──────────────────────────────────────────────────
+const sleep = ms => new Promise(r => setTimeout(r, ms));
 
-function ensureNoPoolPendingLoaded() {
-  if (_noPoolPendingLoaded) return;
-  const stored = getRuntimeState(NO_POOL_PENDING_STATE_KEY, {});
-  if (stored && typeof stored === 'object' && !Array.isArray(stored)) {
-    for (const [mint, item] of Object.entries(stored)) {
-      const normalized = normalizeNoPoolPendingItem(mint, item);
-      if (normalized) _noPoolPending.set(mint, normalized);
+// ── Main Linear Loop ─────────────────────────────────────────────
+
+/**
+ * Jalankan loop Linear Sniper.
+ * Dipanggil sekali dari index.js — berjalan terus sampai di-stop.
+ */
+export async function runLinearLoop() {
+  if (_running) {
+    console.warn('[hunter] Loop sudah berjalan, skip.');
+    return;
+  }
+  _running = true;
+  console.log('[hunter] ▶ Linear Sniper Loop dimulai');
+  await notify('🚀 <b>Linear Sniper aktif.</b> Memulai scan pool...');
+
+  while (_running) {
+    try {
+      await scanAndDeploy();
+    } catch (e) {
+      console.error(`[hunter] Loop error: ${e.message}`);
+      await notify(`⚠️ <b>Loop error:</b>\n<code>${e.message}</code>\n\n<i>Retry dalam 30 detik...</i>`);
+      await sleep(30_000);
     }
   }
-  _noPoolPendingLoaded = true;
+
+  console.log('[hunter] ⏹ Loop dihentikan.');
 }
 
-function persistNoPoolPending() {
-  ensureNoPoolPendingLoaded();
-  const payload = {};
-  for (const [mint, item] of _noPoolPending.entries()) {
-    payload[mint] = {
-      mint: item.mint,
-      symbol: item.symbol || '',
-      gmgnGate: item.gmgnGate || null,
-      firstSeenAt: item.firstSeenAt,
-      lastSeenAt: item.lastSeenAt,
-    };
+export function stopLoop() {
+  _running = false;
+  console.log('[hunter] Stop signal diterima.');
+}
+
+// ── Phase 1: SCAN ─────────────────────────────────────────────────
+
+async function scanAndDeploy() {
+  const cfg    = getConfig();
+  const limit  = cfg.meteoraDiscoveryLimit || 50;
+
+  console.log(`[hunter] 🔍 SCAN — discover ${limit} pools...`);
+  await notify('🔍 <b>Scan dimulai.</b> Mencari kandidat pool...');
+
+  let pools;
+  try {
+    pools = await discoverMeteoraDlmmPools({ limit });
+  } catch (e) {
+    console.warn(`[hunter] discoverMeteoraDlmmPools gagal: ${e.message}`);
+    await sleep(60_000);
+    return;
   }
-  setRuntimeState(NO_POOL_PENDING_STATE_KEY, payload);
-}
 
-function pruneNoPoolPending(cfg = getConfig()) {
-  ensureNoPoolPendingLoaded();
-  const ttlMin = Math.max(5, Number(cfg.noPoolPendingTtlMinutes || 120));
-  const ttlMs = ttlMin * 60 * 1000;
-  const now = Date.now();
-  let changed = false;
-  for (const [mint, item] of _noPoolPending.entries()) {
-    if (!item?.lastSeenAt || (now - item.lastSeenAt) > ttlMs) {
-      _noPoolPending.delete(mint);
-      changed = true;
-    }
+  if (!pools || pools.length === 0) {
+    console.log('[hunter] Tidak ada pool ditemukan. Tunggu 60 detik...');
+    await sleep(60_000);
+    return;
   }
-  if (changed) persistNoPoolPending();
-}
 
-function listNoPoolPending(cfg = getConfig()) {
-  ensureNoPoolPendingLoaded();
-  pruneNoPoolPending(cfg);
-  return Array.from(_noPoolPending.values())
-    .sort((a, b) => (b.lastSeenAt || 0) - (a.lastSeenAt || 0));
-}
+  console.log(`[hunter] ${pools.length} pool ditemukan. Mulai screening...`);
 
-function upsertNoPoolPending({ mint, symbol, gmgnGate }, cfg = getConfig()) {
-  if (!mint) return;
-  ensureNoPoolPendingLoaded();
-  pruneNoPoolPending(cfg);
-  const now = Date.now();
-  const prev = _noPoolPending.get(mint);
-  _noPoolPending.set(mint, {
-    mint,
-    symbol: symbol || prev?.symbol || '',
-    gmgnGate: gmgnGate || prev?.gmgnGate || null,
-    firstSeenAt: prev?.firstSeenAt || now,
-    lastSeenAt: now,
-  });
-  persistNoPoolPending();
-}
+  // ── Phase 2: FILTER — sequential, 5 detik antar koin ────────────
+  let winner = null;
 
-function removeNoPoolPending(mint) {
-  if (!mint) return;
-  ensureNoPoolPendingLoaded();
-  if (_noPoolPending.delete(mint)) {
-    persistNoPoolPending();
-  }
-}
+  for (const pool of pools) {
+    if (!_running) return;
 
+    const tokenMint   = pool.tokenX || pool.mint;
+    const tokenSymbol = pool.name?.split('-')[0] || pool.tokenXSymbol || '';
 
-async function runPartialDeploymentHealing(notifyFn, cfg = getConfig()) {
-  const healCandidates = getPartialOpenPositions(8)
-    .filter((p) => p?.pool_address && p?.position_address);
-  if (!healCandidates.length) return { scanned: 0, healed: 0, failed: 0 };
-
-  const now = Date.now();
-  const minGapMs = Math.max(2, Number(cfg.managementIntervalMin || 15)) * 60 * 1000;
-  const lastAttemptState = getRuntimeState('hunter-partial-heal-attempts', {});
-  const nextAttemptState = { ...(lastAttemptState || {}) };
-  let healed = 0;
-  let failed = 0;
-
-  for (const pos of healCandidates) {
-    const key = pos.position_address;
-    const lastAttemptAt = Number(nextAttemptState[key] || 0);
-    if (Number.isFinite(lastAttemptAt) && (now - lastAttemptAt) < minGapMs) continue;
-    nextAttemptState[key] = now;
-
-    const targetSol = Math.max(
-      0.01,
-      safeNum(pos.deploy_target_sol || pos.deployed_sol || cfg.deployAmountSol || 0.1),
-    );
-
-    if (!acquireHeal(pos.position_address)) {
-      if (process.env.HUNTER_DEBUG) console.log(`[hunter] Heal skipped ${pos.position_address?.slice(0, 8)} — already healing in another cycle`);
+    if (!tokenMint) {
+      await sleep(5_000);
       continue;
     }
 
+    console.log(`[hunter] 🔬 Screen: ${tokenSymbol} (${tokenMint.slice(0,8)})`);
+
+    let screenResult;
     try {
-      // Deterministic + safe: verify posisi masih ada di chain sebelum healing.
-      const chainInfo = await getConnection().getAccountInfo(new PublicKey(pos.position_address)).catch(() => null);
-      if (!chainInfo) {
-        // Posisi sudah hilang (manual close / reconciled). Jangan heal ulang.
-        await updatePositionStatus(pos.position_address, 'closed').catch(() => {});
-        await updatePositionLifecycle(pos.position_address, 'closed_reconciled', { force: true }).catch(() => {});
-        continue;
-      }
-
-      const freshPos = getPositionByAddress(pos.position_address);
-      if (!freshPos || freshPos.status !== 'open') continue;
-      if (!['deploying', 'open_partial'].includes(String(freshPos.lifecycle_state || ''))) {
-        // Tidak dalam state partial lagi → tidak perlu healing.
-        continue;
-      }
-
-      await openPosition(
-        pos.pool_address,
-        0,
-        targetSol,
-        10,
-        pos.strategy_used || null,
-        {
-          resumePositionAddress: pos.position_address,
-        },
-      );
-      healed++;
+      screenResult = await screenToken(tokenMint, tokenSymbol, tokenSymbol);
     } catch (e) {
-      failed++;
-      console.warn(`[hunter] Partial heal failed for ${pos.position_address?.slice(0, 8)}: ${e.message}`);
-      await notifyFn?.(
-        `⚠️ <b>Partial Deploy Heal Failed</b>\n` +
-        `Pos: <code>${escapeHTML(shortAddr(pos.position_address))}</code>\n` +
-        `Pool: <code>${escapeHTML(shortAddr(pos.pool_address))}</code>\n` +
-        `Error: <code>${escapeHTML(String(e.message || e))}</code>`
-      ).catch(() => {});
-    } finally {
-      releaseHeal(pos.position_address);
+      console.warn(`[hunter] screenToken error ${tokenMint.slice(0,8)}: ${e.message}`);
+      await sleep(5_000);
+      continue;
     }
+
+    if (!screenResult?.eligible) {
+      console.log(`[hunter] ❌ ${tokenSymbol}: ${screenResult?.verdict || 'FAIL'}`);
+      await sleep(5_000);  // Anti-429: jeda 5 detik antar koin
+      continue;
+    }
+
+    // PASS — cek konfigurasi flat tambahan
+    const passesConfig = checkFlatConfig(pool, cfg);
+    if (!passesConfig.ok) {
+      console.log(`[hunter] ❌ ${tokenSymbol}: config gate — ${passesConfig.reason}`);
+      await sleep(5_000);
+      continue;
+    }
+
+    console.log(`[hunter] ✅ ${tokenSymbol} LOLOS screening!`);
+    winner = pool;
+    break;
   }
 
-  setRuntimeState('hunter-partial-heal-attempts', nextAttemptState);
-  await flushRuntimeState().catch(() => {});
-  return { scanned: healCandidates.length, healed, failed };
-}
-
-export function getCandidates() { return lastCandidates; }
-export function getLastHunterReport() { return lastReport; }
-export function getLastRadarSnapshot() { return lastRadarSnapshot; }
-export function getLastDeploySummary() { return lastDeploySummary; }
-
-const WSOL_MINT = 'So11111111111111111111111111111111111111112';
-
-async function fetchGmgnGateMetrics(tokenMint, seedData = {}) {
-  if (!tokenMint) return null;
-  try {
-    // Use seed data if already extracted from GMGN trending response (avoids extra API call)
-    const hasSeedData = seedData.seedMcap > 0 || seedData.seedVolume24h > 0;
-    const info = hasSeedData ? null : await getGmgnTokenInfo(tokenMint).catch(() => null);
-
-    const volume24h = seedData.seedVolume24h > 0
-      ? seedData.seedVolume24h
-      : safeNum(info?.volume_24h || info?.stat?.volume_24h || 0);
-    const mcap = seedData.seedMcap > 0
-      ? seedData.seedMcap
-      : safeNum(info?.market_cap || info?.fdv || info?.usd_market_cap || 0);
-    const liquidityUsd = seedData.seedLiquidity > 0
-      ? seedData.seedLiquidity
-      : safeNum(info?.liquidity || 0);
-    const pairCreatedAt = seedData.seedCreatedAt != null
-      ? seedData.seedCreatedAt
-      : (() => {
-          const ts = safeNum(info?.created_timestamp || info?.open_timestamp || 0);
-          return ts > 0 ? ts * 1000 : null; // convert seconds → ms
-        })();
-
-    // Return null only when both mcap and volume are completely absent (non-blocking: prefer pass)
-    if (!volume24h && !mcap && !liquidityUsd) return null;
-
-    return {
-      volume24h,
-      mcap,
-      liquidityUsd,
-      txns24h: 0,
-      pairAddress: null,
-      pairAddressFallback: null,
-      meteoraPairAddresses: [],
-      hasMeteoraPair: false,
-      pairCreatedAt,
-      pairName: info?.symbol || seedData.symbol || tokenMint.slice(0, 8),
-    };
-  } catch {
-    return null;
-  }
-}
-
-function extractPrimaryFlag(result) {
-  const first = Array.isArray(result?.highFlags) && result.highFlags.length > 0
-    ? result.highFlags[0]
-    : null;
-  return {
-    rule: first?.rule || null,
-    msg: first?.msg || null,
-  };
-}
-
-function auditScreeningResult(result, context = {}) {
-  try {
-    const primary = extractPrimaryFlag(result);
-    recordScreeningEvent({
-      tokenMint: result?.tokenMint || context.tokenMint || null,
-      tokenSymbol: result?.symbol || context.tokenSymbol || null,
-      tokenName: result?.name || context.tokenName || null,
-      poolAddress: context.poolAddress || null,
-      verdict: result?.verdict || 'UNKNOWN',
-      eligible: result?.eligible === true,
-      primaryRule: primary.rule,
-      primaryMessage: primary.msg,
-      gmgnStatus: result?.gmgnStatus || null,
-      vampedSourceStatus: result?.vampedSourceStatus || null,
-      totalFeesSol: result?.totalFeesSol,
-      totalFeesSource: result?.totalFeesSource || null,
-      sourceContext: context.sourceContext || 'hunter',
-      highFlags: result?.highFlags || [],
-      mediumFlags: result?.mediumFlags || [],
-    }).catch(() => {});
-  } catch {
-    // Audit failure must never break decision path.
-  }
-}
-
-function clamp(value, min, max) {
-  return Math.min(max, Math.max(min, value));
-}
-
-function computeAdaptiveDeployAmount({ cfg, poolInfo, snapshot }) {
-  const baseAmount = safeNum(cfg.deployAmountSol || 0.05);
-  const range24hPct = safeNum(snapshot?.ohlcv?.range24hPct);
-  const volatility = String(snapshot?.ohlcv?.volatilityCategory || '').toUpperCase();
-  const feeApr = safeNum(poolInfo?.feeApr);
-  const tvl = safeNum(poolInfo?.tvl);
-  const volume24h = safeNum(poolInfo?.volume24h);
-  const volumeTvlRatio = tvl > 0 ? volume24h / tvl : 0;
-
-  let multiplier = 1.0;
-
-  if (volatility === 'HIGH' || range24hPct >= 20) multiplier *= 0.55;
-  else if (volatility === 'MEDIUM' || range24hPct >= 10) multiplier *= 0.75;
-
-  if (feeApr >= 250) multiplier *= 1.10;
-  else if (feeApr > 0 && feeApr < 60) multiplier *= 0.85;
-
-  if (volumeTvlRatio > 0 && volumeTvlRatio < 0.75) multiplier *= 0.80;
-  else if (volumeTvlRatio > 3.0 && volatility !== 'HIGH' && range24hPct < 15) multiplier *= 1.05;
-
-  const adjusted = clamp(baseAmount * multiplier, 0.01, baseAmount);
-  return Number(adjusted.toFixed(4));
-}
-
-function aggregateCandlesTo1h(candles = []) {
-  if (!Array.isArray(candles) || candles.length < 4) return [];
-  const out = [];
-  for (let i = 0; i + 3 < candles.length; i += 4) {
-    const group = candles.slice(i, i + 4);
-    out.push({
-      time: group[0].time,
-      open: group[0].open,
-      high: Math.max(...group.map(c => safeNum(c.high))),
-      low: Math.min(...group.map(c => safeNum(c.low))),
-      close: group[group.length - 1].close,
-      volume: group.reduce((s, c) => s + safeNum(c.volume), 0),
-    });
-  }
-  return out.filter((c) => Number.isFinite(c.open) && Number.isFinite(c.close) && c.close > 0);
-}
-
-export function computeEntrySignalsFromCandles(candles15m = [], cfg = {}) {
-  const closed = Array.isArray(candles15m) ? candles15m.slice(0, -1) : [];
-  if (closed.length < 12) {
-    return { ready: false, reason: 'Not enough candles for entry confirmation' };
+  if (!winner) {
+    console.log('[hunter] Tidak ada kandidat lolos. Tunggu 2 menit...');
+    await notify('🔍 <i>Tidak ada kandidat lolos screening. Scan ulang dalam 2 menit.</i>');
+    await sleep(120_000);
+    return;
   }
 
-  const last = closed[closed.length - 1];
-  const prev = closed[closed.length - 2];
-  const open = safeNum(last.open);
-  const close = safeNum(last.close);
-  const high = safeNum(last.high);
-  const isGreen = close > open;
-  const bodyPct = open > 0 ? Math.abs((close - open) / open) * 100 : 0;
-  const upperWick = Math.max(0, high - Math.max(open, close));
-  const bodyAbs = Math.max(Math.abs(close - open), 1e-12);
-  const upperWickBodyRatio = upperWick / bodyAbs;
-
-  const volLookback = Math.max(5, Number(cfg.entryVolumeLookbackCandles || 20));
-  const volWindow = closed.slice(-(volLookback + 1), -1);
-  const avgVolume = volWindow.length > 0
-    ? volWindow.reduce((s, c) => s + safeNum(c.volume), 0) / volWindow.length
-    : 0;
-  const lastVolume = safeNum(last.volume);
-  const volumeRatio = avgVolume > 0 ? lastVolume / avgVolume : 1;
-
-  const breakoutLookback = Math.max(20, Number(cfg.entryBreakoutLookbackCandles || 96));
-  const prePrevWindow = closed.slice(-(breakoutLookback + 2), -2);
-  const prevBreakoutLevel = prePrevWindow.length > 0
-    ? Math.max(...prePrevWindow.map(c => safeNum(c.close)))
-    : safeNum(prev.close);
-  const breakoutPrev = safeNum(prev.close) > prevBreakoutLevel;
-  const breakoutConfirm = breakoutPrev && close > prevBreakoutLevel;
-
-  const htf1h = aggregateCandlesTo1h(closed);
-  let htfTrend = 'NEUTRAL';
-  if (htf1h.length >= 10) {
-    const st1h = calculateSupertrend(htf1h, 10, 3);
-    htfTrend = st1h?.trend || 'NEUTRAL';
-  } else if (htf1h.length >= 2) {
-    const htfPrev = safeNum(htf1h[htf1h.length - 2].close);
-    const htfLast = safeNum(htf1h[htf1h.length - 1].close);
-    if (htfLast > htfPrev) htfTrend = 'BULLISH';
-    else if (htfLast < htfPrev) htfTrend = 'BEARISH';
-  }
-
-  const st15m = calculateSupertrend(closed, 10, 3);
-  const supertrendValue = Number.isFinite(st15m?.value) ? safeNum(st15m.value) : NaN;
-  const lastClose = safeNum(close);
-  const closeAboveSupertrend = Number.isFinite(supertrendValue) ? (lastClose > supertrendValue) : false;
-  const supertrendDistancePct = Number.isFinite(supertrendValue) && supertrendValue > 0
-    ? ((lastClose - supertrendValue) / supertrendValue) * 100
-    : NaN;
-  const maxDistancePct = Math.max(0.1, Number(cfg.entrySupertrendMaxDistancePct || 20));
-  const proximityPass = Number.isFinite(supertrendDistancePct)
-    ? supertrendDistancePct <= maxDistancePct
-    : false;
-  const volumeMomentumPass = volumeRatio >= Math.max(0.5, Number(cfg.entryMinVolumeRatio || 1.5));
-
-  return {
-    ready: true,
-    isGreen,
-    bodyPct,
-    upperWickBodyRatio,
-    volumeRatio,
-    breakoutConfirm,
-    htfTrend,
-    breakoutLevel: prevBreakoutLevel,
-    supertrendTrend: st15m?.trend || 'NEUTRAL',
-    supertrendValue,
-    lastClose,
-    closeAboveSupertrend,
-    supertrendDistancePct,
-    maxDistancePct,
-    proximityPass,
-    volumeMomentumPass,
-  };
-}
-
-// --- Kode Zombie Diamputasi (Baris 43-149) ---
-// Logika evaluasi strategi kini terpusat di src/market/strategyLibrary.js 
-// untuk mencegah dualisme kodingan dan shadowing bug.
-
-// ─── Darwinian Scoring ───────────────────────────────────────────
-// Weights di-load dari signalWeights.js (auto-recalibrated dari data nyata).
-// Fallback ke defaults jika belum ada data.
-
-function calculateDarwinScore(pool, weightsOverride, sentiment = 'NEUTRAL') {
-  const cfg = getConfig();
-  const w = weightsOverride || getDarwinWeights();
-  let score = 0;
-
-  // fee/TVL ratio — strong predictor
-  const tvl = pool.liquidityRaw || pool.tvl || 0;
-  const fees = pool.fees24hRaw || 0;
-  if (tvl > 0 && fees > 0) {
-    const ratio = fees / tvl;
-    const ratioScore = Math.min(ratio / 0.05, 2.0) / 2.0; // 5% ratio = max 1.0
-    score += ratioScore * (w.feeActiveTvlRatio || 3.5);
-  }
-
-  // Maturity Bonus: Beri poin ekstra untuk koin yang sudah terbukti bertahan lama
-  if (pool.createdAt) {
-    const ageHours = (Date.now() - new Date(pool.createdAt).getTime()) / (1000 * 60 * 60);
-    if (ageHours > 24) {
-      score += 1.0; // Bonus +1.0 untuk koin berumur > 24 jam
-      if (process.env.HUNTER_DEBUG) console.log(`[hunter] Maturity Bonus for ${pool.name}: +1.0`);
-    }
-  }
-
-  // volume — near floor, de-emphasize
-  const vol = pool.volume24hRaw || 0;
-  if (vol > 0) {
-    score += Math.min(vol / 500000, 1.0) * (w.volume || 0.36);
-  }
-
-  // mcap proxy via TVL
-  if (tvl > 0) {
-    const mcapScore = tvl < 10000 ? 0.2 : tvl < 50000 ? 0.5 : tvl < 100000 ? 0.8 : 1.0;
-    score += mcapScore * (w.mcap || 2.5);
-  }
-
-  // holderCount
-  score += 0.3 * (w.holderCount || 0.3);
-
-  // multiTFScore — bonus jika tersedia (di-set saat enrichment)
-  if (pool.multiTFScore > 0) {
-    score += pool.multiTFScore * (w.multiTFScore || 1.5);
-  }
-
-  // Bin step performance boost — pools whose bin step histori paling banyak fee
-  const binStepBoost = getDarwinBinStepBoost(pool.binStep);
-  if (binStepBoost !== 1.0) score *= binStepBoost;
-
-  // Technical Confluence Filter: Slash score if trend is bearish
-  const isGlobalBullish = sentiment === 'BULLISH';
-  if (pool.multiTFScore > 0 && pool.multiTFScore < 0.4) {
-    if (!isGlobalBullish) {
-      score *= 0.5;
-    } else {
-      score *= 0.95;
-    }
-  }
-
-  return parseFloat(score.toFixed(4));
-}
-
-const HUNTER_TOOLS = [
-  {
-    name: 'screen_pools',
-    description: 'Screen pool Meteora DLMM terbaik berdasarkan threshold yang dikonfigurasi',
-    input_schema: {
-      type: 'object',
-      properties: {
-        limit: { type: 'number', description: 'Jumlah kandidat (default 10)' },
-      },
-      required: [],
-    },
-  },
-  {
-    name: 'get_pool_detail',
-    description: 'Ambil detail pool + rekomendasi strategi berdasarkan kondisi market saat ini',
-    input_schema: {
-      type: 'object',
-      properties: {
-        pool_address: { type: 'string' },
-      },
-      required: ['pool_address'],
-    },
-  },
-  {
-    name: 'screen_token',
-    description: 'WAJIB sebelum deploy. Filter token via Coin Filter: GMGN security, Birdeye/Jupiter market data, holder check, token safety.',
-    input_schema: {
-      type: 'object',
-      properties: {
-        token_mint: { type: 'string' },
-        token_name: { type: 'string' },
-        token_symbol: { type: 'string' },
-      },
-      required: ['token_mint'],
-    },
-  },
-  {
-    name: 'get_wallet_status',
-    description: 'Cek balance wallet dan jumlah posisi terbuka saat ini',
-    input_schema: { type: 'object', properties: {}, required: [] },
-  },
-  {
-    name: 'get_pool_memory',
-    description: 'Cek histori deploy sebelumnya di pool ini — win rate, avg PnL, range efficiency, close reason dominan. Gunakan sebelum deploy untuk hindari pool dengan histori buruk.',
-    input_schema: {
-      type: 'object',
-      properties: {
-        pool_address: { type: 'string' },
-      },
-      required: ['pool_address'],
-    },
-  },
-  {
-    name: 'deploy_position',
-    description: 'Deploy likuiditas ke pool. Jumlah token dihitung otomatis dari strategi dan config. Hanya boleh dipanggil setelah screen_token verdict PASS atau CAUTION.',
-    input_schema: {
-      type: 'object',
-      properties: {
-        pool_address: { type: 'string' },
-        strategy_name: { type: 'string', description: 'Nama strategi dari Strategy Library' },
-        dev_address: { type: 'string', description: 'Alamat deployer koin (diambil dari screen_token)' },
-        reasoning: { type: 'string', description: 'Alasan memilih pool dan strategi ini (DLMM-specific: fee APR, range fit, volatilitas)' },
-      },
-      required: ['pool_address', 'reasoning'],
-    },
-  },
-  {
-    name: 'run_evolution',
-    description: 'Trigger autonomous evolution cycle untuk kalibrasi ulang threshold config berdasarkan performa trade terakhir.',
-    input_schema: { type: 'object', properties: {}, required: [] },
-  },
-];
-
-// ─── Tool execution ──────────────────────────────────────────────
-
-async function executeTool(name, input) {
-  // Global Marker
-  console.log(`[hunter] Rebirth Engine v3.0 Unified — Tool: ${name}`);
-
-  switch (name) {
-
-    case 'screen_pools': {
-      const limit = input.limit || 10;
-      const thresholds = getThresholds();
-      const weights = getDarwinWeights();
-
-      const cfg = getConfig();
-      // ── LP Agent: discover top pools (1 API call, cached 10 menit) ──
-      // Berjalan paralel dengan getTopPools untuk hemat waktu
-      const [primaryPools, lpAgentPools] = await Promise.allSettled([
-        getTopPools(limit * 3),
-        isLPAgentEnabled()
-          ? lpAgentDiscoverPools({
-            pageSize: 50,
-            vol24hMin: cfg.minVolume24h,
-            organicScoreMin: cfg.minOrganic,
-            binStepMin: cfg.minBinStep,
-            binStepMax: 125,
-            feeTVLInterval: '1h',
-          })
-          : Promise.resolve([]),
-      ]);
-
-      const rawPrimary = primaryPools.status === 'fulfilled' ? (primaryPools.value || []) : [];
-      const rawLP = lpAgentPools.status === 'fulfilled' ? (lpAgentPools.value || []) : [];
-
-      // Merge LP Agent pools that are not already returned by the primary pool source.
-      const primaryAddresses = new Set(rawPrimary.map(p => p.address));
-      const lpAgentOnly = rawLP.filter(p => p.address && !primaryAddresses.has(p.address)).map(p => ({
-        address: p.address,
-        name: p.name || p.tokenXSymbol ? `${p.tokenXSymbol}-SOL` : '',
-        tokenX: p.tokenX,
-        tokenY: p.tokenY,
-        tvl: p.tvl,
-        fees24hRaw: p.vol24h * (p.feeTVLRatio || 0),
-        binStep: p.binStep,
-        _fromLPAgent: true,
-      }));
-      const combined = [...rawPrimary, ...lpAgentOnly];
-
-      // ── Satu call enrichment LP Agent untuk semua kandidat ──
-      // enrich pools SETELAH merge, zero extra API calls (pakai cache)
-      const allAddresses = combined.map(p => p.address).filter(Boolean);
-      const lpEnrichMap = isLPAgentEnabled()
-        ? await lpAgentEnrichPools(allAddresses).catch(() => ({}))
-        : {};
-
-      // Filter dasar — binStep difilter via allowlist dari active strategy (dynamic)
-      const activeStrat = getStrategy(cfg.activeStrategy || 'Evil Panda');
-      const allowedBinSteps = (Array.isArray(cfg.allowedBinSteps) && cfg.allowedBinSteps.length > 0)
-        ? cfg.allowedBinSteps
-        : (activeStrat?.allowedBinSteps || [100, 125]);
-      const preFiltered = combined.filter(p => {
-        const fees = p.fees24hRaw || 0;
-        const volume24h = p.volume24hRaw || 0;
-        const binStep = p.binStep || 0;
-
-        // Fokus filter dipindah ke kualitas token (GMGN + market data), bukan TVL/Liquidity gate.
-        const minVolume24h = thresholds.minVolume24h || cfg.minVolume24h || 0;
-        const volumePasses = minVolume24h <= 0 || volume24h >= minVolume24h;
-
-        // 🏰 HERITAGE FILTER v76.0 (Kecerdasan Sultan)
-        const minTotalFeesSol = cfg.gmgnMinTotalFeesSol || 30.0;
-        const heritageMode = cfg.heritageModeEnabled !== false;
-
-        const isMomentumPass = true;
-        const isHeritagePass = heritageMode && (p.totalFeesEstimated >= minTotalFeesSol);
-
-        // 🐼 EVIL PANDA GATE 1: Pool age <72h (freshness edge)
-        const maxPoolAgeDays = cfg.maxPoolAgeDays ?? 3;
-        const poolAgeHours = p.createdAt
-          ? (Date.now() - new Date(p.createdAt).getTime()) / (1000 * 60 * 60)
-          : null;
-        const agePasses = poolAgeHours === null || poolAgeHours <= maxPoolAgeDays * 24;
-
-        return (
-          allowedBinSteps.includes(binStep) &&
-          volumePasses &&
-          agePasses &&
-          (isMomentumPass || isHeritagePass) &&
-          !isOnCooldown(p.address)
-        );
-      }).map(p => {
-        const isMomentumPass = true;
-        const isHeritagePass = (cfg.heritageModeEnabled !== false) && (p.totalFeesEstimated >= (cfg.gmgnMinTotalFeesSol || 30.0));
-
-        return {
-          ...p,
-          isHeritageMatch: isHeritagePass && !isMomentumPass,
-          heritageStatus: isHeritagePass ? 'HERITAGE_SULTAN' : 'MOMENTUM_ONLY'
-        };
-      });
-
-      // Wash Trading Gate: veto pools where fees24h/volume24h < 0.2% (cyclic self-trading signal)
-      const { clean: washClean, vetoed: washVetoed } = filterWashTrading(preFiltered);
-      if (washVetoed.length > 0) {
-        console.warn(`[hunter] WASH_TRADE_VETO: ${washVetoed.length} pool(s) removed — ${washVetoed.map(p => `${p.name || p.address?.slice(0,8)} (${(p.washTradeVeto.feeVolumeRatio * 100).toFixed(4)}%)`).join(', ')}`);
-      }
-
-      // Enrich: multi-TF + smart wallet + LP Agent data (parallel, best-effort)
-      const enriched = await Promise.all(washClean.map(async p => {
-        let multiTFScore = 0;
-        let smartWalletSignal = null;
-        let poolMemCtx = '';
-        let marketSent = 'NEUTRAL';
-        try {
-          const [mtf, sw, sent] = await Promise.allSettled([
-            getMultiTFScore(p.tokenX, p.address),
-            checkSmartWalletsOnPool(p.address),
-            getSentiment(p.tokenX || p.tokenY)
-          ]);
-          if (mtf.status === 'fulfilled') multiTFScore = mtf.value.score || 0;
-          if (sw.status === 'fulfilled' && sw.value.found) smartWalletSignal = sw.value;
-          if (sent.status === 'fulfilled' && sent.value) marketSent = sent.value.sentiment || 'NEUTRAL';
-          poolMemCtx = getPoolMemoryContext(p.address);
-        } catch { /* best-effort */ }
-
-        const lpData = lpEnrichMap[p.address] || { inLPAgentList: false };
-
-        return {
-          ...p,
-          multiTFScore,
-          marketSentiment: marketSent,
-          smartWallet: smartWalletSignal
-            ? { found: true, wallets: smartWalletSignal.matches.map(m => m.label), confidence: smartWalletSignal.confidence }
-            : null,
-          poolMemory: poolMemCtx || undefined,
-          lpAgent: lpData,   // { inLPAgentList, organicScore, feeTVLRatioLP, vol24hLP }
-          darwinScore: calculateDarwinScore({ ...p, multiTFScore }, weights, marketSent),
-          feeToTvlRatio: (() => {
-            const tvl = parseTvl(p.tvlStr || p.tvl || 0);
-            return tvl > 0 ? ((p.fees24hRaw || 0) / tvl).toFixed(4) : '0';
-          })(),
-        };
-      }));
-
-      // ─── Deduplication (Layer 7) ───────────────────────────────
-      // Jika koin yang sama punya > 1 pool (misal 100 vs 125),
-      // ambil yang volume24hRaw tertinggi — kolam paling ramai = spread fee terbaik.
-      const tokenMap = new Map(); // tokenMint -> bestPool (highest 24h volume)
-      for (const p of enriched) {
-        const mint = p.tokenX || p.tokenY;
-        const currentVol = Number(p.volume24hRaw || 0);
-        const existing = tokenMap.get(mint);
-
-        if (!existing || currentVol > Number(existing.volume24hRaw || 0)) {
-          tokenMap.set(mint, p);
-        }
-      }
-
-      // Re-sort berdasarkan Darwin Score (yang sudah include TVL/Fee logic)
-      const filtered = Array.from(tokenMap.values())
-        .sort((a, b) => b.darwinScore - a.darwinScore)
-        .slice(0, limit);
-
-      lastCandidates = filtered;
-
-      const lpNote = isLPAgentEnabled()
-        ? `LP Agent: ${rawLP.length} pools discovered, ${lpAgentOnly.length} tambahan baru, enrich ${allAddresses.length} pool.`
-        : 'LP Agent: disabled (LP_AGENT_API_KEY tidak diset).';
-
-      // Trim kandidat — hapus field verbose yang tidak dibutuhkan LLM untuk keputusan
-      const trimmedCandidates = filtered.map(p => ({
-        address: p.address,
-        name: p.name || '',
-        binStep: p.binStep,
-        tvl: typeof p.tvl === 'number' ? Math.round(p.tvl) : p.tvlStr,
-        fees24h: p.fees24hRaw ? parseFloat(p.fees24hRaw.toFixed(2)) : undefined,
-        feeToTvlRatio: p.feeToTvlRatio,
-        darwinScore: p.darwinScore ? parseFloat(p.darwinScore.toFixed(3)) : undefined,
-        multiTFScore: p.multiTFScore || undefined,
-        smartWallet: p.smartWallet || undefined,
-        poolMemory: p.poolMemory || undefined,
-        lpAgent: p.lpAgent?.inLPAgentList
-          ? { organicScore: p.lpAgent.organicScore, feeTVLRatioLP: p.lpAgent.feeTVLRatioLP }
-          : undefined,
-      }));
-
-      return JSON.stringify({
-        note: `Sorted by darwinScore. Pool cooldown difilter. ${lpNote}`,
-        candidates: trimmedCandidates,
-      }, null, 2);
-    }
-
-    case 'get_pool_detail': {
-      const info = await getPoolInfo(input.pool_address);
-      if (!info) {
-        return JSON.stringify({ error: 'Pool tidak ditemukan atau RPC gagal. Coba pool lain.' }, null, 2);
-      }
-      let strategyMatch = null;
-      let dlmmSnapshot = null;
-
-      // Retry logic for market snapshot
-      for (let i = 0; i < 3; i++) {
-        try {
-          dlmmSnapshot = await getMarketSnapshot(info.tokenX, input.pool_address);
-          strategyMatch = matchStrategyToMarket(dlmmSnapshot);
-          break;
-        } catch (e) {
-          if (i === 2) console.warn(`[hunter] Failed to get snapshot after 3 retries: ${e.message}`);
-          await new Promise(r => setTimeout(r, 500));
-        }
-      }
-
-      const pool = dlmmSnapshot?.pool;
-      const price = dlmmSnapshot?.price;
-
-      return JSON.stringify({
-        poolInfo: info,
-        dlmmEconomics: pool ? {
-          feeApr: `${pool.feeApr}% (${pool.feeAprCategory})`,
-          feeVelocity: pool.feeVelocity,
-          feeTvlRatioPct: `${(pool.feeTvlRatio * 100).toFixed(3)}%/hari`,
-          tvl: pool.tvl,
-          volume24h: pool.volume24h,
-          healthScore: dlmmSnapshot?.healthScore,
-          eligible: pool.feeAprCategory !== 'LOW' && pool.feeTvlRatio > 0.01,
-        } : null,
-        priceContext: price ? {
-          trend: price.trend,
-          momentumM5: price.priceChangeM5,
-          volatility: `${price.volatility24h}% (${price.volatilityCategory})`,
-          // binStepFit: Defensive implementation v61.2
-          binStepFit: info.binStep >= (price.suggestedBinStepMin || 1) ? 'OK' : `⚠️ Butuh bin step ≥${price.suggestedBinStepMin || 1}`,
-          buyPressure: `${price.buyPressurePct}% (${price.sentiment})`,
-        } : null,
-        strategyRecommendation: strategyMatch ? {
-          recommended: strategyMatch.recommended?.name || 'Evil Panda',
-          confidence: strategyMatch.recommended?.matchScore,
-          entryConditions: 'm5 Momentum + h1 Trend Alignment',
-          exitConditions: 'Evil Panda Confluence',
-        } : null,
-        validStrategyNames: ['Evil Panda'],
-      }, null, 2);
-    }
-
-    case 'screen_token': {
-      if (hunterNotifyFn) {
-        const label = input.token_symbol || input.token_name || input.token_mint.slice(0, 8);
-        await hunterNotifyFn(`🔬 <b>Coin Filter</b>: Screening <code>${escapeHTML(label)}</code>...`);
-      }
-      const result = await screenToken(
-        input.token_mint,
-        input.token_name || '',
-        input.token_symbol || ''
-      );
-      auditScreeningResult(result, {
-        tokenMint: input.token_mint || null,
-        tokenName: input.token_name || null,
-        tokenSymbol: input.token_symbol || null,
-        sourceContext: 'hunter_tool_screen_token',
-      });
-
-      // Kirim hasil ke user untuk semua verdict:
-      // - AVOID  → user perlu tahu kenapa ditolak
-      // - CAUTION → user perlu tahu warning sebelum deploy
-      // - PASS   → user perlu konfirmasi GMGN clean sebelum deploy
-      if (hunterNotifyFn) {
-        const prefix = result.verdict === 'AVOID'
-          ? '🚫 <b>Token Ditolak</b>'
-          : result.verdict === 'CAUTION'
-            ? '⚠️ <b>Token CAUTION</b>'
-            : '✅ <b>Token Lolos Screening</b>';
-        await hunterNotifyFn(`${prefix}\n\n${formatScreenResult(result)}`);
-      }
-
-      return JSON.stringify({
-        verdict: result.verdict,
-        eligible: result.eligible,
-        highFlags: (result.highFlags || []).map(f => f.msg),
-        mediumFlags: (result.mediumFlags || []).map(f => f.msg),
-        gmgnStatus: result.gmgnStatus || 'UNKNOWN',
-        gmgnFallbackFeesUsed: result.gmgnFallbackFeesUsed === true,
-        gmgnIssues: (result.gmgnRejects || []).map(f => f.msg),
-        tokenAgeMinutes: result.tokenAgeMinutes,
-        priceImpact: result.priceImpact,
-        sources: result.sources,
-        action: result.verdict === 'AVOID'
-          ? 'SKIP — cari kandidat lain'
-          : 'LANJUT DEPLOY — jumlah token dihitung otomatis',
-      }, null, 2);
-    }
-
-    case 'get_wallet_status': {
-      const cfg = getConfig();
-      const balance = await getWalletBalance();
-      const openPos = getOpenPositions();
-      const maxCap = Number.isFinite(_hunterMaxPositionsCap) ? _hunterMaxPositionsCap : cfg.maxPositions;
-      // Jika run dari /entry dengan targetCount, hitung batas berdasarkan posisi yang akan dibuka
-      const effectiveMax = _hunterTargetCount != null
-        ? Math.min(openPos.length + _hunterTargetCount, maxCap)
-        : maxCap;
-      const minReserve = cfg.gasReserve || 0.05;
-      const totalRequired = cfg.deployAmountSol + minReserve;
-
-      return stringify({
-        solBalance: balance,
-        openPositions: openPos.length,
-        maxPositions: effectiveMax,
-        targetCount: _hunterTargetCount,
-        canOpen: safeNum(balance) >= totalRequired && openPos.length < effectiveMax,
-        requiredSol: safeNum(totalRequired.toFixed(4)),
-        gasReserve: minReserve,
-        notes: safeNum(balance) < totalRequired ? `⚠️ Saldo SOL kurang untuk Gas Reserve (${minReserve} SOL)` : 'OK',
-      }, 2);
-    }
-
-    case 'get_pool_memory': {
-      const stats = getPoolStats(input.pool_address);
-      if (!stats) {
-        return stringify({ firstTime: true, message: 'Belum pernah deploy ke pool ini.' }, 2);
-      }
-      const verdict = stats.winRate < 40
-        ? 'HINDARI — win rate rendah, histori buruk di pool ini'
-        : stats.winRate < 60
-          ? 'HATI-HATI — win rate di bawah rata-rata'
-          : 'OK — histori positif di pool ini';
-      return stringify({ ...stats, verdict }, 2);
-    }
-
-    case 'deploy_position': {
-      // ── Initialization (Top-level scope to prevent ReferenceError) ──
-      const cfg = getConfig();
-      let deployOptions = {};
-      let strategyEval = null;
-      let targetPriceRangePct = 10;
-      let result = null;
-
-      // ── Guard: cegah deploy duplikat ke pool yang sama ──────────
-      let existingPositions = getOpenPositions();
-      const existingForPool = existingPositions.find(p => p.pool_address === input.pool_address);
-      if (existingForPool) {
-        // Ada di DB — verifikasi on-chain dulu. DB bisa stale jika position ditutup
-        // di luar bot (manual close, expired, dll) tanpa DB di-update.
-        let accountExists = true;
-        try {
-          const conn = getConnection();
-          const pubkey = new PublicKey(existingForPool.position_address);
-          const info = await conn.getAccountInfo(pubkey);
-          accountExists = info !== null;
-        } catch { /* best-effort — kalau gagal, anggap masih ada (safe default) */ }
-
-        if (!accountExists) {
-          // Account sudah tidak ada on-chain → DB stale → bersihkan dan izinkan deploy baru
-          console.log(`[hunter] DB stale: posisi ${existingForPool.position_address} tidak ada on-chain, bersihkan dan izinkan re-deploy`);
-          try {
-            await closePositionWithPnl(existingForPool.position_address, {
-              pnlUsd: 0, pnlPct: 0, feesUsd: 0, pnlSol: 0, feesSol: 0, closeReason: 'MANUAL_CLOSE', lifecycleState: 'closed_reconciled',
-            });
-          } catch { /* best-effort */ }
-          // Re-fetch setelah cleanup agar slot count akurat
-          existingPositions = getOpenPositions();
-          // Tidak return di sini — lanjut ke deploy baru di bawah
-        } else {
-          // Posisi benar-benar masih ada on-chain → tolak duplikat
-          return JSON.stringify({
-            success: true,
-            alreadyDeployed: true,
-            positionAddress: existingForPool.position_address,
-            pool_address: input.pool_address,
-            strategyUsed: existingForPool.strategy_used,
-            note: 'SUDAH_ADA — skip diam-diam, lanjut kandidat berikutnya.',
-          }, null, 2);
-        }
-      }
-
-      // NOTE: Database-level lock in executeControlledOperation handles duplicate guard per pool.
-
-      // ── Guard: slot posisi penuh ─────────────────────────────────
-      const maxCap = Number.isFinite(_hunterMaxPositionsCap) ? _hunterMaxPositionsCap : cfg.maxPositions;
-      const effectiveMaxPos = _hunterTargetCount != null
-        ? Math.min(existingPositions.length + _hunterTargetCount, maxCap)
-        : maxCap;
-      if (existingPositions.length >= effectiveMaxPos) {
-        return JSON.stringify({
-          blocked: true,
-          reason: `Slot penuh (${existingPositions.length}/${effectiveMaxPos}) — tidak bisa deploy lagi.`,
-        }, null, 2);
-      }
-
-      // ── Semua validasi di sini — SEBELUM lock + "Deploying..." ──────
-      // "Deploying..." hanya dikirim kalau semua cek lulus dan TX benar-benar
-      // akan dieksekusi. Kalau ada yang block, user tidak dapat notif palsu.
-
-      // Safety: max drawdown (sinkron — cek dulu sebelum fetch API)
-      const drawdown = checkMaxDrawdown();
-      if (drawdown.triggered) {
-        return stringify({ blocked: true, reason: drawdown.reason }, 2);
-      }
-
-      // ── Auto-calculate position sizing ──────────────────────────
-      let deployAmountSol = cfg.deployAmountSol || 0.1;
-      const tokenXAmount = 0;
-      let tokenYAmount = deployAmountSol;
-
-      // Ambil pool info + validasi sebelum lock
-      const poolInfo = await getPoolInfo(input.pool_address);
-      if (!poolInfo) {
-        return JSON.stringify({
-          blocked: true,
-          reason: 'Gagal fetch pool info — RPC tidak merespons atau pool tidak valid. Coba lagi.',
-        }, null, 2);
-      }
-
-      // Guard: hanya deploy ke pool TOKEN/SOL
-      const WSOL_MINT = 'So11111111111111111111111111111111111111112';
-      if (poolInfo.tokenY !== WSOL_MINT) {
-        return JSON.stringify({
-          blocked: true,
-          reason: `Pool tokenY bukan WSOL (${poolInfo.tokenYSymbol || poolInfo.tokenY?.slice(0, 8)}) — bot hanya deploy ke pool TOKEN/SOL. Skip pool ini.`,
-        }, null, 2);
-      }
-
-      // Guard: Liquidity Dominance — prevent bot from becoming the dominant LP
-      // Dominant LP = price can be manipulated against the position, amplifying IL
-      const poolTvlUsd = safeNum(poolInfo?.tvl);
-      if (poolTvlUsd > 0) {
-        const solPriceUsd   = await getSolPriceUsd().catch(() => 150);
-        const deployUsd     = deployAmountSol * solPriceUsd;
-        const dominancePct  = (deployUsd / poolTvlUsd) * 100;
-        const maxDominance  = cfg.maxLpDominancePct ?? 20;
-        if (dominancePct > maxDominance) {
-          return JSON.stringify({
-            blocked: true,
-            reason: `Liquidity dominance terlalu tinggi: ${dominancePct.toFixed(1)}% (max ${maxDominance}%). Deploy ~$${deployUsd.toFixed(0)} ke pool TVL $${poolTvlUsd.toFixed(0)} akan membuat bot jadi LP dominan — risiko manipulasi harga tinggi.`,
-          }, null, 2);
-        }
-      }
-
-      // ── Guard: Real-Time Small Pond CE Re-check (GMGN Fresh Mcap) ──
-      // Stale Mcap from screening can be 1-5 min old — for new tokens that's meaningless.
-      // Re-fetch live Mcap from GMGN right now before committing capital.
-      {
-        const gmgnInfo = await getGmgnTokenInfo(poolInfo.tokenX).catch(() => null);
-        const freshMcap = safeNum(
-          gmgnInfo?.usd_market_cap || gmgnInfo?.market_cap || gmgnInfo?.fdv
-        );
-        const ceLimit = cfg.maxTvlMcapRatio ?? 0.20;
-        if (freshMcap > 0 && poolTvlUsd > 0) {
-          const freshRatio = poolTvlUsd / freshMcap;
-          if (freshRatio > ceLimit) {
-            return JSON.stringify({
-              blocked: true,
-              reason: `Small Pond Guard (GMGN live): TVL/Mcap ${(freshRatio * 100).toFixed(1)}% > ${(ceLimit * 100).toFixed(0)}% — fee terlalu terdilusi. TVL $${poolTvlUsd.toFixed(0)}, Mcap GMGN $${freshMcap.toLocaleString()}. Skip.`,
-              policy: 'CE_REALTIME_REJECT',
-            }, null, 2);
-          }
-          console.log(`[SHARK] CE re-check OK (GMGN live): TVL/Mcap ${(freshRatio * 100).toFixed(1)}% ≤ ${(ceLimit * 100).toFixed(0)}% — pool layak.`);
-        }
-      }
-
-      // Strategy validation sebelum lock — hardlocked ke Evil Panda, tidak ada strategi lain.
-      const strategy = getStrategy('Evil Panda');
-
-      if (!strategy) {
-        return JSON.stringify({
-          blocked: true,
-          reason: `Strategi "${input.strategy_name}" tidak ditemukan di database atau baseline.`,
-        }, null, 2);
-      }
-
-      // ── Guard: binStep Enforcement (Sentinel v61) ──────────────
-      if (strategy.allowedBinSteps && !strategy.allowedBinSteps.includes(poolInfo.binStep)) {
-        return JSON.stringify({
-          blocked: true,
-          reason: `Pool binStep (${poolInfo.binStep}) tidak dijinkan untuk strategi ${strategy.name}. Diperlukan: [${strategy.allowedBinSteps.join(', ')}].`,
-        }, null, 2);
-      }
-
-      // ── Guard: Dev Correlation Filter (Intelligence v1.0) ──────
-      const devAddr = input.dev_address || null;
-      if (devAddr) {
-        const activeDevs = getOpenPositions().map(p => p.dev_address).filter(Boolean);
-        if (activeDevs.includes(devAddr)) {
-          return JSON.stringify({
-            blocked: true,
-            reason: `CORRELATION RISK: Deployer \`${devAddr.slice(0, 8)}...\` sudah memiliki posisi aktif di bot ini. Melewati pool ini untuk menghindari risiko sistemik satu dev.`,
-          }, null, 2);
-        }
-      }
-
-      // ── Guard: Gas Vault & Balance Check (atomic) ──────────────
-      const walletBalance = await getWalletBalance();
-      const gasReserve = cfg.gasReserve || 0.025; // Aegis-level reserve
-      // Each open position needs ~0.004 SOL gas buffer to close (tx fees + account rent).
-      const existingCount = getOpenPositions().length;
-      const closeGasBuffer = existingCount * 0.004;
-      const minRequired = (deployAmountSol || 0.1) + gasReserve + closeGasBuffer;
-      if (safeNum(walletBalance) < minRequired) {
-        return JSON.stringify({
-          blocked: true,
-          reason: `Saldo SOL tidak cukup (${walletBalance.toFixed(4)} SOL). Butuh ${minRequired.toFixed(4)} SOL (Deploy: ${(deployAmountSol || 0.1).toFixed(4)} + Reserve: ${gasReserve} + CloseBuffer: ${closeGasBuffer.toFixed(4)} untuk ${existingCount} posisi).`,
-        }, null, 2);
-      }
-
-      const stratParams = parseStrategyParameters(strategy);
-      const strategyType = strategy?.type || 'spot';
-      const strategyProfile = getStrategy(strategy.name);
-      deployOptions = { ...(strategyProfile?.parameters || {}), ...(strategyProfile?.deploy || {}) };
-      strategyEval = null;
-      let snapshot = null;
-
-      try {
-        snapshot = await getMarketSnapshot(poolInfo.tokenX, input.pool_address);
-
-        const isEvilPanda = strategy.name === 'Evil Panda';
-
-        if (!isEvilPanda) {
-          // BEAR_DEFENSE and failSafe checks — bypassed for Evil Panda (predator mode).
-          const regimeInfo = classifyMarketRegime(snapshot);
-          if (regimeInfo?.regime === 'BEAR_DEFENSE') {
-            return JSON.stringify({
-              blocked: true,
-              reason: `Regime ${regimeInfo.regime}: ${regimeInfo.notes || 'market bearish-defense mode'}. Entry di-skip.`,
-              policy: 'REGIME_BEAR_DEFENSE',
-              regime: regimeInfo,
-            }, null, 2);
-          }
-          const failSafeEnabled = cfg.failSafeModeOnDataUnreliable !== false;
-          const dataReliable = snapshot?.quality?.dataReliable !== false;
-          const taReliable = snapshot?.quality?.taReliable === true;
-          const taSource = snapshot?.quality?.taSource || snapshot?.ta?.supertrend?.source || 'unknown';
-          if (failSafeEnabled && (!dataReliable || !taReliable)) {
-            const issueText = (snapshot?.quality?.issues || []).join(' | ') || 'oracle snapshot unreliable';
-            const taIssue = !taReliable
-              ? `TA reliability belum memenuhi syarat (source=${taSource}, minConf=${snapshot?.quality?.minTaConfidence ?? 'n/a'}).`
-              : '';
-            return JSON.stringify({
-              blocked: true,
-              reason: `Fail-safe aktif: data market/TA belum reliable untuk entry. ${issueText} ${taIssue}`.trim(),
-              policy: 'FAIL_SAFE_UNRELIABLE_DATA',
-            }, null, 2);
-          }
-          // Non-Evil-Panda: scale deploy amount adaptively.
-          deployAmountSol = computeAdaptiveDeployAmount({ cfg, poolInfo, snapshot });
-          tokenYAmount = deployAmountSol;
-        } else {
-          // Evil Panda: full capital commitment — no adaptive scaling, no regime gate.
-          deployAmountSol = safeNum(cfg.deployAmountSol) || 0.1;
-          tokenYAmount = deployAmountSol;
-          console.log(`[SHARK] Evil Panda predator mode — deploy 100% config amount: ${deployAmountSol} SOL`);
-        }
-        strategyEval = await libEvaluateReadiness({
-          strategyName: strategy.name,
-          poolAddress: input.pool_address,
-          snapshot,
-          binStep: poolInfo.binStep,
-          activeBinId: poolInfo.activeBinId,
-        });
-        // Merge dynamic market-based options (e.g., adaptive fixedBinsBelow)
-        if (strategyEval?.deployOptions) {
-          deployOptions = { ...deployOptions, ...strategyEval.deployOptions };
-        }
-        // T1.4: Per-pool slippage at deploy time, not hardcoded strategy default.
-        // Nascent pools (< 1h) have extreme volatility — conservative slippage always reverts.
-        const vol24h = snapshot?.price?.volatility24h || 0;
-        const poolAgeHours = poolInfo.createdAt
-          ? (Date.now() - new Date(poolInfo.createdAt).getTime()) / (1000 * 60 * 60)
-          : null;
-        const isNascentPool = Number.isFinite(poolAgeHours) && poolAgeHours < 1;
-        if (isNascentPool) {
-          deployOptions.slippageBps = 750; // 7.5% anti-revert for hyper-volatile new pools
-          console.log(`[SHARK] Nascent pool (${poolAgeHours.toFixed(2)}h) — slippage forced 750bps (7.5%)`);
-        } else {
-          deployOptions.slippageBps = getConservativeSlippage(vol24h);
-        }
-      } catch (e) {
-        console.warn(`[hunter] Market evaluation failed for ${input.pool_address}:`, e.message);
-      }
-
-      if (strategyEval && !strategyEval.ok) {
-        return JSON.stringify({
-          blocked: true,
-          reason: `Strategy ${strategy.name} tidak valid untuk kondisi saat ini: ${strategyEval.blockers.join(' | ')}`,
-          strategyNotes: strategyEval.notes,
-        }, null, 2);
-      }
-
-      // Dynamic range — strategyEval.deployOptions sudah di-merge ke deployOptions di atas.
-      // Fallback: deployOptions.priceRangePct → strategy params → generic 10%.
-      targetPriceRangePct = deployOptions?.priceRangePct ?? stratParams.priceRangePercent ?? 10;
-
-      // LPer Retest Mode: enforce one-sided SOL + SPOT metadata and map bin placement near ST support.
-      // This metadata is non-breaking and helps keep deploy semantics explicit.
-      const modeNow = String(getConfig().entryGateMode || 'lper_retest');
-      deployOptions = {
-        ...deployOptions,
-        entryGateMode: modeNow,
-        lperPositionType: 'one-sided',
-        lperBaseToken: 'SOL',
-        lperShape: 'SPOT',
-      };
-
-      const currentPrice = Number(snapshot?.price?.current || snapshot?.price?.price || 0);
-      const stSupport = Number(snapshot?.ta?.supertrend?.value || 0);
-      const binPct = Number(poolInfo?.binStep || 0) / 100;
-      if (!Number.isFinite(deployOptions.fixedBinsBelow) && Number.isFinite(currentPrice) && currentPrice > 0 && Number.isFinite(stSupport) && stSupport > 0 && Number.isFinite(binPct) && binPct > 0) {
-        const stDistancePct = ((currentPrice - stSupport) / stSupport) * 100;
-        if (stDistancePct > 0) {
-          const binsTowardSupport = Math.max(2, Math.min(250, Math.ceil((stDistancePct / binPct) + 2)));
-          deployOptions.fixedBinsBelow = binsTowardSupport;
-          deployOptions.binPadding = -1;
-        }
-      }
-
-      // Strategy vs pool warning (non-blocking)
-      try {
-        const validation = validateStrategyForMarket(strategyType, poolInfo);
-        if (!validation.valid && strategy.name === 'Evil Panda') {
-          return JSON.stringify({
-            blocked: true,
-            reason: `Strategy ${strategy.name} diblokir oleh LP market validation: ${validation.warning}`,
-            recommendation: validation.recommendation,
-          }, null, 2);
-        }
-        if (!validation.valid && hunterNotifyFn) {
-          await hunterNotifyFn(`⚠️ <b>Strategy Warning</b>\n\n${escapeHTML(validation.warning)}`);
-        }
-      } catch { /* skip */ }
-
-      // ── Semua validasi lulus — sekarang kirim "Deploying..." ──
-
-      if (hunterNotifyFn) {
-        await hunterNotifyFn(
-          `⚡ <b>Deploying...</b>\n` +
-          `Pool: <code>${escapeHTML(input.pool_address.slice(0, 8))}...</code>\n` +
-          `Strategi: <b>${escapeHTML(strategy.name)}</b>\n` +
-          `Range: ${targetPriceRangePct.toFixed(1)}%\n` +
-          `<i>${escapeHTML((deployOptions.technicalReasoning || input.reasoning || '').slice(0, 150))}</i>`
-        );
-      }
-
-
-      // Konfirmasi Telegram (cegah race)
-      if (cfg.requireConfirmation && hunterNotifyFn && hunterBotRef && hunterAllowedId) {
-        const confirmed = await requestConfirmation(
-          hunterNotifyFn,
-          hunterBotRef,
-          hunterAllowedId,
-          `🚀 <b>Hunter Alpha ingin deploy:</b>\n\n` +
-          `📍 Pool: <code>${escapeHTML(input.pool_address.slice(0, 8))}...</code>\n` +
-          `📊 Strategi: <b>${escapeHTML(strategy.name)}</b> (${targetPriceRangePct.toFixed(1)}%)\n` +
-          `💰 Deploy: ${deployAmountSol} SOL (Single-Side SOL, adaptive)\n` +
-          `  tokenX: 0 | tokenY: ${tokenYAmount.toFixed(4)} SOL\n\n` +
-          `💭 ${escapeHTML(deployOptions.technicalReasoning || input.reasoning)}`
-        );
-        if (!confirmed) {
-          // Kirim notif batal agar user tidak bingung kenapa "Deploying..." tanpa follow-up
-          if (hunterNotifyFn) {
-            await hunterNotifyFn(`❌ <b>Deploy Dibatalkan</b>\n\nUser tidak menyetujui deploy ke pool <code>${escapeHTML(input.pool_address.slice(0, 8))}...</code>`).catch(() => { });
-          }
-          return stringify({ blocked: true, reason: 'Ditolak oleh user.' }, 2);
-        }
-      }
-
-      // Execute TX — jika gagal, notifikasi user sebelum re-throw
-      try {
-        ({ result } = await executeControlledOperation({
-          operationType: 'OPEN_POSITION',
-          entityId: input.pool_address,
-          payload: {
-            poolAddress: input.pool_address,
-            tokenXAmount,
-            tokenYAmount,
-            priceRangePct: targetPriceRangePct,
-            strategy: strategy.name,
-            deployOptions,
-          },
-          metadata: { source: 'hunter_alpha', strategy: strategy.name },
-          policy: { isEntryOperation: true, entryMaxPositions: effectiveMaxPos },
-          execute: () => openPosition(
-            input.pool_address,
-            tokenXAmount,
-            tokenYAmount,
-            targetPriceRangePct,
-            strategy.name,
-            deployOptions,
-          ),
-        }));
-      } catch (deployErr) {
-        if (hunterNotifyFn) {
-          hunterNotifyFn(
-            `❌ <b>Deploy Gagal</b>\n\n` +
-            `Pool: <code>${escapeHTML(input.pool_address.slice(0, 8))}...</code>\n` +
-            `Error: <code>${escapeHTML(deployErr.message)}</code>\n\n` +
-            `<i>Cek wallet balance dan Meteora UI untuk memastikan posisi tidak terbuat.</i>`
-          ).catch(() => { });
-        }
-        throw deployErr;
-      }
-
-      // Notifikasi & recording — dikurung try/catch agar error Telegram
-      // tidak membuat tool return Error dan memicu AI retry ke pool yang sama
-      try {
-        if (hunterNotifyFn && result.success) {
-          const tpTarget = strategyProfile?.exit?.takeProfitPct ?? cfg.takeProfitFeePct ?? 5;
-          const liveThresholds = getThresholds();
-          const slTarget = strategyProfile?.exit?.emergencyStopLossPct ?? liveThresholds.stopLossPct ?? cfg.stopLossPct ?? 5;
-          const trailAct = strategyProfile?.exit?.trailingTriggerPct ?? cfg.trailingTriggerPct ?? 3.0;
-          const nPos = result.positionCount ?? 1;
-
-          const details = [
-            kv('Posisi', nPos > 1 && result.positionAddresses?.length > 0
-              ? `${nPos}x chunks (${result.positionAddresses.map(a => shortAddr(a, 4, 4)).join(', ')})`
-              : shortAddr(result.positionAddress, 4, 4), 9),
-            kv('Pool', shortAddr(input.pool_address, 4, 4), 9),
-            kv('Strategi', strategy?.name || 'default', 9),
-            kv('Deploy', `${deployAmountSol} SOL (${nPos > 1 ? `${nPos} positions` : 'Single-Side'})`, 9),
-            ...(nPos > 1 && result.positions?.length > 0 ? result.positions.map((p, i) =>
-              kv(`Chunk${i + 1}`, `${p.yAmountSol.toFixed(4)}◎ @ ${p.binCount} bins`, 9)
-            ) : []),
-            hr(40),
-            kv('Entry', result.entryPrice?.toFixed(8) ?? '-', 9),
-            kv('Bawah', `${result.lowerPrice?.toFixed(8) ?? '-'}  (-${targetPriceRangePct}%)`, 9),
-            kv('Atas', `${result.upperPrice?.toFixed(8) ?? '-'}  (entry)`, 9),
-            kv('Fee/bin', `${result.feeRatePct}%`, 9),
-            kv('Range', `${deployOptions.fixedBinsBelow && result.binsBelow !== undefined ? `${result.binsBelow + 1} bins` : `${targetPriceRangePct}%`} | ${result.positions?.reduce((s, p) => s + p.binCount, 0) ?? (result.binRange ? (result.binRange.max - result.binRange.min + 1) : '?')} bins total`, 9),
-            hr(40),
-            kv('TP', `+${tpTarget}%  Trail: +${trailAct}%  SL: -${slTarget}%`, 9),
-            ...(strategyEval?.notes?.length ? [kv('Setup', strategyEval.notes.join(' | ').slice(0, 40), 9)] : []),
-          ];
-
-          const txLinks = result.txHashes.slice(0, 3)
-            .map((h, i) => `[Tx${result.txHashes.length > 1 ? i + 1 : ''}](https://solscan.io/tx/${h})`)
-            .join(' · ');
-
-          const openMsg =
-            `🚀 <b>Posisi Dibuka${nPos > 1 ? ` (${nPos} Chunks)` : ''}</b>\n\n` +
-            codeBlock(details) + '\n' +
-            `💭 <i>${escapeHTML(input.reasoning)}</i>\n\n` +
-            `🔗 ${txLinks}`;
-
-          await hunterNotifyFn(openMsg);
-        }
-
-        // Record deploy ke pool memory + capture signals untuk Darwinian learning
-        if (result.success && result.positionAddress) {
-          await recordDeployment(input.pool_address);
-          const poolData = lastCandidates.find(c => c.address === input.pool_address);
-          if (poolData) captureSignals(result.positionAddress, poolData);
-        }
-      } catch (notifErr) {
-        // Notifikasi/recording gagal — JANGAN propagate error ini.
-        // Posisi sudah berhasil di-deploy & tersimpan di DB.
-        console.warn('[hunter] Post-deploy notification failed:', notifErr.message);
-      }
-
-      return stringify({ ...result, strategyUsed: strategy?.name, reasoning: input.reasoning }, 2);
-    }
-
-    case 'run_evolution': {
-      const updates = await runEvolutionCycle();
-      return stringify({
-        success: !!updates,
-        appliedUpdates: updates || 'No updates needed at this cycle (performance stable).',
-        summary: updates ? 'Thresholds adjusted based on recent trade performance.' : 'Current thresholds are optimal.'
-      }, 2);
-    }
-
-    default:
-      return `Tool tidak dikenali: ${name}`;
-  }
-}
-
-// ─── Screen-only: get top candidates without running LLM ─────────
-// Used by auto-screening flow for batch Telegram approval
-
-
-// ─── Main agent loop ─────────────────────────────────────────────
-
-export async function runHunterAlpha(notifyFn, bot = null, allowedId = null, options = {}) {
-  // Bungkus notifyFn agar error Telegram (EFATAL/terminated) tidak crash loop screening.
-  // Error "terminated" terjadi saat polling Telegram putus ditengah eksekusi.
-  hunterNotifyFn = notifyFn
-    ? (msg) => notifyFn(msg).catch(err => {
-      if (process.env.HUNTER_DEBUG) console.warn('[hunter] notify swallowed:', err?.message);
-    })
-    : null;
-  hunterBotRef = bot;
-  hunterAllowedId = allowedId;
-  _hunterTargetCount = options.targetCount ?? null;
-  _hunterMaxPositionsCap = Number.isFinite(options.maxPositionsCap)
-    ? Math.max(1, Math.floor(options.maxPositionsCap))
-    : null;
-
-  const cfg = getConfig();
-
-  // ─── Circuit Breaker Check ────────────────────────────────────
-  // Healer can trip this state after rapid stop-loss clusters.
-  // Persisted in runtime-state.json so restart does not bypass cooldown.
-  {
-    const cb = getRuntimeState('hunter-circuit-breaker', null);
-    if (cb?.pausedUntil && Date.now() < cb.pausedUntil) {
-      const remainMin = Math.ceil((cb.pausedUntil - Date.now()) / 60000);
-      hunterNotifyFn?.(
-        `⚡ *Hunter Paused — Circuit Breaker Active*\n` +
-        `Sisa waktu pembekuan: *${remainMin} menit*\n` +
-        `_${cb.count || 0} SL exits terdeteksi. Menunggu kondisi market stabil._`
-      );
-      return;
-    }
-    if (cb?.pausedUntil && Date.now() >= cb.pausedUntil) {
-      setRuntimeState('hunter-circuit-breaker', null);
-      setRuntimeState('recent-sl-events', []);
-      await flushRuntimeState().catch(() => {});
-      hunterNotifyFn?.(
-        '✅ *Hunter Circuit Breaker Reset*\n_Buffer SL lama dibersihkan, hunter kembali normal._'
-      );
-    }
-  }
-
-  // --- Portfolio Awareness ---
-  const balanceRaw = await getWalletBalance().catch(() => 0);
-  const balanceSnapshot = safeNum(balanceRaw);
-  const minSolNeeded = cfg.minSolToOpen + (cfg.gasReserve ?? 0.02);
-  const isBalanceLow = balanceSnapshot < (minSolNeeded * 3);
-
-  if (isBalanceLow) {
-    console.log(`📡 Portfolio Awareness: Saldo SOL menipis (${balanceSnapshot.toFixed(4)}). Memperketat filter entry...`);
-  }
-
-  // ── Skip silently jika slot posisi penuh ─────────────────────
-  const openPos = getOpenPositions();
-  const maxCap = Number.isFinite(_hunterMaxPositionsCap) ? _hunterMaxPositionsCap : cfg.maxPositions;
-  const effectiveMax = _hunterTargetCount != null
-    ? Math.min(openPos.length + _hunterTargetCount, maxCap)
-    : maxCap;
-
-  // Self-healing for partial deployments runs regardless of entry slot availability.
-  try {
-    const heal = await runPartialDeploymentHealing(hunterNotifyFn, cfg);
-    if (heal.healed > 0) {
-      await hunterNotifyFn?.(
-        `🩹 <b>Partial Deploy Healed</b>\n` +
-        `Scanned: ${heal.scanned} | Healed: ${heal.healed} | Failed: ${heal.failed}`
-      );
-    }
-  } catch (e) {
-    console.warn('[hunter] partial deployment heal loop failed:', e.message);
-  }
-
-  if (openPos.length >= effectiveMax) {
-    _hunterTargetCount = null;
-    _hunterMaxPositionsCap = null;
-    return null;
-  }
-
-  // ── Skip silently jika balance tidak cukup ───────────────────
-  try {
-    const balance = await getWalletBalance();
-    if (safeNum(balance) < (cfg.deployAmountSol + (cfg.gasReserve ?? 0.02))) {
-      _hunterTargetCount = null;
-      _hunterMaxPositionsCap = null;
-      return null;
-    }
-  } catch { /* lanjut jika gagal cek balance */ }
-
-  // ── PRE-COMPUTE: parallelkan pool screening sebelum LLM loop ─
-  // Mengurangi LLM round trips dari 40+ menjadi ~6-8.
-  // getTopPools + pool memory + OKX dijalankan sekaligus, bukan satu per satu oleh LLM.
-  let statusMsgId = null;
-  const updatePulse = async (text) => {
-    if (!notifyFn) return;
-    if (!statusMsgId) {
-      const msg = await notifyFn(`🔍 <b>Radar Sweep Initializing...</b>`);
-      if (msg?.message_id) statusMsgId = msg.message_id;
-    } else {
-      // Access updateStatus if the transport provides it
-      // hunterBotRef and hunterNotifyFn are cached in state
-      if (hunterBotRef && statusMsgId && hunterAllowedId) {
-        try {
-          await hunterBotRef.editMessageText(text, {
-            chat_id: hunterAllowedId,
-            message_id: statusMsgId,
-            parse_mode: 'HTML'
-          });
-        } catch (e) { /* ignore mod errors */ }
-      }
-    }
-  };
-
-  await updatePulse(`🔍 <b>Radar Sweep: Meteora Seed → GMGN Gate → Meteora Execute...</b>`);
-
-  let preComputedContext = '';
-  let forcedFinalReport = '';
-  let skipModelRun = false;
-  try {
-    const weights = getDarwinWeights(); // adaptive weights dari data nyata
-    // --- Stage 0: Meridian Discovery Path ---
-    // 1) Meteora Pool Discovery API (server-side filter: dlmm + mcap + volume + tvl)
-    // 2) Token waterfall screening per mint (DexScreener/OKX/GMGN/Jupiter)
-    const radarCfg = cfg.radar && typeof cfg.radar === 'object' ? cfg.radar : {};
-    const seedLimit = Math.max(10, Math.min(200, Number(radarCfg.meteoraDiscoveryLimit ?? 150)));
-    const discovery = await discoverMeteoraDlmmPools({
-      limit: seedLimit,
-      timeframe: radarCfg.discoveryTimeframe || '5m',
-      category: radarCfg.discoveryCategory || '',
-    }).catch((e) => ({ pools: [], error: e?.message || 'unknown' }));
-    const rawPools = Array.isArray(discovery?.pools) ? discovery.pools : [];
-    if (discovery?.error) {
-      console.warn(`⚠️ [meteora-discovery] Stage-0 degraded: ${discovery.error}`);
-    }
-
-    const seedByMint = new Map();
-    for (const pool of (rawPools || [])) {
-      const tokenCandidates = [
-        { mint: pool?.tokenX, symbol: pool?.tokenXSymbol || '', side: 'x' },
-        { mint: pool?.tokenY, symbol: pool?.tokenYSymbol || '', side: 'y' },
-      ];
-      for (const item of tokenCandidates) {
-        const mint = String(item?.mint || '').trim();
-        if (!mint || mint === WSOL_MINT || seedByMint.has(mint)) continue;
-        const seedMcap = safeNum(pool?.mcap || 0);
-        const seedVolume24h = safeNum(pool?.volume24hRaw || 0);
-        const seedLiquidity = safeNum(pool?.liquidityRaw || 0);
-        const rawCreatedAt = safeNum(pool?.tokenCreatedAt || 0);
-        seedByMint.set(mint, {
-          mint,
-          symbol: item?.symbol || '',
-          source: 'meteora_pool_discovery',
-          seedMcap,
-          seedVolume24h,
-          seedLiquidity,
-          seedCreatedAt: rawCreatedAt > 0 ? rawCreatedAt : null,
-          pairAddress: pool?.address || null,
-          pairAddressFallback: pool?.address || null,
-          meteoraPairAddresses: pool?.address ? [pool.address] : [],
-          hasMeteoraPair: true,
-        });
-      }
-    }
-    const gmgnSeeds = Array.from(seedByMint.values());
-    const minVol = Number(radarCfg.minVolume24h ?? 1000000);
-    const minMcap = Number(radarCfg.minMcap ?? 250000);
-    const minAgeHours = Number(radarCfg.minAgeHours ?? 0);
-    const maxAgeHours = Number(radarCfg.maxAgeHours ?? 0);
-    const requireKnownAge = radarCfg.requireKnownAge === true;
-
-    // Stage 1: probe semua seed GMGN lalu prefilter tegas (mcap + volume) sebelum masuk screening.
-    const gmgnSeedMetrics = await Promise.all(gmgnSeeds.map(async (s) => {
-      const gmgnGate = await fetchGmgnGateMetrics(s.mint, s);
-      const gateVolume = safeNum(gmgnGate?.volume24h);
-      const gateMcap = safeNum(gmgnGate?.mcap);
-      const ageHours = null;
-
-      let prefilterRejected = false;
-      let prefilterReason = null;
-      let prefilterRejectCode = null;
-      if (!gmgnGate) {
-        // Non-blocking: pass through when GMGN gate data unavailable (no API key or timeout)
-        // Volume/mcap filters below require gate data; skip them if unavailable
-      } else if (minVol > 0 && gateVolume > 0 && gateVolume < minVol) {
-        prefilterRejected = true;
-        prefilterRejectCode = 'BELOW_MIN_VOLUME_24H';
-        prefilterReason = `VETO [BELOW_MIN_VOLUME_24H]: Volume 24h $${gateVolume.toLocaleString()} < min $${minVol.toLocaleString()}`;
-      } else if (minMcap > 0 && gateMcap > 0 && gateMcap < minMcap) {
-        prefilterRejected = true;
-        prefilterRejectCode = 'BELOW_MIN_MCAP';
-        prefilterReason = `VETO [BELOW_MIN_MCAP]: Mcap $${gateMcap.toLocaleString()} < min $${minMcap.toLocaleString()}`;
-      }
-
-      return {
-        ...s,
-        gmgnGate,
-        gateVolume,
-        gateMcap,
-        ageHours,
-        prefilterRejected,
-        prefilterRejectCode,
-        prefilterReason,
-      };
-    }));
-
-    // Kandidat prefilter-pass diprioritaskan dari GMGN: fresh dulu, lalu volume besar.
-    const prefilterPassed = gmgnSeedMetrics
-      .filter((s) => !s.prefilterRejected)
-      .sort((a, b) => {
-        const aAge = Number.isFinite(a.ageHours) ? a.ageHours : Number.POSITIVE_INFINITY;
-        const bAge = Number.isFinite(b.ageHours) ? b.ageHours : Number.POSITIVE_INFINITY;
-        if (aAge !== bAge) return aAge - bAge;
-        return safeNum(b.gateVolume) - safeNum(a.gateVolume);
-      });
-
-    const seedSample = prefilterPassed.slice(0, seedLimit);
-    const prefilterRejectedList = gmgnSeedMetrics.filter((s) => s.prefilterRejected);
-    const pendingReplayLimit = Math.max(0, Number(radarCfg.noPoolReplayLimit ?? cfg.noPoolReplayLimit ?? 12));
-    const pendingReplay = listNoPoolPending(cfg)
-      .filter((p) => !seedSample.some((s) => s.mint === p.mint))
-      .slice(0, pendingReplayLimit)
-      .map((p) => ({
-        mint: p.mint,
-        symbol: p.symbol || '',
-        gmgnGate: p.gmgnGate || null,
-        ageHours: null,
-        source: 'no_pool_pending_replay',
-      }));
-    let rejSecurity = 0, rejNoPool = 0, rejCooldown = 0;
-
-    // Token gate list dimulai dari hasil prefilter fail supaya radar bisa audit stage-1 dengan jelas.
-    const tokenGate = prefilterRejectedList.map((s) => ({
-      mint: s.mint,
-      symbol: s.symbol || '',
-      name: s.symbol || s.mint.slice(0, 6),
-      security: null,
-      prefilterRejected: true,
-      prefilterReason: s.prefilterReason || 'VETO [GMGN_PREFILTER]: token gagal pre-filter GMGN.',
-      gmgnGate: s.gmgnGate || null,
-      ageHours: s.ageHours,
-      stageFunnel: {
-        stage1_gmgn_gate: 'FAIL',
-        stage2_gmgn_availability: 'SKIPPED',
-        stage3_gmgn_security: 'SKIPPED',
-        stage4_fee_integrity: 'SKIPPED',
-        final: 'REJECTED',
-      },
-    }));
-
-    const tokenGatePassed = [];
-    for (const s of seedSample) {
-      const gmgnGate = s.gmgnGate || null;
-
-      const security = await screenToken(s.mint, s.symbol || '', s.symbol || '', { seedData: s }).catch(() => null);
-      if (security) {
-        auditScreeningResult(security, {
-          tokenMint: s.mint || null,
-          tokenName: security?.name || null,
-          poolAddress: null,
-          sourceContext: 'hunter_token_first_seed',
-        });
-      }
-      if (!security || !security.eligible) {
-        rejSecurity++;
-      }
-      tokenGatePassed.push({
-        mint: s.mint,
-        symbol: s.symbol || security?.symbol || '',
-        name: security?.name || s.symbol || s.mint.slice(0, 6),
-        security,
-        gmgnGate,
-        ageHours: s.ageHours,
-        prefilterRejected: false,
-        prefilterReason: null,
-        stageFunnel: security?.stageFunnel || null,
-      });
-      // Jeda 2 detik antar token untuk menghindari rate limit Jupiter (429)
-      await new Promise(r => setTimeout(r, 2000));
-    }
-
-    tokenGate.push(...tokenGatePassed);
-
-    // Replay pendingReplay secara sequential (bukan paralel) dengan jeda 2 detik
-    // agar tidak membombardir Jupiter saat ada banyak token pending.
-    if (pendingReplay.length) {
-      const replayGate = [];
-      for (const s of pendingReplay) {
-        const security = await screenToken(s.mint, s.symbol || '', s.symbol || '', { seedData: s }).catch(() => null);
-        if (security) {
-          auditScreeningResult(security, {
-            tokenMint: s.mint || null,
-            tokenName: security?.name || null,
-            poolAddress: null,
-            sourceContext: 'hunter_no_pool_replay',
-          });
-        }
-        if (!security || !security.eligible) {
-          rejSecurity++;
-          removeNoPoolPending(s.mint);
-        }
-        replayGate.push({
-          mint: s.mint,
-          symbol: s.symbol || security?.symbol || '',
-          name: security?.name || s.symbol || s.mint.slice(0, 6),
-          security,
-          gmgnGate: s.gmgnGate || null,
-          ageHours: null,
-          prefilterRejected: false,
-          prefilterReason: null,
-          stageFunnel: security?.stageFunnel || null,
-        });
-        // Jeda 2 detik antar token untuk menghindari rate limit Jupiter (429)
-        await new Promise(r => setTimeout(r, 2000));
-      }
-      tokenGate.push(...replayGate);
-    }
-
-    const approvedMints = tokenGate
-      .filter((t) => !t.prefilterRejected && t.security?.eligible)
-      .map((t) => t.mint);
-
-    const approvedMintSet = new Set(approvedMints);
-    const poolsByMint = new Map();
-    for (const p of (rawPools || [])) {
-      const mints = [p.tokenX, p.tokenY].filter((m) => m && m !== WSOL_MINT);
-      for (const mint of mints) {
-        if (!approvedMintSet.has(mint)) continue;
-        const list = poolsByMint.get(mint) || [];
-        list.push(p);
-        poolsByMint.set(mint, list);
-      }
-    }
-
-    // Fallback: jika token lolos gate tapi tidak muncul di discovery ranking Meteora,
-    // coba validasi langsung pairAddress dari GMGN (best-effort, non-blocking).
-    const directPoolChecks = tokenGate
-      .filter((t) => !t.prefilterRejected && t.security?.eligible)
-      .filter((t) => !poolsByMint.get(t.mint)?.length)
-      .map((t) => ({
-        mint: t.mint,
-        symbol: t.symbol,
-        gmgnGate: t.gmgnGate || null,
-        pairAddresses: Array.isArray(t.gmgnGate?.meteoraPairAddresses) && t.gmgnGate.meteoraPairAddresses.length
-          ? t.gmgnGate.meteoraPairAddresses
-          : (t.gmgnGate?.pairAddress ? [t.gmgnGate.pairAddress] : []),
-      }))
-      .filter((x) => x.pairAddresses.length > 0)
-      .slice(0, 8);
-
-    if (directPoolChecks.length) {
-      const directResults = await Promise.all(directPoolChecks.map(async (item) => {
-        for (const addr of item.pairAddresses.slice(0, 3)) {
-          try {
-            const info = await getPoolInfo(addr);
-            if (!info || !info.address) continue;
-            const mints = [info.tokenX, info.tokenY].filter((m) => m && m !== WSOL_MINT);
-            if (!mints.includes(item.mint)) continue;
-            return {
-              mint: item.mint,
-              pool: {
-                address: info.address,
-                name: `${item.symbol || 'TOKEN'}-SOL`,
-                tokenX: info.tokenX,
-                tokenY: info.tokenY,
-                binStep: safeNum(info.binStep || 0),
-                liquidityRaw: safeNum(item.gmgnGate?.liquidityUsd || 0),
-                volume24hRaw: safeNum(item.gmgnGate?.volume24h || 0),
-                fees24hRaw: 0,
-              },
-            };
-          } catch {
-            // try next pair address
-          }
-        }
-        return null;
-      }));
-
-      for (const row of directResults) {
-        if (!row?.pool) continue;
-        const list = poolsByMint.get(row.mint) || [];
-        if (!list.find((p) => p.address === row.pool.address)) {
-          list.push(row.pool);
-          poolsByMint.set(row.mint, list);
-        }
-      }
-    }
-
-    const tokenGateWithPvp = enrichPvpRisk(tokenGate);
-
-    const computeFeeApr = (p) => {
-      const fees = safeNum(p.fees24hRaw);
-      const liq  = safeNum(p.liquidityRaw || p.liquidityUsd || p.tvl);
-      return (liq > 0 && fees > 0) ? (fees / liq) * 365 : 0;
-    };
-
-    const radarSnapshot = tokenGateWithPvp.map((t) => {
-      const security = t.security;
-      const prefilterRejected = t.prefilterRejected === true;
-      const gmgnGate = t.gmgnGate || null;
-      const candidates = poolsByMint.get(t.mint) || [];
-      // Apply CE + BinStep filters to ALL candidates first — never pick a pool that would be vetoed anyway
-      const validCandidates = candidates.filter(c =>
-        !filterCapitalEfficiency(c).rejected && filterBinStep(c).allowed
-      );
-      // Select wettest pool: Fee APR primary (direct fee yield), 24h volume as fallback
-      const bestPool = validCandidates
-        .sort((a, b) => {
-          const aprA = computeFeeApr(a), aprB = computeFeeApr(b);
-          if (aprA > 0 || aprB > 0) return aprB - aprA;
-          return safeNum(b.volume24hRaw) - safeNum(a.volume24hRaw);
-        })[0] || null;
-      if (validCandidates.length > 1 && bestPool) {
-        const apr = computeFeeApr(bestPool);
-        console.log(`[SHARK] Multiple valid pools for ${t.symbol || t.mint?.slice(0, 8)}. Selecting Pool ${bestPool.address?.slice(0, 8)} — Fee APR: ${(apr * 100).toFixed(1)}% / 24h Vol: $${safeNum(bestPool.volume24hRaw).toFixed(0)}`);
-      }
-
-      let matched = false;
-      let reason = 'PASS: GMGN gate clean';
-      if (prefilterRejected) {
-        removeNoPoolPending(t.mint);
-        reason = t.prefilterReason || 'VETO [GMGN_PREFILTER]: token gagal pre-filter GMGN.';
-      } else if (!security) {
-        removeNoPoolPending(t.mint);
-        reason = 'VETO [SCREENING_UNAVAILABLE]: screening gagal, token dilewati.';
-      } else if (!security.eligible) {
-        removeNoPoolPending(t.mint);
-        const first = security.highFlags?.[0];
-        const funnel = security.stageFunnel
-          ? ` (GMGN=${security.stageFunnel.stage1_gmgn_gate}, GMGN-Sec=${security.stageFunnel.stage3_gmgn_security}, Fee=${security.stageFunnel.stage4_fee_integrity})`
-          : '';
-        reason = `VETO [${first?.rule || 'SECURITY_REJECT'}]: ${first?.msg || 'Token gagal gate keamanan.'}${funnel}`;
-      } else if (!bestPool) {
-        upsertNoPoolPending({ mint: t.mint, symbol: t.symbol || t.name, gmgnGate }, cfg);
-        reason = candidates.length > 0
-          ? 'VETO [NO_VALID_EXEC_POOL]: pool ada tapi semua gagal CE/BinStep filter.'
-          : (gmgnGate?.hasMeteoraPair === false)
-            ? 'VETO [NO_METEORA_EXEC_POOL]: token lolos gate, tapi GMGN belum memberi pair Meteora/DLMM.'
-            : 'VETO [NO_METEORA_EXEC_POOL]: token lolos, tapi belum ada pool Meteora yang executable.';
-        rejNoPool++;
-      } else if (t.pvpRisk?.detected) {
-        removeNoPoolPending(t.mint);
-        reason = `VETO [HIGH_PVP_RISK]: ${t.pvpRisk.reason}`;
-      } else if (isOnCooldown(bestPool.address)) {
-        reason = 'VETO [POOL_COOLDOWN]: pool/token dalam masa cooldown.';
-        rejCooldown++;
-      } else {
-        // CE and BinStep already validated above — bestPool is guaranteed to pass both gates
-        removeNoPoolPending(t.mint);
-        matched = true;
-      }
-
-      const basePool = bestPool || {};
-      const fallbackMcap = safeNum(gmgnGate?.mcap || security?.mcap);
-      const fallbackVol = safeNum(gmgnGate?.volume24h);
-      const fallbackLiq = safeNum(gmgnGate?.liquidityUsd);
-      const fallbackTxns = safeNum(gmgnGate?.txns24h);
-      return {
-        ...basePool,
-        tokenX: basePool.tokenX || t.mint,
-        tokenY: basePool.tokenY || WSOL_MINT,
-        address: basePool.address || t.mint,
-        name: basePool.name || `${t.symbol || t.name || 'TOKEN'}-SOL`,
-        mcap: safeNum(basePool.mcap || fallbackMcap),
-        volume24hRaw: safeNum(basePool.volume24hRaw || fallbackVol),
-        fees24hRaw: safeNum(basePool.fees24hRaw || 0),
-        liquidityRaw: safeNum(basePool.liquidityRaw || fallbackLiq),
-        txns24hRaw: safeNum(basePool.txns24hRaw || fallbackTxns),
-        binStep: safeNum(basePool.binStep || 0),
-        ageHours: Number.isFinite(t.ageHours) ? Number(t.ageHours.toFixed(2)) : null,
-        prefilterMcap: fallbackMcap,
-        prefilterVol24h: fallbackVol,
-        prefilterRejected,
-        isMatched: matched,
-        vetoReason: reason,
-        prefilterSecurity: security,
-        stageFunnel: t.stageFunnel || security?.stageFunnel || null,
-        darwinScore: calculateDarwinScore(basePool, weights, 'NEUTRAL'),
-      };
-    });
-
-    // filtered: Hanya yang benar-benar lolos untuk diproses LLM (Hemat Cost)
-    const filtered = radarSnapshot
-      .filter(p => p.isMatched)
-      .sort((a, b) => b.darwinScore - a.darwinScore)
-      .slice(0, 6);
-
-    // radarDisplay: tampilkan hanya token yang lolos GMGN prefilter (age+mcap+volume)
-    // agar radar fokus pada kandidat yang memang layak diproses lanjut.
-    const radarDisplay = radarSnapshot
-      .filter((p) => p.prefilterRejected !== true)
-      .sort((a, b) => {
-        if (a.isMatched !== b.isMatched) return b.isMatched ? 1 : -1;
-        const aAge = Number.isFinite(a.ageHours) ? a.ageHours : Number.POSITIVE_INFINITY;
-        const bAge = Number.isFinite(b.ageHours) ? b.ageHours : Number.POSITIVE_INFINITY;
-        if (aAge !== bAge) return aAge - bAge;
-        return safeNum(b.volume24hRaw) - safeNum(a.volume24hRaw);
-      })
-      .slice(0, 15);
-
-    lastCandidates = filtered;
-    const walBalRaw = await getWalletBalance().catch(() => '0');
-    const openPositions = await getOpenPositions();
-    const rentSaved = getStat('total_rent_reclaimed_sol') || 0;
-    const funnelStats = {
-      s1: { pass: 0, fail: 0, soft: 0, skipped: 0 },
-      s2: { pass: 0, fail: 0, soft: 0, skipped: 0 },
-      s3: { pass: 0, fail: 0, soft: 0, skipped: 0 },
-      s4: { pass: 0, fail: 0, soft: 0, skipped: 0 },
-    };
-    for (const c of radarDisplay) {
-      const w = c.prefilterSecurity?.stageWaterfall || null;
-      const s1 = c.prefilterRejected ? 'FAIL' : 'PASS';
-      const s2 = w ? String(w.stage1PublicData || '').toUpperCase() : 'SKIPPED';
-      const s3 = w ? String(w.stage2GmgnAudit || '').toUpperCase() : 'SKIPPED';
-      const s4 = w ? String(w.stage3Jupiter || '').toUpperCase() : 'SKIPPED';
-      const bump = (bucket, v) => {
-        if (v === 'PASS') bucket.pass++;
-        else if (v === 'FAIL') bucket.fail++;
-        else if (v === 'SOFT') bucket.soft++;
-        else bucket.skipped++;
-      };
-      bump(funnelStats.s1, s1);
-      bump(funnelStats.s2, s2);
-      bump(funnelStats.s3, s3);
-      bump(funnelStats.s4, s4);
-    }
-
-    lastRadarSnapshot = {
-      timestamp: new Date().toISOString(),
-      walletBalance: safeNum(walBalRaw).toFixed(4),
-      activeCount: openPositions.length,
-      totalNetProfitSol: (openPositions.reduce((acc, p) => acc + (parseFloat(p.pnl_sol) || 0), 0)).toFixed(4),
-      totalRentSaved: safeNum(rentSaved).toFixed(4),
-      prefilter: {
-        seedSource: 'meteora_datapi',
-        seeded: gmgnSeeds.length,
-        pass: prefilterPassed.length,
-        rejected: prefilterRejectedList.length,
-        screened: seedSample.length,
-        replayedPending: pendingReplay.length,
-        pendingQueueSize: listNoPoolPending(cfg).length,
-        minVolume24h: minVol,
-        minMcap: minMcap,
-        minAgeHours,
-        maxAgeHours,
-        requireKnownAge,
-        sort: 'volume_desc',
-      },
-      candidates: radarDisplay.map(p => ({
-        address: p.address,
-        name: p.name,
-        tvl: p.liquidityRaw,
-        vol24h: p.volume24hRaw,
-        txns24h: p.txns24hRaw || 0,
-        prefilterMcap: safeNum(p.prefilterMcap || 0),
-        prefilterVol24h: safeNum(p.prefilterVol24h || 0),
-        fees: p.fees24hRaw,
-        totalFees: p.totalFeesEstimated,
-        binStep: p.binStep,
-        mcap: p.mcap,
-        ageHours: Number.isFinite(p.ageHours) ? p.ageHours : null,
-        score: p.darwinScore,
-        volTvlRatio: (p.volume24hRaw / (p.liquidityRaw || 1)).toFixed(2),
-        isMatched: p.isMatched,
-        isHeritage: p.isHeritageMatch,
-        vetoReason: p.vetoReason,
-        securityFlags: Array.isArray(p.prefilterSecurity?.highFlags)
-          ? p.prefilterSecurity.highFlags
-            .map((f) => String(f?.rule || '').trim())
-            .filter(Boolean)
-            .slice(0, 5)
-          : [],
-        stageFunnel: p.stageFunnel,
-        stageWaterfall: p.prefilterSecurity?.stageWaterfall || null,
-      })),
-      sentiment: 'BULLISH',
-      stats: {
-        radarTotal: radarSnapshot.length,
-        executablePoolsCount: radarSnapshot.filter((p) => p.address && p.address !== p.tokenX).length,
-        matchedCount: radarSnapshot.filter((p) => p.isMatched).length,
-        rejectedSecurity: rejSecurity,
-        rejectedNoPool: rejNoPool,
-        rejectedCooldown: rejCooldown,
-      },
-      funnelStats,
-      technical: {
-        trendNonBullish: 0,
-        waitBreakSupertrend: 0,
-        entryConfirmFailed: 0,
-        details: [],
-      },
-    };
-
-    // Fetch pool memory + multi-TF + smart wallets + sentiment in parallel
-    const totalToEnrich = filtered.length;
-    let processed = 0;
-    let rejNonRefundable = 0;
-    let rejTrendNonBullish = 0;
-    let rejWaitBreakSupertrend = 0;
-    let rejEntryConfirm = 0;
-    const technicalBlockDetails = [];
-
-    const enriched = await Promise.all(filtered.map(async (p) => {
-      const [memResult, ohlcvResult, swResult, sentResult, dlmmResult] = await Promise.allSettled([
-        Promise.resolve(getPoolStats(p.address)),
-        getOHLCV(p.tokenX || p.tokenY, p.address),
-        checkSmartWalletsOnPool(p.address),
-        getSentiment(p.tokenX || p.tokenY),
-        getDLMMPoolData(p.address),
-      ]);
-
-      processed++;
-      if (processed % 2 === 0 || processed === totalToEnrich) {
-        await updatePulse(`🔍 <b>Radar Sweep: Analyzing Candidates [${processed}/${totalToEnrich}]...</b>`);
-      }
-
-      const mem = memResult.status === 'fulfilled' ? memResult.value : null;
-      const ohlcv = ohlcvResult.status === 'fulfilled' ? ohlcvResult.value : null;
-      const sw = swResult.status === 'fulfilled' ? swResult.value : null;
-      const sent = sentResult.status === 'fulfilled' ? sentResult.value : null;
-      const dlmm = dlmmResult.status === 'fulfilled' ? dlmmResult.value : null;
-
-      const marketSent = sent?.sentiment || 'NEUTRAL';
-      const trend = ohlcv?.ta?.supertrend?.trend || 'NEUTRAL';
-      if (cfg.executionRejectNonRefundableFees !== false && dlmm?.hasNonRefundableFees === true) {
-        rejNonRefundable++;
-        console.log(`[hunter] NON_REFUNDABLE_FEES_DETECTED: ${p.name} (${p.address?.slice(0, 8)}) — marked ineligible, excluded from LLM`);
-        return {
-          address: p.address,
-          name: p.name,
-          eligible: false,
-          rejectionReason: 'NON_REFUNDABLE_FEES_DETECTED',
-          security: { verdict: 'SKIP', eligible: false },
-          poolMemory: { verdict: 'SKIP' },
-          executionFlags: { nonRefundableFees: true },
-          smartWallet: null,
-          multiTF: null,
-          entrySignals: {},
-        };
-      }
-
-      // ─── Phase 2.0: Technical Hard-Gate ─────────────────────────
-      // Sesuai filosofi Evil Panda: Jangan pernah entry kalau 15m Bearish.
-      if (trend !== 'BULLISH') {
-        rejTrendNonBullish++;
-        technicalBlockDetails.push({
-          address: p.address,
-          name: p.name,
-          code: 'TREND_NON_BULLISH',
-          trend,
-        });
-        if (process.env.HUNTER_DEBUG) console.log(`[hunter] Skipping ${p.name} - Supertrend 15m is ${trend}`);
-        return null;
-      }
-
-      // ─── Phase 2.05: Entry Confirmation Layer (15m + HTF) ──────
-      const cfgNow = getConfig();
-      const _tokenMintForHistory = [p.tokenX, p.tokenY].find(m => m && m !== WSOL_MINT) || p.tokenX;
-      const history15m = await getHistoryOHLCV(_tokenMintForHistory).catch(() => null);
-      const entrySignals = computeEntrySignalsFromCandles(history15m || [], cfgNow);
-      const fallbackBodyPct = Math.abs(safeNum(ohlcv?.priceChangeM5, 0));
-      const fallbackHtfTrend = safeNum(ohlcv?.priceChangeH1, 0) >= 0 ? 'BULLISH' : 'BEARISH';
-
-      const signalVolumeRatio = entrySignals.ready ? entrySignals.volumeRatio : 1;
-      const signalHtfTrend = entrySignals.ready ? entrySignals.htfTrend : fallbackHtfTrend;
-      const signalStValue = entrySignals.ready
-        ? safeNum(entrySignals.supertrendValue, NaN)
-        : safeNum(ohlcv?.ta?.supertrend?.value, NaN);
-      const signalClose = entrySignals.ready
-        ? safeNum(entrySignals.lastClose, NaN)
-        : safeNum(ohlcv?.currentPrice, NaN);
-      const signalStDistancePct = entrySignals.ready
-        ? safeNum(entrySignals.supertrendDistancePct, NaN)
-        : (Number.isFinite(signalStValue) && signalStValue > 0 && Number.isFinite(signalClose)
-          ? ((signalClose - signalStValue) / signalStValue) * 100
-          : NaN);
-      const breakMinPct = Math.max(0, Number(cfgNow.entrySupertrendBreakMinPct ?? 0));
-      const maxDistancePct = Math.max(0.1, Number(cfgNow.entrySupertrendMaxDistancePct || 20));
-      const breakThreshold = Number.isFinite(signalStValue)
-        ? signalStValue * (1 + (breakMinPct / 100))
-        : NaN;
-
-      // Shark Logic: ST 15m Green + Volume > 1.1x → LANGSUNG DEPLOY. No pullback wait.
-      {
-        const requireVolumeConfirm = cfgNow.entryRequireVolumeConfirm !== false;
-        const minVolRatio = Math.max(0.5, Number(cfgNow.entryMinVolumeRatio || 1.5));
-        if (requireVolumeConfirm && signalVolumeRatio < minVolRatio) {
-          rejEntryConfirm++;
-          technicalBlockDetails.push({
-            address: p.address,
-            name: p.name,
-            code: 'ENTRY_CONFIRM_FAILED_VOLUME',
-            volumeRatio: Number(signalVolumeRatio.toFixed(3)),
-            volumeMinRatio: Number(minVolRatio.toFixed(3)),
-            htfTrend: signalHtfTrend,
-          });
-          if (process.env.HUNTER_DEBUG) console.log(`[hunter] Skipping ${p.name} - volume confirm failed (${signalVolumeRatio.toFixed(2)}x < ${minVolRatio}x)`);
-          return null;
-        }
-      }
-
-      if (Number.isFinite(signalStDistancePct) && signalStDistancePct > maxDistancePct) {
-        rejEntryConfirm++;
-        technicalBlockDetails.push({
-          address: p.address,
-          name: p.name,
-          code: 'WAIT_FOR_PULLBACK',
-          supertrendDistancePct: Number(signalStDistancePct.toFixed(3)),
-          supertrendMaxDistancePct: Number(maxDistancePct.toFixed(3)),
-        });
-        if (process.env.HUNTER_DEBUG) {
-          console.log(`[hunter] Skipping ${p.name} - supertrend distance too far (${signalStDistancePct.toFixed(2)}% > ${maxDistancePct.toFixed(2)}%)`);
-        }
-        return null;
-      }
-
-      const entryRequireHtfAlignment = cfgNow.entryRequireHtfAlignment !== false;
-      if (entryRequireHtfAlignment) {
-        const allowNeutral = cfgNow.entryHtfAllowNeutral !== false;
-        const htfPass = signalHtfTrend === 'BULLISH' || (allowNeutral && signalHtfTrend === 'NEUTRAL');
-        if (!htfPass) {
-          rejEntryConfirm++;
-          technicalBlockDetails.push({
-            address: p.address,
-            name: p.name,
-            code: 'ENTRY_CONFIRM_FAILED_HTF',
-            htfTrend: signalHtfTrend,
-            allowNeutral,
-          });
-          if (process.env.HUNTER_DEBUG) {
-            console.log(`[hunter] Skipping ${p.name} - HTF alignment failed (${signalHtfTrend})`);
-          }
-          return null;
-        }
-      }
-
-
-      // ─── Phase 2.1: LLM Cost Guard (Static Security Filter) ─────
-      // Run full audit for top candidates BEFORE sending to LLM.
-      // This saves 10k-50k tokens by rejecting rugs during pre-screening.
-      const security = p.prefilterSecurity || { verdict: 'UNKNOWN' };
-
-
-      // Update darwinScore dengan Sentiment & TA
-      p.darwinScore = calculateDarwinScore(p, weights, marketSent);
-
-      const memVerdict = !mem
-        ? 'firstTime'
-        : mem.winRate < 40 ? 'HINDARI'
-          : mem.winRate < 60 ? 'HATI-HATI'
-            : 'OK';
-
-      const tvl = p.liquidityRaw || 0;
-      return {
-        address: p.address,
-        name: p.name,
-        darwinScore: p.darwinScore,
-        tvl: tvl.toFixed(0),
-        fees24h: (p.fees24hRaw || 0).toFixed(2),
-        security: security ? {
-          verdict: security.verdict,
-          eligible: security.eligible,
-          gmgnStatus: security.gmgnStatus,
-          highFlags: (security.highFlags || []).map(f => f.msg),
-          stageFunnel: security.stageFunnel || null,
-        } : { verdict: 'UNKNOWN' },
-        feeToTvlPct: tvl > 0 ? ((p.fees24hRaw || 0) / tvl * 100).toFixed(2) + '%' : '0%',
-        binStep: p.binStep,
-        tokenXMint: p.tokenX,
-        poolMemory: mem
-          ? { winRate: mem.winRate, totalTrades: mem.totalTrades, verdict: memVerdict }
-          : { verdict: 'firstTime' },
-        multiTF: ohlcv?.ta ? {
-          score: (ohlcv.ta.supertrend?.trend === 'BULLISH' ? 0.7 : 0.3),
-          bullishTFs: ohlcv.ta.supertrend?.trend === 'BULLISH' ? '1/1' : '0/1',
-          breakdown: `15m:${ohlcv.ta.supertrend?.trend === 'BULLISH' ? '✅' : '❌'}`
-        } : null,
-        entrySignals: {
-          green: entrySignals.ready ? Boolean(entrySignals.isGreen) : false,
-          bodyPct: Number((entrySignals.ready ? entrySignals.bodyPct : fallbackBodyPct).toFixed(3)),
-          volumeRatio: Number(signalVolumeRatio.toFixed(3)),
-          breakoutConfirmed: entrySignals.ready ? Boolean(entrySignals.breakoutConfirm) : false,
-          htfTrend: signalHtfTrend,
-          supertrendBreakConfirmed: Number.isFinite(signalClose) && Number.isFinite(breakThreshold)
-            ? signalClose > breakThreshold
-            : false,
-          supertrendClose: Number.isFinite(signalClose) ? Number(signalClose.toFixed(10)) : null,
-          supertrendBreakLevel: Number.isFinite(breakThreshold) ? Number(breakThreshold.toFixed(10)) : null,
-          supertrendDistancePct: Number.isFinite(signalStDistancePct) ? Number(signalStDistancePct.toFixed(3)) : null,
-          supertrendMaxDistancePct: Number(maxDistancePct.toFixed(3)),
-          supertrendProximityPass: Number.isFinite(signalStDistancePct) ? signalStDistancePct <= maxDistancePct : false,
-        },
-        executionFlags: {
-          nonRefundableFees: dlmm?.hasNonRefundableFees === true,
-        },
-        smartWallet: sw?.found
-          ? { wallets: sw.matches.map(m => m.label), confidence: sw.confidence }
-          : null,
-      };
-    }));
-
-    // --- Filter obvious rejects & Technical Hard-Gate ---
-    const rawTotal = radarSnapshot.length;
-    const executablePoolsCount = radarSnapshot.filter((p) => p.address && p.address !== p.tokenX).length;
-    const basicFilteredCount = filtered.length;
-    const finalEnriched = enriched.filter(p => p !== null);
-    const technicalRejectedCount = rejTrendNonBullish + rejWaitBreakSupertrend + rejEntryConfirm;
-    if (lastRadarSnapshot) {
-      lastRadarSnapshot.technical = {
-        trendNonBullish: rejTrendNonBullish,
-        waitBreakSupertrend: rejWaitBreakSupertrend,
-        entryConfirmFailed: rejEntryConfirm,
-        details: technicalBlockDetails.slice(0, 20),
-      };
-    }
-
-    if (finalEnriched.length === 0) {
-      const deploySummary = {
-        timestamp: new Date().toISOString(),
-        attempted: 0,
-        newDeploy: 0,
-        alreadyDeployed: 0,
-        blocked: 0,
-        failed: 0,
-        anyRealDeploy: false,
-        stage: 'technical_block',
-      };
-      lastDeploySummary = deploySummary;
-      if (lastRadarSnapshot) lastRadarSnapshot.deployment = deploySummary;
-      // Opsi operasional: suppress notifikasi raw "Discovery Result" agar
-      // kanal Telegram fokus ke laporan /radar_report yang lebih konsisten.
-      const nonRefundText = rejNonRefundable > 0 ? ` | NonRefundable: ${rejNonRefundable}` : '';
-      console.log(
-        `[hunter] Discovery 0 match (suppressed): seeded=${gmgnSeeds.length}, prefilterPass=${prefilterPassed.length}, ` +
-        `screened=${seedSample.length}, execPools=${executablePoolsCount}, rej={security:${rejSecurity},noPool:${rejNoPool},cooldown:${rejCooldown}${nonRefundText}}, ` +
-        `tech={trendNonBullish:${rejTrendNonBullish},waitBreakST:${rejWaitBreakSupertrend},entryConfirm:${rejEntryConfirm}}, ` +
-        `api=${technicalRejectedCount === 0 && basicFilteredCount > 0 ? 'all_failed' : 'linked'}`
-      );
-      forcedFinalReport =
-        `Sweep selesai: 0 koin lolos filter teknis/keamanan.\n` +
-        `Seeded: ${gmgnSeeds.length} | Prefilter pass: ${prefilterPassed.length} | Screened: ${seedSample.length}\n` +
-        `Reject — Security: ${rejSecurity}, NoPool: ${rejNoPool}, Cooldown: ${rejCooldown}\n` +
-        `Technical — TrendNonBullish: ${rejTrendNonBullish}, WaitBreakST: ${rejWaitBreakSupertrend}, EntryConfirmFailed: ${rejEntryConfirm}`;
-      skipModelRun = true;
-      await updatePulse(`✅ <b>Radar Sweep Completed</b> — 0 final candidate. Laporan tetap dikirim ke Telegram.`);
-    }
-
-    const viable = finalEnriched.filter(p =>
-      p.eligible !== false &&
-      p.poolMemory.verdict !== 'HINDARI' &&
-      p.security.verdict !== 'AVOID'
-    );
-    const skipped = finalEnriched.length - viable.length;
-
-    // Send brief rejection report for transparency
-    const rejected = finalEnriched.filter(p => p.eligible !== false && p.security.verdict === 'AVOID');
-    if (rejected.length > 0 && notifyFn) {
-      const reasonCount = new Map();
-      for (const p of rejected) {
-        const rule = String(p?.security?.highFlags?.[0]?.rule || 'UNKNOWN');
-        reasonCount.set(rule, (reasonCount.get(rule) || 0) + 1);
-      }
-      const topReasons = [...reasonCount.entries()]
-        .sort((a, b) => b[1] - a[1])
-        .slice(0, 3);
-      let rejMsg = `🛡️ <b>Quick Filter: Removed ${rejected.length} risky/low-liq coins (Saved LLM cost):</b>\n`;
-      topReasons.forEach(([rule, count]) => {
-        rejMsg += `• ${rule}: ${count}\n`;
-      });
-      const hint = topReasons.some(([rule]) => String(rule).startsWith('GMGN_'))
-        ? `\n💡 Hint: bisa tuning threshold GMGN via <code>/setconfig</code>.`
-        : '';
-      rejMsg += hint;
-      await notifyFn(rejMsg);
-    }
-
-    if (notifyFn) {
-      const smartWalletHits = finalEnriched.filter(p => p.smartWallet?.wallets?.length > 0).length;
-      const highTFAlign = finalEnriched.filter(p => (p.multiTF?.score || 0) >= 0.67).length;
-      const heritageHits = finalEnriched.filter(p => p.isHeritageMatch).length;
-      const funnelAgg = {
-        stage1_pass: 0, stage1_fail: 0,
-        stage2_pass: 0, stage2_fail: 0, stage2_skipped: 0,
-        stage3_pass: 0, stage3_fail: 0, stage3_skipped: 0,
-        stage4_pass: 0, stage4_fail: 0, stage4_skipped: 0,
-        final_passed: 0, final_rejected: 0,
-      };
-      for (const p of finalEnriched) {
-        const f = p.security?.stageFunnel;
-        if (!f) continue;
-        const s1 = String(f.stage1_gmgn_gate || '').toUpperCase();
-        const s2 = String(f.stage2_gmgn_availability || '').toUpperCase();
-        const s3 = String(f.stage3_gmgn_security || '').toUpperCase();
-        const s4 = String(f.stage4_fee_integrity || '').toUpperCase();
-        const fin = String(f.final || '').toUpperCase();
-        if (s1 === 'PASS') funnelAgg.stage1_pass++; else if (s1 === 'FAIL') funnelAgg.stage1_fail++;
-        if (s2 === 'PASS') funnelAgg.stage2_pass++; else if (s2 === 'FAIL') funnelAgg.stage2_fail++; else if (s2 === 'SKIPPED') funnelAgg.stage2_skipped++;
-        if (s3 === 'PASS') funnelAgg.stage3_pass++; else if (s3 === 'FAIL') funnelAgg.stage3_fail++; else if (s3 === 'SKIPPED') funnelAgg.stage3_skipped++;
-        if (s4 === 'PASS') funnelAgg.stage4_pass++; else if (s4 === 'FAIL') funnelAgg.stage4_fail++; else if (s4 === 'SKIPPED') funnelAgg.stage4_skipped++;
-        if (fin === 'PASSED') funnelAgg.final_passed++; else if (fin === 'REJECTED') funnelAgg.final_rejected++;
-      }
-      const funnelText = (funnelAgg.stage1_pass + funnelAgg.stage1_fail) > 0
-        ? (
-          `\n🧭 Funnel:\n` +
-          `• S1 GMGN Gate → PASS ${funnelAgg.stage1_pass} | FAIL ${funnelAgg.stage1_fail}\n` +
-          `• S2 GMGN API → PASS ${funnelAgg.stage2_pass} | FAIL ${funnelAgg.stage2_fail} | SKIP ${funnelAgg.stage2_skipped}\n` +
-          `• S3 GMGN Sec → PASS ${funnelAgg.stage3_pass} | FAIL ${funnelAgg.stage3_fail} | SKIP ${funnelAgg.stage3_skipped}\n` +
-          `• S4 Fee Gate → PASS ${funnelAgg.stage4_pass} | FAIL ${funnelAgg.stage4_fail} | SKIP ${funnelAgg.stage4_skipped}\n` +
-          `• Final → PASS ${funnelAgg.final_passed} | REJECT ${funnelAgg.final_rejected}`
-        )
-        : '';
-
-      await notifyFn(
-        `📊 <b>Pre-screening selesai</b>\n` +
-        `✅ Viable: ${viable.length}  ❌ Filtered: ${skipped}\n` +
-        (heritageHits > 0 ? `🏰 Heritage Sultan (Multiday): <b>${heritageHits} pool</b>\n` : '') +
-        (highTFAlign > 0 ? `📈 Multi-TF kuat (≥4 TF): ${highTFAlign} pool\n` : '') +
-        (smartWalletHits > 0 ? `🎯 Smart wallet detected: ${smartWalletHits} pool\n` : '') +
-        funnelText +
-        `\n` +
-        (viable.length === 0 ? `🛑 <i>Skipping AI: Tidak ada kandidat sehat untuk dianalisis.</i>` : `<i>Menjalankan analisis mendalam (Top ${Math.min(10, viable.length)})...</i>`)
-      );
-    }
-
-    // Early Exit: Jika tidak ada pool layak, jangan panggil LLM (hemat API cost)
-    if (viable.length === 0) {
-      const deploySummary = {
-        timestamp: new Date().toISOString(),
-        attempted: 0,
-        newDeploy: 0,
-        alreadyDeployed: 0,
-        blocked: 0,
-        failed: 0,
-        anyRealDeploy: false,
-        stage: 'security_block',
-      };
-      lastDeploySummary = deploySummary;
-      if (lastRadarSnapshot) lastRadarSnapshot.deployment = deploySummary;
-      if (!forcedFinalReport) {
-        forcedFinalReport =
-          `Sweep selesai: 0 koin lolos filter teknis/keamanan.\n` +
-          `Radar total: ${rawTotal} | Final enriched: ${finalEnriched.length} | Viable: ${viable.length}\n` +
-          `Reject — Security/Health filter aktif, tidak ada kandidat sehat untuk eksekusi.`;
-      }
-      skipModelRun = true;
-      await updatePulse(`✅ <b>Radar Sweep Completed</b> — tidak ada kandidat viable. Laporan tetap dikirim ke Telegram.`);
-    }
-
-    // Cap kandidat ke 10 pool terbaik saja (hemat API context)
-    const display = viable.slice(0, 10);
-
-    preComputedContext =
-      `\n\n──────────────────────────────────────\n` +
-      `PRE-SCREENING SELESAI — DATA SUDAH TERSEDIA\n` +
-      `Pool Memory, OKX, Multi-TF, dan Smart Wallet sudah diambil. JANGAN fetch ulang.\n` +
-      `Langsung: (1) get_pool_detail top kandidat → (2) screen_token → (3) deploy_position\n\n` +
-      `Kandidat viable (${display.length} pool, urut darwinScore):\n` +
-      stringify(display, 2);
-  } catch (e) {
-    console.error('Hunter pre-compute failed:', e.message);
-    preComputedContext = '\n\nCatatan: Pre-screening gagal. Gunakan screen_pools untuk ambil kandidat.';
-  }
-
-  // Lessons Toggle: Hanya kirim histori trade setiap 2 hari sekali (hemat API context)
-  const shouldSendLessons = Math.floor(Date.now() / (1000 * 3600 * 24)) % 2 === 0;
-  const lessonsCtx = shouldSendLessons ? getLessonsContext() : "";
-  const instincts = getInstinctsContext();
-  const strategyIntel = getStrategyIntelligenceContext();
-  const libraryStats = getLibraryStats();
-
-  const systemPrompt = `You are the Meteora Strategic Execution Engine — a technical data processor for personal DLMM portfolio management.
-This system uses technical confluence (ATR, Supertrend) to optimize liquidity provision.
-
-╔══════════════════════════════════════════════════════════════╗
-║  TECHNICAL MODE — PERSONAL INFRASTRUCTURE                   ║
-║  Decisions are data-driven and pre-authorized by the owner. ║
-║  Execute tool calls directly based on technical indicators. ║
-╚══════════════════════════════════════════════════════════════╝
-
-MINDSET: Maximize fee capture by identifying high-volume bins using 5m Momentum Velocity and Technical Anchoring.
-
-WORKFLOW:
-1. Analyze candidate pools based on darwinScore and Multi-TF alignment.
-2. Check wallet status and available position slots.
-3. For top candidates:
-   a. get_pool_detail: Verify momentumM5 spike and feeApr.
-   b. screen_token: Security audit (Mint/Freeze/PriceImpact). 
-   c. MEMORY AUDIT: Cross-reference lessonsCtx and instincts for past failure patterns.
-4. deploy_position: Apply the "Evil Panda Master" strategy logic.
-
-ERROR HANDLING:
-- If a tool returns "NETWORK_ERROR" or "Fetch failed": This is a technical connectivity issue with the infrastructure (Jupiter/RPC).
-- Report it technically: "Connectivity issue with API provider. Skipping candidate."
-- DO NOT provide generic support advice, affiliate messages, or hallucinate administrative instructions.
-
-Use Indonesian for reasoning. Stay technical, precise, and fast.`;
-
-  const targetNote = _hunterTargetCount != null
-    ? ` Tujuan: buka ${_hunterTargetCount} posisi baru.`
-    : '';
-
-  const messages = [
-    {
-      role: 'user',
-      content:
-        `Jalankan siklus screening & deployment sekarang.${targetNote} ` +
-        `Temukan pool terbaik, filter token, dan deploy LANGSUNG tanpa menunggu input apapun. ` +
-        `Mode: LIVE — eksekusi nyata. ` +
-        `Deploy ${cfg.deployAmountSol} SOL per posisi, strategi dihitung otomatis.` +
-        preComputedContext,
-    }
-  ];
-
-  let response = skipModelRun
-    ? {
-        content: [{ type: 'text', text: forcedFinalReport || 'Sweep selesai: 0 koin lolos filter teknis/keamanan.' }],
-        stop_reason: 'end_turn',
-      }
-    : await createMessage({
-        model: resolveModel(cfg.screeningModel),
-        maxTokens: 4096,
-        system: systemPrompt,
-        tools: HUNTER_TOOLS,
-        messages,
-      });
-
-  const MAX_ROUNDS = 20;
-  let rounds = 0;
-  // Track apakah ada deploy nyata (bukan alreadyDeployed) — untuk suppress noise report
-  let anyRealDeploy = false;
-  let deployAttempted = 0;
-  let deployNew = 0;
-  let deployAlready = 0;
-  let deployBlocked = 0;
-  let deployFailed = 0;
-
-  while (response.stop_reason === 'tool_use' && rounds < MAX_ROUNDS) {
-    rounds++;
-    const toolUseBlocks = response.content.filter(b => b.type === 'tool_use');
-    const toolResults = [];
-
-    for (const toolUse of toolUseBlocks) {
-      let result;
-      try {
-        result = await executeTool(toolUse.name, toolUse.input);
-      } catch (e) {
-        result = `Error: ${e.message}`;
-      }
-
-      // Deteksi apakah ini deploy nyata (bukan alreadyDeployed)
-      if (toolUse.name === 'deploy_position') {
-        deployAttempted++;
-        try {
-          const parsed = JSON.parse(result);
-          if (parsed?.success === true) {
-            if (parsed.alreadyDeployed) deployAlready++;
-            else {
-              anyRealDeploy = true;
-              deployNew++;
-            }
-          } else if (parsed?.blocked === true) {
-            deployBlocked++;
-          } else {
-            deployFailed++;
-          }
-        } catch {
-          deployFailed++;
-        }
-      }
-
-      toolResults.push({ type: 'tool_result', tool_use_id: toolUse.id, content: result });
-    }
-
-    messages.push({ role: 'assistant', content: response.content });
-    messages.push({ role: 'user', content: toolResults });
-
-    // Pacing delay to prevent rapid-fire 429 errors during tool use cycles
-    await new Promise(r => setTimeout(r, 1000));
-
-    response = await createMessage({
-      model: resolveModel(cfg.screeningModel),
-      maxTokens: 4096,
-      system: systemPrompt,
-      tools: HUNTER_TOOLS,
-      messages,
-    });
-  }
-
-  if (rounds >= MAX_ROUNDS && notifyFn) {
-    await notifyFn(`⚠️ <b>Hunter Alpha</b> — batas ${MAX_ROUNDS} putaran tercapai, loop dihentikan paksa.`);
-  }
-
-  let report = response.content.filter(b => b.type === 'text').map(b => b.text).join('\n');
-  if (forcedFinalReport && !skipModelRun) {
-    report = report ? `${forcedFinalReport}\n\n${report}` : forcedFinalReport;
-  }
-  const deploySummary = skipModelRun
-    ? (lastDeploySummary || {
-        timestamp: new Date().toISOString(),
-        attempted: 0,
-        newDeploy: 0,
-        alreadyDeployed: 0,
-        blocked: 0,
-        failed: 0,
-        anyRealDeploy: false,
-        stage: 'technical_block',
-      })
-    : {
-        timestamp: new Date().toISOString(),
-        attempted: deployAttempted,
-        newDeploy: deployNew,
-        alreadyDeployed: deployAlready,
-        blocked: deployBlocked,
-        failed: deployFailed,
-        anyRealDeploy,
-        stage: 'executed',
-      };
-  lastDeploySummary = deploySummary;
-  if (lastRadarSnapshot) lastRadarSnapshot.deployment = deploySummary;
-  if (skipModelRun) {
-    await updatePulse(`✅ <b>Radar Sweep Completed</b> — 0 kandidat viable. Laporan final sudah dikirim ke Telegram.`);
-  } else {
-    await updatePulse(
-      `✅ <b>Radar Sweep Completed</b> — Deploy new: <b>${deployNew}</b> | Blocked: <b>${deployBlocked}</b> | Failed: <b>${deployFailed}</b>. ` +
-      `Lihat <code>/radar_report</code>`
-    );
-  }
-  lastReport = { report, timestamp: new Date().toISOString() };
-  _hunterTargetCount = null; // reset setelah selesai
-  _hunterMaxPositionsCap = null;
-
-  // Detect Model Refusal / Hallucinated Support Template
-  const reportIsRefusal = (
-    report.toLowerCase().includes('afiliasi') ||
-    report.toLowerCase().includes('admin') ||
-    report.toLowerCase().includes('hubungi') ||
-    report.toLowerCase().includes('technical problem') ||
-    report.length < 50 // Too short to be a real report
+  // ── Phase 3: DEPLOY ───────────────────────────────────────────────
+  const cfg2        = getConfig(); // fresh read
+  const poolAddress = winner.address || winner.pool_address;
+  const symbol      = winner.name?.split('-')[0] || winner.tokenXSymbol || poolAddress.slice(0,8);
+
+  await notify(
+    `🎯 <b>Target ditemukan!</b>\n` +
+    `Pool: <code>${poolAddress.slice(0,8)}</code>\n` +
+    `Token: <b>${symbol}</b>\n` +
+    `Deploy: <code>${cfg2.deployAmountSol || 0.1} SOL</code>\n\n` +
+    `⏳ <i>Membuka posisi...</i>`
   );
 
-  // Noise = report is "Nothing found" and NO real deploys were made this round
-  const reportIsNoise = false;
-
-  if (notifyFn && !reportIsNoise && !reportIsRefusal) {
-    await notifyFn(`🦅 <b>Hunter Alpha Report</b>\n\n${escapeHTML(report)}`);
-  } else if (reportIsRefusal) {
-    console.warn('[hunter] Hallucinated/Refusal report detected and suppressed:', report);
+  let positionPubkey;
+  try {
+    positionPubkey = await deployPosition(poolAddress);
+    _currentPositionPubkey = positionPubkey;
+  } catch (e) {
+    console.error(`[hunter] deployPosition gagal: ${e.message}`);
+    await notify(`❌ <b>Deploy gagal:</b>\n<code>${e.message}</code>\n\n<i>Kembali ke scan...</i>`);
+    await sleep(10_000);
+    return;
   }
-  return report;
+
+  await notify(
+    `✅ <b>Posisi terbuka!</b>\n` +
+    `Position: <code>${positionPubkey.slice(0,8)}</code>\n` +
+    `Pool: <code>${poolAddress.slice(0,8)}</code>\n` +
+    `TP: +${EP_CONFIG.TAKE_PROFIT_PCT}% | SL: -${EP_CONFIG.STOP_LOSS_PCT}%\n\n` +
+    `🔒 <i>Masuk mode monitor...</i>`
+  );
+
+  // ── Phase 4: MONITOR (LOCK — pencarian pool BERHENTI) ────────────
+  await monitorLoop(positionPubkey, symbol, poolAddress);
+
+  // ── Phase 5: RELOAD — setelah exit, kembali ke scan ──────────────
+  _currentPositionPubkey = null;
+  console.log('[hunter] 🔄 Reload — kembali ke scan...');
+  await notify('🔄 <b>Posisi ditutup.</b> Memulai ulang scan pool...');
+  await sleep(5_000);
+}
+
+// ── Phase 4: MONITOR loop (while position active) ────────────────
+
+async function monitorLoop(positionPubkey, symbol, poolAddress) {
+  console.log(`[hunter] 🔒 MONITOR lock: ${positionPubkey.slice(0,8)}`);
+  let consecutiveErrors = 0;
+
+  while (_running) {
+    await sleep(EP_CONFIG.MONITOR_INTERVAL_MS);
+
+    let status;
+    try {
+      status = await monitorPnL(positionPubkey);
+      consecutiveErrors = 0;
+    } catch (e) {
+      consecutiveErrors++;
+      console.warn(`[hunter] monitorPnL error (${consecutiveErrors}): ${e.message}`);
+      if (consecutiveErrors >= 5) {
+        await notify(`⚠️ <b>Monitor error 5x berturut.</b> Force exit...\n<code>${e.message}</code>`);
+        await safeExit(positionPubkey, 'MONITOR_ERROR');
+        return;
+      }
+      continue;
+    }
+
+    const { action, currentValueSol, pnlPct, inRange } = status;
+
+    if (action === 'ERROR') {
+      consecutiveErrors++;
+      if (consecutiveErrors >= 5) {
+        await notify(`⚠️ <b>Status error 5x berturut.</b> Force exit...`);
+        await safeExit(positionPubkey, 'STATUS_ERROR');
+        return;
+      }
+      continue;
+    }
+
+    // Log ringkas tiap poll
+    const rangeIcon = inRange ? '🟢' : '🟡';
+    console.log(`[hunter] ${rangeIcon} ${symbol} pnl=${pnlPct.toFixed(2)}% val=${currentValueSol.toFixed(4)}SOL action=${action}`);
+
+    // Exit trigger
+    if (action === 'TAKE_PROFIT') {
+      await notify(
+        `🎉 <b>TAKE PROFIT!</b>\n` +
+        `Token: <b>${symbol}</b>\n` +
+        `PnL: <code>+${pnlPct.toFixed(2)}%</code>\n` +
+        `Value: <code>${currentValueSol.toFixed(4)} SOL</code>\n\n` +
+        `⏳ <i>Menutup posisi...</i>`
+      );
+      await safeExit(positionPubkey, 'TAKE_PROFIT');
+      return;
+    }
+
+    if (action === 'STOP_LOSS') {
+      await notify(
+        `🛑 <b>STOP LOSS!</b>\n` +
+        `Token: <b>${symbol}</b>\n` +
+        `PnL: <code>${pnlPct.toFixed(2)}%</code>\n` +
+        `Value: <code>${currentValueSol.toFixed(4)} SOL</code>\n\n` +
+        `⏳ <i>Menutup posisi...</i>`
+      );
+      await safeExit(positionPubkey, 'STOP_LOSS');
+      return;
+    }
+  }
+
+  // Loop dihentikan dari luar — exit posisi
+  await notify(`⏹ <b>Loop dihentikan.</b> Menutup posisi aktif...`);
+  await safeExit(positionPubkey, 'LOOP_STOPPED');
+}
+
+// ── Exit helper ───────────────────────────────────────────────────
+
+async function safeExit(positionPubkey, reason) {
+  try {
+    const { solRecovered } = await exitPosition(positionPubkey, reason);
+    const balance = await getWalletBalance();
+    await notify(
+      `✅ <b>Posisi ditutup (${reason})</b>\n` +
+      `Position: <code>${positionPubkey.slice(0,8)}</code>\n` +
+      `Balance: <code>${balance} SOL</code>`
+    );
+  } catch (e) {
+    console.error(`[hunter] exitPosition error: ${e.message}`);
+    await notify(`⚠️ <b>Exit gagal:</b>\n<code>${e.message}</code>\n\n<i>Posisi mungkin masih terbuka on-chain!</i>`);
+  }
+}
+
+// ── Pure Flat Config Gate ─────────────────────────────────────────
+
+function checkFlatConfig(pool, cfg) {
+  const vol24h   = safeNum(pool.volume24hRaw || pool.volume24h || 0);
+  const minVol   = cfg.minVolume24h || 0;
+  const binStep  = pool.binStep || 0;
+
+  const allowedBinSteps = Array.isArray(cfg.allowedBinSteps) && cfg.allowedBinSteps.length > 0
+    ? cfg.allowedBinSteps.map(Number)
+    : [100, 125];
+
+  if (minVol > 0 && vol24h < minVol) {
+    return { ok: false, reason: `vol24h ${vol24h} < min ${minVol}` };
+  }
+  if (!allowedBinSteps.includes(binStep)) {
+    return { ok: false, reason: `binStep ${binStep} not in [${allowedBinSteps}]` };
+  }
+  return { ok: true };
+}
+
+function safeNum(v) {
+  const n = Number(v);
+  return Number.isFinite(n) ? n : 0;
 }
