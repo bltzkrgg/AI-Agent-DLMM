@@ -2,26 +2,13 @@ import DLMM from '@meteora-ag/dlmm';
 import { PublicKey, Keypair, Transaction, ComputeBudgetProgram, VersionedTransaction, SystemProgram, TransactionMessage } from '@solana/web3.js';
 import BN from 'bn.js';
 import { getConnection, getWallet } from './wallet.js';
-import db, {
-  savePosition,
-  closePositionWithPnl,
-  enqueueReconcileIssue,
-  updatePositionLifecycle,
-  runInQueue,
-  getResumablePartialDeployment,
-  getResumablePartialDeploymentByPosition,
-  updatePositionDeploymentProgress,
-} from '../db/database.js';
-import { updatePositionRuntimeState } from '../app/positionRuntimeState.js';
 import { fetchWithTimeout, safeNum, withRetry, withExponentialBackoff, stringify, getConservativeSlippage } from '../utils/safeJson.js';
 import { toLamports, fromLamports, sumBigInts } from '../utils/units.js';
 import { resolveTokens, WSOL_MINT } from '../utils/tokenMeta.js';
 import { getRecommendedPriorityFee } from '../utils/helius.js';
 import { isDryRun, getConfig } from '../config.js';
-import { getWalletPositions as getLPAgentPositions, isLPAgentEnabled } from '../market/lpAgent.js';
 import { swapToSol, getSwapQuoteToSol } from '../utils/jupiter.js';
 import { getTokenBalance } from './wallet.js';
-import { getMarketSnapshot } from '../market/oracle.js';
 import {
   checkAndConsumePriorityFeeBudget,
   estimatePriorityFeeSol,
@@ -29,6 +16,22 @@ import {
   recordTxSuccess,
 } from '../safety/gasGuard.js';
 import crypto from 'crypto';
+
+// ── Stateless stubs (DB + legacy imports removed) ─────────────────────
+// Semua fungsi ini sebelumnya membaca/menulis SQLite.
+// Sekarang menjadi no-op — state dikelola di-memory oleh evilPanda.js.
+const savePosition                           = async () => {};
+const closePositionWithPnl                   = async () => {};
+const enqueueReconcileIssue                  = async () => {};
+const updatePositionLifecycle                = async () => {};
+const runInQueue                             = async (fn) => fn();
+const getResumablePartialDeployment          = async () => null;
+const getResumablePartialDeploymentByPosition = async () => null;
+const updatePositionDeploymentProgress       = async () => {};
+const updatePositionRuntimeState             = () => {};
+const isLPAgentEnabled                       = () => false;
+const getLPAgentPositions                    = async () => [];
+const getMarketSnapshot                      = async () => null;
 
 const METEORA_DLMM_API = 'https://dlmm-api.meteora.ag';
 

@@ -21,7 +21,6 @@ import { join, dirname }            from 'path';
 import { fileURLToPath }            from 'url';
 import { getConfig, updateConfig, isConfigKeySupported } from '../config.js';
 import { createMessage }            from '../agent/provider.js';
-import { resolveModel }             from '../agent/provider.js';
 
 const __dirname  = dirname(fileURLToPath(import.meta.url));
 const HARVEST_LOG = join(__dirname, '../../harvest.log');
