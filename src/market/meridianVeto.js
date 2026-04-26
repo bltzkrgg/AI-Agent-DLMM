@@ -342,6 +342,7 @@ export async function discoverHighFeePoolsMeridian({ limit = 50 } = {}) {
   const maxMcap            = Number(cfg.maxMcapUsd || cfg.maxMcap) || 0;
   const minVol             = Number(cfg.minVolume24h) || 100000;
   const minTvl             = Number(cfg.minTvl) || 0;
+  const maxTvl             = Number(cfg.maxTvl) || 0;
   const timeframe          = cfg.discoveryTimeframe || '1h';
   const category           = cfg.discoveryCategory || '';
 
@@ -361,6 +362,7 @@ export async function discoverHighFeePoolsMeridian({ limit = 50 } = {}) {
     `fee_active_tvl_ratio>=${minFeeRatio}`,
   ];
   if (maxMcap > 0) filterParts.push(`base_token_market_cap<=${maxMcap}`);
+  if (maxTvl  > 0) filterParts.push(`tvl<=${maxTvl}`);
 
   const filterStr = filterParts.join('&&');
 

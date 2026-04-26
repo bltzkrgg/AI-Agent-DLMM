@@ -485,12 +485,15 @@ export async function discoverMeteoraDlmmPools(opts = {}) {
   const timeframe = String(opts.timeframe || radar.discoveryTimeframe || '5m');
   const category = String(opts.category || radar.discoveryCategory || '');
 
-  const filters = [
+  const filterArr = [
     'pool_type=dlmm',
     `base_token_market_cap>=${Math.max(0, radar.minMcap)}`,
     `volume>=${Math.max(0, radar.minVolume24h)}`,
     `tvl>=${Math.max(0, radar.minTvl)}`,
-  ].join('&&');
+  ];
+  if (radar.maxMcap > 0) filterArr.push(`base_token_market_cap<=${radar.maxMcap}`);
+  if (radar.maxTvl  > 0) filterArr.push(`tvl<=${radar.maxTvl}`);
+  const filters = filterArr.join('&&');
 
   const params = new URLSearchParams({
     page_size: String(limit),

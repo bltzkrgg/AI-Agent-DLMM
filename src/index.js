@@ -365,7 +365,7 @@ bot.onText(/\/setconfig(?:\s+(\S+))?(?:\s+(.+))?/, (msg, match) => {
         bot.sendMessage(chatId,
           `📡 <b>Auto-Screening: ON</b>\n` +
           `Loop dimulai — interval <code>${result.screeningIntervalMin || 15} menit</code>.\n\n` +
-          `<i>Screening pertama akan berjalan dalam 30 detik.</i>`,
+          `<i>Screening pertama akan berjalan dalam ${result.screeningIntervalMin || 15} menit.</i>`,
           { parse_mode: 'HTML' }
         );
       } else {
@@ -461,7 +461,7 @@ bot.onText(/\/autoscreen(?:\s+(on|off))?/, (msg, match) => {
       bot.sendMessage(chatId,
         `📡 <b>Auto-Screening: ON</b>\n` +
         `Loop dimulai — interval <code>${result.screeningIntervalMin || 15} menit</code>.\n\n` +
-        `<i>Screening pertama akan berjalan dalam 30 detik.</i>`,
+        `<i>Screening pertama akan berjalan dalam ${result.screeningIntervalMin || 15} menit.</i>`,
         { parse_mode: 'HTML' }
       );
     } else {
@@ -699,8 +699,8 @@ async function runScreeningLoop() {
     }
   };
 
-  // Jalankan pertama kali setelah 30 detik, lalu per interval dari config
-  setTimeout(tick, 30_000);
+  // Jalankan pertama kali setelah 1 interval, lalu per interval dari config
+  setTimeout(tick, intervalMs);
   _screeningLoopTimer = setInterval(tick, intervalMs);
   console.log(`🔍 Screening loop aktif — interval ${intervalMin} menit (${intervalMs / 1000}s)`);
 }
