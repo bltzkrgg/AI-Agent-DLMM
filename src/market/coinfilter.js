@@ -7,10 +7,10 @@ const WSOL_MINT = 'So11111111111111111111111111111111111111112';
 const METEORA_DISCOVERY_BASE = 'https://pool-discovery-api.datapi.meteora.ag';
 const DEXSCREENER_BASE = 'https://api.dexscreener.com/latest/dex/tokens';
 const OKX_BASE = 'https://web3.okx.com';
-// Kedua endpoint mengarah ke api.jup.ag/v6/quote (TANPA /swap/) — fix HTTP 404
-// Fallback dipertahankan sebagai safety net jika primary timeout/reject
-const JUPITER_QUOTE_API = 'https://api.jup.ag/v6/quote';
-const JUPITER_QUOTE_API_FALLBACK = 'https://api.jup.ag/v6/quote';
+// quote-api.jup.ag adalah domain resmi untuk Jupiter Quote API V6 (TANPA /swap/)
+// Kedua konstanta identik — fallback sebagai safety net jika primary timeout/reject
+const JUPITER_QUOTE_API = 'https://quote-api.jup.ag/v6/quote';
+const JUPITER_QUOTE_API_FALLBACK = 'https://quote-api.jup.ag/v6/quote';
 const JUPITER_UA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
 const JUPITER_BLACKLIST_TTL_MS = 24 * 60 * 60 * 1000;
 
