@@ -389,7 +389,7 @@ POOL FILTER (semua harus terpenuhi):
   • binStep        : ${(cfg.allowedBinSteps || [100, 125]).join(' atau ')} (meme/volatile SOL pairs)
   • Fee tier       : 0.25%+ (minimal worth the gas)
   • Min mcap       : $${cfg.minMcap.toLocaleString('en-US')}
-  • Min volume 24h : $${cfg.minVolume24h.toLocaleString('en-US')}
+  • Min volume 24h : $${cfg.minVolume.toLocaleString('en-US')}
 
 EXECUTION:
   • Type           : single_side_y — SOL only, tidak pakai token X sama sekali

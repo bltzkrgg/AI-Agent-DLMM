@@ -109,7 +109,7 @@ function buildEvolutionPrompt(stats, currentConfig) {
     minFeeActiveTvlRatio: currentConfig.minFeeActiveTvlRatio,
     maxPoolAgeDays:      currentConfig.maxPoolAgeDays,
     slippageBps:         currentConfig.slippageBps,
-    minVolume24h:        currentConfig.minVolume24h,
+    minVolume:        currentConfig.minVolume,
     minMcap:             currentConfig.minMcap,
   };
 
@@ -135,7 +135,7 @@ ${stats.recentTrades.join('\n')}
    minOrganic (0-100), gmgnMinAgeHours (0-720), stopLossPct (1-50),
    trailingStopPct (0.5-50), minFeeActiveTvlRatio (0-1),
    maxPoolAgeDays (0.1-30), slippageBps (10-1000),
-   minVolume24h (0-1000000000), minMcap (0-100000000)
+   minVolume (0-1000000000), minMcap (0-100000000)
 
 2. Be conservative — only suggest changes supported by the data.
 

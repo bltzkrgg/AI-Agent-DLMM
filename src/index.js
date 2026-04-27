@@ -229,7 +229,7 @@ bot.onText(/\/config/, (msg) => {
     `discoveryCategory     = ${cfg.discoveryCategory}`,
     `minTvl                = ${cfg.minTvl}`,
     `maxTvl                = ${cfg.maxTvl}`,
-    `minVolume24h          = ${cfg.minVolume24h}`,
+    `minVolume          = ${cfg.minVolume}`,
     `minHolders            = ${cfg.minHolders}`,
     `minOrganic            = ${cfg.minOrganic}`,
     `maxPoolAgeDays        = ${cfg.maxPoolAgeDays}`,
@@ -638,10 +638,10 @@ async function runScreeningLoop() {
         const sym   = p.name || p.tokenXMint?.slice(0, 8) || 'UNKNOWN';
         const ratio = ((p.feeActiveTvlRatio || 0) * 100).toFixed(2);
         const tvlRaw= Number(p.totalTvl || p.activeTvl || 0);
-        const tvl   = safeNum(tvlRaw, 0).toLocaleString('en-US', { maximumFractionDigits: 0 });
-        const mcap  = safeNum(p.mcap, 0).toLocaleString('en-US', { maximumFractionDigits: 0 });
+        const tvl   = safeNum(tvlRaw, 0).toLocaleString('en-US');
+        const mcap  = safeNum(p.mcap, 0).toLocaleString('en-US');
         const volRaw= Number(p.volume24h || p.volume || p.v24h || 0);
-        const vol   = safeNum(volRaw, 0).toLocaleString('en-US', { maximumFractionDigits: 0 });
+        const vol   = safeNum(volRaw, 0).toLocaleString('en-US');
         const effValue = volRaw / (tvlRaw || 1);
         const eff   = effValue > 1000 ? '>1000' : effValue.toFixed(2);
         return `${i + 1}. <b>${escapeHTML(sym)}</b> — <code>${ratio}%</code> fee/TVL | TVL: <code>$${tvl}</code>\n      MCap: <code>$${mcap}</code> | Vol: <code>$${vol}</code> | Eff: <code>${eff}x</code>`;

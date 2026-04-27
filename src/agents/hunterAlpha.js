@@ -110,8 +110,8 @@ export async function runLinearLoop() {
       await scanAndDeploy();
     } catch (e) {
       console.error(`[hunter] Loop error: ${e.message}`);
-      await notify(`⚠️ <b>Loop error:</b>\n<code>${e.message}</code>\n\n<i>Retry dalam 30 detik...</i>`);
-      await sleep(30_000);
+      await notify(`⚠️ <b>Loop error:</b>\n<code>${e.message}</code>\n\n<i>Retry dalam 60 detik...</i>`);
+      await sleep(60_000);
     }
   }
 
@@ -412,7 +412,8 @@ async function safeExit(positionPubkey, reason) {
 
 function checkFlatConfig(pool, cfg) {
   const vol24h   = safeNum(pool.volume24h || pool.volume24hRaw || 0);
-  const minVol   = cfg.minVolume24h || 0;
+  const minVol   = Number(cfg.minVolume) || 0;
+  const maxVol   = Number(cfg.maxVolume) || 0;
   const binStep  = pool.binStep || 0;
   const feeRatio = pool.feeActiveTvlRatio || 0;
   const minFee   = cfg.minFeeActiveTvlRatio || 0;
@@ -427,6 +428,9 @@ function checkFlatConfig(pool, cfg) {
   if (minVol > 0 && vol24h < minVol) {
     return { ok: false, reason: `vol24h $${vol24h.toLocaleString()} < min $${minVol.toLocaleString()}` };
   }
+  if (maxVol > 0 && vol24h > maxVol) {
+    return { ok: false, reason: `vol24h $${vol24h.toLocaleString()} > max $${maxVol.toLocaleString()}` };
+  }
   if (minFee > 0 && feeRatio < minFee) {
     return { ok: false, reason: `fee/tvl ${(feeRatio*100).toFixed(4)}% < min ${(minFee*100).toFixed(4)}%` };
   }
@@ -436,4 +440,71 @@ function checkFlatConfig(pool, cfg) {
 function safeNum(v) {
   const n = Number(v);
   return Number.isFinite(n) ? n : 0;
+}
+
+// ── Auto-Screening Manual Runner ───────────────────────────────────
+// Dipanggil oleh /screening dan awal /autoscreen on
+
+export async function runAutoscreening(bot, chatId) {
+  const cfg = getConfig();
+  await bot.sendMessage(chatId, `🔍 <b>Scanning real-time...</b>\nMencari kandidat terbaik.`, { parse_mode: 'HTML' });
+
+  try {
+    const limit = Number(cfg.meteoraDiscoveryLimit) || 180;
+    const pools = await discoverHighFeePoolsMeridian({ limit });
+    
+    if (!pools || pools.length === 0) {
+      await bot.sendMessage(chatId, 'ℹ️ Tidak ada pool ditemukan saat ini.', { parse_mode: 'HTML' });
+      return;
+    }
+
+    // Urutkan berdasarkan Efficiency Score (Volume / TVL), ambil top 5
+    const top5 = [...pools]
+      .sort((a, b) => {
+        const aTvl = Number(a.activeTvl || a.totalTvl || 0) || 1;
+        const bTvl = Number(b.activeTvl || b.totalTvl || 0) || 1;
+        const aVol = Number(a.volume24h || a.volume || a.v24h || 0);
+        const bVol = Number(b.volume24h || b.volume || b.v24h || 0);
+        return (bVol / bTvl) - (aVol / aTvl);
+      })
+      .slice(0, 5);
+
+    const lines = await Promise.all(top5.map(async (pool, i) => {
+      const symbol  = pool.name || pool.tokenXMint?.slice(0, 8) || 'UNKNOWN';
+      const ratio   = ((pool.feeActiveTvlRatio || 0) * 100).toFixed(2);
+      const tvlRaw  = Number(pool.totalTvl || pool.activeTvl || 0);
+      const tvl     = safeNum(tvlRaw, 0).toLocaleString('en-US'); // Changed to preserve decimals
+      const mcap    = safeNum(pool.mcap, 0).toLocaleString('en-US'); // Changed to preserve decimals
+      const volRaw  = Number(pool.volume24h || pool.volume || pool.v24h || 0);
+      const vol     = safeNum(volRaw, 0).toLocaleString('en-US'); // Changed to preserve decimals
+      const effValue= volRaw / (tvlRaw || 1);
+      const eff     = effValue > 1000 ? '>1000' : effValue.toFixed(2);
+      const binStep = pool.binStep || '?';
+
+      let stIcon = '⚪';
+      try {
+        // Pass the token shape correctly
+        const veto = await runMeridianVeto({ mint: pool.tokenXMint || pool.address || '', symbol, pool });
+        if (!veto.veto) {
+          stIcon = `🟢 ${veto.reason || 'PASS'}`;
+        } else {
+          stIcon = `🔴 ${veto.reason || 'VETO'}`;
+        }
+      } catch (e) {
+        stIcon = `⚪ (API skip: ${e.message})`;
+      }
+
+      return (
+        `<b>${i + 1}. ${symbol}</b> [${binStep}]\n` +
+        `   Eff: <code>${eff}x</code> | Fee/TVL: <code>${ratio}%</code>\n` +
+        `   TVL: <code>$${tvl}</code> | Vol: <code>$${vol}</code> | MCap: <code>$${mcap}</code>\n` +
+        `   Status: ${stIcon}`
+      );
+    }));
+
+    const report = `📊 <b>Top 5 Pool Efisien (Real-time)</b>\n\n` + lines.join('\n\n');
+    await bot.sendMessage(chatId, report, { parse_mode: 'HTML', disable_web_page_preview: true });
+  } catch (e) {
+    bot.sendMessage(chatId, `❌ Error scanning: ${e.message}`);
+  }
 }
