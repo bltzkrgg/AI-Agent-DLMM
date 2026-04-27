@@ -522,7 +522,7 @@ export async function discoverMeteoraDlmmPools(opts = {}) {
         tokenXSymbol: p?.token_x?.symbol || '',
         tokenYSymbol: p?.token_y?.symbol || '',
         mcap: safeNum(p?.token_x?.market_cap || p?.base_token_market_cap || 0),
-        volume24hRaw: Number(p?.tradeVolume24h || p?.volume || p?.v24h || 0),
+        volume24hRaw: Number(p?.volume24h || p?.volume_24h || p?.trade_volume_24h || p?.tradeVolume24h || p?.volume || p?.v24h || 0),
         liquidityRaw: safeNum(p?.active_tvl || p?.tvl || 0),
         txns24hRaw: safeNum(p?.swap_count || 0),
         binStep: safeNum(p?.dlmm_params?.bin_step || p?.bin_step || 0),

@@ -615,8 +615,8 @@ async function runScreeningLoop() {
         .sort((a, b) => {
           const aTvl = Number(a.activeTvl || a.totalTvl || 0) || 1;
           const bTvl = Number(b.activeTvl || b.totalTvl || 0) || 1;
-          const aVol = Number(a.volume24h || a.volume || a.v24h || 0);
-          const bVol = Number(b.volume24h || b.volume || b.v24h || 0);
+          const aVol = Number(a.volume24h || a.volume_24h || a.trade_volume_24h || a.tradeVolume24h || a.volume || a.v24h || 0);
+          const bVol = Number(b.volume24h || b.volume_24h || b.trade_volume_24h || b.tradeVolume24h || b.volume || b.v24h || 0);
           return (bVol / bTvl) - (aVol / aTvl);
         })
         .slice(0, 5);
@@ -629,7 +629,7 @@ async function runScreeningLoop() {
         const tvlRaw= Number(p.totalTvl || p.activeTvl || 0);
         const tvl   = safeNum(tvlRaw, 0).toLocaleString('en-US');
         const mcap  = safeNum(p.mcap, 0).toLocaleString('en-US');
-        const volRaw= Number(p.volume24h || p.volume || p.v24h || 0);
+        const volRaw= Number(p.volume24h || p.volume_24h || p.trade_volume_24h || p.tradeVolume24h || p.volume || p.v24h || 0);
         const vol   = safeNum(volRaw, 0).toLocaleString('en-US');
         const effValue = volRaw / (tvlRaw || 1);
         const eff   = effValue > 1000 ? '>1000' : effValue.toFixed(2);

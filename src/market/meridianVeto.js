@@ -447,7 +447,7 @@ function normalizePool(p) {
     activeTvl:         Number(p.active_tvl || 0),
     // total_tvl: dipakai oleh dominance check — seluruh TVL pool (bukan hanya active bins)
     totalTvl:          Number(p.tvl || p.total_tvl || p.active_tvl || 0),
-    volume24h:         Number(p.tradeVolume24h || p.volume || p.v24h || 0),
+    volume24h:         Number(p.volume24h || p.volume_24h || p.trade_volume_24h || p.tradeVolume24h || p.volume || p.v24h || 0),
     mcap:              Number(p.token_x?.market_cap || p.mcap || 0),
     holders:           Number(p.base_token_holders || p.holders || 0),
     organicScore:      Number(p.token_x?.organic_score || p.organic_score || 0),
@@ -492,7 +492,7 @@ export async function runMeridianVeto(token) {
 
   // Volume Range Gate
   if (pool) {
-    const vol = Number(pool.tradeVolume24h || pool.volume || pool.v24h || 0);
+    const vol = Number(pool.volume24h || pool.volume_24h || pool.trade_volume_24h || pool.tradeVolume24h || pool.volume || pool.v24h || 0);
     const minVol = Number(cfg.minVolume) || 0;
     const maxVol = Number(cfg.maxVolume) || 0;
     if (minVol > 0 && vol < minVol) {
