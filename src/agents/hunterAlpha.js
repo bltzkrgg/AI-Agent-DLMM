@@ -166,9 +166,10 @@ async function scanAndDeploy() {
   console.log(`[hunter] ${pools.length} pool ditemukan. Mulai screening...`);
 
   // ── Phase 2: FILTER — sequential, 5 detik antar koin ────────────
-  let winner = null;
+  let winners = [];
 
   for (const pool of pools) {
+    if (winners.length >= 5) break;
     if (!_running) return;
 
     const tokenMint   = pool.tokenXMint || pool.tokenX || pool.mint;
@@ -239,11 +240,10 @@ async function scanAndDeploy() {
     }
 
     console.log(`[hunter] ✅ ${tokenSymbol} LOLOS semua gate! (binStep=${binStep} fee/tvl=${(feeRatio*100).toFixed(3)}%)`);
-    winner = pool;
-    break;
+    winners.push(pool);
   }
 
-  if (!winner) {
+  if (winners.length === 0) {
     // Baca config fresh agar pakai nilai terbaru (tidak hardcode 2 menit)
     const retryCfg      = getConfig();
     const retryMin      = Number(retryCfg.screeningIntervalMin) || 15;
@@ -254,23 +254,40 @@ async function scanAndDeploy() {
     return;
   }
 
+  // Sort winners by Efficiency Score
+  winners.sort((a, b) => {
+    const aTvl = Number(a.activeTvl || a.totalTvl || 0) || 1;
+    const bTvl = Number(b.activeTvl || b.totalTvl || 0) || 1;
+    const aVol = Number(a.volume24h || a.volume || a.v24h || 0);
+    const bVol = Number(b.volume24h || b.volume || b.v24h || 0);
+    return (bVol / bTvl) - (aVol / aTvl);
+  });
+
+  const winner = winners[0];
+
   // ── Phase 3: DEPLOY ───────────────────────────────────────────────
   const cfg2        = getConfig();
   const poolAddress = winner.address || winner.pool_address || winner.pool;
   const symbol      = winner.tokenXSymbol || winner.name?.split('-')[0] || poolAddress.slice(0,8);
-  const binStep     = winner.binStep || '?';
-  const feeRatio    = winner.feeActiveTvlRatio || 0;
-  const mcap        = Math.round(winner.mcap || 0).toLocaleString('en-US');
-  const vol         = Math.round(winner.volume24h || 0).toLocaleString('en-US');
+
+  const candidateListStr = winners.map((p, i) => {
+    const sym   = p.name || p.tokenXMint?.slice(0, 8) || 'UNKNOWN';
+    const ratio = ((p.feeActiveTvlRatio || 0) * 100).toFixed(2);
+    const tvlRaw= Number(p.totalTvl || p.activeTvl || 0);
+    const volRaw= Number(p.volume24h || p.volume || p.v24h || 0);
+    const mcap  = Math.round(p.mcap || 0).toLocaleString('en-US');
+    const effValue = volRaw / (tvlRaw || 1);
+    const eff   = effValue > 1000 ? '>1000' : effValue.toFixed(2);
+    const mark  = i === 0 ? '🏆' : '✅';
+    return `${i+1}. ${mark} <b>${sym}</b> [${p.binStep || '?'}] — Eff: <code>${eff}x</code>\n   Fee/TVL: <code>${ratio}%</code> | MCap: <code>$${mcap}</code>`;
+  }).join('\n\n');
 
   await notify(
-    `🎯 <b>Target ditemukan!</b>\n` +
-    `Pool: <code>${poolAddress.slice(0,8)}</code>\n` +
-    `Token: <b>${symbol}</b> | BinStep: <code>${binStep}</code>\n` +
-    `Fee/TVL: <code>${(feeRatio*100).toFixed(3)}%</code>\n` +
-    `MCap: <code>$${mcap}</code> | Vol: <code>$${vol}</code>\n` +
-    `Deploy: <code>${cfg2.deployAmountSol || 0.1} SOL</code>\n\n` +
-    `⏳ <i>Membuka posisi...</i>`
+    `🎯 <b>Top ${winners.length} Kandidat Paling Efisien (Vol/TVL)</b>\n\n` +
+    `${candidateListStr}\n\n` +
+    `Mengeksekusi <b>${symbol}</b>...\n` +
+    `Deploy: <code>${cfg2.deployAmountSol || 0.1} SOL</code>\n` +
+    `⏳ <i>Membuka posisi pada pool <code>${poolAddress.slice(0,8)}</code>...</i>`
   );
 
   let positionPubkey;
