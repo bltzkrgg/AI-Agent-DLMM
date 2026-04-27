@@ -76,10 +76,11 @@ async function notify(msg) {
 
 // ── State ─────────────────────────────────────────────────────────
 let _running   = false;
-let _currentPositionPubkey = null;
+const _activePositions = []; // [{ pubkey, symbol, poolAddress, mint }]
 
 export function isRunning()            { return _running; }
-export function getCurrentPosition()   { return _currentPositionPubkey; }
+export function getCurrentPosition()   { return _activePositions.length > 0 ? _activePositions[0].pubkey : null; }
+export function getActivePositions()   { return _activePositions; }
 
 // ── Delay helper ──────────────────────────────────────────────────
 const sleep = ms => new Promise(r => setTimeout(r, ms));
@@ -270,12 +271,34 @@ async function scanAndDeploy() {
 
   const winner = winners[0];
 
-  // ── Phase 3: DEPLOY ───────────────────────────────────────────────
+  // ── Phase 3: DEPLOY & SLOT MANAGEMENT ───────────────────────────
   const cfg2        = getConfig();
-  const poolAddress = winner.address || winner.pool_address || winner.pool;
-  const symbol      = winner.tokenXSymbol || winner.name?.split('-')[0] || poolAddress.slice(0,8);
+  
+  // 1. Kapasitas Slot
+  const maxPositions = cfg2.maxPositions || 1;
+  const activePositionsCount = _activePositions.length;
+  let availableSlots = maxPositions - activePositionsCount;
 
-  const candidateListStr = winners.map((p, i) => {
+  if (availableSlots <= 0) {
+    console.log(`[hunter] ⚠️ Kapasitas penuh (Max ${maxPositions}). Bot standby memantau exit...`);
+    await sleep(15_000);
+    return;
+  }
+
+  // 2. Filter Deduplikasi (Anti Double-Entry)
+  const activeMints = _activePositions.map(p => p.mint);
+  const eligibleWinners = winners.filter(w => {
+    const mint = w.tokenXMint || w.tokenX || w.mint || w.address;
+    return !activeMints.includes(mint);
+  });
+
+  if (eligibleWinners.length === 0) {
+    console.log('[hunter] Semua kandidat Top 5 sudah ada di posisi aktif. Standby...');
+    await sleep(15_000);
+    return;
+  }
+
+  const candidateListStr = eligibleWinners.map((p, i) => {
     const sym   = p.name || p.tokenXMint?.slice(0, 8) || 'UNKNOWN';
     const ratio = ((p.feeActiveTvlRatio || 0) * 100).toFixed(2);
     const tvlRaw= Number(p.totalTvl || p.activeTvl || 0);
@@ -288,40 +311,53 @@ async function scanAndDeploy() {
   }).join('\n\n');
 
   await notify(
-    `🎯 <b>Top ${winners.length} Kandidat Paling Efisien (Vol/TVL)</b>\n\n` +
+    `🎯 <b>Top ${eligibleWinners.length} Kandidat Tersedia (Deduplicated)</b>\n\n` +
     `${candidateListStr}\n\n` +
-    `Mengeksekusi <b>${symbol}</b>...\n` +
-    `Deploy: <code>${cfg2.deployAmountSol || 0.1} SOL</code>\n` +
-    `⏳ <i>Membuka posisi pada pool <code>${poolAddress.slice(0,8)}</code>...</i>`
+    `Mengeksekusi kandidat yang tersedia...`
   );
 
-  let positionPubkey;
-  try {
-    positionPubkey = await deployPosition(poolAddress);
-    _currentPositionPubkey = positionPubkey;
-  } catch (e) {
-    console.error(`[hunter] deployPosition gagal: ${e.message}`);
-    await notify(`❌ <b>Deploy gagal:</b>\n<code>${e.message}</code>\n\n<i>Kembali ke scan...</i>`);
-    await sleep(10_000);
-    return;
+  // 3. Iterative Deployment
+  for (const winner of eligibleWinners) {
+    if (availableSlots <= 0) break;
+
+    const poolAddress = winner.address || winner.pool_address || winner.pool;
+    const tokenMint   = winner.tokenXMint || winner.tokenX || winner.mint || poolAddress;
+    const symbol      = winner.tokenXSymbol || winner.name?.split('-')[0] || poolAddress.slice(0,8);
+
+    await notify(
+      `Mengeksekusi <b>${symbol}</b>...\n` +
+      `Deploy: <code>${cfg2.deployAmountSol || 0.1} SOL</code>\n` +
+      `⏳ <i>Membuka posisi pada pool <code>${poolAddress.slice(0,8)}</code>...</i>`
+    );
+
+    let positionPubkey;
+    try {
+      positionPubkey = await deployPosition(poolAddress);
+      _activePositions.push({ pubkey: positionPubkey, symbol, poolAddress, mint: tokenMint });
+    } catch (e) {
+      console.error(`[hunter] deployPosition gagal: ${e.message}`);
+      await notify(`❌ <b>Deploy gagal:</b>\n<code>${e.message}</code>\n\n<i>Lanjut ke kandidat berikutnya...</i>`);
+      continue;
+    }
+
+    await notify(
+      `✅ <b>Posisi terbuka!</b>\n` +
+      `Position: <code>${positionPubkey.slice(0,8)}</code>\n` +
+      `Pool: <code>${poolAddress.slice(0,8)}</code>\n` +
+      `TP: +${EP_CONFIG.TAKE_PROFIT_PCT}% | SL: -${EP_CONFIG.STOP_LOSS_PCT}%\n\n` +
+      `🔒 <i>Masuk mode monitor (Background)...</i>`
+    );
+
+    // 4. MONITOR Loop (Asynchronous, tidak ngeblok iterasi)
+    monitorLoop(positionPubkey, symbol, poolAddress).catch(err => {
+      console.error(`[hunter] Monitor loop crash untuk ${symbol}:`, err);
+    });
+
+    availableSlots--;
+
+    // 5. Jeda antar eksekusi untuk cegah RPC rate-limit
+    await new Promise(r => setTimeout(r, 3000));
   }
-
-  await notify(
-    `✅ <b>Posisi terbuka!</b>\n` +
-    `Position: <code>${positionPubkey.slice(0,8)}</code>\n` +
-    `Pool: <code>${poolAddress.slice(0,8)}</code>\n` +
-    `TP: +${EP_CONFIG.TAKE_PROFIT_PCT}% | SL: -${EP_CONFIG.STOP_LOSS_PCT}%\n\n` +
-    `🔒 <i>Masuk mode monitor...</i>`
-  );
-
-  // ── Phase 4: MONITOR (LOCK — pencarian pool BERHENTI) ────────────
-  await monitorLoop(positionPubkey, symbol, poolAddress);
-
-  // ── Phase 5: RELOAD — setelah exit, kembali ke scan ──────────────
-  _currentPositionPubkey = null;
-  console.log('[hunter] 🔄 Reload — kembali ke scan...');
-  await notify('🔄 <b>Posisi ditutup.</b> Memulai ulang scan pool...');
-  await sleep(5_000);
 }
 
 // ── Phase 4: MONITOR loop (while position active) ────────────────
@@ -410,6 +446,13 @@ async function safeExit(positionPubkey, reason) {
   } catch (e) {
     console.error(`[hunter] exitPosition error: ${e.message}`);
     await notify(`⚠️ <b>Exit gagal:</b>\n<code>${e.message}</code>\n\n<i>Posisi mungkin masih terbuka on-chain!</i>`);
+  } finally {
+    // 6. Bebaskan Slot (Hapus dari _activePositions)
+    const idx = _activePositions.findIndex(p => p.pubkey === positionPubkey);
+    if (idx > -1) {
+      _activePositions.splice(idx, 1);
+      console.log(`[hunter] Slot dibebaskan. Posisi aktif tersisa: ${_activePositions.length}`);
+    }
   }
 }
 
