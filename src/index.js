@@ -441,7 +441,6 @@ bot.onText(/\/autoscreen(?:\s+(on|off))?/, async (msg, match) => {
   const chatId = msg.chat.id;
   const toggle = match[1]?.toLowerCase();
 
-  // Tanpa argumen: tampilkan status saat ini
   if (!toggle) {
     const current = getConfig().autoScreeningEnabled;
     bot.sendMessage(chatId,
@@ -457,24 +456,14 @@ bot.onText(/\/autoscreen(?:\s+(on|off))?/, async (msg, match) => {
   const after  = result.autoScreeningEnabled;
 
   if (after === true) {
-    if (!_screeningLoopTimer) {
-      await bot.sendMessage(chatId,
-        `📡 <b>Auto-Screening: ON</b>\n` +
-        `Loop dimulai — interval <code>${result.screeningIntervalMin || 15} menit</code>.\n\n` +
-        `<i>Memulai scan pertama sekarang...</i>`,
-        { parse_mode: 'HTML' }
-      );
-      await runAutoscreening(bot, chatId);
-      runScreeningLoop();
-    } else {
-      bot.sendMessage(chatId,
-        `📡 <b>Auto-Screening: ON</b>\n` +
-        `Loop sudah berjalan — interval <code>${result.screeningIntervalMin || 15} menit</code>.`,
-        { parse_mode: 'HTML' }
-      );
-    }
+    await bot.sendMessage(chatId,
+      `📡 <b>Auto-Screening: ON</b>\n🔍 Memulai inisialisasi scan real-time sekarang...`,
+      { parse_mode: 'HTML' }
+    );
+    // EKSEKUSI LANGSUNG (Fire & Forget, langsung scan saat itu juga)
+    runAutoscreening(bot, chatId);
   } else {
-    stopScreeningLoop();
+    // config autoScreeningEnabled=false akan menghentikan rekursif loop secara otomatis.
     bot.sendMessage(chatId,
       `🔕 <b>Auto-Screening: OFF</b>\n` +
       `Loop dihentikan. Gunakan <code>/screening</code> untuk scan manual.`,

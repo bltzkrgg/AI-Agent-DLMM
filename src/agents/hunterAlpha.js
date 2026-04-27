@@ -450,8 +450,17 @@ function safeNum(v) {
 // ── Auto-Screening Manual Runner ───────────────────────────────────
 // Dipanggil oleh /screening dan awal /autoscreen on
 
+let _autoScreenTimer = null;
+
 export async function runAutoscreening(bot, chatId) {
   const cfg = getConfig();
+  
+  // Guard rekursif: Hentikan loop jika Autoscreen dimatikan dari config
+  if (!cfg.autoScreeningEnabled) {
+    if (_autoScreenTimer) clearTimeout(_autoScreenTimer);
+    return;
+  }
+
   await bot.sendMessage(chatId, `🔍 <b>Memulai scan real-time (No Cache)...</b>\nMencari kandidat terbaik.`, { parse_mode: 'HTML' });
 
   try {
@@ -459,59 +468,70 @@ export async function runAutoscreening(bot, chatId) {
     const pools = await discoverHighFeePoolsMeridian({ limit });
     
     if (!pools || pools.length === 0) {
-      await bot.sendMessage(chatId, 'ℹ️ Tidak ada pool ditemukan saat ini.', { parse_mode: 'HTML' });
-      return;
-    }
+      await bot.sendMessage(chatId, '⚠️ Belum ada kandidat Top 5 yang lolos filter efisiensi saat ini. Menunggu scan berikutnya...', { parse_mode: 'HTML' });
+    } else {
+      // Urutkan berdasarkan Efficiency Score (Volume / TVL), ambil top 5
+      const top5 = [...pools]
+        .sort((a, b) => {
+          const aTvl = Number(a.activeTvl || a.totalTvl || 0) || 1;
+          const bTvl = Number(b.activeTvl || b.totalTvl || 0) || 1;
+          const aVol = Number(a.tradeVolume24h || a.volume || a.v24h || 0);
+          const bVol = Number(b.tradeVolume24h || b.volume || b.v24h || 0);
+          return (bVol / bTvl) - (aVol / aTvl);
+        })
+        .slice(0, 5);
 
-    // Urutkan berdasarkan Efficiency Score (Volume / TVL), ambil top 5
-    const top5 = [...pools]
-      .sort((a, b) => {
-        const aTvl = Number(a.activeTvl || a.totalTvl || 0) || 1;
-        const bTvl = Number(b.activeTvl || b.totalTvl || 0) || 1;
-        const aVol = Number(a.tradeVolume24h || a.volume || a.v24h || 0);
-        const bVol = Number(b.tradeVolume24h || b.volume || b.v24h || 0);
-        return (bVol / bTvl) - (aVol / aTvl);
-      })
-      .slice(0, 5);
+      if (top5.length === 0) {
+         await bot.sendMessage(chatId, '⚠️ Belum ada kandidat Top 5 yang lolos filter efisiensi saat ini. Menunggu scan berikutnya...', { parse_mode: 'HTML' });
+      } else {
+        const lines = await Promise.all(top5.map(async (pool, i) => {
+          const symbol  = pool.name || pool.tokenXMint?.slice(0, 8) || 'UNKNOWN';
+          const ratio   = ((pool.feeActiveTvlRatio || 0) * 100).toFixed(2);
+          const tvlRaw  = Number(pool.totalTvl || pool.activeTvl || 0);
+          const tvl     = safeNum(tvlRaw, 0).toLocaleString('en-US');
+          const mcap    = safeNum(pool.mcap, 0).toLocaleString('en-US');
+          const volRaw  = Number(pool.tradeVolume24h || pool.volume || pool.v24h || 0);
+          const vol     = safeNum(volRaw, 0).toLocaleString('en-US');
+          const effValue= volRaw / (tvlRaw || 1);
+          const eff     = effValue > 1000 ? '>1000' : effValue.toFixed(2);
+          const binStep = pool.binStep || '?';
 
-    const lines = await Promise.all(top5.map(async (pool, i) => {
-      const symbol  = pool.name || pool.tokenXMint?.slice(0, 8) || 'UNKNOWN';
-      const ratio   = ((pool.feeActiveTvlRatio || 0) * 100).toFixed(2);
-      const tvlRaw  = Number(pool.totalTvl || pool.activeTvl || 0);
-      const tvl     = safeNum(tvlRaw, 0).toLocaleString('en-US'); // Changed to preserve decimals
-      const mcap    = safeNum(pool.mcap, 0).toLocaleString('en-US'); // Changed to preserve decimals
-      const volRaw  = Number(pool.tradeVolume24h || pool.volume || pool.v24h || 0);
-      const vol     = safeNum(volRaw, 0).toLocaleString('en-US'); // Changed to preserve decimals
-      const effValue= volRaw / (tvlRaw || 1);
-      const eff     = effValue > 1000 ? '>1000' : effValue.toFixed(2);
-      const binStep = pool.binStep || '?';
+          let stIcon = '⚪';
+          try {
+            const veto = await runMeridianVeto({ mint: pool.tokenXMint || pool.address || '', symbol, pool });
+            if (!veto.veto) {
+              stIcon = `🟢 ${veto.reason || 'PASS'}`;
+            } else {
+              stIcon = `🔴 ${veto.reason || 'VETO'}`;
+            }
+          } catch (e) {
+            stIcon = `⚪ (API skip: ${e.message})`;
+          }
 
-      let stIcon = '⚪';
-      try {
-        // Pass the token shape correctly
-        const veto = await runMeridianVeto({ mint: pool.tokenXMint || pool.address || '', symbol, pool });
-        if (!veto.veto) {
-          stIcon = `🟢 ${veto.reason || 'PASS'}`;
-        } else {
-          stIcon = `🔴 ${veto.reason || 'VETO'}`;
-        }
-      } catch (e) {
-        stIcon = `⚪ (API skip: ${e.message})`;
+          return (
+            `<b>${i + 1}. ${symbol}</b> [${binStep}]\n` +
+            `   Eff: <code>${eff}x</code> | Fee/TVL: <code>${ratio}%</code>\n` +
+            `   TVL: <code>$${tvl}</code> | Vol: <code>$${vol}</code> | MCap: <code>$${mcap}</code>\n` +
+            `   Status: ${stIcon}`
+          );
+        }));
+
+        const report = `📊 <b>Top 5 Pool Efisien (Real-time)</b>\n\n` + lines.join('\n\n');
+        await bot.sendMessage(chatId, report, { parse_mode: 'HTML', disable_web_page_preview: true });
       }
-
-      return (
-        `<b>${i + 1}. ${symbol}</b> [${binStep}]\n` +
-        `   Eff: <code>${eff}x</code> | Fee/TVL: <code>${ratio}%</code>\n` +
-        `   TVL: <code>$${tvl}</code> | Vol: <code>$${vol}</code> | MCap: <code>$${mcap}</code>\n` +
-        `   Status: ${stIcon}`
-      );
-    }));
-
-    const report = `📊 <b>Top 5 Pool Efisien (Real-time)</b>\n\n` + lines.join('\n\n');
-    await bot.sendMessage(chatId, report, { parse_mode: 'HTML', disable_web_page_preview: true });
+    }
   } catch (error) {
     console.error("⚠️ Loop Error:", error.message);
     bot.sendMessage(chatId, `❌ Error scanning: ${error.message}. Retrying in 15s...`);
-    setTimeout(() => runAutoscreening(bot, chatId), 15000);
+    // Retry instan dengan jeda singkat sebelum mati/zombie
+    if (_autoScreenTimer) clearTimeout(_autoScreenTimer);
+    _autoScreenTimer = setTimeout(() => runAutoscreening(bot, chatId), 15000);
+    return; // Cegah tertimpa set interval default di bawah
   }
+
+  // Rekursif Loop: Eksekusi berulang HANYA setelah proses fetch sebelumnya sepenuhnya selesai
+  const intervalMin = Number(cfg.screeningIntervalMin) || 15;
+  const intervalMs  = intervalMin * 60 * 1000;
+  if (_autoScreenTimer) clearTimeout(_autoScreenTimer); // Bersihkan sisa timer lama
+  _autoScreenTimer = setTimeout(() => runAutoscreening(bot, chatId), intervalMs);
 }
