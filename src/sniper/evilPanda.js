@@ -22,6 +22,7 @@ import { fileURLToPath } from 'url';
 import { getConnection, getWallet, getWalletBalance } from '../solana/wallet.js';
 import { getConfig } from '../config.js';
 import { swapToSol } from '../utils/jupiter.js';
+import { getJupiterQuote } from '../solana/jupiter.js';
 import { safeNum, withExponentialBackoff, fetchWithTimeout } from '../utils/safeJson.js';
 import { resolveTokens, WSOL_MINT } from '../utils/tokenMeta.js';
 import { getRecommendedPriorityFee } from '../utils/helius.js';
@@ -462,8 +463,23 @@ export async function monitorPnL(positionPubkey) {
     const feeXUi   = Number(pd.feeX?.toString() || '0')         / Math.pow(10, xDec);
     const feeYUi   = Number(pd.feeY?.toString() || '0')         / Math.pow(10, yDec);
 
-    const currentValueSol = totalYUi + feeYUi + (totalXUi + feeXUi) * rawPrice;
-    const pnlPct          = reg.deploySol > 0
+    const totalXRawToSell = Math.floor((totalXUi + feeXUi) * Math.pow(10, xDec)).toString();
+
+    let currentValueSol = 0;
+    try {
+      if (totalXRawToSell !== '0') {
+        const quote = await getJupiterQuote(reg.tokenXMint, WSOL_MINT, totalXRawToSell);
+        const jupOutSol = Number(quote.outAmount) / Math.pow(10, yDec);
+        currentValueSol = totalYUi + feeYUi + jupOutSol;
+      } else {
+        currentValueSol = totalYUi + feeYUi;
+      }
+    } catch (jupErr) {
+      console.warn(`[evilPanda] Jupiter Quote API error, fallback ke pool bin price: ${jupErr.message}`);
+      currentValueSol = totalYUi + feeYUi + (totalXUi + feeXUi) * rawPrice;
+    }
+
+    const pnlPct = reg.deploySol > 0
       ? ((currentValueSol - reg.deploySol) / reg.deploySol) * 100
       : 0;
     const inRange = activeBin.binId >= reg.rangeMin && activeBin.binId <= reg.rangeMax;
