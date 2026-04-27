@@ -18,7 +18,7 @@ import TelegramBot              from 'node-telegram-bot-api';
 import { existsSync, readFileSync, writeFileSync, unlinkSync } from 'fs';
 import { initSolana, getWalletBalance }   from './solana/wallet.js';
 import { getConfig, updateConfig, isConfigKeySupported, resolveNestedKey, SETCONFIG_WHITELIST } from './config.js';
-import { runLinearLoop, stopLoop, setNotifyFn, isRunning, getCurrentPosition } from './agents/hunterAlpha.js';
+import { runLinearLoop, stopLoop, setNotifyFn, isRunning, getCurrentPosition, runAutoscreening } from './agents/hunterAlpha.js';
 import { exitPosition, getActivePositionCount, EP_CONFIG } from './sniper/evilPanda.js';
 import { discoverHighFeePoolsMeridian, runMeridianVeto } from './market/meridianVeto.js';
 import { analyzePerformance, formatEvolutionReport }     from './learn/statelessEvolve.js';
@@ -361,13 +361,14 @@ bot.onText(/\/setconfig(?:\s+(\S+))?(?:\s+(.+))?/, (msg, match) => {
     if (after === true) {
       // Start loop jika belum berjalan
       if (!_screeningLoopTimer) {
-        runScreeningLoop();
-        bot.sendMessage(chatId,
+        await bot.sendMessage(chatId,
           `📡 <b>Auto-Screening: ON</b>\n` +
           `Loop dimulai — interval <code>${result.screeningIntervalMin || 15} menit</code>.\n\n` +
-          `<i>Melakukan scan pertama sekarang...</i>`,
+          `<i>Memulai scan pertama sekarang...</i>`,
           { parse_mode: 'HTML' }
         );
+        await runAutoscreening(bot, chatId);
+        runScreeningLoop();
       } else {
         bot.sendMessage(chatId,
           `📡 <b>Auto-Screening: ON</b>\n` +
@@ -435,7 +436,7 @@ bot.onText(/\/dryrun(?:\s+(on|off))?/, (msg, match) => {
 });
 
 // /autoscreen on|off — Shortcut toggle autoScreeningEnabled
-bot.onText(/\/autoscreen(?:\s+(on|off))?/, (msg, match) => {
+bot.onText(/\/autoscreen(?:\s+(on|off))?/, async (msg, match) => {
   if (!guard(msg)) return;
   const chatId = msg.chat.id;
   const toggle = match[1]?.toLowerCase();
@@ -457,13 +458,14 @@ bot.onText(/\/autoscreen(?:\s+(on|off))?/, (msg, match) => {
 
   if (after === true) {
     if (!_screeningLoopTimer) {
-      runScreeningLoop();
-      bot.sendMessage(chatId,
+      await bot.sendMessage(chatId,
         `📡 <b>Auto-Screening: ON</b>\n` +
         `Loop dimulai — interval <code>${result.screeningIntervalMin || 15} menit</code>.\n\n` +
-        `<i>Melakukan scan pertama sekarang...</i>`,
+        `<i>Memulai scan pertama sekarang...</i>`,
         { parse_mode: 'HTML' }
       );
+      await runAutoscreening(bot, chatId);
+      runScreeningLoop();
     } else {
       bot.sendMessage(chatId,
         `📡 <b>Auto-Screening: ON</b>\n` +
@@ -580,75 +582,7 @@ bot.onText(/\/evolve(?:\s+(apply))?/, async (msg, match) => {
 bot.onText(/\/screening/, async (msg) => {
   if (!guard(msg)) return;
   const chatId = msg.chat.id;
-  const cfg    = getConfig();
-
-  bot.sendMessage(chatId,
-    `🔍 <b>Scanning top pools...</b>\nLimit: <code>${cfg.meteoraDiscoveryLimit}</code> pool`,
-    { parse_mode: 'HTML' }
-  );
-
-  try {
-    const pools = await discoverHighFeePoolsMeridian({ limit: cfg.meteoraDiscoveryLimit });
-
-    if (!pools || pools.length === 0) {
-      bot.sendMessage(chatId, 'ℹ️ Tidak ada pool ditemukan saat ini.', { parse_mode: 'HTML' });
-      return;
-    }
-
-    // Urutkan berdasarkan Efficiency Score (Volume / TVL), ambil top 5
-    const top5 = [...pools]
-      .sort((a, b) => {
-        const aTvl = Number(a.activeTvl || a.totalTvl || 0) || 1;
-        const bTvl = Number(b.activeTvl || b.totalTvl || 0) || 1;
-        const aVol = Number(a.volume24h || a.volume || a.v24h || 0);
-        const bVol = Number(b.volume24h || b.volume || b.v24h || 0);
-        return (bVol / bTvl) - (aVol / aTvl);
-      })
-      .slice(0, 5);
-
-    const lines = await Promise.all(top5.map(async (pool, i) => {
-      const symbol  = pool.name || pool.tokenXMint?.slice(0, 8) || 'UNKNOWN';
-      const ratio   = ((pool.feeActiveTvlRatio || 0) * 100).toFixed(2);
-      const tvlRaw  = Number(pool.totalTvl || pool.activeTvl || 0);
-      const tvl     = safeNum(tvlRaw, 0).toLocaleString('en-US', { maximumFractionDigits: 0 });
-      const mcap    = safeNum(pool.mcap, 0).toLocaleString('en-US', { maximumFractionDigits: 0 });
-      const volRaw  = Number(pool.volume24h || pool.volume || pool.v24h || 0);
-      const vol     = safeNum(volRaw, 0).toLocaleString('en-US', { maximumFractionDigits: 0 });
-      const effValue= volRaw / (tvlRaw || 1);
-      const eff     = effValue > 1000 ? '>1000' : effValue.toFixed(2);
-      const binStep = pool.binStep || '?';
-
-      // Cek Meridian Supertrend — fail-open jika error
-      let stIcon = '⚪';
-      try {
-        const veto = await runMeridianVeto(pool.tokenXMint || pool.address, pool);
-        if (veto.pass) stIcon = '🟢';
-        else           stIcon = `🔴 ${veto.reason || ''}`.trim();
-      } catch {
-        stIcon = '⚪ (API skip)';
-      }
-
-      return (
-        `<b>${i + 1}. ${escapeHTML(symbol)}</b> [${binStep}]\n` +
-        `   Fee/TVL: <code>${ratio}%</code> | TVL: <code>$${tvl}</code>\n` +
-        `   MCap: <code>$${mcap}</code> | Vol: <code>$${vol}</code> | Eff: <code>${eff}x</code>\n` +
-        `   Meridian: ${stIcon}`
-      );
-    }));
-
-    await sendLong(chatId,
-      `📊 <b>Top 5 High-Fee Pools</b>\n` +
-      `<i>Sorted by Fee/Active-TVL Ratio</i>\n\n` +
-      lines.join('\n\n'),
-      { parse_mode: 'HTML' }
-    );
-
-  } catch (e) {
-    bot.sendMessage(chatId,
-      `❌ <b>Screening error:</b>\n<code>${escapeHTML(e.message)}</code>`,
-      { parse_mode: 'HTML' }
-    );
-  }
+  await runAutoscreening(bot, chatId);
 });
 
 // ── Screening Loop ─────────────────────────────────────────────────
@@ -724,8 +658,7 @@ async function runScreeningLoop() {
     }
   };
 
-  // Jalankan pertama kali segera (delay 2 detik), lalu per interval
-  setTimeout(tick, 2000);
+  // Hanya jalankan background interval (tanpa memanggil tick seketika)
   _screeningLoopTimer = setInterval(tick, intervalMs);
   console.log(`🔍 Screening loop aktif — interval ${intervalMin} menit (${intervalMs / 1000}s)`);
 }
