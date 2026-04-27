@@ -91,31 +91,36 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
  * Dipanggil sekali dari index.js — berjalan terus sampai di-stop.
  */
 export async function runLinearLoop() {
-  if (_running) {
-    console.warn('[hunter] Loop sudah berjalan, skip.');
-    return;
-  }
-  _running = true;
-  console.log('[hunter] ▶ Linear Sniper Loop dimulai');
-
-  const startCfg = getConfig();
-  if (!startCfg.autoScreeningEnabled) {
-    await notify('🚀 <b>Linear Sniper aktif.</b>\n⚠️ <i>Auto-Screening OFF. Ketik <code>/autoscreen on</code> untuk mulai.</i>');
-  } else {
-    await notify('🚀 <b>Linear Sniper aktif.</b> 🔍 Memulai scan real-time (No Cache)...');
-  }
-
-  while (_running) {
-    try {
-      await scanAndDeploy();
-    } catch (e) {
-      console.error(`[hunter] Loop error: ${e.message}`);
-      await notify(`⚠️ <b>Loop error:</b>\n<code>${e.message}</code>\n\n<i>Retry dalam 60 detik...</i>`);
-      await sleep(60_000);
+  try {
+    if (_running) {
+      console.warn('[hunter] Loop sudah berjalan, skip.');
+      return;
     }
-  }
+    _running = true;
+    console.log('[hunter] ▶ Linear Sniper Loop dimulai');
 
-  console.log('[hunter] ⏹ Loop dihentikan.');
+    const startCfg = getConfig();
+    if (!startCfg.autoScreeningEnabled) {
+      await notify('🚀 <b>Linear Sniper aktif.</b>\n⚠️ <i>Auto-Screening OFF. Ketik <code>/autoscreen on</code> untuk mulai.</i>');
+    } else {
+      await notify('🚀 <b>Linear Sniper aktif.</b> 🔍 Memulai scan real-time (No Cache)...');
+    }
+
+    while (_running) {
+      try {
+        await scanAndDeploy();
+      } catch (e) {
+        console.error("⚠️ Loop Error:", e.message);
+        await sleep(15_000);
+      }
+    }
+
+    console.log('[hunter] ⏹ Loop dihentikan.');
+  } catch (error) {
+    console.error("⚠️ Loop Error:", error.message);
+    _running = false;
+    setTimeout(runLinearLoop, 15000);
+  }
 }
 
 export function stopLoop() {
@@ -177,7 +182,7 @@ async function scanAndDeploy() {
     const binStep     = pool.binStep || 0;
     const feeRatio    = pool.feeActiveTvlRatio || 0;
     const mcap        = Math.round(pool.mcap || 0).toLocaleString('en-US');
-    const vol         = Math.round(pool.volume24h || 0).toLocaleString('en-US');
+    const vol         = Math.round(pool.tradeVolume24h || pool.volume || pool.v24h || 0).toLocaleString('en-US');
 
     if (!tokenMint) {
       await sleep(5_000);
@@ -258,8 +263,8 @@ async function scanAndDeploy() {
   winners.sort((a, b) => {
     const aTvl = Number(a.activeTvl || a.totalTvl || 0) || 1;
     const bTvl = Number(b.activeTvl || b.totalTvl || 0) || 1;
-    const aVol = Number(a.volume24h || a.volume || a.v24h || 0);
-    const bVol = Number(b.volume24h || b.volume || b.v24h || 0);
+    const aVol = Number(a.tradeVolume24h || a.volume || a.v24h || 0);
+    const bVol = Number(b.tradeVolume24h || b.volume || b.v24h || 0);
     return (bVol / bTvl) - (aVol / aTvl);
   });
 
@@ -274,7 +279,7 @@ async function scanAndDeploy() {
     const sym   = p.name || p.tokenXMint?.slice(0, 8) || 'UNKNOWN';
     const ratio = ((p.feeActiveTvlRatio || 0) * 100).toFixed(2);
     const tvlRaw= Number(p.totalTvl || p.activeTvl || 0);
-    const volRaw= Number(p.volume24h || p.volume || p.v24h || 0);
+    const volRaw= Number(p.tradeVolume24h || p.volume || p.v24h || 0);
     const mcap  = Math.round(p.mcap || 0).toLocaleString('en-US');
     const effValue = volRaw / (tvlRaw || 1);
     const eff   = effValue > 1000 ? '>1000' : effValue.toFixed(2);
@@ -411,7 +416,7 @@ async function safeExit(positionPubkey, reason) {
 // ── Pure Flat Config Gate ─────────────────────────────────────────
 
 function checkFlatConfig(pool, cfg) {
-  const vol24h   = safeNum(pool.volume24h || pool.volume24hRaw || 0);
+  const vol24h   = safeNum(pool.tradeVolume24h || pool.volume24hRaw || pool.volume || 0);
   const minVol   = Number(cfg.minVolume) || 0;
   const maxVol   = Number(cfg.maxVolume) || 0;
   const binStep  = pool.binStep || 0;
@@ -463,8 +468,8 @@ export async function runAutoscreening(bot, chatId) {
       .sort((a, b) => {
         const aTvl = Number(a.activeTvl || a.totalTvl || 0) || 1;
         const bTvl = Number(b.activeTvl || b.totalTvl || 0) || 1;
-        const aVol = Number(a.volume24h || a.volume || a.v24h || 0);
-        const bVol = Number(b.volume24h || b.volume || b.v24h || 0);
+        const aVol = Number(a.tradeVolume24h || a.volume || a.v24h || 0);
+        const bVol = Number(b.tradeVolume24h || b.volume || b.v24h || 0);
         return (bVol / bTvl) - (aVol / aTvl);
       })
       .slice(0, 5);
@@ -475,7 +480,7 @@ export async function runAutoscreening(bot, chatId) {
       const tvlRaw  = Number(pool.totalTvl || pool.activeTvl || 0);
       const tvl     = safeNum(tvlRaw, 0).toLocaleString('en-US'); // Changed to preserve decimals
       const mcap    = safeNum(pool.mcap, 0).toLocaleString('en-US'); // Changed to preserve decimals
-      const volRaw  = Number(pool.volume24h || pool.volume || pool.v24h || 0);
+      const volRaw  = Number(pool.tradeVolume24h || pool.volume || pool.v24h || 0);
       const vol     = safeNum(volRaw, 0).toLocaleString('en-US'); // Changed to preserve decimals
       const effValue= volRaw / (tvlRaw || 1);
       const eff     = effValue > 1000 ? '>1000' : effValue.toFixed(2);
@@ -504,7 +509,9 @@ export async function runAutoscreening(bot, chatId) {
 
     const report = `📊 <b>Top 5 Pool Efisien (Real-time)</b>\n\n` + lines.join('\n\n');
     await bot.sendMessage(chatId, report, { parse_mode: 'HTML', disable_web_page_preview: true });
-  } catch (e) {
-    bot.sendMessage(chatId, `❌ Error scanning: ${e.message}`);
+  } catch (error) {
+    console.error("⚠️ Loop Error:", error.message);
+    bot.sendMessage(chatId, `❌ Error scanning: ${error.message}. Retrying in 15s...`);
+    setTimeout(() => runAutoscreening(bot, chatId), 15000);
   }
 }

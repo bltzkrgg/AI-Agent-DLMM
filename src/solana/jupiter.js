@@ -157,7 +157,7 @@ export async function getTokenBalance(walletPublicKey, tokenMint) {
 
 // ─── Get Jupiter quote ────────────────────────────────────────────
 
-export async function getJupiterQuote(inputMint, outputMint, amountRaw, slippageBps = 100) {
+export async function getJupiterQuote(inputMint, outputMint, amountRaw, slippageBps = 250) {
   const quoteParams = new URLSearchParams({
     inputMint,
     outputMint,
@@ -177,7 +177,7 @@ export async function getJupiterQuote(inputMint, outputMint, amountRaw, slippage
 
 // ─── Swap token → SOL ─────────────────────────────────────────────
 
-export async function swapToSOL(inputMint, amountRaw, slippageBps = 100, options = {}) {
+export async function swapToSOL(inputMint, amountRaw, slippageBps = 250, options = {}) {
   const { isUrgent = false } = options;
   const effectiveSlippage = isUrgent ? 500 : slippageBps;
 
@@ -352,7 +352,7 @@ export async function swapToSOL(inputMint, amountRaw, slippageBps = 100, options
 
 // ─── Swap all non-SOL balance of a token to SOL ───────────────────
 
-export async function swapAllToSOL(tokenMint, slippageBps = 100, options = {}) {
+export async function swapAllToSOL(tokenMint, slippageBps = 250, options = {}) {
   const wallet = getWallet();
   const balance = await getTokenBalance(wallet.publicKey, tokenMint);
   const amount  = typeof balance === 'string' ? balance : balance.toString();

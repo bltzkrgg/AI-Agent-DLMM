@@ -77,8 +77,12 @@ export async function checkSupertrendVeto(mint, currentRealtimePrice = 0) {
     
     if (direction === 'bearish') return { veto: true, reason: 'Trend 15m BEARISH' };
     
+    if (currentRealtimePrice > 0 && openPrice15m > 0 && currentRealtimePrice < openPrice15m) {
+      return { veto: true, reason: "VETO [REALTIME_DUMP] — Harga anjlok di bawah open 15m (API Lag)" };
+    }
+    
     if (activePrice < openPrice15m) {
-      return { veto: true, reason: 'Candle 15m MERAH (Price Realtime Drop)' };
+      return { veto: true, reason: 'Candle 15m MERAH (Haram Entry)' };
     }
 
     // Logika Konfirmasi
@@ -443,7 +447,7 @@ function normalizePool(p) {
     activeTvl:         Number(p.active_tvl || 0),
     // total_tvl: dipakai oleh dominance check — seluruh TVL pool (bukan hanya active bins)
     totalTvl:          Number(p.tvl || p.total_tvl || p.active_tvl || 0),
-    volume24h:         Number(p.volume || p.volume24h || 0),
+    volume24h:         Number(p.tradeVolume24h || p.volume || p.v24h || 0),
     mcap:              Number(p.token_x?.market_cap || p.mcap || 0),
     holders:           Number(p.base_token_holders || p.holders || 0),
     organicScore:      Number(p.token_x?.organic_score || p.organic_score || 0),
@@ -488,7 +492,7 @@ export async function runMeridianVeto(token) {
 
   // Volume Range Gate
   if (pool) {
-    const vol = Number(pool.volume || pool.volume24h || pool.v24h || pool.trade_volume_24h || 0);
+    const vol = Number(pool.tradeVolume24h || pool.volume || pool.v24h || 0);
     const minVol = Number(cfg.minVolume) || 0;
     const maxVol = Number(cfg.maxVolume) || 0;
     if (minVol > 0 && vol < minVol) {

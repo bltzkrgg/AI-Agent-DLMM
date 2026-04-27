@@ -112,7 +112,7 @@ const DEFAULTS = {
   maxPriceImpactPct:      1.5,
 
   // ── Evil Panda Position ───────────────────────────────────────────────────
-  slippageBps:            150,
+  slippageBps:            250,
   stopLossPct:            10,
   trailingStopPct:        5.0,
   trailingTriggerPct:     10,

@@ -50,7 +50,7 @@ async function getJupiterQuote(tokenMint, outMint, amount, slippage) {
 export async function getSwapQuoteToSol(tokenMint, amount, overrideSlippageBps = null) {
   const cfg     = getConfig();
   const WSOL    = 'So11111111111111111111111111111111111111112';
-  const slippage = overrideSlippageBps || cfg.slippageBps || 100;
+  const slippage = overrideSlippageBps || cfg.slippageBps || 250;
   return getJupiterQuote(tokenMint, WSOL, amount, slippage);
 }
 
@@ -64,7 +64,7 @@ export async function swapToSol(tokenMint, amount, overrideSlippageBps = null) {
 
   try {
     // 1. Quote A — baseline
-    const slippage = overrideSlippageBps || cfg.slippageBps || 100;
+    const slippage = overrideSlippageBps || cfg.slippageBps || 250;
     const quoteA   = await getJupiterQuote(tokenMint, WSOL, amount, slippage);
     const outA     = parseInt(quoteA.outAmount);
 

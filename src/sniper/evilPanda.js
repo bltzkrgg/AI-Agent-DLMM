@@ -197,7 +197,7 @@ export async function deployPosition(poolAddress) {
 
     // 6. Hitung deposit Y (SOL) — dibagi merata antar chunk
     const cfg2          = getConfig();
-    const slippageBps   = Number(cfg2.slippageBps) || 150;
+    const slippageBps   = Number(cfg2.slippageBps) || 250;
     // Meteora SDK menerima slippage dalam persen (bukan bps): 150bps = 1.5
     const slippagePct   = slippageBps / 100;
 
