@@ -76,7 +76,6 @@ async function notify(msg) {
 
 // ── State ─────────────────────────────────────────────────────────
 let _running   = false;
-let _wasPaused = true;   // true = loop baru start atau baru resume dari OFF
 let _currentPositionPubkey = null;
 
 export function isRunning()            { return _running; }
@@ -131,18 +130,8 @@ async function scanAndDeploy() {
 
   // — Gembok: jika auto-screening dimatikan, pause senyap tanpa log
   if (!cfg.autoScreeningEnabled) {
-    _wasPaused = true;
     await sleep(10_000);
     return;
-  }
-
-  // — Resume delay: tunggu satu siklus penuh sebelum scan pertama
-  if (_wasPaused) {
-    _wasPaused = false;
-    const resumeMs = (Number(cfg.screeningIntervalMin) || 15) * 60_000;
-    console.log(`[hunter] Resume dari pause — menunggu ${resumeMs / 60000} menit sebelum scan pertama...`);
-    await sleep(resumeMs);
-    if (!getConfig().autoScreeningEnabled) return; // cek ulang setelah delay
   }
 
   const limit = cfg.meteoraDiscoveryLimit || 50;
