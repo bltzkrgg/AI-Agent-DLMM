@@ -14,15 +14,15 @@
   },
   "discovery": {
     "meteoraDiscoveryLimit": 50,
-    "timeframe": "24h",
+    "timeframe": "12h",
     "category": "trending",
-    "minTvl": 10000,
-    "maxTvl": 0,
-    "minVolume": 100000,
+    "minTvl": 5000,
+    "maxTvl": 1500000,
+    "minVolume": 200000,
     "maxVolume": 0,
     "minHolders": 300,
     "minOrganic": 70,
-    "minMcap": 150000,
+    "minMcap": 200000,
     "maxMcapUsd": 5000000
   },
   "security_gmgn": {
