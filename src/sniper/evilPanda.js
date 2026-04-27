@@ -246,9 +246,18 @@ export async function deployPosition(poolAddress) {
         for (const tx of txList) {
           injectPriorityFee(tx, { units: EP_CONFIG.COMPUTE_UNITS, microLamports });
           const signers = isFirstChunk ? [wallet, posKp] : [wallet];
-          const sig = await connection.sendTransaction(tx, signers, { skipPreflight: false, maxRetries: 3 });
-          await pollTxConfirm(connection, sig);
-          console.log(`[evilPanda] Chunk ${i+1}/${chunks.length} confirmed: ${sig.slice(0,8)}`);
+          try {
+            const sig = await connection.sendTransaction(tx, signers, { skipPreflight: false, maxRetries: 3 });
+            await pollTxConfirm(connection, sig);
+            console.log(`[evilPanda] ✅ Chunk ${i+1}/${chunks.length} sukses terdeploy on-chain: ${sig.slice(0,8)}`);
+          } catch (txErr) {
+            if (txErr.message.includes('already in use')) {
+              console.log(`[evilPanda] ✅ Chunk ${i+1}/${chunks.length} sukses terdeploy on-chain (RPC timeout recovered: already in use)`);
+            } else {
+              console.error(`[evilPanda] ❌ Chunk ${i+1} gagal tereksekusi: ${txErr.message}`);
+              throw txErr;
+            }
+          }
         }
         chunksConfirmed++;
       }
@@ -540,10 +549,10 @@ export async function exitPosition(positionPubkey, reason = 'MANUAL') {
     const { userPositions } = await dlmmPool.getPositionsByUserAndLbPair(wallet.publicKey);
     const pos = userPositions.find(p => p.publicKey.toString() === positionPubkey);
 
-    if (!pos) {
-      console.warn(`[evilPanda] exitPosition: position tidak ditemukan on-chain (mungkin sudah closed)`);
+    if (!pos || !pos.positionData || pos.positionData.lowerBinId === undefined) {
+      console.log(`[evilPanda] ❌ Rollback dibatalkan: Data posisi tidak lengkap / undefined (kemungkinan gagal di tahap inisialisasi). Lakukan cek manual pada pubkey: ${positionPubkey}`);
       _activePositions.delete(positionPubkey);
-      return { solRecovered: 0, note: 'already closed' };
+      return { solRecovered: 0, note: 'incomplete position data' };
     }
 
     // 1. Remove all liquidity

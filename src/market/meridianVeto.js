@@ -53,44 +53,40 @@ function getMeridianHeaders() {
  */
 export async function checkSupertrendVeto(mint) {
   try {
-    const base    = getMeridianBase();
+    const base = getMeridianBase();
     const headers = getMeridianHeaders();
-
-    const params = new URLSearchParams({
-      interval:  '15_MINUTE',
-      candles:   '50',
-      rsiLength: '14',
-    });
-
+    const params = new URLSearchParams({ interval: '15_MINUTE', candles: '10' });
     const url = `${base}/chart-indicators/${mint}?${params.toString()}`;
     const res = await fetchWithTimeout(url, { headers }, 8000);
 
-    if (!res.ok) {
-      console.warn(`[meridianVeto] chart-indicators ${res.status} untuk ${mint.slice(0,8)} — PASS (fail-open)`);
-      return { veto: false, reason: `API ${res.status} — skip veto`, direction: 'unknown' };
-    }
+    if (!res.ok) return { veto: true, reason: `API ${res.status} down — Safety Veto` };
 
-    const data       = await res.json();
-    const supertrend = data?.latest?.supertrend || {};
-    const direction  = String(supertrend.direction || 'unknown').toLowerCase();
+    const data = await res.json();
+    const candles = data?.candles || [];
+    if (candles.length === 0) return { veto: true, reason: 'No candle data' };
 
-    if (direction === 'bearish') {
-      return {
-        veto:      true,
-        reason:    `Supertrend 15m BEARISH — tidak safe untuk LP`,
-        direction: 'bearish',
-      };
-    }
+    const currentCandle = candles[0];
+    const st = data?.latest?.supertrend || {};
+    const direction = String(st.direction || 'unknown').toLowerCase();
+    
+    // Logika Konfirmasi
+    const isGreenCandle = Number(currentCandle.close) > Number(currentCandle.open);
+    const isAboveST = Number(currentCandle.close) > Number(st.value);
+    
+    // Logika Local ATH
+    const previousHighs = candles.slice(1).map(c => Number(c.high));
+    const localATH = Number(currentCandle.close) >= Math.max(...previousHighs);
 
-    return {
-      veto:      false,
-      reason:    `Supertrend 15m: ${direction}`,
-      direction,
-    };
+    if (direction === 'bearish') return { veto: true, reason: 'Trend 15m BEARISH' };
+    if (!isGreenCandle) return { veto: true, reason: 'Candle 15m MERAH (Haram Entry)' };
 
+    const canEntry = isAboveST || localATH;
+    if (!canEntry) return { veto: true, reason: 'Belum Break ST / Belum ATH' };
+
+    const entryType = localATH ? 'ATH BREAKOUT 🚀' : 'ST BREAKOUT 🟢';
+    return { veto: false, reason: `KONFIRMASI: Candle Hijau + ${entryType}` };
   } catch (e) {
-    console.warn(`[meridianVeto] Supertrend check error ${mint.slice(0,8)}: ${e.message} — PASS`);
-    return { veto: false, reason: `API error: ${e.message}`, direction: 'unknown' };
+    return { veto: true, reason: `Logic error: ${e.message}` };
   }
 }
 
