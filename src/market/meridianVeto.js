@@ -51,7 +51,7 @@ function getMeridianHeaders() {
  * @param {string} mint  - Token mint address
  * @returns {Promise<{veto: boolean, reason: string, direction?: string}>}
  */
-export async function checkSupertrendVeto(mint) {
+export async function checkSupertrendVeto(mint, currentRealtimePrice = 0) {
   try {
     const base = getMeridianBase();
     const headers = getMeridianHeaders();
@@ -69,16 +69,24 @@ export async function checkSupertrendVeto(mint) {
     const st = data?.latest?.supertrend || {};
     const direction = String(st.direction || 'unknown').toLowerCase();
     
+    const openPrice15m = Number(currentCandle.open);
+    const apiClosePrice = Number(currentCandle.close);
+    
+    // Price Action Check: antisipasi delay API
+    const activePrice = currentRealtimePrice > 0 ? currentRealtimePrice : apiClosePrice;
+    
+    if (direction === 'bearish') return { veto: true, reason: 'Trend 15m BEARISH' };
+    
+    if (activePrice < openPrice15m) {
+      return { veto: true, reason: 'Candle 15m MERAH (Price Realtime Drop)' };
+    }
+
     // Logika Konfirmasi
-    const isGreenCandle = Number(currentCandle.close) > Number(currentCandle.open);
-    const isAboveST = Number(currentCandle.close) > Number(st.value);
+    const isAboveST = activePrice > Number(st.value);
     
     // Logika Local ATH
     const previousHighs = candles.slice(1).map(c => Number(c.high));
-    const localATH = Number(currentCandle.close) >= Math.max(...previousHighs);
-
-    if (direction === 'bearish') return { veto: true, reason: 'Trend 15m BEARISH' };
-    if (!isGreenCandle) return { veto: true, reason: 'Candle 15m MERAH (Haram Entry)' };
+    const localATH = activePrice >= Math.max(...previousHighs);
 
     const canEntry = isAboveST || localATH;
     if (!canEntry) return { veto: true, reason: 'Belum Break ST / Belum ATH' };
@@ -461,9 +469,11 @@ function normalizePool(p) {
 export async function runMeridianVeto(token) {
   const { mint, symbol, pool } = token;
   const cfg = getConfig();
+  
+  const currentPrice = pool ? Number(pool.price || pool.pool_price || pool.currentPrice || 0) : 0;
 
   // Gate 1: Supertrend 15m
-  const st = await checkSupertrendVeto(mint);
+  const st = await checkSupertrendVeto(mint, currentPrice);
   if (st.veto) return { veto: true, reason: st.reason, gate: 'SUPERTREND_15M' };
 
   // Gate 2: ATH Distance [TA_ATH_DANGER]
