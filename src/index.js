@@ -263,7 +263,7 @@ bot.onText(/\/config/, (msg) => {
 //   /setconfig autoScreeningEnabled false    (boolean)
 //   /setconfig ?                             (tampilkan semua key)
 
-bot.onText(/\/setconfig(?:\s+(\S+))?(?:\s+(.+))?/, (msg, match) => {
+bot.onText(/\/setconfig(?:\s+(\S+))?(?:\s+(.+))?/, async (msg, match) => {
   if (!guard(msg)) return;
   const chatId = msg.chat.id;
   const rawKey = match[1]?.trim();
