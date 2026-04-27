@@ -102,7 +102,7 @@ export async function runLinearLoop() {
   if (!startCfg.autoScreeningEnabled) {
     await notify('🚀 <b>Linear Sniper aktif.</b>\n⚠️ <i>Auto-Screening OFF. Ketik <code>/autoscreen on</code> untuk mulai.</i>');
   } else {
-    await notify('🚀 <b>Linear Sniper aktif.</b> Memulai scan pool...');
+    await notify('🚀 <b>Linear Sniper aktif.</b> 🔍 Memulai scan real-time (No Cache)...');
   }
 
   while (_running) {
@@ -137,7 +137,7 @@ async function scanAndDeploy() {
   const limit = cfg.meteoraDiscoveryLimit || 50;
 
   console.log(`[hunter] 🔍 SCAN — High-Fee Hunter (binStep priority: ${(cfg.binStepPriority || [200,125,100]).join('>')} )...`);
-  await notify('🔍 <b>Scan Progress...</b>\nMengambil data real-time, mohon tunggu.');
+  await notify('🔍 <b>Memulai scan real-time (No Cache)...</b>\nMengambil data, mohon tunggu.');
 
   let pools;
   try {
@@ -447,7 +447,7 @@ function safeNum(v) {
 
 export async function runAutoscreening(bot, chatId) {
   const cfg = getConfig();
-  await bot.sendMessage(chatId, `🔍 <b>Scan Progress...</b>\nMencari kandidat terbaik (mengambil data real-time).`, { parse_mode: 'HTML' });
+  await bot.sendMessage(chatId, `🔍 <b>Memulai scan real-time (No Cache)...</b>\nMencari kandidat terbaik.`, { parse_mode: 'HTML' });
 
   try {
     const limit = Number(cfg.meteoraDiscoveryLimit) || 180;
