@@ -18,6 +18,8 @@
 
 import { getConfig }            from '../config.js';
 import { fetchWithTimeout }     from '../utils/safeJson.js';
+import { calculateSupertrend }  from '../utils/ta.js';
+import * as oracle              from './oracle.js';
 
 const POOL_DISCOVERY_BASE = 'https://pool-discovery-api.datapi.meteora.ag';
 const DLMM_API_BASE       = 'https://dlmm.datapi.meteora.ag';
@@ -53,52 +55,43 @@ function getMeridianHeaders() {
  */
 export async function checkSupertrendVeto(mint, currentRealtimePrice = 0) {
   try {
-    const base = getMeridianBase();
-    const headers = getMeridianHeaders();
-    const params = new URLSearchParams({ interval: '15_MINUTE', candles: '10' });
-    const url = `${base}/chart-indicators/${mint}?${params.toString()}`;
-    const res = await fetchWithTimeout(url, { headers }, 8000);
+    // 1. Ambil bahan mentah dari Oracle internal
+    let candles = await oracle.getOHLCV(mint, '15_MINUTE', 50);
 
-    if (!res.ok) return { veto: true, reason: `API ${res.status} down — Safety Veto` };
-
-    const data = await res.json();
-    const candles = data?.candles || [];
-    if (candles.length === 0) return { veto: true, reason: 'No candle data' };
-
-    const currentCandle = candles[0];
-    const st = data?.latest?.supertrend || {};
-    const direction = String(st.direction || 'unknown').toLowerCase();
-    
-    const openPrice15m = Number(currentCandle.open);
-    const apiClosePrice = Number(currentCandle.close);
-    
-    // Price Action Check: antisipasi delay API
-    const activePrice = currentRealtimePrice > 0 ? currentRealtimePrice : apiClosePrice;
-    
-    if (direction === 'bearish') return { veto: true, reason: 'Trend 15m BEARISH' };
-    
-    if (currentRealtimePrice > 0 && openPrice15m > 0 && currentRealtimePrice < openPrice15m) {
-      return { veto: true, reason: "VETO [REALTIME_DUMP] — Harga anjlok di bawah open 15m (API Lag)" };
-    }
-    
-    if (activePrice < openPrice15m) {
-      return { veto: true, reason: 'Candle 15m MERAH (Haram Entry)' };
+    // Adaptasi: Jika getOHLCV mengembalikan object (snapshot), tarik array mentah
+    if (candles && !Array.isArray(candles) && candles.historySuccess) {
+      candles = await oracle.getHistoryOHLCV(mint);
     }
 
-    // Logika Konfirmasi
-    const isAboveST = activePrice > Number(st.value);
-    
-    // Logika Local ATH
-    const previousHighs = candles.slice(1).map(c => Number(c.high));
-    const localATH = activePrice >= Math.max(...previousHighs);
+    // 2. SOP Darurat: Jika data gagal didapat dari semua supplier
+    if (!candles || !Array.isArray(candles) || candles.length === 0) {
+      return { veto: true, reason: "VETO: Data TA tidak tersedia (Oracle Timeout)" };
+    }
 
-    const canEntry = isAboveST || localATH;
-    if (!canEntry) return { veto: true, reason: 'Belum Break ST / Belum ATH' };
+    // 3. Masak di Dapur Lokal
+    // Ambil maksimal 50 candle terakhir sesuai instruksi
+    const recentCandles = candles.slice(-50);
+    const st = calculateSupertrend(recentCandles, 10, 3);
 
+    // 4. Validasi Tren
+    const lastCandle = recentCandles[recentCandles.length - 1];
+    const activePrice = currentRealtimePrice > 0 ? currentRealtimePrice : lastCandle.close;
+
+    // Jika Harga < Nilai Supertrend Lokal = BEARISH
+    if (activePrice < st.value || st.trend === 'BEARISH') {
+      return { veto: true, reason: `VETO: Trend 15m BEARISH (Harga ${activePrice.toFixed(6)} < ST ${st.value.toFixed(6)})` };
+    }
+
+    // Logika Konfirmasi (BULLISH)
+    // Jika Harga > Nilai Supertrend Lokal = BULLISH
+    const previousHighs = recentCandles.slice(0, -1).map(c => Number(c.high));
+    const localATH = previousHighs.length > 0 && activePrice >= Math.max(...previousHighs);
     const entryType = localATH ? 'ATH BREAKOUT 🚀' : 'ST BREAKOUT 🟢';
-    return { veto: false, reason: `KONFIRMASI: Candle Hijau + ${entryType}` };
+
+    return { veto: false, reason: `PASS: Trend 15m BULLISH Lokal (${entryType})` };
+
   } catch (e) {
-    return { veto: true, reason: `Logic error: ${e.message}` };
+    return { veto: true, reason: `VETO: Logic error local TA - ${e.message}` };
   }
 }
 
