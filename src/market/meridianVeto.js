@@ -336,7 +336,6 @@ export async function discoverHighFeePoolsMeridian({ limit = 50 } = {}) {
   const minFeeRatio        = Number(cfg.minFeeActiveTvlRatio) || 0.002;
   const minMcap            = cfg.minMcap !== undefined ? Number(cfg.minMcap) : 250000;
   const maxMcap            = Number(cfg.maxMcapUsd || cfg.maxMcap) || 0;
-  const minVol             = Number(cfg.minVolume24h) || 100000;
   const minTvl             = Number(cfg.minTvl) || 0;
   const maxTvl             = Number(cfg.maxTvl) || 0;
   const timeframe          = cfg.discoveryTimeframe || '1h';
@@ -351,7 +350,6 @@ export async function discoverHighFeePoolsMeridian({ limit = 50 } = {}) {
     'quote_token_has_critical_warnings=false',
     'pool_type=dlmm',
     `base_token_market_cap>=${minMcap}`,
-    `volume>=${minVol}`,
     `tvl>=${minTvl}`,
     `dlmm_bin_step>=${minBinStep}`,
     `dlmm_bin_step<=${maxBinStep}`,
@@ -477,6 +475,19 @@ export async function runMeridianVeto(token) {
   // Gate 3: PVP Guard (rival token)
   const pvp = await checkPvpGuardVeto(mint, symbol);
   if (pvp.veto) return { veto: true, reason: pvp.reason, gate: 'PVP_GUARD' };
+
+  // Volume Range Gate
+  if (pool) {
+    const vol = Number(pool.volume || pool.volume24h || pool.v24h || pool.trade_volume_24h || 0);
+    const minVol = Number(cfg.minVolume) || 0;
+    const maxVol = Number(cfg.maxVolume) || 0;
+    if (minVol > 0 && vol < minVol) {
+      return { veto: true, reason: `🚫 VETO: Volume $${Math.round(vol).toLocaleString()} di bawah minimal $${Math.round(minVol).toLocaleString()}`, gate: 'LOW_VOLUME' };
+    }
+    if (maxVol > 0 && vol > maxVol) {
+      return { veto: true, reason: `🚫 VETO: Volume $${Math.round(vol).toLocaleString()} melebihi maksimal $${Math.round(maxVol).toLocaleString()}`, gate: 'HIGH_VOLUME' };
+    }
+  }
 
   // Gate 4: Dominance Check [LOW_DOMINANCE]
   // Dijalankan hanya jika pool object tersedia (berisi activeTvl)

@@ -595,17 +595,27 @@ bot.onText(/\/screening/, async (msg) => {
       return;
     }
 
-    // Urutkan fee_active_tvl_ratio tertinggi, ambil top 5
+    // Urutkan berdasarkan Efficiency Score (Volume / TVL), ambil top 5
     const top5 = [...pools]
-      .sort((a, b) => (b.feeActiveTvlRatio || 0) - (a.feeActiveTvlRatio || 0))
+      .sort((a, b) => {
+        const aTvl = Number(a.activeTvl || a.totalTvl || 0) || 1;
+        const bTvl = Number(b.activeTvl || b.totalTvl || 0) || 1;
+        const aVol = Number(a.volume24h || a.volume || a.v24h || 0);
+        const bVol = Number(b.volume24h || b.volume || b.v24h || 0);
+        return (bVol / bTvl) - (aVol / aTvl);
+      })
       .slice(0, 5);
 
     const lines = await Promise.all(top5.map(async (pool, i) => {
       const symbol  = pool.name || pool.tokenXMint?.slice(0, 8) || 'UNKNOWN';
       const ratio   = ((pool.feeActiveTvlRatio || 0) * 100).toFixed(2);
-      const tvl     = safeNum(pool.totalTvl || pool.activeTvl, 0).toLocaleString('en-US', { maximumFractionDigits: 0 });
+      const tvlRaw  = Number(pool.totalTvl || pool.activeTvl || 0);
+      const tvl     = safeNum(tvlRaw, 0).toLocaleString('en-US', { maximumFractionDigits: 0 });
       const mcap    = safeNum(pool.mcap, 0).toLocaleString('en-US', { maximumFractionDigits: 0 });
-      const vol     = safeNum(pool.volume24h, 0).toLocaleString('en-US', { maximumFractionDigits: 0 });
+      const volRaw  = Number(pool.volume24h || pool.volume || pool.v24h || 0);
+      const vol     = safeNum(volRaw, 0).toLocaleString('en-US', { maximumFractionDigits: 0 });
+      const effValue= volRaw / (tvlRaw || 1);
+      const eff     = effValue > 1000 ? '>1000' : effValue.toFixed(2);
       const binStep = pool.binStep || '?';
 
       // Cek Meridian Supertrend — fail-open jika error
@@ -621,7 +631,7 @@ bot.onText(/\/screening/, async (msg) => {
       return (
         `<b>${i + 1}. ${escapeHTML(symbol)}</b> [${binStep}]\n` +
         `   Fee/TVL: <code>${ratio}%</code> | TVL: <code>$${tvl}</code>\n` +
-        `   MCap: <code>$${mcap}</code> | Vol: <code>$${vol}</code>\n` +
+        `   MCap: <code>$${mcap}</code> | Vol: <code>$${vol}</code> | Eff: <code>${eff}x</code>\n` +
         `   Meridian: ${stIcon}`
       );
     }));
@@ -679,18 +689,28 @@ async function runScreeningLoop() {
       // Filter hanya pool yang benar-benar hot
       const hotPools = pools
         .filter(p => (p.feeActiveTvlRatio || 0) >= HOT_FEE_RATIO_THRESHOLD)
-        .sort((a, b) => (b.feeActiveTvlRatio || 0) - (a.feeActiveTvlRatio || 0))
-        .slice(0, 3);
+        .sort((a, b) => {
+          const aTvl = Number(a.activeTvl || a.totalTvl || 0) || 1;
+          const bTvl = Number(b.activeTvl || b.totalTvl || 0) || 1;
+          const aVol = Number(a.volume24h || a.volume || a.v24h || 0);
+          const bVol = Number(b.volume24h || b.volume || b.v24h || 0);
+          return (bVol / bTvl) - (aVol / aTvl);
+        })
+        .slice(0, 5);
 
       if (hotPools.length === 0) return;
 
       const lines = hotPools.map((p, i) => {
         const sym   = p.name || p.tokenXMint?.slice(0, 8) || 'UNKNOWN';
         const ratio = ((p.feeActiveTvlRatio || 0) * 100).toFixed(2);
-        const tvl   = safeNum(p.totalTvl || p.activeTvl, 0).toLocaleString('en-US', { maximumFractionDigits: 0 });
+        const tvlRaw= Number(p.totalTvl || p.activeTvl || 0);
+        const tvl   = safeNum(tvlRaw, 0).toLocaleString('en-US', { maximumFractionDigits: 0 });
         const mcap  = safeNum(p.mcap, 0).toLocaleString('en-US', { maximumFractionDigits: 0 });
-        const vol   = safeNum(p.volume24h, 0).toLocaleString('en-US', { maximumFractionDigits: 0 });
-        return `${i + 1}. <b>${escapeHTML(sym)}</b> — <code>${ratio}%</code> fee/TVL | TVL: <code>$${tvl}</code>\n      MCap: <code>$${mcap}</code> | Vol: <code>$${vol}</code>`;
+        const volRaw= Number(p.volume24h || p.volume || p.v24h || 0);
+        const vol   = safeNum(volRaw, 0).toLocaleString('en-US', { maximumFractionDigits: 0 });
+        const effValue = volRaw / (tvlRaw || 1);
+        const eff   = effValue > 1000 ? '>1000' : effValue.toFixed(2);
+        return `${i + 1}. <b>${escapeHTML(sym)}</b> — <code>${ratio}%</code> fee/TVL | TVL: <code>$${tvl}</code>\n      MCap: <code>$${mcap}</code> | Vol: <code>$${vol}</code> | Eff: <code>${eff}x</code>`;
       });
 
       await notify(

@@ -1,5 +1,5 @@
 {
-  "dryRun": true,
+  "dryRun": false,
   "autonomyMode": "active",
   "requireConfirmation": true,
   "autoScreeningEnabled": true,
@@ -16,13 +16,14 @@
     "meteoraDiscoveryLimit": 50,
     "timeframe": "24h",
     "category": "trending",
-    "minTvl": 1000,
+    "minTvl": 10000,
     "maxTvl": 0,
-    "minVolume24h": 1000000,
+    "minVolume": 100000,
+    "maxVolume": 0,
     "minHolders": 300,
     "minOrganic": 70,
-    "minMcap": 0,
-    "maxMcapUsd": 0
+    "minMcap": 150000,
+    "maxMcapUsd": 5000000
   },
   "security_gmgn": {
     "enabled": true,
@@ -77,5 +78,6 @@
     "publicApiKey": "bWVyaWRpYW4taXMtdGhlLWJlc3QtYWdlbnRz",
     "agentMeridianApiUrl": "https://api.agentmeridian.xyz/api",
     "lpAgentRelayEnabled": false
-  }
+  },
+  "deployAmountSol": 0.1
 }

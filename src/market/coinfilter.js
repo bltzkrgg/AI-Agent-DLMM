@@ -30,7 +30,8 @@ function normalizeConfig(cfg = getConfig()) {
     // Mcap: baca dari config, fallback 0 (tidak filter) agar pool tua seperti SOL/USDC bisa lolos
     // Atur minMcap dan maxMcapUsd di user-config.json discovery section
     minMcap:              Number(cfg.minMcap)              || 0,
-    minVolume24h:         Number(cfg.minVolume24h)         || 1000000,
+    minVolume:            Number(cfg.minVolume)            || 100000,
+    maxVolume:            Number(cfg.maxVolume)            || 0,
     minTvl:               Number(cfg.minTvl)               || 0,
     maxTvl:               Number(cfg.maxTvl)               || 0,
     // maxMcapUsd = alias untuk maxMcap (keduanya diterima)
@@ -488,7 +489,6 @@ export async function discoverMeteoraDlmmPools(opts = {}) {
   const filterArr = [
     'pool_type=dlmm',
     `base_token_market_cap>=${Math.max(0, radar.minMcap)}`,
-    `volume>=${Math.max(0, radar.minVolume24h)}`,
     `tvl>=${Math.max(0, radar.minTvl)}`,
   ];
   if (radar.maxMcap > 0) filterArr.push(`base_token_market_cap<=${radar.maxMcap}`);
@@ -615,9 +615,14 @@ export async function screenToken(tokenMint, tokenName = '', tokenSymbol = '', o
     highFlags.push({ rule: 'ABOVE_MAX_MCAP', msg });
     appendDecision(decisions, msg, { stage: 1 });
   }
-  if (radar.minVolume24h > 0 && volume24h > 0 && volume24h < radar.minVolume24h) {
-    const msg = `[VETO] Volume 24h $${Math.round(volume24h).toLocaleString()} < min $${Math.round(radar.minVolume24h).toLocaleString()}`;
-    highFlags.push({ rule: 'BELOW_MIN_VOLUME_24H', msg });
+  if (radar.minVolume > 0 && volume24h > 0 && volume24h < radar.minVolume) {
+    const msg = `🚫 VETO: Volume $${Math.round(volume24h).toLocaleString()} di bawah minimal $${Math.round(radar.minVolume).toLocaleString()}`;
+    highFlags.push({ rule: 'BELOW_MIN_VOLUME', msg });
+    appendDecision(decisions, msg, { stage: 1 });
+  }
+  if (radar.maxVolume > 0 && volume24h > radar.maxVolume) {
+    const msg = `🚫 VETO: Volume $${Math.round(volume24h).toLocaleString()} melebihi maksimal $${Math.round(radar.maxVolume).toLocaleString()}`;
+    highFlags.push({ rule: 'ABOVE_MAX_VOLUME', msg });
     appendDecision(decisions, msg, { stage: 1 });
   }
 
