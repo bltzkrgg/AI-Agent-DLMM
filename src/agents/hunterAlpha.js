@@ -137,7 +137,7 @@ async function scanAndDeploy() {
   const limit = cfg.meteoraDiscoveryLimit || 50;
 
   console.log(`[hunter] 🔍 SCAN — High-Fee Hunter (binStep priority: ${(cfg.binStepPriority || [200,125,100]).join('>')} )...`);
-  await notify('🔍 <b>Scan dimulai.</b> Mencari pool dengan fee tertinggi...');
+  await notify('🔍 <b>Scan Progress...</b>\nMengambil data real-time, mohon tunggu.');
 
   let pools;
   try {
@@ -447,7 +447,7 @@ function safeNum(v) {
 
 export async function runAutoscreening(bot, chatId) {
   const cfg = getConfig();
-  await bot.sendMessage(chatId, `🔍 <b>Scanning real-time...</b>\nMencari kandidat terbaik.`, { parse_mode: 'HTML' });
+  await bot.sendMessage(chatId, `🔍 <b>Scan Progress...</b>\nMencari kandidat terbaik (mengambil data real-time).`, { parse_mode: 'HTML' });
 
   try {
     const limit = Number(cfg.meteoraDiscoveryLimit) || 180;
