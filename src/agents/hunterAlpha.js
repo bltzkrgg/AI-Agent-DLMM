@@ -281,7 +281,10 @@ async function scanAndDeploy() {
           appendDecisionLog({ token: tokenSymbol, mint: tokenMint, decision: 'SCREEN_FAIL',
             gate: 'GMGN', reason: screenResult?.verdict || 'FAIL', pool: pool.address || '', feeRatio });
           isEligible = false;
-          const firstFlag = screenResult?.highFlags?.[0]?.msg || screenResult?.decisions?.slice(-1)?.[0]?.line;
+          const stageReasonLines = Array.isArray(screenResult?.highFlags) && screenResult.highFlags.length
+            ? screenResult.highFlags.slice(0, 3).map((f) => f?.msg).filter(Boolean)
+            : [];
+          const firstFlag = stageReasonLines.join('\n- ') || screenResult?.decisions?.slice(-1)?.[0]?.line;
           rejectReason = firstFlag || 'ScreenToken waterfall veto';
         }
       } catch (e) {
@@ -335,7 +338,17 @@ async function scanAndDeploy() {
       }
     }
 
-    if (!isEligible) return { ok: false, symbol: tokenSymbol || 'UNKNOWN', stage: 'WATERFALL', reason: rejectReason || 'REJECTED_BY_GATE', summary };
+    if (!isEligible) {
+      let rejectStage = 'WATERFALL';
+      if (summary.includes('BLACKLIST_LOCAL: FAIL')) rejectStage = 'BLACKLIST_LOCAL';
+      else if (summary.includes('STAGE_1_PUBLIC: FAIL') || summary.includes('STAGE_1_PUBLIC: ERROR')) rejectStage = 'STAGE_1_PUBLIC';
+      else if (summary.includes('STAGE_2_GMGN: FAIL') || summary.includes('STAGE_2_GMGN: ERROR')) rejectStage = 'STAGE_2_GMGN';
+      else if (summary.includes('STAGE_3_JUPITER: FAIL') || summary.includes('STAGE_3_JUPITER: ERROR')) rejectStage = 'STAGE_3_JUPITER';
+      else if (summary.includes('MERIDIAN_VETO: FAIL')) rejectStage = 'MERIDIAN_VETO';
+      else if (summary.includes('FLAT_CONFIG_GATE: FAIL')) rejectStage = 'FLAT_CONFIG_GATE';
+      else if (summary.includes('SCOUT_AGENT: FAIL') || summary.includes('SCOUT_AGENT: ERROR')) rejectStage = 'SCOUT_AGENT';
+      return { ok: false, symbol: tokenSymbol || 'UNKNOWN', stage: rejectStage, reason: rejectReason || 'REJECTED_BY_GATE', summary };
+    }
 
     try {
       const scoutModel = cfg.screeningModel || cfg.agentModel;
@@ -388,12 +401,12 @@ async function scanAndDeploy() {
     console.log(`[hunter] Tidak ada kandidat lolos Scout. Scan ulang dalam ${retryMin} menit...`);
     if (rejectTelemetry.length) {
       const lines = rejectTelemetry.slice(0, 5).map((r, i) => {
-        const gateCompact = toGateCompact(r.summary || []);
+        const gateReport = formatGateReport(r.summary || [], r.stage || 'UNKNOWN_STAGE');
         return (
           `${i + 1}) <b>${escapeHTML(r.symbol)}</b> — REJECT\n` +
           `Tahap gagal: <code>${escapeHTML(r.stage || 'UNKNOWN_STAGE')}</code>\n` +
-          `Alasan: <code>${escapeHTML(String(r.reason).slice(0, 180))}</code>\n` +
-          `Gate: ${escapeHTML(gateCompact)}`
+          `Alasan:\n<pre>${escapeHTML(String(r.reason).slice(0, 360))}</pre>\n` +
+          `Gate:\n<pre>${escapeHTML(gateReport)}</pre>`
         );
       });
       await notify(
@@ -819,6 +832,68 @@ function toGateCompact(summary = []) {
     if (line.startsWith('GENERAL_AGENT:')) return line.replace('GENERAL_AGENT:', 'General');
     return line;
   }).join(' | ');
+}
+
+function buildGateStateMap(summary = []) {
+  const map = new Map();
+  if (!Array.isArray(summary)) return map;
+  for (const line of summary) {
+    if (typeof line !== 'string') continue;
+    const idx = line.indexOf(':');
+    if (idx <= 0) continue;
+    const key = line.slice(0, idx).trim();
+    const value = line.slice(idx + 1).trim();
+    map.set(key, value);
+  }
+  return map;
+}
+
+function formatGateReport(summary = [], stage = 'UNKNOWN_STAGE') {
+  const gateMap = buildGateStateMap(summary);
+  const normalizedStage = String(stage || '').toUpperCase();
+  const order = [
+    'STAGE_0_DISCOVERY',
+    'BLACKLIST_LOCAL',
+    'STAGE_1_PUBLIC',
+    'STAGE_2_GMGN',
+    'STAGE_3_JUPITER',
+    'MERIDIAN_VETO',
+    'FLAT_CONFIG_GATE',
+    'SCOUT_AGENT',
+  ];
+
+  const stageIndexMap = {
+    BLACKLIST_LOCAL: 1,
+    STAGE_1_PUBLIC: 2,
+    STAGE_2_GMGN: 3,
+    STAGE_3_JUPITER: 4,
+    MERIDIAN_VETO: 5,
+    FLAT_CONFIG_GATE: 6,
+    SCOUT_AGENT: 7,
+  };
+  const failIdx = stageIndexMap[normalizedStage] || 0;
+
+  const labels = {
+    STAGE_0_DISCOVERY: 'STAGE_0_DISCOVERY',
+    BLACKLIST_LOCAL: 'BLACKLIST_LOCAL',
+    STAGE_1_PUBLIC: 'STAGE_1_PUBLIC',
+    STAGE_2_GMGN: 'STAGE_2_GMGN',
+    STAGE_3_JUPITER: 'STAGE_3_JUPITER',
+    MERIDIAN_VETO: 'MERIDIAN_VETO',
+    FLAT_CONFIG_GATE: 'FLAT_CONFIG_GATE',
+    SCOUT_AGENT: 'SCOUT_AGENT',
+  };
+
+  return order.map((key) => {
+    const value = gateMap.get(key);
+    if (value) return `${labels[key]}: ${value}`;
+    if (key === 'STAGE_0_DISCOVERY') return `${labels[key]}: PASS`;
+    if (key === 'BLACKLIST_LOCAL' && normalizedStage !== 'BLACKLIST_LOCAL') return `${labels[key]}: PASS`;
+    if (stageIndexMap[key] && failIdx && stageIndexMap[key] < failIdx) return `${labels[key]}: PASS`;
+    if (stageIndexMap[key] === failIdx) return `${labels[key]}: FAIL`;
+    if (stageIndexMap[key] && stageIndexMap[key] > failIdx) return `${labels[key]}: SKIPPED`;
+    return `${labels[key]}: SKIPPED`;
+  }).join('\n');
 }
 
 function classifyMarketRegime() {
