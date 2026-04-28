@@ -55,7 +55,7 @@ function getMeridianHeaders() {
  */
 export async function checkSupertrendVeto(mint, currentRealtimePrice = 0) {
   try {
-    const url = `${getMeridianBase()}/chart-indicators/supertrend/15m/${mint}`;
+    const url = `${getMeridianBase()}/chart-indicators/${mint}?interval=15_MINUTE`;
     const res = await fetchWithTimeout(url, { headers: getMeridianHeaders() }, 3000);
     
     if (!res.ok) {
@@ -63,11 +63,12 @@ export async function checkSupertrendVeto(mint, currentRealtimePrice = 0) {
     }
     
     const data = await res.json().catch(() => null);
-    if (!data || !data.direction) {
-      return { veto: true, reason: '[FAIL_CLOSED] Meridian Supertrend missing direction — safety data unavailable' };
+    const direction = data?.latest?.supertrend?.direction;
+    if (!direction) {
+      return { veto: true, reason: '[FAIL_CLOSED] Meridian Supertrend missing direction' };
     }
 
-    if (data.direction === 'bearish') {
+    if (direction === 'bearish') {
       return { veto: true, reason: `VETO: Trend 15m BEARISH via Meridian API` };
     }
 
