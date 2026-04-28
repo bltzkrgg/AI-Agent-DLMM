@@ -15,11 +15,21 @@ const BIRDEYE_BASE = 'https://public-api.birdeye.so';
 // Fallback 1: Birdeye 15m candles when DexScreener data absent/stale.
 // Fallback 2: Jupiter spot price momentum proxy when both candle sources fail.
 
+let _birdeyeCooldownUntil = 0;
+
 export async function getOHLCV(tokenMint, poolAddress = null) {
   const dex = await buildOHLCVFromDexScreener(tokenMint);
   if (dex?.historySuccess) return dex;
-  const birdeye = await buildOHLCVFromBirdeye(tokenMint);
-  if (birdeye?.historySuccess) return birdeye;
+
+  if (Date.now() > _birdeyeCooldownUntil) {
+    const sleepMs = Math.floor(Math.random() * 1000) + 1000;
+    await new Promise(r => setTimeout(r, sleepMs));
+    const birdeye = await buildOHLCVFromBirdeye(tokenMint);
+    if (birdeye?.historySuccess) return birdeye;
+  } else {
+    console.warn(`[oracle] Birdeye cooldown aktif. Fallback langsung ke Jupiter Proxy.`);
+  }
+
   return buildMomentumProxyOHLCV(tokenMint);
 }
 
@@ -471,6 +481,11 @@ async function getHistoryOHLCVFromBirdeye(tokenMint, lookbackHours = 12) {
       },
       8000
     );
+    if (res.status === 429) {
+      console.warn(`[oracle] Birdeye 429 Rate Limit - Aktivasi Cooldown 5 menit.`);
+      _birdeyeCooldownUntil = Date.now() + 5 * 60 * 1000;
+      return null;
+    }
     if (!res.ok) return null;
     const json = await res.json().catch(() => null);
     const items = json?.data?.items || json?.data?.candles || [];

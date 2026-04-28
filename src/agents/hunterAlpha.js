@@ -172,85 +172,101 @@ async function scanAndDeploy() {
 
   console.log(`[hunter] ${pools.length} pool ditemukan. Mulai screening...`);
 
-  // ── Phase 2: FILTER — Parallel Screening ────────────
+  // ── Phase 2: FILTER — Batch Screening ────────────
   const scoutCandidates = pools.slice(0, 15);
-  console.log(`[hunter] 🔬 Memulai Parallel Screening untuk ${scoutCandidates.length} pool...`);
+  console.log(`[hunter] 🔬 Memulai Batch Screening untuk ${scoutCandidates.length} pool...`);
 
-  const scoutResults = await Promise.allSettled(scoutCandidates.map(async (pool) => {
-    if (!_running) return null;
+  let winners = [];
+  for (let i = 0; i < scoutCandidates.length; i += 3) {
+    const batch = scoutCandidates.slice(i, i + 3);
+    console.log(`[hunter] 📦 Memproses Batch ${Math.floor(i / 3) + 1}...`);
+    
+    const batchResults = await Promise.allSettled(batch.map(async (pool) => {
+      if (!_running) return null;
 
-    const tokenMint   = pool.tokenXMint || pool.tokenX || pool.mint;
-    const tokenSymbol = pool.tokenXSymbol || pool.name?.split('-')[0] || '';
-    const binStep     = pool.binStep || 0;
-    const feeRatio    = pool.feeActiveTvlRatio || 0;
-    const vol         = pool.volume24h || pool.volume_24h || pool.trade_volume_24h || pool.volume || 0;
+      const tokenMint   = pool.tokenXMint || pool.tokenX || pool.mint;
+      const tokenSymbol = pool.tokenXSymbol || pool.name?.split('-')[0] || '';
+      const binStep     = pool.binStep || 0;
+      const feeRatio    = pool.feeActiveTvlRatio || 0;
+      const vol         = pool.volume24h || pool.volume_24h || pool.trade_volume_24h || pool.volume || 0;
 
-    if (!tokenMint) return null;
+      if (!tokenMint) return null;
 
-    // ── Blacklist check ────────────────
-    if (isBlacklisted(tokenMint)) {
-      appendDecisionLog({ token: tokenSymbol, mint: tokenMint, decision: 'VETO',
-        gate: 'BLACKLIST', reason: 'Token ada di daftar blacklist lokal',
-        pool: pool.address || '', feeRatio });
-      return null;
-    }
-
-    // ── GMGN / Coinfilter screening ─────────────────────────────
-    let screenResult;
-    try {
-      screenResult = await screenToken(tokenMint, tokenSymbol, tokenSymbol);
-    } catch (e) {
-      return null;
-    }
-
-    if (!screenResult?.eligible) {
-      appendDecisionLog({ token: tokenSymbol, mint: tokenMint, decision: 'SCREEN_FAIL',
-        gate: 'GMGN', reason: screenResult?.verdict || 'FAIL', pool: pool.address || '', feeRatio });
-      return null;
-    }
-
-    // ── Meridian VETO (Supertrend 15m + ATH + PVP + Dominance) ────
-    const vetoResult = await runMeridianVeto({ mint: tokenMint, symbol: tokenSymbol, pool });
-    if (vetoResult.veto) {
-      appendDecisionLog({ token: tokenSymbol, mint: tokenMint, decision: 'VETO',
-        gate: vetoResult.gate, reason: vetoResult.reason,
-        pool: pool.address || pool.poolAddress || '', feeRatio });
-      return null;
-    }
-
-    appendDecisionLog({ token: tokenSymbol, mint: tokenMint, decision: 'PASS',
-      gate: null, reason: vetoResult.reason,
-      pool: pool.address || pool.poolAddress || '', feeRatio });
-
-    // ── Pure Flat Config gate ─────────────────────────────────────
-    const passesConfig = checkFlatConfig(pool, cfg);
-    if (!passesConfig.ok) return null;
-
-    // ── ScoutAgent (Nvidia) ───────────────────────────────────────
-    try {
-      const prompt = `Analisa singkat pool ini:\nToken: ${tokenSymbol}\nBin Step: ${binStep}\nFee/TVL: ${(feeRatio*100).toFixed(2)}%\nVolume: $${Math.round(vol)}\nBalas HANYA dengan 'PASS' jika layak lanjut, atau 'REJECT' jika meragukan.`;
-      const res = await createMessage({
-        model: cfg.screeningModel,
-        maxTokens: 10,
-        messages: [{ role: 'user', content: prompt }]
-      });
-      const ans = res.content.find(c => c.type === 'text')?.text.trim().toUpperCase();
-      if (ans && ans.includes('PASS')) {
-        console.log(`[hunter] 🤖 ScoutAgent (Nvidia) APPROVED: ${tokenSymbol}`);
-        return pool;
+      // ── Blacklist check ────────────────
+      if (isBlacklisted(tokenMint)) {
+        appendDecisionLog({ token: tokenSymbol, mint: tokenMint, decision: 'VETO',
+          gate: 'BLACKLIST', reason: 'Token ada di daftar blacklist lokal',
+          pool: pool.address || '', feeRatio });
+        return null;
       }
-      console.log(`[hunter] 🤖 ScoutAgent (Nvidia) REJECTED: ${tokenSymbol}`);
-      return null;
-    } catch (e) {
-      console.warn(`[hunter] ScoutAgent error pada ${tokenSymbol}: ${e.message}`);
-      return null;
-    }
-  }));
 
-  let winners = scoutResults
-    .filter(r => r.status === 'fulfilled' && r.value !== null)
-    .map(r => r.value)
-    .slice(0, 5); // Ambil Top 5
+      // ── GMGN / Coinfilter screening ─────────────────────────────
+      let screenResult;
+      try {
+        screenResult = await screenToken(tokenMint, tokenSymbol, tokenSymbol);
+      } catch (e) {
+        return null;
+      }
+
+      if (!screenResult?.eligible) {
+        appendDecisionLog({ token: tokenSymbol, mint: tokenMint, decision: 'SCREEN_FAIL',
+          gate: 'GMGN', reason: screenResult?.verdict || 'FAIL', pool: pool.address || '', feeRatio });
+        return null;
+      }
+
+      // ── Meridian VETO (Supertrend 15m + ATH + PVP + Dominance) ────
+      const vetoResult = await runMeridianVeto({ mint: tokenMint, symbol: tokenSymbol, pool });
+      if (vetoResult.veto) {
+        appendDecisionLog({ token: tokenSymbol, mint: tokenMint, decision: 'VETO',
+          gate: vetoResult.gate, reason: vetoResult.reason,
+          pool: pool.address || pool.poolAddress || '', feeRatio });
+        return null;
+      }
+
+      appendDecisionLog({ token: tokenSymbol, mint: tokenMint, decision: 'PASS',
+        gate: null, reason: vetoResult.reason,
+        pool: pool.address || pool.poolAddress || '', feeRatio });
+
+      // ── Pure Flat Config gate ─────────────────────────────────────
+      const passesConfig = checkFlatConfig(pool, cfg);
+      if (!passesConfig.ok) return null;
+
+      // ── ScoutAgent (Nvidia) ───────────────────────────────────────
+      try {
+        const prompt = `Analisa singkat pool ini:\nToken: ${tokenSymbol}\nBin Step: ${binStep}\nFee/TVL: ${(feeRatio*100).toFixed(2)}%\nVolume: $${Math.round(vol)}\nBalas HANYA dengan 'PASS' jika layak lanjut, atau 'REJECT' jika meragukan.`;
+        const res = await createMessage({
+          model: cfg.screeningModel,
+          maxTokens: 10,
+          messages: [{ role: 'user', content: prompt }]
+        });
+        const ans = res.content.find(c => c.type === 'text')?.text.trim().toUpperCase();
+        if (ans && ans.includes('PASS')) {
+          console.log(`[hunter] 🤖 ScoutAgent (Nvidia) APPROVED: ${tokenSymbol}`);
+          return pool;
+        }
+        console.log(`[hunter] 🤖 ScoutAgent (Nvidia) REJECTED: ${tokenSymbol}`);
+        return null;
+      } catch (e) {
+        console.warn(`[hunter] ScoutAgent error pada ${tokenSymbol}: ${e.message}`);
+        return null;
+      }
+    }));
+
+    const batchWinners = batchResults
+      .filter(r => r.status === 'fulfilled' && r.value !== null)
+      .map(r => r.value);
+      
+    winners.push(...batchWinners);
+    
+    if (winners.length >= 5) {
+       winners = winners.slice(0, 5);
+       break;
+    }
+    
+    if (i + 3 < scoutCandidates.length) {
+      await sleep(2000);
+    }
+  }
 
   if (winners.length === 0) {
     const retryCfg = getConfig();
