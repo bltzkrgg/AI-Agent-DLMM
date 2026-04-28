@@ -10,6 +10,9 @@
 
 'use strict';
 
+import { appendFileSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+
 // ── In-memory stores ──────────────────────────────────────────────
 
 /** @type {Map<string, Object>} positionAddress → position object */
@@ -36,7 +39,46 @@ const _screeningEvents = [];
 const MAX_SCREENING = 500;
 
 function nowIso() { return new Date().toISOString(); }
+function todayKey() { return new Date().toISOString().slice(0, 10); }
 function nowMs()  { return Date.now(); }
+
+function getDailyPnlStatePath() {
+  return process.env.BOT_DAILY_PNL_PATH || join(process.cwd(), 'daily-pnl-state.json');
+}
+
+function getDailyPnlLedgerPath() {
+  return process.env.BOT_DAILY_PNL_LEDGER_PATH || join(process.cwd(), 'daily-pnl-ledger.jsonl');
+}
+
+function loadDailyPnlState() {
+  const fallback = { date: todayKey(), totalPnlUsd: 0, totalFeesUsd: 0, trades: 0 };
+  const path = getDailyPnlStatePath();
+  if (!existsSync(path)) return fallback;
+  try {
+    const raw = JSON.parse(readFileSync(path, 'utf8'));
+    if (raw?.date !== todayKey()) return fallback;
+    return {
+      date: raw.date,
+      totalPnlUsd: Number(raw.totalPnlUsd) || 0,
+      totalFeesUsd: Number(raw.totalFeesUsd) || 0,
+      trades: Number(raw.trades) || 0,
+    };
+  } catch {
+    return fallback;
+  }
+}
+
+function saveDailyPnlState(state) {
+  writeFileSync(getDailyPnlStatePath(), JSON.stringify(state, null, 2));
+}
+
+function appendDailyPnlLedger(row) {
+  try {
+    appendFileSync(getDailyPnlLedgerPath(), `${JSON.stringify(row)}\n`, 'utf8');
+  } catch {
+    // non-fatal: state snapshot remains the circuit-breaker source of truth
+  }
+}
 
 // ── Position API ──────────────────────────────────────────────────
 
@@ -241,10 +283,10 @@ export function getScreeningEvents(limit = 50) {
 
 // ── PnL Recording (daily tracker) ────────────────────────────────
 
-const _dailyPnl = { date: null, totalPnlUsd: 0, totalFeesUsd: 0, trades: 0 };
+const _dailyPnl = loadDailyPnlState();
 
 export function recordPnlUsd(pnlUsd = 0, feesUsd = 0) {
-  const today = new Date().toISOString().slice(0, 10);
+  const today = todayKey();
   if (_dailyPnl.date !== today) {
     _dailyPnl.date = today;
     _dailyPnl.totalPnlUsd = 0;
@@ -254,10 +296,25 @@ export function recordPnlUsd(pnlUsd = 0, feesUsd = 0) {
   _dailyPnl.totalPnlUsd += pnlUsd;
   _dailyPnl.totalFeesUsd += feesUsd;
   _dailyPnl.trades++;
+  saveDailyPnlState(_dailyPnl);
+  appendDailyPnlLedger({
+    ts: nowIso(),
+    date: _dailyPnl.date,
+    pnlUsd: Number(pnlUsd) || 0,
+    feesUsd: Number(feesUsd) || 0,
+    totalPnlUsd: _dailyPnl.totalPnlUsd,
+    totalFeesUsd: _dailyPnl.totalFeesUsd,
+    trades: _dailyPnl.trades,
+  });
 }
 
 export function getTodayResults() {
-  const today = new Date().toISOString().slice(0, 10);
+  const restored = loadDailyPnlState();
+  _dailyPnl.date = restored.date;
+  _dailyPnl.totalPnlUsd = restored.totalPnlUsd;
+  _dailyPnl.totalFeesUsd = restored.totalFeesUsd;
+  _dailyPnl.trades = restored.trades;
+  const today = todayKey();
   if (_dailyPnl.date !== today) return { totalPnlUsd: 0, totalFeesUsd: 0, trades: 0 };
   return { ..._dailyPnl };
 }

@@ -24,3 +24,5 @@ data/
 
 # runtime state
 daily-risk-state.json
+daily-pnl-state.json
+daily-pnl-ledger.jsonl

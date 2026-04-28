@@ -83,6 +83,7 @@ let _deployLock = false;
 let _shutdownInProgress = false;
 const _closingPositions = new Set();
 const _positionLabels = new Map(); // pubkey -> { symbol }
+const _monitoredPositions = new Set();
 
 function listActivePositions() {
   const keys = getActivePositionKeys();
@@ -570,77 +571,100 @@ async function scanAndDeploy() {
 // ── Phase 4: MONITOR loop (while position active) ────────────────
 
 async function monitorLoop(positionPubkey, symbol, poolAddress) {
+  if (_monitoredPositions.has(positionPubkey)) {
+    console.log(`[hunter] Monitor loop already active: ${positionPubkey.slice(0,8)}`);
+    return;
+  }
+  _monitoredPositions.add(positionPubkey);
   console.log(`[hunter] 🔒 MONITOR lock: ${positionPubkey.slice(0,8)}`);
   let consecutiveErrors = 0;
 
-  while (_running) {
-    await sleep(EP_CONFIG.MONITOR_INTERVAL_MS);
+  try {
+    while (_running || getActivePositionKeys().includes(positionPubkey)) {
+      await sleep(EP_CONFIG.MONITOR_INTERVAL_MS);
 
-    let status;
-    try {
-      status = await monitorPnL(positionPubkey);
-      consecutiveErrors = 0;
-    } catch (e) {
-      consecutiveErrors++;
-      console.warn(`[hunter] monitorPnL error (${consecutiveErrors}): ${e.message}`);
-      if (consecutiveErrors >= 5) {
-        await notify(`⚠️ <b>Monitor error 5x berturut.</b> Force exit...\n<code>${e.message}</code>`);
-        await safeExit(positionPubkey, 'MONITOR_ERROR');
+      let status;
+      try {
+        status = await monitorPnL(positionPubkey);
+        consecutiveErrors = 0;
+      } catch (e) {
+        consecutiveErrors++;
+        console.warn(`[hunter] monitorPnL error (${consecutiveErrors}): ${e.message}`);
+        if (consecutiveErrors >= 5) {
+          await notify(`⚠️ <b>Monitor error 5x berturut.</b> Force exit...\n<code>${e.message}</code>`);
+          await safeExit(positionPubkey, 'MONITOR_ERROR');
+          return;
+        }
+        continue;
+      }
+
+      const { action, currentValueSol, pnlPct, inRange } = status;
+
+      if (action === 'ERROR') {
+        consecutiveErrors++;
+        if (consecutiveErrors >= 5) {
+          await notify(`⚠️ <b>Status error 5x berturut.</b> Force exit...`);
+          await safeExit(positionPubkey, 'STATUS_ERROR');
+          return;
+        }
+        continue;
+      }
+
+      // Log ringkas tiap poll
+      const rangeIcon = inRange ? '🟢' : '🟡';
+      console.log(`[hunter] ${rangeIcon} ${symbol} pnl=${pnlPct.toFixed(2)}% val=${currentValueSol.toFixed(4)}SOL action=${action}`);
+
+      // Exit trigger
+      if (action === 'TAKE_PROFIT') {
+        await notify(
+          `🎉 <b>TAKE PROFIT!</b>\n` +
+          `Token: <b>${symbol}</b>\n` +
+          `PnL: <code>+${pnlPct.toFixed(2)}%</code>\n` +
+          `Value: <code>${currentValueSol.toFixed(4)} SOL</code>\n` +
+          (status.exitScenario ? `📊 Skenario <b>${status.exitScenario}</b>: <code>${status.exitReason || ''}</code>\n` : '') +
+          `\n⏳ <i>Menutup posisi...</i>`
+        );
+        await safeExit(positionPubkey, `TAKE_PROFIT_${status.exitScenario || 'TA'}`);
         return;
       }
-      continue;
-    }
 
-    const { action, currentValueSol, pnlPct, inRange } = status;
-
-    if (action === 'ERROR') {
-      consecutiveErrors++;
-      if (consecutiveErrors >= 5) {
-        await notify(`⚠️ <b>Status error 5x berturut.</b> Force exit...`);
-        await safeExit(positionPubkey, 'STATUS_ERROR');
+      if (action === 'STOP_LOSS') {
+        await notify(
+          `🛑 <b>STOP LOSS!</b>\n` +
+          `Token: <b>${symbol}</b>\n` +
+          `PnL: <code>${pnlPct.toFixed(2)}%</code>\n` +
+          `Value: <code>${currentValueSol.toFixed(4)} SOL</code>\n\n` +
+          `⏳ <i>Menutup posisi...</i>`
+        );
+        await safeExit(positionPubkey, 'STOP_LOSS');
         return;
       }
-      continue;
     }
 
-    // Log ringkas tiap poll
-    const rangeIcon = inRange ? '🟢' : '🟡';
-    console.log(`[hunter] ${rangeIcon} ${symbol} pnl=${pnlPct.toFixed(2)}% val=${currentValueSol.toFixed(4)}SOL action=${action}`);
-
-    // Exit trigger
-    if (action === 'TAKE_PROFIT') {
-      await notify(
-        `🎉 <b>TAKE PROFIT!</b>\n` +
-        `Token: <b>${symbol}</b>\n` +
-        `PnL: <code>+${pnlPct.toFixed(2)}%</code>\n` +
-        `Value: <code>${currentValueSol.toFixed(4)} SOL</code>\n` +
-        (status.exitScenario ? `📊 Skenario <b>${status.exitScenario}</b>: <code>${status.exitReason || ''}</code>\n` : '') +
-        `\n⏳ <i>Menutup posisi...</i>`
-      );
-      await safeExit(positionPubkey, `TAKE_PROFIT_${status.exitScenario || 'TA'}`);
+    // Loop dihentikan dari luar — exit posisi
+    if (_shutdownInProgress) {
+      console.log(`[hunter] Shutdown in progress, monitor loop selesai tanpa auto-exit tambahan: ${positionPubkey.slice(0,8)}`);
       return;
     }
-
-    if (action === 'STOP_LOSS') {
-      await notify(
-        `🛑 <b>STOP LOSS!</b>\n` +
-        `Token: <b>${symbol}</b>\n` +
-        `PnL: <code>${pnlPct.toFixed(2)}%</code>\n` +
-        `Value: <code>${currentValueSol.toFixed(4)} SOL</code>\n\n` +
-        `⏳ <i>Menutup posisi...</i>`
-      );
-      await safeExit(positionPubkey, 'STOP_LOSS');
-      return;
-    }
+    await notify(`⏹ <b>Loop dihentikan.</b> Menutup posisi aktif...`);
+    await safeExit(positionPubkey, 'LOOP_STOPPED');
+  } finally {
+    _monitoredPositions.delete(positionPubkey);
   }
+}
 
-  // Loop dihentikan dari luar — exit posisi
-  if (_shutdownInProgress) {
-    console.log(`[hunter] Shutdown in progress, monitor loop selesai tanpa auto-exit tambahan: ${positionPubkey.slice(0,8)}`);
-    return;
+export function spawnMonitorForRestoredPositions() {
+  const active = listActivePositions();
+  let spawned = 0;
+  for (const pos of active) {
+    if (!pos?.pubkey || _monitoredPositions.has(pos.pubkey)) continue;
+    const symbol = pos.symbol || pos.mint?.slice(0, 8) || pos.pubkey.slice(0, 8);
+    monitorLoop(pos.pubkey, symbol, pos.poolAddress).catch(err => {
+      console.error(`[hunter] Restored monitor loop crash untuk ${symbol}:`, err);
+    });
+    spawned++;
   }
-  await notify(`⏹ <b>Loop dihentikan.</b> Menutup posisi aktif...`);
-  await safeExit(positionPubkey, 'LOOP_STOPPED');
+  return spawned;
 }
 
 // ── Exit helper ───────────────────────────────────────────────────
