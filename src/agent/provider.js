@@ -19,6 +19,20 @@ const PROVIDER = (process.env.AI_PROVIDER || 'openrouter').toLowerCase();
 
 let _anthropicClient = null;
 let _openaiClient    = null;
+let _nvidiaClient    = null;
+
+function getNvidiaClient() {
+  if (!_nvidiaClient) {
+    if (!process.env.NVIDIA_API_KEY) {
+      return getOpenRouterClient();
+    }
+    _nvidiaClient = new OpenAI({
+      apiKey: process.env.NVIDIA_API_KEY,
+      baseURL: 'https://integrate.api.nvidia.com/v1',
+    });
+  }
+  return _nvidiaClient;
+}
 
 function getAnthropicClient() {
   if (!_anthropicClient) {
@@ -348,12 +362,13 @@ export async function createMessage({ model, maxTokens = 4096, system, tools, me
         response = await client.messages.create(params);
 
       } else {
-        // ── OpenAI-compatible (openrouter / openai / custom / groq / huggingface) ──
+        // ── OpenAI-compatible (openrouter / openai / custom / groq / huggingface / nvidia) ──
         let client;
         if (PROVIDER === 'openai') client = getOpenAIClient();
         else if (PROVIDER === 'custom') client = getCustomClient();
         else if (PROVIDER === 'groq') client = getGroqClient();
         else if (PROVIDER === 'huggingface') client = getHuggingFaceClient();
+        else if (resolvedModel.startsWith('nvidia/')) client = getNvidiaClient();
         else client = getOpenRouterClient();
 
         const oaiMessages = toOAIMessages(system, messages);

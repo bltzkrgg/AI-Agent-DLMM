@@ -15,6 +15,7 @@ import { getConfig }              from '../config.js';
 import { screenToken }            from '../market/coinfilter.js';
 import { runMeridianVeto, discoverHighFeePoolsMeridian } from '../market/meridianVeto.js';
 import { deployPosition, monitorPnL, exitPosition, EP_CONFIG } from '../sniper/evilPanda.js';
+import { createMessage }          from '../agent/provider.js';
 import { getWalletBalance }       from '../solana/wallet.js';
 import { appendDecisionLog }      from '../learn/decisionLog.js';
 import { isBlacklisted }          from '../learn/tokenBlacklist.js';
@@ -171,35 +172,27 @@ async function scanAndDeploy() {
 
   console.log(`[hunter] ${pools.length} pool ditemukan. Mulai screening...`);
 
-  // ── Phase 2: FILTER — sequential, 5 detik antar koin ────────────
-  let winners = [];
+  // ── Phase 2: FILTER — Parallel Screening ────────────
+  const scoutCandidates = pools.slice(0, 15);
+  console.log(`[hunter] 🔬 Memulai Parallel Screening untuk ${scoutCandidates.length} pool...`);
 
-  for (const pool of pools) {
-    if (winners.length >= 5) break;
-    if (!_running) return;
+  const scoutResults = await Promise.allSettled(scoutCandidates.map(async (pool) => {
+    if (!_running) return null;
 
     const tokenMint   = pool.tokenXMint || pool.tokenX || pool.mint;
     const tokenSymbol = pool.tokenXSymbol || pool.name?.split('-')[0] || '';
     const binStep     = pool.binStep || 0;
     const feeRatio    = pool.feeActiveTvlRatio || 0;
-    const mcap        = Math.round(pool.mcap || 0).toLocaleString('en-US');
-    const vol         = Math.round(pool.volume24h || pool.volume_24h || pool.trade_volume_24h || pool.tradeVolume24h || pool.volume || pool.v24h || 0).toLocaleString('en-US');
+    const vol         = pool.volume24h || pool.volume_24h || pool.trade_volume_24h || pool.volume || 0;
 
-    if (!tokenMint) {
-      await sleep(5_000);
-      continue;
-    }
+    if (!tokenMint) return null;
 
-    console.log(`[hunter] 🔬 Screen: ${tokenSymbol} | binStep=${binStep} | fee/tvl=${(feeRatio*100).toFixed(3)}% | mcap=$${mcap} | vol=$${vol}`);
-
-    // ── Blacklist check (sebelum API call apapun) ────────────────
+    // ── Blacklist check ────────────────
     if (isBlacklisted(tokenMint)) {
-      console.log(`[hunter] 🚧 ${tokenSymbol}: BLACKLISTED — skip`);
       appendDecisionLog({ token: tokenSymbol, mint: tokenMint, decision: 'VETO',
         gate: 'BLACKLIST', reason: 'Token ada di daftar blacklist lokal',
         pool: pool.address || '', feeRatio });
-      await sleep(1_000);
-      continue;
+      return null;
     }
 
     // ── GMGN / Coinfilter screening ─────────────────────────────
@@ -207,69 +200,106 @@ async function scanAndDeploy() {
     try {
       screenResult = await screenToken(tokenMint, tokenSymbol, tokenSymbol);
     } catch (e) {
-      console.warn(`[hunter] screenToken error ${tokenMint.slice(0,8)}: ${e.message}`);
-      await sleep(5_000);
-      continue;
+      return null;
     }
 
     if (!screenResult?.eligible) {
-      const failReason = screenResult?.verdict || 'FAIL';
-      console.log(`[hunter] ❌ ${tokenSymbol}: ${failReason} (GMGN gate)`);
       appendDecisionLog({ token: tokenSymbol, mint: tokenMint, decision: 'SCREEN_FAIL',
-        gate: 'GMGN', reason: failReason, pool: pool.address || '', feeRatio });
-      await sleep(5_000);
-      continue;
+        gate: 'GMGN', reason: screenResult?.verdict || 'FAIL', pool: pool.address || '', feeRatio });
+      return null;
     }
 
     // ── Meridian VETO (Supertrend 15m + ATH + PVP + Dominance) ────
-    // Pass `pool` agar dominance check (Gate 4) bisa berjalan
     const vetoResult = await runMeridianVeto({ mint: tokenMint, symbol: tokenSymbol, pool });
     if (vetoResult.veto) {
-      console.log(`[hunter] 🚫 ${tokenSymbol}: VETO [${vetoResult.gate}] — ${vetoResult.reason}`);
       appendDecisionLog({ token: tokenSymbol, mint: tokenMint, decision: 'VETO',
         gate: vetoResult.gate, reason: vetoResult.reason,
         pool: pool.address || pool.poolAddress || '', feeRatio });
-      await sleep(5_000);
-      continue;
+      return null;
     }
-    console.log(`[hunter] ✅ Meridian: ${vetoResult.reason}`);
+
     appendDecisionLog({ token: tokenSymbol, mint: tokenMint, decision: 'PASS',
       gate: null, reason: vetoResult.reason,
       pool: pool.address || pool.poolAddress || '', feeRatio });
 
     // ── Pure Flat Config gate ─────────────────────────────────────
     const passesConfig = checkFlatConfig(pool, cfg);
-    if (!passesConfig.ok) {
-      console.log(`[hunter] ❌ ${tokenSymbol}: config gate — ${passesConfig.reason}`);
-      await sleep(5_000);
-      continue;
-    }
+    if (!passesConfig.ok) return null;
 
-    console.log(`[hunter] ✅ ${tokenSymbol} LOLOS semua gate! (binStep=${binStep} fee/tvl=${(feeRatio*100).toFixed(3)}%)`);
-    winners.push(pool);
-  }
+    // ── ScoutAgent (Nvidia) ───────────────────────────────────────
+    try {
+      const prompt = `Analisa singkat pool ini:\nToken: ${tokenSymbol}\nBin Step: ${binStep}\nFee/TVL: ${(feeRatio*100).toFixed(2)}%\nVolume: $${Math.round(vol)}\nBalas HANYA dengan 'PASS' jika layak lanjut, atau 'REJECT' jika meragukan.`;
+      const res = await createMessage({
+        model: cfg.screeningModel,
+        maxTokens: 10,
+        messages: [{ role: 'user', content: prompt }]
+      });
+      const ans = res.content.find(c => c.type === 'text')?.text.trim().toUpperCase();
+      if (ans && ans.includes('PASS')) {
+        console.log(`[hunter] 🤖 ScoutAgent (Nvidia) APPROVED: ${tokenSymbol}`);
+        return pool;
+      }
+      console.log(`[hunter] 🤖 ScoutAgent (Nvidia) REJECTED: ${tokenSymbol}`);
+      return null;
+    } catch (e) {
+      console.warn(`[hunter] ScoutAgent error pada ${tokenSymbol}: ${e.message}`);
+      return null;
+    }
+  }));
+
+  let winners = scoutResults
+    .filter(r => r.status === 'fulfilled' && r.value !== null)
+    .map(r => r.value)
+    .slice(0, 5); // Ambil Top 5
 
   if (winners.length === 0) {
-    // Baca config fresh agar pakai nilai terbaru (tidak hardcode 2 menit)
-    const retryCfg      = getConfig();
-    const retryMin      = Number(retryCfg.screeningIntervalMin) || 15;
-    const retryMs       = retryMin * 60 * 1000;
-    console.log(`[hunter] Tidak ada kandidat lolos. Scan ulang dalam ${retryMin} menit...`);
+    const retryCfg = getConfig();
+    const retryMin = Number(retryCfg.screeningIntervalMin) || 15;
+    console.log(`[hunter] Tidak ada kandidat lolos Scout. Scan ulang dalam ${retryMin} menit...`);
     await notify(`🔍 <i>Tidak ada kandidat lolos screening. Scan ulang dalam ${retryMin} menit.</i>`);
-    await sleep(retryMs);
+    await sleep(retryMin * 60 * 1000);
     return;
   }
 
-  // Sort winners by Efficiency Score
-  winners.sort((a, b) => {
-    const aTvl = Number(a.activeTvl || a.totalTvl || 0) || 1;
-    const bTvl = Number(b.activeTvl || b.totalTvl || 0) || 1;
-    const aVol = Number(a.volume24h || a.volume_24h || a.trade_volume_24h || a.tradeVolume24h || a.volume || a.v24h || 0);
-    const bVol = Number(b.volume24h || b.volume_24h || b.trade_volume_24h || b.tradeVolume24h || b.volume || b.v24h || 0);
-    return (bVol / bTvl) - (aVol / aTvl);
-  });
+  // ── GeneralAgent (DeepSeek) Sequential Audit ───────────────────
+  console.log(`[hunter] 🧠 GeneralAgent (DeepSeek) memulai final audit sekuensial untuk ${winners.length} kandidat...`);
+  let finalWinner = null;
 
-  const winner = winners[0];
+  for (const w of winners) {
+    const sym = w.tokenXSymbol || w.name?.split('-')[0];
+    const mcap = Math.round(w.mcap || 0).toLocaleString('en-US');
+    const vol = Math.round(w.volume24h || w.volume_24h || w.trade_volume_24h || w.tradeVolume24h || w.volume || w.v24h || 0).toLocaleString('en-US');
+    
+    try {
+      const prompt = `Sebagai eksekutor final (GeneralAgent), beri keputusan untuk token ${sym}:\nMCap: $${mcap}\nVolume: $${vol}\nStrategi: Evil Panda.\nBalas HANYA dengan 'BUY' jika eksekusi, atau 'PASS' jika batal.`;
+      const res = await createMessage({
+        model: cfg.generalModel,
+        maxTokens: 10,
+        messages: [{ role: 'user', content: prompt }]
+      });
+      const ans = res.content.find(c => c.type === 'text')?.text.trim().toUpperCase();
+      
+      if (ans && ans.includes('BUY')) {
+        console.log(`[hunter] 🎯 GeneralAgent MEMUTUSKAN BUY: ${sym}`);
+        finalWinner = w;
+        break; // Segera eksekusi, stop audit sisanya
+      } else {
+        console.log(`[hunter] ✋ GeneralAgent PASS: ${sym}`);
+      }
+    } catch (e) {
+      console.warn(`[hunter] GeneralAgent error pada ${sym}: ${e.message}`);
+    }
+  }
+
+  if (!finalWinner) {
+    const retryCfg = getConfig();
+    const retryMin = Number(retryCfg.screeningIntervalMin) || 15;
+    console.log(`[hunter] GeneralAgent membatalkan semua kandidat. Scan ulang dalam ${retryMin} menit...`);
+    await sleep(retryMin * 60 * 1000);
+    return;
+  }
+
+  const winner = finalWinner;
 
   // ── Phase 3: DEPLOY & SLOT MANAGEMENT ───────────────────────────
   const cfg2        = getConfig();

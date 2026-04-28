@@ -56,7 +56,7 @@ const DEFAULTS = {
   // Priority: process.env > user-config.json[llm.*] > DEFAULTS
   // Ganti model via .env tanpa sentuh kode:
   //   SCREENING_MODEL, MANAGEMENT_MODEL, AGENT_MODEL
-  screeningModel:  process.env.SCREENING_MODEL  || 'deepseek/deepseek-chat',
+  screeningModel:  process.env.SCREENING_MODEL  || 'nvidia/llama-3.1-nemotron-70b-instruct',
   managementModel: process.env.MANAGEMENT_MODEL || 'deepseek/deepseek-chat',
   agentModel:      process.env.AGENT_MODEL      || 'deepseek/deepseek-chat',
   generalModel:    process.env.AGENT_MODEL      || 'deepseek/deepseek-chat',
