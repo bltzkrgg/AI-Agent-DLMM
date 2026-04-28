@@ -12,8 +12,7 @@ import { checkCooldown, setCooldown } from '../utils/jupiterCooldown.js';
 import { getRecommendedPriorityFee } from '../utils/helius.js';
 import { isDryRun } from '../config.js';
 import {
-  checkAndConsumePriorityFeeBudget,
-  estimatePriorityFeeSol,
+  checkGasGuard,
   recordTxFailure,
   recordTxSuccess,
 } from '../safety/gasGuard.js';
@@ -284,11 +283,7 @@ export async function swapToSOL(inputMint, amountRaw, slippageBps = 250, options
 
   let txHash = null;
   try {
-    const estFeeSol = estimatePriorityFeeSol({ priorityFeeLamports });
-    const budgetCheck = checkAndConsumePriorityFeeBudget({
-      estimatedSol: estFeeSol,
-      context: 'jupiter.swap',
-    });
+    const budgetCheck = checkGasGuard();
     if (!budgetCheck.allowed) {
       throw new Error(`TX_GUARD_BLOCKED: ${budgetCheck.reason}`);
     }
