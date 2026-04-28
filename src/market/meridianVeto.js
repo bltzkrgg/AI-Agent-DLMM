@@ -55,43 +55,25 @@ function getMeridianHeaders() {
  */
 export async function checkSupertrendVeto(mint, currentRealtimePrice = 0) {
   try {
-    // 1. Ambil bahan mentah dari Oracle internal
-    let candles = await oracle.getOHLCV(mint, '15_MINUTE', 50);
-
-    // Adaptasi: Jika getOHLCV mengembalikan object (snapshot), tarik array mentah
-    if (candles && !Array.isArray(candles) && candles.historySuccess) {
-      candles = await oracle.getHistoryOHLCV(mint);
+    const url = `${getMeridianBase()}/chart-indicators/supertrend/15m/${mint}`;
+    const res = await fetchWithTimeout(url, { headers: getMeridianHeaders() }, 3000);
+    
+    if (!res.ok) {
+      return { veto: false, reason: 'PASS: Meridian API timeout/error (fail-open)' };
+    }
+    
+    const data = await res.json().catch(() => null);
+    if (!data || !data.direction) {
+      return { veto: false, reason: 'PASS: Meridian API missing direction (fail-open)' };
     }
 
-    // 2. SOP Darurat: Jika data gagal didapat dari semua supplier
-    if (!candles || !Array.isArray(candles) || candles.length === 0) {
-      return { veto: true, reason: "VETO: Data TA tidak tersedia (Oracle Timeout)" };
+    if (data.direction === 'bearish') {
+      return { veto: true, reason: `VETO: Trend 15m BEARISH via Meridian API` };
     }
 
-    // 3. Masak di Dapur Lokal
-    // Ambil maksimal 50 candle terakhir sesuai instruksi
-    const recentCandles = candles.slice(-50);
-    const st = calculateSupertrend(recentCandles, 10, 3);
-
-    // 4. Validasi Tren
-    const lastCandle = recentCandles[recentCandles.length - 1];
-    const activePrice = currentRealtimePrice > 0 ? currentRealtimePrice : lastCandle.close;
-
-    // Jika Harga < Nilai Supertrend Lokal = BEARISH
-    if (activePrice < st.value || st.trend === 'BEARISH') {
-      return { veto: true, reason: `VETO: Trend 15m BEARISH (Harga ${activePrice.toFixed(6)} < ST ${st.value.toFixed(6)})` };
-    }
-
-    // Logika Konfirmasi (BULLISH)
-    // Jika Harga > Nilai Supertrend Lokal = BULLISH
-    const previousHighs = recentCandles.slice(0, -1).map(c => Number(c.high));
-    const localATH = previousHighs.length > 0 && activePrice >= Math.max(...previousHighs);
-    const entryType = localATH ? 'ATH BREAKOUT 🚀' : 'ST BREAKOUT 🟢';
-
-    return { veto: false, reason: `PASS: Trend 15m BULLISH Lokal (${entryType})` };
-
+    return { veto: false, reason: `PASS: Trend 15m BULLISH via Meridian API` };
   } catch (e) {
-    return { veto: true, reason: `VETO: Logic error local TA - ${e.message}` };
+    return { veto: false, reason: `PASS: Meridian API throw exception (fail-open)` };
   }
 }
 

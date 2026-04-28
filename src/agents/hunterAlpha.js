@@ -257,8 +257,8 @@ async function scanAndDeploy() {
       }
     }
 
-    // Jeda sekuensial untuk menghindari bentrok API
-    await sleep(1000);
+    // Jeda sekuensial untuk memberikan napas pada API
+    await sleep(2000);
   }
 
   if (winners.length === 0) {

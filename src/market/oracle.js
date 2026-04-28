@@ -15,34 +15,24 @@ const BIRDEYE_BASE = 'https://public-api.birdeye.so';
 // Fallback 1: Birdeye 15m candles when DexScreener data absent/stale.
 // Fallback 2: Jupiter spot price momentum proxy when both candle sources fail.
 
-let lastBirdeyeCall = 0;
-let isBirdeyeBlocked = false;
-let birdeyeBlockTime = 0;
+let birdeyeCooldownUntil = 0;
 
 export async function getOHLCV(tokenMint, poolAddress = null) {
   const dex = await buildOHLCVFromDexScreener(tokenMint);
   if (dex?.historySuccess) return dex;
 
-  if (isBirdeyeBlocked) {
-    if (Date.now() - birdeyeBlockTime < 5 * 60 * 1000) {
-      console.warn(`[oracle] Birdeye throttled, using Jupiter Proxy fallback...`);
-      return buildMomentumProxyOHLCV(tokenMint);
-    }
-    isBirdeyeBlocked = false;
+  if (Date.now() < birdeyeCooldownUntil) {
+    console.warn(`[oracle] Birdeye throttled, using DexScreener/Jupiter fallback...`);
+    return buildMomentumProxyOHLCV(tokenMint);
   }
 
-  const waitTime = Math.max(0, 1500 - (Date.now() - lastBirdeyeCall));
-  if (waitTime > 0) {
-    await new Promise(r => setTimeout(r, waitTime));
-  }
+  await new Promise(r => setTimeout(r, 1500));
 
   const birdeye = await buildOHLCVFromBirdeye(tokenMint);
-  lastBirdeyeCall = Date.now();
 
   if (birdeye === 'THROTTLED') {
-    isBirdeyeBlocked = true;
-    birdeyeBlockTime = Date.now();
-    console.warn(`[oracle] Birdeye throttled, using Jupiter Proxy fallback...`);
+    birdeyeCooldownUntil = Date.now() + (5 * 60 * 1000);
+    console.warn(`[oracle] Birdeye throttled, using DexScreener/Jupiter fallback...`);
     return buildMomentumProxyOHLCV(tokenMint);
   }
 
@@ -50,6 +40,7 @@ export async function getOHLCV(tokenMint, poolAddress = null) {
 
   return buildMomentumProxyOHLCV(tokenMint);
 }
+
 
 async function buildMomentumProxyOHLCV(tokenMint) {
   try {
