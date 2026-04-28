@@ -13,8 +13,8 @@
 
 import { getConfig }              from '../config.js';
 import { screenToken }            from '../market/coinfilter.js';
-import { runMeridianVeto, discoverHighFeePoolsMeridian } from '../market/meridianVeto.js';
 import { deployPosition, monitorPnL, exitPosition, EP_CONFIG } from '../sniper/evilPanda.js';
+import { createMessage }          from '../agent/provider.js';
 import { getWalletBalance }       from '../solana/wallet.js';
 import { appendDecisionLog }      from '../learn/decisionLog.js';
 import { isBlacklisted }          from '../learn/tokenBlacklist.js';
@@ -171,35 +171,26 @@ async function scanAndDeploy() {
 
   console.log(`[hunter] ${pools.length} pool ditemukan. Mulai screening...`);
 
-  // ── Phase 2: FILTER — sequential, 5 detik antar koin ────────────
-  let winners = [];
+  // ── Phase 2: FILTER — Parallel Scouting ────────────
+  const scoutCandidates = pools.slice(0, 15);
+  console.log(`[hunter] 🔬 Memulai Parallel Scouting untuk ${scoutCandidates.length} pool...`);
 
-  for (const pool of pools) {
-    if (winners.length >= 5) break;
-    if (!_running) return;
+  const scoutResults = await Promise.allSettled(scoutCandidates.map(async (pool) => {
+    if (!_running) return null;
 
     const tokenMint   = pool.tokenXMint || pool.tokenX || pool.mint;
     const tokenSymbol = pool.tokenXSymbol || pool.name?.split('-')[0] || '';
     const binStep     = pool.binStep || 0;
     const feeRatio    = pool.feeActiveTvlRatio || 0;
-    const mcap        = Math.round(pool.mcap || 0).toLocaleString('en-US');
-    const vol         = Math.round(pool.volume24h || pool.volume_24h || pool.trade_volume_24h || pool.tradeVolume24h || pool.volume || pool.v24h || 0).toLocaleString('en-US');
 
-    if (!tokenMint) {
-      await sleep(5_000);
-      continue;
-    }
+    if (!tokenMint) return null;
 
-    console.log(`[hunter] 🔬 Screen: ${tokenSymbol} | binStep=${binStep} | fee/tvl=${(feeRatio*100).toFixed(3)}% | mcap=$${mcap} | vol=$${vol}`);
-
-    // ── Blacklist check (sebelum API call apapun) ────────────────
+    // ── Blacklist check ────────────────
     if (isBlacklisted(tokenMint)) {
-      console.log(`[hunter] 🚧 ${tokenSymbol}: BLACKLISTED — skip`);
       appendDecisionLog({ token: tokenSymbol, mint: tokenMint, decision: 'VETO',
         gate: 'BLACKLIST', reason: 'Token ada di daftar blacklist lokal',
         pool: pool.address || '', feeRatio });
-      await sleep(1_000);
-      continue;
+      return null;
     }
 
     // ── GMGN / Coinfilter screening ─────────────────────────────
@@ -207,32 +198,25 @@ async function scanAndDeploy() {
     try {
       screenResult = await screenToken(tokenMint, tokenSymbol, tokenSymbol);
     } catch (e) {
-      console.warn(`[hunter] screenToken error ${tokenMint.slice(0,8)}: ${e.message}`);
-      await sleep(5_000);
-      continue;
+      return null;
     }
 
     if (!screenResult?.eligible) {
       const failReason = screenResult?.verdict || 'FAIL';
-      console.log(`[hunter] ❌ ${tokenSymbol}: ${failReason} (GMGN gate)`);
       appendDecisionLog({ token: tokenSymbol, mint: tokenMint, decision: 'SCREEN_FAIL',
         gate: 'GMGN', reason: failReason, pool: pool.address || '', feeRatio });
-      await sleep(5_000);
-      continue;
+      return null;
     }
 
     // ── Meridian VETO (Supertrend 15m + ATH + PVP + Dominance) ────
-    // Pass `pool` agar dominance check (Gate 4) bisa berjalan
     const vetoResult = await runMeridianVeto({ mint: tokenMint, symbol: tokenSymbol, pool });
     if (vetoResult.veto) {
-      console.log(`[hunter] 🚫 ${tokenSymbol}: VETO [${vetoResult.gate}] — ${vetoResult.reason}`);
       appendDecisionLog({ token: tokenSymbol, mint: tokenMint, decision: 'VETO',
         gate: vetoResult.gate, reason: vetoResult.reason,
         pool: pool.address || pool.poolAddress || '', feeRatio });
-      await sleep(5_000);
-      continue;
+      return null;
     }
-    console.log(`[hunter] ✅ Meridian: ${vetoResult.reason}`);
+
     appendDecisionLog({ token: tokenSymbol, mint: tokenMint, decision: 'PASS',
       gate: null, reason: vetoResult.reason,
       pool: pool.address || pool.poolAddress || '', feeRatio });
@@ -240,13 +224,51 @@ async function scanAndDeploy() {
     // ── Pure Flat Config gate ─────────────────────────────────────
     const passesConfig = checkFlatConfig(pool, cfg);
     if (!passesConfig.ok) {
-      console.log(`[hunter] ❌ ${tokenSymbol}: config gate — ${passesConfig.reason}`);
-      await sleep(5_000);
-      continue;
+      return null;
     }
 
-    console.log(`[hunter] ✅ ${tokenSymbol} LOLOS semua gate! (binStep=${binStep} fee/tvl=${(feeRatio*100).toFixed(3)}%)`);
-    winners.push(pool);
+    console.log(`[hunter] ✅ ${tokenSymbol} LOLOS semua gate! (binStep=${binStep})`);
+    return pool;
+  }));
+
+  let winners = scoutResults
+    .filter(r => r.status === 'fulfilled' && r.value !== null)
+    .map(r => r.value)
+    .slice(0, 5); // Ambil 5 terbaik
+
+  // ── Claude 3.5 Sonnet Final Audit ─────────────────────────────
+  if (winners.length > 0) {
+    const auditPrompt = `Tolong audit kandidat token ini untuk DLMM Sniper (Evil Panda strategy):\n${JSON.stringify(winners.map(w => ({ symbol: w.tokenXSymbol || w.name?.split('-')[0], mcap: w.mcap, vol: w.volume24h || w.volume_24h || w.trade_volume_24h, binStep: w.binStep, feeTvl: w.feeActiveTvlRatio })), null, 2)}\n\nPilih SATU token terbaik yang paling aman dan potensial untuk dieksekusi. Balas HANYA dengan token symbol-nya saja tanpa penjelasan lain. Jika tidak ada yang layak, balas 'SKIP'.`;
+    
+    try {
+      console.log(`[hunter] 🤖 Mengirim ${winners.length} kandidat ke Claude untuk audit final...`);
+      const claudeRes = await createMessage({
+        model: 'claude-3-5-sonnet-20241022',
+        maxTokens: 50,
+        messages: [{ role: 'user', content: auditPrompt }],
+      });
+      
+      const claudeChoice = claudeRes.content.find(c => c.type === 'text')?.text.trim();
+      
+      if (claudeChoice && !claudeChoice.includes('SKIP')) {
+        console.log(`[hunter] 🤖 Claude memilih: ${claudeChoice}`);
+        const selectedPool = winners.find(w => {
+            const sym = w.tokenXSymbol || w.name?.split('-')[0];
+            return sym === claudeChoice || claudeChoice.includes(sym);
+        });
+        if (selectedPool) {
+          winners = [selectedPool];
+        } else {
+           console.log(`[hunter] 🤖 Claude memilih token yang tidak valid, proceeding dengan kandidat utama.`);
+           winners = winners.slice(0, 1);
+        }
+      } else {
+        console.log(`[hunter] 🤖 Claude memutuskan SKIP semua kandidat.`);
+        winners = [];
+      }
+    } catch (e) {
+      console.warn(`[hunter] Claude audit gagal: ${e.message}, proceed tanpa audit.`);
+    }
   }
 
   if (winners.length === 0) {
