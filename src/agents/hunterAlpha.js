@@ -20,7 +20,7 @@ import { getWalletBalance }       from '../solana/wallet.js';
 import { appendDecisionLog }      from '../learn/decisionLog.js';
 import { isBlacklisted }          from '../learn/tokenBlacklist.js';
 import { getRuntimeState }        from '../runtime/state.js';
-import { escapeHTML }             from '../utils/safeJson.js';
+import { escapeHTML, safeParseAI } from '../utils/safeJson.js';
 
 // ── Pool selector: pilih pool terbaik per-token berdasarkan binStep priority ─────────────
 //
@@ -353,21 +353,63 @@ async function scanAndDeploy() {
     try {
       const scoutModel = cfg.screeningModel || cfg.agentModel;
       console.log(`[hunter] 🧠 LLM stage=SCOUT model=${scoutModel}`);
-      const prompt = `Analisa singkat pool ini:\nToken: ${tokenSymbol}\nBin Step: ${binStep}\nFee/TVL: ${(feeRatio*100).toFixed(2)}%\nVolume: $${Math.round(vol)}\nBalas HANYA dengan 'PASS' jika layak lanjut, atau 'REJECT' jika meragukan.`;
+      const prompt = `[ROLE: INITIAL SCREENING FILTER FOR DLMM LIQUIDITY PROVIDER]
+Kamu adalah garis pertahanan pertama (screening filter) untuk penyedia likuiditas (LP) DLMM Meteora.
+Tugas kamu BUKAN trading spekulatif, melainkan menilai secara mekanis apakah sebuah pool layak dan sehat untuk masuk shortlist penyediaan likuiditas.
+
+FOKUS UTAMA KAMU:
+- Volume & Market Cap (Apakah kolam cukup ramai dan dalam?)
+- Safety Data & Contract Security (Mint/Freeze Authority, Top 10 Holders)
+- Wash Trading / Bundling Risk (Apakah rasio Volume/TVL wajar atau palsu?)
+- Dominasi Awal (Apakah likuiditas terpusat atau terfragmentasi?)
+- Fee Opportunity (Apakah potensi pajaknya sepadan?)
+
+MINDSET & ATURAN EKSEKUSI:
+1. Pikirkan SELALU dari sudut pandang LP: aman, sehat, dan layak diberi likuiditas.
+2. Jangan buang waktu memikirkan arah harga. Tugasmu hanya memastikan "Apakah kolam ini tidak beracun?"
+3. DILARANG KERAS menggunakan bahasa trader seperti "pump", "moon", "buy murah", atau "breakout".
+4. Kalau ada satu saja Hard Gate (indikasi rugpull/dump) yang gagal: REJECT.
+5. Kalau data belum lengkap, API timeout, atau safety belum jelas: DEFER.
+6. Kalau pool cukup sehat untuk dilanjutkan ke evaluasi teknikal berikutnya: PASS.
+
+DATA POOL:
+- Token: ${tokenSymbol || 'UNKNOWN'}
+- Bin Step: ${binStep}
+- Fee/TVL: ${(feeRatio * 100).toFixed(2)}%
+- Volume 24h: $${Math.round(vol).toLocaleString('en-US')}
+- TVL: $${Math.round(Number(pool.activeTvl || pool.totalTvl || 0)).toLocaleString('en-US')}
+- Mcap: $${Math.round(Number(pool.mcap || 0)).toLocaleString('en-US')}
+
+[FORMAT JAWABAN JSON]
+{
+  "decision": "PASS | REJECT | DEFER",
+  "reason": "Alasan singkat evaluasi berbasis mcap, volume, safety data, atau wash trading risk.",
+  "safety_score": 0-100
+}
+
+Balas HANYA JSON valid tanpa Markdown.`;
       const res = await createMessage({
         model: scoutModel,
-        maxTokens: 10,
+        maxTokens: 220,
         messages: [{ role: 'user', content: prompt }]
       });
-      const ans = res.content.find(c => c.type === 'text')?.text.trim().toUpperCase();
-      if (ans && ans.includes('PASS')) {
-        console.log(`[hunter] 🤖 ScoutAgent (Nvidia) APPROVED: ${tokenSymbol}`);
-        summary.push('SCOUT_AGENT: PASS');
+      const rawText = res.content.find(c => c.type === 'text')?.text?.trim() || '';
+      const parsed = safeParseAI(rawText, null);
+      const decision = String(parsed?.decision || rawText || '').trim().toUpperCase();
+      const scoutReason = String(parsed?.reason || '').trim();
+      const safetyScore = Number(parsed?.safety_score);
+      const scoreSuffix = Number.isFinite(safetyScore) ? ` (${Math.max(0, Math.min(100, safetyScore))})` : '';
+      if (decision.includes('PASS')) {
+        console.log(`[hunter] 🤖 ScoutAgent LP APPROVED: ${tokenSymbol}${scoreSuffix}`);
+        summary.push(`SCOUT_AGENT: PASS${scoreSuffix}`);
         return { ok: true, pool, symbol: tokenSymbol || 'UNKNOWN', summary };
       }
-      console.log(`[hunter] 🤖 ScoutAgent (Nvidia) REJECTED: ${tokenSymbol}`);
-      summary.push('SCOUT_AGENT: FAIL');
-      return { ok: false, symbol: tokenSymbol || 'UNKNOWN', stage: 'SCOUT_AGENT', reason: 'ScoutAgent REJECT', summary };
+      const isDeferred = decision.includes('DEFER');
+      const label = isDeferred ? 'DEFER' : 'FAIL';
+      const reason = scoutReason || (isDeferred ? 'ScoutAgent DEFER' : 'ScoutAgent REJECT');
+      console.log(`[hunter] 🤖 ScoutAgent LP ${isDeferred ? 'DEFERRED' : 'REJECTED'}: ${tokenSymbol}${scoreSuffix}`);
+      summary.push(`SCOUT_AGENT: ${label}${scoreSuffix}`);
+      return { ok: false, symbol: tokenSymbol || 'UNKNOWN', stage: 'SCOUT_AGENT', reason, summary };
     } catch (e) {
       console.warn(`[hunter] ScoutAgent error pada ${tokenSymbol}: ${e.message}`);
       summary.push('SCOUT_AGENT: ERROR');
