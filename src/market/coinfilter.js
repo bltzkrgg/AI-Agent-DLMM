@@ -12,6 +12,7 @@ const OKX_BASE = 'https://web3.okx.com';
 const JUPITER_QUOTE_API          = 'https://api.jup.ag/swap/v1/quote';
 const JUPITER_QUOTE_API_FALLBACK = 'https://lite-api.jup.ag/swap/v1/quote';
 const JUPITER_UA                 = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
+const JUPITER_API_KEY            = process.env.JUPITER_API_KEY || process.env.JUP_API_KEY || '';
 const JUPITER_BLACKLIST_TTL_MS   = 24 * 60 * 60 * 1000;
 const JUPITER_SIM_CACHE_TTL_MS   = 60 * 1000;
 const JUPITER_QUOTE_CACHE_TTL_MS = 30 * 1000;
@@ -392,6 +393,7 @@ async function fetchJupiterQuote(queryString) {
     'Accept':          'application/json',
     'Accept-Language': 'en-US,en;q=0.9',
     'Cache-Control':   'no-cache',
+    ...(JUPITER_API_KEY ? { 'x-api-key': JUPITER_API_KEY } : {}),
   };
   const endpoints = [JUPITER_QUOTE_API, JUPITER_QUOTE_API_FALLBACK];
   let lastRes = null;

@@ -568,9 +568,14 @@ export async function getPositionInfo(poolAddress) {
 
 export async function getSolPriceUsd() {
   try {
+    const jupiterApiKey = process.env.JUPITER_API_KEY || process.env.JUP_API_KEY || '';
     const res = await fetchWithTimeout(
       'https://api.jup.ag/price/v1?ids=So11111111111111111111111111111111111111112',
-      {}, 6000
+      {
+        headers: {
+          ...(jupiterApiKey ? { 'x-api-key': jupiterApiKey } : {}),
+        },
+      }, 6000
     );
     if (!res.ok) return 150;
     const data = await res.json();

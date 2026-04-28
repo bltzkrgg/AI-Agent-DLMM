@@ -15,6 +15,7 @@ const JUP_BASE      = 'https://api.jup.ag/swap/v1';
 const JUP_QUOTE_URL = `${JUP_BASE}/quote`;
 const JUP_SWAP_URL  = `${JUP_BASE}/swap`;
 const JUP_PRICE_URL = 'https://api.jup.ag/price/v1';
+const JUPITER_API_KEY = process.env.JUPITER_API_KEY || process.env.JUP_API_KEY || '';
 
 // User-Agent uniform agar tidak diblokir CDN Jupiter
 const JUPITER_UA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
@@ -24,6 +25,7 @@ const JUPITER_HEADERS = {
   'Accept':          'application/json',
   'Accept-Language': 'en-US,en;q=0.9',
   'Cache-Control':   'no-cache',
+  ...(JUPITER_API_KEY ? { 'x-api-key': JUPITER_API_KEY } : {}),
 };
 
 // ── getJupiterQuote ─────────────────────────────────────────────────
