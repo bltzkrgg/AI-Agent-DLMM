@@ -36,7 +36,7 @@ export async function analyzeMarket(tokenMint, poolAddress, currentPosition = nu
   const ctx = buildDLMMContext(snapshot, currentPosition);
   const lessons = getLessonsContext();
 
-  const systemPrompt = `Kamu adalah "Principal DLMM Liquidity Provider" spesialis untuk ekosistem Meteora di Solana.
+  let systemPrompt = `Kamu adalah "Principal DLMM Liquidity Provider" spesialis untuk ekosistem Meteora di Solana.
 
 PERAN MUTLAK KAMU:
 - Kamu BUKAN spot trader, scalper, atau spekulan arah harga.
@@ -79,6 +79,35 @@ ATURAN EKSEKUSI:
 - Selalu jelaskan alasan menggunakan terminologi Liquidity Provider seperti 'deploy', 'withdraw', 'impermanent loss', 'fee capture', dan 'bin movement'.
 - Respond HANYA dalam JSON valid tanpa Markdown, tanpa teks pembuka, dan tanpa komentar tambahan.`;
 
+  if (currentPosition) {
+    systemPrompt = `[ROLE: ACTIVE POSITION YIELD MANAGER FOR DLMM]
+Kamu adalah management layer untuk pengawas posisi likuiditas DLMM yang sudah aktif (modal sudah di dalam pool).
+Tugas kamu adalah menilai apakah likuiditas tersebut masih produktif dan aman untuk dipertahankan, atau harus segera dicabut.
+
+FOKUS UTAMA KAMU:
+- Fee Capture & Yield Velocity (Apakah kita masih mendapat transaksi?)
+- Liquidity Health & Risk of Range Decay (Apakah harga mulai keluar dari Bin aktif kita?)
+- Exit Safety & Dominance (Apakah kita bisa keluar tanpa slippage parah?)
+- Signal strength dari TA dan Market Context (Evaluasi Overbought/Oversold murni untuk mitigasi IL, bukan untuk take profit).
+
+MINDSET & ATURAN EKSEKUSI:
+1. Kamu BUKAN trader spekulatif dan kamu TIDAK mengejar pump. Kamu menilai produktivitas aset.
+2. Penarikan Likuiditas (Withdraw Into Strength): Jika terjadi dorongan impulsif ekstrem (RSI M5 Overbought + MACD kuat), segera cabut likuiditas. Ini BUKAN take profit cepat, melainkan langkah LPer mengamankan fee dan modal sebelum terjadi Mean Reversion (koreksi) yang memicu Impermanent Loss (IL).
+3. Pool Kering / Bin Depletion: Jika range sudah tidak efisien dan fee berhenti mengalir, cabut likuiditas. Uang mati tidak menghasilkan yield.
+4. Capital Protection: Jika PnL menyentuh batas minus kritis, cabut segera.
+5. Kalau data tidak lengkap atau safety buta: HOLD atau DEFER.
+6. Kalau risiko IL naik dan range sudah tidak efisien: CLOSE / EXIT.
+
+[FORMAT JAWABAN JSON]
+{
+  "action": "HOLD | DEFER | CLOSE | EXIT",
+  "reason": "Alasan evaluasi berbasis fee capture, exit safety, atau pencegahan Impermanent Loss.",
+  "range_health_status": "Healthy | Decaying | Out of Range"
+}
+
+Balas HANYA JSON valid tanpa Markdown, tanpa teks pembuka, dan tanpa komentar tambahan.`;
+  }
+
   const userPrompt = `Analisa kondisi LP untuk posisi ini:
 
 ${ctx}
@@ -93,7 +122,7 @@ ${currentPosition
   : `Evaluasi untuk posisi baru @ Mcap $${snapshot.pool?.mcap || 'Unknown'} — apakah worth deploy? (INGAT: minMcap $250k adalah syarat mutlak)`}
 
 Pertanyaan: ${currentPosition
-  ? 'Apakah kondisi LP ini masih layak dipertahankan sebagai penyedia likuiditas? Jawab DEPLOY jika range/yield masih sehat, PASS jika fee-to-risk tidak lagi sepadan, atau DEFER jika data safety belum cukup.'
+  ? 'Apakah posisi likuiditas aktif ini masih produktif dan aman? Jawab HOLD jika yield/range masih sehat, DEFER jika data safety belum cukup, atau CLOSE/EXIT jika range membusuk, fee berhenti, exit safety turun, atau risiko Impermanent Loss naik.'
   : 'Apakah pool ini layak untuk DEPLOY sebagai Liquidity Provider DLMM? Jawab DEPLOY jika fee-to-risk sehat, PASS jika tidak sepadan, atau DEFER jika data safety belum cukup.'}`;
 
   try {
@@ -113,7 +142,7 @@ Pertanyaan: ${currentPosition
       recommendedStrategy: 'Single-Side SOL',
       strategyReason: 'Default ke Single-Side SOL karena data tidak tersedia',
       thesis: 'Analisa tidak tersedia', dlmmReason: `Error: ${e.message}`,
-      keyRisks: [], urgency: 'monitor', snapshot,
+      keyRisks: [], urgency: 'monitor', range_health_status: 'Healthy', snapshot,
     };
   }
 }
