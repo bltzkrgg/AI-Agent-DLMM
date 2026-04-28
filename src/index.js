@@ -467,6 +467,11 @@ bot.onText(/\/autoscreen(?:\s+(on|off))?/, async (msg, match) => {
     );
     // EKSEKUSI LANGSUNG (Fire & Forget, langsung scan saat itu juga)
     runAutoscreening(bot, chatId);
+    if (!isRunning()) {
+      runLinearLoop().catch((e) => {
+        notify(`❌ <b>Loop crash:</b>\n<code>${escapeHTML(e.message)}</code>`);
+      });
+    }
   } else {
     // config autoScreeningEnabled=false akan menghentikan rekursif loop secara otomatis.
     bot.sendMessage(chatId,
