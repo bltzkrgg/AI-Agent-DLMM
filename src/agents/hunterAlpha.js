@@ -20,6 +20,7 @@ import { getWalletBalance }       from '../solana/wallet.js';
 import { appendDecisionLog }      from '../learn/decisionLog.js';
 import { isBlacklisted }          from '../learn/tokenBlacklist.js';
 import { getRuntimeState }        from '../runtime/state.js';
+import { escapeHTML }             from '../utils/safeJson.js';
 
 // ── Pool selector: pilih pool terbaik per-token berdasarkan binStep priority ─────────────
 //
@@ -234,8 +235,10 @@ async function scanAndDeploy() {
   // ── Phase 2: FILTER — Strict Serial Screening ────────────
   const scoutCandidates = pools.slice(0, 15);
   console.log(`[hunter] 🔬 Memulai Strict Serial Screening untuk ${scoutCandidates.length} pool...`);
+  const jupiterBudgetRef = { remaining: Math.max(1, Number(cfg.jupiterMaxChecksPerScan) || 3) };
 
   let winners = [];
+  const rejectTelemetry = [];
   const candidateChunks = chunkArray(scoutCandidates, 2);
 
   const evaluatePool = async (pool) => {
@@ -245,27 +248,32 @@ async function scanAndDeploy() {
     const feeRatio    = pool.feeActiveTvlRatio || 0;
     const vol         = pool.volume24h || pool.volume_24h || pool.trade_volume_24h || pool.volume || 0;
 
-    if (!tokenMint) return null;
+    if (!tokenMint) return { ok: false, symbol: tokenSymbol || 'UNKNOWN', reason: 'MISSING_TOKEN_MINT' };
     console.log(`[hunter] 📦 Mengevaluasi ${tokenSymbol}...`);
 
     let isEligible = true;
+    let rejectReason = '';
     if (isBlacklisted(tokenMint)) {
       appendDecisionLog({ token: tokenSymbol, mint: tokenMint, decision: 'VETO',
         gate: 'BLACKLIST', reason: 'Token ada di daftar blacklist lokal',
         pool: pool.address || '', feeRatio });
       isEligible = false;
+      rejectReason = 'BLACKLIST lokal aktif';
     }
 
     if (isEligible) {
       try {
-        const screenResult = await screenToken(tokenMint, tokenSymbol, tokenSymbol);
+        const screenResult = await screenToken(tokenMint, tokenSymbol, tokenSymbol, { jupiterBudgetRef });
         if (!screenResult?.eligible) {
           appendDecisionLog({ token: tokenSymbol, mint: tokenMint, decision: 'SCREEN_FAIL',
             gate: 'GMGN', reason: screenResult?.verdict || 'FAIL', pool: pool.address || '', feeRatio });
           isEligible = false;
+          const firstFlag = screenResult?.highFlags?.[0]?.msg || screenResult?.decisions?.slice(-1)?.[0]?.line;
+          rejectReason = firstFlag || 'ScreenToken waterfall veto';
         }
-      } catch {
+      } catch (e) {
         isEligible = false;
+        rejectReason = e?.message || 'ScreenToken error';
       }
     }
 
@@ -276,6 +284,7 @@ async function scanAndDeploy() {
           gate: vetoResult.gate, reason: vetoResult.reason,
           pool: pool.address || pool.poolAddress || '', feeRatio });
         isEligible = false;
+        rejectReason = vetoResult.reason || `Meridian veto (${vetoResult.gate || 'UNKNOWN_GATE'})`;
       } else {
         appendDecisionLog({ token: tokenSymbol, mint: tokenMint, decision: 'PASS',
           gate: null, reason: vetoResult.reason,
@@ -285,10 +294,13 @@ async function scanAndDeploy() {
 
     if (isEligible) {
       const passesConfig = checkFlatConfig(pool, cfg);
-      if (!passesConfig.ok) isEligible = false;
+      if (!passesConfig.ok) {
+        isEligible = false;
+        rejectReason = passesConfig.reason || 'Flat config gate failed';
+      }
     }
 
-    if (!isEligible) return null;
+    if (!isEligible) return { ok: false, symbol: tokenSymbol || 'UNKNOWN', reason: rejectReason || 'REJECTED_BY_GATE' };
 
     try {
       const prompt = `Analisa singkat pool ini:\nToken: ${tokenSymbol}\nBin Step: ${binStep}\nFee/TVL: ${(feeRatio*100).toFixed(2)}%\nVolume: $${Math.round(vol)}\nBalas HANYA dengan 'PASS' jika layak lanjut, atau 'REJECT' jika meragukan.`;
@@ -300,13 +312,13 @@ async function scanAndDeploy() {
       const ans = res.content.find(c => c.type === 'text')?.text.trim().toUpperCase();
       if (ans && ans.includes('PASS')) {
         console.log(`[hunter] 🤖 ScoutAgent (Nvidia) APPROVED: ${tokenSymbol}`);
-        return pool;
+        return { ok: true, pool, symbol: tokenSymbol || 'UNKNOWN' };
       }
       console.log(`[hunter] 🤖 ScoutAgent (Nvidia) REJECTED: ${tokenSymbol}`);
-      return null;
+      return { ok: false, symbol: tokenSymbol || 'UNKNOWN', reason: 'ScoutAgent REJECT' };
     } catch (e) {
       console.warn(`[hunter] ScoutAgent error pada ${tokenSymbol}: ${e.message}`);
-      return null;
+      return { ok: false, symbol: tokenSymbol || 'UNKNOWN', reason: `ScoutAgent error: ${e.message}` };
     }
   };
 
@@ -314,7 +326,15 @@ async function scanAndDeploy() {
     if (!_running || winners.length >= 5) break;
     const settled = await Promise.allSettled(chunk.map(evaluatePool));
     for (const item of settled) {
-      if (item.status === 'fulfilled' && item.value && winners.length < 5) winners.push(item.value);
+      if (item.status !== 'fulfilled' || !item.value) continue;
+      if (item.value.ok && item.value.pool && winners.length < 5) {
+        winners.push(item.value.pool);
+      } else if (!item.value.ok) {
+        rejectTelemetry.push({
+          symbol: item.value.symbol || 'UNKNOWN',
+          reason: item.value.reason || 'REJECTED',
+        });
+      }
     }
     await sleep(1500);
   }
@@ -323,6 +343,15 @@ async function scanAndDeploy() {
     const retryCfg = getConfig();
     const retryMin = Number(retryCfg.screeningIntervalMin) || 15;
     console.log(`[hunter] Tidak ada kandidat lolos Scout. Scan ulang dalam ${retryMin} menit...`);
+    if (rejectTelemetry.length) {
+      const lines = rejectTelemetry.slice(0, 5).map((r, i) =>
+        `${i + 1}. <b>${escapeHTML(r.symbol)}</b> — <code>${escapeHTML(String(r.reason).slice(0, 180))}</code>`
+      );
+      await notify(
+        `🚫 <b>Tidak ada deploy pada siklus ini</b>\n` +
+        `Alasan utama kandidat:\n${lines.join('\n')}`
+      );
+    }
     await notify(`🔍 <i>Tidak ada kandidat lolos screening. Scan ulang dalam ${retryMin} menit.</i>`);
     await sleep(retryMin * 60 * 1000);
     return;
@@ -362,6 +391,11 @@ async function scanAndDeploy() {
     const retryCfg = getConfig();
     const retryMin = Number(retryCfg.screeningIntervalMin) || 15;
     console.log(`[hunter] GeneralAgent membatalkan semua kandidat. Scan ulang dalam ${retryMin} menit...`);
+    await notify(
+      `✋ <b>Tidak ada deploy kali ini</b>\n` +
+      `Semua kandidat final dinilai <code>PASS</code> (bukan <code>BUY</code>) oleh GeneralAgent.\n` +
+      `Scan ulang dalam <code>${retryMin} menit</code>.`
+    );
     await sleep(retryMin * 60 * 1000);
     return;
   }

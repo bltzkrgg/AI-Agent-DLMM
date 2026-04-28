@@ -13,8 +13,10 @@ const JUPITER_QUOTE_API          = 'https://api.jup.ag/swap/v1/quote';
 const JUPITER_QUOTE_API_FALLBACK = 'https://lite-api.jup.ag/swap/v1/quote';
 const JUPITER_UA                 = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
 const JUPITER_BLACKLIST_TTL_MS   = 24 * 60 * 60 * 1000;
+const JUPITER_SIM_CACHE_TTL_MS   = 60 * 1000;
 
 const _jupiterFailBlacklist = new Map(); // mint -> { until, reason, ts }
+const _jupiterSimCache = new Map(); // mint -> { until, result }
 
 // Global cooldown state dikelola oleh shared module jupiterCooldown.js
 // agar sinkron dengan solana/jupiter.js — import: checkCooldown, setCooldown
@@ -123,6 +125,24 @@ function addJupiterBlacklist(mint, reason) {
 function removeJupiterBlacklist(mint) {
   if (!mint) return;
   _jupiterFailBlacklist.delete(mint);
+}
+
+function getJupiterSimCache(mint) {
+  const row = _jupiterSimCache.get(mint);
+  if (!row) return null;
+  if (row.until <= Date.now()) {
+    _jupiterSimCache.delete(mint);
+    return null;
+  }
+  return row.result || null;
+}
+
+function setJupiterSimCache(mint, result) {
+  if (!mint || !result) return;
+  _jupiterSimCache.set(mint, {
+    until: Date.now() + JUPITER_SIM_CACHE_TTL_MS,
+    result,
+  });
 }
 
 function dexPairScore(pair) {
@@ -313,7 +333,7 @@ async function fetchJupiterQuote(queryString) {
             const retryAfter = parseInt(r.headers?.get?.('retry-after') || '0', 10);
             setCooldown(retryAfter); // ← shared module (sync dengan solana/jupiter.js)
             const err = new Error(`JUPITER_RATELIMIT_429`);
-            err._skipRetry = true;
+            err._hardStop = true;
             err._res = r;
             throw err;
           }
@@ -324,7 +344,11 @@ async function fetchJupiterQuote(queryString) {
       );
       return res;
     } catch (e) {
-      // Jika 404/403/429 — simpan response dan lanjut ke endpoint berikutnya
+      // 429: stop total — jangan lanjut ke endpoint berikutnya di siklus yang sama
+      if (e?._hardStop) {
+        return e._res || null;
+      }
+      // Jika 404/403 — simpan response dan lanjut ke endpoint berikutnya
       if (e?._skipRetry) {
         console.warn(`[Jupiter] ${e.message} endpoint=${base} — skip ke endpoint berikutnya`);
         lastRes = e._res || null;
@@ -389,6 +413,8 @@ async function _executeJupiterSimulation(tokenMint, usdAmount, maxImpactPct) {
  * - HTTP error (404, 429, dsb) tidak di-retry di level ini (sudah ditangani fetchJupiterQuote).
  */
 async function runJupiterSimulation(tokenMint, usdAmount, maxImpactPct) {
+  const cached = getJupiterSimCache(tokenMint);
+  if (cached) return cached;
   await ensureIpv4First();
 
   const MAX_OUTER_RETRIES = 3;
@@ -397,9 +423,15 @@ async function runJupiterSimulation(tokenMint, usdAmount, maxImpactPct) {
   for (let attempt = 1; attempt <= MAX_OUTER_RETRIES; attempt++) {
     try {
       const result = await _executeJupiterSimulation(tokenMint, usdAmount, maxImpactPct);
+      setJupiterSimCache(tokenMint, result);
       return result;
     } catch (e) {
       const errMsg = e?.message || '';
+      if (errMsg.startsWith('JUPITER_IN_COOLDOWN_')) {
+        const deferred = { pass: false, reason: errMsg, buyImpact: null, sellImpact: null, deferred: true };
+        setJupiterSimCache(tokenMint, deferred);
+        return deferred;
+      }
       const isNetworkError = NETWORK_ERROR_PATTERNS.some(p => errMsg.includes(p));
 
       if (isNetworkError && attempt < MAX_OUTER_RETRIES) {
@@ -417,12 +449,16 @@ async function runJupiterSimulation(tokenMint, usdAmount, maxImpactPct) {
         ? `JUPITER_ENOTFOUND_RETRY_EXHAUSTED`
         : (errMsg || 'JUPITER_SIM_FAILED');
       console.error(`[JupiterSim] Gagal setelah ${attempt} percobaan: ${reason}`);
-      return { pass: false, reason, buyImpact: null, sellImpact: null };
+      const failed = { pass: false, reason, buyImpact: null, sellImpact: null };
+      setJupiterSimCache(tokenMint, failed);
+      return failed;
     }
   }
 
   // Seharusnya tidak tercapai, tapi failsafe
-  return { pass: false, reason: 'JUPITER_SIM_RETRY_EXHAUSTED', buyImpact: null, sellImpact: null };
+  const exhausted = { pass: false, reason: 'JUPITER_SIM_RETRY_EXHAUSTED', buyImpact: null, sellImpact: null };
+  setJupiterSimCache(tokenMint, exhausted);
+  return exhausted;
 }
 
 function buildResult({
@@ -697,28 +733,52 @@ export async function screenToken(tokenMint, tokenName = '', tokenSymbol = '', o
   }
 
   // Stage 3: Jupiter Safety & Memory
+  const stage1Failed = highFlags.some((f) => String(f.rule).startsWith('OKX_') || String(f.rule).includes('MCAP') || String(f.rule).includes('VOLUME'));
+  const stage2Failed = gmgnRejects.length > 0;
+  const budgetRef = opts?.jupiterBudgetRef;
+  const hasJupiterBudget = budgetRef && typeof budgetRef.remaining === 'number';
+
   let buyImpact = null;
   let sellImpact = null;
-  const jup = await runJupiterSimulation(tokenMint, radar.jupiterSimUsd, radar.maxPriceImpactPct);
-  sources.jupiter = true;
-  buyImpact = jup.buyImpact;
-  sellImpact = jup.sellImpact;
-
-  if (!jup.pass) {
-    const msg = `[VETO] Jupiter simulation gagal: ${jup.reason}`;
-    highFlags.push({ rule: 'JUPITER_SIM_FAIL', msg });
-    addJupiterBlacklist(tokenMint, jup.reason);
-    appendDecision(decisions, `${msg} (blacklist 24h)`, { stage: 3 });
+  let jup = { pass: true, reason: 'SKIPPED' };
+  if (stage1Failed || stage2Failed) {
+    appendDecision(decisions, '[STAGE-3] Jupiter skipped (already veto at Stage-1/2)', { stage: 3 });
+    jup = { pass: false, reason: 'SKIPPED_PREV_STAGE_FAIL', skipped: true };
+  } else if (hasJupiterBudget && budgetRef.remaining <= 0) {
+    const msg = '[STAGE-3] Jupiter deferred (scan budget exhausted)';
+    mediumFlags.push({ rule: 'JUPITER_BUDGET_DEFERRED', msg });
+    appendDecision(decisions, msg, { stage: 3 });
+    jup = { pass: false, reason: 'JUPITER_BUDGET_DEFERRED', deferred: true };
   } else {
-    removeJupiterBlacklist(tokenMint);
-    appendDecision(decisions, `[STAGE-3] Jupiter PASS buyImpact=${Number(buyImpact).toFixed(2)} sellImpact=${Number(sellImpact).toFixed(2)}`, { stage: 3 });
+    if (hasJupiterBudget) budgetRef.remaining -= 1;
+    jup = await runJupiterSimulation(tokenMint, radar.jupiterSimUsd, radar.maxPriceImpactPct);
+    sources.jupiter = true;
+    buyImpact = jup.buyImpact;
+    sellImpact = jup.sellImpact;
+
+    if (!jup.pass) {
+      const isCooldown = String(jup.reason || '').startsWith('JUPITER_IN_COOLDOWN_');
+      if (isCooldown || jup.deferred) {
+        const msg = `[STAGE-3] Jupiter deferred: ${jup.reason}`;
+        mediumFlags.push({ rule: 'JUPITER_DEFERRED', msg });
+        appendDecision(decisions, msg, { stage: 3 });
+      } else {
+        const msg = `[VETO] Jupiter simulation gagal: ${jup.reason}`;
+        highFlags.push({ rule: 'JUPITER_SIM_FAIL', msg });
+        addJupiterBlacklist(tokenMint, jup.reason);
+        appendDecision(decisions, `${msg} (blacklist 24h)`, { stage: 3 });
+      }
+    } else {
+      removeJupiterBlacklist(tokenMint);
+      appendDecision(decisions, `[STAGE-3] Jupiter PASS buyImpact=${Number(buyImpact).toFixed(2)} sellImpact=${Number(sellImpact).toFixed(2)}`, { stage: 3 });
+    }
   }
 
   const stageWaterfall = {
     stage0Discovery: 'PASS',
-    stage1PublicData: highFlags.some((f) => String(f.rule).startsWith('OKX_') || String(f.rule).includes('MCAP') || String(f.rule).includes('VOLUME')) ? 'FAIL' : 'PASS',
-    stage2GmgnAudit: gmgnRejects.length > 0 ? 'FAIL' : (gmgnStatus === 'UNVERIFIED' ? 'SOFT' : 'PASS'),
-    stage3Jupiter: jup.pass ? 'PASS' : 'FAIL',
+    stage1PublicData: stage1Failed ? 'FAIL' : 'PASS',
+    stage2GmgnAudit: stage2Failed ? 'FAIL' : (gmgnStatus === 'UNVERIFIED' ? 'SOFT' : 'PASS'),
+    stage3Jupiter: (jup.skipped || jup.deferred || String(jup.reason || '').startsWith('JUPITER_IN_COOLDOWN_')) ? 'SOFT' : (jup.pass ? 'PASS' : 'FAIL'),
   };
 
   const name = tokenName || gmgnInfo?.name || tokenSymbol || tokenMint.slice(0, 8);

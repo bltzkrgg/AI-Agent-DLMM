@@ -56,7 +56,7 @@ export async function fetchWithTimeout(url, options = {}, timeoutMs = 10000) {
   // Domains yang SKIP rate limiting (sudah aman atau tidak critical)
   const skipRateLimiting = [
     'api.openai.com', 'api.anthropic.com', 'openrouter.ai', 'api.openrouter.org', // LLM APIs
-    'tokens.jup.ag', 'api.jup.ag', // Jupiter (sudah punya rate limiting sendiri)
+    'tokens.jup.ag', // token list
     'api.lpagent.io', // LP Agent (sudah punya 13s interval)
     'mainnet.helius-rpc.com', 'solana-mainnet.g.alchemy.com', 'solana-mainnet.quiknode.pro', // RPC (sudah aman)
   ];
@@ -64,6 +64,8 @@ export async function fetchWithTimeout(url, options = {}, timeoutMs = 10000) {
   // Domains yang PERLU rate limiting (strict free tier)
   const needsRateLimiting = [
     'openapi.gmgn.ai',
+    'api.jup.ag',
+    'lite-api.jup.ag',
   ];
 
   if (needsRateLimiting.includes(hostname) && !skipRateLimiting.includes(hostname)) {
