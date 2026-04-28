@@ -372,15 +372,18 @@ async function scanAndDeploy() {
     const retryMin = Number(retryCfg.screeningIntervalMin) || 15;
     console.log(`[hunter] Tidak ada kandidat lolos Scout. Scan ulang dalam ${retryMin} menit...`);
     if (rejectTelemetry.length) {
-      const lines = rejectTelemetry.slice(0, 5).map((r, i) =>
-        `${i + 1}. <b>${escapeHTML(r.symbol)}</b> [${escapeHTML(r.stage || 'UNKNOWN_STAGE')}] — <code>${escapeHTML(String(r.reason).slice(0, 180))}</code>`
-      );
-      const detail = rejectTelemetry[0]?.summary?.length
-        ? `\n\nHard Gate (contoh):\n<pre>${escapeHTML(rejectTelemetry[0].summary.join('\n'))}</pre>`
-        : '';
+      const lines = rejectTelemetry.slice(0, 5).map((r, i) => {
+        const gateCompact = toGateCompact(r.summary || []);
+        return (
+          `${i + 1}) <b>${escapeHTML(r.symbol)}</b> — REJECT\n` +
+          `Tahap gagal: <code>${escapeHTML(r.stage || 'UNKNOWN_STAGE')}</code>\n` +
+          `Alasan: <code>${escapeHTML(String(r.reason).slice(0, 180))}</code>\n` +
+          `Gate: ${escapeHTML(gateCompact)}`
+        );
+      });
       await notify(
         `🚫 <b>Tidak ada deploy pada siklus ini</b>\n` +
-        `Alasan utama kandidat:\n${lines.join('\n')}${detail}`
+        `${lines.join('\n\n')}`
       );
     }
     await notify(`🔍 <i>Tidak ada kandidat lolos screening. Scan ulang dalam ${retryMin} menit.</i>`);
@@ -538,6 +541,8 @@ async function scanAndDeploy() {
 
       await notify(
         `✅ <b>Posisi terbuka!</b>\n` +
+        `<b>${escapeHTML(symbol)}</b> — <code>DEPLOYED</code>\n` +
+        `Tahap lolos ringkas: <code>${escapeHTML(toGateCompact(winner._gateSummary || []))}</code>\n` +
         `Status: <code>DEPLOYED</code>\n` +
         `Tahap: <code>EXECUTION_SUCCESS</code>\n` +
         `Position: <code>${positionPubkey.slice(0,8)}</code>\n` +
@@ -751,6 +756,22 @@ function checkFlatConfig(pool, cfg) {
 function safeNum(v) {
   const n = Number(v);
   return Number.isFinite(n) ? n : 0;
+}
+
+function toGateCompact(summary = []) {
+  if (!Array.isArray(summary) || summary.length === 0) return 'N/A';
+  return summary.map((line) => {
+    if (line.startsWith('STAGE_0_DISCOVERY:')) return line.replace('STAGE_0_DISCOVERY:', 'S0 Discovery');
+    if (line.startsWith('STAGE_1_PUBLIC:')) return line.replace('STAGE_1_PUBLIC:', 'S1 Public');
+    if (line.startsWith('STAGE_2_GMGN:')) return line.replace('STAGE_2_GMGN:', 'S2 GMGN');
+    if (line.startsWith('STAGE_3_JUPITER:')) return line.replace('STAGE_3_JUPITER:', 'S3 Jupiter');
+    if (line.startsWith('BLACKLIST_LOCAL:')) return line.replace('BLACKLIST_LOCAL:', 'Blacklist');
+    if (line.startsWith('MERIDIAN_VETO:')) return line.replace('MERIDIAN_VETO:', 'Meridian');
+    if (line.startsWith('FLAT_CONFIG_GATE:')) return line.replace('FLAT_CONFIG_GATE:', 'FlatConfig');
+    if (line.startsWith('SCOUT_AGENT:')) return line.replace('SCOUT_AGENT:', 'Scout');
+    if (line.startsWith('GENERAL_AGENT:')) return line.replace('GENERAL_AGENT:', 'General');
+    return line;
+  }).join(' | ');
 }
 
 function classifyMarketRegime() {
