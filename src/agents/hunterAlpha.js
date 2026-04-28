@@ -248,8 +248,10 @@ async function scanAndDeploy() {
     const feeRatio    = pool.feeActiveTvlRatio || 0;
     const vol         = pool.volume24h || pool.volume_24h || pool.trade_volume_24h || pool.volume || 0;
 
-    if (!tokenMint) return { ok: false, symbol: tokenSymbol || 'UNKNOWN', stage: 'PRECHECK', reason: 'MISSING_TOKEN_MINT' };
+    if (!tokenMint) return { ok: false, symbol: tokenSymbol || 'UNKNOWN', stage: 'PRECHECK', reason: 'MISSING_TOKEN_MINT', summary: [] };
     console.log(`[hunter] 📦 Mengevaluasi ${tokenSymbol}...`);
+    const summary = [];
+    summary.push('STAGE_0_DISCOVERY: PASS');
 
     let isEligible = true;
     let rejectReason = '';
@@ -259,12 +261,21 @@ async function scanAndDeploy() {
         pool: pool.address || '', feeRatio });
       isEligible = false;
       rejectReason = 'BLACKLIST lokal aktif';
-      return { ok: false, symbol: tokenSymbol || 'UNKNOWN', stage: 'BLACKLIST', reason: rejectReason };
+      summary.push('BLACKLIST_LOCAL: FAIL');
+      return { ok: false, symbol: tokenSymbol || 'UNKNOWN', stage: 'BLACKLIST', reason: rejectReason, summary };
     }
+    summary.push('BLACKLIST_LOCAL: PASS');
 
+    let screenResult = null;
     if (isEligible) {
       try {
-        const screenResult = await screenToken(tokenMint, tokenSymbol, tokenSymbol, { jupiterBudgetRef });
+        screenResult = await screenToken(tokenMint, tokenSymbol, tokenSymbol, { jupiterBudgetRef });
+        const s1 = screenResult?.stageWaterfall?.stage1PublicData || 'UNKNOWN';
+        const s2 = screenResult?.stageWaterfall?.stage2GmgnAudit || 'UNKNOWN';
+        const s3 = screenResult?.stageWaterfall?.stage3Jupiter || 'UNKNOWN';
+        summary.push(`STAGE_1_PUBLIC: ${s1}`);
+        summary.push(`STAGE_2_GMGN: ${s2}`);
+        summary.push(`STAGE_3_JUPITER: ${s3}`);
         if (!screenResult?.eligible) {
           appendDecisionLog({ token: tokenSymbol, mint: tokenMint, decision: 'SCREEN_FAIL',
             gate: 'GMGN', reason: screenResult?.verdict || 'FAIL', pool: pool.address || '', feeRatio });
@@ -275,6 +286,9 @@ async function scanAndDeploy() {
       } catch (e) {
         isEligible = false;
         rejectReason = e?.message || 'ScreenToken error';
+        summary.push('STAGE_1_PUBLIC: ERROR');
+        summary.push('STAGE_2_GMGN: ERROR');
+        summary.push('STAGE_3_JUPITER: ERROR');
       }
     }
 
@@ -286,10 +300,12 @@ async function scanAndDeploy() {
           pool: pool.address || pool.poolAddress || '', feeRatio });
         isEligible = false;
         rejectReason = vetoResult.reason || `Meridian veto (${vetoResult.gate || 'UNKNOWN_GATE'})`;
+        summary.push('MERIDIAN_VETO: FAIL');
       } else {
         appendDecisionLog({ token: tokenSymbol, mint: tokenMint, decision: 'PASS',
           gate: null, reason: vetoResult.reason,
           pool: pool.address || pool.poolAddress || '', feeRatio });
+        summary.push('MERIDIAN_VETO: PASS');
       }
     }
 
@@ -298,10 +314,13 @@ async function scanAndDeploy() {
       if (!passesConfig.ok) {
         isEligible = false;
         rejectReason = passesConfig.reason || 'Flat config gate failed';
+        summary.push('FLAT_CONFIG_GATE: FAIL');
+      } else {
+        summary.push('FLAT_CONFIG_GATE: PASS');
       }
     }
 
-    if (!isEligible) return { ok: false, symbol: tokenSymbol || 'UNKNOWN', stage: 'WATERFALL', reason: rejectReason || 'REJECTED_BY_GATE' };
+    if (!isEligible) return { ok: false, symbol: tokenSymbol || 'UNKNOWN', stage: 'WATERFALL', reason: rejectReason || 'REJECTED_BY_GATE', summary };
 
     try {
       const scoutModel = cfg.screeningModel || cfg.agentModel;
@@ -315,13 +334,16 @@ async function scanAndDeploy() {
       const ans = res.content.find(c => c.type === 'text')?.text.trim().toUpperCase();
       if (ans && ans.includes('PASS')) {
         console.log(`[hunter] 🤖 ScoutAgent (Nvidia) APPROVED: ${tokenSymbol}`);
-        return { ok: true, pool, symbol: tokenSymbol || 'UNKNOWN' };
+        summary.push('SCOUT_AGENT: PASS');
+        return { ok: true, pool, symbol: tokenSymbol || 'UNKNOWN', summary };
       }
       console.log(`[hunter] 🤖 ScoutAgent (Nvidia) REJECTED: ${tokenSymbol}`);
-      return { ok: false, symbol: tokenSymbol || 'UNKNOWN', stage: 'SCOUT_AGENT', reason: 'ScoutAgent REJECT' };
+      summary.push('SCOUT_AGENT: FAIL');
+      return { ok: false, symbol: tokenSymbol || 'UNKNOWN', stage: 'SCOUT_AGENT', reason: 'ScoutAgent REJECT', summary };
     } catch (e) {
       console.warn(`[hunter] ScoutAgent error pada ${tokenSymbol}: ${e.message}`);
-      return { ok: false, symbol: tokenSymbol || 'UNKNOWN', stage: 'SCOUT_AGENT', reason: `ScoutAgent error: ${e.message}` };
+      summary.push('SCOUT_AGENT: ERROR');
+      return { ok: false, symbol: tokenSymbol || 'UNKNOWN', stage: 'SCOUT_AGENT', reason: `ScoutAgent error: ${e.message}`, summary };
     }
   };
 
@@ -331,12 +353,14 @@ async function scanAndDeploy() {
     for (const item of settled) {
       if (item.status !== 'fulfilled' || !item.value) continue;
       if (item.value.ok && item.value.pool && winners.length < 5) {
+        item.value.pool._gateSummary = item.value.summary || [];
         winners.push(item.value.pool);
       } else if (!item.value.ok) {
         rejectTelemetry.push({
           symbol: item.value.symbol || 'UNKNOWN',
           stage: item.value.stage || 'UNKNOWN_STAGE',
           reason: item.value.reason || 'REJECTED',
+          summary: item.value.summary || [],
         });
       }
     }
@@ -351,9 +375,12 @@ async function scanAndDeploy() {
       const lines = rejectTelemetry.slice(0, 5).map((r, i) =>
         `${i + 1}. <b>${escapeHTML(r.symbol)}</b> [${escapeHTML(r.stage || 'UNKNOWN_STAGE')}] — <code>${escapeHTML(String(r.reason).slice(0, 180))}</code>`
       );
+      const detail = rejectTelemetry[0]?.summary?.length
+        ? `\n\nHard Gate (contoh):\n<pre>${escapeHTML(rejectTelemetry[0].summary.join('\n'))}</pre>`
+        : '';
       await notify(
         `🚫 <b>Tidak ada deploy pada siklus ini</b>\n` +
-        `Alasan utama kandidat:\n${lines.join('\n')}`
+        `Alasan utama kandidat:\n${lines.join('\n')}${detail}`
       );
     }
     await notify(`🔍 <i>Tidak ada kandidat lolos screening. Scan ulang dalam ${retryMin} menit.</i>`);
@@ -383,10 +410,12 @@ async function scanAndDeploy() {
       
       if (ans && ans.includes('BUY')) {
         console.log(`[hunter] 🎯 GeneralAgent MEMUTUSKAN BUY: ${sym}`);
+        w._gateSummary = [...(w._gateSummary || []), 'GENERAL_AGENT: BUY'];
         finalWinner = w;
         break; // Segera eksekusi, stop audit sisanya
       } else {
         console.log(`[hunter] ✋ GeneralAgent PASS: ${sym}`);
+        w._gateSummary = [...(w._gateSummary || []), 'GENERAL_AGENT: PASS'];
       }
     } catch (e) {
       console.warn(`[hunter] GeneralAgent error pada ${sym}: ${e.message}`);
@@ -485,7 +514,14 @@ async function scanAndDeploy() {
 
       await notify(
         `Mengeksekusi <b>${symbol}</b>...\n` +
-        `Tahap lolos: <code>BLACKLIST → WATERFALL → SCOUT_AGENT → GENERAL_AGENT(BUY) → SLOT_CHECK</code>\n` +
+        `Tahap lolos:\n<pre>${escapeHTML((winner._gateSummary || [
+          'BLACKLIST_LOCAL: PASS',
+          'STAGE_1_PUBLIC: PASS',
+          'STAGE_2_GMGN: PASS',
+          'STAGE_3_JUPITER: PASS',
+          'SCOUT_AGENT: PASS',
+          'GENERAL_AGENT: BUY',
+        ]).join('\n'))}</pre>\n` +
         `Deploy: <code>${currentCfg.deployAmountSol || 0.1} SOL</code>\n` +
         `⏳ <i>Membuka posisi pada pool <code>${poolAddress.slice(0,8)}</code>...</i>`
       );
