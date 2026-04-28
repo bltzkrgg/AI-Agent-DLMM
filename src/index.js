@@ -52,6 +52,13 @@ if (missing.length > 0) {
   process.exit(1);
 }
 
+if (process.env.AI_MODEL) {
+  console.warn(
+    `⚠️ Global AI override aktif via AI_MODEL=${process.env.AI_MODEL}. ` +
+    `Ini akan menimpa screeningModel/managementModel/agentModel dari .env atau config.`
+  );
+}
+
 const ALLOWED_ID = parseInt(process.env.ALLOWED_TELEGRAM_ID);
 if (isNaN(ALLOWED_ID)) {
   console.error('❌ ALLOWED_TELEGRAM_ID harus berupa angka.');

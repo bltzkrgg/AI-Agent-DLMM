@@ -312,9 +312,14 @@ async function scanAndDeploy() {
     if (isEligible) {
       const passesConfig = checkFlatConfig(pool, cfg);
       if (!passesConfig.ok) {
-        isEligible = false;
-        rejectReason = passesConfig.reason || 'Flat config gate failed';
-        summary.push('FLAT_CONFIG_GATE: FAIL');
+        summary.push(`FLAT_CONFIG_GATE: FAIL (${passesConfig.reason})`);
+        return {
+          ok: false,
+          symbol: tokenSymbol || 'UNKNOWN',
+          stage: passesConfig.gate || 'FLAT_CONFIG_GATE',
+          reason: passesConfig.reason || 'Flat config gate failed',
+          summary,
+        };
       } else {
         summary.push('FLAT_CONFIG_GATE: PASS');
       }
@@ -739,18 +744,18 @@ function checkFlatConfig(pool, cfg) {
     : [200, 125, 100];
 
   if (!binStepPriority.includes(binStep)) {
-    return { ok: false, reason: `binStep ${binStep} not in priority list [${binStepPriority}]` };
+    return { ok: false, gate: 'BIN_STEP', reason: `binStep ${binStep} not in priority list [${binStepPriority}]` };
   }
   if (minVol > 0 && vol24h < minVol) {
-    return { ok: false, reason: `vol24h $${vol24h.toLocaleString()} < min $${minVol.toLocaleString()}` };
+    return { ok: false, gate: 'VOLUME_MIN', reason: `vol24h $${vol24h.toLocaleString()} < min $${minVol.toLocaleString()}` };
   }
   if (maxVol > 0 && vol24h > maxVol) {
-    return { ok: false, reason: `vol24h $${vol24h.toLocaleString()} > max $${maxVol.toLocaleString()}` };
+    return { ok: false, gate: 'VOLUME_MAX', reason: `vol24h $${vol24h.toLocaleString()} > max $${maxVol.toLocaleString()}` };
   }
   if (minFee > 0 && feeRatio < minFee) {
-    return { ok: false, reason: `fee/tvl ${(feeRatio*100).toFixed(4)}% < min ${(minFee*100).toFixed(4)}%` };
+    return { ok: false, gate: 'FEE_TVL_MIN', reason: `fee/tvl ${(feeRatio*100).toFixed(4)}% < min ${(minFee*100).toFixed(4)}%` };
   }
-  return { ok: true };
+  return { ok: true, gate: 'FLAT_CONFIG_GATE', reason: 'PASS' };
 }
 
 function safeNum(v) {

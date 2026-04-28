@@ -9,6 +9,9 @@ backups/
 bot.pid
 user-config.json
 runtime-state.json
+decision.log
+harvest.log
+position-ledger.jsonl
 tmp/
 .DS_Store
 src/.DS_Store
