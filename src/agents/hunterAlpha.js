@@ -304,9 +304,11 @@ async function scanAndDeploy() {
     if (!isEligible) return { ok: false, symbol: tokenSymbol || 'UNKNOWN', stage: 'WATERFALL', reason: rejectReason || 'REJECTED_BY_GATE' };
 
     try {
+      const scoutModel = cfg.screeningModel || cfg.agentModel;
+      console.log(`[hunter] 🧠 LLM stage=SCOUT model=${scoutModel}`);
       const prompt = `Analisa singkat pool ini:\nToken: ${tokenSymbol}\nBin Step: ${binStep}\nFee/TVL: ${(feeRatio*100).toFixed(2)}%\nVolume: $${Math.round(vol)}\nBalas HANYA dengan 'PASS' jika layak lanjut, atau 'REJECT' jika meragukan.`;
       const res = await createMessage({
-        model: cfg.screeningModel,
+        model: scoutModel,
         maxTokens: 10,
         messages: [{ role: 'user', content: prompt }]
       });
@@ -369,9 +371,11 @@ async function scanAndDeploy() {
     const vol = Math.round(w.volume24h || w.volume_24h || w.trade_volume_24h || w.tradeVolume24h || w.volume || w.v24h || 0).toLocaleString('en-US');
     
     try {
+      const managementModel = cfg.managementModel || cfg.generalModel || cfg.agentModel;
+      console.log(`[hunter] 🧠 LLM stage=GENERAL model=${managementModel}`);
       const prompt = `Sebagai eksekutor final (GeneralAgent), beri keputusan untuk token ${sym}:\nMCap: $${mcap}\nVolume: $${vol}\nStrategi: Evil Panda.\nBalas HANYA dengan 'BUY' jika eksekusi, atau 'PASS' jika batal.`;
       const res = await createMessage({
-        model: cfg.managementModel || cfg.generalModel || cfg.agentModel,
+        model: managementModel,
         maxTokens: 10,
         messages: [{ role: 'user', content: prompt }]
       });
