@@ -459,45 +459,29 @@ function normalizePool(p) {
 // Jalankan semua VETO secara sekuensial.
 // Return pada VETO pertama yang ditemukan.
 
-const _vetoCache = new Map();
-const VETO_CACHE_TTL = 5 * 60 * 1000;
-
 /**
  * @param {{ mint: string, symbol: string, pool?: object }} token
  * @returns {Promise<{veto: boolean, reason: string, gate: string|null}>}
  */
 export async function runMeridianVeto(token) {
   const { mint, symbol, pool } = token;
-  const now = Date.now();
-
-  if (_vetoCache.has(mint)) {
-    const cached = _vetoCache.get(mint);
-    if (now - cached.timestamp < VETO_CACHE_TTL) {
-      return cached.result;
-    }
-  }
-
-  const setCacheAndReturn = (result) => {
-    _vetoCache.set(mint, { timestamp: now, result });
-    return result;
-  };
   const cfg = getConfig();
   
   const currentPrice = pool ? Number(pool.price || pool.pool_price || pool.currentPrice || 0) : 0;
 
   // Gate 1: Supertrend 15m
   const st = await checkSupertrendVeto(mint, currentPrice);
-  if (st.veto) return setCacheAndReturn({ veto: true, reason: st.reason, gate: 'SUPERTREND_15M' });
+  if (st.veto) return { veto: true, reason: st.reason, gate: 'SUPERTREND_15M' };
 
   // Gate 2: ATH Distance [TA_ATH_DANGER]
   if (cfg.maxAthDistancePct > 0) {
     const ath = await checkAthDistanceVeto(mint);
-    if (ath.veto) return setCacheAndReturn({ veto: true, reason: ath.reason, gate: 'TA_ATH_DANGER' });
+    if (ath.veto) return { veto: true, reason: ath.reason, gate: 'TA_ATH_DANGER' };
   }
 
   // Gate 3: PVP Guard (rival token)
   const pvp = await checkPvpGuardVeto(mint, symbol);
-  if (pvp.veto) return setCacheAndReturn({ veto: true, reason: pvp.reason, gate: 'PVP_GUARD' });
+  if (pvp.veto) return { veto: true, reason: pvp.reason, gate: 'PVP_GUARD' };
 
   // Volume Range Gate
   if (pool) {
@@ -505,10 +489,10 @@ export async function runMeridianVeto(token) {
     const minVol = Number(cfg.minVolume) || 0;
     const maxVol = Number(cfg.maxVolume) || 0;
     if (minVol > 0 && vol < minVol) {
-      return setCacheAndReturn({ veto: true, reason: `🚫 VETO: Volume $${Math.round(vol).toLocaleString()} di bawah minimal $${Math.round(minVol).toLocaleString()}`, gate: 'LOW_VOLUME' });
+      return { veto: true, reason: `🚫 VETO: Volume $${Math.round(vol).toLocaleString()} di bawah minimal $${Math.round(minVol).toLocaleString()}`, gate: 'LOW_VOLUME' };
     }
     if (maxVol > 0 && vol > maxVol) {
-      return setCacheAndReturn({ veto: true, reason: `🚫 VETO: Volume $${Math.round(vol).toLocaleString()} melebihi maksimal $${Math.round(maxVol).toLocaleString()}`, gate: 'HIGH_VOLUME' });
+      return { veto: true, reason: `🚫 VETO: Volume $${Math.round(vol).toLocaleString()} melebihi maksimal $${Math.round(maxVol).toLocaleString()}`, gate: 'HIGH_VOLUME' };
     }
   }
 
@@ -518,8 +502,8 @@ export async function runMeridianVeto(token) {
     const poolTvl  = Number(pool.activeTvl || pool.totalTvl || 0);
     const poolAddr = pool.address || '';
     const dom = await checkDominanceVeto(mint, poolTvl, poolAddr);
-    if (dom.veto) return setCacheAndReturn({ veto: true, reason: dom.reason, gate: 'LOW_DOMINANCE' });
+    if (dom.veto) return { veto: true, reason: dom.reason, gate: 'LOW_DOMINANCE' };
   }
 
-  return setCacheAndReturn({ veto: false, reason: 'All Meridian gates PASS', gate: null });
+  return { veto: false, reason: 'All Meridian gates PASS', gate: null };
 }

@@ -56,10 +56,10 @@ const DEFAULTS = {
   // Priority: process.env > user-config.json[llm.*] > DEFAULTS
   // Ganti model via .env tanpa sentuh kode:
   //   SCREENING_MODEL, MANAGEMENT_MODEL, AGENT_MODEL
-  screeningModel:  process.env.SCREENING_MODEL  || 'nvidia/nemotron-3-super-120b-a12b:free',
-  managementModel: process.env.MANAGEMENT_MODEL || 'minimax/minimax-m2.5:free',
-  agentModel:      process.env.AGENT_MODEL      || 'deepseek/deepseek-v3.2',
-  generalModel:    process.env.AGENT_MODEL      || 'deepseek/deepseek-v3.2',
+  screeningModel:  process.env.SCREENING_MODEL  || 'deepseek/deepseek-chat',
+  managementModel: process.env.MANAGEMENT_MODEL || 'deepseek/deepseek-chat',
+  agentModel:      process.env.AGENT_MODEL      || 'deepseek/deepseek-chat',
+  generalModel:    process.env.AGENT_MODEL      || 'deepseek/deepseek-chat',
   activeModel:     null,
 
   // ── Pool Discovery ────────────────────────────────────────────────────────

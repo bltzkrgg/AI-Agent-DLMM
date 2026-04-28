@@ -23,10 +23,7 @@ let _openaiClient    = null;
 function getAnthropicClient() {
   if (!_anthropicClient) {
     if (!process.env.ANTHROPIC_API_KEY) throw new Error('ANTHROPIC_API_KEY tidak di-set di .env');
-    _anthropicClient = new Anthropic({ 
-      apiKey: process.env.ANTHROPIC_API_KEY,
-      defaultHeaders: { 'anthropic-beta': 'prompt-caching-2024-07-31' }
-    });
+    _anthropicClient = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
   }
   return _anthropicClient;
 }

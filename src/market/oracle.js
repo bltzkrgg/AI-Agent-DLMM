@@ -74,7 +74,7 @@ async function buildOHLCVFromDexScreener(tokenMint) {
     const pairRes = await fetchWithTimeout(
       `https://api.dexscreener.com/latest/dex/tokens/${tokenMint}`,
       { headers: { Accept: 'application/json' } },
-      3000
+      8000
     );
     if (!pairRes.ok) return null;
     const pairData = await pairRes.json().catch(() => null);
@@ -90,7 +90,7 @@ async function buildOHLCVFromDexScreener(tokenMint) {
     const candleRes = await fetchWithTimeout(
       `https://io.dexscreener.com/dex/candles/v3/solana/${pairAddress}?res=15&cb=1`,
       { headers: { Accept: 'application/json' } },
-      3000
+      8000
     );
     if (!candleRes.ok) return null;
     const candleJson = await candleRes.json().catch(() => null);

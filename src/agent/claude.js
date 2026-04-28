@@ -364,10 +364,7 @@ export async function processMessage(userMessage) {
     { role: 'user', content: scrubbedUserMsg },
   ];
 
-  const systemPrompt = [
-    {
-      type: 'text',
-      text: `Kamu adalah Meteora DLMM Execution Engine — lapisan intelijensi otonom untuk trading di Solana.
+  const systemPrompt = `Kamu adalah Meteora DLMM Execution Engine — lapisan intelijensi otonom untuk trading di Solana.
 Kamu BUKAN "asisten AI" biasa. Kamu adalah partner trading yang teknis, dingin, dan akuntabel.
 
 ATURAN KOMUNIKASI (WAJIB):
@@ -415,10 +412,7 @@ MONITORING:
 Ketika user tanya soal strategy, selalu jawab parameter di atas secara eksak.
 
 Jangan tanya user informasi yang bisa kamu cari sendiri dengan tool.
-Gunakan emoji secara taktis untuk readability data, bukan untuk sekadar hiasan.`,
-      cache_control: { type: 'ephemeral' }
-    }
-  ];
+Gunakan emoji secara taktis untuk readability data, bukan untuk sekadar hiasan.`;
 
   let response = await createMessage({
     model: resolveModel(cfg.generalModel),
