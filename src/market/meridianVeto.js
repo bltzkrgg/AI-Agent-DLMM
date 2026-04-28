@@ -350,6 +350,7 @@ export async function discoverHighFeePoolsMeridian({ limit = 50 } = {}) {
   const filterStr = filterParts.join('&&');
 
   let rawPools = [];
+  let discoverySource = 'MERIDIAN';
 
   try {
     // Tier 1: Meridian Server Discovery (authenticated, lebih fresh)
@@ -362,10 +363,12 @@ export async function discoverHighFeePoolsMeridian({ limit = 50 } = {}) {
         console.log(`[meridianVeto] Meridian Discovery: ${rawPools.length} pools`);
       } else {
         console.warn(`[meridianVeto] Meridian Discovery ${res.status} — fallback ke Meteora`);
+        discoverySource = 'METEORA_FALLBACK';
       }
     }
   } catch (e) {
     console.warn(`[meridianVeto] Meridian Discovery error: ${e.message} — fallback ke Meteora`);
+    discoverySource = 'METEORA_FALLBACK';
   }
 
   // Tier 2: Meteora Pool Discovery API langsung
@@ -377,6 +380,7 @@ export async function discoverHighFeePoolsMeridian({ limit = 50 } = {}) {
         const data = await res.json();
         rawPools   = Array.isArray(data.data) ? data.data : [];
         console.log(`[meridianVeto] Meteora Discovery fallback: ${rawPools.length} pools`);
+        discoverySource = 'METEORA_FALLBACK';
       }
     } catch (e) {
       console.warn(`[meridianVeto] Meteora Discovery error: ${e.message}`);
@@ -387,7 +391,7 @@ export async function discoverHighFeePoolsMeridian({ limit = 50 } = {}) {
 
   // Normalize, filter, dan sort by fee/tvl ratio + binStep priority
   const normalized = rawPools
-    .map(p => normalizePool(p))
+    .map(p => normalizePool(p, discoverySource))
     .filter(p => {
       // Hanya pool dengan binStep yang ada di priority list
       return binStepPriority.includes(p.binStep);
@@ -406,7 +410,7 @@ export async function discoverHighFeePoolsMeridian({ limit = 50 } = {}) {
 
 // ── Pool normalizer ───────────────────────────────────────────────
 
-function normalizePool(p) {
+function normalizePool(p, discoverySource = 'MERIDIAN') {
   const binStep = Number(p.dlmm_params?.bin_step || p.bin_step || p.binStep || 0);
   const feeTvl  = Number(p.fee_active_tvl_ratio || 0) ||
     (Number(p.active_tvl) > 0 ? (Number(p.fee || 0) / Number(p.active_tvl)) * 100 : 0);
@@ -434,6 +438,8 @@ function normalizePool(p) {
     price:             Number(p.pool_price || p.price || 0),
     priceChangePct:    Number(p.pool_price_change_pct || 0),
     priceTrend:        p.price_trend || null,
+    DISCOVERY_SOURCE:  discoverySource,
+    discoverySource,
     raw:               p,
   };
 }
@@ -465,45 +471,50 @@ export async function runMeridianVeto(token) {
     _vetoCache.set(mint, { timestamp: now, result });
     return result;
   };
-  const cfg = getConfig();
-  
-  const currentPrice = pool ? Number(pool.price || pool.pool_price || pool.currentPrice || 0) : 0;
+  try {
+    const cfg = getConfig();
+    
+    const currentPrice = pool ? Number(pool.price || pool.pool_price || pool.currentPrice || 0) : 0;
 
-  // Gate 1: Supertrend 15m
-  const st = await checkSupertrendVeto(mint, currentPrice);
-  if (st.veto) return setCacheAndReturn({ veto: true, reason: st.reason, gate: 'SUPERTREND_15M' });
+    // Gate 1: Supertrend 15m
+    const st = await checkSupertrendVeto(mint, currentPrice);
+    if (st.veto) return setCacheAndReturn({ veto: true, reason: st.reason, gate: 'SUPERTREND_15M' });
 
-  // Gate 2: ATH Distance [TA_ATH_DANGER]
-  if (cfg.maxAthDistancePct > 0) {
-    const ath = await checkAthDistanceVeto(mint);
-    if (ath.veto) return setCacheAndReturn({ veto: true, reason: ath.reason, gate: 'TA_ATH_DANGER' });
-  }
-
-  // Gate 3: PVP Guard (rival token)
-  const pvp = await checkPvpGuardVeto(mint, symbol);
-  if (pvp.veto) return setCacheAndReturn({ veto: true, reason: pvp.reason, gate: 'PVP_GUARD' });
-
-  // Volume Range Gate
-  if (pool) {
-    const vol = Number(pool.volume24h || pool.volume_24h || pool.trade_volume_24h || pool.tradeVolume24h || pool.volume || pool.v24h || 0);
-    const minVol = Number(cfg.minVolume) || 0;
-    const maxVol = Number(cfg.maxVolume) || 0;
-    if (minVol > 0 && vol < minVol) {
-      return setCacheAndReturn({ veto: true, reason: `🚫 VETO: Volume $${Math.round(vol).toLocaleString()} di bawah minimal $${Math.round(minVol).toLocaleString()}`, gate: 'LOW_VOLUME' });
+    // Gate 2: ATH Distance [TA_ATH_DANGER]
+    if (cfg.maxAthDistancePct > 0) {
+      const ath = await checkAthDistanceVeto(mint);
+      if (ath.veto) return setCacheAndReturn({ veto: true, reason: ath.reason, gate: 'TA_ATH_DANGER' });
     }
-    if (maxVol > 0 && vol > maxVol) {
-      return setCacheAndReturn({ veto: true, reason: `🚫 VETO: Volume $${Math.round(vol).toLocaleString()} melebihi maksimal $${Math.round(maxVol).toLocaleString()}`, gate: 'HIGH_VOLUME' });
+
+    // Gate 3: PVP Guard (rival token)
+    const pvp = await checkPvpGuardVeto(mint, symbol);
+    if (pvp.veto) return setCacheAndReturn({ veto: true, reason: pvp.reason, gate: 'PVP_GUARD' });
+
+    // Volume Range Gate
+    if (pool) {
+      const vol = Number(pool.volume24h || pool.volume_24h || pool.trade_volume_24h || pool.tradeVolume24h || pool.volume || pool.v24h || 0);
+      const minVol = Number(cfg.minVolume) || 0;
+      const maxVol = Number(cfg.maxVolume) || 0;
+      if (minVol > 0 && vol < minVol) {
+        return setCacheAndReturn({ veto: true, reason: `🚫 VETO: Volume $${Math.round(vol).toLocaleString()} di bawah minimal $${Math.round(minVol).toLocaleString()}`, gate: 'LOW_VOLUME' });
+      }
+      if (maxVol > 0 && vol > maxVol) {
+        return setCacheAndReturn({ veto: true, reason: `🚫 VETO: Volume $${Math.round(vol).toLocaleString()} melebihi maksimal $${Math.round(maxVol).toLocaleString()}`, gate: 'HIGH_VOLUME' });
+      }
     }
-  }
 
-  // Gate 4: Dominance Check [LOW_DOMINANCE]
-  // Dijalankan hanya jika pool object tersedia (berisi activeTvl)
-  if (pool) {
-    const poolTvl  = Number(pool.activeTvl || pool.totalTvl || 0);
-    const poolAddr = pool.address || '';
-    const dom = await checkDominanceVeto(mint, poolTvl, poolAddr);
-    if (dom.veto) return setCacheAndReturn({ veto: true, reason: dom.reason, gate: 'LOW_DOMINANCE' });
-  }
+    // Gate 4: Dominance Check [LOW_DOMINANCE]
+    // Dijalankan hanya jika pool object tersedia (berisi activeTvl)
+    if (pool) {
+      const poolTvl  = Number(pool.activeTvl || pool.totalTvl || 0);
+      const poolAddr = pool.address || '';
+      const dom = await checkDominanceVeto(mint, poolTvl, poolAddr);
+      if (dom.veto) return setCacheAndReturn({ veto: true, reason: dom.reason, gate: 'LOW_DOMINANCE' });
+    }
 
-  return setCacheAndReturn({ veto: false, reason: 'All Meridian gates PASS', gate: null });
+    return setCacheAndReturn({ veto: false, reason: 'All Meridian gates PASS', gate: null });
+  } catch (e) {
+    console.warn(`[meridianVeto] unexpected error ${mint.slice(0,8)}: ${e.message} — FAIL_CLOSED`);
+    return setCacheAndReturn({ veto: true, reason: `[FAIL_CLOSED] Meridian Veto error: ${e.message}`, gate: 'MERIDIAN_ERROR' });
+  }
 }

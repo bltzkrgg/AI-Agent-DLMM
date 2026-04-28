@@ -294,7 +294,16 @@ async function scanAndDeploy() {
     }
 
     if (isEligible) {
-      const vetoResult = await runMeridianVeto({ mint: tokenMint, symbol: tokenSymbol, pool });
+      let vetoResult;
+      try {
+        vetoResult = await runMeridianVeto({ mint: tokenMint, symbol: tokenSymbol, pool });
+      } catch (e) {
+        vetoResult = {
+          veto: true,
+          gate: 'MERIDIAN_ERROR',
+          reason: `[FAIL_CLOSED] Meridian Veto error: ${e?.message || 'UNKNOWN_ERROR'}`,
+        };
+      }
       if (vetoResult.veto) {
         appendDecisionLog({ token: tokenSymbol, mint: tokenMint, decision: 'VETO',
           gate: vetoResult.gate, reason: vetoResult.reason,
@@ -893,6 +902,7 @@ export async function runAutoscreening(bot, chatId) {
           const effValue= volRaw / (tvlRaw || 1);
           const eff     = effValue > 1000 ? '>1000' : effValue.toFixed(2);
           const binStep = pool.binStep || '?';
+          const discoverySource = pool.DISCOVERY_SOURCE || pool.discoverySource || 'MERIDIAN';
 
           let stIcon = '⚪';
           try {
@@ -910,7 +920,8 @@ export async function runAutoscreening(bot, chatId) {
             `<b>${i + 1}. ${symbol}</b> [${binStep}]\n` +
             `   Eff: <code>${eff}x</code> | Fee/TVL: <code>${ratio}%</code>\n` +
             `   TVL: <code>$${tvl}</code> | Vol: <code>$${vol}</code> | MCap: <code>$${mcap}</code>\n` +
-            `   Status: ${stIcon}`
+            `   Status: ${stIcon}\n` +
+            `   Source: <code>${discoverySource}</code>`
           );
         }));
 

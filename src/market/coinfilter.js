@@ -19,8 +19,12 @@ const JUPITER_QUOTE_CACHE_TTL_MS = 30 * 1000;
 const _jupiterFailBlacklist = new Map(); // mint -> { until, reason, ts }
 const _jupiterSimCache = new Map(); // mint -> { until, result }
 const _jupiterQuoteCache = new Map(); // queryString -> { until, payload }
-let _jupiterQuoteActive = 0;
-const _jupiterQuoteWaiters = [];
+const _jupiterQuoteInFlight = new Map(); // queryString -> Promise<Response>
+const _jupiterQuoteSemaphore = {
+  limit: 0,
+  available: 0,
+  queue: [],
+};
 
 // Global cooldown state dikelola oleh shared module jupiterCooldown.js
 // agar sinkron dengan solana/jupiter.js — import: checkCooldown, setCooldown
@@ -180,21 +184,41 @@ function setJupiterQuoteCache(queryString, payload) {
   });
 }
 
-async function acquireJupiterQuoteSlot() {
-  const cfg = getConfig();
-  const maxConcurrent = Math.max(1, Number(cfg.jupiterMaxConcurrentQuotes) || 2);
-  if (_jupiterQuoteActive < maxConcurrent) {
-    _jupiterQuoteActive += 1;
-    return;
-  }
-  await new Promise((resolve) => _jupiterQuoteWaiters.push(resolve));
-  _jupiterQuoteActive += 1;
+function syncJupiterQuoteSemaphore() {
+  const nextLimit = Math.max(1, Number(getConfig().jupiterMaxConcurrentQuotes) || 2);
+  const prevLimit = Number(_jupiterQuoteSemaphore.limit) || 0;
+  const prevAvailable = Number(_jupiterQuoteSemaphore.available) || 0;
+  const active = Math.max(0, prevLimit - prevAvailable);
+  _jupiterQuoteSemaphore.limit = nextLimit;
+  _jupiterQuoteSemaphore.available = Math.max(0, nextLimit - active);
 }
 
-function releaseJupiterQuoteSlot() {
-  _jupiterQuoteActive = Math.max(0, _jupiterQuoteActive - 1);
-  const next = _jupiterQuoteWaiters.shift();
-  if (next) next();
+function createJupiterQuoteReleaseToken() {
+  let released = false;
+  return function releaseJupiterQuoteSlot() {
+    if (released) return;
+    released = true;
+    const next = _jupiterQuoteSemaphore.queue.shift();
+    if (next) {
+      next(createJupiterQuoteReleaseToken());
+      return;
+    }
+    _jupiterQuoteSemaphore.available = Math.min(
+      _jupiterQuoteSemaphore.limit,
+      _jupiterQuoteSemaphore.available + 1,
+    );
+  };
+}
+
+async function acquireJupiterQuoteSlot() {
+  syncJupiterQuoteSemaphore();
+  if (_jupiterQuoteSemaphore.available > 0) {
+    _jupiterQuoteSemaphore.available -= 1;
+    return createJupiterQuoteReleaseToken();
+  }
+  return await new Promise((resolve) => {
+    _jupiterQuoteSemaphore.queue.push(resolve);
+  });
 }
 
 function dexPairScore(pair) {
@@ -294,10 +318,10 @@ async function fetchOkxSignals(tokenMint) {
       }
     }
 
-    if (!sourceOk) return null;
+    if (!sourceOk) return { unavailable: true, reason: 'OKX_API_UNAVAILABLE' };
     return { highRisk, washTradingPct: wash, bundlerPct, riskLevel };
   } catch {
-    return null;
+    return { unavailable: true, reason: 'OKX_API_UNAVAILABLE' };
   }
 }
 
@@ -360,6 +384,8 @@ async function fetchJupiterQuote(queryString) {
 
   const cached = getJupiterQuoteCache(queryString);
   if (cached) return cached;
+  const inflight = _jupiterQuoteInFlight.get(queryString);
+  if (inflight) return inflight;
 
   const headers = {
     'User-Agent':      JUPITER_UA,
@@ -369,62 +395,72 @@ async function fetchJupiterQuote(queryString) {
   };
   const endpoints = [JUPITER_QUOTE_API, JUPITER_QUOTE_API_FALLBACK];
   let lastRes = null;
+  const requestPromise = (async () => {
+    for (const base of endpoints) {
+      try {
+        const payload = await withExponentialBackoff(
+          async () => {
+            const release = await acquireJupiterQuoteSlot();
+            let r;
+            try {
+              r = await fetchWithTimeout(`${base}${queryString}`, { headers }, 12000);
+            } finally {
+              release();
+            }
+            if (r.ok) return r;
+            // 404/403 = path salah, jangan retry — lempar langsung
+            if (r.status === 404 || r.status === 403) {
+              const err = new Error(`JUPITER_HTTP_${r.status}_NO_RETRY`);
+              err._skipRetry = true;
+              err._res = r;
+              throw err;
+            }
+            // 429 = rate limited — set shared global cooldown lalu lempar
+            if (r.status === 429) {
+              const retryAfter = parseInt(r.headers?.get?.('retry-after') || '0', 10);
+              setCooldown(retryAfter); // ← shared module (sync dengan solana/jupiter.js)
+              const err = new Error(`JUPITER_RATELIMIT_429`);
+              err._hardStop = true;
+              err._res = r;
+              throw err;
+            }
+            // Lainnya: lempar agar backoff bisa retry
+            throw new Error(`JUPITER_HTTP_${r.status}`);
+          },
+          { maxRetries: 3, baseDelay: 800 },
+        ).then((res) => res.json().catch(() => null));
+        if (!payload) {
+          return makeJsonResponse(null, 502);
+        }
+        setJupiterQuoteCache(queryString, payload);
+        return makeJsonResponse(payload);
+      } catch (e) {
+        // 429: stop total — jangan lanjut ke endpoint berikutnya di siklus yang sama
+        if (e?._hardStop) {
+          return e._res || null;
+        }
+        // Jika 404/403 — simpan response dan lanjut ke endpoint berikutnya
+        if (e?._skipRetry) {
+          console.warn(`[Jupiter] ${e.message} endpoint=${base} — skip ke endpoint berikutnya`);
+          lastRes = e._res || null;
+          continue;
+        }
+        // Semua error lain (ENOTFOUND, dsb) sudah di-backoff oleh withExponentialBackoff
+        console.warn(`[Jupiter] Gagal setelah backoff endpoint=${base}: ${e?.message}`);
+      }
+    }
 
-  for (const base of endpoints) {
-    try {
-      const payload = await withExponentialBackoff(
-        async () => {
-          await acquireJupiterQuoteSlot();
-          let r;
-          try {
-            r = await fetchWithTimeout(`${base}${queryString}`, { headers }, 12000);
-          } finally {
-            releaseJupiterQuoteSlot();
-          }
-          if (r.ok) return r;
-          // 404/403 = path salah, jangan retry — lempar langsung
-          if (r.status === 404 || r.status === 403) {
-            const err = new Error(`JUPITER_HTTP_${r.status}_NO_RETRY`);
-            err._skipRetry = true;
-            err._res = r;
-            throw err;
-          }
-          // 429 = rate limited — set shared global cooldown lalu lempar
-          if (r.status === 429) {
-            const retryAfter = parseInt(r.headers?.get?.('retry-after') || '0', 10);
-            setCooldown(retryAfter); // ← shared module (sync dengan solana/jupiter.js)
-            const err = new Error(`JUPITER_RATELIMIT_429`);
-            err._hardStop = true;
-            err._res = r;
-            throw err;
-          }
-          // Lainnya: lempar agar backoff bisa retry
-          throw new Error(`JUPITER_HTTP_${r.status}`);
-        },
-        { maxRetries: 3, baseDelay: 800 },
-      ).then((res) => res.json().catch(() => null));
-      if (!payload) {
-        return makeJsonResponse(null, 502);
-      }
-      setJupiterQuoteCache(queryString, payload);
-      return makeJsonResponse(payload);
-    } catch (e) {
-      // 429: stop total — jangan lanjut ke endpoint berikutnya di siklus yang sama
-      if (e?._hardStop) {
-        return e._res || null;
-      }
-      // Jika 404/403 — simpan response dan lanjut ke endpoint berikutnya
-      if (e?._skipRetry) {
-        console.warn(`[Jupiter] ${e.message} endpoint=${base} — skip ke endpoint berikutnya`);
-        lastRes = e._res || null;
-        continue;
-      }
-      // Semua error lain (ENOTFOUND, dsb) sudah di-backoff oleh withExponentialBackoff
-      console.warn(`[Jupiter] Gagal setelah backoff endpoint=${base}: ${e?.message}`);
+    return lastRes;
+  })();
+
+  _jupiterQuoteInFlight.set(queryString, requestPromise);
+  try {
+    return await requestPromise;
+  } finally {
+    if (_jupiterQuoteInFlight.get(queryString) === requestPromise) {
+      _jupiterQuoteInFlight.delete(queryString);
     }
   }
-
-  return lastRes;
 }
 
 /**
@@ -728,8 +764,12 @@ export async function screenToken(tokenMint, tokenName = '', tokenSymbol = '', o
   }
 
   const okx = await fetchOkxSignals(tokenMint);
-  sources.okx = !!okx;
-  if (okx) {
+  sources.okx = !!okx && !okx.unavailable;
+  if (okx?.unavailable) {
+    const msg = `[FAIL_CLOSED] OKX unavailable: ${okx.reason || 'OKX_API_UNAVAILABLE'}`;
+    highFlags.push({ rule: 'OKX_UNAVAILABLE', msg });
+    appendDecision(decisions, msg, { stage: 1 });
+  } else if (okx) {
     if (okx.highRisk || (Number.isFinite(okx.riskLevel) && okx.riskLevel >= 3)) {
       const msg = `[VETO] OKX menandai High Risk (riskLevel=${okx.riskLevel ?? 'N/A'})`;
       highFlags.push({ rule: 'OKX_HIGH_RISK', msg });
@@ -743,8 +783,6 @@ export async function screenToken(tokenMint, tokenName = '', tokenSymbol = '', o
     if (Number.isFinite(okx.bundlerPct)) {
       notes.push(`OKX bundler ${formatPct(okx.bundlerPct)}`);
     }
-  } else {
-    appendDecision(decisions, '[STAGE-1] OKX unavailable (non-blocking)');
   }
 
   // Stage 2: GMGN Deep Audit
