@@ -19,7 +19,7 @@ import BN from 'bn.js';
 import { appendFileSync, mkdirSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
-import { getConnection, getWallet, getWalletBalance } from '../solana/wallet.js';
+import { getConnection, getWallet } from '../solana/wallet.js';
 import { getConfig } from '../config.js';
 import { swapToSol } from '../utils/jupiter.js';
 import { getJupiterQuote } from '../solana/jupiter.js';
@@ -28,9 +28,12 @@ import { resolveTokens, WSOL_MINT } from '../utils/tokenMeta.js';
 import { getRecommendedPriorityFee } from '../utils/helius.js';
 import { addToBlacklist } from '../learn/tokenBlacklist.js';
 import { getDynamicStopLoss } from '../market/atrGuard.js';
+import { getRuntimeState, setRuntimeState } from '../runtime/state.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const HARVEST_LOG = join(__dirname, '../../harvest.log');
+const POSITION_LEDGER_LOG = join(__dirname, '../../position-ledger.jsonl');
+const ACTIVE_POSITIONS_STATE_KEY = 'evilPandaActivePositions';
 
 // ── Evil Panda Hardcoded Strategy ────────────────────────────────
 const EP_CONFIG = {
@@ -50,6 +53,14 @@ const EP_CONFIG = {
 // Value: { poolAddress, deploySol, deployedAt, tokenXMint, tokenYMint,
 //          rangeMin, rangeMax, hwmPct }  ← hwmPct = High Water Mark PnL%
 const _activePositions = new Map();
+
+function persistActivePositionsState() {
+  const rows = [..._activePositions.entries()].map(([pubkey, meta]) => ({
+    pubkey,
+    ...meta,
+  }));
+  setRuntimeState(ACTIVE_POSITIONS_STATE_KEY, rows);
+}
 
 function nowIso() { return new Date().toISOString(); }
 
@@ -71,6 +82,46 @@ function appendHarvestLog({ token = 'UNKNOWN', positionPubkey = '', pnlPct = 0, 
     console.log(`[evilPanda] 📝 Harvest log: ${line.trim()}`);
   } catch (e) {
     console.warn(`[evilPanda] harvest.log write error: ${e.message}`);
+  }
+}
+
+function appendPositionLedger({
+  positionPubkey = '',
+  poolAddress = '',
+  tokenMint = '',
+  openedAt = null,
+  closedAt = null,
+  reason = 'MANUAL',
+  capitalInSol = 0,
+  capitalOutSol = 0,
+  pnlTotalSol = 0,
+  pnlTotalPct = 0,
+  feePnlSol = 0,
+  pricePnlSol = 0,
+  txCostSol = 0,
+} = {}) {
+  try {
+    const row = {
+      ts: nowIso(),
+      positionPubkey,
+      poolAddress,
+      tokenMint,
+      openedAt,
+      closedAt,
+      reason,
+      cashflow: {
+        capitalInSol: Number(capitalInSol.toFixed(9)),
+        capitalOutSol: Number(capitalOutSol.toFixed(9)),
+        pnlTotalSol: Number(pnlTotalSol.toFixed(9)),
+        pnlTotalPct: Number(pnlTotalPct.toFixed(6)),
+        feePnlSol: Number(feePnlSol.toFixed(9)),
+        pricePnlSol: Number(pricePnlSol.toFixed(9)),
+        txCostSol: Number(txCostSol.toFixed(9)),
+      },
+    };
+    appendFileSync(POSITION_LEDGER_LOG, `${JSON.stringify(row)}\n`, 'utf8');
+  } catch (e) {
+    console.warn(`[evilPanda] position-ledger write error: ${e.message}`);
   }
 }
 
@@ -128,6 +179,38 @@ async function pollTxConfirm(connection, sig, maxWaitMs = 90_000) {
     await new Promise(r => setTimeout(r, 2500));
   }
   throw new Error(`TX ${sig.slice(0, 8)}… not confirmed after ${maxWaitMs / 1000}s`);
+}
+
+async function verifyPositionClosedOnChain(connection, wallet, poolAddress, positionPubkey, {
+  attempts = 3,
+  delayMs = 1200,
+} = {}) {
+  for (let i = 0; i < attempts; i++) {
+    try {
+      const dlmmPool = await DLMM.create(connection, new PublicKey(poolAddress));
+      const { userPositions } = await dlmmPool.getPositionsByUserAndLbPair(wallet.publicKey);
+      const stillOpen = userPositions.some((p) => p.publicKey.toString() === positionPubkey);
+      if (!stillOpen) return true;
+    } catch {
+      // non-fatal during verification; retry a few times
+    }
+    if (i < attempts - 1) await new Promise((r) => setTimeout(r, delayMs));
+  }
+  return false;
+}
+
+async function estimateTxFeeLamports(connection, signatures = []) {
+  let total = 0;
+  for (const sig of signatures) {
+    if (!sig) continue;
+    try {
+      const tx = await connection.getTransaction(sig, { maxSupportedTransactionVersion: 0 });
+      total += Number(tx?.meta?.fee || 0);
+    } catch {
+      // non-fatal
+    }
+  }
+  return total;
 }
 
 // ── 1. deployPosition ─────────────────────────────────────────────
@@ -298,6 +381,7 @@ export async function deployPosition(poolAddress) {
       rangeMax,
       hwmPct:      0, // High Water Mark — diperbarui tiap poll di monitorPnL
     });
+    persistActivePositionsState();
 
     console.log(`[evilPanda] ✅ Position open: ${positionPubkey.slice(0,8)}`);
     return positionPubkey;
@@ -561,6 +645,7 @@ export async function exitPosition(positionPubkey, reason = 'MANUAL') {
   const microLamports = await getPriorityFee();
 
   return withExponentialBackoff(async () => {
+    const preSwapLamports = await connection.getBalance(wallet.publicKey);
     const dlmmPool = await DLMM.create(connection, new PublicKey(reg.poolAddress));
     const { userPositions } = await dlmmPool.getPositionsByUserAndLbPair(wallet.publicKey);
     const pos = userPositions.find(p => p.publicKey.toString() === positionPubkey);
@@ -568,7 +653,32 @@ export async function exitPosition(positionPubkey, reason = 'MANUAL') {
     if (!pos || !pos.positionData || pos.positionData.lowerBinId === undefined) {
       console.log(`[evilPanda] ❌ Rollback dibatalkan: Data posisi tidak lengkap / undefined (kemungkinan gagal di tahap inisialisasi). Lakukan cek manual pada pubkey: ${positionPubkey}`);
       _activePositions.delete(positionPubkey);
+      persistActivePositionsState();
       return { solRecovered: 0, note: 'incomplete position data' };
+    }
+
+    // Snapshot fee composition sebelum close untuk accounting split.
+    let estimatedFeeSol = 0;
+    try {
+      const pd = pos.positionData;
+      const [xMeta, yMeta] = await resolveTokens([reg.tokenXMint, reg.tokenYMint]);
+      const xDec = xMeta.decimals || 9;
+      const yDec = yMeta.decimals || 9;
+      const feeXRaw = String(pd.feeX?.toString() || '0');
+      const feeYUi = Number(pd.feeY?.toString() || '0') / Math.pow(10, yDec);
+      let feeXSol = 0;
+      if (feeXRaw !== '0') {
+        try {
+          const quote = await getJupiterQuote(reg.tokenXMint, WSOL_MINT, feeXRaw);
+          feeXSol = Number(quote.outAmount || 0) / 1e9;
+        } catch {
+          const feeXUi = Number(pd.feeX?.toString() || '0') / Math.pow(10, xDec);
+          feeXSol = Math.max(0, feeXUi * safeNum((await dlmmPool.getActiveBin())?.pricePerToken, 0));
+        }
+      }
+      estimatedFeeSol = Math.max(0, feeYUi + feeXSol);
+    } catch {
+      estimatedFeeSol = 0;
     }
 
     // 1. Remove all liquidity
@@ -582,10 +692,12 @@ export async function exitPosition(positionPubkey, reason = 'MANUAL') {
     });
 
     const removeTxList = Array.isArray(removeTxs) ? removeTxs : [removeTxs];
+    const removeSignatures = [];
     for (const tx of removeTxList) {
       injectPriorityFee(tx, { units: EP_CONFIG.COMPUTE_UNITS, microLamports });
       const sig = await connection.sendTransaction(tx, [wallet], { skipPreflight: false, maxRetries: 3 });
       await pollTxConfirm(connection, sig);
+      removeSignatures.push(sig);
       console.log(`[evilPanda] Remove liquidity TX confirmed: ${sig.slice(0,8)}`);
     }
 
@@ -598,20 +710,35 @@ export async function exitPosition(positionPubkey, reason = 'MANUAL') {
         console.log(`[evilPanda] Swap ${tokenXBalance} tokenX → SOL`);
         await swapToSol(reg.tokenXMint, tokenXBalance);
       }
-      const newBal = parseFloat(await getWalletBalance());
-      solRecovered = newBal;
     } catch (e) {
       console.warn(`[evilPanda] Swap sisa token gagal (tidak fatal): ${e.message}`);
     }
+    const postSwapLamports = await connection.getBalance(wallet.publicKey);
+    solRecovered = (postSwapLamports - preSwapLamports) / 1e9;
+    const txFeeLamports = await estimateTxFeeLamports(connection, removeSignatures);
+    const txFeeSol = txFeeLamports / 1e9;
 
-    // 3. Bersihkan registry
+    // 3. Verifikasi posisi benar-benar sudah close di chain
+    const isClosedOnChain = await verifyPositionClosedOnChain(connection, wallet, reg.poolAddress, positionPubkey, {
+      attempts: 3,
+      delayMs: 1200,
+    });
+    if (!isClosedOnChain) {
+      throw new Error(`POSITION_STILL_OPEN_AFTER_EXIT_${positionPubkey.slice(0,8)}`);
+    }
+
+    // 4. Bersihkan registry lokal setelah verifikasi close sukses
     _activePositions.delete(positionPubkey);
-    console.log(`[evilPanda] ✅ Position closed: ${positionPubkey.slice(0,8)} | reason=${reason}`);
+    persistActivePositionsState();
+    console.log(`[evilPanda] ✅ Position closed & verified: ${positionPubkey.slice(0,8)} | reason=${reason}`);
 
-    // 4. Harvest Log + Blacklist
+    // 5. Harvest Log + Ledger + Blacklist
     const tokenSymbol = reg.tokenXMint?.slice(0,8) || 'UNKNOWN';
+    const pnlTotalSol = solRecovered - reg.deploySol;
+    const feePnlSol = Math.max(0, estimatedFeeSol);
+    const pricePnlSol = pnlTotalSol - feePnlSol;
     const finalPnlPct = reg.deploySol > 0
-      ? ((solRecovered - reg.deploySol) / reg.deploySol) * 100
+      ? (pnlTotalSol / reg.deploySol) * 100
       : 0;
     appendHarvestLog({
       token:          tokenSymbol,
@@ -619,6 +746,21 @@ export async function exitPosition(positionPubkey, reason = 'MANUAL') {
       pnlPct:         finalPnlPct,
       deploySol:      reg.deploySol,
       reason,
+    });
+    appendPositionLedger({
+      positionPubkey,
+      poolAddress: reg.poolAddress || '',
+      tokenMint: reg.tokenXMint || '',
+      openedAt: reg.deployedAt || null,
+      closedAt: nowIso(),
+      reason,
+      capitalInSol: reg.deploySol || 0,
+      capitalOutSol: solRecovered,
+      pnlTotalSol,
+      pnlTotalPct: finalPnlPct,
+      feePnlSol,
+      pricePnlSol,
+      txCostSol: txFeeSol,
     });
 
     // Tambah ke blacklist jika kena SL / rugpull / rollback
@@ -636,6 +778,50 @@ export async function exitPosition(positionPubkey, reason = 'MANUAL') {
     return { solRecovered };
 
   }, { maxRetries: 2, baseDelay: 3000 });
+}
+
+export async function reconcileStartupPositions() {
+  const connection = getConnection();
+  const wallet = getWallet();
+  const saved = getRuntimeState(ACTIVE_POSITIONS_STATE_KEY, []);
+  const rows = Array.isArray(saved) ? saved : [];
+  let restored = 0;
+  let dropped = 0;
+
+  _activePositions.clear();
+  for (const row of rows) {
+    const pubkey = row?.pubkey;
+    const poolAddress = row?.poolAddress;
+    if (!pubkey || !poolAddress) {
+      dropped++;
+      continue;
+    }
+    try {
+      const dlmmPool = await DLMM.create(connection, new PublicKey(poolAddress));
+      const { userPositions } = await dlmmPool.getPositionsByUserAndLbPair(wallet.publicKey);
+      const exists = userPositions.some((p) => p.publicKey.toString() === pubkey);
+      if (!exists) {
+        dropped++;
+        continue;
+      }
+      _activePositions.set(pubkey, {
+        poolAddress,
+        deploySol: safeNum(row.deploySol, 0),
+        deployedAt: row.deployedAt || nowIso(),
+        tokenXMint: row.tokenXMint || '',
+        tokenYMint: row.tokenYMint || '',
+        rangeMin: safeNum(row.rangeMin, 0),
+        rangeMax: safeNum(row.rangeMax, 0),
+        hwmPct: safeNum(row.hwmPct, 0),
+      });
+      restored++;
+    } catch {
+      dropped++;
+    }
+  }
+
+  persistActivePositionsState();
+  return { scanned: rows.length, restored, dropped };
 }
 
 // ── Registry helpers (untuk index.js) ────────────────────────────

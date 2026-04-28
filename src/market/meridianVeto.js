@@ -442,7 +442,7 @@ function normalizePool(p) {
 // Return pada VETO pertama yang ditemukan.
 
 const _vetoCache = new Map();
-const VETO_CACHE_TTL = 5 * 60 * 1000;
+const VETO_CACHE_TTL_MAX_MS = 60 * 1000;
 
 /**
  * @param {{ mint: string, symbol: string, pool?: object }} token
@@ -454,7 +454,7 @@ export async function runMeridianVeto(token) {
 
   if (_vetoCache.has(mint)) {
     const cached = _vetoCache.get(mint);
-    if (now - cached.timestamp < VETO_CACHE_TTL) {
+    if (now - cached.timestamp < VETO_CACHE_TTL_MAX_MS) {
       return cached.result;
     }
   }

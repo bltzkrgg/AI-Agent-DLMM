@@ -14,11 +14,12 @@
 import { getConfig }              from '../config.js';
 import { screenToken }            from '../market/coinfilter.js';
 import { runMeridianVeto, discoverHighFeePoolsMeridian } from '../market/meridianVeto.js';
-import { deployPosition, monitorPnL, exitPosition, EP_CONFIG } from '../sniper/evilPanda.js';
+import { deployPosition, monitorPnL, exitPosition, EP_CONFIG, getActivePositionKeys, getPositionMeta } from '../sniper/evilPanda.js';
 import { createMessage }          from '../agent/provider.js';
 import { getWalletBalance }       from '../solana/wallet.js';
 import { appendDecisionLog }      from '../learn/decisionLog.js';
 import { isBlacklisted }          from '../learn/tokenBlacklist.js';
+import { getRuntimeState }        from '../runtime/state.js';
 
 // ── Pool selector: pilih pool terbaik per-token berdasarkan binStep priority ─────────────
 //
@@ -77,14 +78,53 @@ async function notify(msg) {
 
 // ── State ─────────────────────────────────────────────────────────
 let _running   = false;
-const _activePositions = []; // [{ pubkey, symbol, poolAddress, mint }]
+let _deployLock = false;
+let _shutdownInProgress = false;
+const _closingPositions = new Set();
+const _positionLabels = new Map(); // pubkey -> { symbol }
+
+function listActivePositions() {
+  const keys = getActivePositionKeys();
+  return keys.map((pubkey) => {
+    const meta = getPositionMeta(pubkey) || {};
+    const label = _positionLabels.get(pubkey) || {};
+    return {
+      pubkey,
+      symbol: label.symbol || (meta.tokenXMint ? meta.tokenXMint.slice(0, 8) : pubkey.slice(0, 8)),
+      poolAddress: meta.poolAddress || '',
+      mint: meta.tokenXMint || '',
+    };
+  });
+}
+
+function hasActiveMint(mint) {
+  if (!mint) return false;
+  return listActivePositions().some((p) => p.mint === mint);
+}
 
 export function isRunning()            { return _running; }
-export function getCurrentPosition()   { return _activePositions.length > 0 ? _activePositions[0].pubkey : null; }
-export function getActivePositions()   { return _activePositions; }
+export function getCurrentPosition()   { return getActivePositionKeys()[0] || null; }
+export function getActivePositions()   { return listActivePositions(); }
+export function setShutdownInProgress(v = true) { _shutdownInProgress = !!v; }
 
 // ── Delay helper ──────────────────────────────────────────────────
 const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+function chunkArray(items, size = 2) {
+  const out = [];
+  for (let i = 0; i < items.length; i += size) out.push(items.slice(i, i + size));
+  return out;
+}
+
+async function withDeployLock(fn) {
+  while (_deployLock) await sleep(100);
+  _deployLock = true;
+  try {
+    return await fn();
+  } finally {
+    _deployLock = false;
+  }
+}
 
 // ── Main Linear Loop ─────────────────────────────────────────────
 
@@ -125,6 +165,17 @@ export async function runLinearLoop() {
   }
 }
 
+export async function runHunterAlpha(notifyFn = null) {
+  const cb = getRuntimeState('hunter-circuit-breaker', null);
+  if ((cb?.pausedUntil || 0) > Date.now()) {
+    if (typeof notifyFn === 'function') {
+      await notifyFn('Circuit Breaker Active');
+    }
+    return { blocked: true, policy: 'CIRCUIT_BREAKER_ACTIVE' };
+  }
+  return { blocked: false };
+}
+
 export function stopLoop() {
   _running = false;
   console.log('[hunter] Stop signal diterima.');
@@ -135,10 +186,18 @@ export function stopLoop() {
 async function scanAndDeploy() {
   const cfg = getConfig();
 
+  const cb = getRuntimeState('hunter-circuit-breaker', null);
+  if ((cb?.pausedUntil || 0) > Date.now()) return { blocked: true, policy: 'CIRCUIT_BREAKER_ACTIVE', pausedUntil: cb?.pausedUntil };
+
   // — Gembok: jika auto-screening dimatikan, pause senyap tanpa log
   if (!cfg.autoScreeningEnabled) {
     await sleep(10_000);
     return;
+  }
+
+  const regime = classifyMarketRegime();
+  if (regime === 'BEAR_DEFENSE') {
+    return { blocked: true, policy: 'REGIME_BEAR_DEFENSE' };
   }
 
   const limit = cfg.meteoraDiscoveryLimit || 50;
@@ -177,23 +236,19 @@ async function scanAndDeploy() {
   console.log(`[hunter] 🔬 Memulai Strict Serial Screening untuk ${scoutCandidates.length} pool...`);
 
   let winners = [];
-  for (const pool of scoutCandidates) {
-    if (!_running) return;
-    if (winners.length >= 5) break;
+  const candidateChunks = chunkArray(scoutCandidates, 2);
 
+  const evaluatePool = async (pool) => {
     const tokenMint   = pool.tokenXMint || pool.tokenX || pool.mint;
     const tokenSymbol = pool.tokenXSymbol || pool.name?.split('-')[0] || '';
     const binStep     = pool.binStep || 0;
     const feeRatio    = pool.feeActiveTvlRatio || 0;
     const vol         = pool.volume24h || pool.volume_24h || pool.trade_volume_24h || pool.volume || 0;
 
-    if (!tokenMint) continue;
-
+    if (!tokenMint) return null;
     console.log(`[hunter] 📦 Mengevaluasi ${tokenSymbol}...`);
 
     let isEligible = true;
-
-    // ── Blacklist check ────────────────
     if (isBlacklisted(tokenMint)) {
       appendDecisionLog({ token: tokenSymbol, mint: tokenMint, decision: 'VETO',
         gate: 'BLACKLIST', reason: 'Token ada di daftar blacklist lokal',
@@ -201,7 +256,6 @@ async function scanAndDeploy() {
       isEligible = false;
     }
 
-    // ── GMGN / Coinfilter screening ─────────────────────────────
     if (isEligible) {
       try {
         const screenResult = await screenToken(tokenMint, tokenSymbol, tokenSymbol);
@@ -210,12 +264,11 @@ async function scanAndDeploy() {
             gate: 'GMGN', reason: screenResult?.verdict || 'FAIL', pool: pool.address || '', feeRatio });
           isEligible = false;
         }
-      } catch (e) {
+      } catch {
         isEligible = false;
       }
     }
 
-    // ── Meridian VETO (Supertrend 15m + ATH + PVP + Dominance) ────
     if (isEligible) {
       const vetoResult = await runMeridianVeto({ mint: tokenMint, symbol: tokenSymbol, pool });
       if (vetoResult.veto) {
@@ -230,35 +283,40 @@ async function scanAndDeploy() {
       }
     }
 
-    // ── Pure Flat Config gate ─────────────────────────────────────
     if (isEligible) {
       const passesConfig = checkFlatConfig(pool, cfg);
       if (!passesConfig.ok) isEligible = false;
     }
 
-    // ── ScoutAgent (Nvidia) ───────────────────────────────────────
-    if (isEligible) {
-      try {
-        const prompt = `Analisa singkat pool ini:\nToken: ${tokenSymbol}\nBin Step: ${binStep}\nFee/TVL: ${(feeRatio*100).toFixed(2)}%\nVolume: $${Math.round(vol)}\nBalas HANYA dengan 'PASS' jika layak lanjut, atau 'REJECT' jika meragukan.`;
-        const res = await createMessage({
-          model: cfg.screeningModel,
-          maxTokens: 10,
-          messages: [{ role: 'user', content: prompt }]
-        });
-        const ans = res.content.find(c => c.type === 'text')?.text.trim().toUpperCase();
-        if (ans && ans.includes('PASS')) {
-          console.log(`[hunter] 🤖 ScoutAgent (Nvidia) APPROVED: ${tokenSymbol}`);
-          winners.push(pool);
-        } else {
-          console.log(`[hunter] 🤖 ScoutAgent (Nvidia) REJECTED: ${tokenSymbol}`);
-        }
-      } catch (e) {
-        console.warn(`[hunter] ScoutAgent error pada ${tokenSymbol}: ${e.message}`);
-      }
-    }
+    if (!isEligible) return null;
 
-    // Jeda sekuensial untuk memberikan napas pada API
-    await sleep(2000);
+    try {
+      const prompt = `Analisa singkat pool ini:\nToken: ${tokenSymbol}\nBin Step: ${binStep}\nFee/TVL: ${(feeRatio*100).toFixed(2)}%\nVolume: $${Math.round(vol)}\nBalas HANYA dengan 'PASS' jika layak lanjut, atau 'REJECT' jika meragukan.`;
+      const res = await createMessage({
+        model: cfg.screeningModel,
+        maxTokens: 10,
+        messages: [{ role: 'user', content: prompt }]
+      });
+      const ans = res.content.find(c => c.type === 'text')?.text.trim().toUpperCase();
+      if (ans && ans.includes('PASS')) {
+        console.log(`[hunter] 🤖 ScoutAgent (Nvidia) APPROVED: ${tokenSymbol}`);
+        return pool;
+      }
+      console.log(`[hunter] 🤖 ScoutAgent (Nvidia) REJECTED: ${tokenSymbol}`);
+      return null;
+    } catch (e) {
+      console.warn(`[hunter] ScoutAgent error pada ${tokenSymbol}: ${e.message}`);
+      return null;
+    }
+  };
+
+  for (const chunk of candidateChunks) {
+    if (!_running || winners.length >= 5) break;
+    const settled = await Promise.allSettled(chunk.map(evaluatePool));
+    for (const item of settled) {
+      if (item.status === 'fulfilled' && item.value && winners.length < 5) winners.push(item.value);
+    }
+    await sleep(1500);
   }
 
   if (winners.length === 0) {
@@ -315,7 +373,7 @@ async function scanAndDeploy() {
   
   // 1. Kapasitas Slot
   const maxPositions = cfg2.maxPositions || 1;
-  const activePositionsCount = _activePositions.length;
+  const activePositionsCount = getActivePositionKeys().length;
   let availableSlots = maxPositions - activePositionsCount;
 
   if (availableSlots <= 0) {
@@ -325,10 +383,9 @@ async function scanAndDeploy() {
   }
 
   // 2. Filter Deduplikasi (Anti Double-Entry)
-  const activeMints = _activePositions.map(p => p.mint);
   const eligibleWinners = winners.filter(w => {
     const mint = w.tokenXMint || w.tokenX || w.mint || w.address;
-    return !activeMints.includes(mint);
+    return !hasActiveMint(mint);
   });
 
   if (eligibleWinners.length === 0) {
@@ -359,42 +416,54 @@ async function scanAndDeploy() {
   for (const winner of eligibleWinners) {
     if (availableSlots <= 0) break;
 
-    const poolAddress = winner.address || winner.pool_address || winner.pool;
-    const tokenMint   = winner.tokenXMint || winner.tokenX || winner.mint || poolAddress;
-    const symbol      = winner.tokenXSymbol || winner.name?.split('-')[0] || poolAddress.slice(0,8);
+    const deployed = await withDeployLock(async () => {
+      const currentCfg = getConfig();
+      const maxPositionsNow = currentCfg.maxPositions || 1;
+      const slotsNow = maxPositionsNow - getActivePositionKeys().length;
+      if (slotsNow <= 0) {
+        console.log(`[hunter] ⚠️ Slot habis saat reserve. Skip deploy kandidat berikut.`);
+        return false;
+      }
 
-    await notify(
-      `Mengeksekusi <b>${symbol}</b>...\n` +
-      `Deploy: <code>${cfg2.deployAmountSol || 0.1} SOL</code>\n` +
-      `⏳ <i>Membuka posisi pada pool <code>${poolAddress.slice(0,8)}</code>...</i>`
-    );
+      const poolAddress = winner.address || winner.pool_address || winner.pool;
+      const tokenMint   = winner.tokenXMint || winner.tokenX || winner.mint || poolAddress;
+      const symbol      = winner.tokenXSymbol || winner.name?.split('-')[0] || poolAddress.slice(0,8);
+      if (hasActiveMint(tokenMint)) {
+        console.log(`[hunter] 🔁 ${symbol} sudah aktif. Skip double-entry.`);
+        return false;
+      }
 
-    let positionPubkey;
-    try {
-      positionPubkey = await deployPosition(poolAddress);
-      _activePositions.push({ pubkey: positionPubkey, symbol, poolAddress, mint: tokenMint });
-    } catch (e) {
-      console.error(`[hunter] deployPosition gagal: ${e.message}`);
-      await notify(`❌ <b>Deploy gagal:</b>\n<code>${e.message}</code>\n\n<i>Lanjut ke kandidat berikutnya...</i>`);
-      continue;
-    }
+      await notify(
+        `Mengeksekusi <b>${symbol}</b>...\n` +
+        `Deploy: <code>${currentCfg.deployAmountSol || 0.1} SOL</code>\n` +
+        `⏳ <i>Membuka posisi pada pool <code>${poolAddress.slice(0,8)}</code>...</i>`
+      );
 
-    await notify(
-      `✅ <b>Posisi terbuka!</b>\n` +
-      `Position: <code>${positionPubkey.slice(0,8)}</code>\n` +
-      `Pool: <code>${poolAddress.slice(0,8)}</code>\n` +
-      `TP: +${EP_CONFIG.TAKE_PROFIT_PCT}% | SL: -${EP_CONFIG.STOP_LOSS_PCT}%\n\n` +
-      `🔒 <i>Masuk mode monitor (Background)...</i>`
-    );
+      let positionPubkey;
+      try {
+        positionPubkey = await deployPosition(poolAddress);
+        _positionLabels.set(positionPubkey, { symbol });
+      } catch (e) {
+        console.error(`[hunter] deployPosition gagal: ${e.message}`);
+        await notify(`❌ <b>Deploy gagal:</b>\n<code>${e.message}</code>\n\n<i>Lanjut ke kandidat berikutnya...</i>`);
+        return false;
+      }
 
-    // 4. MONITOR Loop (Asynchronous, tidak ngeblok iterasi)
-    monitorLoop(positionPubkey, symbol, poolAddress).catch(err => {
-      console.error(`[hunter] Monitor loop crash untuk ${symbol}:`, err);
+      await notify(
+        `✅ <b>Posisi terbuka!</b>\n` +
+        `Position: <code>${positionPubkey.slice(0,8)}</code>\n` +
+        `Pool: <code>${poolAddress.slice(0,8)}</code>\n` +
+        `TP: +${EP_CONFIG.TAKE_PROFIT_PCT}% | SL: -${EP_CONFIG.STOP_LOSS_PCT}%\n\n` +
+        `🔒 <i>Masuk mode monitor (Background)...</i>`
+      );
+
+      monitorLoop(positionPubkey, symbol, poolAddress).catch(err => {
+        console.error(`[hunter] Monitor loop crash untuk ${symbol}:`, err);
+      });
+      return true;
     });
 
-    availableSlots--;
-
-    // 5. Jeda antar eksekusi untuk cegah RPC rate-limit
+    if (deployed) availableSlots--;
     await new Promise(r => setTimeout(r, 3000));
   }
 }
@@ -467,6 +536,10 @@ async function monitorLoop(positionPubkey, symbol, poolAddress) {
   }
 
   // Loop dihentikan dari luar — exit posisi
+  if (_shutdownInProgress) {
+    console.log(`[hunter] Shutdown in progress, monitor loop selesai tanpa auto-exit tambahan: ${positionPubkey.slice(0,8)}`);
+    return;
+  }
   await notify(`⏹ <b>Loop dihentikan.</b> Menutup posisi aktif...`);
   await safeExit(positionPubkey, 'LOOP_STOPPED');
 }
@@ -474,6 +547,11 @@ async function monitorLoop(positionPubkey, symbol, poolAddress) {
 // ── Exit helper ───────────────────────────────────────────────────
 
 async function safeExit(positionPubkey, reason) {
+  if (_closingPositions.has(positionPubkey)) {
+    console.log(`[hunter] safeExit skip (already closing): ${positionPubkey.slice(0,8)}`);
+    return;
+  }
+  _closingPositions.add(positionPubkey);
   try {
     const { solRecovered } = await exitPosition(positionPubkey, reason);
     const balance = await getWalletBalance();
@@ -486,13 +564,70 @@ async function safeExit(positionPubkey, reason) {
     console.error(`[hunter] exitPosition error: ${e.message}`);
     await notify(`⚠️ <b>Exit gagal:</b>\n<code>${e.message}</code>\n\n<i>Posisi mungkin masih terbuka on-chain!</i>`);
   } finally {
-    // 6. Bebaskan Slot (Hapus dari _activePositions)
-    const idx = _activePositions.findIndex(p => p.pubkey === positionPubkey);
-    if (idx > -1) {
-      _activePositions.splice(idx, 1);
-      console.log(`[hunter] Slot dibebaskan. Posisi aktif tersisa: ${_activePositions.length}`);
+    _positionLabels.delete(positionPubkey);
+    console.log(`[hunter] Slot dibebaskan. Posisi aktif tersisa: ${getActivePositionKeys().length}`);
+    _closingPositions.delete(positionPubkey);
+  }
+}
+
+export async function closeAllActivePositionsForShutdown(signal = 'SIGTERM', timeoutMs = 10_000) {
+  _shutdownInProgress = true;
+  const snapshot = listActivePositions();
+  const results = [];
+
+  for (const pos of snapshot) {
+    const pubkey = pos?.pubkey;
+    if (!pubkey) continue;
+    const result = { pubkey, ok: false, reason: null };
+    try {
+      await Promise.race([
+        safeExit(pubkey, `SHUTDOWN_${signal}`),
+        new Promise((_, reject) => setTimeout(() => reject(new Error('SHUTDOWN_TIMEOUT')), timeoutMs)),
+      ]);
+      result.ok = true;
+    } catch (e) {
+      result.reason = e?.message || 'UNKNOWN_SHUTDOWN_ERROR';
+    }
+    results.push(result);
+  }
+
+  return {
+    total: snapshot.length,
+    closed: results.filter(r => r.ok).length,
+    failed: results.filter(r => !r.ok),
+    results,
+  };
+}
+
+export async function retryFailedShutdownPositions(failedRows = [], signal = 'SIGTERM', timeoutMs = 10_000) {
+  if (!Array.isArray(failedRows) || failedRows.length === 0) {
+    return { retried: 0, recovered: 0, stillFailed: [] };
+  }
+
+  const stillActive = new Set(getActivePositionKeys());
+  const retryTargets = failedRows
+    .map((r) => r?.pubkey)
+    .filter((pubkey) => pubkey && stillActive.has(pubkey));
+
+  let recovered = 0;
+  const stillFailed = [];
+  for (const pubkey of retryTargets) {
+    try {
+      await Promise.race([
+        safeExit(pubkey, `SHUTDOWN_RETRY_${signal}`),
+        new Promise((_, reject) => setTimeout(() => reject(new Error('SHUTDOWN_RETRY_TIMEOUT')), timeoutMs)),
+      ]);
+      recovered++;
+    } catch (e) {
+      stillFailed.push({ pubkey, reason: e?.message || 'SHUTDOWN_RETRY_FAILED' });
     }
   }
+
+  return {
+    retried: retryTargets.length,
+    recovered,
+    stillFailed,
+  };
 }
 
 // ── Pure Flat Config Gate ─────────────────────────────────────────
@@ -527,6 +662,10 @@ function checkFlatConfig(pool, cfg) {
 function safeNum(v) {
   const n = Number(v);
   return Number.isFinite(n) ? n : 0;
+}
+
+function classifyMarketRegime() {
+  return 'NEUTRAL';
 }
 
 // ── Auto-Screening Manual Runner ───────────────────────────────────

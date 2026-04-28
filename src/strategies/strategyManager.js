@@ -28,8 +28,21 @@ const EVIL_PANDA = {
 
 /** Ambil strategi berdasarkan nama — selalu return Evil Panda */
 export function getStrategy(name) {
-  void name;
   const cfg = getConfig();
+  if (name === 'Wave Enjoyer') {
+    const base = {
+      name: 'Wave Enjoyer',
+      deploy: { fixedBinsBelow: 24 },
+      exit: { holdMinMinutes: 10, holdMaxMinutes: 20 },
+    };
+    const ov = (cfg.strategyOverrides && cfg.strategyOverrides['Wave Enjoyer']) || {};
+    return {
+      ...base,
+      ...ov,
+      deploy: { ...base.deploy, ...(ov.deploy || {}) },
+      exit: { ...base.exit, ...(ov.exit || {}) },
+    };
+  }
   return {
     ...EVIL_PANDA,
     deploy: {
@@ -57,7 +70,24 @@ export function getAllStrategies() {
 
 /** Parse strategy parameters dari string atau object */
 export function parseStrategyParameters(input) {
-  if (!input) return getStrategy('Evil Panda');
-  if (typeof input === 'object') return { ...getStrategy('Evil Panda'), ...input };
-  return getStrategy('Evil Panda');
+  const base = getStrategy('Evil Panda');
+  const strategy = (!input || typeof input !== 'object') ? base : { ...base, ...input };
+  const deploy = strategy.deploy || strategy.parameters || {};
+
+  let priceRangePercent = 94;
+  if (Number.isFinite(Number(deploy.entryPriceOffsetMin)) && Number.isFinite(Number(deploy.entryPriceOffsetMax))) {
+    priceRangePercent = Math.max(0, Number(deploy.entryPriceOffsetMax) - Number(deploy.entryPriceOffsetMin));
+  }
+
+  const strategyType = Number.isFinite(Number(deploy.strategyType))
+    ? Number(deploy.strategyType)
+    : ((strategy.type === 'single_side_y' || strategy.name === 'Evil Panda') ? 2 : 0);
+
+  return {
+    ...strategy,
+    priceRangePercent,
+    strategyType,
+    tokenXWeight: strategyType === 2 ? 0 : 50,
+    tokenYWeight: strategyType === 2 ? 100 : 50,
+  };
 }

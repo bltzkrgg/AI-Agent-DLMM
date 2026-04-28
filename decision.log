@@ -1,0 +1,86 @@
+{"ts":"2026-04-26T17:39:06.037Z","token":"ASTEROID","mint":"4UeLCRqA","decision":"SCREEN_FAIL","gate":"GMGN","reason":"AVOID","pool":"CEZRNzf1","feeRatio":"9.9909"}
+{"ts":"2026-04-26T17:39:25.528Z","token":"MUSK","mint":"D4BPL1zv","decision":"SCREEN_FAIL","gate":"GMGN","reason":"AVOID","pool":"GeUkx21V","feeRatio":"6.6638"}
+{"ts":"2026-04-26T17:41:32.127Z","token":"ASTEROID","mint":"4UeLCRqA","decision":"SCREEN_FAIL","gate":"GMGN","reason":"AVOID","pool":"CEZRNzf1","feeRatio":"10.1378"}
+{"ts":"2026-04-26T17:41:37.130Z","token":"MUSK","mint":"D4BPL1zv","decision":"SCREEN_FAIL","gate":"GMGN","reason":"AVOID","pool":"GeUkx21V","feeRatio":"6.6551"}
+{"ts":"2026-04-26T17:43:43.820Z","token":"ASTEROID","mint":"4UeLCRqA","decision":"SCREEN_FAIL","gate":"GMGN","reason":"AVOID","pool":"CEZRNzf1","feeRatio":"10.1553"}
+{"ts":"2026-04-26T17:43:48.824Z","token":"MUSK","mint":"D4BPL1zv","decision":"SCREEN_FAIL","gate":"GMGN","reason":"AVOID","pool":"GeUkx21V","feeRatio":"6.6611"}
+{"ts":"2026-04-26T17:45:55.519Z","token":"ASTEROID","mint":"4UeLCRqA","decision":"SCREEN_FAIL","gate":"GMGN","reason":"AVOID","pool":"CEZRNzf1","feeRatio":"10.1354"}
+{"ts":"2026-04-26T17:46:00.523Z","token":"MUSK","mint":"D4BPL1zv","decision":"SCREEN_FAIL","gate":"GMGN","reason":"AVOID","pool":"GeUkx21V","feeRatio":"6.6544"}
+{"ts":"2026-04-26T17:48:07.134Z","token":"ASTEROID","mint":"4UeLCRqA","decision":"SCREEN_FAIL","gate":"GMGN","reason":"AVOID","pool":"CEZRNzf1","feeRatio":"10.1897"}
+{"ts":"2026-04-26T17:48:12.137Z","token":"MUSK","mint":"D4BPL1zv","decision":"SCREEN_FAIL","gate":"GMGN","reason":"AVOID","pool":"GeUkx21V","feeRatio":"6.6671"}
+{"ts":"2026-04-26T17:51:08.292Z","token":"ASTEROID","mint":"4UeLCRqA","decision":"SCREEN_FAIL","gate":"GMGN","reason":"AVOID","pool":"CEZRNzf1","feeRatio":"10.1478"}
+{"ts":"2026-04-26T17:51:35.742Z","token":"MUSK","mint":"D4BPL1zv","decision":"SCREEN_FAIL","gate":"GMGN","reason":"AVOID","pool":"GeUkx21V","feeRatio":"6.6623"}
+{"ts":"2026-04-26T18:09:56.160Z","token":"HENRY","mint":"CJUrENDA","decision":"SCREEN_FAIL","gate":"GMGN","reason":"AVOID","pool":"9Ybx4ZjZ","feeRatio":"25.9554"}
+{"ts":"2026-04-26T18:10:01.166Z","token":"ASTEROID","mint":"4UeLCRqA","decision":"SCREEN_FAIL","gate":"GMGN","reason":"AVOID","pool":"CEZRNzf1","feeRatio":"10.4774"}
+{"ts":"2026-04-26T18:10:31.044Z","token":"MUSK","mint":"D4BPL1zv","decision":"SCREEN_FAIL","gate":"GMGN","reason":"AVOID","pool":"GeUkx21V","feeRatio":"6.6862"}
+{"ts":"2026-04-26T18:39:25.228Z","token":"HENRY","mint":"CJUrENDA","decision":"SCREEN_FAIL","gate":"GMGN","reason":"AVOID","pool":"9Ybx4ZjZ","feeRatio":"30.9820"}
+{"ts":"2026-04-26T19:19:33.776Z","token":"HENRY","mint":"CJUrENDA","decision":"SCREEN_FAIL","gate":"GMGN","reason":"AVOID","pool":"9Ybx4ZjZ","feeRatio":"34.0189"}
+{"ts":"2026-04-26T19:19:53.130Z","token":"ASTEROID","mint":"4UeLCRqA","decision":"SCREEN_FAIL","gate":"GMGN","reason":"AVOID","pool":"CEZRNzf1","feeRatio":"10.8711"}
+{"ts":"2026-04-26T19:20:10.664Z","token":"MUSK","mint":"D4BPL1zv","decision":"SCREEN_FAIL","gate":"GMGN","reason":"AVOID","pool":"GeUkx21V","feeRatio":"6.6813"}
+{"ts":"2026-04-26T19:26:56.031Z","token":"HENRY","mint":"CJUrENDA","decision":"SCREEN_FAIL","gate":"GMGN","reason":"AVOID","pool":"9Ybx4ZjZ","feeRatio":"37.7806"}
+{"ts":"2026-04-26T19:27:11.552Z","token":"ASTEROID","mint":"4UeLCRqA","decision":"SCREEN_FAIL","gate":"GMGN","reason":"AVOID","pool":"CEZRNzf1","feeRatio":"10.7367"}
+{"ts":"2026-04-26T19:27:25.172Z","token":"MUSK","mint":"D4BPL1zv","decision":"SCREEN_FAIL","gate":"GMGN","reason":"AVOID","pool":"GeUkx21V","feeRatio":"6.6547"}
+{"ts":"2026-04-26T19:37:51.890Z","token":"HENRY","mint":"CJUrENDA","decision":"SCREEN_FAIL","gate":"GMGN","reason":"AVOID","pool":"9Ybx4ZjZ","feeRatio":"47.4110"}
+{"ts":"2026-04-26T19:38:03.602Z","token":"ASTEROID","mint":"4UeLCRqA","decision":"SCREEN_FAIL","gate":"GMGN","reason":"AVOID","pool":"CEZRNzf1","feeRatio":"10.9164"}
+{"ts":"2026-04-26T19:38:15.510Z","token":"MUSK","mint":"D4BPL1zv","decision":"SCREEN_FAIL","gate":"GMGN","reason":"AVOID","pool":"GeUkx21V","feeRatio":"6.6262"}
+{"ts":"2026-04-26T19:53:05.458Z","token":"HENRY","mint":"CJUrENDA","decision":"VETO","gate":"SUPERTREND_15M","reason":"Supertrend 15m BEARISH — tidak safe untuk LP","pool":"9Ybx4ZjZ","feeRatio":"45.6764"}
+{"ts":"2026-04-26T19:53:13.470Z","token":"ASTEROID","mint":"4UeLCRqA","decision":"VETO","gate":"PVP_GUARD","reason":"PVP guard: rival \"ASTEROID\" (F1ppSHed) punya pool dominan TVL=$15,698","pool":"CEZRNzf1","feeRatio":"10.7666"}
+{"ts":"2026-04-26T19:53:19.802Z","token":"MUSK","mint":"D4BPL1zv","decision":"SCREEN_FAIL","gate":"GMGN","reason":"AVOID","pool":"GeUkx21V","feeRatio":"6.6400"}
+{"ts":"2026-04-27T06:38:59.033Z","token":"HENRY","mint":"CJUrENDA","decision":"PASS","gate":null,"reason":"All Meridian gates PASS","pool":"9Ybx4ZjZ","feeRatio":"40.1228"}
+{"ts":"2026-04-27T06:39:50.009Z","token":"HENRY","mint":"CJUrENDA","decision":"PASS","gate":null,"reason":"All Meridian gates PASS","pool":"9Ybx4ZjZ","feeRatio":"40.1346"}
+{"ts":"2026-04-27T08:20:13.470Z","token":"HENRY","mint":"CJUrENDA","decision":"VETO","gate":"SUPERTREND_15M","reason":"Candle 15m MERAH (Haram Entry)","pool":"9Ybx4ZjZ","feeRatio":"36.6848"}
+{"ts":"2026-04-27T08:36:37.058Z","token":"HENRY","mint":"CJUrENDA","decision":"VETO","gate":"SUPERTREND_15M","reason":"Candle 15m MERAH (Haram Entry)","pool":"9Ybx4ZjZ","feeRatio":"36.8519"}
+{"ts":"2026-04-27T08:52:02.433Z","token":"HENRY","mint":"CJUrENDA","decision":"VETO","gate":"SUPERTREND_15M","reason":"Logic error: Timeout (8000ms): https://api.agentmeridian.xyz/api/chart-indicators/CJUrENDAuSm4FxxziUgftnUJqqXjm4VL1zhJgwXupump?interval=15_MINUTE&candles=10","pool":"9Ybx4ZjZ","feeRatio":"37.4763"}
+{"ts":"2026-04-27T13:08:42.448Z","token":"NiggaCoin","mint":"CJTmgXkR","decision":"VETO","gate":"SUPERTREND_15M","reason":"Trend 15m BEARISH","pool":"6JGyEMwX","feeRatio":"37.3100"}
+{"ts":"2026-04-27T13:08:51.401Z","token":"ODAI","mint":"HxFSWTJE","decision":"VETO","gate":"SUPERTREND_15M","reason":"Belum Break ST / Belum ATH","pool":"HHRruXs3","feeRatio":"31.9811"}
+{"ts":"2026-04-27T13:08:58.766Z","token":"BASED","mint":"DPZcf7hD","decision":"SCREEN_FAIL","gate":"GMGN","reason":"AVOID","pool":"wn2J8Uez","feeRatio":"14.4883"}
+{"ts":"2026-04-27T13:09:08.870Z","token":"BELKA","mint":"4df1wZoy","decision":"VETO","gate":"SUPERTREND_15M","reason":"Belum Break ST / Belum ATH","pool":"3VbrpQ18","feeRatio":"6.9883"}
+{"ts":"2026-04-27T13:09:15.279Z","token":"Deployr","mint":"8JvDVZK6","decision":"SCREEN_FAIL","gate":"GMGN","reason":"AVOID","pool":"CTAcKsfr","feeRatio":"4.7751"}
+{"ts":"2026-04-27T13:09:21.738Z","token":"NIKITA","mint":"GJ9LEQZg","decision":"SCREEN_FAIL","gate":"GMGN","reason":"AVOID","pool":"9knK1wHu","feeRatio":"3.3606"}
+{"ts":"2026-04-27T13:09:30.739Z","token":"chudhouse","mint":"VNo7EjR3","decision":"VETO","gate":"SUPERTREND_15M","reason":"Belum Break ST / Belum ATH","pool":"AUGgxEcG","feeRatio":"2.0865"}
+{"ts":"2026-04-27T13:09:38.500Z","token":"Mirumi","mint":"3BRC7ZfR","decision":"SCREEN_FAIL","gate":"GMGN","reason":"AVOID","pool":"G5Lv5sBf","feeRatio":"1.8817"}
+{"ts":"2026-04-27T13:09:46.312Z","token":"AOL","mint":"2oQNkePa","decision":"SCREEN_FAIL","gate":"GMGN","reason":"AVOID","pool":"E3WE5PTL","feeRatio":"1.0869"}
+{"ts":"2026-04-27T13:09:52.853Z","token":"MOBY","mint":"Cy1GS2Fq","decision":"SCREEN_FAIL","gate":"GMGN","reason":"AVOID","pool":"EPsYCPk2","feeRatio":"1.0438"}
+{"ts":"2026-04-27T13:10:00.288Z","token":"KABUTO","mint":"A9E2Aopu","decision":"SCREEN_FAIL","gate":"GMGN","reason":"AVOID","pool":"H4NetgYs","feeRatio":"0.7564"}
+{"ts":"2026-04-27T13:10:07.124Z","token":"AIFRUITS","mint":"6Bp9LWty","decision":"SCREEN_FAIL","gate":"GMGN","reason":"AVOID","pool":"FXZr7Wga","feeRatio":"0.6609"}
+{"ts":"2026-04-27T13:10:13.588Z","token":"Patapim","mint":"W6wjBw8H","decision":"SCREEN_FAIL","gate":"GMGN","reason":"AVOID","pool":"3YJpfNAT","feeRatio":"0.5071"}
+{"ts":"2026-04-27T13:10:22.688Z","token":"BP","mint":"3B1ijcoc","decision":"VETO","gate":"SUPERTREND_15M","reason":"Candle 15m MERAH (Haram Entry)","pool":"BMjAaKH6","feeRatio":"0.4877"}
+{"ts":"2026-04-27T13:10:30.044Z","token":"afk","mint":"kMKX8hBa","decision":"SCREEN_FAIL","gate":"GMGN","reason":"AVOID","pool":"2cNnMFKg","feeRatio":"0.3981"}
+{"ts":"2026-04-27T13:10:42.726Z","token":"LOL","mint":"34q2KmCv","decision":"VETO","gate":"SUPERTREND_15M","reason":"Candle 15m MERAH (Haram Entry)","pool":"7E7KLbXg","feeRatio":"0.3662"}
+{"ts":"2026-04-27T13:10:49.472Z","token":"CROWN","mint":"GDfnEsia","decision":"SCREEN_FAIL","gate":"GMGN","reason":"AVOID","pool":"HAC8ufNf","feeRatio":"0.3505"}
+{"ts":"2026-04-27T13:10:55.823Z","token":"abcdefg","mint":"89S7oVB4","decision":"SCREEN_FAIL","gate":"GMGN","reason":"AVOID","pool":"AGCBHFUL","feeRatio":"0.2800"}
+{"ts":"2026-04-27T13:11:02.623Z","token":"CHILLHOUSE","mint":"GkyPYa7N","decision":"SCREEN_FAIL","gate":"GMGN","reason":"AVOID","pool":"Fx4jn8Kx","feeRatio":"0.2370"}
+{"ts":"2026-04-27T13:11:14.156Z","token":"我的刀盾","mint":"6iA73gWC","decision":"VETO","gate":"SUPERTREND_15M","reason":"Trend 15m BEARISH","pool":"EnWuoyUf","feeRatio":"0.2221"}
+{"ts":"2026-04-27T13:11:21.080Z","token":"HODL","mint":"Hh3oTaqD","decision":"SCREEN_FAIL","gate":"GMGN","reason":"AVOID","pool":"DWXUaegR","feeRatio":"0.1863"}
+{"ts":"2026-04-27T13:11:28.440Z","token":"DEXTER","mint":"EfPoo4wW","decision":"SCREEN_FAIL","gate":"GMGN","reason":"AVOID","pool":"F9KbYJgw","feeRatio":"0.1737"}
+{"ts":"2026-04-27T13:11:35.368Z","token":"LORIA","mint":"Gj4Towiz","decision":"SCREEN_FAIL","gate":"GMGN","reason":"AVOID","pool":"7hiPCWdL","feeRatio":"0.1596"}
+{"ts":"2026-04-27T13:11:41.827Z","token":"URANUS","mint":"BFgdzMkT","decision":"SCREEN_FAIL","gate":"GMGN","reason":"AVOID","pool":"24A3UwLn","feeRatio":"0.1557"}
+{"ts":"2026-04-27T13:11:48.499Z","token":"DEGEN","mint":"A7n89LqW","decision":"SCREEN_FAIL","gate":"GMGN","reason":"AVOID","pool":"BWqRj64n","feeRatio":"0.1150"}
+{"ts":"2026-04-27T13:11:55.179Z","token":"PMX","mint":"J27UYHX5","decision":"SCREEN_FAIL","gate":"GMGN","reason":"AVOID","pool":"47dAcATN","feeRatio":"0.1146"}
+{"ts":"2026-04-27T13:12:01.380Z","token":"ooo","mint":"G6mNZN8o","decision":"SCREEN_FAIL","gate":"GMGN","reason":"AVOID","pool":"HQy43i9N","feeRatio":"0.0681"}
+{"ts":"2026-04-27T13:12:07.994Z","token":"OPAL","mint":"2PzS5SYY","decision":"SCREEN_FAIL","gate":"GMGN","reason":"AVOID","pool":"A2Swwe76","feeRatio":"0.0624"}
+{"ts":"2026-04-27T13:12:14.746Z","token":"OMFG","mint":"omfgRBnx","decision":"SCREEN_FAIL","gate":"GMGN","reason":"AVOID","pool":"BiNnErm2","feeRatio":"0.0573"}
+{"ts":"2026-04-27T13:12:21.427Z","token":"SOLPUMP","mint":"3VW31dwi","decision":"SCREEN_FAIL","gate":"GMGN","reason":"AVOID","pool":"Hc4oES9y","feeRatio":"0.0324"}
+{"ts":"2026-04-27T13:12:28.185Z","token":"FORGE","mint":"foRgE7d5","decision":"SCREEN_FAIL","gate":"GMGN","reason":"AVOID","pool":"FFb8Mq6q","feeRatio":"0.0242"}
+{"ts":"2026-04-27T13:12:35.081Z","token":"ORAI","mint":"oraiyuR7","decision":"SCREEN_FAIL","gate":"GMGN","reason":"AVOID","pool":"JByddFon","feeRatio":"0.0171"}
+{"ts":"2026-04-27T13:12:42.663Z","token":"GBOY","mint":"svy5Erij","decision":"SCREEN_FAIL","gate":"GMGN","reason":"AVOID","pool":"ELRDDVBN","feeRatio":"0.0155"}
+{"ts":"2026-04-27T13:12:49.658Z","token":"V2EX","mint":"9raUVuze","decision":"SCREEN_FAIL","gate":"GMGN","reason":"AVOID","pool":"TgbaCkki","feeRatio":"0.0078"}
+{"ts":"2026-04-27T13:12:56.207Z","token":"Aliens","mint":"F5tfztTn","decision":"SCREEN_FAIL","gate":"GMGN","reason":"AVOID","pool":"Cy4ZW25m","feeRatio":"2.0970"}
+{"ts":"2026-04-27T13:13:06.552Z","token":"DUMBMONEY","mint":"CAjtTHvC","decision":"VETO","gate":"SUPERTREND_15M","reason":"Trend 15m BEARISH","pool":"G1okG7hA","feeRatio":"1.9109"}
+{"ts":"2026-04-27T13:13:13.469Z","token":"JIGGLYPUFF","mint":"AoKgjNMu","decision":"SCREEN_FAIL","gate":"GMGN","reason":"AVOID","pool":"Cbfzk3Qw","feeRatio":"1.7308"}
+{"ts":"2026-04-27T13:13:23.534Z","token":"发财","mint":"57dYAUq7","decision":"VETO","gate":"SUPERTREND_15M","reason":"Trend 15m BEARISH","pool":"4qhRKi32","feeRatio":"0.4960"}
+{"ts":"2026-04-27T13:13:30.088Z","token":"ASTROID","mint":"8NwtzwGm","decision":"SCREEN_FAIL","gate":"GMGN","reason":"AVOID","pool":"GaPfxMEC","feeRatio":"0.2168"}
+{"ts":"2026-04-27T13:13:36.478Z","token":"$NRG","mint":"9f52wiW2","decision":"SCREEN_FAIL","gate":"GMGN","reason":"AVOID","pool":"3N3QUX75","feeRatio":"0.0741"}
+{"ts":"2026-04-27T13:13:46.399Z","token":"BOAR","mint":"5ohBqLgm","decision":"VETO","gate":"SUPERTREND_15M","reason":"Belum Break ST / Belum ATH","pool":"14cGLw3J","feeRatio":"2.5657"}
+{"ts":"2026-04-27T13:13:58.001Z","token":"BULL","mint":"3TYgKwkE","decision":"VETO","gate":"SUPERTREND_15M","reason":"Belum Break ST / Belum ATH","pool":"BrdkY6Xr","feeRatio":"0.6595"}
+{"ts":"2026-04-27T13:14:04.143Z","token":"TripleT","mint":"J8PSdNP3","decision":"SCREEN_FAIL","gate":"GMGN","reason":"AVOID","pool":"7JNqoSgi","feeRatio":"0.1737"}
+{"ts":"2026-04-27T13:14:12.305Z","token":"FLUID","mint":"DuEy8wWr","decision":"SCREEN_FAIL","gate":"GMGN","reason":"AVOID","pool":"Gis8fU4M","feeRatio":"0.0543"}
+{"ts":"2026-04-27T13:14:19.045Z","token":"USA","mint":"69kdRLyP","decision":"SCREEN_FAIL","gate":"GMGN","reason":"AVOID","pool":"5wEcxkyk","feeRatio":"0.0265"}
+{"ts":"2026-04-27T17:20:46.739Z","token":"NiggaCoin","mint":"CJTmgXkR","decision":"VETO","gate":"SUPERTREND_15M","reason":"Trend 15m BEARISH","pool":"6JGyEMwX","feeRatio":"115.0200"}
+{"ts":"2026-04-27T17:20:54.288Z","token":"SAM","mint":"7WRX5QGu","decision":"VETO","gate":"SUPERTREND_15M","reason":"Trend 15m BEARISH","pool":"Fft7C9bp","feeRatio":"15.3887"}
+{"ts":"2026-04-27T17:21:02.468Z","token":"BELKA","mint":"4df1wZoy","decision":"VETO","gate":"LOW_VOLUME","reason":"🚫 VETO: Volume $61,920 di bawah minimal $200,000","pool":"3VbrpQ18","feeRatio":"6.1845"}
+{"ts":"2026-04-27T17:21:10.713Z","token":"chudhouse","mint":"VNo7EjR3","decision":"VETO","gate":"SUPERTREND_15M","reason":"Trend 15m BEARISH","pool":"AUGgxEcG","feeRatio":"4.2887"}
+{"ts":"2026-04-27T17:21:17.713Z","token":"KABUTO","mint":"A9E2Aopu","decision":"SCREEN_FAIL","gate":"GMGN","reason":"AVOID","pool":"H4NetgYs","feeRatio":"4.1063"}
+{"ts":"2026-04-27T17:21:26.022Z","token":"assface","mint":"BnXWvsVZ","decision":"VETO","gate":"LOW_VOLUME","reason":"🚫 VETO: Volume $15,523 di bawah minimal $200,000","pool":"iZmL7Qw5","feeRatio":"2.1874"}
+{"ts":"2026-04-27T17:21:32.404Z","token":"AOL","mint":"2oQNkePa","decision":"SCREEN_FAIL","gate":"GMGN","reason":"AVOID","pool":"E3WE5PTL","feeRatio":"1.7800"}
+{"ts":"2026-04-27T17:21:41.051Z","token":"BP","mint":"3B1ijcoc","decision":"VETO","gate":"LOW_VOLUME","reason":"🚫 VETO: Volume $2,196 di bawah minimal $200,000","pool":"BMjAaKH6","feeRatio":"1.5981"}

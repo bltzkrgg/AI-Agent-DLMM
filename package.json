@@ -12,6 +12,7 @@
     "dev": "DRY_RUN=true node --watch src/index.js",
     "dry": "DRY_RUN=true node src/index.js",
     "test": "node --test --test-concurrency=1 tests/*.test.js tests/integration/*.test.js",
+    "test:critical": "node --test --test-concurrency=1 tests/shutdown-hardening.test.js tests/reconcile-startup.test.js tests/pnl-ledger-critical.test.js tests/jupiter.test.js tests/runtime-state.test.js",
     "test:coverage": "c8 --reporter=text-summary --reporter=lcov node --test --test-concurrency=1 tests/*.test.js tests/integration/*.test.js",
     "lint": "node scripts/lint.js",
     "signal:report": "node scripts/buildSignalAccuracyReport.js",

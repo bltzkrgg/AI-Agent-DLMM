@@ -109,6 +109,10 @@ export function closePositionWithPnl(addr, pnlData = {}) {
   const closed = {
     ...pos,
     ...pnlData,
+    close_reason: pnlData.closeReason ?? pos.close_reason ?? null,
+    pnl_pct: pnlData.pnlPct ?? pos.pnl_pct ?? null,
+    fees_usd: pnlData.feesUsd ?? pos.fees_usd ?? null,
+    lifecycle_state: pnlData.lifecycleState ?? pos.lifecycle_state ?? 'closed',
     status: 'closed',
     closed_at: nowIso(),
     updated_at: nowIso(),

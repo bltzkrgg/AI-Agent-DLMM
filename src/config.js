@@ -45,7 +45,7 @@ const DEFAULTS = {
   canaryMaxPositions:   1,
   autonomyMode:         'active',
   autoScreeningEnabled: false,
-  requireConfirmation:  false, // true = minta konfirmasi Telegram sebelum deploy
+  requireConfirmation:  true, // true = minta konfirmasi Telegram sebelum deploy
 
   // ── Intervals ────────────────────────────────────────────────────────────
   managementIntervalMin:    15,
@@ -65,7 +65,7 @@ const DEFAULTS = {
   // ── Pool Discovery ────────────────────────────────────────────────────────
   meteoraDiscoveryLimit:  180,
   binStepPriority:        [200, 125, 100],
-  allowedBinSteps:        [100, 125, 200],
+  allowedBinSteps:        [100, 125],
   minBinStep:             100,
   maxBinStep:             200,
   minFeeActiveTvlRatio:   0.002,
@@ -120,6 +120,7 @@ const DEFAULTS = {
   maxHoldHours:           72,
   outOfRangeWaitMinutes:  30,   // Tunggu N menit OOR sebelum close
   maxDailyPriorityFeeSol: 0.2,
+  maxDailyDrawdownPct:    6,
   activeStrategy:         'Evil Panda',
   smartExitRsi:           90,   // RSI(2) threshold untuk Meridian Smart Exit
   depthPct:               90,   // Depth jaring SOL ke bawah (%)
@@ -132,6 +133,13 @@ const DEFAULTS = {
 
   // ── OKX ──────────────────────────────────────────────────────────────────
   okxApiKey: process.env.OKX_API_KEY || '',
+  signalWeights: {
+    mcap: 2.5,
+    feeActiveTvlRatio: 2.3,
+    volume: 1.0,
+    holderCount: 0.3,
+  },
+  strategyOverrides: {},
 
 };
 
@@ -202,6 +210,9 @@ const CONFIG_BOUNDS = {
   smartExitRsi:           { min: 50,    max: 100 },
   depthPct:               { min: 10,    max: 100 },
   okxApiKey:              { type: 'string' },
+  maxDailyDrawdownPct:    { min: 0, max: 100 },
+  signalWeights:          { type: 'object' },
+  strategyOverrides:      { type: 'object' },
 };
 
 // ── flattenUserConfig ─────────────────────────────────────────────────────────
@@ -465,6 +476,28 @@ export function updateConfig(updates) {
     if (key === 'bannedNarratives') {
       if (!Array.isArray(value)) { rejected.push(`${key}: must be an array`); continue; }
       validated[key] = value.map(v => String(v).toLowerCase().trim()).filter(Boolean);
+      continue;
+    }
+    if (key === 'signalWeights') {
+      if (!value || typeof value !== 'object' || Array.isArray(value)) { rejected.push(`${key}: must be an object`); continue; }
+      const current = getConfig().signalWeights || DEFAULTS.signalWeights;
+      validated[key] = { ...current, ...value };
+      continue;
+    }
+    if (key === 'strategyOverrides') {
+      if (!value || typeof value !== 'object' || Array.isArray(value)) { rejected.push(`${key}: must be an object`); continue; }
+      const current = getConfig().strategyOverrides || {};
+      const next = { ...current };
+      for (const [name, override] of Object.entries(value)) {
+        const existing = current[name] && typeof current[name] === 'object' ? current[name] : {};
+        next[name] = {
+          ...existing,
+          ...(override || {}),
+          deploy: { ...(existing.deploy || {}), ...((override || {}).deploy || {}) },
+          exit: { ...(existing.exit || {}), ...((override || {}).exit || {}) },
+        };
+      }
+      validated[key] = next;
       continue;
     }
 

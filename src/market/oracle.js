@@ -26,13 +26,26 @@ export async function getOHLCV(tokenMint, poolAddress = null) {
     return buildMomentumProxyOHLCV(tokenMint);
   }
 
-  await new Promise(r => setTimeout(r, 1500));
+  const backoffStepsMs = [500, 1000];
+  let birdeye = await buildOHLCVFromBirdeye(tokenMint);
 
-  const birdeye = await buildOHLCVFromBirdeye(tokenMint);
+  for (let i = 0; i < backoffStepsMs.length; i++) {
+    const retryAfterSec = Number(birdeye?.retryAfterSec ?? 0);
+    const throttled = birdeye?.status === 'THROTTLED';
+    if (!throttled) break;
 
-  if (birdeye === 'THROTTLED') {
-    birdeyeCooldownUntil = Date.now() + (5 * 60 * 1000);
-    console.warn(`[oracle] Birdeye throttled, using DexScreener/Jupiter fallback...`);
+    const waitMs = retryAfterSec > 0
+      ? Math.max(250, retryAfterSec * 1000)
+      : backoffStepsMs[i];
+    await new Promise(r => setTimeout(r, waitMs));
+    birdeye = await buildOHLCVFromBirdeye(tokenMint);
+  }
+
+  if (birdeye?.status === 'THROTTLED') {
+    const retryAfterSec = Number(birdeye?.retryAfterSec ?? 0);
+    const cooldownMs = retryAfterSec > 0 ? retryAfterSec * 1000 : 2 * 60 * 1000;
+    birdeyeCooldownUntil = Date.now() + cooldownMs;
+    console.warn(`[oracle] Birdeye throttled (${cooldownMs}ms cooldown), using DexScreener/Jupiter fallback...`);
     return buildMomentumProxyOHLCV(tokenMint);
   }
 
@@ -491,7 +504,9 @@ async function getHistoryOHLCVFromBirdeye(tokenMint, lookbackHours = 12) {
       8000
     );
     if (res.status === 429) {
-      return 'THROTTLED';
+      const retryAfterRaw = Number(res.headers?.get?.('retry-after') || 0);
+      const retryAfterSec = Number.isFinite(retryAfterRaw) && retryAfterRaw > 0 ? retryAfterRaw : 0;
+      return { status: 'THROTTLED', retryAfterSec };
     }
     if (!res.ok) return null;
     const json = await res.json().catch(() => null);
@@ -525,7 +540,7 @@ async function getHistoryOHLCVFromBirdeye(tokenMint, lookbackHours = 12) {
 async function buildOHLCVFromBirdeye(tokenMint, dexFallback = null) {
   try {
     const history = await getHistoryOHLCVFromBirdeye(tokenMint, 12);
-    if (history === 'THROTTLED') return 'THROTTLED';
+    if (history?.status === 'THROTTLED') return history;
     if (!Array.isArray(history) || history.length < 12) return null;
 
     const cfg = getConfig();

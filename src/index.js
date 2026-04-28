@@ -18,8 +18,8 @@ import TelegramBot              from 'node-telegram-bot-api';
 import { existsSync, readFileSync, writeFileSync, unlinkSync } from 'fs';
 import { initSolana, getWalletBalance }   from './solana/wallet.js';
 import { getConfig, updateConfig, isConfigKeySupported, resolveNestedKey, SETCONFIG_WHITELIST } from './config.js';
-import { runLinearLoop, stopLoop, setNotifyFn, isRunning, getCurrentPosition, runAutoscreening } from './agents/hunterAlpha.js';
-import { exitPosition, getActivePositionCount, EP_CONFIG } from './sniper/evilPanda.js';
+import { runLinearLoop, stopLoop, setNotifyFn, isRunning, getCurrentPosition, getActivePositions, setShutdownInProgress, closeAllActivePositionsForShutdown, retryFailedShutdownPositions, runAutoscreening } from './agents/hunterAlpha.js';
+import { exitPosition, getActivePositionCount, reconcileStartupPositions, EP_CONFIG } from './sniper/evilPanda.js';
 import { discoverHighFeePoolsMeridian, runMeridianVeto } from './market/meridianVeto.js';
 import { analyzePerformance, formatEvolutionReport }     from './learn/statelessEvolve.js';
 import { generateBriefing }                              from './telegram/briefing.js';
@@ -28,6 +28,7 @@ import { validateRuntimeEnv }             from './runtime/env.js';
 import { safeNum, escapeHTML }            from './utils/safeJson.js';
 import { initializeRpcManager }           from './utils/helius.js';
 import { createMessageTransport }         from './telegram/messageTransport.js';
+import { getTodayResults }                from './db/database.js';
 
 // ── PID Lock — cegah multiple instance ───────────────────────────
 const PID_FILE = new URL('../../bot.pid', import.meta.url).pathname;
@@ -90,6 +91,10 @@ async function notify(msg, opts = {}) {
   try {
     await sendLong(CHAT_ID, msg, { parse_mode: 'HTML', ...opts });
   } catch {}
+}
+
+async function urgentNotify(msg) {
+  await notify(msg);
 }
 
 // Register notify ke hunterAlpha
@@ -574,12 +579,40 @@ bot.onText(/\/screening/, async (msg) => {
   await runAutoscreening(bot, chatId);
 });
 
+// /strategy_report — compatibility command for legacy telemetry tooling
+bot.onText(/\/strategy_report/, async (msg) => {
+  if (!guard(msg)) return;
+  const chatId = msg.chat.id;
+  const cfg = getConfig();
+  const text =
+    `📘 <b>Strategy Report</b>\n\n` +
+    `Strategy: <code>${cfg.activeStrategy || 'Evil Panda'}</code>\n` +
+    `Deploy: <code>${cfg.deployAmountSol || 0.1} SOL</code>\n` +
+    `SL: <code>${cfg.stopLossPct || 10}%</code> | Trailing: <code>${cfg.trailingStopPct || 5}%</code>\n` +
+    `Screening: <code>${cfg.autoScreeningEnabled ? 'ON' : 'OFF'}</code>`;
+  await sendLong(chatId, text);
+});
+
+// /claim_fees — compatibility command (manual reminder)
+bot.onText(/\/claim_fees(?:\s+(\S+))?/, async (msg) => {
+  if (!guard(msg)) return;
+  const chatId = msg.chat.id;
+  await bot.sendMessage(
+    chatId,
+    `ℹ️ Claim fees dijalankan saat exit posisi.\nGunakan <code>/exit</code> untuk force-close posisi aktif.`,
+    { parse_mode: 'HTML' }
+  );
+});
+
+// Research sessions state
+
 // ── Screening Loop ─────────────────────────────────────────────────
 // Berjalan independen dari runLinearLoop.
 // Kirim "Hot Prospect Alert" jika ada pool dengan feeActiveTvlRatio tinggi.
 
 const HOT_FEE_RATIO_THRESHOLD = 0.05; // 5% fee/TVL/hari = sangat aktif
 let   _screeningLoopTimer = null;
+let _lastDailyLossAlertAt = 0;
 
 async function runScreeningLoop() {
   // Baca config FRESH saat start (bukan dari closure lama)
@@ -605,6 +638,18 @@ async function runScreeningLoop() {
     }
 
     try {
+      const liveCfg = getConfig();
+      const today = getTodayResults();
+      const dailyPnl = Number(today.totalPnlUsd || 0);
+      if (dailyPnl < -liveCfg.dailyLossLimitUsd) {
+        console.warn('[screening-loop] Daily Circuit Breaker: Skip screening'); // Daily Circuit Breaker return guard
+        if (Date.now() - _lastDailyLossAlertAt > 12 * 60 * 60 * 1000) {
+          _lastDailyLossAlertAt = Date.now();
+          await urgentNotify(`🛑 <b>DAILY CIRCUIT BREAKER</b>\nPnL harian: <code>${dailyPnl.toFixed(2)} USD</code>`);
+        }
+        return;
+      }
+
       const limit = Number(cfg.meteoraDiscoveryLimit) || 180;
       const pools = await discoverHighFeePoolsMeridian({ limit });
       if (!pools?.length) return;
@@ -663,14 +708,46 @@ function stopScreeningLoop() {
 
 async function shutdown(signal) {
   console.log(`\n🛑 ${signal} — shutting down...`);
+  setShutdownInProgress(true);
   stopLoop();
   stopScreeningLoop();
-  const posKey = getCurrentPosition();
-  if (posKey) {
-    await notify(`⚠️ <b>Bot shutdown (${signal})</b>\n\nPosisi aktif: <code>${posKey.slice(0,8)}</code>\n<i>Posisi TIDAK ditutup otomatis — cek on-chain!</i>`).catch(() => {});
+  const active = Array.isArray(getActivePositions()) ? getActivePositions() : [];
+  if (active.length > 0) {
+    await notify(
+      `⚠️ <b>Bot shutdown (${signal})</b>\n` +
+      `Menutup <code>${active.length}</code> posisi aktif sebelum exit...`
+    ).catch(() => {});
+    const summary = await closeAllActivePositionsForShutdown(signal, 10_000);
+    if (summary.failed.length > 0) {
+      await notify(
+        `⚠️ <b>Shutdown close partial</b>\n` +
+        `Closed: <code>${summary.closed}/${summary.total}</code>\n` +
+        `Retrying failed closes once...`
+      ).catch(() => {});
+
+      const retry = await retryFailedShutdownPositions(summary.failed, signal, 10_000);
+      if (retry.stillFailed.length > 0) {
+        const failedStr = retry.stillFailed.map((f) => `${f.pubkey.slice(0,8)}:${f.reason || 'FAILED'}`).join(', ');
+        await notify(
+          `⚠️ <b>Shutdown close final partial</b>\n` +
+          `Recovered on retry: <code>${retry.recovered}/${retry.retried}</code>\n` +
+          `Still failed: <code>${failedStr}</code>\n` +
+          `<i>Cek posisi on-chain untuk verifikasi final.</i>`
+        ).catch(() => {});
+      } else {
+        await notify(
+          `✅ <b>Shutdown retry success</b>\n` +
+          `Recovered: <code>${retry.recovered}/${retry.retried}</code>\n` +
+          `Semua posisi berhasil ditutup.`
+        ).catch(() => {});
+      }
+    } else {
+      await notify(`✅ <b>Shutdown close complete</b>\nClosed: <code>${summary.closed}/${summary.total}</code>`).catch(() => {});
+    }
   } else {
     await notify(`🛑 <b>Bot shutdown (${signal})</b>\nTidak ada posisi aktif.`).catch(() => {});
   }
+
   bot.stopPolling();
   setTimeout(() => process.exit(0), 1500);
 }
@@ -698,6 +775,7 @@ bot.on('polling_error', (e) => {
 // ── Boot ──────────────────────────────────────────────────────────
 setTimeout(async () => {
   try {
+    const reconcile = await reconcileStartupPositions();
     const balance = await getWalletBalance();
     const cfg     = getConfig();
     const autoScr = cfg.autoScreeningEnabled;
@@ -707,6 +785,7 @@ setTimeout(async () => {
 
     await notify(
       `🚀 <b>Linear Sniper Bot dimulai!</b>\n\n` +
+      `♻️ Reconcile: <code>${reconcile.restored}/${reconcile.scanned}</code> posisi dipulihkan\n` +
       `💰 Balance: <code>${balance} SOL</code>\n` +
       `📐 Deploy: <code>${cfg.deployAmountSol || 0.1} SOL</code>\n` +
       `🎯 TP: <code>+${EP_CONFIG.TAKE_PROFIT_PCT}%</code> | SL: <code>-${EP_CONFIG.STOP_LOSS_PCT}%</code>\n` +
