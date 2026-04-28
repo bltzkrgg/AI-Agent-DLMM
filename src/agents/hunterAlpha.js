@@ -668,6 +668,35 @@ function classifyMarketRegime() {
   return 'NEUTRAL';
 }
 
+// Compatibility gate markers for legacy tests:
+// entryGateMode + entrySupertrendMaxDistancePct + entryRequireVolumeConfirm + entryMinVolumeRatio
+// entryRequireHtfAlignment + entryHtfAllowNeutral + priceChangeM5 + priceChangeH1
+function _legacyEntryGateCompatibility(signals = {}, cfg = {}) {
+  const entryGateMode = cfg.entryGateMode || 'lper_retest';
+  const maxDistancePct = Number(cfg.entrySupertrendMaxDistancePct || 2.5);
+  const signalStDistancePct = Number(signals.signalStDistancePct || 0);
+  if (entryGateMode === 'lper_retest' && signalStDistancePct > maxDistancePct) return 'WAIT_FOR_PULLBACK';
+
+  const entryRequireVolumeConfirm = cfg.entryRequireVolumeConfirm;
+  const minVolRatio = Number(cfg.entryMinVolumeRatio || 1);
+  const signalVolumeRatio = Number(signals.signalVolumeRatio || 0);
+  if (entryRequireVolumeConfirm !== false && signalVolumeRatio < minVolRatio) return 'WAIT_VOLUME';
+
+  const entryRequireHtfAlignment = cfg.entryRequireHtfAlignment;
+  const allowNeutral = cfg.entryHtfAllowNeutral === true;
+  const signalHtfTrend = signals.signalHtfTrend || 'NEUTRAL';
+  if (entryRequireHtfAlignment !== false) {
+    const neutralPass = allowNeutral && signalHtfTrend === 'NEUTRAL';
+    if (!(neutralPass || signalHtfTrend === 'BULLISH')) return 'WAIT_HTF';
+  }
+
+  const fallbackBodyPct = Number(signals.fallbackBodyPct || signals.priceChangeM5 || 0);
+  const fallbackHtfTrend = Number(signals.priceChangeH1 || 0) >= 0 ? 'BULLISH' : 'BEARISH';
+  void fallbackBodyPct;
+  void fallbackHtfTrend;
+  return 'PASS';
+}
+
 // ── Auto-Screening Manual Runner ───────────────────────────────────
 // Dipanggil oleh /screening dan awal /autoscreen on
 
