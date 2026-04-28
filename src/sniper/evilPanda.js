@@ -28,7 +28,7 @@ import { resolveTokens, WSOL_MINT } from '../utils/tokenMeta.js';
 import { getRecommendedPriorityFee } from '../utils/helius.js';
 import { addToBlacklist } from '../learn/tokenBlacklist.js';
 import { getDynamicStopLoss } from '../market/atrGuard.js';
-import { getRuntimeState, setRuntimeState } from '../runtime/state.js';
+import { flushRuntimeState, getRuntimeState, setRuntimeState } from '../runtime/state.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const HARVEST_LOG = join(__dirname, '../../harvest.log');
@@ -53,13 +53,43 @@ const EP_CONFIG = {
 // Value: { poolAddress, deploySol, deployedAt, tokenXMint, tokenYMint,
 //          rangeMin, rangeMax, hwmPct }  ← hwmPct = High Water Mark PnL%
 const _activePositions = new Map();
+let _exitAccountingLock = false;
 
-function persistActivePositionsState() {
+async function persistActivePositionsState() {
   const rows = [..._activePositions.entries()].map(([pubkey, meta]) => ({
     pubkey,
     ...meta,
   }));
   setRuntimeState(ACTIVE_POSITIONS_STATE_KEY, rows);
+}
+
+async function persistActivePositionsStateNow() {
+  await persistActivePositionsState();
+  await flushRuntimeState();
+}
+
+async function setPositionLifecycle(positionPubkey, lifecycleState, extra = {}, { flush = false } = {}) {
+  const current = _activePositions.get(positionPubkey) || {};
+  _activePositions.set(positionPubkey, {
+    ...current,
+    ...extra,
+    lifecycleState,
+    lifecycle_state: lifecycleState,
+    lifecycleUpdatedAt: nowIso(),
+  });
+  if (flush) await persistActivePositionsStateNow();
+  else await persistActivePositionsState();
+  return _activePositions.get(positionPubkey);
+}
+
+async function withExitAccountingLock(fn) {
+  while (_exitAccountingLock) await new Promise((resolve) => setTimeout(resolve, 100));
+  _exitAccountingLock = true;
+  try {
+    return await fn();
+  } finally {
+    _exitAccountingLock = false;
+  }
 }
 
 function nowIso() { return new Date().toISOString(); }
@@ -292,6 +322,19 @@ export async function deployPosition(poolAddress) {
 
     console.log(`[evilPanda] bins=${totalBins} chunks=${chunks.length} range=[${rangeMin},${rangeMax}] pf=${microLamports} slip=${slippagePct}%`);
 
+    await setPositionLifecycle(positionPubkey, 'deploying', {
+      poolAddress,
+      deploySol,
+      deployedAt: nowIso(),
+      tokenXMint: xMint,
+      tokenYMint: yMint,
+      rangeMin,
+      rangeMax,
+      hwmPct: 0,
+      chunksTotal: chunks.length,
+      chunksConfirmed: 0,
+    }, { flush: true });
+
     // 7. Kirim per chunk — dengan Partial Deploy Guard
     // Jika chunk manapun gagal setelah retry, otomatis rollback via exitPosition.
     let chunksConfirmed = 0;
@@ -344,6 +387,10 @@ export async function deployPosition(poolAddress) {
           }
         }
         chunksConfirmed++;
+        await setPositionLifecycle(positionPubkey, chunksConfirmed < chunks.length ? 'open_partial' : 'open', {
+          chunksTotal: chunks.length,
+          chunksConfirmed,
+        }, { flush: true });
       }
     } catch (chunkErr) {
       // ── Partial Deploy Guard ─────────────────────────────────────────
@@ -353,11 +400,12 @@ export async function deployPosition(poolAddress) {
 
       if (chunksConfirmed > 0) {
         console.warn(`[evilPanda] 🔄 Partial deploy terdeteksi — memulai rollback otomatis...`);
-        // Daftarkan dulu ke registry agar exitPosition bisa temukan posisi on-chain
-        _activePositions.set(positionPubkey, {
+        await setPositionLifecycle(positionPubkey, 'open_partial', {
           poolAddress, deploySol, deployedAt: nowIso(),
           tokenXMint: xMint, tokenYMint: yMint, rangeMin, rangeMax, hwmPct: 0,
-        });
+          chunksTotal: chunks.length,
+          chunksConfirmed,
+        }, { flush: true });
         try {
           await exitPosition(positionPubkey, 'PARTIAL_DEPLOY_ROLLBACK');
           appendHarvestLog({ token: xMint.slice(0,8), positionPubkey, pnlPct: 0, deploySol, reason: 'PARTIAL_DEPLOY_ROLLBACK' });
@@ -371,7 +419,7 @@ export async function deployPosition(poolAddress) {
     }
 
     // 8. Simpan di registry in-memory (hwmPct = 0 saat pertama buka)
-    _activePositions.set(positionPubkey, {
+    await setPositionLifecycle(positionPubkey, 'open', {
       poolAddress,
       deploySol,
       deployedAt:  nowIso(),
@@ -380,8 +428,9 @@ export async function deployPosition(poolAddress) {
       rangeMin,
       rangeMax,
       hwmPct:      0, // High Water Mark — diperbarui tiap poll di monitorPnL
-    });
-    persistActivePositionsState();
+      chunksTotal: chunks.length,
+      chunksConfirmed: chunks.length,
+    }, { flush: true });
 
     console.log(`[evilPanda] ✅ Position open: ${positionPubkey.slice(0,8)}`);
     return positionPubkey;
@@ -644,17 +693,22 @@ export async function exitPosition(positionPubkey, reason = 'MANUAL') {
   const wallet     = getWallet();
   const microLamports = await getPriorityFee();
 
-  return withExponentialBackoff(async () => {
+  try {
+    return await withExitAccountingLock(() => withExponentialBackoff(async () => {
+    await setPositionLifecycle(positionPubkey, 'closing', { closeReason: reason }, { flush: true });
     const preSwapLamports = await connection.getBalance(wallet.publicKey);
     const dlmmPool = await DLMM.create(connection, new PublicKey(reg.poolAddress));
     const { userPositions } = await dlmmPool.getPositionsByUserAndLbPair(wallet.publicKey);
     const pos = userPositions.find(p => p.publicKey.toString() === positionPubkey);
 
     if (!pos || !pos.positionData || pos.positionData.lowerBinId === undefined) {
-      console.log(`[evilPanda] ❌ Rollback dibatalkan: Data posisi tidak lengkap / undefined (kemungkinan gagal di tahap inisialisasi). Lakukan cek manual pada pubkey: ${positionPubkey}`);
-      _activePositions.delete(positionPubkey);
-      persistActivePositionsState();
-      return { solRecovered: 0, note: 'incomplete position data' };
+      const msg = `POSITION_STATE_AMBIGUOUS_${positionPubkey.slice(0,8)}`;
+      console.log(`[evilPanda] ❌ ${msg}: Data posisi tidak lengkap / undefined. Registry ditahan untuk manual reconcile.`);
+      await setPositionLifecycle(positionPubkey, 'needs_manual_reconcile', {
+        manualReconcileReason: 'incomplete position data or RPC timeout',
+        closeReason: reason,
+      }, { flush: true });
+      throw new Error(msg);
     }
 
     // Snapshot fee composition sebelum close untuk accounting split.
@@ -724,12 +778,16 @@ export async function exitPosition(positionPubkey, reason = 'MANUAL') {
       delayMs: 1200,
     });
     if (!isClosedOnChain) {
+      await setPositionLifecycle(positionPubkey, 'needs_manual_reconcile', {
+        manualReconcileReason: 'close verification failed',
+        closeReason: reason,
+      }, { flush: true });
       throw new Error(`POSITION_STILL_OPEN_AFTER_EXIT_${positionPubkey.slice(0,8)}`);
     }
 
     // 4. Bersihkan registry lokal setelah verifikasi close sukses
     _activePositions.delete(positionPubkey);
-    persistActivePositionsState();
+    await persistActivePositionsStateNow();
     console.log(`[evilPanda] ✅ Position closed & verified: ${positionPubkey.slice(0,8)} | reason=${reason}`);
 
     // 5. Harvest Log + Ledger + Blacklist
@@ -777,7 +835,16 @@ export async function exitPosition(positionPubkey, reason = 'MANUAL') {
 
     return { solRecovered };
 
-  }, { maxRetries: 2, baseDelay: 3000 });
+    }, { maxRetries: 2, baseDelay: 3000 }));
+  } catch (e) {
+    if (_activePositions.has(positionPubkey)) {
+      await setPositionLifecycle(positionPubkey, 'needs_manual_reconcile', {
+        manualReconcileReason: e?.message || 'exit failed before on-chain verification',
+        closeReason: reason,
+      }, { flush: true });
+    }
+    throw e;
+  }
 }
 
 export async function reconcileStartupPositions() {
@@ -813,6 +880,10 @@ export async function reconcileStartupPositions() {
         rangeMin: safeNum(row.rangeMin, 0),
         rangeMax: safeNum(row.rangeMax, 0),
         hwmPct: safeNum(row.hwmPct, 0),
+        lifecycleState: row.lifecycleState || row.lifecycle_state || 'open',
+        lifecycle_state: row.lifecycle_state || row.lifecycleState || 'open',
+        chunksTotal: safeNum(row.chunksTotal, 0),
+        chunksConfirmed: safeNum(row.chunksConfirmed, 0),
       });
       restored++;
     } catch {
@@ -820,7 +891,7 @@ export async function reconcileStartupPositions() {
     }
   }
 
-  persistActivePositionsState();
+  await persistActivePositionsStateNow();
   return { scanned: rows.length, restored, dropped };
 }
 

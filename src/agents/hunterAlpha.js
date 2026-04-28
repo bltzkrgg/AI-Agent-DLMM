@@ -648,22 +648,26 @@ async function monitorLoop(positionPubkey, symbol, poolAddress) {
 async function safeExit(positionPubkey, reason) {
   if (_closingPositions.has(positionPubkey)) {
     console.log(`[hunter] safeExit skip (already closing): ${positionPubkey.slice(0,8)}`);
-    return;
+    throw new Error(`POSITION_ALREADY_CLOSING_${positionPubkey.slice(0,8)}`);
   }
   _closingPositions.add(positionPubkey);
+  let success = false;
   try {
     const { solRecovered } = await exitPosition(positionPubkey, reason);
     const balance = await getWalletBalance();
+    success = true;
     await notify(
       `✅ <b>Posisi ditutup (${reason})</b>\n` +
       `Position: <code>${positionPubkey.slice(0,8)}</code>\n` +
       `Balance: <code>${balance} SOL</code>`
     );
+    return { ok: true, solRecovered };
   } catch (e) {
     console.error(`[hunter] exitPosition error: ${e.message}`);
     await notify(`⚠️ <b>Exit gagal:</b>\n<code>${e.message}</code>\n\n<i>Posisi mungkin masih terbuka on-chain!</i>`);
+    throw e;
   } finally {
-    _positionLabels.delete(positionPubkey);
+    if (success) _positionLabels.delete(positionPubkey);
     console.log(`[hunter] Slot dibebaskan. Posisi aktif tersisa: ${getActivePositionKeys().length}`);
     _closingPositions.delete(positionPubkey);
   }
@@ -679,11 +683,12 @@ export async function closeAllActivePositionsForShutdown(signal = 'SIGTERM', tim
     if (!pubkey) continue;
     const result = { pubkey, ok: false, reason: null };
     try {
-      await Promise.race([
+      const closeResult = await Promise.race([
         safeExit(pubkey, `SHUTDOWN_${signal}`),
         new Promise((_, reject) => setTimeout(() => reject(new Error('SHUTDOWN_TIMEOUT')), timeoutMs)),
       ]);
-      result.ok = true;
+      result.ok = closeResult?.ok === true && !getActivePositionKeys().includes(pubkey);
+      if (!result.ok) result.reason = 'SHUTDOWN_CLOSE_NOT_VERIFIED';
     } catch (e) {
       result.reason = e?.message || 'UNKNOWN_SHUTDOWN_ERROR';
     }
@@ -712,11 +717,15 @@ export async function retryFailedShutdownPositions(failedRows = [], signal = 'SI
   const stillFailed = [];
   for (const pubkey of retryTargets) {
     try {
-      await Promise.race([
+      const closeResult = await Promise.race([
         safeExit(pubkey, `SHUTDOWN_RETRY_${signal}`),
         new Promise((_, reject) => setTimeout(() => reject(new Error('SHUTDOWN_RETRY_TIMEOUT')), timeoutMs)),
       ]);
-      recovered++;
+      if (closeResult?.ok === true && !getActivePositionKeys().includes(pubkey)) {
+        recovered++;
+      } else {
+        stillFailed.push({ pubkey, reason: 'SHUTDOWN_RETRY_NOT_VERIFIED' });
+      }
     } catch (e) {
       stillFailed.push({ pubkey, reason: e?.message || 'SHUTDOWN_RETRY_FAILED' });
     }
