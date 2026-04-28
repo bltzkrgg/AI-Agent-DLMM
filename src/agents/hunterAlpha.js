@@ -248,7 +248,7 @@ async function scanAndDeploy() {
     const feeRatio    = pool.feeActiveTvlRatio || 0;
     const vol         = pool.volume24h || pool.volume_24h || pool.trade_volume_24h || pool.volume || 0;
 
-    if (!tokenMint) return { ok: false, symbol: tokenSymbol || 'UNKNOWN', reason: 'MISSING_TOKEN_MINT' };
+    if (!tokenMint) return { ok: false, symbol: tokenSymbol || 'UNKNOWN', stage: 'PRECHECK', reason: 'MISSING_TOKEN_MINT' };
     console.log(`[hunter] 📦 Mengevaluasi ${tokenSymbol}...`);
 
     let isEligible = true;
@@ -259,6 +259,7 @@ async function scanAndDeploy() {
         pool: pool.address || '', feeRatio });
       isEligible = false;
       rejectReason = 'BLACKLIST lokal aktif';
+      return { ok: false, symbol: tokenSymbol || 'UNKNOWN', stage: 'BLACKLIST', reason: rejectReason };
     }
 
     if (isEligible) {
@@ -300,7 +301,7 @@ async function scanAndDeploy() {
       }
     }
 
-    if (!isEligible) return { ok: false, symbol: tokenSymbol || 'UNKNOWN', reason: rejectReason || 'REJECTED_BY_GATE' };
+    if (!isEligible) return { ok: false, symbol: tokenSymbol || 'UNKNOWN', stage: 'WATERFALL', reason: rejectReason || 'REJECTED_BY_GATE' };
 
     try {
       const prompt = `Analisa singkat pool ini:\nToken: ${tokenSymbol}\nBin Step: ${binStep}\nFee/TVL: ${(feeRatio*100).toFixed(2)}%\nVolume: $${Math.round(vol)}\nBalas HANYA dengan 'PASS' jika layak lanjut, atau 'REJECT' jika meragukan.`;
@@ -315,10 +316,10 @@ async function scanAndDeploy() {
         return { ok: true, pool, symbol: tokenSymbol || 'UNKNOWN' };
       }
       console.log(`[hunter] 🤖 ScoutAgent (Nvidia) REJECTED: ${tokenSymbol}`);
-      return { ok: false, symbol: tokenSymbol || 'UNKNOWN', reason: 'ScoutAgent REJECT' };
+      return { ok: false, symbol: tokenSymbol || 'UNKNOWN', stage: 'SCOUT_AGENT', reason: 'ScoutAgent REJECT' };
     } catch (e) {
       console.warn(`[hunter] ScoutAgent error pada ${tokenSymbol}: ${e.message}`);
-      return { ok: false, symbol: tokenSymbol || 'UNKNOWN', reason: `ScoutAgent error: ${e.message}` };
+      return { ok: false, symbol: tokenSymbol || 'UNKNOWN', stage: 'SCOUT_AGENT', reason: `ScoutAgent error: ${e.message}` };
     }
   };
 
@@ -332,6 +333,7 @@ async function scanAndDeploy() {
       } else if (!item.value.ok) {
         rejectTelemetry.push({
           symbol: item.value.symbol || 'UNKNOWN',
+          stage: item.value.stage || 'UNKNOWN_STAGE',
           reason: item.value.reason || 'REJECTED',
         });
       }
@@ -345,7 +347,7 @@ async function scanAndDeploy() {
     console.log(`[hunter] Tidak ada kandidat lolos Scout. Scan ulang dalam ${retryMin} menit...`);
     if (rejectTelemetry.length) {
       const lines = rejectTelemetry.slice(0, 5).map((r, i) =>
-        `${i + 1}. <b>${escapeHTML(r.symbol)}</b> — <code>${escapeHTML(String(r.reason).slice(0, 180))}</code>`
+        `${i + 1}. <b>${escapeHTML(r.symbol)}</b> [${escapeHTML(r.stage || 'UNKNOWN_STAGE')}] — <code>${escapeHTML(String(r.reason).slice(0, 180))}</code>`
       );
       await notify(
         `🚫 <b>Tidak ada deploy pada siklus ini</b>\n` +
@@ -369,7 +371,7 @@ async function scanAndDeploy() {
     try {
       const prompt = `Sebagai eksekutor final (GeneralAgent), beri keputusan untuk token ${sym}:\nMCap: $${mcap}\nVolume: $${vol}\nStrategi: Evil Panda.\nBalas HANYA dengan 'BUY' jika eksekusi, atau 'PASS' jika batal.`;
       const res = await createMessage({
-        model: cfg.generalModel,
+        model: cfg.managementModel || cfg.generalModel || cfg.agentModel,
         maxTokens: 10,
         messages: [{ role: 'user', content: prompt }]
       });
@@ -412,6 +414,11 @@ async function scanAndDeploy() {
 
   if (availableSlots <= 0) {
     console.log(`[hunter] ⚠️ Kapasitas penuh (Max ${maxPositions}). Bot standby memantau exit...`);
+    await notify(
+      `⚠️ <b>Deploy ditahan</b>\n` +
+      `Tahap: <code>SLOT_CAPACITY</code>\n` +
+      `Alasan: Slot penuh (<code>${activePositionsCount}/${maxPositions}</code>).`
+    );
     await sleep(15_000);
     return;
   }
@@ -424,6 +431,11 @@ async function scanAndDeploy() {
 
   if (eligibleWinners.length === 0) {
     console.log('[hunter] Semua kandidat Top 5 sudah ada di posisi aktif. Standby...');
+    await notify(
+      `⚠️ <b>Deploy ditahan</b>\n` +
+      `Tahap: <code>DEDUPLICATION</code>\n` +
+      `Alasan: Semua kandidat sudah jadi posisi aktif (anti double-entry).`
+    );
     await sleep(15_000);
     return;
   }
@@ -469,6 +481,7 @@ async function scanAndDeploy() {
 
       await notify(
         `Mengeksekusi <b>${symbol}</b>...\n` +
+        `Tahap lolos: <code>BLACKLIST → WATERFALL → SCOUT_AGENT → GENERAL_AGENT(BUY) → SLOT_CHECK</code>\n` +
         `Deploy: <code>${currentCfg.deployAmountSol || 0.1} SOL</code>\n` +
         `⏳ <i>Membuka posisi pada pool <code>${poolAddress.slice(0,8)}</code>...</i>`
       );
@@ -485,6 +498,8 @@ async function scanAndDeploy() {
 
       await notify(
         `✅ <b>Posisi terbuka!</b>\n` +
+        `Status: <code>DEPLOYED</code>\n` +
+        `Tahap: <code>EXECUTION_SUCCESS</code>\n` +
         `Position: <code>${positionPubkey.slice(0,8)}</code>\n` +
         `Pool: <code>${poolAddress.slice(0,8)}</code>\n` +
         `TP: +${EP_CONFIG.TAKE_PROFIT_PCT}% | SL: -${EP_CONFIG.STOP_LOSS_PCT}%\n\n` +
