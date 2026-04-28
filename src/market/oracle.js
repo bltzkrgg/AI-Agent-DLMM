@@ -15,20 +15,38 @@ const BIRDEYE_BASE = 'https://public-api.birdeye.so';
 // Fallback 1: Birdeye 15m candles when DexScreener data absent/stale.
 // Fallback 2: Jupiter spot price momentum proxy when both candle sources fail.
 
-let _birdeyeCooldownUntil = 0;
+let lastBirdeyeCall = 0;
+let isBirdeyeBlocked = false;
+let birdeyeBlockTime = 0;
 
 export async function getOHLCV(tokenMint, poolAddress = null) {
   const dex = await buildOHLCVFromDexScreener(tokenMint);
   if (dex?.historySuccess) return dex;
 
-  if (Date.now() > _birdeyeCooldownUntil) {
-    const sleepMs = Math.floor(Math.random() * 1000) + 1000;
-    await new Promise(r => setTimeout(r, sleepMs));
-    const birdeye = await buildOHLCVFromBirdeye(tokenMint);
-    if (birdeye?.historySuccess) return birdeye;
-  } else {
-    console.warn(`[oracle] Birdeye cooldown aktif. Fallback langsung ke Jupiter Proxy.`);
+  if (isBirdeyeBlocked) {
+    if (Date.now() - birdeyeBlockTime < 5 * 60 * 1000) {
+      console.warn(`[oracle] Birdeye throttled, using Jupiter Proxy fallback...`);
+      return buildMomentumProxyOHLCV(tokenMint);
+    }
+    isBirdeyeBlocked = false;
   }
+
+  const waitTime = Math.max(0, 1500 - (Date.now() - lastBirdeyeCall));
+  if (waitTime > 0) {
+    await new Promise(r => setTimeout(r, waitTime));
+  }
+
+  const birdeye = await buildOHLCVFromBirdeye(tokenMint);
+  lastBirdeyeCall = Date.now();
+
+  if (birdeye === 'THROTTLED') {
+    isBirdeyeBlocked = true;
+    birdeyeBlockTime = Date.now();
+    console.warn(`[oracle] Birdeye throttled, using Jupiter Proxy fallback...`);
+    return buildMomentumProxyOHLCV(tokenMint);
+  }
+
+  if (birdeye?.historySuccess) return birdeye;
 
   return buildMomentumProxyOHLCV(tokenMint);
 }
@@ -482,9 +500,7 @@ async function getHistoryOHLCVFromBirdeye(tokenMint, lookbackHours = 12) {
       8000
     );
     if (res.status === 429) {
-      console.warn(`[oracle] Birdeye 429 Rate Limit - Aktivasi Cooldown 5 menit.`);
-      _birdeyeCooldownUntil = Date.now() + 5 * 60 * 1000;
-      return null;
+      return 'THROTTLED';
     }
     if (!res.ok) return null;
     const json = await res.json().catch(() => null);
@@ -517,10 +533,11 @@ async function getHistoryOHLCVFromBirdeye(tokenMint, lookbackHours = 12) {
 
 async function buildOHLCVFromBirdeye(tokenMint, dexFallback = null) {
   try {
-    const cfg = getConfig();
     const history = await getHistoryOHLCVFromBirdeye(tokenMint, 12);
+    if (history === 'THROTTLED') return 'THROTTLED';
     if (!Array.isArray(history) || history.length < 12) return null;
 
+    const cfg = getConfig();
     const closedCandles = history.slice(0, -1);
     if (closedCandles.length < 10) return null;
     if (isCandleSeriesStale(closedCandles, cfg.maxOhlcvStaleMinutes15m ?? 90)) {
