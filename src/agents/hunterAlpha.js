@@ -461,8 +461,8 @@ Balas HANYA JSON valid tanpa Markdown.`;
     return;
   }
 
-  // ── GeneralAgent (DeepSeek) Sequential Audit ───────────────────
-  console.log(`[hunter] 🧠 GeneralAgent (DeepSeek) memulai final audit sekuensial untuk ${winners.length} kandidat...`);
+  // ── GeneralAgent Final LP Decision ─────────────────────────────
+  console.log(`[hunter] 🧠 GeneralAgent memulai final audit LP sekuensial untuk ${winners.length} kandidat...`);
   let finalWinner = null;
 
   for (const w of winners) {
@@ -473,22 +473,73 @@ Balas HANYA JSON valid tanpa Markdown.`;
     try {
       const managementModel = cfg.managementModel || cfg.generalModel || cfg.agentModel;
       console.log(`[hunter] 🧠 LLM stage=GENERAL model=${managementModel}`);
-      const prompt = `Sebagai eksekutor final (GeneralAgent), beri keputusan untuk token ${sym}:\nMCap: $${mcap}\nVolume: $${vol}\nStrategi: Evil Panda.\nBalas HANYA dengan 'BUY' jika eksekusi, atau 'PASS' jika batal.`;
+      const gateSummary = (w._gateSummary || []).join('\n');
+      const prompt = `[ROLE: PRINCIPAL DLMM LIQUIDITY PROVIDER (FINAL DECISION MAKER)]
+Kamu adalah pengambil keputusan final untuk ekosistem Liquidity Provider DLMM.
+Tugas kamu adalah mengambil keputusan mutlak berdasarkan agregasi semua filter, safety checks, dan kondisi market. Keputusan kamu menentukan nasib modal.
+
+FOKUS UTAMA KAMU:
+- Capital Protection (Mitigasi Impermanent Loss secara mutlak)
+- Fee Generation Potential (Yield/TVL Ratio)
+- Exit Safety & Structure Health
+- Range Quality (Kualitas volatilitas di dalam Bin Step)
+- Reliability of Safety Data (Keakuratan data Meridian/Oracle)
+
+MINDSET & ATURAN EKSEKUSI:
+1. Pikirkan seperti LPer kelas institusi yang menaruh modal ke dalam range tertutup dan ingin menjaga modal tetap utuh sembari memanen pajak transaksi.
+2. Kamu BUKAN trader. Jangan pernah berpikir dalam kerangka pump, quick flip, spekulasi arah harga, atau buy low sell high.
+3. Momentum Sebagai Asuransi: Gunakan tren M5 hijau dan Supertrend Bullish HANYA sebagai konfirmasi bahwa struktur harga mampu menahan SOL kita agar tidak anjlok menjadi token sampah, bukan sebagai alasan fomo.
+4. Kalau semua syarat metrik aman, bebas jebakan honeypot, dan produktif: DEPLOY.
+5. Kalau belum cukup yakin, data ambigu, tapi kondisi belum mengancam: DEFER atau HOLD.
+6. Kalau terdeteksi risiko IL yang meroket tajam atau perubahan tren ke Bearish ekstrem: EXIT atau PROTECT_CAPITAL.
+
+DATA FINAL:
+- Token: ${sym || 'UNKNOWN'}
+- Mcap: $${mcap}
+- Volume 24h: $${vol}
+- Fee/TVL: ${((w.feeActiveTvlRatio || 0) * 100).toFixed(2)}%
+- Bin Step: ${w.binStep || '?'}
+- Gate Summary:
+${gateSummary || 'N/A'}
+
+[FORMAT JAWABAN JSON]
+{
+  "decision": "DEPLOY | HOLD | DEFER | EXIT | PROTECT_CAPITAL",
+  "confidence": 0-100,
+  "il_risk_assessment": "Low | Medium | High - Penjelasan potensi Impermanent Loss saat ini",
+  "lp_thesis": "1 kalimat konklusif kenapa range ini layak dieksekusi atau wajib dihindari demi menjaga keutuhan modal dan fee."
+}
+
+Balas HANYA JSON valid tanpa Markdown.`;
       const res = await createMessage({
         model: managementModel,
-        maxTokens: 10,
+        maxTokens: 260,
         messages: [{ role: 'user', content: prompt }]
       });
-      const ans = res.content.find(c => c.type === 'text')?.text.trim().toUpperCase();
+      const rawText = res.content.find(c => c.type === 'text')?.text?.trim() || '';
+      const parsed = safeParseAI(rawText, null);
+      const decision = String(parsed?.decision || rawText || '').trim().toUpperCase();
+      const confidence = Number(parsed?.confidence);
+      const confidenceSuffix = Number.isFinite(confidence) ? ` (${Math.max(0, Math.min(100, confidence))})` : '';
+      const thesis = String(parsed?.lp_thesis || parsed?.il_risk_assessment || '').trim();
       
-      if (ans && ans.includes('BUY')) {
-        console.log(`[hunter] 🎯 GeneralAgent MEMUTUSKAN BUY: ${sym}`);
-        w._gateSummary = [...(w._gateSummary || []), 'GENERAL_AGENT: BUY'];
+      if (decision.includes('DEPLOY')) {
+        console.log(`[hunter] 🎯 GeneralAgent MEMUTUSKAN DEPLOY: ${sym}${confidenceSuffix}`);
+        w._gateSummary = [...(w._gateSummary || []), `GENERAL_AGENT: DEPLOY${confidenceSuffix}`];
         finalWinner = w;
         break; // Segera eksekusi, stop audit sisanya
       } else {
-        console.log(`[hunter] ✋ GeneralAgent PASS: ${sym}`);
-        w._gateSummary = [...(w._gateSummary || []), 'GENERAL_AGENT: PASS'];
+        const finalDecision = decision.includes('PROTECT_CAPITAL') ? 'PROTECT_CAPITAL'
+          : decision.includes('EXIT') ? 'EXIT'
+          : decision.includes('DEFER') ? 'DEFER'
+          : decision.includes('HOLD') ? 'HOLD'
+          : 'DEFER';
+        console.log(`[hunter] ✋ GeneralAgent ${finalDecision}: ${sym}${confidenceSuffix}`);
+        w._gateSummary = [...(w._gateSummary || []), `GENERAL_AGENT: ${finalDecision}${confidenceSuffix}`];
+        if (thesis) {
+          appendDecisionLog({ token: sym, mint: w.tokenXMint || w.tokenX || w.mint || '', decision: 'SCREEN_FAIL',
+            gate: 'GENERAL_AGENT', reason: thesis, pool: w.address || w.poolAddress || '', feeRatio: w.feeActiveTvlRatio || 0 });
+        }
       }
     } catch (e) {
       console.warn(`[hunter] GeneralAgent error pada ${sym}: ${e.message}`);
@@ -501,7 +552,7 @@ Balas HANYA JSON valid tanpa Markdown.`;
     console.log(`[hunter] GeneralAgent membatalkan semua kandidat. Scan ulang dalam ${retryMin} menit...`);
     await notify(
       `✋ <b>Tidak ada deploy kali ini</b>\n` +
-      `Semua kandidat final dinilai <code>PASS</code> (bukan <code>BUY</code>) oleh GeneralAgent.\n` +
+      `Semua kandidat final belum mendapat keputusan <code>DEPLOY</code> dari GeneralAgent LP.\n` +
       `Scan ulang dalam <code>${retryMin} menit</code>.`
     );
     await sleep(retryMin * 60 * 1000);
@@ -593,7 +644,7 @@ Balas HANYA JSON valid tanpa Markdown.`;
           'STAGE_2_GMGN: PASS',
           'STAGE_3_JUPITER: PASS',
           'SCOUT_AGENT: PASS',
-          'GENERAL_AGENT: BUY',
+          'GENERAL_AGENT: DEPLOY',
         ]).join('\n'))}</pre>\n` +
         `Deploy: <code>${currentCfg.deployAmountSol || 0.1} SOL</code>\n` +
         `⏳ <i>Membuka posisi pada pool <code>${poolAddress.slice(0,8)}</code>...</i>`
