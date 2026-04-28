@@ -14,9 +14,13 @@ const JUPITER_QUOTE_API_FALLBACK = 'https://lite-api.jup.ag/swap/v1/quote';
 const JUPITER_UA                 = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
 const JUPITER_BLACKLIST_TTL_MS   = 24 * 60 * 60 * 1000;
 const JUPITER_SIM_CACHE_TTL_MS   = 60 * 1000;
+const JUPITER_QUOTE_CACHE_TTL_MS = 30 * 1000;
 
 const _jupiterFailBlacklist = new Map(); // mint -> { until, reason, ts }
 const _jupiterSimCache = new Map(); // mint -> { until, result }
+const _jupiterQuoteCache = new Map(); // queryString -> { until, payload }
+let _jupiterQuoteActive = 0;
+const _jupiterQuoteWaiters = [];
 
 // Global cooldown state dikelola oleh shared module jupiterCooldown.js
 // agar sinkron dengan solana/jupiter.js — import: checkCooldown, setCooldown
@@ -143,6 +147,54 @@ function setJupiterSimCache(mint, result) {
     until: Date.now() + JUPITER_SIM_CACHE_TTL_MS,
     result,
   });
+}
+
+function cloneJson(value) {
+  if (value == null) return value;
+  return JSON.parse(JSON.stringify(value));
+}
+
+function makeJsonResponse(payload, status = 200) {
+  return {
+    ok: status >= 200 && status < 300,
+    status,
+    json: async () => cloneJson(payload),
+  };
+}
+
+function getJupiterQuoteCache(queryString) {
+  const row = _jupiterQuoteCache.get(queryString);
+  if (!row) return null;
+  if (row.until <= Date.now()) {
+    _jupiterQuoteCache.delete(queryString);
+    return null;
+  }
+  return makeJsonResponse(row.payload);
+}
+
+function setJupiterQuoteCache(queryString, payload) {
+  if (!queryString || !payload) return;
+  _jupiterQuoteCache.set(queryString, {
+    until: Date.now() + JUPITER_QUOTE_CACHE_TTL_MS,
+    payload: cloneJson(payload),
+  });
+}
+
+async function acquireJupiterQuoteSlot() {
+  const cfg = getConfig();
+  const maxConcurrent = Math.max(1, Number(cfg.jupiterMaxConcurrentQuotes) || 2);
+  if (_jupiterQuoteActive < maxConcurrent) {
+    _jupiterQuoteActive += 1;
+    return;
+  }
+  await new Promise((resolve) => _jupiterQuoteWaiters.push(resolve));
+  _jupiterQuoteActive += 1;
+}
+
+function releaseJupiterQuoteSlot() {
+  _jupiterQuoteActive = Math.max(0, _jupiterQuoteActive - 1);
+  const next = _jupiterQuoteWaiters.shift();
+  if (next) next();
 }
 
 function dexPairScore(pair) {
@@ -306,6 +358,9 @@ async function fetchJupiterQuote(queryString) {
   checkCooldown(); // throw JUPITER_IN_COOLDOWN_Xs jika cooldown aktif
   // ────────────────────────────────────────────────────────────────
 
+  const cached = getJupiterQuoteCache(queryString);
+  if (cached) return cached;
+
   const headers = {
     'User-Agent':      JUPITER_UA,
     'Accept':          'application/json',
@@ -317,9 +372,15 @@ async function fetchJupiterQuote(queryString) {
 
   for (const base of endpoints) {
     try {
-      const res = await withExponentialBackoff(
+      const payload = await withExponentialBackoff(
         async () => {
-          const r = await fetchWithTimeout(`${base}${queryString}`, { headers }, 12000);
+          await acquireJupiterQuoteSlot();
+          let r;
+          try {
+            r = await fetchWithTimeout(`${base}${queryString}`, { headers }, 12000);
+          } finally {
+            releaseJupiterQuoteSlot();
+          }
           if (r.ok) return r;
           // 404/403 = path salah, jangan retry — lempar langsung
           if (r.status === 404 || r.status === 403) {
@@ -341,8 +402,12 @@ async function fetchJupiterQuote(queryString) {
           throw new Error(`JUPITER_HTTP_${r.status}`);
         },
         { maxRetries: 3, baseDelay: 800 },
-      );
-      return res;
+      ).then((res) => res.json().catch(() => null));
+      if (!payload) {
+        return makeJsonResponse(null, 502);
+      }
+      setJupiterQuoteCache(queryString, payload);
+      return makeJsonResponse(payload);
     } catch (e) {
       // 429: stop total — jangan lanjut ke endpoint berikutnya di siklus yang sama
       if (e?._hardStop) {
@@ -745,8 +810,8 @@ export async function screenToken(tokenMint, tokenName = '', tokenSymbol = '', o
     appendDecision(decisions, '[STAGE-3] Jupiter skipped (already veto at Stage-1/2)', { stage: 3 });
     jup = { pass: false, reason: 'SKIPPED_PREV_STAGE_FAIL', skipped: true };
   } else if (hasJupiterBudget && budgetRef.remaining <= 0) {
-    const msg = '[STAGE-3] Jupiter deferred (scan budget exhausted)';
-    mediumFlags.push({ rule: 'JUPITER_BUDGET_DEFERRED', msg });
+    const msg = '[FAIL_CLOSED] Jupiter deferred (scan budget exhausted)';
+    highFlags.push({ rule: 'JUPITER_BUDGET_DEFERRED', msg });
     appendDecision(decisions, msg, { stage: 3 });
     jup = { pass: false, reason: 'JUPITER_BUDGET_DEFERRED', deferred: true };
   } else {
@@ -759,8 +824,8 @@ export async function screenToken(tokenMint, tokenName = '', tokenSymbol = '', o
     if (!jup.pass) {
       const isCooldown = String(jup.reason || '').startsWith('JUPITER_IN_COOLDOWN_');
       if (isCooldown || jup.deferred) {
-        const msg = `[STAGE-3] Jupiter deferred: ${jup.reason}`;
-        mediumFlags.push({ rule: 'JUPITER_DEFERRED', msg });
+        const msg = `[FAIL_CLOSED] Jupiter safety unavailable: ${jup.reason}`;
+        highFlags.push({ rule: 'JUPITER_DEFERRED', msg });
         appendDecision(decisions, msg, { stage: 3 });
       } else {
         const msg = `[VETO] Jupiter simulation gagal: ${jup.reason}`;
@@ -778,7 +843,7 @@ export async function screenToken(tokenMint, tokenName = '', tokenSymbol = '', o
     stage0Discovery: 'PASS',
     stage1PublicData: stage1Failed ? 'FAIL' : 'PASS',
     stage2GmgnAudit: stage2Failed ? 'FAIL' : (gmgnStatus === 'UNVERIFIED' ? 'SOFT' : 'PASS'),
-    stage3Jupiter: (jup.skipped || jup.deferred || String(jup.reason || '').startsWith('JUPITER_IN_COOLDOWN_')) ? 'SOFT' : (jup.pass ? 'PASS' : 'FAIL'),
+    stage3Jupiter: jup.skipped ? 'SKIPPED' : (jup.pass ? 'PASS' : 'FAIL'),
   };
 
   const name = tokenName || gmgnInfo?.name || tokenSymbol || tokenMint.slice(0, 8);

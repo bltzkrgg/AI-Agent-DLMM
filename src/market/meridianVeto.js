@@ -47,7 +47,7 @@ function getMeridianHeaders() {
 //
 // Memanggil Meridian chart-indicators API untuk mendapatkan Supertrend 15m.
 // Jika direction === 'bearish', VETO koin tersebut.
-// Jika API gagal (timeout/error), PASS (fail-open — jangan blokir karena API down).
+// Jika API gagal (timeout/error), VETO (fail-closed — jangan deploy saat safety data buta).
 
 /**
  * @param {string} mint  - Token mint address
@@ -59,12 +59,12 @@ export async function checkSupertrendVeto(mint, currentRealtimePrice = 0) {
     const res = await fetchWithTimeout(url, { headers: getMeridianHeaders() }, 3000);
     
     if (!res.ok) {
-      return { veto: false, reason: 'PASS: Meridian API timeout/error (fail-open)' };
+      return { veto: true, reason: `[FAIL_CLOSED] Meridian Supertrend API ${res.status} — safety data unavailable` };
     }
     
     const data = await res.json().catch(() => null);
     if (!data || !data.direction) {
-      return { veto: false, reason: 'PASS: Meridian API missing direction (fail-open)' };
+      return { veto: true, reason: '[FAIL_CLOSED] Meridian Supertrend missing direction — safety data unavailable' };
     }
 
     if (data.direction === 'bearish') {
@@ -73,7 +73,7 @@ export async function checkSupertrendVeto(mint, currentRealtimePrice = 0) {
 
     return { veto: false, reason: `PASS: Trend 15m BULLISH via Meridian API` };
   } catch (e) {
-    return { veto: false, reason: `PASS: Meridian API throw exception (fail-open)` };
+    return { veto: true, reason: `[FAIL_CLOSED] Meridian Supertrend exception: ${e.message}` };
   }
 }
 
@@ -82,7 +82,7 @@ export async function checkSupertrendVeto(mint, currentRealtimePrice = 0) {
 // Mengambil price_vs_ath_pct dari Meridian/OKX.
 // Jika harga > (100 - maxAthDistancePct)% dari ATH → VETO.
 // Contoh: maxAthDistancePct=15 → threshold=85 → VETO jika price > 85% ATH.
-// Jika data tidak tersedia → PASS (fail-open).
+// Jika data tidak tersedia → VETO (fail-closed).
 
 /**
  * @param {string} mint
@@ -108,7 +108,7 @@ export async function checkAthDistanceVeto(mint) {
     const priceVsAthPct = Number(data?.price_vs_ath_pct ?? data?.priceVsAthPct ?? null);
 
     if (!Number.isFinite(priceVsAthPct)) {
-      return { veto: false, reason: 'ATH data tidak tersedia — PASS', priceVsAthPct: null };
+      return { veto: true, reason: '[FAIL_CLOSED] ATH data tidak tersedia', priceVsAthPct: null };
     }
 
     if (priceVsAthPct > threshold) {
@@ -126,8 +126,8 @@ export async function checkAthDistanceVeto(mint) {
     };
 
   } catch (e) {
-    console.warn(`[meridianVeto] ATH check error ${mint.slice(0,8)}: ${e.message} — PASS`);
-    return { veto: false, reason: `ATH API error — skip veto`, priceVsAthPct: null };
+    console.warn(`[meridianVeto] ATH check error ${mint.slice(0,8)}: ${e.message} — FAIL_CLOSED`);
+    return { veto: true, reason: `[FAIL_CLOSED] ATH API error: ${e.message}`, priceVsAthPct: null };
   }
 }
 
@@ -135,14 +135,14 @@ async function checkAthViaJupiter(mint, threshold) {
   try {
     const url = `${DATAPI_JUP}/assets/search?query=${encodeURIComponent(mint)}`;
     const res = await fetchWithTimeout(url, {}, 6000);
-    if (!res.ok) return { veto: false, reason: 'Jupiter ATH unavailable — PASS' };
+    if (!res.ok) return { veto: true, reason: `[FAIL_CLOSED] Jupiter ATH unavailable HTTP_${res.status}` };
 
     const data          = await res.json();
     const asset         = Array.isArray(data) ? data[0] : data;
     const priceVsAthPct = Number(asset?.priceVsAth ?? asset?.price_vs_ath_pct ?? null);
 
     if (!Number.isFinite(priceVsAthPct)) {
-      return { veto: false, reason: 'ATH data tidak tersedia — PASS', priceVsAthPct: null };
+      return { veto: true, reason: '[FAIL_CLOSED] ATH data tidak tersedia', priceVsAthPct: null };
     }
     if (priceVsAthPct > threshold) {
       return {
@@ -153,7 +153,7 @@ async function checkAthViaJupiter(mint, threshold) {
     }
     return { veto: false, reason: `ATH ok (jup): ${priceVsAthPct.toFixed(1)}%`, priceVsAthPct };
   } catch {
-    return { veto: false, reason: 'ATH Jupiter error — PASS', priceVsAthPct: null };
+    return { veto: true, reason: '[FAIL_CLOSED] ATH Jupiter error', priceVsAthPct: null };
   }
 }
 
@@ -163,7 +163,7 @@ async function checkAthViaJupiter(mint, threshold) {
 // Jika activeTvl pool kita < DOMINANCE_MIN_PCT% dari total likuiditas token
 // di seluruh jaringan → VETO [LOW_DOMINANCE].
 // Sumber data: Meteora DLMM API (semua pool token tersebut, sort by tvl:desc).
-// Fail-open jika API error atau data tidak tersedia.
+// Fail-closed jika API error atau data tidak tersedia.
 
 /**
  * @param {string} mint        - Token mint (base token)
@@ -174,9 +174,9 @@ async function checkAthViaJupiter(mint, threshold) {
 export async function checkDominanceVeto(mint, poolTvl, poolAddr) {
   const minDomPct = DOMINANCE_MIN_PCT; // 15%
 
-  // Jika pool kita tidak punya TVL data — skip (fail-open)
+  // Jika pool kita tidak punya TVL data — fail-closed
   if (!mint || !Number.isFinite(poolTvl) || poolTvl <= 0) {
-    return { veto: false, reason: 'TVL data pool tidak tersedia — skip dominance check' };
+    return { veto: true, reason: '[FAIL_CLOSED] TVL data pool tidak tersedia — dominance safety unavailable' };
   }
 
   try {
@@ -185,15 +185,15 @@ export async function checkDominanceVeto(mint, poolTvl, poolAddr) {
     const res = await fetchWithTimeout(url, {}, 8000);
 
     if (!res.ok) {
-      console.warn(`[meridianVeto] Dominance API ${res.status} untuk ${mint.slice(0,8)} — PASS`);
-      return { veto: false, reason: `Dominance API ${res.status} — skip check` };
+      console.warn(`[meridianVeto] Dominance API ${res.status} untuk ${mint.slice(0,8)} — FAIL_CLOSED`);
+      return { veto: true, reason: `[FAIL_CLOSED] Dominance API ${res.status}` };
     }
 
     const data  = await res.json();
     const pools = Array.isArray(data?.data) ? data.data : [];
 
     if (pools.length === 0) {
-      return { veto: false, reason: 'Tidak ada pool lain ditemukan — dominance ok' };
+      return { veto: true, reason: '[FAIL_CLOSED] Dominance data kosong — safety unavailable' };
     }
 
     // Hitung total TVL semua pool yang mengandung token ini
@@ -203,7 +203,7 @@ export async function checkDominanceVeto(mint, poolTvl, poolAddr) {
     }, 0);
 
     if (totalNetworkTvl <= 0) {
-      return { veto: false, reason: 'Total network TVL nol — skip dominance check' };
+      return { veto: true, reason: '[FAIL_CLOSED] Total network TVL nol — dominance safety unavailable' };
     }
 
     const dominancePct = (poolTvl / totalNetworkTvl) * 100;
@@ -227,8 +227,8 @@ export async function checkDominanceVeto(mint, poolTvl, poolAddr) {
     };
 
   } catch (e) {
-    console.warn(`[meridianVeto] Dominance check error ${mint.slice(0,8)}: ${e.message} — PASS`);
-    return { veto: false, reason: `Dominance error — skip veto` };
+    console.warn(`[meridianVeto] Dominance check error ${mint.slice(0,8)}: ${e.message} — FAIL_CLOSED`);
+    return { veto: true, reason: `[FAIL_CLOSED] Dominance error: ${e.message}` };
   }
 }
 
@@ -237,7 +237,7 @@ export async function checkDominanceVeto(mint, poolTvl, poolAddr) {
 // Cek apakah ada token rival dengan simbol sama yang punya:
 //   - holders > 500 AND total fees > 30 SOL AND TVL aktif > $5000
 // Jika rival dominan ditemukan → VETO (pasar terpecah, LP kita tidak dominan).
-// Fail-open jika API error.
+// Fail-closed jika API error.
 
 /**
  * @param {string} mint   - Token mint kita
@@ -252,7 +252,7 @@ export async function checkPvpGuardVeto(mint, symbol) {
     // Cari semua aset dengan simbol yang sama
     const searchUrl = `${DATAPI_JUP}/assets/search?query=${encodeURIComponent(normalizedSymbol)}`;
     const searchRes = await fetchWithTimeout(searchUrl, {}, 6000);
-    if (!searchRes.ok) return { veto: false, reason: `PVP search ${searchRes.status} — PASS` };
+    if (!searchRes.ok) return { veto: true, reason: `[FAIL_CLOSED] PVP search HTTP_${searchRes.status}` };
 
     const assets      = await searchRes.json();
     const assetList   = Array.isArray(assets) ? assets : [assets];
@@ -275,7 +275,9 @@ export async function checkPvpGuardVeto(mint, symbol) {
       try {
         const poolUrl = `https://dlmm.datapi.meteora.ag/pools?query=${encodeURIComponent(rival.id)}&sort_by=${encodeURIComponent('tvl:desc')}&filter_by=${encodeURIComponent(`tvl>${PVP_MIN_ACTIVE_TVL}`)}`;
         const poolRes = await fetchWithTimeout(poolUrl, {}, 6000);
-        if (!poolRes.ok) continue;
+        if (!poolRes.ok) {
+          return { veto: true, reason: `[FAIL_CLOSED] PVP rival pool HTTP_${poolRes.status}` };
+        }
 
         const poolData  = await poolRes.json();
         const pools     = Array.isArray(poolData?.data) ? poolData.data : [];
@@ -291,16 +293,16 @@ export async function checkPvpGuardVeto(mint, symbol) {
             rivalTvl,
           };
         }
-      } catch {
-        continue;
+      } catch (e) {
+        return { veto: true, reason: `[FAIL_CLOSED] PVP rival pool error: ${e.message}` };
       }
     }
 
     return { veto: false, reason: 'Rival ada tapi tidak punya pool dominan — PASS' };
 
   } catch (e) {
-    console.warn(`[meridianVeto] PVP check error ${mint.slice(0,8)}: ${e.message} — PASS`);
-    return { veto: false, reason: `PVP error — skip veto` };
+    console.warn(`[meridianVeto] PVP check error ${mint.slice(0,8)}: ${e.message} — FAIL_CLOSED`);
+    return { veto: true, reason: `[FAIL_CLOSED] PVP error: ${e.message}` };
   }
 }
 
