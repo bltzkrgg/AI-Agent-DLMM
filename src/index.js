@@ -20,7 +20,6 @@ import { initSolana, getWalletBalance }   from './solana/wallet.js';
 import { getConfig, updateConfig, isConfigKeySupported, resolveNestedKey, SETCONFIG_WHITELIST } from './config.js';
 import { runLinearLoop, stopLoop, setNotifyFn, isRunning, getCurrentPosition, getActivePositions, setShutdownInProgress, closeAllActivePositionsForShutdown, retryFailedShutdownPositions, runAutoscreening, spawnMonitorForRestoredPositions } from './agents/hunterAlpha.js';
 import { exitPosition, getActivePositionCount, reconcileStartupPositions, EP_CONFIG } from './sniper/evilPanda.js';
-import { discoverHighFeePoolsMeridian, runMeridianVeto } from './market/meridianVeto.js';
 import { analyzePerformance, formatEvolutionReport }     from './learn/statelessEvolve.js';
 import { generateBriefing }                              from './telegram/briefing.js';
 import { readBlacklist, removeFromBlacklist }            from './learn/tokenBlacklist.js';
@@ -28,7 +27,6 @@ import { validateRuntimeEnv }             from './runtime/env.js';
 import { safeNum, escapeHTML }            from './utils/safeJson.js';
 import { initializeRpcManager }           from './utils/helius.js';
 import { createMessageTransport }         from './telegram/messageTransport.js';
-import { getTodayResults }                from './db/database.js';
 
 // ── PID Lock — cegah multiple instance ───────────────────────────
 const PID_FILE = new URL('../../bot.pid', import.meta.url).pathname;
@@ -98,10 +96,6 @@ async function notify(msg, opts = {}) {
   try {
     await sendLong(CHAT_ID, msg, { parse_mode: 'HTML', ...opts });
   } catch {}
-}
-
-async function urgentNotify(msg) {
-  await notify(msg);
 }
 
 // Register notify ke hunterAlpha
@@ -618,13 +612,7 @@ bot.onText(/\/claim_fees(?:\s+(\S+))?/, async (msg) => {
 
 // Research sessions state
 
-// ── Screening Loop ─────────────────────────────────────────────────
-// Berjalan independen dari runLinearLoop.
-// Kirim "Hot Prospect Alert" jika ada pool dengan feeActiveTvlRatio tinggi.
-
-const HOT_FEE_RATIO_THRESHOLD = 0.05; // 5% fee/TVL/hari = sangat aktif
 let   _screeningLoopTimer = null;
-let _lastDailyLossAlertAt = 0;
 
 async function runScreeningLoop() {
   // Baca config FRESH saat start (bukan dari closure lama)
@@ -633,80 +621,7 @@ async function runScreeningLoop() {
     console.log('[screening-loop] autoScreeningEnabled=false — loop tidak dijalankan.');
     return;
   }
-
-  // Konversi: config.screeningIntervalMin (angka menit) → milidetik
-  // Fallback eksplisit: 15 menit (bukan 2 menit)
-  const intervalMin = Number(startCfg.screeningIntervalMin) || 15;
-  const intervalMs  = intervalMin * 60 * 1000;
-
-  const tick = async () => {
-    // Selalu baca config FRESH setiap tick agar perubahan /setconfig langsung efektif
-    const cfg = getConfig();
-
-    // Guard: hentikan diri sendiri jika dinonaktifkan via /setconfig
-    if (!cfg.autoScreeningEnabled) {
-      stopScreeningLoop();
-      return;
-    }
-
-    try {
-      const liveCfg = getConfig();
-      const today = getTodayResults();
-      const dailyPnl = Number(today.totalPnlUsd || 0);
-      if (dailyPnl < -liveCfg.dailyLossLimitUsd) {
-        console.warn('[screening-loop] Daily Circuit Breaker: Skip screening'); // Daily Circuit Breaker return guard
-        if (Date.now() - _lastDailyLossAlertAt > 12 * 60 * 60 * 1000) {
-          _lastDailyLossAlertAt = Date.now();
-          await urgentNotify(`🛑 <b>DAILY CIRCUIT BREAKER</b>\nPnL harian: <code>${dailyPnl.toFixed(2)} USD</code>`);
-        }
-        return;
-      }
-
-      const limit = Number(cfg.meteoraDiscoveryLimit) || 180;
-      const pools = await discoverHighFeePoolsMeridian({ limit });
-      if (!pools?.length) return;
-
-      // Filter hanya pool yang benar-benar hot
-      const hotPools = pools
-        .filter(p => (p.feeActiveTvlRatio || 0) >= HOT_FEE_RATIO_THRESHOLD)
-        .sort((a, b) => {
-          const aTvl = Number(a.activeTvl || a.totalTvl || 0) || 1;
-          const bTvl = Number(b.activeTvl || b.totalTvl || 0) || 1;
-          const aVol = Number(a.volume24h || a.volume_24h || a.trade_volume_24h || a.tradeVolume24h || a.volume || a.v24h || 0);
-          const bVol = Number(b.volume24h || b.volume_24h || b.trade_volume_24h || b.tradeVolume24h || b.volume || b.v24h || 0);
-          return (bVol / bTvl) - (aVol / aTvl);
-        })
-        .slice(0, 5);
-
-      if (hotPools.length === 0) return;
-
-      const lines = hotPools.map((p, i) => {
-        const sym   = p.name || p.tokenXMint?.slice(0, 8) || 'UNKNOWN';
-        const ratio = ((p.feeActiveTvlRatio || 0) * 100).toFixed(2);
-        const tvlRaw= Number(p.totalTvl || p.activeTvl || 0);
-        const tvl   = safeNum(tvlRaw, 0).toLocaleString('en-US');
-        const mcap  = safeNum(p.mcap, 0).toLocaleString('en-US');
-        const volRaw= Number(p.volume24h || p.volume_24h || p.trade_volume_24h || p.tradeVolume24h || p.volume || p.v24h || 0);
-        const vol   = safeNum(volRaw, 0).toLocaleString('en-US');
-        const effValue = volRaw / (tvlRaw || 1);
-        const eff   = effValue > 1000 ? '>1000' : effValue.toFixed(2);
-        return `${i + 1}. <b>${escapeHTML(sym)}</b> — <code>${ratio}%</code> fee/TVL | TVL: <code>$${tvl}</code>\n      MCap: <code>$${mcap}</code> | Vol: <code>$${vol}</code> | Eff: <code>${eff}x</code>`;
-      });
-
-      await notify(
-        `🔥 <b>Hot Prospect Alert!</b>\n` +
-        `<i>${hotPools.length} pool di atas threshold ${(HOT_FEE_RATIO_THRESHOLD * 100).toFixed(0)}% fee/TVL</i>\n\n` +
-        lines.join('\n') +
-        `\n\n<i>Ketik /hunt untuk mulai loop atau /screening untuk detail.</i>`
-      );
-    } catch (e) {
-      console.warn('[screening-loop] error:', e.message);
-    }
-  };
-
-  // Hanya jalankan background interval (tanpa memanggil tick seketika)
-  _screeningLoopTimer = setInterval(tick, intervalMs);
-  console.log(`🔍 Screening loop aktif — interval ${intervalMin} menit (${intervalMs / 1000}s)`);
+  console.log('[screening-loop] Screening loop nonaktif — tidak ada alert fee/TVL yang dikirim.');
 }
 
 function stopScreeningLoop() {
