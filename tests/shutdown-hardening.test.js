@@ -47,21 +47,21 @@ test('telegram exit command closes all active positions with verification summar
   assert.match(hunterSrc, /MANUAL_EXIT_NOT_VERIFIED/);
 });
 
-test('evilPanda uses macro positions with one Meteora account per chunk', () => {
+test('evilPanda uses monolith positions with one Meteora account for the full range', () => {
   const src = readFileSync(evilPandaPath, 'utf8');
-  assert.match(src, /const posKps = chunks\.map\(\(\) => Keypair\.generate\(\)\)/);
-  assert.match(src, /const macroPositionId = posKps\.map\(kp => kp\.publicKey\.toString\(\)\)\.join\(','\)/);
-  assert.match(src, /const posKp = posKps\[i\]/);
+  assert.match(src, /const posKp = Keypair\.generate\(\)/);
+  assert.match(src, /let rangeMax = activeBin\.binId - offsetMinBins/);
+  assert.doesNotMatch(src, /rangeMax = activeBin\.binId - offsetMinBins - 1/);
   assert.match(src, /initializePositionAndAddLiquidityByStrategy/);
   assert.match(src, /sendTransaction\(tx, \[wallet, posKp\]/);
-  assert.match(src, /const activeChunks = userPositions\.filter\(p => chunkPubkeys\.includes\(p\.publicKey\.toString\(\)\)\)/);
+  assert.match(src, /const activePos = userPositions\.find\(p => p\.publicKey\.toString\(\) === positionPubkey\)/);
 });
 
-test('macro monitor treats missing active chunks as stop loss fail-safe', () => {
+test('monolith monitor treats missing active position as stop loss fail-safe', () => {
   const src = readFileSync(evilPandaPath, 'utf8');
-  assert.match(src, /if \(activeChunks\.length === 0\) \{/);
+  assert.match(src, /if \(!activePos\) \{/);
   assert.match(src, /action:\s*'STOP_LOSS'/);
-  assert.match(src, /No active macro chunks found on-chain/);
+  assert.match(src, /Position not found on-chain/);
 });
 
 test('deploy natural failures are silenced from Telegram notifications', () => {

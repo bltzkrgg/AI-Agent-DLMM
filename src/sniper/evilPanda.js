@@ -40,7 +40,6 @@ const EP_CONFIG = {
   PRICE_RANGE_PCT:    90,
   OFFSET_MIN_PCT:      0,
   OFFSET_MAX_PCT:     90,
-  MAX_BINS_PER_TX:    69,
   COMPUTE_UNITS:   400_000,
   MICRO_LAMPORTS:  200_000,
   STOP_LOSS_PCT:      10,    // Hard SL — prioritas utama, selalu aktif
@@ -54,6 +53,16 @@ const EP_CONFIG = {
 //          rangeMin, rangeMax, hwmPct }  ← hwmPct = High Water Mark PnL%
 const _activePositions = new Map();
 let _exitAccountingLock = false;
+let _notifyFn = null;
+
+export function setEvilPandaNotifyFn(fn) {
+  _notifyFn = typeof fn === 'function' ? fn : null;
+}
+
+async function notify(msg) {
+  if (!_notifyFn) return;
+  await _notifyFn(msg).catch(() => {});
+}
 
 async function persistActivePositionsState() {
   const rows = [..._activePositions.entries()].map(([pubkey, meta]) => ({
@@ -222,23 +231,15 @@ async function pollTxConfirm(connection, sig, maxWaitMs = 90_000) {
   throw new Error(`TX ${sig.slice(0, 8)}… not confirmed after ${maxWaitMs / 1000}s`);
 }
 
-function getMacroChunkPubkeys(positionPubkey = '') {
-  return String(positionPubkey || '')
-    .split(',')
-    .map((s) => s.trim())
-    .filter(Boolean);
-}
-
 async function verifyPositionClosedOnChain(connection, wallet, poolAddress, positionPubkey, {
   attempts = 3,
   delayMs = 1200,
 } = {}) {
-  const chunkPubkeys = getMacroChunkPubkeys(positionPubkey);
   for (let i = 0; i < attempts; i++) {
     try {
       const dlmmPool = await DLMM.create(connection, new PublicKey(poolAddress));
       const { userPositions } = await dlmmPool.getPositionsByUserAndLbPair(wallet.publicKey);
-      const stillOpen = userPositions.some((p) => chunkPubkeys.includes(p.publicKey.toString()));
+      const stillOpen = userPositions.some((p) => p.publicKey.toString() === positionPubkey);
       if (!stillOpen) return true;
     } catch {
       // non-fatal during verification; retry a few times
@@ -280,13 +281,11 @@ export async function deployPosition(poolAddress) {
   console.log(`[evilPanda] ▶ deployPosition pool=${poolAddress.slice(0,8)} sol=${deploySol}`);
 
   return withExponentialBackoff(async () => {
-    // 1. Load pool
     const dlmmPool  = await DLMM.create(connection, poolPubkey);
     await dlmmPool.refetchStates();
     const activeBin = await dlmmPool.getActiveBin();
     const binStep   = dlmmPool.lbPair.binStep;
 
-    // 2. Resolve tokens
     const xMint = dlmmPool.tokenX.publicKey.toString();
     const yMint = dlmmPool.tokenY.publicKey.toString();
     const [, yMeta] = await resolveTokens([xMint, yMint]);
@@ -297,10 +296,8 @@ export async function deployPosition(poolAddress) {
       throw new Error(`[evilPanda] Pool ${poolAddress.slice(0,8)} bukan SOL pair — Evil Panda hanya mendukung TOKEN/SOL`);
     }
 
-    // 3. Hitung bin range (log-accurate, sama seperti meteora.js legacy)
     const binStepInt   = parseInt(binStep);
     const exactLogBinFactor = Math.log(1 + binStepInt / 10000);
-
     const offsetMinBins = Math.round(
       Math.abs(Math.log(1 - EP_CONFIG.OFFSET_MIN_PCT / 100) / exactLogBinFactor)
     ) || 0;
@@ -308,42 +305,28 @@ export async function deployPosition(poolAddress) {
       Math.abs(Math.log(1 - EP_CONFIG.OFFSET_MAX_PCT / 100) / exactLogBinFactor)
     );
 
-    let rangeMax = activeBin.binId - offsetMinBins - 1; // strictly below active
+    let rangeMax = activeBin.binId - offsetMinBins;
     let rangeMin = activeBin.binId - offsetMaxBins;
 
-    // Clamp
     if (rangeMax - rangeMin > 1000) rangeMin = rangeMax - 1000;
     if (rangeMin > rangeMax)        rangeMin = rangeMax - 2;
 
     const totalBins = rangeMax - rangeMin + 1;
-    const chunks    = [];
-    for (let s = rangeMin; s <= rangeMax; s += EP_CONFIG.MAX_BINS_PER_TX) {
-      chunks.push({ lowerBinId: s, upperBinId: Math.min(rangeMax, s + EP_CONFIG.MAX_BINS_PER_TX - 1) });
-    }
-
-    // 4. Ambil priority fee
     const microLamports = await getPriorityFee();
-
-    // 5. Generate one position keypair per chunk. Meteora binds one position
-    // account to exactly one bin range, so the local registry stores a macro id.
     const { Keypair } = await import('@solana/web3.js');
-    const posKps = chunks.map(() => Keypair.generate());
-    const macroPositionId = posKps.map(kp => kp.publicKey.toString()).join(',');
+    const posKp = Keypair.generate();
+    const positionPubkey = posKp.publicKey.toString();
 
-    // 6. Hitung deposit Y (SOL) — dibagi merata antar chunk
     const cfg2          = getConfig();
     const slippageBps   = Number(cfg2.slippageBps) || 250;
-    // Meteora SDK menerima slippage dalam persen (bukan bps): 150bps = 1.5
     const slippagePct   = slippageBps / 100;
-
     const totalLamports = Math.floor(deploySol * 1e9);
-    const solPerChunk   = Math.floor(totalLamports / chunks.length);
-    const amountYBn     = new BN(String(solPerChunk));
+    const amountYBn     = new BN(String(totalLamports));
     const amountXBn     = new BN('0'); // single-side Y
 
-    console.log(`[evilPanda] bins=${totalBins} chunks=${chunks.length} range=[${rangeMin},${rangeMax}] pf=${microLamports} slip=${slippagePct}%`);
+    console.log(`[evilPanda] bins=${totalBins} range=[${rangeMin},${rangeMax}] pf=${microLamports} slip=${slippagePct}%`);
 
-    await setPositionLifecycle(macroPositionId, 'deploying', {
+    await setPositionLifecycle(positionPubkey, 'deploying', {
       poolAddress,
       deploySol,
       deployedAt: nowIso(),
@@ -352,83 +335,35 @@ export async function deployPosition(poolAddress) {
       rangeMin,
       rangeMax,
       hwmPct: 0,
-      chunksTotal: chunks.length,
-      chunksConfirmed: 0,
-      chunkPubkeys: posKps.map(kp => kp.publicKey.toString()),
     }, { flush: true });
 
-    // 7. Kirim per chunk — dengan Partial Deploy Guard
-    // Jika chunk manapun gagal setelah retry, otomatis rollback via exitPosition.
-    let chunksConfirmed = 0;
     try {
-      for (let i = 0; i < chunks.length; i++) {
-        const { lowerBinId, upperBinId } = chunks[i];
-        const posKp = posKps[i];
+      const txOrTxs = await dlmmPool.initializePositionAndAddLiquidityByStrategy({
+        positionPubKey: posKp.publicKey,
+        user:           wallet.publicKey,
+        totalXAmount:   amountXBn,
+        totalYAmount:   amountYBn,
+        strategy: {
+          maxBinId:     rangeMax,
+          minBinId:     rangeMin,
+          strategyType: 0,
+        },
+        slippage: slippagePct,
+      });
 
-        const txOrTxs = await dlmmPool.initializePositionAndAddLiquidityByStrategy({
-          positionPubKey: posKp.publicKey,
-          user:           wallet.publicKey,
-          totalXAmount:   amountXBn,
-          totalYAmount:   amountYBn,
-          strategy: {
-            maxBinId:     upperBinId,
-            minBinId:     lowerBinId,
-            strategyType: 0,
-          },
-          slippage: slippagePct,
-        });
-
-        const txList = Array.isArray(txOrTxs) ? txOrTxs : [txOrTxs];
-        for (const tx of txList) {
-          injectPriorityFee(tx, { units: EP_CONFIG.COMPUTE_UNITS, microLamports });
-          try {
-            const sig = await connection.sendTransaction(tx, [wallet, posKp], { skipPreflight: false, maxRetries: 3 });
-            await pollTxConfirm(connection, sig);
-            console.log(`[evilPanda] ✅ Chunk ${i+1}/${chunks.length} sukses terdeploy on-chain: ${sig.slice(0,8)}`);
-          } catch (txErr) {
-            if (txErr.message.includes('already in use')) {
-              console.log(`[evilPanda] ✅ Chunk ${i+1}/${chunks.length} sukses terdeploy on-chain (RPC timeout recovered: already in use)`);
-            } else {
-              console.error(`[evilPanda] ❌ Chunk ${i+1} gagal tereksekusi: ${txErr.message}`);
-              throw txErr;
-            }
-          }
-        }
-        chunksConfirmed++;
-        await setPositionLifecycle(macroPositionId, chunksConfirmed < chunks.length ? 'open_partial' : 'open', {
-          chunksTotal: chunks.length,
-          chunksConfirmed,
-        }, { flush: true });
+      const txList = Array.isArray(txOrTxs) ? txOrTxs : [txOrTxs];
+      for (const tx of txList) {
+        injectPriorityFee(tx, { units: EP_CONFIG.COMPUTE_UNITS, microLamports });
+        const sig = await connection.sendTransaction(tx, [wallet, posKp], { skipPreflight: false, maxRetries: 3 });
+        await pollTxConfirm(connection, sig);
+        console.log(`[evilPanda] ✅ Monolith position deployed on-chain: ${sig.slice(0,8)}`);
       }
-    } catch (chunkErr) {
-      // ── Partial Deploy Guard ─────────────────────────────────────────
-      // Ada chunk yang gagal setelah retry. Jika sudah ada chunk yang berhasil
-      // (posisi terbuka sebagian), lakukan rollback otomatis.
-      console.error(`[evilPanda] ⚠️ Chunk gagal setelah ${chunksConfirmed} chunk sukses: ${chunkErr.message}`);
-
-      if (chunksConfirmed > 0) {
-        console.warn(`[evilPanda] 🔄 Partial deploy terdeteksi — memulai rollback otomatis...`);
-        await setPositionLifecycle(macroPositionId, 'open_partial', {
-          poolAddress, deploySol, deployedAt: nowIso(),
-          tokenXMint: xMint, tokenYMint: yMint, rangeMin, rangeMax, hwmPct: 0,
-          chunksTotal: chunks.length,
-          chunksConfirmed,
-          chunkPubkeys: posKps.map(kp => kp.publicKey.toString()),
-        }, { flush: true });
-        try {
-          await exitPosition(macroPositionId, 'PARTIAL_DEPLOY_ROLLBACK');
-          appendHarvestLog({ token: xMint.slice(0,8), positionPubkey: macroPositionId, pnlPct: 0, deploySol, reason: 'PARTIAL_DEPLOY_ROLLBACK' });
-          console.log(`[evilPanda] ✅ Rollback selesai — posisi bersih.`);
-        } catch (rollbackErr) {
-          console.error(`[evilPanda] ❌ Rollback GAGAL: ${rollbackErr.message} — cek posisi manual!`);
-        }
-      }
-      // Re-throw agar withExponentialBackoff tidak retry deployPosition lagi
-      throw new Error(`[evilPanda] Deploy dibatalkan (partial guard): ${chunkErr.message}`);
+    } catch (deployErr) {
+      console.error(`[evilPanda] ❌ Monolith deploy gagal: ${deployErr.message}`);
+      throw deployErr;
     }
 
-    // 8. Simpan di registry in-memory (hwmPct = 0 saat pertama buka)
-    await setPositionLifecycle(macroPositionId, 'open', {
+    await setPositionLifecycle(positionPubkey, 'open', {
       poolAddress,
       deploySol,
       deployedAt:  nowIso(),
@@ -436,14 +371,11 @@ export async function deployPosition(poolAddress) {
       tokenYMint:  yMint,
       rangeMin,
       rangeMax,
-      hwmPct:      0, // High Water Mark — diperbarui tiap poll di monitorPnL
-      chunksTotal: chunks.length,
-      chunksConfirmed: chunks.length,
-      chunkPubkeys: posKps.map(kp => kp.publicKey.toString()),
+      hwmPct:      0,
     }, { flush: true });
 
-    console.log(`[evilPanda] ✅ Position open: ${macroPositionId.slice(0,8)} chunks=${chunks.length}`);
-    return macroPositionId;
+    console.log(`[evilPanda] ✅ Position open: ${positionPubkey.slice(0,8)}`);
+    return positionPubkey;
 
   }, { maxRetries: 3, baseDelay: 3000 });
 }
@@ -587,31 +519,24 @@ export async function monitorPnL(positionPubkey) {
     const activeBin  = await dlmmPool.getActiveBin();
 
     const { userPositions } = await dlmmPool.getPositionsByUserAndLbPair(wallet.publicKey);
-    const chunkPubkeys = getMacroChunkPubkeys(positionPubkey);
-    const activeChunks = userPositions.filter(p => chunkPubkeys.includes(p.publicKey.toString()));
+    const activePos = userPositions.find(p => p.publicKey.toString() === positionPubkey);
 
-    if (activeChunks.length === 0) {
+    if (!activePos) {
       return { action: 'STOP_LOSS', currentValueSol: 0, pnlPct: -100, inRange: false,
-               note: 'No active macro chunks found on-chain — assumed closed' };
+               note: 'Position not found on-chain — assumed closed' };
     }
 
+    const pd       = activePos.positionData;
     const rawPrice = safeNum(activeBin.pricePerToken);
 
     const [xMeta, yMeta] = await resolveTokens([reg.tokenXMint, reg.tokenYMint]);
     const xDec = xMeta.decimals || 9;
     const yDec = yMeta.decimals || 9;
 
-    let totalXUi = 0;
-    let totalYUi = 0;
-    let feeXUi = 0;
-    let feeYUi = 0;
-    for (const pos of activeChunks) {
-      const pd = pos.positionData || {};
-      totalXUi += Number(pd.totalXAmount?.toString() || '0') / Math.pow(10, xDec);
-      totalYUi += Number(pd.totalYAmount?.toString() || '0') / Math.pow(10, yDec);
-      feeXUi   += Number(pd.feeX?.toString() || '0')         / Math.pow(10, xDec);
-      feeYUi   += Number(pd.feeY?.toString() || '0')         / Math.pow(10, yDec);
-    }
+    const totalXUi = Number(pd.totalXAmount?.toString() || '0') / Math.pow(10, xDec);
+    const totalYUi = Number(pd.totalYAmount?.toString() || '0') / Math.pow(10, yDec);
+    const feeXUi   = Number(pd.feeX?.toString() || '0')         / Math.pow(10, xDec);
+    const feeYUi   = Number(pd.feeY?.toString() || '0')         / Math.pow(10, yDec);
 
     const totalXRawToSell = Math.floor((totalXUi + feeXUi) * Math.pow(10, xDec)).toString();
 
@@ -716,14 +641,13 @@ export async function exitPosition(positionPubkey, reason = 'MANUAL') {
     const preSwapLamports = await connection.getBalance(wallet.publicKey);
     const dlmmPool = await DLMM.create(connection, new PublicKey(reg.poolAddress));
     const { userPositions } = await dlmmPool.getPositionsByUserAndLbPair(wallet.publicKey);
-    const chunkPubkeys = getMacroChunkPubkeys(positionPubkey);
-    const activeChunks = userPositions.filter(p => chunkPubkeys.includes(p.publicKey.toString()));
+    const activePos = userPositions.find(p => p.publicKey.toString() === positionPubkey);
 
-    if (activeChunks.length === 0) {
+    if (!activePos) {
       return await markPositionManuallyClosed(positionPubkey, 'MANUAL_WITHDRAW_DETECTED_DURING_EXIT');
     }
 
-    if (activeChunks.some((pos) => !pos?.positionData || pos.positionData.lowerBinId === undefined)) {
+    if (!activePos.positionData || activePos.positionData.lowerBinId === undefined) {
       const msg = `POSITION_STATE_AMBIGUOUS_${positionPubkey.slice(0,8)}`;
       console.log(`[evilPanda] ❌ ${msg}: Data posisi tidak lengkap / undefined. Registry ditahan untuk manual reconcile.`);
       await setPositionLifecycle(positionPubkey, 'needs_manual_reconcile', {
@@ -736,26 +660,20 @@ export async function exitPosition(positionPubkey, reason = 'MANUAL') {
     // Snapshot fee composition sebelum close untuk accounting split.
     let estimatedFeeSol = 0;
     try {
+      const pd = activePos.positionData;
       const [xMeta, yMeta] = await resolveTokens([reg.tokenXMint, reg.tokenYMint]);
       const xDec = xMeta.decimals || 9;
       const yDec = yMeta.decimals || 9;
-      let feeXRawSum = 0n;
-      let feeYUi = 0;
-      let feeXUiFallback = 0;
-      for (const pos of activeChunks) {
-        const pd = pos.positionData || {};
-        feeXRawSum += BigInt(pd.feeX?.toString() || '0');
-        feeYUi += Number(pd.feeY?.toString() || '0') / Math.pow(10, yDec);
-        feeXUiFallback += Number(pd.feeX?.toString() || '0') / Math.pow(10, xDec);
-      }
-      const feeXRaw = feeXRawSum.toString();
+      const feeXRaw = String(pd.feeX?.toString() || '0');
+      const feeYUi = Number(pd.feeY?.toString() || '0') / Math.pow(10, yDec);
       let feeXSol = 0;
       if (feeXRaw !== '0') {
         try {
           const quote = await getJupiterQuote(reg.tokenXMint, WSOL_MINT, feeXRaw);
           feeXSol = Number(quote.outAmount || 0) / 1e9;
         } catch {
-          feeXSol = Math.max(0, feeXUiFallback * safeNum((await dlmmPool.getActiveBin())?.pricePerToken, 0));
+          const feeXUi = Number(pd.feeX?.toString() || '0') / Math.pow(10, xDec);
+          feeXSol = Math.max(0, feeXUi * safeNum((await dlmmPool.getActiveBin())?.pricePerToken, 0));
         }
       }
       estimatedFeeSol = Math.max(0, feeYUi + feeXSol);
@@ -764,25 +682,23 @@ export async function exitPosition(positionPubkey, reason = 'MANUAL') {
     }
 
     // 1. Remove all liquidity
-    const removeSignatures = [];
-    for (const pos of activeChunks) {
-      const removeTxs = await dlmmPool.removeLiquidity({
-        position:       pos.publicKey,
-        user:           wallet.publicKey,
-        fromBinId:      pos.positionData.lowerBinId,
-        toBinId:        pos.positionData.upperBinId,
-        liquidityBpsToRemove: new BN(10000), // 100%
-        shouldClaimAndClose:  true,
-      });
+    const removeTxs = await dlmmPool.removeLiquidity({
+      position:       activePos.publicKey,
+      user:           wallet.publicKey,
+      fromBinId:      activePos.positionData.lowerBinId,
+      toBinId:        activePos.positionData.upperBinId,
+      liquidityBpsToRemove: new BN(10000), // 100%
+      shouldClaimAndClose:  true,
+    });
 
-      const removeTxList = Array.isArray(removeTxs) ? removeTxs : [removeTxs];
-      for (const tx of removeTxList) {
-        injectPriorityFee(tx, { units: EP_CONFIG.COMPUTE_UNITS, microLamports });
-        const sig = await connection.sendTransaction(tx, [wallet], { skipPreflight: false, maxRetries: 3 });
-        await pollTxConfirm(connection, sig);
-        removeSignatures.push(sig);
-        console.log(`[evilPanda] Remove liquidity TX confirmed: ${sig.slice(0,8)} chunk=${pos.publicKey.toString().slice(0,8)}`);
-      }
+    const removeTxList = Array.isArray(removeTxs) ? removeTxs : [removeTxs];
+    const removeSignatures = [];
+    for (const tx of removeTxList) {
+      injectPriorityFee(tx, { units: EP_CONFIG.COMPUTE_UNITS, microLamports });
+      const sig = await connection.sendTransaction(tx, [wallet], { skipPreflight: false, maxRetries: 3 });
+      await pollTxConfirm(connection, sig);
+      removeSignatures.push(sig);
+      console.log(`[evilPanda] Remove liquidity TX confirmed: ${sig.slice(0,8)}`);
     }
 
     // 2. Swap sisa tokenX → SOL (jika ada)
@@ -904,6 +820,7 @@ export async function markPositionManuallyClosed(positionPubkey, reason = 'MANUA
     manualCloseDetected: true,
   });
 
+  await notify('ℹ️ Posisi ditutup secara manual (on-chain detected).');
   console.log(`[evilPanda] Manual close recorded: ${positionPubkey.slice(0,8)} | reason=${reason}`);
   return { ok: true, solRecovered: 0, manualCloseDetected: true };
 }
@@ -919,16 +836,15 @@ export async function reconcileStartupPositions() {
   _activePositions.clear();
   for (const row of rows) {
     const pubkey = row?.pubkey;
-    const chunkPubkeys = getMacroChunkPubkeys(pubkey);
     const poolAddress = row?.poolAddress;
-    if (!pubkey || chunkPubkeys.length === 0 || !poolAddress) {
+    if (!pubkey || !poolAddress) {
       dropped++;
       continue;
     }
     try {
       const dlmmPool = await DLMM.create(connection, new PublicKey(poolAddress));
       const { userPositions } = await dlmmPool.getPositionsByUserAndLbPair(wallet.publicKey);
-      const exists = userPositions.some((p) => chunkPubkeys.includes(p.publicKey.toString()));
+      const exists = userPositions.some((p) => p.publicKey.toString() === pubkey);
       if (!exists) {
         dropped++;
         continue;
@@ -944,9 +860,6 @@ export async function reconcileStartupPositions() {
         hwmPct: safeNum(row.hwmPct, 0),
         lifecycleState: row.lifecycleState || row.lifecycle_state || 'open',
         lifecycle_state: row.lifecycle_state || row.lifecycleState || 'open',
-        chunksTotal: safeNum(row.chunksTotal, 0),
-        chunksConfirmed: safeNum(row.chunksConfirmed, 0),
-        chunkPubkeys: Array.isArray(row.chunkPubkeys) ? row.chunkPubkeys : chunkPubkeys,
       });
       restored++;
     } catch {

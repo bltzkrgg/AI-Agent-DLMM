@@ -14,7 +14,7 @@
 import { getConfig }              from '../config.js';
 import { screenToken }            from '../market/coinfilter.js';
 import { runMeridianVeto, discoverHighFeePoolsMeridian } from '../market/meridianVeto.js';
-import { deployPosition, monitorPnL, exitPosition, markPositionManuallyClosed, EP_CONFIG, getActivePositionKeys, getPositionMeta } from '../sniper/evilPanda.js';
+import { deployPosition, monitorPnL, exitPosition, markPositionManuallyClosed, setEvilPandaNotifyFn, EP_CONFIG, getActivePositionKeys, getPositionMeta } from '../sniper/evilPanda.js';
 import { createMessage }          from '../agent/provider.js';
 import { getWalletBalance }       from '../solana/wallet.js';
 import { appendDecisionLog }      from '../learn/decisionLog.js';
@@ -72,7 +72,10 @@ function deduplicatePoolsByToken(pools, binStepPriority) {
 
 // ── Notify helper (diset dari index.js) ──────────────────────────
 let _notifyFn = null;
-export function setNotifyFn(fn) { _notifyFn = fn; }
+export function setNotifyFn(fn) {
+  _notifyFn = fn;
+  setEvilPandaNotifyFn(fn);
+}
 async function notify(msg) {
   try { await _notifyFn?.(msg); } catch { /* non-fatal */ }
 }
