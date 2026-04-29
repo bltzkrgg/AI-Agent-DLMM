@@ -77,6 +77,17 @@ test('evilPanda removeLiquidity uses Meteora SDK parameter names', () => {
   assert.doesNotMatch(src, /liquidityBpsToRemove:/);
 });
 
+test('dryRun mode only simulates tx in evilPanda and hunter', () => {
+  const evilPandaSrc = readFileSync(evilPandaPath, 'utf8');
+  const hunterSrc = readFileSync(hunterPath, 'utf8');
+  assert.match(evilPandaSrc, /if \(isDryRun\(\)\) \{/);
+  assert.match(evilPandaSrc, /simulateTransaction\(tx, \{ commitment: 'processed' \}\)/);
+  assert.match(evilPandaSrc, /DRY_RUN_SIMULATION_FAILED/);
+  assert.match(hunterSrc, /Dry-run deploy disimulasikan/);
+  assert.match(hunterSrc, /Dry-run exit disimulasikan/);
+  assert.match(hunterSrc, /Tidak ada transaksi real yang dikirim karena mode dryRun aktif/);
+});
+
 test('deploy natural failures are silenced from Telegram notifications', () => {
   const src = readFileSync(hunterPath, 'utf8');
   assert.match(src, /function isNaturalDeployError/);

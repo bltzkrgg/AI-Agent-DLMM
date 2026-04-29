@@ -20,7 +20,7 @@ import { appendFileSync, mkdirSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { getConnection, getWallet } from '../solana/wallet.js';
-import { getConfig } from '../config.js';
+import { getConfig, isDryRun } from '../config.js';
 import { swapToSol } from '../utils/jupiter.js';
 import { getJupiterQuote } from '../solana/jupiter.js';
 import { safeNum, withExponentialBackoff, fetchWithTimeout } from '../utils/safeJson.js';
@@ -326,6 +326,47 @@ export async function deployPosition(poolAddress) {
 
     console.log(`[evilPanda] bins=${totalBins} range=[${rangeMin},${rangeMax}] pf=${microLamports} slip=${slippagePct}%`);
 
+    try {
+    const txOrTxs = await dlmmPool.initializePositionAndAddLiquidityByStrategy({
+      positionPubKey: posKp.publicKey,
+      user:           wallet.publicKey,
+      totalXAmount:   amountXBn,
+      totalYAmount:   amountYBn,
+        strategy: {
+          maxBinId:     rangeMax,
+          minBinId:     rangeMin,
+          strategyType: 0,
+        },
+        slippage: slippagePct,
+    });
+
+    const txList = Array.isArray(txOrTxs) ? txOrTxs : [txOrTxs];
+
+    if (isDryRun()) {
+      for (const tx of txList) {
+        injectPriorityFee(tx, { units: EP_CONFIG.COMPUTE_UNITS, microLamports });
+        if (tx instanceof VersionedTransaction) {
+          tx.sign([wallet, posKp]);
+        } else {
+          tx.sign(posKp, wallet);
+        }
+        const sim = await connection.simulateTransaction(tx, { commitment: 'processed' });
+        if (sim?.value?.err) {
+          throw new Error(`DRY_RUN_SIMULATION_FAILED: ${stringify(sim.value.err)}`);
+        }
+      }
+      console.log(`[DRY RUN] deployPosition simulated only: pool=${poolAddress.slice(0,8)} pos=${positionPubkey.slice(0,8)} txs=${txList.length}`);
+      return {
+        dryRun: true,
+        simulated: true,
+        positionPubkey,
+        poolAddress,
+        rangeMin,
+        rangeMax,
+        txCount: txList.length,
+      };
+    }
+
     await setPositionLifecycle(positionPubkey, 'deploying', {
       poolAddress,
       deploySol,
@@ -337,22 +378,7 @@ export async function deployPosition(poolAddress) {
       hwmPct: 0,
     }, { flush: true });
 
-    try {
-      const txOrTxs = await dlmmPool.initializePositionAndAddLiquidityByStrategy({
-        positionPubKey: posKp.publicKey,
-        user:           wallet.publicKey,
-        totalXAmount:   amountXBn,
-        totalYAmount:   amountYBn,
-        strategy: {
-          maxBinId:     rangeMax,
-          minBinId:     rangeMin,
-          strategyType: 0,
-        },
-        slippage: slippagePct,
-      });
-
-      const txList = Array.isArray(txOrTxs) ? txOrTxs : [txOrTxs];
-      for (const tx of txList) {
+    for (const tx of txList) {
         injectPriorityFee(tx, { units: EP_CONFIG.COMPUTE_UNITS, microLamports });
         const sig = await connection.sendTransaction(tx, [wallet, posKp], { skipPreflight: false, maxRetries: 3 });
         await pollTxConfirm(connection, sig);
@@ -637,17 +663,24 @@ export async function exitPosition(positionPubkey, reason = 'MANUAL') {
 
   try {
     return await withExitAccountingLock(() => withExponentialBackoff(async () => {
-    await setPositionLifecycle(positionPubkey, 'closing', { closeReason: reason }, { flush: true });
     const preSwapLamports = await connection.getBalance(wallet.publicKey);
     const dlmmPool = await DLMM.create(connection, new PublicKey(reg.poolAddress));
     const { userPositions } = await dlmmPool.getPositionsByUserAndLbPair(wallet.publicKey);
     const activePos = userPositions.find(p => p.publicKey.toString() === positionPubkey);
 
     if (!activePos) {
+      if (isDryRun()) {
+        console.log(`[DRY RUN] exitPosition skipped: ${positionPubkey.slice(0,8)} not found on-chain`);
+        return { dryRun: true, skipped: true, reason: 'POSITION_NOT_FOUND_ON_CHAIN' };
+      }
       return await markPositionManuallyClosed(positionPubkey, 'MANUAL_WITHDRAW_DETECTED_DURING_EXIT');
     }
 
     if (!activePos.positionData || activePos.positionData.lowerBinId === undefined) {
+      if (isDryRun()) {
+        console.log(`[DRY RUN] exitPosition skipped: ${positionPubkey.slice(0,8)} position data incomplete`);
+        return { dryRun: true, skipped: true, reason: 'POSITION_DATA_INCOMPLETE' };
+      }
       const msg = `POSITION_STATE_AMBIGUOUS_${positionPubkey.slice(0,8)}`;
       console.log(`[evilPanda] ❌ ${msg}: Data posisi tidak lengkap / undefined. Registry ditahan untuk manual reconcile.`);
       await setPositionLifecycle(positionPubkey, 'needs_manual_reconcile', {
@@ -656,6 +689,36 @@ export async function exitPosition(positionPubkey, reason = 'MANUAL') {
       }, { flush: true });
       throw new Error(msg);
     }
+
+    if (isDryRun()) {
+      const dryRunRemoveTxs = await dlmmPool.removeLiquidity({
+        position: activePos.publicKey,
+        user: wallet.publicKey,
+        minBinId: activePos.positionData.lowerBinId,
+        maxBinId: activePos.positionData.upperBinId,
+        bps: new BN(10000),
+        shouldClaimAndClose: true,
+      });
+
+      const dryRunTxList = Array.isArray(dryRunRemoveTxs) ? dryRunRemoveTxs : [dryRunRemoveTxs];
+      for (const tx of dryRunTxList) {
+        injectPriorityFee(tx, { units: EP_CONFIG.COMPUTE_UNITS, microLamports });
+        if (tx instanceof VersionedTransaction) {
+          tx.sign([wallet]);
+        } else {
+          tx.sign(wallet);
+        }
+        const sim = await connection.simulateTransaction(tx, { commitment: 'processed' });
+        if (sim?.value?.err) {
+          throw new Error(`DRY_RUN_SIMULATION_FAILED: ${stringify(sim.value.err)}`);
+        }
+      }
+
+      console.log(`[DRY RUN] exitPosition simulated only: pos=${positionPubkey.slice(0,8)} txs=${dryRunTxList.length}`);
+      return { dryRun: true, solRecovered: 0, simulated: true, txCount: dryRunTxList.length };
+    }
+
+    await setPositionLifecycle(positionPubkey, 'closing', { closeReason: reason }, { flush: true });
 
     // Snapshot fee composition sebelum close untuk accounting split.
     let estimatedFeeSol = 0;

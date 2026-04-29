@@ -815,7 +815,19 @@ Balas HANYA JSON valid tanpa Markdown.`;
 
       let positionPubkey;
       try {
-        positionPubkey = await deployPosition(poolAddress);
+        const deployResult = await deployPosition(poolAddress);
+        if (deployResult && typeof deployResult === 'object' && deployResult.dryRun) {
+          await notify(
+            `🧪 <b>Dry-run deploy disimulasikan</b>\n` +
+            `Token: <b>${escapeHTML(symbol)}</b>\n` +
+            `Pool: <code>${poolAddress.slice(0,8)}</code>\n` +
+            `Tx simulasi: <code>${deployResult.txCount || 0}</code>\n` +
+            `Range: <code>${deployResult.rangeMin}-${deployResult.rangeMax}</code>\n` +
+            `<i>Tidak ada transaksi real yang dikirim karena mode dryRun aktif.</i>`
+          );
+          return false;
+        }
+        positionPubkey = deployResult;
         _positionLabels.set(positionPubkey, { symbol });
       } catch (e) {
         if (isNaturalDeployError(e)) {
@@ -973,7 +985,17 @@ async function safeExit(positionPubkey, reason) {
   _closingPositions.add(positionPubkey);
   let success = false;
   try {
-    const { solRecovered } = await exitPosition(positionPubkey, reason);
+    const exitResult = await exitPosition(positionPubkey, reason);
+    if (exitResult?.dryRun) {
+      await notify(
+        `🧪 <b>Dry-run exit disimulasikan</b>\n` +
+        `Position: <code>${positionPubkey.slice(0,8)}</code>\n` +
+        `Alasan: <code>${escapeHTML(reason)}</code>\n` +
+        `<i>Tidak ada transaksi real yang dikirim karena mode dryRun aktif.</i>`
+      );
+      return { ok: true, dryRun: true, simulated: true };
+    }
+    const { solRecovered } = exitResult;
     const balance = await getWalletBalance();
     success = true;
     await notify(
