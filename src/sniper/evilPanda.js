@@ -308,7 +308,7 @@ export async function deployPosition(poolAddress) {
     let rangeMax = activeBin.binId - offsetMinBins;
     let rangeMin = activeBin.binId - offsetMaxBins;
 
-    if (rangeMax - rangeMin > 1000) rangeMin = rangeMax - 1000;
+    if ((rangeMax - rangeMin) > 68) { rangeMin = rangeMax - 68; }
     if (rangeMin > rangeMax)        rangeMin = rangeMax - 2;
 
     const totalBins = rangeMax - rangeMin + 1;

@@ -51,7 +51,9 @@ test('evilPanda uses monolith positions with one Meteora account for the full ra
   const src = readFileSync(evilPandaPath, 'utf8');
   assert.match(src, /const posKp = Keypair\.generate\(\)/);
   assert.match(src, /let rangeMax = activeBin\.binId - offsetMinBins/);
+  assert.match(src, /if \(\(rangeMax - rangeMin\) > 68\) \{ rangeMin = rangeMax - 68; \}/);
   assert.doesNotMatch(src, /rangeMax = activeBin\.binId - offsetMinBins - 1/);
+  assert.doesNotMatch(src, /rangeMax - rangeMin > 1000/);
   assert.match(src, /initializePositionAndAddLiquidityByStrategy/);
   assert.match(src, /sendTransaction\(tx, \[wallet, posKp\]/);
   assert.match(src, /const activePos = userPositions\.find\(p => p\.publicKey\.toString\(\) === positionPubkey\)/);
