@@ -14,7 +14,7 @@
 import { getConfig }              from '../config.js';
 import { screenToken }            from '../market/coinfilter.js';
 import { runMeridianVeto, discoverHighFeePoolsMeridian } from '../market/meridianVeto.js';
-import { deployPosition, monitorPnL, exitPosition, EP_CONFIG, getActivePositionKeys, getPositionMeta } from '../sniper/evilPanda.js';
+import { deployPosition, monitorPnL, exitPosition, markPositionManuallyClosed, EP_CONFIG, getActivePositionKeys, getPositionMeta } from '../sniper/evilPanda.js';
 import { createMessage }          from '../agent/provider.js';
 import { getWalletBalance }       from '../solana/wallet.js';
 import { appendDecisionLog }      from '../learn/decisionLog.js';
@@ -849,6 +849,19 @@ async function monitorLoop(positionPubkey, symbol, poolAddress) {
         continue;
       }
 
+      if (action === 'MANUAL_CLOSED') {
+        await markPositionManuallyClosed(positionPubkey, 'MANUAL_WITHDRAW_DETECTED');
+        _positionLabels.delete(positionPubkey);
+        await notify(
+          `ℹ️ <b>Manual close terdeteksi</b>\n` +
+          `Token: <b>${symbol}</b>\n` +
+          `Position: <code>${positionPubkey.slice(0,8)}</code>\n` +
+          `Status: <code>tidak ditemukan lagi di Meteora/on-chain</code>\n` +
+          `<i>Registry lokal sudah dibersihkan. PnL manual tidak dihitung otomatis.</i>`
+        );
+        return;
+      }
+
       // Log ringkas tiap poll
       const rangeIcon = inRange ? '🟢' : '🟡';
       console.log(`[hunter] ${rangeIcon} ${symbol} pnl=${pnlPct.toFixed(2)}% val=${currentValueSol.toFixed(4)}SOL action=${action}`);
@@ -962,6 +975,41 @@ export async function closeAllActivePositionsForShutdown(signal = 'SIGTERM', tim
     total: snapshot.length,
     closed: results.filter(r => r.ok).length,
     failed: results.filter(r => !r.ok),
+    results,
+  };
+}
+
+export async function closeAllActivePositionsByUser(reason = 'MANUAL_COMMAND', timeoutMs = 30_000) {
+  const snapshot = listActivePositions();
+  const results = [];
+
+  for (const pos of snapshot) {
+    const pubkey = pos?.pubkey;
+    if (!pubkey) continue;
+    const result = {
+      pubkey,
+      symbol: pos.symbol || pos.mint?.slice(0, 8) || pubkey.slice(0, 8),
+      ok: false,
+      reason: null,
+    };
+    try {
+      const closeResult = await Promise.race([
+        safeExit(pubkey, reason),
+        new Promise((_, reject) => setTimeout(() => reject(new Error('MANUAL_EXIT_TIMEOUT')), timeoutMs)),
+      ]);
+      result.ok = closeResult?.ok === true && !getActivePositionKeys().includes(pubkey);
+      if (!result.ok) result.reason = 'MANUAL_EXIT_NOT_VERIFIED';
+    } catch (e) {
+      result.reason = e?.message || 'MANUAL_EXIT_FAILED';
+    }
+    results.push(result);
+  }
+
+  return {
+    total: snapshot.length,
+    closed: results.filter(r => r.ok).length,
+    failed: results.filter(r => !r.ok),
+    remaining: getActivePositionKeys().length,
     results,
   };
 }

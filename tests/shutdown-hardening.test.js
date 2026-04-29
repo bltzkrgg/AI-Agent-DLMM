@@ -29,3 +29,21 @@ test('evilPanda enforces on-chain close verification before success', () => {
   assert.match(src, /Position closed & verified/);
 });
 
+test('manual close is detected without triggering another stop loss exit', () => {
+  const evilPandaSrc = readFileSync(evilPandaPath, 'utf8');
+  const hunterSrc = readFileSync(hunterPath, 'utf8');
+  assert.match(evilPandaSrc, /action:\s*'MANUAL_CLOSED'/);
+  assert.match(evilPandaSrc, /export async function markPositionManuallyClosed/);
+  assert.match(hunterSrc, /action === 'MANUAL_CLOSED'/);
+  assert.match(hunterSrc, /Manual close terdeteksi/);
+});
+
+test('telegram exit command closes all active positions with verification summary', () => {
+  const indexSrc = readFileSync(indexPath, 'utf8');
+  const hunterSrc = readFileSync(hunterPath, 'utf8');
+  assert.match(indexSrc, /closeAllActivePositionsByUser\('MANUAL_COMMAND'/);
+  assert.match(indexSrc, /Manual exit selesai dan verified/);
+  assert.match(indexSrc, /Manual exit belum bersih/);
+  assert.match(hunterSrc, /export async function closeAllActivePositionsByUser/);
+  assert.match(hunterSrc, /MANUAL_EXIT_NOT_VERIFIED/);
+});

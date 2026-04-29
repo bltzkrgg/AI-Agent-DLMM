@@ -18,8 +18,8 @@ import TelegramBot              from 'node-telegram-bot-api';
 import { existsSync, readFileSync, writeFileSync, unlinkSync } from 'fs';
 import { initSolana, getWalletBalance }   from './solana/wallet.js';
 import { getConfig, updateConfig, isConfigKeySupported, resolveNestedKey, SETCONFIG_WHITELIST } from './config.js';
-import { runLinearLoop, stopLoop, setNotifyFn, isRunning, getCurrentPosition, getActivePositions, setShutdownInProgress, closeAllActivePositionsForShutdown, retryFailedShutdownPositions, runAutoscreening, spawnMonitorForRestoredPositions } from './agents/hunterAlpha.js';
-import { exitPosition, getActivePositionCount, reconcileStartupPositions, EP_CONFIG } from './sniper/evilPanda.js';
+import { runLinearLoop, stopLoop, setNotifyFn, isRunning, getCurrentPosition, getActivePositions, setShutdownInProgress, closeAllActivePositionsByUser, closeAllActivePositionsForShutdown, retryFailedShutdownPositions, runAutoscreening, spawnMonitorForRestoredPositions } from './agents/hunterAlpha.js';
+import { getActivePositionCount, reconcileStartupPositions, EP_CONFIG } from './sniper/evilPanda.js';
 import { analyzePerformance, formatEvolutionReport }     from './learn/statelessEvolve.js';
 import { generateBriefing }                              from './telegram/briefing.js';
 import { readBlacklist, removeFromBlacklist }            from './learn/tokenBlacklist.js';
@@ -187,22 +187,46 @@ bot.onText(/\/stop$/, async (msg) => {
 bot.onText(/\/exit/, async (msg) => {
   if (!guard(msg)) return;
   const chatId = msg.chat.id;
-  const posKey = getCurrentPosition();
+  const active = Array.isArray(getActivePositions()) ? getActivePositions() : [];
 
-  if (!posKey) {
+  if (active.length === 0) {
     bot.sendMessage(chatId, 'ℹ️ Tidak ada posisi aktif untuk di-exit.', { parse_mode: 'HTML' });
     return;
   }
 
-  bot.sendMessage(chatId, `⏳ <b>Force exit posisi</b> <code>${posKey.slice(0,8)}</code>...`, { parse_mode: 'HTML' });
+  bot.sendMessage(
+    chatId,
+    `⏳ <b>Force exit semua posisi aktif</b>\n` +
+    `Total: <code>${active.length}</code>\n` +
+    `<i>Bot akan verifikasi on-chain sebelum melapor sukses.</i>`,
+    { parse_mode: 'HTML' }
+  );
 
   try {
     stopLoop();
-    const { solRecovered } = await exitPosition(posKey, 'MANUAL_COMMAND');
+    const summary = await closeAllActivePositionsByUser('MANUAL_COMMAND', 30_000);
     const balance = await getWalletBalance();
+
+    if (summary.failed.length > 0 || summary.remaining > 0) {
+      const failedLines = summary.failed.slice(0, 5)
+        .map((r) => `${r.symbol || r.pubkey.slice(0,8)}: ${r.reason || 'FAILED'}`)
+        .join('\n');
+      bot.sendMessage(chatId,
+        `⚠️ <b>Manual exit belum bersih</b>\n` +
+        `Closed: <code>${summary.closed}/${summary.total}</code>\n` +
+        `Remaining registry: <code>${summary.remaining}</code>\n` +
+        (failedLines ? `<pre>${escapeHTML(failedLines)}</pre>\n` : '') +
+        `Balance: <code>${balance} SOL</code>\n` +
+        `<i>Posisi gagal tidak dihapus lokal agar bisa direconcile.</i>`,
+        { parse_mode: 'HTML' }
+      );
+      return;
+    }
+
     bot.sendMessage(chatId,
-      `✅ <b>Posisi di-exit.</b>\n` +
-      `Position: <code>${posKey.slice(0,8)}</code>\n` +
+      `✅ <b>Manual exit selesai dan verified.</b>\n` +
+      `Closed: <code>${summary.closed}/${summary.total}</code>\n` +
+      `Remaining registry: <code>0</code>\n` +
       `Balance: <code>${balance} SOL</code>`,
       { parse_mode: 'HTML' }
     );

@@ -129,8 +129,17 @@ function appendPositionLedger({
   feePnlSol = 0,
   pricePnlSol = 0,
   txCostSol = 0,
+  accountingStatus = 'final',
+  manualCloseDetected = false,
 } = {}) {
   try {
+    const capitalIn = safeNum(capitalInSol, 0);
+    const capitalOut = safeNum(capitalOutSol, 0);
+    const pnlSol = safeNum(pnlTotalSol, 0);
+    const pnlPct = safeNum(pnlTotalPct, 0);
+    const feeSol = safeNum(feePnlSol, 0);
+    const priceSol = safeNum(pricePnlSol, 0);
+    const costSol = safeNum(txCostSol, 0);
     const row = {
       ts: nowIso(),
       positionPubkey,
@@ -139,14 +148,16 @@ function appendPositionLedger({
       openedAt,
       closedAt,
       reason,
+      accountingStatus,
+      manualCloseDetected,
       cashflow: {
-        capitalInSol: Number(capitalInSol.toFixed(9)),
-        capitalOutSol: Number(capitalOutSol.toFixed(9)),
-        pnlTotalSol: Number(pnlTotalSol.toFixed(9)),
-        pnlTotalPct: Number(pnlTotalPct.toFixed(6)),
-        feePnlSol: Number(feePnlSol.toFixed(9)),
-        pricePnlSol: Number(pricePnlSol.toFixed(9)),
-        txCostSol: Number(txCostSol.toFixed(9)),
+        capitalInSol: Number(capitalIn.toFixed(9)),
+        capitalOutSol: Number(capitalOut.toFixed(9)),
+        pnlTotalSol: Number(pnlSol.toFixed(9)),
+        pnlTotalPct: Number(pnlPct.toFixed(6)),
+        feePnlSol: Number(feeSol.toFixed(9)),
+        pricePnlSol: Number(priceSol.toFixed(9)),
+        txCostSol: Number(costSol.toFixed(9)),
       },
     };
     appendFileSync(POSITION_LEDGER_LOG, `${JSON.stringify(row)}\n`, 'utf8');
@@ -547,7 +558,7 @@ function evaluateExitSignal(signal) {
 
 /**
  * @typedef {Object} PnLStatus
- * @property {'HOLD'|'TAKE_PROFIT'|'STOP_LOSS'|'ERROR'} action
+ * @property {'HOLD'|'TAKE_PROFIT'|'STOP_LOSS'|'MANUAL_CLOSED'|'ERROR'} action
  * @property {number}  currentValueSol
  * @property {number}  pnlPct
  * @property {boolean} inRange
@@ -581,8 +592,8 @@ export async function monitorPnL(positionPubkey) {
     const pos = userPositions.find(p => p.publicKey.toString() === positionPubkey);
 
     if (!pos) {
-      return { action: 'STOP_LOSS', currentValueSol: 0, pnlPct: -100, inRange: false,
-               note: 'Position not found on-chain — assumed closed' };
+      return { action: 'MANUAL_CLOSED', currentValueSol: 0, pnlPct: 0, inRange: false,
+               note: 'Position not found on-chain — assumed manually closed or withdrawn' };
     }
 
     const pd       = pos.positionData;
@@ -846,6 +857,37 @@ export async function exitPosition(positionPubkey, reason = 'MANUAL') {
     }
     throw e;
   }
+}
+
+export async function markPositionManuallyClosed(positionPubkey, reason = 'MANUAL_WITHDRAW_DETECTED') {
+  const reg = _activePositions.get(positionPubkey);
+  if (!reg) return { ok: true, alreadyRemoved: true };
+
+  _activePositions.delete(positionPubkey);
+  await persistActivePositionsStateNow();
+
+  const tokenSymbol = reg.tokenXMint?.slice(0, 8) || 'UNKNOWN';
+  appendHarvestLog({
+    token: tokenSymbol,
+    positionPubkey,
+    pnlPct: 0,
+    deploySol: safeNum(reg.deploySol, 0),
+    reason,
+  });
+  appendPositionLedger({
+    positionPubkey,
+    poolAddress: reg.poolAddress || '',
+    tokenMint: reg.tokenXMint || '',
+    openedAt: reg.deployedAt || null,
+    closedAt: nowIso(),
+    reason,
+    capitalInSol: safeNum(reg.deploySol, 0),
+    accountingStatus: 'manual_close_pnl_unknown',
+    manualCloseDetected: true,
+  });
+
+  console.log(`[evilPanda] Manual close recorded: ${positionPubkey.slice(0,8)} | reason=${reason}`);
+  return { ok: true, manualCloseDetected: true };
 }
 
 export async function reconcileStartupPositions() {
