@@ -820,8 +820,17 @@ export async function markPositionManuallyClosed(positionPubkey, reason = 'MANUA
     manualCloseDetected: true,
   });
 
-  await notify('ℹ️ Posisi ditutup secara manual (on-chain detected).');
-  console.log(`[evilPanda] Manual close recorded: ${positionPubkey.slice(0,8)} | reason=${reason}`);
+  const symbol = reg.tokenXMint?.slice(0, 8) || 'UNKNOWN';
+  const pool   = reg.poolAddress?.slice(0, 8) || 'UNKNOWN';
+  await notify(
+    `ℹ️ <b>Manual close terdeteksi</b>\n` +
+    `Token: <b>${symbol}</b>\n` +
+    `Position: <code>${positionPubkey.slice(0, 8)}</code>\n` +
+    `Pool: <code>${pool}</code>\n` +
+    `Alasan: <code>${reason}</code>\n` +
+    `<i>Posisi dihapus dari registry lokal dan akan direconcile jika masih ada sisa state.</i>`
+  );
+  console.log(`[evilPanda] Manual close recorded: ${positionPubkey.slice(0,8)} | token=${symbol} | reason=${reason}`);
   return { ok: true, solRecovered: 0, manualCloseDetected: true };
 }
 

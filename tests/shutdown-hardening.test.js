@@ -33,6 +33,7 @@ test('manual close helper records manual withdrawals when called explicitly', ()
   const evilPandaSrc = readFileSync(evilPandaPath, 'utf8');
   const hunterSrc = readFileSync(hunterPath, 'utf8');
   assert.match(evilPandaSrc, /export async function markPositionManuallyClosed/);
+  assert.match(evilPandaSrc, /Manual close terdeteksi/);
   assert.match(hunterSrc, /action === 'MANUAL_CLOSED'/);
   assert.match(hunterSrc, /Manual close terdeteksi/);
 });
