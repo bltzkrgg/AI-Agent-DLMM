@@ -263,6 +263,7 @@ export async function deployPosition(poolAddress) {
   return withExponentialBackoff(async () => {
     // 1. Load pool
     const dlmmPool  = await DLMM.create(connection, poolPubkey);
+    await dlmmPool.refetchStates();
     const activeBin = await dlmmPool.getActiveBin();
     const binStep   = dlmmPool.lbPair.binStep;
 
@@ -279,13 +280,13 @@ export async function deployPosition(poolAddress) {
 
     // 3. Hitung bin range (log-accurate, sama seperti meteora.js legacy)
     const binStepInt   = parseInt(binStep);
-    const logBinFactor = binStepInt * Math.log(1.0001);
+    const exactLogBinFactor = Math.log(1 + binStepInt / 10000);
 
     const offsetMinBins = Math.round(
-      Math.abs(Math.log(1 - EP_CONFIG.OFFSET_MIN_PCT / 100) / logBinFactor)
+      Math.abs(Math.log(1 - EP_CONFIG.OFFSET_MIN_PCT / 100) / exactLogBinFactor)
     ) || 0;
     const offsetMaxBins = Math.round(
-      Math.abs(Math.log(1 - EP_CONFIG.OFFSET_MAX_PCT / 100) / logBinFactor)
+      Math.abs(Math.log(1 - EP_CONFIG.OFFSET_MAX_PCT / 100) / exactLogBinFactor)
     );
 
     let rangeMax = activeBin.binId - offsetMinBins - 1; // strictly below active
@@ -343,19 +344,8 @@ export async function deployPosition(poolAddress) {
         const { lowerBinId, upperBinId } = chunks[i];
         const isFirstChunk = i === 0;
 
-        const txOrTxs = await dlmmPool.initializePositionAndAddLiquidityByStrategy({
-          positionPubKey: posKp.publicKey,
-          user:           wallet.publicKey,
-          totalXAmount:   amountXBn,
-          totalYAmount:   amountYBn,
-          strategy: {
-            maxBinId:     upperBinId,
-            minBinId:     lowerBinId,
-            strategyType: 0,
-          },
-          slippage: slippagePct,
-        }).catch(async () =>
-          dlmmPool.addLiquidityByStrategy({
+        const txOrTxs = isFirstChunk
+          ? await dlmmPool.initializePositionAndAddLiquidityByStrategy({
             positionPubKey: posKp.publicKey,
             user:           wallet.publicKey,
             totalXAmount:   amountXBn,
@@ -367,7 +357,18 @@ export async function deployPosition(poolAddress) {
             },
             slippage: slippagePct,
           })
-        );
+          : await dlmmPool.addLiquidityByStrategy({
+            positionPubKey: posKp.publicKey,
+            user:           wallet.publicKey,
+            totalXAmount:   amountXBn,
+            totalYAmount:   amountYBn,
+            strategy: {
+              maxBinId:     upperBinId,
+              minBinId:     lowerBinId,
+              strategyType: 0,
+            },
+            slippage: slippagePct,
+          });
 
         const txList = Array.isArray(txOrTxs) ? txOrTxs : [txOrTxs];
         for (const tx of txList) {
