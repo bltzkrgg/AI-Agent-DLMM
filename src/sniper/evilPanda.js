@@ -683,12 +683,12 @@ export async function exitPosition(positionPubkey, reason = 'MANUAL') {
 
     // 1. Remove all liquidity
     const removeTxs = await dlmmPool.removeLiquidity({
-      position:       activePos.publicKey,
-      user:           wallet.publicKey,
-      fromBinId:      activePos.positionData.lowerBinId,
-      toBinId:        activePos.positionData.upperBinId,
-      liquidityBpsToRemove: new BN(10000), // 100%
-      shouldClaimAndClose:  true,
+      position: activePos.publicKey,
+      user: wallet.publicKey,
+      minBinId: activePos.positionData.lowerBinId,
+      maxBinId: activePos.positionData.upperBinId,
+      bps: new BN(10000),
+      shouldClaimAndClose: true,
     });
 
     const removeTxList = Array.isArray(removeTxs) ? removeTxs : [removeTxs];

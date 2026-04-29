@@ -67,6 +67,16 @@ test('monolith monitor treats missing active position as stop loss fail-safe', (
   assert.match(src, /Position not found on-chain/);
 });
 
+test('evilPanda removeLiquidity uses Meteora SDK parameter names', () => {
+  const src = readFileSync(evilPandaPath, 'utf8');
+  assert.match(src, /minBinId:\s*activePos\.positionData\.lowerBinId/);
+  assert.match(src, /maxBinId:\s*activePos\.positionData\.upperBinId/);
+  assert.match(src, /bps:\s*new BN\(10000\)/);
+  assert.doesNotMatch(src, /fromBinId:/);
+  assert.doesNotMatch(src, /toBinId:/);
+  assert.doesNotMatch(src, /liquidityBpsToRemove:/);
+});
+
 test('deploy natural failures are silenced from Telegram notifications', () => {
   const src = readFileSync(hunterPath, 'utf8');
   assert.match(src, /function isNaturalDeployError/);
