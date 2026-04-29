@@ -84,6 +84,7 @@ let _shutdownInProgress = false;
 const _closingPositions = new Set();
 const _positionLabels = new Map(); // pubkey -> { symbol }
 const _monitoredPositions = new Set();
+const _pendingRetestQueue = new Map(); // mint -> { pool, symbol, reason, attempts, nextCheckAt, expiresAt }
 
 function listActivePositions() {
   const keys = getActivePositionKeys();
@@ -104,6 +105,100 @@ function hasActiveMint(mint) {
   return listActivePositions().some((p) => p.mint === mint);
 }
 
+function getPoolMint(pool = {}) {
+  return pool.tokenXMint || pool.tokenX || pool.mint || pool.address || '';
+}
+
+function getPoolSymbol(pool = {}) {
+  return pool.tokenXSymbol || pool.name?.split('-')[0] || getPoolMint(pool).slice(0, 8) || 'UNKNOWN';
+}
+
+function isRetestableTaVeto(vetoResult = {}) {
+  const gate = String(vetoResult?.gate || '').toUpperCase();
+  const reason = String(vetoResult?.reason || '').toUpperCase();
+  return gate === 'SUPERTREND_15M' || reason.includes('SUPERTREND') || reason.includes('TREND 15M');
+}
+
+function addPendingRetest(pool, reason = 'TA belum valid') {
+  const cfg = getConfig();
+  if (cfg.pendingRetestEnabled === false) return;
+
+  const mint = getPoolMint(pool);
+  if (!mint || hasActiveMint(mint)) return;
+
+  const now = Date.now();
+  const intervalMin = Math.max(1, Number(cfg.retestIntervalMin) || 5);
+  const ttlMin = Math.max(intervalMin, Number(cfg.retestTtlMin) || 60);
+  const existing = _pendingRetestQueue.get(mint);
+
+  _pendingRetestQueue.set(mint, {
+    pool,
+    symbol: getPoolSymbol(pool),
+    reason,
+    attempts: existing?.attempts || 0,
+    firstSeenAt: existing?.firstSeenAt || now,
+    lastReason: reason,
+    nextCheckAt: now + intervalMin * 60 * 1000,
+    expiresAt: existing?.expiresAt || (now + ttlMin * 60 * 1000),
+  });
+  console.log(`[hunter] ⏳ Pending retest: ${getPoolSymbol(pool)} — ${reason}`);
+}
+
+async function collectReadyRetestPools(cfg = getConfig()) {
+  if (cfg.pendingRetestEnabled === false || _pendingRetestQueue.size === 0) return [];
+
+  const now = Date.now();
+  const maxAttempts = Math.max(1, Number(cfg.retestMaxAttempts) || 8);
+  const maxReady = Math.max(1, Number(cfg.retestMaxReadyPerScan) || 3);
+  const intervalMin = Math.max(1, Number(cfg.retestIntervalMin) || 5);
+  const ready = [];
+
+  for (const [mint, row] of [..._pendingRetestQueue.entries()]) {
+    if (ready.length >= maxReady) break;
+    if (!row?.pool || hasActiveMint(mint) || isBlacklisted(mint)) {
+      _pendingRetestQueue.delete(mint);
+      continue;
+    }
+    if (row.expiresAt <= now || row.attempts >= maxAttempts) {
+      console.log(`[hunter] ⌛ Retest expired: ${row.symbol} attempts=${row.attempts}/${maxAttempts}`);
+      _pendingRetestQueue.delete(mint);
+      continue;
+    }
+    if (row.nextCheckAt > now) continue;
+
+    row.attempts += 1;
+    row.nextCheckAt = now + intervalMin * 60 * 1000;
+    try {
+      const veto = await runMeridianVeto({ mint, symbol: row.symbol, pool: row.pool });
+      if (!veto.veto) {
+        _pendingRetestQueue.delete(mint);
+        const pool = {
+          ...row.pool,
+          _retestReason: row.reason,
+          _retestAttempts: row.attempts,
+        };
+        console.log(`[hunter] ✅ Retest PASS: ${row.symbol} attempts=${row.attempts}`);
+        ready.push(pool);
+        continue;
+      }
+      row.lastReason = veto.reason || row.lastReason;
+      if (!isRetestableTaVeto(veto)) {
+        console.log(`[hunter] ❌ Retest dropped: ${row.symbol} — ${row.lastReason}`);
+        _pendingRetestQueue.delete(mint);
+        continue;
+      }
+      _pendingRetestQueue.set(mint, row);
+      console.log(`[hunter] ⏳ Retest still pending: ${row.symbol} — ${row.lastReason}`);
+    } catch (e) {
+      row.lastReason = e?.message || 'Retest error';
+      _pendingRetestQueue.set(mint, row);
+      console.warn(`[hunter] Retest error ${row.symbol}: ${row.lastReason}`);
+    }
+  }
+
+  return ready;
+}
+
 export function isRunning()            { return _running; }
 export function getCurrentPosition()   { return getActivePositionKeys()[0] || null; }
 export function getActivePositions()   { return listActivePositions(); }
@@ -116,6 +211,13 @@ function chunkArray(items, size = 2) {
   const out = [];
   for (let i = 0; i < items.length; i += size) out.push(items.slice(i, i + size));
   return out;
+}
+
+function getIdleDelayMin(cfg = getConfig()) {
+  if (_pendingRetestQueue.size > 0) {
+    return Math.max(1, Number(cfg.retestIntervalMin) || 5);
+  }
+  return Number(cfg.screeningIntervalMin) || 15;
 }
 
 async function withDeployLock(fn) {
@@ -207,22 +309,30 @@ async function scanAndDeploy() {
   console.log(`[hunter] 🔍 SCAN — High-Fee Hunter (binStep priority: ${(cfg.binStepPriority || [200,125,100]).join('>')} )...`);
   await notify('🔍 <b>Memulai scan real-time (No Cache)...</b>\nMengambil data, mohon tunggu.');
 
-  let pools;
-  try {
-    // Ambil semua pool dari Meridian/Meteora (sorted by binStep priority + fee ratio)
-    const rawPools = await discoverHighFeePoolsMeridian({ limit });
+  let pools = await collectReadyRetestPools(cfg);
+  if (pools.length > 0) {
+    console.log(`[hunter] ${pools.length} kandidat retest siap diproses ulang.`);
+    await notify(
+      `♻️ <b>Retest queue aktif</b>\n` +
+      `${pools.length} kandidat TA sudah hijau dan masuk ulang ke pipeline.`
+    );
+  } else {
+    try {
+      // Ambil semua pool dari Meteora/Meridian fallback (sorted by binStep priority + fee ratio)
+      const rawPools = await discoverHighFeePoolsMeridian({ limit });
 
-    // Deduplikasi: satu token mungkin punya beberapa pool.
-    // Pilih pool terbaik per-token berdasarkan binStep priority [200,125,100].
-    const cfg2          = getConfig();
-    const binPriority   = Array.isArray(cfg2.binStepPriority) ? cfg2.binStepPriority.map(Number) : [200, 125, 100];
-    pools               = deduplicatePoolsByToken(rawPools, binPriority);
+      // Deduplikasi: satu token mungkin punya beberapa pool.
+      // Pilih pool terbaik per-token berdasarkan binStep priority [200,125,100].
+      const cfg2          = getConfig();
+      const binPriority   = Array.isArray(cfg2.binStepPriority) ? cfg2.binStepPriority.map(Number) : [200, 125, 100];
+      pools               = deduplicatePoolsByToken(rawPools, binPriority);
 
-    console.log(`[hunter] ${rawPools.length} pool raw → ${pools.length} token unik setelah seleksi binStep`);
-  } catch (e) {
-    console.warn(`[hunter] discoverHighFeePoolsMeridian gagal: ${e.message}`);
-    await sleep(60_000);
-    return;
+      console.log(`[hunter] ${rawPools.length} pool raw → ${pools.length} token unik setelah seleksi binStep`);
+    } catch (e) {
+      console.warn(`[hunter] discoverHighFeePoolsMeridian gagal: ${e.message}`);
+      await sleep(60_000);
+      return;
+    }
   }
 
   if (!pools || pools.length === 0) {
@@ -314,6 +424,10 @@ async function scanAndDeploy() {
         isEligible = false;
         rejectReason = vetoResult.reason || `Meridian veto (${vetoResult.gate || 'UNKNOWN_GATE'})`;
         summary.push('MERIDIAN_VETO: FAIL');
+        if (isRetestableTaVeto(vetoResult)) {
+          addPendingRetest(pool, rejectReason);
+          summary.push('PENDING_RETEST: QUEUED');
+        }
       } else {
         appendDecisionLog({ token: tokenSymbol, mint: tokenMint, decision: 'PASS',
           gate: null, reason: vetoResult.reason,
@@ -439,7 +553,7 @@ Balas HANYA JSON valid tanpa Markdown.`;
 
   if (winners.length === 0) {
     const retryCfg = getConfig();
-    const retryMin = Number(retryCfg.screeningIntervalMin) || 15;
+    const retryMin = getIdleDelayMin(retryCfg);
     console.log(`[hunter] Tidak ada kandidat lolos Scout. Scan ulang dalam ${retryMin} menit...`);
     if (rejectTelemetry.length) {
       const lines = rejectTelemetry.slice(0, 5).map((r, i) => {
@@ -548,7 +662,7 @@ Balas HANYA JSON valid tanpa Markdown.`;
 
   if (!finalWinner) {
     const retryCfg = getConfig();
-    const retryMin = Number(retryCfg.screeningIntervalMin) || 15;
+    const retryMin = getIdleDelayMin(retryCfg);
     console.log(`[hunter] GeneralAgent membatalkan semua kandidat. Scan ulang dalam ${retryMin} menit...`);
     await notify(
       `✋ <b>Tidak ada deploy kali ini</b>\n` +
@@ -920,6 +1034,7 @@ function toGateCompact(summary = []) {
     if (line.startsWith('STAGE_3_JUPITER:')) return line.replace('STAGE_3_JUPITER:', 'S3 Jupiter');
     if (line.startsWith('BLACKLIST_LOCAL:')) return line.replace('BLACKLIST_LOCAL:', 'Blacklist');
     if (line.startsWith('MERIDIAN_VETO:')) return line.replace('MERIDIAN_VETO:', 'Meridian');
+    if (line.startsWith('PENDING_RETEST:')) return line.replace('PENDING_RETEST:', 'Retest');
     if (line.startsWith('FLAT_CONFIG_GATE:')) return line.replace('FLAT_CONFIG_GATE:', 'FlatConfig');
     if (line.startsWith('SCOUT_AGENT:')) return line.replace('SCOUT_AGENT:', 'Scout');
     if (line.startsWith('GENERAL_AGENT:')) return line.replace('GENERAL_AGENT:', 'General');
@@ -951,6 +1066,7 @@ function formatGateReport(summary = [], stage = 'UNKNOWN_STAGE') {
     'STAGE_2_GMGN',
     'STAGE_3_JUPITER',
     'MERIDIAN_VETO',
+    'PENDING_RETEST',
     'FLAT_CONFIG_GATE',
     'SCOUT_AGENT',
   ];
@@ -961,8 +1077,9 @@ function formatGateReport(summary = [], stage = 'UNKNOWN_STAGE') {
     STAGE_2_GMGN: 3,
     STAGE_3_JUPITER: 4,
     MERIDIAN_VETO: 5,
-    FLAT_CONFIG_GATE: 6,
-    SCOUT_AGENT: 7,
+    PENDING_RETEST: 6,
+    FLAT_CONFIG_GATE: 7,
+    SCOUT_AGENT: 8,
   };
   const failIdx = stageIndexMap[normalizedStage] || 0;
 
@@ -973,6 +1090,7 @@ function formatGateReport(summary = [], stage = 'UNKNOWN_STAGE') {
     STAGE_2_GMGN: 'STAGE_2_GMGN',
     STAGE_3_JUPITER: 'STAGE_3_JUPITER',
     MERIDIAN_VETO: 'MERIDIAN_VETO',
+    PENDING_RETEST: 'PENDING_RETEST',
     FLAT_CONFIG_GATE: 'FLAT_CONFIG_GATE',
     SCOUT_AGENT: 'SCOUT_AGENT',
   };

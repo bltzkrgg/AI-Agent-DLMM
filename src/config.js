@@ -51,6 +51,11 @@ const DEFAULTS = {
   managementIntervalMin:    15,
   screeningIntervalMin:     15,
   positionUpdateIntervalMin: 5,
+  pendingRetestEnabled:      true,
+  retestIntervalMin:         5,
+  retestTtlMin:              60,
+  retestMaxAttempts:         8,
+  retestMaxReadyPerScan:     3,
 
   // ── LLM Models ───────────────────────────────────────────────────────────
   // Priority: process.env > user-config.json[llm.*] > DEFAULTS
@@ -160,6 +165,11 @@ const CONFIG_BOUNDS = {
   managementIntervalMin:  { min: 1,     max: 1440 },
   screeningIntervalMin:   { min: 5,     max: 1440 },
   positionUpdateIntervalMin: { min: 1,  max: 1440 },
+  pendingRetestEnabled:   { type: 'boolean' },
+  retestIntervalMin:      { min: 1,     max: 1440 },
+  retestTtlMin:           { min: 1,     max: 1440 },
+  retestMaxAttempts:      { min: 1,     max: 100 },
+  retestMaxReadyPerScan:  { min: 1,     max: 20 },
   meteoraDiscoveryLimit:  { min: 50,    max: 500 },
   allowedBinSteps:        { type: 'array' },
   binStepPriority:        { type: 'array' },
@@ -414,6 +424,11 @@ export const SETCONFIG_WHITELIST = {
   // ── Screening ─────────────────────────────────────────────────────
   autoScreeningEnabled:   { section: 'screening',  type: 'boolean', desc: 'Aktifkan auto-screening berkala (true/false)' },
   screeningIntervalMin:   { section: 'screening',  type: 'number',  desc: 'Interval auto-screening (menit, 5–1440)' },
+  pendingRetestEnabled:   { section: 'screening',  type: 'boolean', desc: 'Aktifkan pending retest TA' },
+  retestIntervalMin:      { section: 'screening',  type: 'number',  desc: 'Interval cek ulang pending TA (menit)' },
+  retestTtlMin:           { section: 'screening',  type: 'number',  desc: 'Batas umur pending retest (menit)' },
+  retestMaxAttempts:      { section: 'screening',  type: 'number',  desc: 'Maks percobaan retest per pool' },
+  retestMaxReadyPerScan:  { section: 'screening',  type: 'number',  desc: 'Maks kandidat retest siap per scan' },
 };
 
 // ── resolveNestedKey ─────────────────────────────────────────────────────────
