@@ -51,6 +51,7 @@ const DEFAULTS = {
   managementIntervalMin:    15,
   screeningIntervalMin:     15,
   positionUpdateIntervalMin: 5,
+  jupiterMaxChecksPerScan:   15,
   pendingRetestEnabled:      true,
   retestIntervalMin:         5,
   retestTtlMin:              60,
@@ -165,6 +166,7 @@ const CONFIG_BOUNDS = {
   managementIntervalMin:  { min: 1,     max: 1440 },
   screeningIntervalMin:   { min: 5,     max: 1440 },
   positionUpdateIntervalMin: { min: 1,  max: 1440 },
+  jupiterMaxChecksPerScan:{ min: 1,     max: 50 },
   pendingRetestEnabled:   { type: 'boolean' },
   retestIntervalMin:      { min: 1,     max: 1440 },
   retestTtlMin:           { min: 1,     max: 1440 },
@@ -424,6 +426,7 @@ export const SETCONFIG_WHITELIST = {
   // ── Screening ─────────────────────────────────────────────────────
   autoScreeningEnabled:   { section: 'screening',  type: 'boolean', desc: 'Aktifkan auto-screening berkala (true/false)' },
   screeningIntervalMin:   { section: 'screening',  type: 'number',  desc: 'Interval auto-screening (menit, 5–1440)' },
+  jupiterMaxChecksPerScan:{ section: 'screening',  type: 'number',  desc: 'Maks cek Jupiter per siklus scan' },
   pendingRetestEnabled:   { section: 'screening',  type: 'boolean', desc: 'Aktifkan pending retest TA' },
   retestIntervalMin:      { section: 'screening',  type: 'number',  desc: 'Interval cek ulang pending TA (menit)' },
   retestTtlMin:           { section: 'screening',  type: 'number',  desc: 'Batas umur pending retest (menit)' },

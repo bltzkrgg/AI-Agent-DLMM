@@ -346,7 +346,17 @@ async function scanAndDeploy() {
   // ── Phase 2: FILTER — Strict Serial Screening ────────────
   const scoutCandidates = pools.slice(0, 15);
   console.log(`[hunter] 🔬 Memulai Strict Serial Screening untuk ${scoutCandidates.length} pool...`);
-  const jupiterBudgetRef = { remaining: Math.max(1, Number(cfg.jupiterMaxChecksPerScan) || 3) };
+  // Jupiter budget dibuat minimal sebesar jumlah kandidat batch ini agar
+  // pool yang sudah lolos tahap awal tidak ke-defer prematur sebelum sempat diuji.
+  const configuredJupiterBudget = Number(cfg.jupiterMaxChecksPerScan);
+  const jupiterBudgetRef = {
+    remaining: Math.max(
+      1,
+      scoutCandidates.length,
+      Number.isFinite(configuredJupiterBudget) && configuredJupiterBudget > 0 ? configuredJupiterBudget : 0,
+      15,
+    ),
+  };
 
   let winners = [];
   const rejectTelemetry = [];
