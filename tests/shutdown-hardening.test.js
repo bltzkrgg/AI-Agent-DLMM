@@ -47,3 +47,13 @@ test('telegram exit command closes all active positions with verification summar
   assert.match(hunterSrc, /export async function closeAllActivePositionsByUser/);
   assert.match(hunterSrc, /MANUAL_EXIT_NOT_VERIFIED/);
 });
+
+test('evilPanda uses macro positions with one Meteora account per chunk', () => {
+  const src = readFileSync(evilPandaPath, 'utf8');
+  assert.match(src, /const posKps = chunks\.map\(\(\) => Keypair\.generate\(\)\)/);
+  assert.match(src, /const macroPositionId = posKps\.map\(kp => kp\.publicKey\.toString\(\)\)\.join\(','\)/);
+  assert.match(src, /const posKp = posKps\[i\]/);
+  assert.match(src, /initializePositionAndAddLiquidityByStrategy/);
+  assert.match(src, /sendTransaction\(tx, \[wallet, posKp\]/);
+  assert.match(src, /const activeChunks = userPositions\.filter\(p => chunkPubkeys\.includes\(p\.publicKey\.toString\(\)\)\)/);
+});
