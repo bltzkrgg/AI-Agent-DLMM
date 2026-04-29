@@ -27,6 +27,7 @@ import { validateRuntimeEnv }             from './runtime/env.js';
 import { safeNum, escapeHTML }            from './utils/safeJson.js';
 import { initializeRpcManager }           from './utils/helius.js';
 import { createMessageTransport }         from './telegram/messageTransport.js';
+import { getTodayResults }                from './db/database.js';
 
 // ── PID Lock — cegah multiple instance ───────────────────────────
 const PID_FILE = new URL('../../bot.pid', import.meta.url).pathname;
@@ -96,6 +97,10 @@ async function notify(msg, opts = {}) {
   try {
     await sendLong(CHAT_ID, msg, { parse_mode: 'HTML', ...opts });
   } catch {}
+}
+
+async function urgentNotify(msg) {
+  await notify(msg);
 }
 
 // Register notify ke hunterAlpha
@@ -613,6 +618,7 @@ bot.onText(/\/claim_fees(?:\s+(\S+))?/, async (msg) => {
 // Research sessions state
 
 let   _screeningLoopTimer = null;
+let _lastDailyLossAlertAt = 0;
 
 async function runScreeningLoop() {
   // Baca config FRESH saat start (bukan dari closure lama)
@@ -621,7 +627,42 @@ async function runScreeningLoop() {
     console.log('[screening-loop] autoScreeningEnabled=false — loop tidak dijalankan.');
     return;
   }
-  console.log('[screening-loop] Screening loop nonaktif — tidak ada alert fee/TVL yang dikirim.');
+
+  // Konversi: config.screeningIntervalMin (angka menit) → milidetik
+  // Fallback eksplisit: 15 menit (bukan 2 menit)
+  const intervalMin = Number(startCfg.screeningIntervalMin) || 15;
+  const intervalMs  = intervalMin * 60 * 1000;
+
+  const tick = async () => {
+    // Selalu baca config FRESH setiap tick agar perubahan /setconfig langsung efektif
+    const cfg = getConfig();
+
+    // Guard: hentikan diri sendiri jika dinonaktifkan via /setconfig
+    if (!cfg.autoScreeningEnabled) {
+      stopScreeningLoop();
+      return;
+    }
+
+    try {
+      const liveCfg = getConfig();
+      const today = getTodayResults();
+      const dailyPnl = Number(today.totalPnlUsd || 0);
+      if (dailyPnl < -liveCfg.dailyLossLimitUsd) {
+        console.warn('[screening-loop] Daily Circuit Breaker: Skip screening'); // Daily Circuit Breaker return guard
+        if (Date.now() - _lastDailyLossAlertAt > 12 * 60 * 60 * 1000) {
+          _lastDailyLossAlertAt = Date.now();
+          await urgentNotify(`🛑 <b>DAILY CIRCUIT BREAKER</b>\nPnL harian: <code>${dailyPnl.toFixed(2)} USD</code>`);
+        }
+        return;
+      }
+    } catch (e) {
+      console.warn('[screening-loop] error:', e.message);
+    }
+  };
+
+  // Hanya jalankan background interval (tanpa memanggil tick seketika)
+  _screeningLoopTimer = setInterval(tick, intervalMs);
+  console.log(`🔍 Screening loop aktif — interval ${intervalMin} menit (${intervalMs / 1000}s)`);
 }
 
 function stopScreeningLoop() {

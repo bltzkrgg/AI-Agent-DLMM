@@ -1070,7 +1070,7 @@ export async function runAutoscreening(bot, chatId) {
           const effValue= volRaw / (tvlRaw || 1);
           const eff     = effValue > 1000 ? '>1000' : effValue.toFixed(2);
           const binStep = pool.binStep || '?';
-          const discoverySource = pool.DISCOVERY_SOURCE || pool.discoverySource || 'MERIDIAN';
+          const discoverySource = pool.DISCOVERY_SOURCE || pool.discoverySource || 'METEORA_PRIMARY';
 
           let stIcon = '⚪';
           try {

@@ -307,31 +307,53 @@ export async function checkPvpGuardVeto(mint, symbol) {
   }
 }
 
-// ── 4. Pool Discovery via Meridian API ───────────────────────────
+// ── 4. Pool Discovery via Meteora-first ───────────────────────────
 //
-// Mengambil daftar pool dari Meridian Server Discovery (jika publicApiKey ada)
-// atau langsung dari Meteora Pool Discovery API sebagai fallback.
+// Mengambil daftar pool dari Meteora Pool Discovery API sebagai sumber utama.
+// Meridian Server Discovery dipakai hanya sebagai fallback bila Meteora kosong/error.
 // Filter: binStep sesuai binStepPriority, sorted by fee_active_tvl_ratio DESC.
+
+async function fetchDiscoveryPoolsFromMeteora(limit, filterStr, timeframe, category) {
+  const url = `${POOL_DISCOVERY_BASE}/pools?page_size=${limit}&filter_by=${encodeURIComponent(filterStr)}&timeframe=${timeframe}&category=${category}`;
+  const res = await fetchWithTimeout(url, {}, 10000);
+  if (!res.ok) {
+    return { pools: [], source: null, reason: `Meteora Discovery ${res.status}` };
+  }
+  const data = await res.json();
+  const pools = Array.isArray(data.data) ? data.data : (Array.isArray(data) ? data : []);
+  return { pools, source: 'METEORA_PRIMARY', reason: 'Meteora Discovery PASS' };
+}
+
+async function fetchDiscoveryPoolsFromMeridian(limit, filterStr, timeframe, category) {
+  const cfg = getConfig();
+  if (!cfg.publicApiKey) return { pools: [], source: null, reason: 'Meridian discovery skipped (no publicApiKey)' };
+  const base = getMeridianBase();
+  const url = `${base}/discovery/pools?page_size=${limit}&filter_by=${encodeURIComponent(filterStr)}&timeframe=${timeframe}&category=${category}`;
+  const res = await fetchWithTimeout(url, { headers: getMeridianHeaders() }, 10000);
+  if (!res.ok) {
+    return { pools: [], source: null, reason: `Meridian Discovery ${res.status}` };
+  }
+  const data = await res.json();
+  const pools = Array.isArray(data.data) ? data.data : (Array.isArray(data) ? data : []);
+  return { pools, source: 'MERIDIAN_FALLBACK', reason: 'Meridian Discovery PASS' };
+}
 
 /**
  * @param {{ limit?: number }} opts
  * @returns {Promise<Array>} - Array pool objects sorted by fee/tvl ratio
  */
 export async function discoverHighFeePoolsMeridian({ limit = 50 } = {}) {
-  const cfg    = getConfig();
-  const apiKey = cfg.publicApiKey;
-  const base   = getMeridianBase();
+  const cfg = getConfig();
 
-  const binStepPriority    = Array.isArray(cfg.binStepPriority) ? cfg.binStepPriority.map(Number) : [200, 125, 100];
-  const minFeeRatio        = Number(cfg.minFeeActiveTvlRatio) || 0.002;
-  const minMcap            = cfg.minMcap !== undefined ? Number(cfg.minMcap) : 250000;
-  const maxMcap            = Number(cfg.maxMcapUsd || cfg.maxMcap) || 0;
-  const minTvl             = Number(cfg.minTvl) || 0;
-  const maxTvl             = Number(cfg.maxTvl) || 0;
-  const timeframe          = cfg.discoveryTimeframe || '1h';
-  const category           = cfg.discoveryCategory || '';
+  const binStepPriority = Array.isArray(cfg.binStepPriority) ? cfg.binStepPriority.map(Number) : [200, 125, 100];
+  const minFeeRatio = Number(cfg.minFeeActiveTvlRatio) || 0.002;
+  const minMcap = cfg.minMcap !== undefined ? Number(cfg.minMcap) : 250000;
+  const maxMcap = Number(cfg.maxMcapUsd || cfg.maxMcap) || 0;
+  const minTvl = Number(cfg.minTvl) || 0;
+  const maxTvl = Number(cfg.maxTvl) || 0;
+  const timeframe = cfg.discoveryTimeframe || '1h';
+  const category = cfg.discoveryCategory || '';
 
-  // Build filter string (Meteora format)
   const minBinStep = Math.min(...binStepPriority);
   const maxBinStep = Math.max(...binStepPriority);
 
@@ -346,53 +368,39 @@ export async function discoverHighFeePoolsMeridian({ limit = 50 } = {}) {
     `fee_active_tvl_ratio>=${minFeeRatio}`,
   ];
   if (maxMcap > 0) filterParts.push(`base_token_market_cap<=${maxMcap}`);
-  if (maxTvl  > 0) filterParts.push(`tvl<=${maxTvl}`);
+  if (maxTvl > 0) filterParts.push(`tvl<=${maxTvl}`);
 
   const filterStr = filterParts.join('&&');
 
   let rawPools = [];
-  let discoverySource = 'MERIDIAN';
+  let discoverySource = 'METEORA_PRIMARY';
 
   try {
-    // Tier 1: Meridian Server Discovery (authenticated, lebih fresh)
-    if (apiKey) {
-      const url  = `${base}/discovery/pools?page_size=${limit}&filter_by=${encodeURIComponent(filterStr)}&timeframe=${timeframe}&category=${category}`;
-      const res  = await fetchWithTimeout(url, { headers: getMeridianHeaders() }, 10000);
-      if (res.ok) {
-        const data = await res.json();
-        rawPools   = Array.isArray(data.data) ? data.data : (Array.isArray(data) ? data : []);
-        console.log(`[meridianVeto] Meridian Discovery: ${rawPools.length} pools`);
-      } else {
-        console.warn(`[meridianVeto] Meridian Discovery ${res.status} — fallback ke Meteora`);
-        discoverySource = 'METEORA_FALLBACK';
-      }
-    }
+    const meteora = await fetchDiscoveryPoolsFromMeteora(limit, filterStr, timeframe, category);
+    rawPools = meteora.pools || [];
+    discoverySource = meteora.source || discoverySource;
+    console.log(`[meridianVeto] Meteora Discovery: ${rawPools.length} pools`);
   } catch (e) {
-    console.warn(`[meridianVeto] Meridian Discovery error: ${e.message} — fallback ke Meteora`);
-    discoverySource = 'METEORA_FALLBACK';
+    console.warn(`[meridianVeto] Meteora Discovery error: ${e.message} — fallback ke Meridian`);
   }
 
-  // Tier 2: Meteora Pool Discovery API langsung
   if (rawPools.length === 0) {
     try {
-      const url = `${POOL_DISCOVERY_BASE}/pools?page_size=${limit}&filter_by=${encodeURIComponent(filterStr)}&timeframe=${timeframe}&category=${category}`;
-      const res = await fetchWithTimeout(url, {}, 10000);
-      if (res.ok) {
-        const data = await res.json();
-        rawPools   = Array.isArray(data.data) ? data.data : [];
-        console.log(`[meridianVeto] Meteora Discovery fallback: ${rawPools.length} pools`);
-        discoverySource = 'METEORA_FALLBACK';
+      const meridian = await fetchDiscoveryPoolsFromMeridian(limit, filterStr, timeframe, category);
+      rawPools = meridian.pools || [];
+      discoverySource = meridian.source || discoverySource;
+      if (rawPools.length > 0) {
+        console.log(`[meridianVeto] Meridian Discovery fallback: ${rawPools.length} pools`);
       }
     } catch (e) {
-      console.warn(`[meridianVeto] Meteora Discovery error: ${e.message}`);
+      console.warn(`[meridianVeto] Meridian Discovery error: ${e.message}`);
     }
   }
 
   if (rawPools.length === 0) return [];
 
-  // Normalize, filter, dan sort by fee/tvl ratio + binStep priority
   const normalized = rawPools
-    .map(p => normalizePool(p, discoverySource))
+    .map((p) => normalizePool(p, discoverySource))
     .filter(p => {
       // Hanya pool dengan binStep yang ada di priority list
       return binStepPriority.includes(p.binStep);
