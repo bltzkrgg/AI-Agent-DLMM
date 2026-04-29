@@ -21,7 +21,7 @@ import { getConfig, updateConfig, isConfigKeySupported, resolveNestedKey, SETCON
 import { runLinearLoop, stopLoop, setNotifyFn, isRunning, getCurrentPosition, getActivePositions, setShutdownInProgress, closeAllActivePositionsByUser, closeAllActivePositionsForShutdown, retryFailedShutdownPositions, runAutoscreening, spawnMonitorForRestoredPositions } from './agents/hunterAlpha.js';
 import { getActivePositionCount, reconcileStartupPositions, EP_CONFIG } from './sniper/evilPanda.js';
 import { analyzePerformance, formatEvolutionReport }     from './learn/statelessEvolve.js';
-import { generateBriefing }                              from './telegram/briefing.js';
+import { generateBriefing, formatActivePositionsTelegram } from './telegram/briefing.js';
 import { readBlacklist, removeFromBlacklist }            from './learn/tokenBlacklist.js';
 import { validateRuntimeEnv }             from './runtime/env.js';
 import { safeNum, escapeHTML }            from './utils/safeJson.js';
@@ -139,13 +139,13 @@ bot.onText(/\/status/, async (msg) => {
   const chatId   = msg.chat.id;
   const running  = isRunning();
   const posKey   = getCurrentPosition();
+  const active   = Array.isArray(getActivePositions()) ? getActivePositions() : [];
   const balance  = await getWalletBalance();
   const cfg      = getConfig();
 
-  let posLine = 'Tidak ada posisi aktif.';
-  if (posKey) {
-    posLine = `Posisi: <code>${posKey.slice(0,16)}...</code>`;
-  }
+  const posLine = active.length > 0
+    ? formatActivePositionsTelegram(active, { maxItems: 3 })
+    : `\n\n🏦 <b>Posisi Aktif</b>: <code>0</code>\n   <i>Tidak ada posisi aktif.</i>`;
 
   bot.sendMessage(chatId,
     `📊 <b>Linear Sniper Status</b>\n\n` +

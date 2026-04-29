@@ -13,9 +13,55 @@
 import { getDecisionStats }     from '../learn/decisionLog.js';
 import { parseHarvestLog }       from '../learn/statelessEvolve.js';
 import { readBlacklist }         from '../learn/tokenBlacklist.js';
-import { getActivePositionCount } from '../sniper/evilPanda.js';
+import { getActivePositionKeys, getPositionMeta } from '../sniper/evilPanda.js';
 import { getWalletBalance }       from '../solana/wallet.js';
 import { getConfig }              from '../config.js';
+import { escapeHTML }             from '../utils/safeJson.js';
+
+function formatPnlSigned(value, digits = 2) {
+  if (!Number.isFinite(value)) return 'n/a';
+  const sign = value >= 0 ? '+' : '';
+  return `${sign}${value.toFixed(digits)}%`;
+}
+
+export function formatActivePositionsTelegram(activePositions = [], { maxItems = 5 } = {}) {
+  const items = Array.isArray(activePositions) ? activePositions.filter(Boolean) : [];
+  const total = items.length;
+  const header =
+    `\n\n🏦 <b>Posisi Aktif</b>: <code>${total}</code>\n`;
+
+  if (total === 0) {
+    return header + `   <i>Tidak ada posisi aktif.</i>`;
+  }
+
+  const lines = items.slice(0, maxItems).map((pos, idx) => {
+    const symbol = escapeHTML(pos.symbol || pos.token || 'UNKNOWN');
+    const pubkey = escapeHTML(String(pos.pubkey || '').slice(0, 8) || '--------');
+    const pool   = escapeHTML(String(pos.poolAddress || '').slice(0, 8) || '--------');
+    const state  = escapeHTML(String(pos.lifecycleState || pos.state || 'OPEN').toUpperCase());
+    const range  = Number.isFinite(pos.rangeMin) && Number.isFinite(pos.rangeMax)
+      ? `${pos.rangeMin}-${pos.rangeMax}`
+      : 'n/a';
+    const hwm    = formatPnlSigned(Number(pos.hwmPct));
+    const deploy = Number.isFinite(Number(pos.deploySol)) ? `${Number(pos.deploySol).toFixed(3)} SOL` : 'n/a';
+
+    return [
+      `${String(idx + 1).padStart(2, ' ')}. <b>${symbol}</b>`,
+      `   Pos: <code>${pubkey}</code>`,
+      `   Pool: <code>${pool}</code>`,
+      `   State: <code>${state}</code>`,
+      `   Range: <code>${escapeHTML(range)}</code>`,
+      `   HWM: <code>${escapeHTML(hwm)}</code>`,
+      `   Deploy: <code>${escapeHTML(deploy)}</code>`,
+    ].join('\n');
+  }).join('\n\n');
+
+  const more = total > maxItems
+    ? `\n   <i>+${total - maxItems} posisi lagi</i>`
+    : '';
+
+  return `${header}<pre>${lines}</pre>${more}`;
+}
 
 // ── generateBriefing ─────────────────────────────────────────────
 
@@ -36,7 +82,20 @@ export async function generateBriefing(hoursBack = 24) {
   const totalSol = recent.reduce((s, t) => s + t.sol, 0);
 
   // 3. Active positions
-  const activeCount = getActivePositionCount();
+  const activeKeys  = getActivePositionKeys();
+  const activeItems = activeKeys.map((pubkey) => {
+    const meta = getPositionMeta(pubkey) || {};
+    return {
+      pubkey,
+      symbol: meta.tokenXMint ? meta.tokenXMint.slice(0, 8) : pubkey.slice(0, 8),
+      poolAddress: meta.poolAddress || '',
+      lifecycleState: meta.lifecycleState || meta.lifecycle_state || 'OPEN',
+      rangeMin: Number(meta.rangeMin),
+      rangeMax: Number(meta.rangeMax),
+      hwmPct: Number(meta.hwmPct),
+      deploySol: Number(meta.deploySol),
+    };
+  });
 
   // 4. Blacklist
   const blacklist   = readBlacklist();
@@ -68,8 +127,8 @@ export async function generateBriefing(hoursBack = 24) {
     `   SOL in   : <code>${totalSol.toFixed(4)} SOL</code>`;
 
   const posBlock =
-    `\n\n🏦 <b>Posisi Aktif</b>: <code>${activeCount}</code>\n` +
-    `💰 <b>Wallet</b>: <code>${balance} SOL</code>`;
+    formatActivePositionsTelegram(activeItems, { maxItems: 5 }) +
+    `\n💰 <b>Wallet</b>: <code>${balance} SOL</code>`;
 
   const blBlock =
     `\n\n🚫 <b>Blacklist</b>: <code>${blacklist.length}</code> token\n` +
