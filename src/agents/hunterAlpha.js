@@ -213,6 +213,12 @@ function chunkArray(items, size = 2) {
   return out;
 }
 
+function isNaturalDeployError(error) {
+  const msg = String(error?.message || error || '').toLowerCase();
+  return ['partial', 'simulation failed', 'slippage', 'timeout', 'blockhash']
+    .some((needle) => msg.includes(needle));
+}
+
 function getIdleDelayMin(cfg = getConfig()) {
   if (_pendingRetestQueue.size > 0) {
     return Math.max(1, Number(cfg.retestIntervalMin) || 5);
@@ -779,8 +785,12 @@ Balas HANYA JSON valid tanpa Markdown.`;
         positionPubkey = await deployPosition(poolAddress);
         _positionLabels.set(positionPubkey, { symbol });
       } catch (e) {
-        console.error(`[hunter] deployPosition gagal: ${e.message}`);
-        await notify(`❌ <b>Deploy gagal:</b>\n<code>${e.message}</code>\n\n<i>Lanjut ke kandidat berikutnya...</i>`);
+        if (isNaturalDeployError(e)) {
+          console.warn(`[hunter] deployPosition natural fail silenced: ${e.message}`);
+        } else {
+          console.error(`[hunter] deployPosition gagal: ${e.message}`);
+          await notify(`❌ <b>Deploy gagal:</b>\n<code>${e.message}</code>\n\n<i>Lanjut ke kandidat berikutnya...</i>`);
+        }
         return false;
       }
 

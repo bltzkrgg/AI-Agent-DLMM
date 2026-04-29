@@ -29,10 +29,9 @@ test('evilPanda enforces on-chain close verification before success', () => {
   assert.match(src, /Position closed & verified/);
 });
 
-test('manual close is detected without triggering another stop loss exit', () => {
+test('manual close helper records manual withdrawals when called explicitly', () => {
   const evilPandaSrc = readFileSync(evilPandaPath, 'utf8');
   const hunterSrc = readFileSync(hunterPath, 'utf8');
-  assert.match(evilPandaSrc, /action:\s*'MANUAL_CLOSED'/);
   assert.match(evilPandaSrc, /export async function markPositionManuallyClosed/);
   assert.match(hunterSrc, /action === 'MANUAL_CLOSED'/);
   assert.match(hunterSrc, /Manual close terdeteksi/);
@@ -56,4 +55,21 @@ test('evilPanda uses macro positions with one Meteora account per chunk', () => 
   assert.match(src, /initializePositionAndAddLiquidityByStrategy/);
   assert.match(src, /sendTransaction\(tx, \[wallet, posKp\]/);
   assert.match(src, /const activeChunks = userPositions\.filter\(p => chunkPubkeys\.includes\(p\.publicKey\.toString\(\)\)\)/);
+});
+
+test('macro monitor treats missing active chunks as stop loss fail-safe', () => {
+  const src = readFileSync(evilPandaPath, 'utf8');
+  assert.match(src, /if \(activeChunks\.length === 0\) \{/);
+  assert.match(src, /action:\s*'STOP_LOSS'/);
+  assert.match(src, /No active macro chunks found on-chain/);
+});
+
+test('deploy natural failures are silenced from Telegram notifications', () => {
+  const src = readFileSync(hunterPath, 'utf8');
+  assert.match(src, /function isNaturalDeployError/);
+  assert.match(src, /'simulation failed'/);
+  assert.match(src, /'slippage'/);
+  assert.match(src, /'timeout'/);
+  assert.match(src, /'blockhash'/);
+  assert.match(src, /deployPosition natural fail silenced/);
 });

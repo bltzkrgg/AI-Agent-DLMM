@@ -591,8 +591,8 @@ export async function monitorPnL(positionPubkey) {
     const activeChunks = userPositions.filter(p => chunkPubkeys.includes(p.publicKey.toString()));
 
     if (activeChunks.length === 0) {
-      return { action: 'MANUAL_CLOSED', currentValueSol: 0, pnlPct: 0, inRange: false,
-               note: 'Position not found on-chain — assumed manually closed or withdrawn' };
+      return { action: 'STOP_LOSS', currentValueSol: 0, pnlPct: -100, inRange: false,
+               note: 'No active macro chunks found on-chain — assumed closed' };
     }
 
     const rawPrice = safeNum(activeBin.pricePerToken);
