@@ -73,9 +73,24 @@ test('safer defaults stay conservative for real-capital usage', async () => {
   assert.equal(cfg.maxPositions, 3);
   assert.equal(cfg.gasReserve, 0.03);
   assert.equal(cfg.requireConfirmation, true);
+  assert.equal(cfg.realtimePnlIntervalSec, 15);
   assert.equal(cfg.maxDailyDrawdownPct, 6);
   assert.equal(cfg.maxPriceImpactPct, 1.5);
   assert.deepEqual(cfg.allowedBinSteps, [100, 125]);
+});
+
+test('realtime PnL terminal interval is configurable', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'dlmm-realtime-pnl-config-'));
+  const configPath = join(root, 'user-config.json');
+
+  process.env.BOT_CONFIG_PATH = configPath;
+  const configModule = await importFresh(join(repoRoot, 'src/config.js'));
+
+  assert.equal(configModule.isConfigKeySupported('realtimePnlIntervalSec'), true);
+  configModule.updateConfig({ realtimePnlIntervalSec: 30 });
+
+  const cfg = configModule.getConfig();
+  assert.equal(cfg.realtimePnlIntervalSec, 30);
 });
 
 test('entry capacity respects deployment stage and clamps overrides', async () => {

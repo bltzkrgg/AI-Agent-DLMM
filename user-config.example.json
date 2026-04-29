@@ -47,6 +47,7 @@
   "managementIntervalMin": 10,
   "screeningIntervalMin": 15,
   "positionUpdateIntervalMin": 5,
+  "realtimePnlIntervalSec": 15,
   "autoScreeningEnabled": false,
 
   "radar": {

@@ -87,6 +87,7 @@ let _shutdownInProgress = false;
 const _closingPositions = new Set();
 const _positionLabels = new Map(); // pubkey -> { symbol }
 const _monitoredPositions = new Set();
+const _lastRealtimePnlLogAt = new Map();
 const _pendingRetestQueue = new Map(); // mint -> { pool, symbol, reason, attempts, nextCheckAt, expiresAt }
 
 function listActivePositions() {
@@ -220,6 +221,35 @@ function isNaturalDeployError(error) {
   const msg = String(error?.message || error || '').toLowerCase();
   return ['partial', 'simulation failed', 'slippage', 'timeout', 'blockhash']
     .some((needle) => msg.includes(needle));
+}
+
+function getRealtimePnlIntervalMs() {
+  const cfg = getConfig();
+  const seconds = Math.max(5, Number(cfg.realtimePnlIntervalSec) || 15);
+  return Math.round(seconds * 1000);
+}
+
+function shouldLogRealtimePnl(positionPubkey) {
+  const now = Date.now();
+  const intervalMs = getRealtimePnlIntervalMs();
+  const last = _lastRealtimePnlLogAt.get(positionPubkey) || 0;
+  if (last && now - last < intervalMs) return false;
+  _lastRealtimePnlLogAt.set(positionPubkey, now);
+  return true;
+}
+
+function logRealtimePnl({ positionPubkey, symbol, status }) {
+  const pnlPct = Number(status?.pnlPct) || 0;
+  const currentValueSol = Number(status?.currentValueSol) || 0;
+  const rangeIcon = status?.inRange ? '🟢' : '🟡';
+  const intervalSec = Math.round(getRealtimePnlIntervalMs() / 1000);
+  const ts = new Date().toISOString();
+  console.log(
+    `[RealtimePnL] ${ts} ${rangeIcon} ${symbol} ` +
+    `pos=${positionPubkey.slice(0,8)} pnl=${pnlPct.toFixed(2)}% ` +
+    `value=${currentValueSol.toFixed(4)}SOL action=${status?.action || 'UNKNOWN'} ` +
+    `interval=${intervalSec}s`
+  );
 }
 
 function getIdleDelayMin(cfg = getConfig()) {
@@ -828,7 +858,7 @@ async function monitorLoop(positionPubkey, symbol, poolAddress) {
     return;
   }
   _monitoredPositions.add(positionPubkey);
-  console.log(`[hunter] 🔒 MONITOR lock: ${positionPubkey.slice(0,8)}`);
+  console.log(`[hunter] 🔒 MONITOR lock: ${positionPubkey.slice(0,8)} | RealtimePnL interval=${Math.round(getRealtimePnlIntervalMs() / 1000)}s`);
   let consecutiveErrors = 0;
 
   try {
@@ -875,9 +905,9 @@ async function monitorLoop(positionPubkey, symbol, poolAddress) {
         return;
       }
 
-      // Log ringkas tiap poll
-      const rangeIcon = inRange ? '🟢' : '🟡';
-      console.log(`[hunter] ${rangeIcon} ${symbol} pnl=${pnlPct.toFixed(2)}% val=${currentValueSol.toFixed(4)}SOL action=${action}`);
+      if (shouldLogRealtimePnl(positionPubkey)) {
+        logRealtimePnl({ positionPubkey, symbol, status });
+      }
 
       // Exit trigger
       if (action === 'TAKE_PROFIT') {
@@ -915,6 +945,7 @@ async function monitorLoop(positionPubkey, symbol, poolAddress) {
     await safeExit(positionPubkey, 'LOOP_STOPPED');
   } finally {
     _monitoredPositions.delete(positionPubkey);
+    _lastRealtimePnlLogAt.delete(positionPubkey);
   }
 }
 
