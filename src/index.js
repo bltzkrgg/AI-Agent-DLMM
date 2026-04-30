@@ -204,7 +204,7 @@ bot.onText(/\/exit/, async (msg) => {
 
   try {
     stopLoop();
-    const summary = await closeAllActivePositionsByUser('MANUAL_COMMAND', 30_000);
+    const summary = await closeAllActivePositionsByUser('MANUAL_COMMAND', 180_000);
     const balance = await getWalletBalance();
 
     if (summary.failed.length > 0 || summary.remaining > 0) {

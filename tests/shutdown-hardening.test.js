@@ -42,9 +42,11 @@ test('telegram exit command closes all active positions with verification summar
   const indexSrc = readFileSync(indexPath, 'utf8');
   const hunterSrc = readFileSync(hunterPath, 'utf8');
   assert.match(indexSrc, /closeAllActivePositionsByUser\('MANUAL_COMMAND'/);
+  assert.match(indexSrc, /closeAllActivePositionsByUser\('MANUAL_COMMAND', 180_000\)/);
   assert.match(indexSrc, /Manual exit selesai dan verified/);
   assert.match(indexSrc, /Manual exit belum bersih/);
   assert.match(hunterSrc, /export async function closeAllActivePositionsByUser/);
+  assert.match(hunterSrc, /timeoutMs = 180_000/);
   assert.match(hunterSrc, /MANUAL_EXIT_NOT_VERIFIED/);
 });
 
@@ -69,12 +71,22 @@ test('monolith monitor treats missing active position as stop loss fail-safe', (
 
 test('evilPanda removeLiquidity uses Meteora SDK parameter names', () => {
   const src = readFileSync(evilPandaPath, 'utf8');
-  assert.match(src, /minBinId:\s*activePos\.positionData\.lowerBinId/);
-  assert.match(src, /maxBinId:\s*activePos\.positionData\.upperBinId/);
+  assert.match(src, /fromBinId:\s*lowerBinId/);
+  assert.match(src, /toBinId:\s*upperBinId/);
   assert.match(src, /bps:\s*new BN\(10000\)/);
-  assert.doesNotMatch(src, /fromBinId:/);
-  assert.doesNotMatch(src, /toBinId:/);
+  assert.doesNotMatch(src, /minBinId:\s*activePos\.positionData\.lowerBinId/);
+  assert.doesNotMatch(src, /maxBinId:\s*activePos\.positionData\.upperBinId/);
   assert.doesNotMatch(src, /liquidityBpsToRemove:/);
+});
+
+test('evilPanda retries close cleanup before reporting manual exit failure', () => {
+  const src = readFileSync(evilPandaPath, 'utf8');
+  assert.match(src, /async function buildClosePositionTxs/);
+  assert.match(src, /closePositionIfEmpty/);
+  assert.match(src, /closePosition/);
+  assert.match(src, /cleanupAttempt = 1; cleanupAttempt <= 3/);
+  assert.match(src, /getFreshActivePosition/);
+  assert.match(src, /accountInfo === null/);
 });
 
 test('dryRun mode only simulates tx in evilPanda and hunter', () => {

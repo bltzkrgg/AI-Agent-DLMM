@@ -231,6 +231,77 @@ async function pollTxConfirm(connection, sig, maxWaitMs = 90_000) {
   throw new Error(`TX ${sig.slice(0, 8)}… not confirmed after ${maxWaitMs / 1000}s`);
 }
 
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function sendExitTx(connection, wallet, tx, microLamports) {
+  injectPriorityFee(tx, { units: EP_CONFIG.COMPUTE_UNITS, microLamports });
+
+  let sig;
+  if (tx instanceof VersionedTransaction) {
+    tx.sign([wallet]);
+    sig = await connection.sendTransaction(tx, { skipPreflight: false, maxRetries: 3 });
+  } else {
+    sig = await connection.sendTransaction(tx, [wallet], { skipPreflight: false, maxRetries: 3 });
+  }
+
+  await pollTxConfirm(connection, sig, 90_000);
+  return sig;
+}
+
+async function getFreshActivePosition(connection, wallet, poolAddress, positionPubkey) {
+  const dlmmPool = await DLMM.create(connection, new PublicKey(poolAddress));
+  await dlmmPool.refetchStates().catch(() => {});
+  const { userPositions } = await dlmmPool.getPositionsByUserAndLbPair(wallet.publicKey);
+  const activePos = userPositions.find((p) => p.publicKey.toString() === positionPubkey);
+  return { dlmmPool, activePos };
+}
+
+async function buildClosePositionTxs(dlmmPool, wallet, activePos) {
+  const pd = activePos?.positionData || {};
+  const lowerBinId = pd.lowerBinId;
+  const upperBinId = pd.upperBinId;
+
+  if (lowerBinId !== undefined && upperBinId !== undefined) {
+    try {
+      const txs = await dlmmPool.removeLiquidity({
+        position: activePos.publicKey,
+        user: wallet.publicKey,
+        fromBinId: lowerBinId,
+        toBinId: upperBinId,
+        bps: new BN(10000),
+        shouldClaimAndClose: true,
+      });
+      return Array.isArray(txs) ? txs : [txs];
+    } catch (e) {
+      console.warn(`[evilPanda] removeLiquidity close attempt failed: ${e.message}`);
+    }
+  }
+
+  if (typeof dlmmPool.closePositionIfEmpty === 'function') {
+    try {
+      const txs = await dlmmPool.closePositionIfEmpty({
+        owner: wallet.publicKey,
+        position: activePos,
+      });
+      return Array.isArray(txs) ? txs : [txs];
+    } catch (e) {
+      console.warn(`[evilPanda] closePositionIfEmpty attempt failed: ${e.message}`);
+    }
+  }
+
+  if (typeof dlmmPool.closePosition === 'function') {
+    const txs = await dlmmPool.closePosition({
+      owner: wallet.publicKey,
+      position: activePos,
+    });
+    return Array.isArray(txs) ? txs : [txs];
+  }
+
+  throw new Error(`NO_CLOSE_METHOD_AVAILABLE_${activePos.publicKey.toString().slice(0, 8)}`);
+}
+
 async function verifyPositionClosedOnChain(connection, wallet, poolAddress, positionPubkey, {
   attempts = 3,
   delayMs = 1200,
@@ -240,11 +311,12 @@ async function verifyPositionClosedOnChain(connection, wallet, poolAddress, posi
       const dlmmPool = await DLMM.create(connection, new PublicKey(poolAddress));
       const { userPositions } = await dlmmPool.getPositionsByUserAndLbPair(wallet.publicKey);
       const stillOpen = userPositions.some((p) => p.publicKey.toString() === positionPubkey);
-      if (!stillOpen) return true;
+      const accountInfo = await connection.getAccountInfo(new PublicKey(positionPubkey));
+      if (!stillOpen && accountInfo === null) return true;
     } catch {
       // non-fatal during verification; retry a few times
     }
-    if (i < attempts - 1) await new Promise((r) => setTimeout(r, delayMs));
+    if (i < attempts - 1) await sleep(delayMs);
   }
   return false;
 }
@@ -694,8 +766,8 @@ export async function exitPosition(positionPubkey, reason = 'MANUAL') {
       const dryRunRemoveTxs = await dlmmPool.removeLiquidity({
         position: activePos.publicKey,
         user: wallet.publicKey,
-        minBinId: activePos.positionData.lowerBinId,
-        maxBinId: activePos.positionData.upperBinId,
+        fromBinId: activePos.positionData.lowerBinId,
+        toBinId: activePos.positionData.upperBinId,
         bps: new BN(10000),
         shouldClaimAndClose: true,
       });
@@ -744,24 +816,41 @@ export async function exitPosition(positionPubkey, reason = 'MANUAL') {
       estimatedFeeSol = 0;
     }
 
-    // 1. Remove all liquidity
-    const removeTxs = await dlmmPool.removeLiquidity({
-      position: activePos.publicKey,
-      user: wallet.publicKey,
-      minBinId: activePos.positionData.lowerBinId,
-      maxBinId: activePos.positionData.upperBinId,
-      bps: new BN(10000),
-      shouldClaimAndClose: true,
-    });
-
-    const removeTxList = Array.isArray(removeTxs) ? removeTxs : [removeTxs];
+    // 1. Remove all liquidity and request account close.
+    const removeTxList = await buildClosePositionTxs(dlmmPool, wallet, activePos);
     const removeSignatures = [];
     for (const tx of removeTxList) {
-      injectPriorityFee(tx, { units: EP_CONFIG.COMPUTE_UNITS, microLamports });
-      const sig = await connection.sendTransaction(tx, [wallet], { skipPreflight: false, maxRetries: 3 });
-      await pollTxConfirm(connection, sig);
+      const sig = await sendExitTx(connection, wallet, tx, microLamports);
       removeSignatures.push(sig);
       console.log(`[evilPanda] Remove liquidity TX confirmed: ${sig.slice(0,8)}`);
+    }
+
+    // Some DLMM accounts need a fresh-state cleanup after fees/rewards settle.
+    for (let cleanupAttempt = 1; cleanupAttempt <= 3; cleanupAttempt++) {
+      await sleep(cleanupAttempt === 1 ? 6000 : 4000);
+      const isClosed = await verifyPositionClosedOnChain(connection, wallet, reg.poolAddress, positionPubkey, {
+        attempts: 1,
+        delayMs: 0,
+      });
+      if (isClosed) break;
+
+      const { dlmmPool: freshPool, activePos: freshPos } = await getFreshActivePosition(
+        connection,
+        wallet,
+        reg.poolAddress,
+        positionPubkey,
+      );
+      if (!freshPos) {
+        continue;
+      }
+
+      console.warn(`[evilPanda] Position masih open setelah remove; cleanup attempt ${cleanupAttempt}/3`);
+      const cleanupTxList = await buildClosePositionTxs(freshPool, wallet, freshPos);
+      for (const tx of cleanupTxList) {
+        const sig = await sendExitTx(connection, wallet, tx, microLamports);
+        removeSignatures.push(sig);
+        console.log(`[evilPanda] Cleanup close TX confirmed: ${sig.slice(0,8)}`);
+      }
     }
 
     // 2. Swap sisa tokenX → SOL (jika ada)

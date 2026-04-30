@@ -1064,7 +1064,7 @@ export async function closeAllActivePositionsForShutdown(signal = 'SIGTERM', tim
   };
 }
 
-export async function closeAllActivePositionsByUser(reason = 'MANUAL_COMMAND', timeoutMs = 30_000) {
+export async function closeAllActivePositionsByUser(reason = 'MANUAL_COMMAND', timeoutMs = 180_000) {
   const snapshot = listActivePositions();
   const results = [];
 
