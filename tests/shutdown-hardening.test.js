@@ -88,6 +88,15 @@ test('dryRun mode only simulates tx in evilPanda and hunter', () => {
   assert.match(hunterSrc, /Tidak ada transaksi real yang dikirim karena mode dryRun aktif/);
 });
 
+test('hunter sends realtime PnL snapshots to Telegram on configured interval', () => {
+  const src = readFileSync(hunterPath, 'utf8');
+  assert.match(src, /function getRealtimePnlIntervalMs/);
+  assert.match(src, /async function notifyRealtimePnl/);
+  assert.match(src, /📊 <b>Realtime PnL<\/b>/);
+  assert.match(src, /Interval: <code>\$\{intervalSec\}s<\/code>/);
+  assert.match(src, /await notifyRealtimePnl\(\{ positionPubkey, symbol, status \}\)/);
+});
+
 test('deploy natural failures are silenced from Telegram notifications', () => {
   const src = readFileSync(hunterPath, 'utf8');
   assert.match(src, /function isNaturalDeployError/);

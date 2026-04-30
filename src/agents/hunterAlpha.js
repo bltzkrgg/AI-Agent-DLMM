@@ -252,6 +252,24 @@ function logRealtimePnl({ positionPubkey, symbol, status }) {
   );
 }
 
+async function notifyRealtimePnl({ positionPubkey, symbol, status }) {
+  const pnlPct = Number(status?.pnlPct) || 0;
+  const currentValueSol = Number(status?.currentValueSol) || 0;
+  const intervalSec = Math.round(getRealtimePnlIntervalMs() / 1000);
+  const rangeStatus = status?.inRange ? 'IN_RANGE' : 'OUT_OF_RANGE';
+  const sign = pnlPct >= 0 ? '+' : '';
+  await notify(
+    `📊 <b>Realtime PnL</b>\n` +
+    `Token: <b>${escapeHTML(symbol)}</b>\n` +
+    `Position: <code>${positionPubkey.slice(0,8)}</code>\n` +
+    `PnL: <code>${sign}${pnlPct.toFixed(2)}%</code>\n` +
+    `Value: <code>${currentValueSol.toFixed(4)} SOL</code>\n` +
+    `Range: <code>${rangeStatus}</code>\n` +
+    `Action: <code>${escapeHTML(status?.action || 'UNKNOWN')}</code>\n` +
+    `Interval: <code>${intervalSec}s</code>`
+  );
+}
+
 function getIdleDelayMin(cfg = getConfig()) {
   if (_pendingRetestQueue.size > 0) {
     return Math.max(1, Number(cfg.retestIntervalMin) || 5);
@@ -919,6 +937,7 @@ async function monitorLoop(positionPubkey, symbol, poolAddress) {
 
       if (shouldLogRealtimePnl(positionPubkey)) {
         logRealtimePnl({ positionPubkey, symbol, status });
+        await notifyRealtimePnl({ positionPubkey, symbol, status });
       }
 
       // Exit trigger
