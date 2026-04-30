@@ -244,6 +244,18 @@ function isNaturalDeployError(error) {
     .some((needle) => msg.includes(needle));
 }
 
+function summarizeExitError(error) {
+  const raw = String(error?.message || error || 'UNKNOWN_EXIT_ERROR');
+  const lower = raw.toLowerCase();
+  if (lower.includes('exceeded cus meter') || lower.includes('compute units')) {
+    return 'EXIT_COMPUTE_UNITS_EXHAUSTED_AFTER_RETRY — transaksi close masih kehabisan compute budget setelah retry maksimum.';
+  }
+  if (lower.includes('position_still_open_after_exit')) {
+    return raw;
+  }
+  return raw.length > 900 ? `${raw.slice(0, 900)}...` : raw;
+}
+
 function getRealtimePnlIntervalMs() {
   const cfg = getConfig();
   const seconds = Math.max(5, Number(cfg.realtimePnlIntervalSec) || 15);
@@ -1076,7 +1088,11 @@ async function safeExit(positionPubkey, reason) {
     return { ok: true, solRecovered };
   } catch (e) {
     console.error(`[hunter] exitPosition error: ${e.message}`);
-    await notify(`⚠️ <b>Exit gagal:</b>\n<code>${e.message}</code>\n\n<i>Posisi mungkin masih terbuka on-chain!</i>`);
+    await notify(
+      `⚠️ <b>Exit gagal:</b>\n` +
+      `<code>${escapeHTML(summarizeExitError(e))}</code>\n\n` +
+      `<i>Posisi mungkin masih terbuka on-chain dan registry lokal tidak dihapus.</i>`
+    );
     throw e;
   } finally {
     if (success) _positionLabels.delete(positionPubkey);

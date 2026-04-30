@@ -41,6 +41,8 @@ const EP_CONFIG = {
   OFFSET_MIN_PCT:      0,
   OFFSET_MAX_PCT:     90,
   COMPUTE_UNITS:   400_000,
+  EXIT_COMPUTE_UNITS: 1_200_000,
+  EXIT_MAX_COMPUTE_UNITS: 1_400_000,
   MICRO_LAMPORTS:  200_000,
   STOP_LOSS_PCT:      10,    // Hard SL — prioritas utama, selalu aktif
   RSI_EXIT_THRESHOLD: 90,    // RSI(2) overbought threshold
@@ -247,15 +249,64 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-async function sendExitTx(connection, wallet, tx, microLamports) {
-  injectPriorityFee(tx, { units: EP_CONFIG.COMPUTE_UNITS, microLamports });
+function getErrorLogs(error) {
+  if (!error) return [];
+  if (Array.isArray(error.logs)) return error.logs;
+  if (typeof error.getLogs === 'function') {
+    try {
+      const logs = error.getLogs();
+      if (Array.isArray(logs)) return logs;
+    } catch {}
+  }
+  return [];
+}
 
-  let sig;
+function isComputeUnitExhausted(error) {
+  const msg = String(error?.message || error || '').toLowerCase();
+  const logs = getErrorLogs(error).join('\n').toLowerCase();
+  return msg.includes('exceeded cus meter')
+    || msg.includes('computational budget exceeded')
+    || msg.includes('compute units')
+    || logs.includes('exceeded cus meter')
+    || logs.includes('computational budget exceeded');
+}
+
+function logSendTxError(prefix, error) {
+  const logs = getErrorLogs(error);
+  console.warn(`[evilPanda] ${prefix}: ${error?.message || error}`);
+  if (logs.length > 0) {
+    console.warn(`[evilPanda] ${prefix} logs:\n${logs.slice(-12).join('\n')}`);
+  }
+}
+
+async function sendSignedTx(connection, wallet, tx) {
   if (tx instanceof VersionedTransaction) {
     tx.sign([wallet]);
-    sig = await connection.sendTransaction(tx, { skipPreflight: false, maxRetries: 3 });
-  } else {
-    sig = await connection.sendTransaction(tx, [wallet], { skipPreflight: false, maxRetries: 3 });
+    return await connection.sendTransaction(tx, { skipPreflight: false, maxRetries: 3 });
+  }
+  return await connection.sendTransaction(tx, [wallet], { skipPreflight: false, maxRetries: 3 });
+}
+
+async function sendExitTx(connection, wallet, tx, microLamports) {
+  injectPriorityFee(tx, { units: EP_CONFIG.EXIT_COMPUTE_UNITS, microLamports });
+
+  let sig;
+  try {
+    sig = await sendSignedTx(connection, wallet, tx);
+  } catch (e) {
+    logSendTxError('exit send failed', e);
+    if (!isComputeUnitExhausted(e)) throw e;
+
+    console.warn(
+      `[evilPanda] Exit TX kehabisan compute unit; retry dengan ${EP_CONFIG.EXIT_MAX_COMPUTE_UNITS} CU`
+    );
+    injectPriorityFee(tx, { units: EP_CONFIG.EXIT_MAX_COMPUTE_UNITS, microLamports });
+    try {
+      sig = await sendSignedTx(connection, wallet, tx);
+    } catch (retryErr) {
+      logSendTxError('exit send retry failed', retryErr);
+      throw retryErr;
+    }
   }
 
   await pollTxConfirm(connection, sig, 90_000);
@@ -274,43 +325,66 @@ async function buildClosePositionTxs(dlmmPool, wallet, activePos) {
   const pd = activePos?.positionData || {};
   const lowerBinId = pd.lowerBinId;
   const upperBinId = pd.upperBinId;
+  const txs = [];
 
   if (lowerBinId !== undefined && upperBinId !== undefined) {
     try {
-      const txs = await dlmmPool.removeLiquidity({
+      const removeTxs = await dlmmPool.removeLiquidity({
         position: activePos.publicKey,
         user: wallet.publicKey,
         fromBinId: lowerBinId,
         toBinId: upperBinId,
         bps: new BN(10000),
-        shouldClaimAndClose: true,
+        shouldClaimAndClose: false,
       });
-      return Array.isArray(txs) ? txs : [txs];
+      txs.push(...(Array.isArray(removeTxs) ? removeTxs : [removeTxs]));
     } catch (e) {
       console.warn(`[evilPanda] removeLiquidity close attempt failed: ${e.message}`);
     }
   }
 
-  if (typeof dlmmPool.closePositionIfEmpty === 'function') {
+  if (typeof dlmmPool.claimSwapFee === 'function') {
     try {
-      const txs = await dlmmPool.closePositionIfEmpty({
+      const claimTxs = await dlmmPool.claimSwapFee({
         owner: wallet.publicKey,
         position: activePos,
       });
-      return Array.isArray(txs) ? txs : [txs];
+      txs.push(...(Array.isArray(claimTxs) ? claimTxs : [claimTxs]));
+    } catch (e) {
+      const msg = String(e?.message || e);
+      if (!msg.toLowerCase().includes('no fee')) {
+        console.warn(`[evilPanda] claimSwapFee attempt failed: ${msg}`);
+      }
+    }
+  }
+
+  if (typeof dlmmPool.closePositionIfEmpty === 'function') {
+    try {
+      const closeIfEmptyTxs = await dlmmPool.closePositionIfEmpty({
+        owner: wallet.publicKey,
+        position: activePos,
+      });
+      txs.push(...(Array.isArray(closeIfEmptyTxs) ? closeIfEmptyTxs : [closeIfEmptyTxs]));
+      if (txs.length > 0) return txs;
     } catch (e) {
       console.warn(`[evilPanda] closePositionIfEmpty attempt failed: ${e.message}`);
     }
   }
 
   if (typeof dlmmPool.closePosition === 'function') {
-    const txs = await dlmmPool.closePosition({
-      owner: wallet.publicKey,
-      position: activePos,
-    });
-    return Array.isArray(txs) ? txs : [txs];
+    try {
+      const closeTxs = await dlmmPool.closePosition({
+        owner: wallet.publicKey,
+        position: activePos,
+      });
+      txs.push(...(Array.isArray(closeTxs) ? closeTxs : [closeTxs]));
+      if (txs.length > 0) return txs;
+    } catch (e) {
+      console.warn(`[evilPanda] closePosition attempt failed: ${e.message}`);
+    }
   }
 
+  if (txs.length > 0) return txs;
   throw new Error(`NO_CLOSE_METHOD_AVAILABLE_${activePos.publicKey.toString().slice(0, 8)}`);
 }
 
@@ -776,18 +850,9 @@ export async function exitPosition(positionPubkey, reason = 'MANUAL') {
     }
 
     if (isDryRun()) {
-      const dryRunRemoveTxs = await dlmmPool.removeLiquidity({
-        position: activePos.publicKey,
-        user: wallet.publicKey,
-        fromBinId: activePos.positionData.lowerBinId,
-        toBinId: activePos.positionData.upperBinId,
-        bps: new BN(10000),
-        shouldClaimAndClose: true,
-      });
-
-      const dryRunTxList = Array.isArray(dryRunRemoveTxs) ? dryRunRemoveTxs : [dryRunRemoveTxs];
+      const dryRunTxList = await buildClosePositionTxs(dlmmPool, wallet, activePos);
       for (const tx of dryRunTxList) {
-        injectPriorityFee(tx, { units: EP_CONFIG.COMPUTE_UNITS, microLamports });
+        injectPriorityFee(tx, { units: EP_CONFIG.EXIT_COMPUTE_UNITS, microLamports });
         if (tx instanceof VersionedTransaction) {
           tx.sign([wallet]);
         } else {

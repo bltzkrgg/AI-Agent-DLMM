@@ -82,11 +82,22 @@ test('evilPanda removeLiquidity uses Meteora SDK parameter names', () => {
 test('evilPanda retries close cleanup before reporting manual exit failure', () => {
   const src = readFileSync(evilPandaPath, 'utf8');
   assert.match(src, /async function buildClosePositionTxs/);
+  assert.match(src, /shouldClaimAndClose:\s*false/);
+  assert.match(src, /claimSwapFee/);
   assert.match(src, /closePositionIfEmpty/);
   assert.match(src, /closePosition/);
   assert.match(src, /cleanupAttempt = 1; cleanupAttempt <= 3/);
   assert.match(src, /getFreshActivePosition/);
   assert.match(src, /accountInfo === null/);
+});
+
+test('evilPanda exit path uses high compute budget with CU retry', () => {
+  const src = readFileSync(evilPandaPath, 'utf8');
+  assert.match(src, /EXIT_COMPUTE_UNITS:\s*1_200_000/);
+  assert.match(src, /EXIT_MAX_COMPUTE_UNITS:\s*1_400_000/);
+  assert.match(src, /injectPriorityFee\(tx,\s*\{\s*units:\s*EP_CONFIG\.EXIT_COMPUTE_UNITS/);
+  assert.match(src, /isComputeUnitExhausted/);
+  assert.match(src, /Exit TX kehabisan compute unit/);
 });
 
 test('dryRun mode only simulates tx in evilPanda and hunter', () => {
