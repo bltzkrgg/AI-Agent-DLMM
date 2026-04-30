@@ -44,6 +44,8 @@ export function formatActivePositionsTelegram(activePositions = [], { maxItems =
       : 'n/a';
     const hwm    = formatPnlSigned(Number(pos.hwmPct));
     const deploy = Number.isFinite(Number(pos.deploySol)) ? `${Number(pos.deploySol).toFixed(3)} SOL` : 'n/a';
+    const pnl    = Number.isFinite(Number(pos.pnlPct)) ? formatPnlSigned(Number(pos.pnlPct)) : 'n/a';
+    const value  = Number.isFinite(Number(pos.currentValueSol)) ? `${Number(pos.currentValueSol).toFixed(4)} SOL` : 'n/a';
 
     return [
       `${String(idx + 1).padStart(2, ' ')}. <b>${symbol}</b>`,
@@ -51,6 +53,8 @@ export function formatActivePositionsTelegram(activePositions = [], { maxItems =
       `   Pool: <code>${pool}</code>`,
       `   State: <code>${state}</code>`,
       `   Range: <code>${escapeHTML(range)}</code>`,
+      `   PnL: <code>${escapeHTML(pnl)}</code>`,
+      `   Value: <code>${escapeHTML(value)}</code>`,
       `   HWM: <code>${escapeHTML(hwm)}</code>`,
       `   Deploy: <code>${escapeHTML(deploy)}</code>`,
     ].join('\n');
@@ -94,6 +98,8 @@ export async function generateBriefing(hoursBack = 24) {
       rangeMax: Number(meta.rangeMax),
       hwmPct: Number(meta.hwmPct),
       deploySol: Number(meta.deploySol),
+      pnlPct: Number(meta.pnlPct),
+      currentValueSol: Number(meta.currentValueSol),
     };
   });
 

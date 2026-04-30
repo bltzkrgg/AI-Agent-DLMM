@@ -18,6 +18,8 @@ test('formatActivePositionsTelegram renders compact active position summaries', 
       rangeMax: 81,
       hwmPct: 3.21,
       deploySol: 0.5,
+      pnlPct: 1.42,
+      currentValueSol: 0.5071,
     },
     {
       pubkey: '7kD4e5F6g7H8i9J0k1',
@@ -48,6 +50,8 @@ test('formatActivePositionsTelegram renders compact active position summaries', 
   assert.match(html, /State: <code>OPEN<\/code>/);
   assert.match(html, /State: <code>MANUAL_CLOSED<\/code>/);
   assert.match(html, /Range: <code>12-81<\/code>/);
+  assert.match(html, /PnL: <code>\+1\.42%<\/code>/);
+  assert.match(html, /Value: <code>0\.5071 SOL<\/code>/);
   assert.match(html, /HWM: <code>\+3\.21%<\/code>/);
 });
 
