@@ -318,10 +318,12 @@ bot.onText(/\/setconfig(?:\s+(\S+))?(?:\s+(.+))?/, async (msg, match) => {
       `<b>💰 Finance:</b>\n${bySection('finance')}\n\n` +
       `<b>🔍 Discovery:</b>\n${bySection('discovery')}\n\n` +
       `<b>📡 Screening:</b>\n${bySection('screening')}\n\n` +
+      `<b>🩺 Management:</b>\n${bySection('management')}\n\n` +
       `<i>Contoh:\n` +
       `/setconfig deployAmountSol 1.5\n` +
       `/setconfig discovery.timeframe 1h\n` +
       `/setconfig autoScreeningEnabled false\n` +
+      `/setconfig realtimePnlIntervalSec 15\n` +
       `/setconfig screeningIntervalMin 30</i>`,
       { parse_mode: 'HTML' }
     );
