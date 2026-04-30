@@ -17,6 +17,7 @@ import { runMeridianVeto, discoverHighFeePoolsMeridian } from '../market/meridia
 import { deployPosition, monitorPnL, exitPosition, markPositionManuallyClosed, setEvilPandaNotifyFn, EP_CONFIG, getActivePositionKeys, getPositionMeta } from '../sniper/evilPanda.js';
 import { createMessage }          from '../agent/provider.js';
 import { getWalletBalance }       from '../solana/wallet.js';
+import { getSolPriceUsd }         from '../solana/meteora.js';
 import { appendDecisionLog }      from '../learn/decisionLog.js';
 import { isBlacklisted }          from '../learn/tokenBlacklist.js';
 import { getRuntimeState }        from '../runtime/state.js';
@@ -80,6 +81,24 @@ async function notify(msg) {
   try { await _notifyFn?.(msg); } catch { /* non-fatal */ }
 }
 
+async function getLiveSolUsdPrice() {
+  const now = Date.now();
+  if (Number.isFinite(_solUsdPriceCache.value) && now - _solUsdPriceCache.fetchedAt < SOL_USD_CACHE_TTL_MS) {
+    return _solUsdPriceCache.value;
+  }
+
+  try {
+    const price = Number(await getSolPriceUsd());
+    if (Number.isFinite(price) && price > 0) {
+      _solUsdPriceCache.value = price;
+      _solUsdPriceCache.fetchedAt = now;
+      return price;
+    }
+  } catch {}
+
+  return Number.isFinite(_solUsdPriceCache.value) ? _solUsdPriceCache.value : 150;
+}
+
 // ── State ─────────────────────────────────────────────────────────
 let _running   = false;
 let _deployLock = false;
@@ -89,6 +108,8 @@ const _positionLabels = new Map(); // pubkey -> { symbol }
 const _monitoredPositions = new Set();
 const _lastRealtimePnlLogAt = new Map();
 const _pendingRetestQueue = new Map(); // mint -> { pool, symbol, reason, attempts, nextCheckAt, expiresAt }
+const _solUsdPriceCache = { value: null, fetchedAt: 0 };
+const SOL_USD_CACHE_TTL_MS = 10_000;
 
 function listActivePositions() {
   const keys = getActivePositionKeys();
@@ -241,13 +262,15 @@ function shouldLogRealtimePnl(positionPubkey) {
 function logRealtimePnl({ positionPubkey, symbol, status }) {
   const pnlPct = Number(status?.pnlPct) || 0;
   const currentValueSol = Number(status?.currentValueSol) || 0;
+  const currentValueUsd = Number(status?.currentValueUsd) || 0;
   const rangeIcon = status?.inRange ? '🟢' : '🟡';
   const intervalSec = Math.round(getRealtimePnlIntervalMs() / 1000);
   const ts = new Date().toISOString();
   console.log(
     `[RealtimePnL] ${ts} ${rangeIcon} ${symbol} ` +
     `pos=${positionPubkey.slice(0,8)} pnl=${pnlPct.toFixed(2)}% ` +
-    `value=${currentValueSol.toFixed(4)}SOL action=${status?.action || 'UNKNOWN'} ` +
+    `value=${currentValueSol.toFixed(4)}SOL usd=${currentValueUsd ? currentValueUsd.toFixed(2) : 'n/a'} ` +
+    `action=${status?.action || 'UNKNOWN'} ` +
     `interval=${intervalSec}s`
   );
 }
@@ -255,15 +278,28 @@ function logRealtimePnl({ positionPubkey, symbol, status }) {
 async function notifyRealtimePnl({ positionPubkey, symbol, status }) {
   const pnlPct = Number(status?.pnlPct) || 0;
   const currentValueSol = Number(status?.currentValueSol) || 0;
+  const solUsd = Number.isFinite(Number(status?.solUsd)) && Number(status?.solUsd) > 0
+    ? Number(status.solUsd)
+    : await getLiveSolUsdPrice();
+  const currentValueUsd = Number.isFinite(Number(status?.currentValueUsd))
+    ? Number(status.currentValueUsd)
+    : currentValueSol * solUsd;
+  const pnlUsd = Number.isFinite(Number(status?.pnlUsd))
+    ? Number(status.pnlUsd)
+    : currentValueUsd - (Number(getPositionMeta(positionPubkey)?.deploySol || 0) * solUsd);
   const intervalSec = Math.round(getRealtimePnlIntervalMs() / 1000);
   const rangeStatus = status?.inRange ? 'IN_RANGE' : 'OUT_OF_RANGE';
   const sign = pnlPct >= 0 ? '+' : '';
+  const signUsd = pnlUsd >= 0 ? '+' : '';
   await notify(
     `📊 <b>Realtime PnL</b>\n` +
     `Token: <b>${escapeHTML(symbol)}</b>\n` +
     `Position: <code>${positionPubkey.slice(0,8)}</code>\n` +
     `PnL: <code>${sign}${pnlPct.toFixed(2)}%</code>\n` +
     `Value: <code>${currentValueSol.toFixed(4)} SOL</code>\n` +
+    `Display: <code>$${currentValueUsd.toFixed(2)}</code>\n` +
+    `PnL USD: <code>${signUsd}$${Math.abs(pnlUsd).toFixed(2)}</code>\n` +
+    `SOL/USD: <code>$${solUsd.toFixed(2)}</code>\n` +
     `Range: <code>${rangeStatus}</code>\n` +
     `Action: <code>${escapeHTML(status?.action || 'UNKNOWN')}</code>\n` +
     `Interval: <code>${intervalSec}s</code>`
@@ -911,6 +947,15 @@ async function monitorLoop(positionPubkey, symbol, poolAddress) {
       }
 
       const { action, currentValueSol, pnlPct, inRange } = status;
+      const solUsd = await getLiveSolUsdPrice();
+      const deploySol = Number(getPositionMeta(positionPubkey)?.deploySol || 0);
+      status = {
+        ...status,
+        solUsd,
+        currentValueUsd: currentValueSol * solUsd,
+        deployUsd: deploySol > 0 ? deploySol * solUsd : 0,
+        pnlUsd: (currentValueSol - deploySol) * solUsd,
+      };
 
       if (action === 'ERROR') {
         consecutiveErrors++;
@@ -947,6 +992,9 @@ async function monitorLoop(positionPubkey, symbol, poolAddress) {
           `Token: <b>${symbol}</b>\n` +
           `PnL: <code>+${pnlPct.toFixed(2)}%</code>\n` +
           `Value: <code>${currentValueSol.toFixed(4)} SOL</code>\n` +
+          `Display: <code>$${status.currentValueUsd.toFixed(2)}</code>\n` +
+          `PnL USD: <code>${status.pnlUsd >= 0 ? '+' : ''}$${Math.abs(status.pnlUsd).toFixed(2)}</code>\n` +
+          `SOL/USD: <code>$${status.solUsd.toFixed(2)}</code>\n` +
           (status.exitScenario ? `📊 Skenario <b>${status.exitScenario}</b>: <code>${status.exitReason || ''}</code>\n` : '') +
           `\n⏳ <i>Menutup posisi...</i>`
         );
@@ -959,7 +1007,10 @@ async function monitorLoop(positionPubkey, symbol, poolAddress) {
           `🛑 <b>STOP LOSS!</b>\n` +
           `Token: <b>${symbol}</b>\n` +
           `PnL: <code>${pnlPct.toFixed(2)}%</code>\n` +
-          `Value: <code>${currentValueSol.toFixed(4)} SOL</code>\n\n` +
+          `Value: <code>${currentValueSol.toFixed(4)} SOL</code>\n` +
+          `Display: <code>$${status.currentValueUsd.toFixed(2)}</code>\n` +
+          `PnL USD: <code>${status.pnlUsd >= 0 ? '+' : ''}$${Math.abs(status.pnlUsd).toFixed(2)}</code>\n` +
+          `SOL/USD: <code>$${status.solUsd.toFixed(2)}</code>\n\n` +
           `⏳ <i>Menutup posisi...</i>`
         );
         await safeExit(positionPubkey, 'STOP_LOSS');

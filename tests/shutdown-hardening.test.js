@@ -103,8 +103,13 @@ test('dryRun mode only simulates tx in evilPanda and hunter', () => {
 test('hunter sends realtime PnL snapshots to Telegram on configured interval', () => {
   const src = readFileSync(hunterPath, 'utf8');
   assert.match(src, /function getRealtimePnlIntervalMs/);
+  assert.match(src, /import\s*\{\s*getSolPriceUsd\s*\}\s*from\s*['"]\.\.\/solana\/meteora\.js['"]/);
+  assert.match(src, /async function getLiveSolUsdPrice/);
   assert.match(src, /async function notifyRealtimePnl/);
   assert.match(src, /📊 <b>Realtime PnL<\/b>/);
+  assert.match(src, /Display: <code>\$\$\{currentValueUsd\.toFixed\(2\)\}<\/code>/);
+  assert.match(src, /PnL USD: <code>/);
+  assert.match(src, /SOL\/USD: <code>/);
   assert.match(src, /Interval: <code>\$\{intervalSec\}s<\/code>/);
   assert.match(src, /await notifyRealtimePnl\(\{ positionPubkey, symbol, status \}\)/);
 });

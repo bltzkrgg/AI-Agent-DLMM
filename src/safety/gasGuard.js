@@ -13,6 +13,21 @@ export function checkGasGuard() {
   return { allowed: true, reason: null };
 }
 
+export function estimatePriorityFeeSol({ microLamports = 0, computeUnits = 0, jitoTipLamports = 0 } = {}) {
+  const feeSol = (Number(microLamports) * Number(computeUnits)) / 1e15;
+  const tipSol = Number(jitoTipLamports) / 1e9;
+  return Number((feeSol + tipSol).toFixed(9));
+}
+
+export function checkAndConsumePriorityFeeBudget({ estimatedSol = 0 } = {}) {
+  return {
+    allowed: true,
+    reason: null,
+    estimatedSol: Number(estimatedSol) || 0,
+    remainingSol: Infinity,
+  };
+}
+
 export function recordPriorityFee(/* sol */) {
   // no-op — RPC-First tidak track priority fee secara lokal
 }
