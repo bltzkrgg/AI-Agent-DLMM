@@ -38,3 +38,12 @@ test('/strategy_report uses sendLong transport to avoid Telegram length limit is
 
   assert.match(reportBlock, /await sendLong\(chatId,\s*text\)/);
 });
+
+test('/config and startup messages expose realtime PnL interval', () => {
+  const indexPath = join(__dirname, '../src/index.js');
+  const content = readFileSync(indexPath, 'utf-8');
+
+  assert.match(content, /realtimePnlIntervalSec/);
+  assert.match(content, /Realtime PnL/);
+  assert.match(content, /realtimePnlSec/);
+});

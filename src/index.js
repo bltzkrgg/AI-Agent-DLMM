@@ -278,12 +278,18 @@ bot.onText(/\/config/, (msg) => {
     `autoScreeningEnabled  = ${cfg.autoScreeningEnabled}`,
     `screeningIntervalMin  = ${cfg.screeningIntervalMin}`,
   ].join('\n');
+  const management = [
+    `managementIntervalMin = ${cfg.managementIntervalMin}`,
+    `positionUpdateMin     = ${cfg.positionUpdateIntervalMin}`,
+    `realtimePnlSec        = ${cfg.realtimePnlIntervalSec}`,
+  ].join('\n');
 
   bot.sendMessage(msg.chat.id,
     `⚙️ <b>Config Aktif</b>\n\n` +
     `<b>💰 Finance</b>\n<pre><code>${finance}</code></pre>\n` +
     `<b>🔍 Discovery</b>\n<pre><code>${discovery}</code></pre>\n` +
     `<b>🎯 Strategy</b>\n<pre><code>${strategy}</code></pre>\n` +
+    `<b>🩺 Management</b>\n<pre><code>${management}</code></pre>\n` +
     `<i>Edit: /setconfig ? untuk lihat key yang bisa diubah</i>`,
     { parse_mode: 'HTML' }
   );
@@ -787,6 +793,7 @@ setTimeout(async () => {
       `🎯 TP: <code>+${EP_CONFIG.TAKE_PROFIT_PCT}%</code> | SL: <code>-${EP_CONFIG.STOP_LOSS_PCT}%</code>\n` +
       `🔍 DryRun: <code>${cfg.dryRun ? 'ON' : 'OFF'}</code>\n` +
       `📡 Auto Screening: <code>${autoScr ? `ON (${cfg.screeningIntervalMin}m)` : 'OFF'}</code>\n` +
+      `📊 Realtime PnL: <code>${cfg.realtimePnlIntervalSec || 15}s</code>\n` +
       `⚡ API Engine: <code>Jupiter V1 Direct (api.jup.ag/swap/v1)</code>\n\n` +
       `Ketik /hunt untuk mulai loop, /screening untuk scan manual.`
     );

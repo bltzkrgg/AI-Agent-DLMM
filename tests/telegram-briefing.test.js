@@ -1,6 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { formatActivePositionsTelegram } from '../src/telegram/briefing.js';
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
 
 test('formatActivePositionsTelegram renders compact active position summaries', () => {
   const html = formatActivePositionsTelegram([
@@ -65,4 +70,12 @@ test('formatActivePositionsTelegram truncates long lists with a tail note', () =
   assert.match(html, /1\. <b>TOKEN0<\/b>/);
   assert.match(html, /3\. <b>TOKEN2<\/b>/);
   assert.doesNotMatch(html, /4\. <b>TOKEN3<\/b>/);
+});
+
+test('briefing config block exposes realtime PnL interval', () => {
+  const briefingPath = join(__dirname, '../src/telegram/briefing.js');
+  const content = readFileSync(briefingPath, 'utf-8');
+
+  assert.match(content, /Realtime PnL/);
+  assert.match(content, /realtimePnlIntervalSec/);
 });
