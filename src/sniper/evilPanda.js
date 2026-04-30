@@ -103,6 +103,18 @@ async function withExitAccountingLock(fn) {
 
 function nowIso() { return new Date().toISOString(); }
 
+function getConfiguredStopLossPct() {
+  const cfg = getConfig();
+  const value = Number(cfg.stopLossPct);
+  return Number.isFinite(value) && value > 0 ? value : EP_CONFIG.STOP_LOSS_PCT;
+}
+
+function getConfiguredSmartExitRsi() {
+  const cfg = getConfig();
+  const value = Number(cfg.smartExitRsi);
+  return Number.isFinite(value) && value > 0 ? value : EP_CONFIG.RSI_EXIT_THRESHOLD;
+}
+
 // ── Harvest Log ───────────────────────────────────────────────────
 // Tulis satu baris CSV ke harvest.log tiap posisi ditutup.
 // Format: timestamp,token,pubkey8,pnlPct,deploySol,reason
@@ -553,7 +565,7 @@ function evaluateExitSignal(signal) {
   if (!signal) return { shouldExit: false, scenario: null, reason: 'Signal unavailable — HOLD' };
 
   const { rsi, close, bbUpper, macdHist } = signal;
-  const threshold = EP_CONFIG.RSI_EXIT_THRESHOLD; // 90
+  const threshold = getConfiguredSmartExitRsi();
 
   const rsiOverbought = rsi != null && rsi >= threshold;
 
@@ -658,10 +670,11 @@ export async function monitorPnL(positionPubkey) {
     const inRange = activeBin.binId >= reg.rangeMin && activeBin.binId <= reg.rangeMax;
 
     // ── PRIORITAS 1: Hard Stop Loss ───────────────────────────────────────
-    if (pnlPct <= -EP_CONFIG.STOP_LOSS_PCT) {
+    const stopLossPct = getConfiguredStopLossPct();
+    if (pnlPct <= -stopLossPct) {
       console.log(`[evilPanda] 🛑 STOP_LOSS ${positionPubkey.slice(0,8)} pnl=${pnlPct.toFixed(2)}%`);
       return { action: 'STOP_LOSS', currentValueSol, pnlPct, inRange,
-               exitReason: `Hard SL: PnL=${pnlPct.toFixed(2)}% ≤ -${EP_CONFIG.STOP_LOSS_PCT}%` };
+               exitReason: `Hard SL: PnL=${pnlPct.toFixed(2)}% ≤ -${stopLossPct}%` };
     }
 
     // ── PRIORITAS 2: Trailing Stop Loss (High Water Mark) ─────────────────

@@ -901,7 +901,7 @@ Balas HANYA JSON valid tanpa Markdown.`;
         `Tahap: <code>EXECUTION_SUCCESS</code>\n` +
         `Position: <code>${positionPubkey.slice(0,8)}</code>\n` +
         `Pool: <code>${poolAddress.slice(0,8)}</code>\n` +
-        `TP: +${EP_CONFIG.TAKE_PROFIT_PCT}% | SL: -${EP_CONFIG.STOP_LOSS_PCT}%\n\n` +
+        `TP: RSI(2) ≥ ${currentCfg.smartExitRsi || 90} | SL: -${currentCfg.stopLossPct || 10}%\n\n` +
         `🔒 <i>Masuk mode monitor (Background)...</i>`
       );
 

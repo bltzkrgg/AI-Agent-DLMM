@@ -153,7 +153,7 @@ bot.onText(/\/status/, async (msg) => {
     `${posLine}\n` +
     `Balance: <code>${balance} SOL</code>\n` +
     `Deploy Amount: <code>${cfg.deployAmountSol || 0.1} SOL</code>\n` +
-    `TP: <code>+${EP_CONFIG.TAKE_PROFIT_PCT}%</code> | SL: <code>-${EP_CONFIG.STOP_LOSS_PCT}%</code>`,
+    `TP: <code>RSI(2) ≥ ${cfg.smartExitRsi || 90}</code> | SL: <code>-${cfg.stopLossPct || 10}%</code>`,
     { parse_mode: 'HTML' }
   );
 });
@@ -631,7 +631,8 @@ bot.onText(/\/strategy_report/, async (msg) => {
     `📘 <b>Strategy Report</b>\n\n` +
     `Strategy: <code>${cfg.activeStrategy || 'Evil Panda'}</code>\n` +
     `Deploy: <code>${cfg.deployAmountSol || 0.1} SOL</code>\n` +
-    `SL: <code>${cfg.stopLossPct || 10}%</code> | Trailing: <code>${cfg.trailingStopPct || 5}%</code>\n` +
+    `TP: <code>RSI(2) ≥ ${cfg.smartExitRsi || 90}</code> | SL: <code>${cfg.stopLossPct || 10}%</code>\n` +
+    `Trailing: <code>${cfg.trailingStopPct || 5}%</code>\n` +
     `Screening: <code>${cfg.autoScreeningEnabled ? 'ON' : 'OFF'}</code>`;
   await sendLong(chatId, text);
 });
@@ -790,7 +791,7 @@ setTimeout(async () => {
       `🩺 Restored Monitor: <code>${restoredMonitors}</code> loop aktif\n` +
       `💰 Balance: <code>${balance} SOL</code>\n` +
       `📐 Deploy: <code>${cfg.deployAmountSol || 0.1} SOL</code>\n` +
-      `🎯 TP: <code>+${EP_CONFIG.TAKE_PROFIT_PCT}%</code> | SL: <code>-${EP_CONFIG.STOP_LOSS_PCT}%</code>\n` +
+      `🎯 TP: <code>RSI(2) ≥ ${cfg.smartExitRsi || 90}</code> | SL: <code>-${cfg.stopLossPct || 10}%</code>\n` +
       `🔍 DryRun: <code>${cfg.dryRun ? 'ON' : 'OFF'}</code>\n` +
       `📡 Auto Screening: <code>${autoScr ? `ON (${cfg.screeningIntervalMin}m)` : 'OFF'}</code>\n` +
       `📊 Realtime PnL: <code>${cfg.realtimePnlIntervalSec || 15}s</code>\n` +
