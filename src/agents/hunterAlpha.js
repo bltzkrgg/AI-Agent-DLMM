@@ -960,13 +960,6 @@ async function monitorLoop(positionPubkey, symbol, poolAddress) {
       if (action === 'MANUAL_CLOSED') {
         await markPositionManuallyClosed(positionPubkey, 'MANUAL_WITHDRAW_DETECTED');
         _positionLabels.delete(positionPubkey);
-        await notify(
-          `ℹ️ <b>Manual close terdeteksi</b>\n` +
-          `Token: <b>${symbol}</b>\n` +
-          `Position: <code>${positionPubkey.slice(0,8)}</code>\n` +
-          `Status: <code>tidak ditemukan lagi di Meteora/on-chain</code>\n` +
-          `<i>Registry lokal sudah dibersihkan. PnL manual tidak dihitung otomatis.</i>`
-        );
         return;
       }
 

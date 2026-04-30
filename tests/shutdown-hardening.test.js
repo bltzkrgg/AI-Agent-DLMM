@@ -34,8 +34,9 @@ test('manual close helper records manual withdrawals when called explicitly', ()
   const hunterSrc = readFileSync(hunterPath, 'utf8');
   assert.match(evilPandaSrc, /export async function markPositionManuallyClosed/);
   assert.match(evilPandaSrc, /Manual close terdeteksi/);
+  assert.match(evilPandaSrc, /console\.log\(`\[evilPanda\] ℹ️ Manual close realtime:/);
   assert.match(hunterSrc, /action === 'MANUAL_CLOSED'/);
-  assert.match(hunterSrc, /Manual close terdeteksi/);
+  assert.doesNotMatch(hunterSrc, /Manual close terdeteksi/);
 });
 
 test('telegram exit command closes all active positions with verification summary', () => {

@@ -706,8 +706,14 @@ export async function monitorPnL(positionPubkey) {
     const activePos = userPositions.find(p => p.publicKey.toString() === positionPubkey);
 
     if (!activePos) {
-      return { action: 'STOP_LOSS', currentValueSol: 0, pnlPct: -100, inRange: false,
-               note: 'Position not found on-chain — assumed closed' };
+      console.log(`[evilPanda] ℹ️ Manual close terdeteksi on-chain: ${positionPubkey.slice(0,8)}`);
+      return {
+        action: 'MANUAL_CLOSED',
+        currentValueSol: 0,
+        pnlPct: 0,
+        inRange: false,
+        note: 'Position not found on-chain — assumed manually withdrawn',
+      };
     }
 
     const pd       = activePos.positionData;
@@ -1027,6 +1033,7 @@ export async function markPositionManuallyClosed(positionPubkey, reason = 'MANUA
   const reg = _activePositions.get(positionPubkey);
   if (!reg) return { ok: true, solRecovered: 0, alreadyRemoved: true };
 
+  console.log(`[evilPanda] ℹ️ Manual close realtime: ${positionPubkey.slice(0,8)} reason=${reason}`);
   _activePositions.delete(positionPubkey);
   await persistActivePositionsStateNow();
 
