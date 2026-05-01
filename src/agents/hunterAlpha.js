@@ -607,23 +607,38 @@ async function scanAndDeploy() {
       const scoutModel = cfg.screeningModel || cfg.agentModel;
       console.log(`[hunter] 🧠 LLM stage=SCOUT model=${scoutModel}`);
       const prompt = `[ROLE: INITIAL SCREENING FILTER FOR DLMM LIQUIDITY PROVIDER]
-Kamu adalah garis pertahanan pertama (screening filter) untuk penyedia likuiditas (LP) DLMM Meteora.
-Tugas kamu BUKAN trading spekulatif, melainkan menilai secara mekanis apakah sebuah pool layak dan sehat untuk masuk shortlist penyediaan likuiditas.
+Kamu adalah garis pertahanan pertama untuk penyedia likuiditas DLMM Meteora.
+Tugas kamu BUKAN trading spekulatif. Tugas kamu adalah menilai secara mekanis apakah sebuah pool layak masuk shortlist untuk penyediaan likuiditas.
+
+MINDSET UTAMA:
+- Kamu berpikir sebagai Liquidity Provider, bukan trader.
+- Kamu tidak mengejar "buy low sell high".
+- Kamu menilai apakah pool ini sehat, aman, dan punya momentum breakout yang layak untuk dipasang likuiditas.
+- Entry yang kamu cari adalah breakout yang matang, bukan harga yang baru menyentuh supertrend.
+- Jangan entry kalau harga masih terlalu dekat dengan supertrend 15m atau momentum belum terbukti kuat.
+- Jika supertrend 15m belum bullish, jangan entry.
+- Jika candle M5 belum hijau, jangan entry.
+- Jika breakout belum jelas atau belum close kuat, jangan entry.
+- Jika ATH belum close hijau dan momentum belum terbentuk, jangan entry.
+- Jika data safety tidak lengkap atau meragukan, DEFER.
+- Jika ada hard gate safety yang gagal, REJECT.
+- Kalau pool sudah lolos semua filter dan breakout-nya matang, PASS.
+
+ATURAN ENTRY YANG WAJIB:
+1. Supertrend 15m harus bullish.
+2. Candle M5 harus hijau.
+3. Breakout harus kuat, close candle harus meyakinkan.
+4. Entry terbaik adalah saat harga sudah break jauh dan valid di atas supertrend 15m bullish, atau saat ATH close hijau terbentuk dengan momentum bullish yang jelas.
+5. Kalau harga cuma nempel supertrend atau baru sedikit naik, jangan entry.
+6. Jangan memaksa entry saat momentum belum terbentuk.
 
 FOKUS UTAMA KAMU:
-- Volume & Market Cap (Apakah kolam cukup ramai dan dalam?)
-- Safety Data & Contract Security (Mint/Freeze Authority, Top 10 Holders)
-- Wash Trading / Bundling Risk (Apakah rasio Volume/TVL wajar atau palsu?)
-- Dominasi Awal (Apakah likuiditas terpusat atau terfragmentasi?)
-- Fee Opportunity (Apakah potensi pajaknya sepadan?)
-
-MINDSET & ATURAN EKSEKUSI:
-1. Pikirkan SELALU dari sudut pandang LP: aman, sehat, dan layak diberi likuiditas.
-2. Jangan buang waktu memikirkan arah harga. Tugasmu hanya memastikan "Apakah kolam ini tidak beracun?"
-3. DILARANG KERAS menggunakan bahasa trader seperti "pump", "moon", "buy murah", atau "breakout".
-4. Kalau ada satu saja Hard Gate (indikasi rugpull/dump) yang gagal: REJECT.
-5. Kalau data belum lengkap, API timeout, atau safety belum jelas: DEFER.
-6. Kalau pool cukup sehat untuk dilanjutkan ke evaluasi teknikal berikutnya: PASS.
+- Volume & Market Cap
+- Safety Data & Contract Security
+- Wash Trading / Bundling Risk
+- Dominasi awal likuiditas
+- Fee opportunity
+- Momentum breakout yang benar-benar hidup
 
 DATA POOL:
 - Token: ${tokenSymbol || 'UNKNOWN'}
@@ -636,14 +651,16 @@ DATA POOL:
 [FORMAT JAWABAN JSON]
 {
   "decision": "PASS | REJECT | DEFER",
-  "reason": "Alasan singkat evaluasi berbasis mcap, volume, safety data, atau wash trading risk.",
-  "safety_score": 0-100
+  "reason": "Alasan singkat berbasis mcap, volume, safety data, breakout strength, atau wash trading risk.",
+  "safety_score": 0-100,
+  "entry_readiness": "LOW | MEDIUM | HIGH",
+  "breakout_quality": "WEAK | VALID | STRONG"
 }
 
 Balas HANYA JSON valid tanpa Markdown.`;
       const res = await createMessage({
         model: scoutModel,
-        maxTokens: 220,
+        maxTokens: 320,
         messages: [{ role: 'user', content: prompt }]
       });
       const rawText = res.content.find(c => c.type === 'text')?.text?.trim() || '';
@@ -651,17 +668,23 @@ Balas HANYA JSON valid tanpa Markdown.`;
       const decision = String(parsed?.decision || rawText || '').trim().toUpperCase();
       const scoutReason = String(parsed?.reason || '').trim();
       const safetyScore = Number(parsed?.safety_score);
+      const entryReadiness = String(parsed?.entry_readiness || '').trim().toUpperCase();
+      const breakoutQuality = String(parsed?.breakout_quality || '').trim().toUpperCase();
       const scoreSuffix = Number.isFinite(safetyScore) ? ` (${Math.max(0, Math.min(100, safetyScore))})` : '';
+      const detailSuffix = [
+        entryReadiness ? `Entry=${entryReadiness}` : '',
+        breakoutQuality ? `Breakout=${breakoutQuality}` : '',
+      ].filter(Boolean).join(', ');
       if (decision.includes('PASS')) {
-        console.log(`[hunter] 🤖 ScoutAgent LP APPROVED: ${tokenSymbol}${scoreSuffix}`);
-        summary.push(`SCOUT_AGENT: PASS${scoreSuffix}`);
+        console.log(`[hunter] 🤖 ScoutAgent LP APPROVED: ${tokenSymbol}${scoreSuffix}${detailSuffix ? ` | ${detailSuffix}` : ''}`);
+        summary.push(`SCOUT_AGENT: PASS${scoreSuffix}${detailSuffix ? ` (${detailSuffix})` : ''}`);
         return { ok: true, pool, symbol: tokenSymbol || 'UNKNOWN', summary };
       }
       const isDeferred = decision.includes('DEFER');
       const label = isDeferred ? 'DEFER' : 'FAIL';
       const reason = scoutReason || (isDeferred ? 'ScoutAgent DEFER' : 'ScoutAgent REJECT');
-      console.log(`[hunter] 🤖 ScoutAgent LP ${isDeferred ? 'DEFERRED' : 'REJECTED'}: ${tokenSymbol}${scoreSuffix}`);
-      summary.push(`SCOUT_AGENT: ${label}${scoreSuffix}`);
+      console.log(`[hunter] 🤖 ScoutAgent LP ${isDeferred ? 'DEFERRED' : 'REJECTED'}: ${tokenSymbol}${scoreSuffix}${detailSuffix ? ` | ${detailSuffix}` : ''}`);
+      summary.push(`SCOUT_AGENT: ${label}${scoreSuffix}${detailSuffix ? ` (${detailSuffix})` : ''}`);
       return { ok: false, symbol: tokenSymbol || 'UNKNOWN', stage: 'SCOUT_AGENT', reason, summary };
     } catch (e) {
       console.warn(`[hunter] ScoutAgent error pada ${tokenSymbol}: ${e.message}`);

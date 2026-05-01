@@ -154,6 +154,18 @@ test('hunter sends realtime PnL snapshots to Telegram on configured interval', (
   assert.match(src, /await notifyRealtimePnl\(\{ positionPubkey, symbol, status \}\)/);
 });
 
+test('scout agent prompt uses DLMM LP breakout screening fields', () => {
+  const src = readFileSync(hunterPath, 'utf8');
+  assert.match(src, /INITIAL SCREENING FILTER FOR DLMM LIQUIDITY PROVIDER/);
+  assert.match(src, /breakout yang matang/);
+  assert.match(src, /Supertrend 15m harus bullish/);
+  assert.match(src, /Candle M5 harus hijau/);
+  assert.match(src, /entry_readiness/);
+  assert.match(src, /breakout_quality/);
+  assert.match(src, /Entry=\$\{entryReadiness\}/);
+  assert.match(src, /Breakout=\$\{breakoutQuality\}/);
+});
+
 test('deploy natural failures are silenced from Telegram notifications', () => {
   const src = readFileSync(hunterPath, 'utf8');
   assert.match(src, /function isNaturalDeployError/);
