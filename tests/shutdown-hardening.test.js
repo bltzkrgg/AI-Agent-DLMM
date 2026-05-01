@@ -33,12 +33,22 @@ test('manual close helper records manual withdrawals when called explicitly', ()
   const evilPandaSrc = readFileSync(evilPandaPath, 'utf8');
   const hunterSrc = readFileSync(hunterPath, 'utf8');
   assert.match(hunterSrc, /setPositionLifecycle/);
+  assert.match(hunterSrc, /getPositionOnChainStatus/);
+  assert.match(hunterSrc, /export function startManualCloseWatcher/);
   assert.match(evilPandaSrc, /export async function markPositionManuallyClosed/);
   assert.match(evilPandaSrc, /export async function setPositionLifecycle/);
+  assert.match(evilPandaSrc, /export async function getPositionOnChainStatus/);
   assert.match(evilPandaSrc, /Manual close terdeteksi/);
   assert.match(evilPandaSrc, /console\.log\(`\[evilPanda\] ℹ️ Manual close realtime:/);
   assert.match(hunterSrc, /action === 'MANUAL_CLOSED'/);
   assert.doesNotMatch(hunterSrc, /Manual close terdeteksi/);
+});
+
+test('index starts manual close watcher during boot', () => {
+  const indexSrc = readFileSync(indexPath, 'utf8');
+  assert.match(indexSrc, /startManualCloseWatcher/);
+  assert.match(indexSrc, /const manualCloseWatcherStarted = startManualCloseWatcher\(\)/);
+  assert.match(indexSrc, /Manual Close Watcher/);
 });
 
 test('telegram exit command closes all active positions with verification summary', () => {

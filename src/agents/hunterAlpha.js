@@ -14,7 +14,7 @@
 import { getConfig }              from '../config.js';
 import { screenToken }            from '../market/coinfilter.js';
 import { runMeridianVeto, discoverHighFeePoolsMeridian } from '../market/meridianVeto.js';
-import { deployPosition, monitorPnL, exitPosition, markPositionManuallyClosed, setEvilPandaNotifyFn, setPositionLifecycle, EP_CONFIG, getActivePositionKeys, getPositionMeta } from '../sniper/evilPanda.js';
+import { deployPosition, monitorPnL, exitPosition, markPositionManuallyClosed, setEvilPandaNotifyFn, setPositionLifecycle, getPositionOnChainStatus, EP_CONFIG, getActivePositionKeys, getPositionMeta } from '../sniper/evilPanda.js';
 import { createMessage }          from '../agent/provider.js';
 import { getWalletBalance }       from '../solana/wallet.js';
 import { appendDecisionLog }      from '../learn/decisionLog.js';
@@ -89,6 +89,8 @@ const _positionLabels = new Map(); // pubkey -> { symbol }
 const _monitoredPositions = new Set();
 const _lastRealtimePnlLogAt = new Map();
 const _pendingRetestQueue = new Map(); // mint -> { pool, symbol, reason, attempts, nextCheckAt, expiresAt }
+let _manualCloseWatchTimer = null;
+let _manualCloseWatchInFlight = false;
 
 function listActivePositions() {
   const keys = getActivePositionKeys();
@@ -243,6 +245,54 @@ function getRealtimePnlIntervalMs() {
   const cfg = getConfig();
   const seconds = Math.max(5, Number(cfg.realtimePnlIntervalSec) || 15);
   return Math.round(seconds * 1000);
+}
+
+function getManualCloseWatchIntervalMs() {
+  return Math.max(5000, getRealtimePnlIntervalMs());
+}
+
+export function startManualCloseWatcher() {
+  if (_manualCloseWatchTimer) return false;
+
+  const tick = async () => {
+    if (_manualCloseWatchInFlight) return;
+    _manualCloseWatchInFlight = true;
+    try {
+      const snapshot = listActivePositions();
+      for (const pos of snapshot) {
+        if (!pos?.pubkey || _closingPositions.has(pos.pubkey)) continue;
+        try {
+          const status = await getPositionOnChainStatus(pos.pubkey);
+          if (!status.tracked) continue;
+          if (status.manualWithdrawn) {
+            console.log(
+              `[hunter] Manual close watcher detected ${pos.symbol || pos.pubkey.slice(0, 8)} ` +
+              `pos=${pos.pubkey.slice(0,8)} reason=${status.reason}`
+            );
+            await markPositionManuallyClosed(pos.pubkey, `MANUAL_WITHDRAW_DETECTED_${status.reason}`);
+            _positionLabels.delete(pos.pubkey);
+          }
+        } catch (e) {
+          console.warn(`[hunter] Manual close watcher skip ${pos.pubkey.slice(0,8)}: ${e.message}`);
+        }
+      }
+    } finally {
+      _manualCloseWatchInFlight = false;
+    }
+  };
+
+  _manualCloseWatchTimer = setInterval(tick, getManualCloseWatchIntervalMs());
+  _manualCloseWatchTimer.unref?.();
+  tick().catch((e) => console.warn(`[hunter] Manual close watcher initial tick error: ${e.message}`));
+  console.log(`[hunter] 👁️ Manual close watcher aktif interval=${Math.round(getManualCloseWatchIntervalMs() / 1000)}s`);
+  return true;
+}
+
+export function stopManualCloseWatcher() {
+  if (!_manualCloseWatchTimer) return false;
+  clearInterval(_manualCloseWatchTimer);
+  _manualCloseWatchTimer = null;
+  return true;
 }
 
 function shouldLogRealtimePnl(positionPubkey) {

@@ -18,7 +18,7 @@ import TelegramBot              from 'node-telegram-bot-api';
 import { existsSync, readFileSync, writeFileSync, unlinkSync } from 'fs';
 import { initSolana, getWalletBalance }   from './solana/wallet.js';
 import { getConfig, updateConfig, isConfigKeySupported, resolveNestedKey, SETCONFIG_WHITELIST } from './config.js';
-import { runLinearLoop, stopLoop, setNotifyFn, isRunning, getCurrentPosition, getActivePositions, setShutdownInProgress, closeAllActivePositionsByUser, closeAllActivePositionsForShutdown, retryFailedShutdownPositions, runAutoscreening, spawnMonitorForRestoredPositions } from './agents/hunterAlpha.js';
+import { runLinearLoop, stopLoop, setNotifyFn, isRunning, getCurrentPosition, getActivePositions, setShutdownInProgress, closeAllActivePositionsByUser, closeAllActivePositionsForShutdown, retryFailedShutdownPositions, runAutoscreening, spawnMonitorForRestoredPositions, startManualCloseWatcher } from './agents/hunterAlpha.js';
 import { getActivePositionCount, reconcileStartupPositions, EP_CONFIG } from './sniper/evilPanda.js';
 import { analyzePerformance, formatEvolutionReport }     from './learn/statelessEvolve.js';
 import { generateBriefing, formatActivePositionsTelegram } from './telegram/briefing.js';
@@ -778,6 +778,7 @@ setTimeout(async () => {
   try {
     const reconcile = await reconcileStartupPositions();
     const restoredMonitors = spawnMonitorForRestoredPositions();
+    const manualCloseWatcherStarted = startManualCloseWatcher();
     const balance = await getWalletBalance();
     const cfg     = getConfig();
     const autoScr = cfg.autoScreeningEnabled;
@@ -789,6 +790,7 @@ setTimeout(async () => {
       `🚀 <b>Linear Sniper Bot dimulai!</b>\n\n` +
       `♻️ Reconcile: <code>${reconcile.restored}/${reconcile.scanned}</code> posisi dipulihkan\n` +
       `🩺 Restored Monitor: <code>${restoredMonitors}</code> loop aktif\n` +
+      `👁️ Manual Close Watcher: <code>${manualCloseWatcherStarted ? 'ON' : 'ALREADY_ON'}</code>\n` +
       `💰 Balance: <code>${balance} SOL</code>\n` +
       `📐 Deploy: <code>${cfg.deployAmountSol || 0.1} SOL</code>\n` +
       `🎯 TP: <code>RSI(2) ≥ ${cfg.smartExitRsi || 90}</code> | SL: <code>-${cfg.stopLossPct || 10}%</code>\n` +

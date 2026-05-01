@@ -807,6 +807,48 @@ export async function monitorPnL(positionPubkey) {
   }
 }
 
+export async function getPositionOnChainStatus(positionPubkey) {
+  const reg = _activePositions.get(positionPubkey);
+  if (!reg) {
+    return {
+      tracked: false,
+      exists: false,
+      hasLiquidity: false,
+      manualWithdrawn: false,
+      reason: 'POSITION_NOT_IN_REGISTRY',
+    };
+  }
+
+  const connection = getConnection();
+  const wallet = getWallet();
+  const dlmmPool = await DLMM.create(connection, new PublicKey(reg.poolAddress));
+  const { userPositions } = await dlmmPool.getPositionsByUserAndLbPair(wallet.publicKey);
+  const activePos = userPositions.find(p => p.publicKey.toString() === positionPubkey);
+
+  if (!activePos) {
+    return {
+      tracked: true,
+      exists: false,
+      hasLiquidity: false,
+      manualWithdrawn: true,
+      reason: 'POSITION_NOT_FOUND_ON_CHAIN',
+    };
+  }
+
+  const pd = activePos.positionData || {};
+  const totalX = Number(pd.totalXAmount?.toString() || '0');
+  const totalY = Number(pd.totalYAmount?.toString() || '0');
+  const hasLiquidity = totalX > 0 || totalY > 0;
+
+  return {
+    tracked: true,
+    exists: true,
+    hasLiquidity,
+    manualWithdrawn: !hasLiquidity,
+    reason: hasLiquidity ? 'POSITION_ACTIVE_ON_CHAIN' : 'POSITION_EMPTY_ON_CHAIN',
+  };
+}
+
 // ── 3. exitPosition ───────────────────────────────────────────────
 
 /**
