@@ -102,20 +102,104 @@ function computeStats(trades) {
 
 function buildEvolutionPrompt(stats, currentConfig) {
   const cfgSummary = {
-    minOrganic:          currentConfig.minOrganic,
-    gmgnMinAgeHours:     currentConfig.gmgnMinAgeHours,
-    stopLossPct:         currentConfig.stopLossPct,
-    trailingStopPct:     currentConfig.trailingStopPct,
-    minFeeActiveTvlRatio: currentConfig.minFeeActiveTvlRatio,
-    maxPoolAgeDays:      currentConfig.maxPoolAgeDays,
-    slippageBps:         currentConfig.slippageBps,
-    minVolume:        currentConfig.minVolume,
-    minMcap:             currentConfig.minMcap,
+    botMode: {
+      dryRun: currentConfig.dryRun,
+      deploymentStage: currentConfig.deploymentStage,
+      autonomyMode: currentConfig.autonomyMode,
+      autoScreeningEnabled: currentConfig.autoScreeningEnabled,
+      activeStrategy: currentConfig.activeStrategy,
+    },
+    intervals: {
+      managementIntervalMin: currentConfig.managementIntervalMin,
+      screeningIntervalMin: currentConfig.screeningIntervalMin,
+      positionUpdateIntervalMin: currentConfig.positionUpdateIntervalMin,
+      realtimePnlIntervalSec: currentConfig.realtimePnlIntervalSec,
+      pendingRetestEnabled: currentConfig.pendingRetestEnabled,
+      retestIntervalMin: currentConfig.retestIntervalMin,
+      retestTtlMin: currentConfig.retestTtlMin,
+      retestMaxAttempts: currentConfig.retestMaxAttempts,
+      retestMaxReadyPerScan: currentConfig.retestMaxReadyPerScan,
+    },
+    discovery: {
+      meteoraDiscoveryLimit: currentConfig.meteoraDiscoveryLimit,
+      discoveryTimeframe: currentConfig.discoveryTimeframe,
+      discoveryCategory: currentConfig.discoveryCategory,
+      minVolume: currentConfig.minVolume,
+      minTvl: currentConfig.minTvl,
+      minMcap: currentConfig.minMcap,
+      maxMcap: currentConfig.maxMcap,
+      minPoolAgeHours: currentConfig.minPoolAgeHours,
+      maxPoolAgeHours: currentConfig.maxPoolAgeHours,
+      maxPoolAgeDays: currentConfig.maxPoolAgeDays,
+      minOrganic: currentConfig.minOrganic,
+      minFeeActiveTvlRatio: currentConfig.minFeeActiveTvlRatio,
+    },
+    entry: {
+      entryGateMode: currentConfig.entryGateMode,
+      entrySupertrendMaxDistancePct: currentConfig.entrySupertrendMaxDistancePct,
+      entryRequireVolumeConfirm: currentConfig.entryRequireVolumeConfirm,
+      entryMinVolumeRatio: currentConfig.entryMinVolumeRatio,
+      entryVolumeLookbackCandles: currentConfig.entryVolumeLookbackCandles,
+      entryRequireHtfAlignment: currentConfig.entryRequireHtfAlignment,
+      entryHtfAllowNeutral: currentConfig.entryHtfAllowNeutral,
+      minAtrPctForEntry: currentConfig.minAtrPctForEntry,
+    },
+    management: {
+      stopLossPct: currentConfig.stopLossPct,
+      smartExitRsi: currentConfig.smartExitRsi,
+      takeProfitFeePct: currentConfig.takeProfitFeePct,
+      trailingStopPct: currentConfig.trailingStopPct,
+      trailingTriggerPct: currentConfig.trailingTriggerPct,
+      trailingDropPct: currentConfig.trailingDropPct,
+      maxHoldHours: currentConfig.maxHoldHours,
+      outOfRangeWaitMinutes: currentConfig.outOfRangeWaitMinutes,
+      proactiveExitEnabled: currentConfig.proactiveExitEnabled,
+      proactiveExitMinProfitPct: currentConfig.proactiveExitMinProfitPct,
+      proactiveExitBearishConfidence: currentConfig.proactiveExitBearishConfidence,
+      maxDailyDrawdownPct: currentConfig.maxDailyDrawdownPct,
+      maxDailyPriorityFeeSol: currentConfig.maxDailyPriorityFeeSol,
+      slippageBps: currentConfig.slippageBps,
+    },
+    safety: {
+      gmgnWhitelistEnabled: currentConfig.radar?.gmgnWhitelistEnabled,
+      gmgnTop10HolderMaxPct: currentConfig.radar?.gmgnTop10HolderMaxPct,
+      gmgnDevHoldMaxPct: currentConfig.radar?.gmgnDevHoldMaxPct,
+      gmgnInsiderMaxPct: currentConfig.radar?.gmgnInsiderMaxPct,
+      gmgnBundlerMaxPct: currentConfig.radar?.gmgnBundlerMaxPct,
+      gmgnMinTotalFeesSol: currentConfig.radar?.gmgnMinTotalFeesSol,
+      gmgnRequireBurnedLp: currentConfig.radar?.gmgnRequireBurnedLp,
+      gmgnRequireZeroTax: currentConfig.radar?.gmgnRequireZeroTax,
+      gmgnBlockCto: currentConfig.radar?.gmgnBlockCto,
+      gmgnBlockVamped: currentConfig.radar?.gmgnBlockVamped,
+      gmgnFailClosedCritical: currentConfig.radar?.gmgnFailClosedCritical,
+      gmgnWashTradeMaxPct: currentConfig.radar?.gmgnWashTradeMaxPct,
+      maxPriceImpactPct: currentConfig.maxPriceImpactPct,
+      maxExitPriceImpactPct: currentConfig.maxExitPriceImpactPct,
+      maxOhlcvStaleMinutes15m: currentConfig.maxOhlcvStaleMinutes15m,
+      maxOhlcvStaleMinutes1h: currentConfig.maxOhlcvStaleMinutes1h,
+    },
+    execution: {
+      deployAmountSol: currentConfig.deployAmountSol,
+      maxPositions: currentConfig.maxPositions,
+      minSolToOpen: currentConfig.minSolToOpen,
+      gasReserve: currentConfig.gasReserve,
+      deployChunkMaxBins: currentConfig.deployChunkMaxBins,
+      maxBinsPerPosition: currentConfig.maxBinsPerPosition,
+      maxTxFailStreak: currentConfig.maxTxFailStreak,
+      txFailCooldownMinutes: currentConfig.txFailCooldownMinutes,
+    },
+    learning: {
+      autonomousEvolutionEnabled: currentConfig.autonomousEvolutionEnabled,
+      evolveIntervalTrades: currentConfig.evolveIntervalTrades,
+      autoPostMortemEnabled: currentConfig.autoPostMortemEnabled,
+      signalWeights: currentConfig.signalWeights,
+      strategyOverrides: currentConfig.strategyOverrides,
+    },
   };
 
-  return `You are an expert DeFi LP trading analyst for a Meteora DLMM bot.
+  return `You are an expert DeFi LP operator for a Meteora DLMM bot.
 
-Analyze the bot's recent trade performance and suggest SPECIFIC config changes.
+Analyze the bot's recent trade performance and suggest SPECIFIC config changes for the current config snapshot.
 
 ## Current Config
 ${JSON.stringify(cfgSummary, null, 2)}
@@ -131,15 +215,10 @@ ${JSON.stringify(cfgSummary, null, 2)}
 ${stats.recentTrades.join('\n')}
 
 ## Rules
-1. Only suggest changes to these config keys:
-   minOrganic (0-100), gmgnMinAgeHours (0-720), stopLossPct (1-50),
-   trailingStopPct (0.5-50), minFeeActiveTvlRatio (0-1),
-   maxPoolAgeDays (0.1-30), slippageBps (10-1000),
-   minVolume (0-1000000000), minMcap (0-100000000)
-
-2. Be conservative — only suggest changes supported by the data.
-
-3. If win rate > 60% and avg PnL > 5%, suggest NO changes.
+1. Only suggest changes to keys that already exist in the current config snapshot.
+2. Prefer current radar, entry, management, execution, and interval settings.
+3. Be conservative — only suggest changes supported by the data.
+4. If win rate > 60% and avg PnL > 5%, suggest NO changes.
 
 ## Response Format (JSON ONLY, no markdown):
 {
@@ -255,7 +334,7 @@ export async function analyzePerformance({ maxEntries = 50, autoApply = false } 
 
 export function formatEvolutionReport(result) {
   if (!result.ok) {
-    return `⚠️ <b>Evolve gagal</b>\n\n<code>${result.message}</code>`;
+    return `⚠️ <b>Evole gagal</b>\n\n<code>${result.message}</code>`;
   }
 
   const { stats, lesson, recommendations, applied, rejected } = result;
