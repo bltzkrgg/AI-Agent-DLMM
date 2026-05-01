@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { resolve, join } from 'node:path';
 
 const indexPath = resolve(process.cwd(), 'src/index.js');
 const hunterPath = resolve(process.cwd(), 'src/agents/hunterAlpha.js');
@@ -169,6 +169,8 @@ test('scout agent prompt uses DLMM LP breakout screening fields', () => {
   assert.match(src, /breakout_quality/);
   assert.match(src, /Entry=\$\{entryReadiness\}/);
   assert.match(src, /Breakout=\$\{breakoutQuality\}/);
+  assert.match(src, /const CycleReport = \[\]/);
+  assert.match(src, /generateFinalCycleReport/);
 });
 
 test('general agent final decision prompt requires mature breakout momentum', () => {
@@ -182,6 +184,13 @@ test('general agent final decision prompt requires mature breakout momentum', ()
   assert.match(src, /Meridian Gate:/);
   assert.match(src, /GMGN Total Fees:/);
   assert.match(src, /DEPLOY jika:/);
+});
+
+test('/screening command returns report-only mode before sending long output', () => {
+  const src = readFileSync(join(process.cwd(), 'src/index.js'), 'utf8');
+  assert.match(src, /runAutoscreening\(bot, chatId, \{ emitReport: false \}\)/);
+  assert.match(src, /if \(result\?\.report\)/);
+  assert.match(src, /sendLong\(chatId, result\.report/);
 });
 
 test('active position analyst prompt holds through healthy bullish momentum', () => {

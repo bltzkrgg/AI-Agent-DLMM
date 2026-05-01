@@ -619,7 +619,10 @@ bot.onText(/\/evolve(?:\s+(apply))?/, async (msg, match) => {
 bot.onText(/\/screening/, async (msg) => {
   if (!guard(msg)) return;
   const chatId = msg.chat.id;
-  await runAutoscreening(bot, chatId);
+  const result = await runAutoscreening(bot, chatId, { emitReport: false });
+  if (result?.report) {
+    await sendLong(chatId, result.report, { parse_mode: 'HTML' });
+  }
 });
 
 // /strategy_report — compatibility command for legacy telemetry tooling
