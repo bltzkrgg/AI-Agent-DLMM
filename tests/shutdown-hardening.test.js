@@ -167,6 +167,16 @@ test('scout agent prompt uses DLMM LP breakout screening fields', () => {
   assert.match(src, /Breakout=\$\{breakoutQuality\}/);
 });
 
+test('general agent final decision prompt requires mature breakout momentum', () => {
+  const src = readFileSync(hunterPath, 'utf8');
+  assert.match(src, /PRINCIPAL DLMM LIQUIDITY PROVIDER \(FINAL DECISION MAKER\)/);
+  assert.match(src, /Kamu tidak mengejar entry dekat supertrend/);
+  assert.match(src, /harga break jauh di atas supertrend 15m bullish/);
+  assert.match(src, /Kalau bullish momentum belum terbentuk, jangan deploy/);
+  assert.match(src, /Entry = breakout matang, bukan harga yang baru menyentuh garis/);
+  assert.match(src, /DEPLOY jika:/);
+});
+
 test('active position analyst prompt holds through healthy bullish momentum', () => {
   const src = readFileSync(analystPath, 'utf8');
   assert.match(src, /ACTIVE POSITION YIELD MANAGER FOR DLMM/);

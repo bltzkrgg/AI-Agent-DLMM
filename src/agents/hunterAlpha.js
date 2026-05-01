@@ -751,23 +751,52 @@ Balas HANYA JSON valid tanpa Markdown.`;
       console.log(`[hunter] 🧠 LLM stage=GENERAL model=${managementModel}`);
       const gateSummary = (w._gateSummary || []).join('\n');
       const prompt = `[ROLE: PRINCIPAL DLMM LIQUIDITY PROVIDER (FINAL DECISION MAKER)]
-Kamu adalah pengambil keputusan final untuk ekosistem Liquidity Provider DLMM.
-Tugas kamu adalah mengambil keputusan mutlak berdasarkan agregasi semua filter, safety checks, dan kondisi market. Keputusan kamu menentukan nasib modal.
+Kamu adalah pengambil keputusan final untuk posisi DLMM.
+Keputusan kamu menentukan apakah modal jadi dipasang, dipertahankan, atau ditarik.
 
-FOKUS UTAMA KAMU:
-- Capital Protection (Mitigasi Impermanent Loss secara mutlak)
-- Fee Generation Potential (Yield/TVL Ratio)
-- Exit Safety & Structure Health
-- Range Quality (Kualitas volatilitas di dalam Bin Step)
-- Reliability of Safety Data (Keakuratan data Meridian/Oracle)
+MINDSET UTAMA:
+- Kamu bukan trader.
+- Kamu adalah Liquidity Provider yang menjaga modal tetap utuh sambil memanen fee.
+- Kamu tidak mengejar entry dekat supertrend.
+- Kamu justru mencari breakout yang sudah matang: harga break jauh di atas supertrend 15m bullish, atau ATH close hijau dengan momentum bullish yang jelas.
+- Kalau bullish momentum belum terbentuk, jangan deploy.
+- Kalau posisi sudah aktif dan momentum masih bullish, pertahankan posisi.
+- Jangan exit hanya karena profit kecil sempat turun kalau struktur bullish masih valid.
+- Exit hanya kalau struktur rusak, stop loss kena, take profit kena, atau safety memburuk.
 
-MINDSET & ATURAN EKSEKUSI:
-1. Pikirkan seperti LPer kelas institusi yang menaruh modal ke dalam range tertutup dan ingin menjaga modal tetap utuh sembari memanen pajak transaksi.
-2. Kamu BUKAN trader. Jangan pernah berpikir dalam kerangka pump, quick flip, spekulasi arah harga, atau buy low sell high.
-3. Momentum Sebagai Asuransi: Gunakan tren M5 hijau dan Supertrend Bullish HANYA sebagai konfirmasi bahwa struktur harga mampu menahan SOL kita agar tidak anjlok menjadi token sampah, bukan sebagai alasan fomo.
-4. Kalau semua syarat metrik aman, bebas jebakan honeypot, dan produktif: DEPLOY.
-5. Kalau belum cukup yakin, data ambigu, tapi kondisi belum mengancam: DEFER atau HOLD.
-6. Kalau terdeteksi risiko IL yang meroket tajam atau perubahan tren ke Bearish ekstrem: EXIT atau PROTECT_CAPITAL.
+ATURAN KEPUTUSAN:
+1. DEPLOY jika:
+   - semua hard gate safety lulus
+   - supertrend 15m bullish
+   - candle M5 hijau
+   - breakout kuat dan valid
+   - harga sudah benar-benar menunjukkan momentum bullish yang sehat
+2. HOLD jika:
+   - posisi sudah aktif
+   - supertrend 15m masih bullish
+   - momentum masih sehat
+   - fee capture masih berjalan
+   - belum ada alasan exit yang valid
+3. DEFER jika:
+   - data belum cukup
+   - momentum belum terbentuk
+   - breakout belum matang
+   - safety data ambigu
+4. EXIT jika:
+   - momentum bullish patah
+   - stop loss kena
+   - take profit kena
+   - struktur trend rusak
+5. PROTECT_CAPITAL jika:
+   - risiko modal meningkat tajam
+   - safety memburuk
+   - kondisi tidak layak dipertahankan
+
+PRINSIP KERJA:
+- Entry = breakout matang, bukan harga yang baru menyentuh garis.
+- Hold = selama momentum bullish masih hidup.
+- Exit = hanya saat struktur patah atau target risiko tercapai.
+- Kalau ada keraguan, pilih aman.
 
 DATA FINAL:
 - Token: ${sym || 'UNKNOWN'}
@@ -782,8 +811,8 @@ ${gateSummary || 'N/A'}
 {
   "decision": "DEPLOY | HOLD | DEFER | EXIT | PROTECT_CAPITAL",
   "confidence": 0-100,
-  "il_risk_assessment": "Low | Medium | High - Penjelasan potensi Impermanent Loss saat ini",
-  "lp_thesis": "1 kalimat konklusif kenapa range ini layak dieksekusi atau wajib dihindari demi menjaga keutuhan modal dan fee."
+  "il_risk_assessment": "Low | Medium | High - Penjelasan singkat potensi impermanent loss saat ini",
+  "lp_thesis": "1 kalimat konklusif kenapa range ini layak dipasang, dipertahankan, atau wajib dihindari."
 }
 
 Balas HANYA JSON valid tanpa Markdown.`;
