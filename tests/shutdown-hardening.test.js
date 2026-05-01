@@ -6,6 +6,7 @@ import { resolve } from 'node:path';
 const indexPath = resolve(process.cwd(), 'src/index.js');
 const hunterPath = resolve(process.cwd(), 'src/agents/hunterAlpha.js');
 const evilPandaPath = resolve(process.cwd(), 'src/sniper/evilPanda.js');
+const analystPath = resolve(process.cwd(), 'src/market/analyst.js');
 
 test('shutdown orchestration calls close + retry helpers', () => {
   const src = readFileSync(indexPath, 'utf8');
@@ -164,6 +165,15 @@ test('scout agent prompt uses DLMM LP breakout screening fields', () => {
   assert.match(src, /breakout_quality/);
   assert.match(src, /Entry=\$\{entryReadiness\}/);
   assert.match(src, /Breakout=\$\{breakoutQuality\}/);
+});
+
+test('active position analyst prompt holds through healthy bullish momentum', () => {
+  const src = readFileSync(analystPath, 'utf8');
+  assert.match(src, /ACTIVE POSITION YIELD MANAGER FOR DLMM/);
+  assert.match(src, /Jangan close hanya karena profit kecil turun sedikit/);
+  assert.match(src, /Selama supertrend 15m masih bullish dan momentum M5 masih sehat/);
+  assert.match(src, /momentum_state/);
+  assert.match(src, /range_health_status/);
 });
 
 test('deploy natural failures are silenced from Telegram notifications', () => {
