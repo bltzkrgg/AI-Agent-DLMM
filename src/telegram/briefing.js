@@ -3,7 +3,7 @@
  *
  * Mengumpulkan data dari:
  *   - decision.log (pools scanned, VETOs per gate)
- *   - harvest.log  (PnL harian, win/loss)
+ *   - position-ledger.jsonl (realized on-chain pool PnL)
  *   - evilPanda _activePositions (posisi terbuka saat ini)
  *   - tokenBlacklist (jumlah token di-ban)
  *
@@ -11,17 +11,71 @@
  */
 
 import { getDecisionStats }     from '../learn/decisionLog.js';
-import { parseHarvestLog }       from '../learn/statelessEvolve.js';
 import { readBlacklist }         from '../learn/tokenBlacklist.js';
 import { getActivePositionKeys, getPositionMeta } from '../sniper/evilPanda.js';
 import { getWalletBalance }       from '../solana/wallet.js';
 import { getConfig }              from '../config.js';
 import { escapeHTML }             from '../utils/safeJson.js';
+import { existsSync, readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const POSITION_LEDGER_LOG = join(__dirname, '../../position-ledger.jsonl');
 
 function formatPnlSigned(value, digits = 2) {
   if (!Number.isFinite(value)) return 'n/a';
   const sign = value >= 0 ? '+' : '';
   return `${sign}${value.toFixed(digits)}%`;
+}
+
+function formatSolSigned(value, digits = 4) {
+  if (!Number.isFinite(value)) return 'n/a';
+  const sign = value >= 0 ? '+' : '';
+  return `${sign}${value.toFixed(digits)} SOL`;
+}
+
+export function parsePositionLedger(maxEntries = 500) {
+  if (!existsSync(POSITION_LEDGER_LOG)) return [];
+
+  const raw = readFileSync(POSITION_LEDGER_LOG, 'utf-8').trim();
+  if (!raw) return [];
+
+  return raw
+    .split('\n')
+    .filter(Boolean)
+    .slice(-maxEntries)
+    .map((line) => {
+      try { return JSON.parse(line); } catch { return null; }
+    })
+    .filter(Boolean);
+}
+
+export function computeRealizedPoolPnlStats(rows = [], hoursBack = 24) {
+  const cutoff = Date.now() - hoursBack * 60 * 60 * 1000;
+  const realized = (Array.isArray(rows) ? rows : []).filter((row) => {
+    const closedTs = new Date(row?.closedAt || row?.ts || 0).getTime();
+    if (!Number.isFinite(closedTs) || closedTs < cutoff) return false;
+    if (row?.manualCloseDetected) return false;
+    if (row?.accountingStatus === 'manual_close_pnl_unknown') return false;
+    return Number.isFinite(Number(row?.cashflow?.pnlTotalSol));
+  });
+
+  const totalPnlSol = realized.reduce((sum, row) => sum + Number(row.cashflow.pnlTotalSol || 0), 0);
+  const capitalInSol = realized.reduce((sum, row) => sum + Math.max(0, Number(row.cashflow.capitalInSol || 0)), 0);
+  const totalPnlPct = capitalInSol > 0 ? (totalPnlSol / capitalInSol) * 100 : 0;
+  const wins = realized.filter((row) => Number(row.cashflow.pnlTotalSol || 0) > 0);
+  const losses = realized.filter((row) => Number(row.cashflow.pnlTotalSol || 0) < 0);
+
+  return {
+    realized,
+    total: realized.length,
+    wins: wins.length,
+    losses: losses.length,
+    totalPnlSol,
+    totalPnlPct,
+    capitalInSol,
+  };
 }
 
 export function formatActivePositionsTelegram(activePositions = [], { maxItems = 5 } = {}) {
@@ -75,15 +129,10 @@ export async function generateBriefing(hoursBack = 24) {
   // 1. Decision log stats (screening funnel)
   const dStats  = getDecisionStats(hoursBack);
 
-  // 2. Harvest log stats (PnL)
-  const trades  = parseHarvestLog(200);
-  const cutoff  = Date.now() - hoursBack * 60 * 60 * 1000;
-  const recent  = trades.filter(t => new Date(t.ts).getTime() >= cutoff);
-
-  const wins    = recent.filter(t => t.isWin);
-  const losses  = recent.filter(t => !t.isWin);
-  const totalPnl = recent.reduce((s, t) => s + t.pnl, 0);
-  const totalSol = recent.reduce((s, t) => s + t.sol, 0);
+  // 2. Realized pool PnL from on-chain close ledger.
+  // capitalOutSol/liquidity withdrawal is not counted as PnL; only pnlTotalSol is.
+  const ledgerRows = parsePositionLedger(500);
+  const pnlStats = computeRealizedPoolPnlStats(ledgerRows, hoursBack);
 
   // 3. Active positions
   const activeKeys  = getActivePositionKeys();
@@ -124,13 +173,14 @@ export async function generateBriefing(hoursBack = 24) {
       ? `   Top Gate : <code>${dStats.topGates.join(', ')}</code>`
       : '');
 
-  const pnlSign  = totalPnl >= 0 ? '+' : '';
   const pnlBlock =
     `\n\n📊 <b>PnL Harian</b> (${period})\n` +
-    `   Trades   : <code>${recent.length}</code> ` +
-    `(<code>${wins.length}W / ${losses.length}L</code>)\n` +
-    `   Total PnL: <code>${pnlSign}${totalPnl.toFixed(2)}%</code>\n` +
-    `   SOL in   : <code>${totalSol.toFixed(4)} SOL</code>`;
+    `   Closed   : <code>${pnlStats.total}</code> ` +
+    `(<code>${pnlStats.wins}W / ${pnlStats.losses}L</code>)\n` +
+    `   Total PnL: <code>${formatSolSigned(pnlStats.totalPnlSol)}</code> ` +
+    `(<code>${formatPnlSigned(pnlStats.totalPnlPct)}</code>)\n` +
+    `   Capital  : <code>${pnlStats.capitalInSol.toFixed(4)} SOL</code>\n` +
+    `   Basis    : <code>on-chain pool PnL only</code>`;
 
   const posBlock =
     formatActivePositionsTelegram(activeItems, { maxItems: 5 }) +

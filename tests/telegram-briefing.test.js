@@ -3,7 +3,10 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { formatActivePositionsTelegram } from '../src/telegram/briefing.js';
+import {
+  computeRealizedPoolPnlStats,
+  formatActivePositionsTelegram,
+} from '../src/telegram/briefing.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -82,4 +85,51 @@ test('briefing config block exposes realtime PnL interval', () => {
 
   assert.match(content, /Realtime PnL/);
   assert.match(content, /realtimePnlIntervalSec/);
+});
+
+test('briefing realized PnL uses pool pnlTotalSol and ignores liquidity withdrawal amount', () => {
+  const now = new Date().toISOString();
+  const stats = computeRealizedPoolPnlStats([
+    {
+      closedAt: now,
+      reason: 'TAKE_PROFIT_A',
+      accountingStatus: 'final',
+      cashflow: {
+        capitalInSol: 1.0,
+        capitalOutSol: 1.25,
+        pnlTotalSol: 0.05,
+        pnlTotalPct: 5,
+      },
+    },
+    {
+      closedAt: now,
+      reason: 'STOP_LOSS',
+      accountingStatus: 'final',
+      cashflow: {
+        capitalInSol: 1.0,
+        capitalOutSol: 0.92,
+        pnlTotalSol: -0.03,
+        pnlTotalPct: -3,
+      },
+    },
+    {
+      closedAt: now,
+      reason: 'MANUAL_WITHDRAW_DETECTED',
+      accountingStatus: 'manual_close_pnl_unknown',
+      manualCloseDetected: true,
+      cashflow: {
+        capitalInSol: 1.0,
+        capitalOutSol: 1.0,
+        pnlTotalSol: 0.9,
+        pnlTotalPct: 90,
+      },
+    },
+  ], 24);
+
+  assert.equal(stats.total, 2);
+  assert.equal(stats.wins, 1);
+  assert.equal(stats.losses, 1);
+  assert.equal(Number(stats.totalPnlSol.toFixed(6)), 0.02);
+  assert.equal(Number(stats.totalPnlPct.toFixed(6)), 1);
+  assert.equal(stats.capitalInSol, 2);
 });
