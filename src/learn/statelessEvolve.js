@@ -334,7 +334,7 @@ export async function analyzePerformance({ maxEntries = 50, autoApply = false } 
 
 export function formatEvolutionReport(result) {
   if (!result.ok) {
-    return `⚠️ <b>Evole gagal</b>\n\n<code>${result.message}</code>`;
+    return `⚠️ <b>Evolve gagal</b>\n\n<code>${result.message}</code>`;
   }
 
   const { stats, lesson, recommendations, applied, rejected } = result;

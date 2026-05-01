@@ -122,7 +122,7 @@ bot.onText(/\/start/, (msg) => {
     `/hunt      — Mulai loop sniper\n` +
     `/screening   — Scan manual top pool sekarang\n` +
     `/autoscreen  — Toggle auto-screening (on/off)\n` +
-    `/evole       — Analisis harvest.log + saran config terbaru\n` +
+    `/evolve      — Analisis harvest.log + saran config terbaru\n` +
     `/stop        — Hentikan loop\n` +
     `/exit        — Force exit posisi aktif\n` +
     `/balance     — Saldo wallet\n` +
@@ -579,20 +579,19 @@ bot.onText(/\/blacklist(?:\s+(rm)\s+(\S+))?/, async (msg, match) => {
   );
 });
 
-// ── /evole — analisis harvest.log + rekomendasi LLM ─────────────
-// /evole        → preview rekomendasi (tidak ubah config)
-// /evole apply  → preview + auto-apply perubahan ke user-config.json
-// Alias lama /evolve tetap didukung untuk kompatibilitas.
+// ── /evolve — analisis harvest.log + rekomendasi LLM ─────────────
+// /evolve        → preview rekomendasi (tidak ubah config)
+// /evolve apply  → preview + auto-apply perubahan ke user-config.json
 
-bot.onText(/\/(?:evole|evolve)(?:\s+(apply))?/, async (msg, match) => {
+bot.onText(/\/evolve(?:\s+(apply))?/, async (msg, match) => {
   if (!guard(msg)) return;
   const chatId    = msg.chat.id;
   const autoApply = match[1]?.toLowerCase() === 'apply';
 
   await bot.sendMessage(chatId,
-    `🧠 <b>Evole — Menganalisis config terbaru...</b>\n` +
+    `🧠 <b>Evolve — Menganalisis config terbaru...</b>\n` +
     `<i>Mengirim snapshot config & performa ke ${getConfig().agentModel || 'Agent Model'}...</i>\n` +
-    (autoApply ? `⚡ Mode: <b>AUTO-APPLY</b>` : `👁 Mode: <b>Preview</b> (gunakan /evole apply untuk terapkan)`),
+    (autoApply ? `⚡ Mode: <b>AUTO-APPLY</b>` : `👁 Mode: <b>Preview</b> (gunakan /evolve apply untuk terapkan)`),
     { parse_mode: 'HTML' }
   );
 
@@ -604,13 +603,13 @@ bot.onText(/\/(?:evole|evolve)(?:\s+(apply))?/, async (msg, match) => {
     // Jika preview dan ada rekomendasi, tawari apply
     if (!autoApply && result.ok && result.recommendations.length > 0) {
       await bot.sendMessage(chatId,
-        `💬 <i>Setuju dengan rekomendasi di atas?\nKetik <code>/evole apply</code> untuk menerapkan perubahan ke config.</i>`,
+        `💬 <i>Setuju dengan rekomendasi di atas?\nKetik <code>/evolve apply</code> untuk menerapkan perubahan ke config.</i>`,
         { parse_mode: 'HTML' }
       );
     }
   } catch (e) {
     bot.sendMessage(chatId,
-      `❌ <b>Evole error:</b>\n<code>${escapeHTML(e.message)}</code>`,
+      `❌ <b>Evolve error:</b>\n<code>${escapeHTML(e.message)}</code>`,
       { parse_mode: 'HTML' }
     );
   }
