@@ -14,6 +14,7 @@
 import { getConfig }              from '../config.js';
 import { screenToken }            from '../market/coinfilter.js';
 import { runMeridianVeto, discoverHighFeePoolsMeridian } from '../market/meridianVeto.js';
+import { getMarketSnapshot }      from '../market/oracle.js';
 import { deployPosition, monitorPnL, exitPosition, markPositionManuallyClosed, setEvilPandaNotifyFn, setPositionLifecycle, getPositionOnChainStatus, EP_CONFIG, getActivePositionKeys, getPositionMeta } from '../sniper/evilPanda.js';
 import { createMessage }          from '../agent/provider.js';
 import { getWalletBalance }       from '../solana/wallet.js';
@@ -232,6 +233,71 @@ function isNaturalDeployError(error) {
   const msg = String(error?.message || error || '').toLowerCase();
   return ['partial', 'simulation failed', 'slippage', 'timeout', 'blockhash']
     .some((needle) => msg.includes(needle));
+}
+
+function formatMaybePct(value, digits = 2) {
+  const num = Number(value);
+  return Number.isFinite(num) ? `${num.toFixed(digits)}%` : 'UNKNOWN';
+}
+
+function formatMaybeUsd(value) {
+  const num = Number(value);
+  return Number.isFinite(num) ? `$${Math.round(num).toLocaleString('en-US')}` : 'UNKNOWN';
+}
+
+function formatMaybeBool(value) {
+  if (value === true) return 'YES';
+  if (value === false) return 'NO';
+  return 'UNKNOWN';
+}
+
+function buildLlmPoolContext({ pool = {}, screenResult = null, vetoResult = null, marketSnapshot = null }) {
+  const okx = screenResult?.okxSignals || null;
+  const gmgn = screenResult?.gmgnMetrics || null;
+  const taTrend = marketSnapshot?.quality?.taTrend || marketSnapshot?.ta?.supertrend?.trend || vetoResult?.diagnostics?.supertrend15m || 'UNKNOWN';
+  const priceChangeM5 = marketSnapshot?.ohlcv?.priceChangeM5;
+  const priceChangeH1 = marketSnapshot?.ohlcv?.priceChangeH1;
+  const taReliable = marketSnapshot?.quality?.taReliable;
+  const athDistancePct = vetoResult?.diagnostics?.athDistancePct;
+  const stageWaterfall = screenResult?.stageWaterfall || {};
+  const topFlags = Array.isArray(screenResult?.highFlags)
+    ? screenResult.highFlags.slice(0, 3).map((f) => f?.msg).filter(Boolean)
+    : [];
+
+  return [
+    `- Token: ${pool.tokenXSymbol || pool.name?.split('-')[0] || 'UNKNOWN'}`,
+    `- Bin Step: ${pool.binStep || 0}`,
+    `- Fee/TVL: ${formatMaybePct((pool.feeActiveTvlRatio || 0) * 100)}`,
+    `- Volume 24h: ${formatMaybeUsd(pool.volume24h || pool.volume_24h || pool.trade_volume_24h || pool.volume || 0)}`,
+    `- TVL: ${formatMaybeUsd(pool.activeTvl || pool.totalTvl || 0)}`,
+    `- Mcap: ${formatMaybeUsd(pool.mcap || 0)}`,
+    `- TA Supertrend 15m: ${String(taTrend || 'UNKNOWN').toUpperCase()}`,
+    `- TA M5 Change: ${formatMaybePct(priceChangeM5)}`,
+    `- TA H1 Change: ${formatMaybePct(priceChangeH1)}`,
+    `- TA Reliable: ${formatMaybeBool(taReliable)}`,
+    `- ATH Distance: ${Number.isFinite(Number(athDistancePct)) ? formatMaybePct(athDistancePct, 1) : 'UNKNOWN'}`,
+    `- Meridian Gate: ${vetoResult?.veto ? 'FAIL' : 'PASS'} (${vetoResult?.gate || 'NONE'})`,
+    `- Meridian Reason: ${vetoResult?.reason || 'UNKNOWN'}`,
+    `- Stage 1 Public: ${stageWaterfall.stage1PublicData || 'UNKNOWN'}`,
+    `- Stage 2 GMGN: ${stageWaterfall.stage2GmgnAudit || 'UNKNOWN'}`,
+    `- Stage 3 Jupiter: ${stageWaterfall.stage3Jupiter || 'UNKNOWN'}`,
+    `- OKX Available: ${formatMaybeBool(okx ? !okx.unavailable : null)}`,
+    `- OKX High Risk: ${formatMaybeBool(okx?.highRisk)}`,
+    `- OKX Risk Level: ${Number.isFinite(Number(okx?.riskLevel)) ? Number(okx.riskLevel) : 'UNKNOWN'}`,
+    `- OKX Wash Trading: ${formatMaybePct(okx?.washTradingPct, 1)}`,
+    `- OKX Bundler: ${formatMaybePct(okx?.bundlerPct, 1)}`,
+    `- GMGN Status: ${screenResult?.gmgnStatus || 'UNKNOWN'}`,
+    `- GMGN Top10: ${formatMaybePct(gmgn?.top10Pct, 2)}`,
+    `- GMGN Dev Hold: ${formatMaybePct(gmgn?.devHoldPct, 2)}`,
+    `- GMGN Insider: ${formatMaybePct(gmgn?.insiderPct, 2)}`,
+    `- GMGN Bundler: ${formatMaybePct(gmgn?.bundlerPct, 2)}`,
+    `- GMGN Total Fees: ${Number.isFinite(Number(gmgn?.totalFeesSol)) ? `${Number(gmgn.totalFeesSol).toFixed(2)} SOL` : 'UNKNOWN'}`,
+    `- GMGN Burned LP: ${formatMaybeBool(gmgn?.burnedLp)}`,
+    `- GMGN Zero Tax: ${formatMaybeBool(gmgn?.zeroTax)}`,
+    `- GMGN CTO Flag: ${formatMaybeBool(gmgn?.ctoFlag)}`,
+    `- GMGN Vamped: ${formatMaybeBool(gmgn?.vamped)}`,
+    `- High Flags: ${topFlags.length ? topFlags.join(' | ') : 'NONE'}`,
+  ].join('\n');
 }
 
 function summarizeExitError(error) {
@@ -505,6 +571,7 @@ async function scanAndDeploy() {
 
     let isEligible = true;
     let rejectReason = '';
+    let vetoResult = null;
     if (isBlacklisted(tokenMint)) {
       appendDecisionLog({ token: tokenSymbol, mint: tokenMint, decision: 'VETO',
         gate: 'BLACKLIST', reason: 'Token ada di daftar blacklist lokal',
@@ -546,7 +613,6 @@ async function scanAndDeploy() {
     }
 
     if (isEligible) {
-      let vetoResult;
       try {
         vetoResult = await runMeridianVeto({ mint: tokenMint, symbol: tokenSymbol, pool });
       } catch (e) {
@@ -591,6 +657,15 @@ async function scanAndDeploy() {
       }
     }
 
+    let marketSnapshot = null;
+    if (isEligible) {
+      try {
+        marketSnapshot = await getMarketSnapshot(tokenMint, pool.address || pool.poolAddress || null);
+      } catch (e) {
+        console.warn(`[hunter] MarketSnapshot error pada ${tokenSymbol}: ${e.message}`);
+      }
+    }
+
     if (!isEligible) {
       let rejectStage = 'WATERFALL';
       if (summary.includes('BLACKLIST_LOCAL: FAIL')) rejectStage = 'BLACKLIST_LOCAL';
@@ -606,6 +681,7 @@ async function scanAndDeploy() {
     try {
       const scoutModel = cfg.screeningModel || cfg.agentModel;
       console.log(`[hunter] 🧠 LLM stage=SCOUT model=${scoutModel}`);
+      const llmPoolContext = buildLlmPoolContext({ pool, screenResult, vetoResult, marketSnapshot });
       const prompt = `[ROLE: INITIAL SCREENING FILTER FOR DLMM LIQUIDITY PROVIDER]
 Kamu adalah garis pertahanan pertama untuk penyedia likuiditas DLMM Meteora.
 Tugas kamu BUKAN trading spekulatif. Tugas kamu adalah menilai secara mekanis apakah sebuah pool layak masuk shortlist untuk penyediaan likuiditas.
@@ -641,12 +717,7 @@ FOKUS UTAMA KAMU:
 - Momentum breakout yang benar-benar hidup
 
 DATA POOL:
-- Token: ${tokenSymbol || 'UNKNOWN'}
-- Bin Step: ${binStep}
-- Fee/TVL: ${(feeRatio * 100).toFixed(2)}%
-- Volume 24h: $${Math.round(vol).toLocaleString('en-US')}
-- TVL: $${Math.round(Number(pool.activeTvl || pool.totalTvl || 0)).toLocaleString('en-US')}
-- Mcap: $${Math.round(Number(pool.mcap || 0)).toLocaleString('en-US')}
+${llmPoolContext}
 
 [FORMAT JAWABAN JSON]
 {
@@ -678,6 +749,10 @@ Balas HANYA JSON valid tanpa Markdown.`;
       if (decision.includes('PASS')) {
         console.log(`[hunter] 🤖 ScoutAgent LP APPROVED: ${tokenSymbol}${scoreSuffix}${detailSuffix ? ` | ${detailSuffix}` : ''}`);
         summary.push(`SCOUT_AGENT: PASS${scoreSuffix}${detailSuffix ? ` (${detailSuffix})` : ''}`);
+        pool._screenResult = screenResult;
+        pool._vetoResult = vetoResult;
+        pool._marketSnapshot = marketSnapshot;
+        pool._llmPoolContext = llmPoolContext;
         return { ok: true, pool, symbol: tokenSymbol || 'UNKNOWN', summary };
       }
       const isDeferred = decision.includes('DEFER');
@@ -750,6 +825,12 @@ Balas HANYA JSON valid tanpa Markdown.`;
       const managementModel = cfg.managementModel || cfg.generalModel || cfg.agentModel;
       console.log(`[hunter] 🧠 LLM stage=GENERAL model=${managementModel}`);
       const gateSummary = (w._gateSummary || []).join('\n');
+      const llmPoolContext = w._llmPoolContext || buildLlmPoolContext({
+        pool: w,
+        screenResult: w._screenResult,
+        vetoResult: w._vetoResult,
+        marketSnapshot: w._marketSnapshot,
+      });
       const prompt = `[ROLE: PRINCIPAL DLMM LIQUIDITY PROVIDER (FINAL DECISION MAKER)]
 Kamu adalah pengambil keputusan final untuk posisi DLMM.
 Keputusan kamu menentukan apakah modal jadi dipasang, dipertahankan, atau ditarik.
@@ -800,10 +881,8 @@ PRINSIP KERJA:
 
 DATA FINAL:
 - Token: ${sym || 'UNKNOWN'}
-- Mcap: $${mcap}
-- Volume 24h: $${vol}
-- Fee/TVL: ${((w.feeActiveTvlRatio || 0) * 100).toFixed(2)}%
-- Bin Step: ${w.binStep || '?'}
+- High-level Summary:
+${llmPoolContext}
 - Gate Summary:
 ${gateSummary || 'N/A'}
 

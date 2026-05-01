@@ -161,6 +161,10 @@ test('scout agent prompt uses DLMM LP breakout screening fields', () => {
   assert.match(src, /breakout yang matang/);
   assert.match(src, /Supertrend 15m harus bullish/);
   assert.match(src, /Candle M5 harus hijau/);
+  assert.match(src, /TA Supertrend 15m:/);
+  assert.match(src, /TA M5 Change:/);
+  assert.match(src, /OKX Wash Trading:/);
+  assert.match(src, /GMGN Top10:/);
   assert.match(src, /entry_readiness/);
   assert.match(src, /breakout_quality/);
   assert.match(src, /Entry=\$\{entryReadiness\}/);
@@ -174,6 +178,9 @@ test('general agent final decision prompt requires mature breakout momentum', ()
   assert.match(src, /harga break jauh di atas supertrend 15m bullish/);
   assert.match(src, /Kalau bullish momentum belum terbentuk, jangan deploy/);
   assert.match(src, /Entry = breakout matang, bukan harga yang baru menyentuh garis/);
+  assert.match(src, /High-level Summary:/);
+  assert.match(src, /Meridian Gate:/);
+  assert.match(src, /GMGN Total Fees:/);
   assert.match(src, /DEPLOY jika:/);
 });
 

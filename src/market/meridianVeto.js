@@ -482,22 +482,34 @@ export async function runMeridianVeto(token) {
   };
   try {
     const cfg = getConfig();
+    const diagnostics = {
+      supertrend15m: 'UNKNOWN',
+      athDistancePct: null,
+      athGate: cfg.maxAthDistancePct > 0 ? 'UNKNOWN' : 'SKIPPED',
+      pvpGate: 'UNKNOWN',
+      dominanceGate: pool ? 'UNKNOWN' : 'SKIPPED',
+      volumeGate: 'SKIPPED',
+    };
     
     const currentPrice = pool ? Number(pool.price || pool.pool_price || pool.currentPrice || 0) : 0;
 
     // Gate 1: Supertrend 15m
     const st = await checkSupertrendVeto(mint, currentPrice);
-    if (st.veto) return setCacheAndReturn({ veto: true, reason: st.reason, gate: 'SUPERTREND_15M' });
+    diagnostics.supertrend15m = st.veto ? 'BEARISH_OR_UNAVAILABLE' : 'BULLISH';
+    if (st.veto) return setCacheAndReturn({ veto: true, reason: st.reason, gate: 'SUPERTREND_15M', diagnostics });
 
     // Gate 2: ATH Distance [TA_ATH_DANGER]
     if (cfg.maxAthDistancePct > 0) {
       const ath = await checkAthDistanceVeto(mint);
-      if (ath.veto) return setCacheAndReturn({ veto: true, reason: ath.reason, gate: 'TA_ATH_DANGER' });
+      diagnostics.athDistancePct = Number.isFinite(ath?.priceVsAthPct) ? ath.priceVsAthPct : null;
+      diagnostics.athGate = ath.veto ? 'FAIL' : 'PASS';
+      if (ath.veto) return setCacheAndReturn({ veto: true, reason: ath.reason, gate: 'TA_ATH_DANGER', diagnostics });
     }
 
     // Gate 3: PVP Guard (rival token)
     const pvp = await checkPvpGuardVeto(mint, symbol);
-    if (pvp.veto) return setCacheAndReturn({ veto: true, reason: pvp.reason, gate: 'PVP_GUARD' });
+    diagnostics.pvpGate = pvp.veto ? 'FAIL' : 'PASS';
+    if (pvp.veto) return setCacheAndReturn({ veto: true, reason: pvp.reason, gate: 'PVP_GUARD', diagnostics });
 
     // Volume Range Gate
     if (pool) {
@@ -505,11 +517,14 @@ export async function runMeridianVeto(token) {
       const minVol = Number(cfg.minVolume) || 0;
       const maxVol = Number(cfg.maxVolume) || 0;
       if (minVol > 0 && vol < minVol) {
-        return setCacheAndReturn({ veto: true, reason: `🚫 VETO: Volume $${Math.round(vol).toLocaleString()} di bawah minimal $${Math.round(minVol).toLocaleString()}`, gate: 'LOW_VOLUME' });
+        diagnostics.volumeGate = 'FAIL';
+        return setCacheAndReturn({ veto: true, reason: `🚫 VETO: Volume $${Math.round(vol).toLocaleString()} di bawah minimal $${Math.round(minVol).toLocaleString()}`, gate: 'LOW_VOLUME', diagnostics });
       }
       if (maxVol > 0 && vol > maxVol) {
-        return setCacheAndReturn({ veto: true, reason: `🚫 VETO: Volume $${Math.round(vol).toLocaleString()} melebihi maksimal $${Math.round(maxVol).toLocaleString()}`, gate: 'HIGH_VOLUME' });
+        diagnostics.volumeGate = 'FAIL';
+        return setCacheAndReturn({ veto: true, reason: `🚫 VETO: Volume $${Math.round(vol).toLocaleString()} melebihi maksimal $${Math.round(maxVol).toLocaleString()}`, gate: 'HIGH_VOLUME', diagnostics });
       }
+      diagnostics.volumeGate = 'PASS';
     }
 
     // Gate 4: Dominance Check [LOW_DOMINANCE]
@@ -518,12 +533,25 @@ export async function runMeridianVeto(token) {
       const poolTvl  = Number(pool.activeTvl || pool.totalTvl || 0);
       const poolAddr = pool.address || '';
       const dom = await checkDominanceVeto(mint, poolTvl, poolAddr);
-      if (dom.veto) return setCacheAndReturn({ veto: true, reason: dom.reason, gate: 'LOW_DOMINANCE' });
+      diagnostics.dominanceGate = dom.veto ? 'FAIL' : 'PASS';
+      if (dom.veto) return setCacheAndReturn({ veto: true, reason: dom.reason, gate: 'LOW_DOMINANCE', diagnostics });
     }
 
-    return setCacheAndReturn({ veto: false, reason: 'All Meridian gates PASS', gate: null });
+    return setCacheAndReturn({ veto: false, reason: 'All Meridian gates PASS', gate: null, diagnostics });
   } catch (e) {
     console.warn(`[meridianVeto] unexpected error ${mint.slice(0,8)}: ${e.message} — FAIL_CLOSED`);
-    return setCacheAndReturn({ veto: true, reason: `[FAIL_CLOSED] Meridian Veto error: ${e.message}`, gate: 'MERIDIAN_ERROR' });
+    return setCacheAndReturn({
+      veto: true,
+      reason: `[FAIL_CLOSED] Meridian Veto error: ${e.message}`,
+      gate: 'MERIDIAN_ERROR',
+      diagnostics: {
+        supertrend15m: 'UNKNOWN',
+        athDistancePct: null,
+        athGate: 'UNKNOWN',
+        pvpGate: 'UNKNOWN',
+        dominanceGate: 'UNKNOWN',
+        volumeGate: 'UNKNOWN',
+      },
+    });
   }
 }

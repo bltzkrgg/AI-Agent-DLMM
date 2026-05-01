@@ -581,6 +581,8 @@ function buildResult({
   priceImpactSell,
   sources,
   notes,
+  okxSignals = null,
+  gmgnMetrics = null,
 }) {
   const rejected = highFlags.length > 0;
   const finalStatus = rejected ? 'FAIL' : 'PASS';
@@ -614,6 +616,8 @@ function buildResult({
       final: rejected ? 'REJECTED' : 'PASSED',
     },
     sources,
+    okxSignals,
+    gmgnMetrics,
     notes: Array.isArray(notes) ? notes : [],
   };
 }
@@ -766,6 +770,7 @@ export async function screenToken(tokenMint, tokenName = '', tokenSymbol = '', o
   }
 
   const okx = await fetchOkxSignals(tokenMint);
+  let okxSignals = null;
   sources.okx = !!okx && !okx.unavailable;
   if (okx?.unavailable) {
     const msg = `[FAIL_CLOSED] OKX unavailable: ${okx.reason || 'OKX_API_UNAVAILABLE'}`;
@@ -785,6 +790,22 @@ export async function screenToken(tokenMint, tokenName = '', tokenSymbol = '', o
     if (Number.isFinite(okx.bundlerPct)) {
       notes.push(`OKX bundler ${formatPct(okx.bundlerPct)}`);
     }
+    okxSignals = {
+      unavailable: false,
+      highRisk: !!okx.highRisk,
+      washTradingPct: Number.isFinite(okx.washTradingPct) ? okx.washTradingPct : null,
+      bundlerPct: Number.isFinite(okx.bundlerPct) ? okx.bundlerPct : null,
+      riskLevel: Number.isFinite(okx.riskLevel) ? okx.riskLevel : null,
+    };
+  } else if (okx?.unavailable) {
+    okxSignals = {
+      unavailable: true,
+      reason: okx.reason || 'OKX_API_UNAVAILABLE',
+      highRisk: null,
+      washTradingPct: null,
+      bundlerPct: null,
+      riskLevel: null,
+    };
   }
 
   // Stage 2: GMGN Deep Audit
@@ -795,6 +816,18 @@ export async function screenToken(tokenMint, tokenName = '', tokenSymbol = '', o
   const gmgnAvailable = !!(gmgnInfo || gmgnSec);
   sources.gmgn = gmgnAvailable;
   const gmgnStatus = gmgnAvailable ? 'ACTIVE' : 'UNVERIFIED';
+  let gmgnMetrics = {
+    available: gmgnAvailable,
+    top10Pct: null,
+    devHoldPct: null,
+    insiderPct: null,
+    bundlerPct: null,
+    totalFeesSol: null,
+    burnedLp: null,
+    zeroTax: null,
+    ctoFlag: null,
+    vamped: null,
+  };
 
   if (gmgnAvailable && radar.gmgnWhitelistEnabled) {
     const top10 = toRatio(pickGmgnNumber(gmgnInfo, gmgnSec, ['stat.top_10_holder_rate', 'top_10_holder_rate']));
@@ -807,6 +840,18 @@ export async function screenToken(tokenMint, tokenName = '', tokenSymbol = '', o
     const sellTax = safeNum(gmgnSec?.sell_tax || 0);
     const ctoFlag = Number(gmgnInfo?.dev?.cto_flag || 0);
     const vamped = isVampedCoin(gmgnInfo, gmgnSec);
+    gmgnMetrics = {
+      available: true,
+      top10Pct: Number.isFinite(top10) ? top10 * 100 : null,
+      devHoldPct: Number.isFinite(devHold) ? devHold * 100 : null,
+      insiderPct: Number.isFinite(insider) ? insider * 100 : null,
+      bundlerPct: Number.isFinite(bundler) ? bundler * 100 : null,
+      totalFeesSol: Number.isFinite(totalFeesSol) ? totalFeesSol : null,
+      burnedLp: burnStatus === 'burn',
+      zeroTax: buyTax <= 0 && sellTax <= 0,
+      ctoFlag: ctoFlag === 1,
+      vamped: vamped === true,
+    };
 
     const gmgnChecks = [
       { ok: top10 == null || top10 <= radar.gmgnTop10HolderMaxPct / 100, msg: `[VETO] Top 10 Holders ${(top10 * 100).toFixed(2)}% > ${radar.gmgnTop10HolderMaxPct}%`, rule: 'GMGN_TOP10' },
@@ -905,6 +950,8 @@ export async function screenToken(tokenMint, tokenName = '', tokenSymbol = '', o
     priceImpactSell: sellImpact,
     sources,
     notes,
+    okxSignals,
+    gmgnMetrics,
   });
 }
 
