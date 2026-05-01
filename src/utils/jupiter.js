@@ -6,9 +6,9 @@
  */
 
 import { fetchWithTimeout, stringify }  from './safeJson.js';
-import { getWallet }                    from '../solana/wallet.js';
+import { getTokenBalanceRaw }           from '../solana/wallet.js';
 import { getConfig }                    from '../config.js';
-import { Transaction, VersionedTransaction } from '@solana/web3.js';
+import { swapToSOL as executeSwapToSOL } from '../solana/jupiter.js';
 
 // ── Jupiter V2 Endpoints (direct) ───────────────────────────────────
 const JUP_BASE      = 'https://api.jup.ag/swap/v1';
@@ -57,57 +57,29 @@ export async function getSwapQuoteToSol(tokenMint, amount, overrideSlippageBps =
 }
 
 // ── swapToSol ────────────────────────────────────────────────────────
-// Jupiter V2 Swap — dengan JIT price stability check
+// Jupiter V2 Swap — wrapper eksekusi langsung via on-chain Jupiter
 
-export async function swapToSol(tokenMint, amount, overrideSlippageBps = null) {
-  const wallet  = getWallet();
-  const cfg     = getConfig();
-  const WSOL    = 'So11111111111111111111111111111111111111112';
+function isZeroLikeAmount(amount) {
+  return String(amount || '0').trim() === '0';
+}
 
+export async function swapToSol(tokenMint, amount, overrideSlippageBps = null, options = {}) {
   try {
-    // 1. Quote A — baseline
-    const slippage = overrideSlippageBps || cfg.slippageBps || 250;
-    const quoteA   = await getJupiterQuote(tokenMint, WSOL, amount, slippage);
-    const outA     = parseInt(quoteA.outAmount);
-
-    // 2. JIT Verification — tunggu 800ms untuk stabilitas harga
-    console.log(`[jupiter] JIT Verification: Menunggu 800ms...`);
-    await new Promise(r => setTimeout(r, 800));
-
-    // 3. Quote B — second opinion
-    const quoteB   = await getJupiterQuote(tokenMint, WSOL, amount, slippage);
-    const outB     = parseInt(quoteB.outAmount);
-
-    // 4. Price Stability Check (maks deviasi 1.0%)
-    const priceShift = (outB - outA) / outA;
-    if (priceShift < -0.01) {
-      console.warn(`[jupiter] ABORT: Harga tidak stabil! Shift: ${(priceShift * 100).toFixed(2)}%`);
-      return { success: false, reason: 'PRICE_UNSTABLE', shift: priceShift };
+    let rawAmount = amount;
+    if (isZeroLikeAmount(rawAmount)) {
+      rawAmount = await getTokenBalanceRaw(tokenMint);
     }
 
-    console.log(`[jupiter] Verification STABLE (Shift: ${(priceShift * 100).toFixed(2)}%). Swap...`);
+    if (!rawAmount || String(rawAmount) === '0') {
+      return { success: false, reason: 'ZERO_BALANCE' };
+    }
 
-    // 5. Get Swap Transaction via V2
-    const swapRes = await fetchWithTimeout(JUP_SWAP_URL, {
-      method:  'POST',
-      headers: { ...JUPITER_HEADERS, 'Content-Type': 'application/json' },
-      body:    stringify({
-        quoteResponse:             quoteB,
-        userPublicKey:             wallet.publicKey.toString(),
-        wrapAndUnwrapSol:          true,
-        dynamicComputeUnitLimit:   true,
-        prioritizationFeeLamports: 'auto',
-      }),
-    }, 10000);
-
-    if (!swapRes.ok) throw new Error(`Jupiter Swap V2 Failed: ${swapRes.status}`);
-    const { swapTransaction } = await swapRes.json();
-
-    return {
-      swapTransaction,
-      outAmount:      quoteB.outAmount,
-      priceImpactPct: quoteB.priceImpactPct,
-    };
+    return await executeSwapToSOL(
+      tokenMint,
+      rawAmount,
+      overrideSlippageBps || getConfig().slippageBps || 250,
+      options,
+    );
   } catch (e) {
     console.error(`[jupiter] swapToSol failed for ${tokenMint.slice(0, 8)}:`, e.message);
     return null;
@@ -118,25 +90,13 @@ export async function swapToSol(tokenMint, amount, overrideSlippageBps = null) {
 
 export async function swapAllToSOL(tokenMint, overrideSlippageBps = null) {
   try {
-    const { getTokenBalance } = await import('../solana/wallet.js');
-    const balanceInfo = await getTokenBalance(tokenMint);
+    const balanceRaw = await getTokenBalanceRaw(tokenMint);
 
-    if (!balanceInfo || !balanceInfo.amount || parseFloat(balanceInfo.amount) <= 0) {
+    if (!balanceRaw || String(balanceRaw) === '0') {
       return { success: false, reason: 'ZERO_BALANCE' };
     }
 
-    const swapRes = await swapToSol(tokenMint, balanceInfo.amount, overrideSlippageBps);
-
-    if (swapRes && swapRes.swapTransaction) {
-      const outSol = parseFloat(swapRes.outAmount) / 1e9;
-      return { success: true, outSol };
-    }
-
-    return {
-      success: false,
-      reason:  swapRes?.reason || 'SWAP_FAILED',
-      shift:   swapRes?.shift,
-    };
+    return await swapToSol(tokenMint, balanceRaw, overrideSlippageBps);
   } catch (e) {
     console.error(`[jupiter] swapAllToSOL failed for ${tokenMint}:`, e.message);
     return { success: false, error: e.message };

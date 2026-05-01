@@ -94,6 +94,26 @@ export async function getTokenBalance(mintAddress) {
   }
 }
 
+export async function getTokenBalanceRaw(mintAddress) {
+  const { PublicKey } = await import('@solana/web3.js');
+  try {
+    const connection = getConnection();
+    const mint = new PublicKey(mintAddress);
+    if (!wallet) return '0';
+    const tokenAccounts = await connection.getParsedTokenAccountsByOwner(
+      wallet.publicKey,
+      { mint }
+    );
+
+    if (tokenAccounts.value.length === 0) return '0';
+
+    const amount = tokenAccounts.value[0].account.data.parsed.info.tokenAmount;
+    return String(amount.amount || '0');
+  } catch {
+    return '0';
+  }
+}
+
 /**
  * 🧹 RENT RECOVERY (Clean-up Crew)
  * Menutup token account kosong dan menarik balik rent (0.002 SOL).

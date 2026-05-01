@@ -113,6 +113,14 @@ test('evilPanda exit path uses high compute budget with CU retry', () => {
   assert.match(src, /Exit TX kehabisan compute unit/);
 });
 
+test('evilPanda exit path swaps residual non-SOL tokens using raw balances', () => {
+  const src = readFileSync(evilPandaPath, 'utf8');
+  assert.match(src, /getTokenBalanceRaw/);
+  assert.match(src, /residualMints = \[\.\.\.new Set\(\[reg\.tokenXMint, reg\.tokenYMint\]\.filter\(/);
+  assert.match(src, /Swap residual token → SOL/);
+  assert.match(src, /swapToSol\(mint, rawBalance, null, \{ isUrgent: true \}\)/);
+});
+
 test('dryRun mode only simulates tx in evilPanda and hunter', () => {
   const evilPandaSrc = readFileSync(evilPandaPath, 'utf8');
   const hunterSrc = readFileSync(hunterPath, 'utf8');

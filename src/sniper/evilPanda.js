@@ -19,7 +19,7 @@ import BN from 'bn.js';
 import { appendFileSync, mkdirSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
-import { getConnection, getWallet } from '../solana/wallet.js';
+import { getConnection, getWallet, getTokenBalanceRaw } from '../solana/wallet.js';
 import { getConfig, isDryRun } from '../config.js';
 import { swapToSol } from '../utils/jupiter.js';
 import { getJupiterQuote } from '../solana/jupiter.js';
@@ -979,14 +979,18 @@ export async function exitPosition(positionPubkey, reason = 'MANUAL') {
       }
     }
 
-    // 2. Swap sisa tokenX → SOL (jika ada)
+    // 2. Swap sisa token non-SOL → SOL (jika ada)
     let solRecovered = 0;
     try {
-      const { getTokenBalance } = await import('../solana/wallet.js');
-      const tokenXBalance = await getTokenBalance(reg.tokenXMint);
-      if (tokenXBalance > 0.0001) {
-        console.log(`[evilPanda] Swap ${tokenXBalance} tokenX → SOL`);
-        await swapToSol(reg.tokenXMint, tokenXBalance);
+      const residualMints = [...new Set([reg.tokenXMint, reg.tokenYMint].filter((mint) => mint && mint !== WSOL_MINT))];
+      for (const mint of residualMints) {
+        const rawBalance = await getTokenBalanceRaw(mint);
+        if (String(rawBalance || '0') === '0') continue;
+        console.log(`[evilPanda] Swap residual token → SOL: ${mint.slice(0, 8)} amountRaw=${rawBalance}`);
+        const swapResult = await swapToSol(mint, rawBalance, null, { isUrgent: true });
+        if (!swapResult?.success && !swapResult?.skipped) {
+          console.warn(`[evilPanda] Swap residual token gagal untuk ${mint.slice(0,8)}: ${swapResult?.reason || 'SWAP_FAILED'}`);
+        }
       }
     } catch (e) {
       console.warn(`[evilPanda] Swap sisa token gagal (tidak fatal): ${e.message}`);
