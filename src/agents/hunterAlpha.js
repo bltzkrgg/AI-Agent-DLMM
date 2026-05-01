@@ -14,7 +14,7 @@
 import { getConfig }              from '../config.js';
 import { screenToken }            from '../market/coinfilter.js';
 import { runMeridianVeto, discoverHighFeePoolsMeridian } from '../market/meridianVeto.js';
-import { deployPosition, monitorPnL, exitPosition, markPositionManuallyClosed, setEvilPandaNotifyFn, EP_CONFIG, getActivePositionKeys, getPositionMeta } from '../sniper/evilPanda.js';
+import { deployPosition, monitorPnL, exitPosition, markPositionManuallyClosed, setEvilPandaNotifyFn, setPositionLifecycle, EP_CONFIG, getActivePositionKeys, getPositionMeta } from '../sniper/evilPanda.js';
 import { createMessage }          from '../agent/provider.js';
 import { getWalletBalance }       from '../solana/wallet.js';
 import { appendDecisionLog }      from '../learn/decisionLog.js';

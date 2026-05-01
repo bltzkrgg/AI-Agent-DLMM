@@ -32,7 +32,9 @@ test('evilPanda enforces on-chain close verification before success', () => {
 test('manual close helper records manual withdrawals when called explicitly', () => {
   const evilPandaSrc = readFileSync(evilPandaPath, 'utf8');
   const hunterSrc = readFileSync(hunterPath, 'utf8');
+  assert.match(hunterSrc, /setPositionLifecycle/);
   assert.match(evilPandaSrc, /export async function markPositionManuallyClosed/);
+  assert.match(evilPandaSrc, /export async function setPositionLifecycle/);
   assert.match(evilPandaSrc, /Manual close terdeteksi/);
   assert.match(evilPandaSrc, /console\.log\(`\[evilPanda\] ℹ️ Manual close realtime:/);
   assert.match(hunterSrc, /action === 'MANUAL_CLOSED'/);
@@ -66,8 +68,8 @@ test('evilPanda uses monolith positions with one Meteora account for the full ra
 test('monolith monitor treats missing active position as stop loss fail-safe', () => {
   const src = readFileSync(evilPandaPath, 'utf8');
   assert.match(src, /if \(!activePos\) \{/);
-  assert.match(src, /action:\s*'STOP_LOSS'/);
-  assert.match(src, /Position not found on-chain/);
+  assert.match(src, /action:\s*'MANUAL_CLOSED'/);
+  assert.match(src, /Position not found on-chain — assumed manually withdrawn/);
 });
 
 test('evilPanda removeLiquidity uses Meteora SDK parameter names', () => {

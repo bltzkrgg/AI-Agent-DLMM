@@ -79,7 +79,7 @@ async function persistActivePositionsStateNow() {
   await flushRuntimeState();
 }
 
-async function setPositionLifecycle(positionPubkey, lifecycleState, extra = {}, { flush = false } = {}) {
+export async function setPositionLifecycle(positionPubkey, lifecycleState, extra = {}, { flush = false } = {}) {
   const current = _activePositions.get(positionPubkey) || {};
   _activePositions.set(positionPubkey, {
     ...current,
