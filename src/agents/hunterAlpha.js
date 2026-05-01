@@ -115,6 +115,11 @@ function hasActiveMint(mint) {
   return listActivePositions().some((p) => p.mint === mint);
 }
 
+function hasActivePoolAddress(poolAddress) {
+  if (!poolAddress) return false;
+  return listActivePositions().some((p) => p.poolAddress === poolAddress);
+}
+
 function getPoolMint(pool = {}) {
   return pool.tokenXMint || pool.tokenX || pool.mint || pool.address || '';
 }
@@ -831,7 +836,8 @@ Balas HANYA JSON valid tanpa Markdown.`;
   // 2. Filter Deduplikasi (Anti Double-Entry)
   const eligibleWinners = winners.filter(w => {
     const mint = w.tokenXMint || w.tokenX || w.mint || w.address;
-    return !hasActiveMint(mint);
+    const poolAddress = w.address || w.pool_address || w.pool || '';
+    return !hasActiveMint(mint) && !hasActivePoolAddress(poolAddress);
   });
 
   if (eligibleWinners.length === 0) {
@@ -879,8 +885,8 @@ Balas HANYA JSON valid tanpa Markdown.`;
       const poolAddress = winner.address || winner.pool_address || winner.pool;
       const tokenMint   = winner.tokenXMint || winner.tokenX || winner.mint || poolAddress;
       const symbol      = winner.tokenXSymbol || winner.name?.split('-')[0] || poolAddress.slice(0,8);
-      if (hasActiveMint(tokenMint)) {
-        console.log(`[hunter] 🔁 ${symbol} sudah aktif. Skip double-entry.`);
+      if (hasActiveMint(tokenMint) || hasActivePoolAddress(poolAddress)) {
+        console.log(`[hunter] 🔁 ${symbol} / ${poolAddress.slice(0,8)} sudah aktif. Skip double-entry.`);
         return false;
       }
 

@@ -121,6 +121,16 @@ test('evilPanda exit path swaps residual non-SOL tokens using raw balances', () 
   assert.match(src, /swapToSol\(mint, rawBalance, null, \{ isUrgent: true \}\)/);
 });
 
+test('deploy path blocks duplicate pool entries before opening a second position', () => {
+  const evilPandaSrc = readFileSync(evilPandaPath, 'utf8');
+  const hunterSrc = readFileSync(hunterPath, 'utf8');
+  assert.match(evilPandaSrc, /hasTrackedPoolPosition\(poolAddress\)/);
+  assert.match(evilPandaSrc, /already has an active or pending position/);
+  assert.match(hunterSrc, /hasActivePoolAddress/);
+  assert.match(hunterSrc, /!hasActivePoolAddress\(poolAddress\)/);
+  assert.match(hunterSrc, /\|\| hasActivePoolAddress\(poolAddress\)/);
+});
+
 test('dryRun mode only simulates tx in evilPanda and hunter', () => {
   const evilPandaSrc = readFileSync(evilPandaPath, 'utf8');
   const hunterSrc = readFileSync(hunterPath, 'utf8');

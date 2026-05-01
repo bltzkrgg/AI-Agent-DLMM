@@ -93,6 +93,15 @@ export async function setPositionLifecycle(positionPubkey, lifecycleState, extra
   return _activePositions.get(positionPubkey);
 }
 
+function hasTrackedPoolPosition(poolAddress) {
+  if (!poolAddress) return false;
+  return [..._activePositions.values()].some((meta) => {
+    const trackedPool = String(meta?.poolAddress || '');
+    const lifecycle = String(meta?.lifecycleState || meta?.lifecycle_state || '').toLowerCase();
+    return trackedPool === String(poolAddress) && lifecycle !== 'closed';
+  });
+}
+
 async function withExitAccountingLock(fn) {
   while (_exitAccountingLock) await new Promise((resolve) => setTimeout(resolve, 100));
   _exitAccountingLock = true;
@@ -439,6 +448,10 @@ export async function deployPosition(poolAddress) {
   console.log(`[evilPanda] ▶ deployPosition pool=${poolAddress.slice(0,8)} sol=${deploySol}`);
 
   return withExponentialBackoff(async () => {
+    if (hasTrackedPoolPosition(poolAddress)) {
+      throw new Error(`[evilPanda] Pool ${poolAddress.slice(0,8)} already has an active or pending position`);
+    }
+
     const dlmmPool  = await DLMM.create(connection, poolPubkey);
     await dlmmPool.refetchStates();
     const activeBin = await dlmmPool.getActiveBin();
