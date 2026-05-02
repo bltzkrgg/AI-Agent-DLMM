@@ -1,5 +1,5 @@
 {
-  "dryRun": false,
+  "dryRun": true,
   "autonomyMode": "active",
   "requireConfirmation": true,
   "autoScreeningEnabled": true,
@@ -18,9 +18,9 @@
     "category": "trending",
     "minTvl": 5000,
     "maxTvl": 1500000,
-    "minVolume": 200000,
+    "minVolume": 30000,
     "maxVolume": 0,
-    "minHolders": 300,
+    "minHolders": 400,
     "minOrganic": 70,
     "minMcap": 200000,
     "maxMcapUsd": 5000000
@@ -55,7 +55,7 @@
     "stopLossPct": 10,
     "trailingStopPct": 5,
     "trailingTriggerPct": 1,
-    "trailingDropPct": 1.5,
+    "trailingDropPct": 0.1,
     "smartExitRsi": 90,
     "maxHoldHours": 24,
     "outOfRangeWaitMinutes": 30,
@@ -72,12 +72,14 @@
   "intervals": {
     "managementIntervalMin": 10,
     "screeningIntervalMin": 15,
-    "positionUpdateIntervalMin": 5
+    "positionUpdateIntervalMin": 5,
+    "realtimePnlIntervalSec": 300
   },
   "meridian": {
     "publicApiKey": "bWVyaWRpYW4taXMtdGhlLWJlc3QtYWdlbnRz",
     "agentMeridianApiUrl": "https://api.agentmeridian.xyz/api",
     "lpAgentRelayEnabled": false
   },
-  "deployAmountSol": 0.1
+  "deployAmountSol": 0.1,
+  "maxPositions": 2
 }

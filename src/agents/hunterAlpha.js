@@ -665,7 +665,7 @@ export async function scanAndDeploy() {
     }
 
     try {
-      const scoutModel = cfg.screeningModel || cfg.agentModel;
+      const scoutModel = cfg.llm_settings?.agentModel || cfg.screeningModel || cfg.agentModel || 'UNKNOWN';
       console.log(`[hunter] 🧠 LLM stage=SCOUT model=${scoutModel}`);
       const llmPoolContext = buildLlmPoolContext({ pool, screenResult, vetoResult, marketSnapshot });
       const prompt = `[ROLE: INITIAL SCREENING FILTER FOR DLMM LIQUIDITY PROVIDER]

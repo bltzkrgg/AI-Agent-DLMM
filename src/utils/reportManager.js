@@ -77,43 +77,77 @@ class ReportManager {
     const deployedTokens = this.currentCycle.filter(t => t.finalVerdict === 'DEPLOYED');
     const rejectedTokens = this.currentCycle.filter(t => t.finalVerdict !== 'DEPLOYED');
 
-    let report = `📊 <b>CYCLE REPORT #${this.cycleId}</b>\n`;
+    const nowStr = new Date().toLocaleString('id-ID', { timeZone: 'Asia/Jakarta', dateStyle: 'full', timeStyle: 'long' });
+
+    let report = `📊 <b>VISUAL PROGRESS REPORT</b>\n`;
+    report += `📅 ${nowStr}\n`;
     report += `================================\n`;
     report += `🔍 <b>Total Discan:</b> ${totalScanned} token\n`;
     report += `✅ <b>Lolos Deploy:</b> ${deployedTokens.length} token\n`;
     report += `🚫 <b>Gagal/Reject:</b> ${rejectedTokens.length} token\n`;
     report += `================================\n\n`;
 
+    const GATES = [
+      'STAGE_0_DISCOVERY',
+      'BLACKLIST_LOCAL',
+      'STAGE_1_PUBLIC',
+      'STAGE_2_GMGN',
+      'STAGE_3_JUPITER',
+      'MERIDIAN_VETO',
+      'PENDING_RETEST',
+      'FLAT_CONFIG_GATE',
+      'SCOUT_AGENT'
+    ];
+
     this.currentCycle.forEach((token, idx) => {
-      const status = token.finalVerdict || 'REJECT';
-      report += `${idx+1}) ${token.name} — ${status}\n`;
+      const isDeployed = token.finalVerdict === 'DEPLOYED';
+      const statusIcon = isDeployed ? '✅' : '❌';
+      const statusText = isDeployed ? 'DEPLOYED' : 'REJECTED';
+      
+      let passedGatesCount = 0;
+      let gateTraceStr = '';
 
-      if (status !== 'DEPLOYED') {
-        const failedGate = this.getFirstFailedGate(token);
-        report += `Tahap gagal: ${failedGate || 'UNKNOWN'}\n`;
-        report += `Alasan: ${token.reason || 'Tidak ada alasan spesifik'}\n`;
-      }
-
-      report += `Gate:\n`;
-      Object.entries(token.gates).forEach(([g, s]) => {
-        let displayState = s;
-        if (g === 'SCOUT_AGENT' && s === 'DEFER') {
-          const meta = token.details['SCOUT_AGENT'] || '';
-          displayState = `DEFER ${meta ? `(${meta})` : ''}`;
+      GATES.forEach(g => {
+        const s = token.gates[g];
+        if (s === 'PASS') {
+          passedGatesCount++;
+          gateTraceStr += '✅';
+        } else if (s === 'FAIL' || s === 'REJECT') {
+          gateTraceStr += '❌';
+        } else if (s === 'DEFER') {
+          gateTraceStr += '⏳';
+        } else {
+          gateTraceStr += '⚪';
         }
-        report += `${g}: ${displayState}\n`;
       });
+
+      const percent = passedGatesCount / GATES.length;
+      const filledBars = Math.round(percent * 10);
+      const emptyBars = Math.max(0, 10 - filledBars);
+      const progressBar = `[${'█'.repeat(filledBars)}${'░'.repeat(emptyBars)}] ${Math.round(percent * 100)}%`;
+
+      report += `<b>${idx+1}. ${token.name}</b> — ${statusText} ${statusIcon}\n`;
+      report += `Progress: <code>${progressBar}</code>\n`;
+      report += `Gate Trace: <code>${gateTraceStr}</code>\n`;
+
+      if (!isDeployed) {
+        const failedGate = this.getFirstFailedGate(token) || 'UNKNOWN';
+        report += `Tahap gagal: <code>${failedGate}</code>\n`;
+        report += `Alasan: <i>${token.reason || 'Tidak ada alasan spesifik'}</i>\n`;
+      }
       
       if (token.details.PENDING_RETEST) {
-        report += `Supertrend Info: ${token.details.PENDING_RETEST}\n`;
+        report += `⏳ Supertrend Info: ${token.details.PENDING_RETEST}\n`;
       }
       report += `\n`;
     });
 
     const cfg = getConfig();
     const nextScreenMin = cfg.intervals?.screeningIntervalMin || cfg.screeningIntervalMin || 15;
-    const agentModel = cfg.llm?.agentModel || cfg.agentModel || 'UNKNOWN';
-    report += `Next screen in: ${nextScreenMin}m | Model used: ${agentModel}`;
+    const agentModel = cfg.llm?.agentModel || cfg.llm_settings?.agentModel || cfg.agentModel || 'UNKNOWN';
+    report += `================================\n`;
+    report += `🤖 Model AI: <code>${agentModel}</code>\n`;
+    report += `⏱️ Next Scan: ${nextScreenMin} Menit`;
 
     return report;
   }

@@ -177,7 +177,8 @@ bot.onText(/\/hunt/, async (msg) => {
       } catch (e) {
         console.error("⚠️ Screening Loop Error:", e.message);
       }
-      const intervalMin = getConfig().intervals?.screeningIntervalMin || 15;
+      const cfg = getConfig();
+      const intervalMin = cfg.intervals?.screeningIntervalMin || cfg.screeningIntervalMin || 15;
       await new Promise(r => setTimeout(r, intervalMin * 60 * 1000));
     }
   };
@@ -192,7 +193,8 @@ bot.onText(/\/hunt/, async (msg) => {
       } catch (e) {
         console.error("⚠️ PnL Loop Error:", e.message);
       }
-      const intervalSec = getConfig().intervals?.realtimePnlIntervalSec || 300;
+      const cfg = getConfig();
+      const intervalSec = cfg.intervals?.realtimePnlIntervalSec || cfg.realtimePnlIntervalSec || 300;
       await new Promise(r => setTimeout(r, intervalSec * 1000));
     }
   };
@@ -206,7 +208,8 @@ bot.onText(/\/hunt/, async (msg) => {
       } catch (e) {
         console.error("⚠️ Management Loop Error:", e.message);
       }
-      const intervalMin = getConfig().intervals?.managementIntervalMin || 10;
+      const cfg = getConfig();
+      const intervalMin = cfg.intervals?.managementIntervalMin || cfg.managementIntervalMin || 10;
       await new Promise(r => setTimeout(r, intervalMin * 60 * 1000));
     }
   };
