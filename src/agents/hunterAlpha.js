@@ -22,7 +22,8 @@ import { appendDecisionLog }      from '../learn/decisionLog.js';
 import { isBlacklisted }          from '../learn/tokenBlacklist.js';
 import { getRuntimeState }        from '../runtime/state.js';
 import { escapeHTML, safeParseAI } from '../utils/safeJson.js';
-
+import reportManager              from '../utils/reportManager.js';
+import pendingStore               from '../utils/pendingStore.js';
 // ── Pool selector: pilih pool terbaik per-token berdasarkan binStep priority ─────────────
 //
 // Input : array pool untuk satu token yang sama (tokenXMint identik)
@@ -442,21 +443,13 @@ export async function runLinearLoop() {
 
     const startCfg = getConfig();
     if (!startCfg.autoScreeningEnabled) {
-      await notify('🚀 <b>Linear Sniper aktif.</b>\n⚠️ <i>Auto-Screening OFF. Ketik <code>/autoscreen on</code> untuk mulai.</i>');
+      await notify('🚀 <b>Multi-Agent Scheduler aktif.</b>\n⚠️ <i>Auto-Screening OFF. Ketik <code>/autoscreen on</code> untuk mulai.</i>');
     } else {
-      await notify('🚀 <b>Linear Sniper aktif.</b> 🔍 Memulai scan real-time (No Cache)...');
+      await notify('🚀 <b>Multi-Agent Scheduler aktif.</b> 🔍 Memulai scan real-time (No Cache)...');
     }
 
-    while (_running) {
-      try {
-        await scanAndDeploy();
-      } catch (e) {
-        console.error("⚠️ Loop Error:", e.message);
-        await sleep(15_000);
-      }
-    }
-
-    console.log('[hunter] ⏹ Loop dihentikan.');
+    // Loop is now managed by src/index.js multi-agent scheduler
+    console.log('[hunter] Scheduler initialized. Delegating to index.js async loops.');
   } catch (error) {
     console.error("⚠️ Loop Error:", error.message);
     _running = false;
@@ -482,27 +475,31 @@ export function stopLoop() {
 
 // ── Phase 1: SCAN ─────────────────────────────────────────────────
 
-async function scanAndDeploy() {
-  const cfg = getConfig();
+export async function scanAndDeploy() {
+  let cycleReport = [];
 
-  const cb = getRuntimeState('hunter-circuit-breaker', null);
-  if ((cb?.pausedUntil || 0) > Date.now()) return { blocked: true, policy: 'CIRCUIT_BREAKER_ACTIVE', pausedUntil: cb?.pausedUntil };
+  try {
+    const cfg = getConfig();
 
-  // — Gembok: jika auto-screening dimatikan, pause senyap tanpa log
-  if (!cfg.autoScreeningEnabled) {
-    await sleep(10_000);
-    return;
-  }
+    const cb = getRuntimeState('hunter-circuit-breaker', null);
+    if ((cb?.pausedUntil || 0) > Date.now()) return { blocked: true, policy: 'CIRCUIT_BREAKER_ACTIVE', pausedUntil: cb?.pausedUntil };
 
-  const regime = classifyMarketRegime();
-  if (regime === 'BEAR_DEFENSE') {
-    return { blocked: true, policy: 'REGIME_BEAR_DEFENSE' };
-  }
+    // — Gembok: jika auto-screening dimatikan, pause senyap tanpa log
+    if (!cfg.autoScreeningEnabled) {
+      await sleep(10_000);
+      return;
+    }
 
-  const limit = cfg.meteoraDiscoveryLimit || 50;
+    const regime = classifyMarketRegime();
+    if (regime === 'BEAR_DEFENSE') {
+      return { blocked: true, policy: 'REGIME_BEAR_DEFENSE' };
+    }
 
-  console.log(`[hunter] 🔍 SCAN — High-Fee Hunter (binStep priority: ${(cfg.binStepPriority || [200,125,100]).join('>')} )...`);
-  await notify('🔍 <b>Memulai scan real-time (No Cache)...</b>\nMengambil data, mohon tunggu.');
+    const limit = cfg.meteoraDiscoveryLimit || 50;
+
+    console.log(`[hunter] 🔍 SCAN — High-Fee Hunter (binStep priority: ${(cfg.binStepPriority || [200,125,100]).join('>')} )...`);
+    await notify('🔍 <b>Memulai scan real-time (No Cache)...</b>\nMengambil data, mohon tunggu.');
+
 
   let pools = await collectReadyRetestPools(cfg);
   if (pools.length > 0) {
@@ -554,194 +551,117 @@ async function scanAndDeploy() {
   };
 
   let winners = [];
-  const rejectTelemetry = [];
-  const CycleReport = [];
-  const cycleReportByKey = new Map();
-  const candidateChunks = chunkArray(scoutCandidates, 2);
-
-  const getCycleKey = (pool = {}) => {
-    const mint = pool.tokenXMint || pool.tokenX || pool.mint || '';
-    const poolAddress = pool.address || pool.poolAddress || pool.pool_address || '';
-    return `${mint}::${poolAddress}`;
-  };
-
-  const getCycleRecord = (pool = {}, tokenMint = '', tokenSymbol = '') => {
-    const key = getCycleKey(pool);
-    if (cycleReportByKey.has(key)) return cycleReportByKey.get(key);
-    const record = createCycleRecord(pool, tokenMint, tokenSymbol);
-    cycleReportByKey.set(key, record);
-    CycleReport.push(record);
-    return record;
-  };
-
-  const emitCycleReportIfAny = async () => {
-    if (CycleReport.length > 0) {
-      await notify(generateFinalCycleReport(CycleReport));
+  reportManager.newCycle();
+  
+  // 1. Process Pending Store Tokens first
+  pendingStore.cleanExpired();
+  const pendingTokens = pendingStore.getPendingTokens();
+  for (const pending of pendingTokens) {
+    const poolData = pending.poolData || { mint: pending.address, tokenXMint: pending.address, tokenXSymbol: pending.name, name: pending.name };
+    
+    let reportEntry = reportManager.currentCycle.find(t => t.name === pending.name);
+    if (!reportEntry) {
+      reportEntry = reportManager.addToken(pending.name, pending.address);
     }
-  };
-
-  const resolvePendingCycleRecords = (reason = 'Tidak dieksekusi pada siklus ini') => {
-    for (const record of CycleReport) {
-      if (String(record?.status || '').toUpperCase() === 'PENDING') {
-        recordCycleGate(record, 'EXECUTION', 'FAIL', reason);
-        finalizeCycleRecord(record, { status: 'REJECT', stage: 'EXECUTION', reason });
+    
+    // Check meridianVeto or TA again for the pending token
+    try {
+      const vetoResult = await runMeridianVeto({ mint: pending.address, symbol: pending.name, pool: poolData });
+      if (vetoResult.veto && isRetestableTaVeto(vetoResult)) {
+        console.log(`⏳ [Pending] Token ${pending.name} masih menunggu TA valid (Supertrend/Momentum)`);
+        pendingStore.add(pending.address, pending.name, 0, 0); // Update attempt
+        reportManager.updateGate(pending.name, 'PENDING_RETEST', 'DEFER', vetoResult.reason);
+      } else if (vetoResult.veto) {
+        reportManager.updateGate(pending.name, 'PENDING_RETEST', 'FAIL', vetoResult.reason);
+        reportManager.setFinalVerdict(pending.name, 'REJECT', vetoResult.reason);
+        pendingStore.remove(pending.address);
+      } else {
+        console.log(`🔄 [Pending] Token ${pending.name} berhasil melewati TA, melanjutkan evaluasi...`);
+        reportManager.updateGate(pending.name, 'PENDING_RETEST', 'PASS', 'Berhasil melewati Supertrend');
+        pendingStore.remove(pending.address);
+        // Feed it back to evaluatePool by pushing to scoutCandidates
+        scoutCandidates.unshift(poolData);
       }
+    } catch (e) {
+      console.warn(`Error processing pending token ${pending.name}: ${e.message}`);
     }
-  };
+  }
 
   const evaluatePool = async (pool) => {
     const tokenMint   = pool.tokenXMint || pool.tokenX || pool.mint;
     const tokenSymbol = pool.tokenXSymbol || pool.name?.split('-')[0] || '';
-    const binStep     = pool.binStep || 0;
-    const feeRatio    = pool.feeActiveTvlRatio || 0;
-    const vol         = pool.volume24h || pool.volume_24h || pool.trade_volume_24h || pool.volume || 0;
-    const cycleRecord = getCycleRecord(pool, tokenMint || '', tokenSymbol || '');
+    
+    const record = reportManager.addToken(tokenSymbol || 'UNKNOWN', tokenMint || '');
+    reportManager.updateGate(tokenSymbol, 'STAGE_0_DISCOVERY', 'PASS');
 
-    if (!tokenMint) return { ok: false, symbol: tokenSymbol || 'UNKNOWN', stage: 'PRECHECK', reason: 'MISSING_TOKEN_MINT', summary: [] };
-    console.log(`[hunter] 📦 Mengevaluasi ${tokenSymbol}...`);
-    const summary = [];
-    summary.push('STAGE_0_DISCOVERY: PASS');
-    recordCycleGate(cycleRecord, 'BLACKLIST_LOCAL', 'NOT_STARTED');
-    recordCycleGate(cycleRecord, 'STAGE_1_PUBLIC', 'NOT_STARTED');
-    recordCycleGate(cycleRecord, 'STAGE_2_GMGN', 'NOT_STARTED');
-    recordCycleGate(cycleRecord, 'STAGE_3_JUPITER', 'NOT_STARTED');
-    recordCycleGate(cycleRecord, 'MERIDIAN_VETO', 'NOT_STARTED');
-    recordCycleGate(cycleRecord, 'PENDING_RETEST', 'NOT_STARTED');
-    recordCycleGate(cycleRecord, 'SCOUT_AGENT', 'NOT_STARTED');
-    recordCycleGate(cycleRecord, 'GENERAL_AGENT', 'NOT_STARTED');
-
-    let isEligible = true;
-    let rejectReason = '';
-    let vetoResult = null;
-    if (isBlacklisted(tokenMint)) {
-      appendDecisionLog({ token: tokenSymbol, mint: tokenMint, decision: 'VETO',
-        gate: 'BLACKLIST', reason: 'Token ada di daftar blacklist lokal',
-        pool: pool.address || '', feeRatio });
-      isEligible = false;
-      rejectReason = 'BLACKLIST lokal aktif';
-      summary.push('BLACKLIST_LOCAL: FAIL');
-      recordCycleGate(cycleRecord, 'BLACKLIST_LOCAL', 'FAIL', rejectReason);
-      markCycleGateChain(cycleRecord, 'BLACKLIST_LOCAL', 'SKIPPED');
-      finalizeCycleRecord(cycleRecord, { status: 'REJECT', stage: 'BLACKLIST_LOCAL', reason: rejectReason });
-      return { ok: false, symbol: tokenSymbol || 'UNKNOWN', stage: 'BLACKLIST', reason: rejectReason, summary };
+    if (!tokenMint) {
+      reportManager.updateGate(tokenSymbol, 'BLACKLIST_LOCAL', 'FAIL', 'MISSING_TOKEN_MINT');
+      return { ok: false, symbol: tokenSymbol || 'UNKNOWN', stage: 'PRECHECK', reason: 'MISSING_TOKEN_MINT', summary: [] };
     }
-    summary.push('BLACKLIST_LOCAL: PASS');
-    recordCycleGate(cycleRecord, 'BLACKLIST_LOCAL', 'PASS');
+    console.log(`[hunter] 📦 Mengevaluasi ${tokenSymbol}...`);
+    
+    if (isBlacklisted(tokenMint)) {
+      const rejectReason = 'BLACKLIST lokal aktif';
+      reportManager.updateGate(tokenSymbol, 'BLACKLIST_LOCAL', 'FAIL', rejectReason);
+      return { ok: false, symbol: tokenSymbol || 'UNKNOWN', stage: 'BLACKLIST', reason: rejectReason, summary: [] };
+    }
+    reportManager.updateGate(tokenSymbol, 'BLACKLIST_LOCAL', 'PASS');
 
     let screenResult = null;
-    if (isEligible) {
-      try {
-        screenResult = await screenToken(tokenMint, tokenSymbol, tokenSymbol, { jupiterBudgetRef });
-        const s1 = screenResult?.stageWaterfall?.stage1PublicData || 'UNKNOWN';
-        const s2 = screenResult?.stageWaterfall?.stage2GmgnAudit || 'UNKNOWN';
-        const s3 = screenResult?.stageWaterfall?.stage3Jupiter || 'UNKNOWN';
-        summary.push(`STAGE_1_PUBLIC: ${s1}`);
-        summary.push(`STAGE_2_GMGN: ${s2}`);
-        summary.push(`STAGE_3_JUPITER: ${s3}`);
-        recordCycleGate(cycleRecord, 'STAGE_1_PUBLIC', s1 || 'UNKNOWN', screenResult?.sources?.okx === false ? 'OKX unavailable' : '');
-        recordCycleGate(cycleRecord, 'STAGE_2_GMGN', s2 || 'UNKNOWN', Array.isArray(screenResult?.gmgnRejects) && screenResult.gmgnRejects.length ? screenResult.gmgnRejects.map((r) => r.msg).join(' | ') : '');
-        recordCycleGate(cycleRecord, 'STAGE_3_JUPITER', s3 || 'UNKNOWN', Array.isArray(screenResult?.highFlags) && screenResult.highFlags.length ? screenResult.highFlags.map((f) => f.msg).join(' | ') : '');
-        if (!screenResult?.eligible) {
-          appendDecisionLog({ token: tokenSymbol, mint: tokenMint, decision: 'SCREEN_FAIL',
-            gate: 'GMGN', reason: screenResult?.verdict || 'FAIL', pool: pool.address || '', feeRatio });
-          isEligible = false;
-          const stageReasonLines = Array.isArray(screenResult?.highFlags) && screenResult.highFlags.length
-            ? screenResult.highFlags.slice(0, 3).map((f) => f?.msg).filter(Boolean)
-            : [];
-          const firstFlag = stageReasonLines.join('\n- ') || screenResult?.decisions?.slice(-1)?.[0]?.line;
-          rejectReason = firstFlag || 'ScreenToken waterfall veto';
-          const screenFailGate = s1 === 'FAIL' || s1 === 'ERROR' ? 'STAGE_1_PUBLIC'
-            : s2 === 'FAIL' || s2 === 'ERROR' ? 'STAGE_2_GMGN'
-              : s3 === 'FAIL' || s3 === 'ERROR' ? 'STAGE_3_JUPITER'
-                : 'STAGE_1_PUBLIC';
-          markCycleGateChain(cycleRecord, screenFailGate, 'FAIL', rejectReason);
-          finalizeCycleRecord(cycleRecord, { status: 'REJECT', stage: screenFailGate, reason: rejectReason });
-        }
-      } catch (e) {
-        isEligible = false;
-        rejectReason = e?.message || 'ScreenToken error';
-        summary.push('STAGE_1_PUBLIC: ERROR');
-        summary.push('STAGE_2_GMGN: ERROR');
-        summary.push('STAGE_3_JUPITER: ERROR');
-        markCycleGateChain(cycleRecord, 'STAGE_1_PUBLIC', 'FAIL', rejectReason);
-        finalizeCycleRecord(cycleRecord, { status: 'REJECT', stage: 'STAGE_1_PUBLIC', reason: rejectReason });
+    try {
+      screenResult = await screenToken(tokenMint, tokenSymbol, tokenSymbol, { jupiterBudgetRef });
+      const s1 = screenResult?.stageWaterfall?.stage1PublicData || 'UNKNOWN';
+      const s2 = screenResult?.stageWaterfall?.stage2GmgnAudit || 'UNKNOWN';
+      const s3 = screenResult?.stageWaterfall?.stage3Jupiter || 'UNKNOWN';
+      
+      reportManager.updateGate(tokenSymbol, 'STAGE_1_PUBLIC', s1 === 'PASS' ? 'PASS' : s1 === 'SKIPPED' ? 'SKIPPED' : 'FAIL', screenResult?.sources?.okx === false ? 'OKX unavailable' : '');
+      if (s1 !== 'PASS') return { ok: false, symbol: tokenSymbol, stage: 'STAGE_1_PUBLIC', reason: 'Failed Stage 1' };
+
+      reportManager.updateGate(tokenSymbol, 'STAGE_2_GMGN', s2 === 'PASS' ? 'PASS' : s2 === 'SKIPPED' ? 'SKIPPED' : 'FAIL', Array.isArray(screenResult?.gmgnRejects) && screenResult.gmgnRejects.length ? screenResult.gmgnRejects.map((r) => r.msg).join(' | ') : '');
+      if (s2 !== 'PASS') return { ok: false, symbol: tokenSymbol, stage: 'STAGE_2_GMGN', reason: 'Failed GMGN' };
+
+      reportManager.updateGate(tokenSymbol, 'STAGE_3_JUPITER', s3 === 'PASS' ? 'PASS' : s3 === 'SKIPPED' ? 'SKIPPED' : 'FAIL', Array.isArray(screenResult?.highFlags) && screenResult.highFlags.length ? screenResult.highFlags.map((f) => f.msg).join(' | ') : '');
+      if (s3 !== 'PASS') return { ok: false, symbol: tokenSymbol, stage: 'STAGE_3_JUPITER', reason: 'Failed Jupiter' };
+
+      if (!screenResult?.eligible) {
+        return { ok: false, symbol: tokenSymbol, stage: 'WATERFALL', reason: 'Not eligible' };
       }
+    } catch (e) {
+      reportManager.updateGate(tokenSymbol, 'STAGE_1_PUBLIC', 'FAIL', e.message);
+      return { ok: false, symbol: tokenSymbol || 'UNKNOWN', stage: 'STAGE_1_PUBLIC', reason: e.message };
     }
 
-    if (isEligible) {
-      try {
-        vetoResult = await runMeridianVeto({ mint: tokenMint, symbol: tokenSymbol, pool });
-      } catch (e) {
-        vetoResult = {
-          veto: true,
-          gate: 'MERIDIAN_ERROR',
-          reason: `[FAIL_CLOSED] Meridian Veto error: ${e?.message || 'UNKNOWN_ERROR'}`,
-        };
-      }
+    let vetoResult = null;
+    try {
+      vetoResult = await runMeridianVeto({ mint: tokenMint, symbol: tokenSymbol, pool });
       if (vetoResult.veto) {
-        appendDecisionLog({ token: tokenSymbol, mint: tokenMint, decision: 'VETO',
-          gate: vetoResult.gate, reason: vetoResult.reason,
-          pool: pool.address || pool.poolAddress || '', feeRatio });
-        isEligible = false;
-        rejectReason = vetoResult.reason || `Meridian veto (${vetoResult.gate || 'UNKNOWN_GATE'})`;
-        summary.push('MERIDIAN_VETO: FAIL');
-        recordCycleGate(cycleRecord, 'MERIDIAN_VETO', 'FAIL', rejectReason);
+        const rejectReason = vetoResult.reason || 'Meridian veto';
+        reportManager.updateGate(tokenSymbol, 'MERIDIAN_VETO', 'FAIL', rejectReason);
         if (isRetestableTaVeto(vetoResult)) {
-          addPendingRetest(pool, rejectReason);
-          summary.push('PENDING_RETEST: QUEUED');
-          recordCycleGate(cycleRecord, 'PENDING_RETEST', 'DEFER', rejectReason);
-          markCycleGateChain(cycleRecord, 'PENDING_RETEST', 'SKIPPED');
+          pendingStore.add(tokenMint, tokenSymbol, 0, 0, pool);
+          reportManager.updateGate(tokenSymbol, 'PENDING_RETEST', 'DEFER', rejectReason);
         }
-        markCycleGateChain(cycleRecord, 'MERIDIAN_VETO', 'SKIPPED');
-        finalizeCycleRecord(cycleRecord, { status: 'REJECT', stage: isRetestableTaVeto(vetoResult) ? 'PENDING_RETEST' : 'MERIDIAN_VETO', reason: rejectReason });
-      } else {
-        appendDecisionLog({ token: tokenSymbol, mint: tokenMint, decision: 'PASS',
-          gate: null, reason: vetoResult.reason,
-          pool: pool.address || pool.poolAddress || '', feeRatio });
-        summary.push('MERIDIAN_VETO: PASS');
-        recordCycleGate(cycleRecord, 'MERIDIAN_VETO', 'PASS', vetoResult.reason || 'All Meridian gates PASS');
+        return { ok: false, symbol: tokenSymbol, stage: 'MERIDIAN_VETO', reason: rejectReason };
       }
+      reportManager.updateGate(tokenSymbol, 'MERIDIAN_VETO', 'PASS');
+      reportManager.updateGate(tokenSymbol, 'PENDING_RETEST', 'PASS');
+    } catch (e) {
+      reportManager.updateGate(tokenSymbol, 'MERIDIAN_VETO', 'FAIL', e.message);
+      return { ok: false, symbol: tokenSymbol, stage: 'MERIDIAN_VETO', reason: e.message };
     }
 
-    if (isEligible) {
-      const passesConfig = checkFlatConfig(pool, cfg);
-      if (!passesConfig.ok) {
-        summary.push(`FLAT_CONFIG_GATE: FAIL (${passesConfig.reason})`);
-        cycleRecord.gates.FLAT_CONFIG_GATE = 'FAIL';
-        cycleRecord.gateReasons.FLAT_CONFIG_GATE = passesConfig.reason || 'Flat config gate failed';
-        return {
-          ok: false,
-          symbol: tokenSymbol || 'UNKNOWN',
-          stage: passesConfig.gate || 'FLAT_CONFIG_GATE',
-          reason: passesConfig.reason || 'Flat config gate failed',
-          summary,
-        };
-      } else {
-        summary.push('FLAT_CONFIG_GATE: PASS');
-        cycleRecord.gates.FLAT_CONFIG_GATE = 'PASS';
-      }
+    const passesConfig = checkFlatConfig(pool, cfg);
+    if (!passesConfig.ok) {
+      reportManager.updateGate(tokenSymbol, 'FLAT_CONFIG_GATE', 'FAIL', passesConfig.reason);
+      return { ok: false, symbol: tokenSymbol, stage: 'FLAT_CONFIG_GATE', reason: passesConfig.reason };
     }
+    reportManager.updateGate(tokenSymbol, 'FLAT_CONFIG_GATE', 'PASS');
 
     let marketSnapshot = null;
-    if (isEligible) {
-      try {
-        marketSnapshot = await getMarketSnapshot(tokenMint, pool.address || pool.poolAddress || null);
-      } catch (e) {
-        console.warn(`[hunter] MarketSnapshot error pada ${tokenSymbol}: ${e.message}`);
-      }
-    }
-
-    if (!isEligible) {
-      let rejectStage = 'WATERFALL';
-      if (summary.includes('BLACKLIST_LOCAL: FAIL')) rejectStage = 'BLACKLIST_LOCAL';
-      else if (summary.includes('STAGE_1_PUBLIC: FAIL') || summary.includes('STAGE_1_PUBLIC: ERROR')) rejectStage = 'STAGE_1_PUBLIC';
-      else if (summary.includes('STAGE_2_GMGN: FAIL') || summary.includes('STAGE_2_GMGN: ERROR')) rejectStage = 'STAGE_2_GMGN';
-      else if (summary.includes('STAGE_3_JUPITER: FAIL') || summary.includes('STAGE_3_JUPITER: ERROR')) rejectStage = 'STAGE_3_JUPITER';
-      else if (summary.includes('MERIDIAN_VETO: FAIL')) rejectStage = 'MERIDIAN_VETO';
-      else if (summary.includes('FLAT_CONFIG_GATE: FAIL')) rejectStage = 'FLAT_CONFIG_GATE';
-      else if (summary.includes('SCOUT_AGENT: FAIL') || summary.includes('SCOUT_AGENT: ERROR')) rejectStage = 'SCOUT_AGENT';
-      finalizeCycleRecord(cycleRecord, { status: 'REJECT', stage: rejectStage, reason: rejectReason || 'REJECTED_BY_GATE' });
-      return { ok: false, symbol: tokenSymbol || 'UNKNOWN', stage: rejectStage, reason: rejectReason || 'REJECTED_BY_GATE', summary };
+    try {
+      marketSnapshot = await getMarketSnapshot(tokenMint, pool.address || pool.poolAddress || null);
+    } catch (e) {
+      console.warn(`[hunter] MarketSnapshot error pada ${tokenSymbol}: ${e.message}`);
     }
 
     try {
@@ -812,49 +732,41 @@ Balas HANYA JSON valid tanpa Markdown.`;
         entryReadiness ? `Entry=${entryReadiness}` : '',
         breakoutQuality ? `Breakout=${breakoutQuality}` : '',
       ].filter(Boolean).join(', ');
+      
       if (decision.includes('PASS')) {
         console.log(`[hunter] 🤖 ScoutAgent LP APPROVED: ${tokenSymbol}${scoreSuffix}${detailSuffix ? ` | ${detailSuffix}` : ''}`);
-        summary.push(`SCOUT_AGENT: PASS${scoreSuffix}${detailSuffix ? ` (${detailSuffix})` : ''}`);
-        recordCycleGate(cycleRecord, 'SCOUT_AGENT', 'PASS', scoutReason || `Entry=${entryReadiness || 'UNKNOWN'}, Breakout=${breakoutQuality || 'UNKNOWN'}`);
+        reportManager.updateGate(tokenSymbol, 'SCOUT_AGENT', 'PASS', scoutReason || `Entry=${entryReadiness || 'UNKNOWN'}, Breakout=${breakoutQuality || 'UNKNOWN'}`);
         pool._screenResult = screenResult;
         pool._vetoResult = vetoResult;
         pool._marketSnapshot = marketSnapshot;
         pool._llmPoolContext = llmPoolContext;
-        finalizeCycleRecord(cycleRecord, { status: 'PENDING', stage: 'SCOUT_AGENT', reason: scoutReason || 'Scout pass' });
-        return { ok: true, pool, symbol: tokenSymbol || 'UNKNOWN', summary };
+        return { ok: true, pool, symbol: tokenSymbol || 'UNKNOWN' };
       }
       const isDeferred = decision.includes('DEFER');
       const label = isDeferred ? 'DEFER' : 'FAIL';
       const reason = scoutReason || (isDeferred ? 'Insufficient Information' : 'Weak Breakout');
       console.log(`[hunter] 🤖 ScoutAgent LP ${isDeferred ? 'DEFERRED' : 'REJECTED'}: ${tokenSymbol}${scoreSuffix}${detailSuffix ? ` | ${detailSuffix}` : ''}`);
-      summary.push(`SCOUT_AGENT: ${label}${scoreSuffix}${detailSuffix ? ` (${detailSuffix})` : ''}`);
-      recordCycleGate(cycleRecord, 'SCOUT_AGENT', isDeferred ? 'DEFER' : 'FAIL', reason);
-      finalizeCycleRecord(cycleRecord, { status: isDeferred ? 'DEFER' : 'REJECT', stage: 'SCOUT_AGENT', reason });
-      return { ok: false, symbol: tokenSymbol || 'UNKNOWN', stage: 'SCOUT_AGENT', reason, summary };
+      reportManager.updateGate(tokenSymbol, 'SCOUT_AGENT', isDeferred ? 'DEFER' : 'FAIL', reason, `Entry=${entryReadiness}, Breakout=${breakoutQuality}`);
+      return { ok: false, symbol: tokenSymbol || 'UNKNOWN', stage: 'SCOUT_AGENT', reason };
     } catch (e) {
       console.warn(`[hunter] ScoutAgent error pada ${tokenSymbol}: ${e.message}`);
-      summary.push('SCOUT_AGENT: ERROR');
-      recordCycleGate(cycleRecord, 'SCOUT_AGENT', 'FAIL', `ScoutAgent error: ${e.message}`);
-      finalizeCycleRecord(cycleRecord, { status: 'REJECT', stage: 'SCOUT_AGENT', reason: `ScoutAgent error: ${e.message}` });
-      return { ok: false, symbol: tokenSymbol || 'UNKNOWN', stage: 'SCOUT_AGENT', reason: `ScoutAgent error: ${e.message}`, summary };
+      reportManager.updateGate(tokenSymbol, 'SCOUT_AGENT', 'FAIL', `ScoutAgent error: ${e.message}`);
+      return { ok: false, symbol: tokenSymbol || 'UNKNOWN', stage: 'SCOUT_AGENT', reason: `ScoutAgent error: ${e.message}` };
     }
+
   };
 
+  const candidateChunks = chunkArray(scoutCandidates, 2);
   for (const chunk of candidateChunks) {
     if (!_running || winners.length >= 5) break;
     const settled = await Promise.allSettled(chunk.map(evaluatePool));
     for (const item of settled) {
       if (item.status !== 'fulfilled' || !item.value) continue;
       if (item.value.ok && item.value.pool && winners.length < 5) {
-        item.value.pool._gateSummary = item.value.summary || [];
         winners.push(item.value.pool);
-      } else if (!item.value.ok) {
-        rejectTelemetry.push({
-          symbol: item.value.symbol || 'UNKNOWN',
-          stage: item.value.stage || 'UNKNOWN_STAGE',
-          reason: item.value.reason || 'REJECTED',
-          summary: item.value.summary || [],
-        });
+      } else if (!item.value.ok && item.value.symbol) {
+        // Handled by reportManager automatically inside evaluatePool
+        reportManager.setFinalVerdict(item.value.symbol, 'REJECT', item.value.reason);
       }
     }
     await sleep(1500);
@@ -864,29 +776,11 @@ Balas HANYA JSON valid tanpa Markdown.`;
     const retryCfg = getConfig();
     const retryMin = getIdleDelayMin(retryCfg);
     console.log(`[hunter] Tidak ada kandidat lolos Scout. Scan ulang dalam ${retryMin} menit...`);
-    if (rejectTelemetry.length) {
-      const lines = rejectTelemetry.slice(0, 5).map((r, i) => {
-        const gateReport = formatGateReport(r.summary || [], r.stage || 'UNKNOWN_STAGE');
-        return (
-          `${i + 1}) <b>${escapeHTML(r.symbol)}</b> — REJECT\n` +
-          `Tahap gagal: <code>${escapeHTML(r.stage || 'UNKNOWN_STAGE')}</code>\n` +
-          `Alasan:\n<pre>${escapeHTML(String(r.reason).slice(0, 360))}</pre>\n` +
-          `Gate:\n<pre>${escapeHTML(gateReport)}</pre>`
-        );
-      });
-      await notify(
-        `🚫 <b>Tidak ada deploy pada siklus ini</b>\n` +
-        `${lines.join('\n\n')}`
-      );
-    }
-    resolvePendingCycleRecords('Semua kandidat tidak lolos screening');
-    if (CycleReport.length > 0) {
-      await notify(generateFinalCycleReport(CycleReport));
-    }
     await notify(`🔍 <i>Tidak ada kandidat lolos screening. Scan ulang dalam ${retryMin} menit.</i>`);
     await sleep(retryMin * 60 * 1000);
     return;
   }
+
 
   // ── GeneralAgent Final LP Decision ─────────────────────────────
   console.log(`[hunter] 🧠 GeneralAgent memulai final audit LP sekuensial untuk ${winners.length} kandidat...`);
@@ -985,12 +879,8 @@ Balas HANYA JSON valid tanpa Markdown.`;
       
       if (decision.includes('DEPLOY')) {
         console.log(`[hunter] 🎯 GeneralAgent MEMUTUSKAN DEPLOY: ${sym}${confidenceSuffix}`);
-        w._gateSummary = [...(w._gateSummary || []), `GENERAL_AGENT: DEPLOY${confidenceSuffix}`];
-        const deployCycleKey = `${w.tokenXMint || w.tokenX || w.mint || ''}::${w.address || w.poolAddress || w.pool_address || ''}`;
-        const deployRecord = cycleReportByKey.get(deployCycleKey);
-        if (deployRecord) {
-          recordCycleGate(deployRecord, 'GENERAL_AGENT', 'PASS', `Confidence=${confidence}`);
-          finalizeCycleRecord(deployRecord, { status: 'PENDING', stage: 'GENERAL_AGENT', reason: thesis || 'GeneralAgent DEPLOY' });
+        if (w._record) {
+          w._record.reason = thesis || 'GeneralAgent DEPLOY';
         }
         finalWinner = w;
         break; // Segera eksekusi, stop audit sisanya
@@ -1001,12 +891,8 @@ Balas HANYA JSON valid tanpa Markdown.`;
           : decision.includes('HOLD') ? 'HOLD'
           : 'DEFER';
         console.log(`[hunter] ✋ GeneralAgent ${finalDecision}: ${sym}${confidenceSuffix}`);
-        w._gateSummary = [...(w._gateSummary || []), `GENERAL_AGENT: ${finalDecision}${confidenceSuffix}`];
-        const rejectCycleKey = `${w.tokenXMint || w.tokenX || w.mint || ''}::${w.address || w.poolAddress || w.pool_address || ''}`;
-        const rejectRecord = cycleReportByKey.get(rejectCycleKey);
-        if (rejectRecord) {
-          recordCycleGate(rejectRecord, 'GENERAL_AGENT', finalDecision === 'DEFER' ? 'DEFER' : 'FAIL', thesis || finalDecision);
-          finalizeCycleRecord(rejectRecord, { status: finalDecision === 'DEFER' ? 'DEFER' : 'REJECT', stage: 'GENERAL_AGENT', reason: thesis || finalDecision });
+        if (w._record) {
+          recordGate(w._record, 'SCOUT_AGENT', 'FAIL', thesis || finalDecision);
         }
         if (thesis) {
           appendDecisionLog({ token: sym, mint: w.tokenXMint || w.tokenX || w.mint || '', decision: 'SCREEN_FAIL',
@@ -1043,8 +929,6 @@ Balas HANYA JSON valid tanpa Markdown.`;
 
   if (availableSlots <= 0) {
     console.log(`[hunter] ⚠️ Kapasitas penuh (Max ${maxPositions}). Bot standby memantau exit...`);
-    resolvePendingCycleRecords(`Slot penuh (${activePositionsCount}/${maxPositions})`);
-    await emitCycleReportIfAny();
     await notify(
       `⚠️ <b>Deploy ditahan</b>\n` +
       `Tahap: <code>SLOT_CAPACITY</code>\n` +
@@ -1053,6 +937,7 @@ Balas HANYA JSON valid tanpa Markdown.`;
     await sleep(15_000);
     return;
   }
+
 
   // 2. Filter Deduplikasi (Anti Double-Entry)
   const eligibleWinners = winners.filter(w => {
@@ -1063,8 +948,6 @@ Balas HANYA JSON valid tanpa Markdown.`;
 
   if (eligibleWinners.length === 0) {
     console.log('[hunter] Semua kandidat Top 5 sudah ada di posisi aktif. Standby...');
-    resolvePendingCycleRecords('Anti double-entry / semua kandidat sudah aktif');
-    await emitCycleReportIfAny();
     await notify(
       `⚠️ <b>Deploy ditahan</b>\n` +
       `Tahap: <code>DEDUPLICATION</code>\n` +
@@ -1073,6 +956,7 @@ Balas HANYA JSON valid tanpa Markdown.`;
     await sleep(15_000);
     return;
   }
+
 
   const candidateListStr = eligibleWinners.map((p, i) => {
     const sym   = p.name || p.tokenXMint?.slice(0, 8) || 'UNKNOWN';
@@ -1131,11 +1015,8 @@ Balas HANYA JSON valid tanpa Markdown.`;
       try {
         const deployResult = await deployPosition(poolAddress);
         if (deployResult && typeof deployResult === 'object' && deployResult.dryRun) {
-          const deployCycleKey = `${tokenMint}::${poolAddress}`;
-          const deployRecord = cycleReportByKey.get(deployCycleKey);
-          if (deployRecord) {
-            recordCycleGate(deployRecord, 'EXECUTION', 'DEFER', 'Dry-run simulation');
-            finalizeCycleRecord(deployRecord, { status: 'DEFER', stage: 'EXECUTION', reason: 'Dry-run simulation' });
+          if (winner._record) {
+            recordGate(winner._record, 'SCOUT_AGENT', 'DEFER', 'Dry-run simulation');
           }
           await notify(
             `🧪 <b>Dry-run deploy disimulasikan</b>\n` +
@@ -1149,24 +1030,11 @@ Balas HANYA JSON valid tanpa Markdown.`;
         }
         positionPubkey = deployResult;
         _positionLabels.set(positionPubkey, { symbol });
-        const deployCycleKey = `${tokenMint}::${poolAddress}`;
-        const deployRecord = cycleReportByKey.get(deployCycleKey);
-        if (deployRecord) {
-          recordCycleGate(deployRecord, 'EXECUTION', 'PASS', `Position ${positionPubkey.slice(0, 8)} deployed`);
-          finalizeCycleRecord(deployRecord, { status: 'DEPLOYED', stage: 'EXECUTION', reason: `Position ${positionPubkey.slice(0, 8)} deployed` });
-        }
       } catch (e) {
-        if (isNaturalDeployError(e)) {
-          console.warn(`[hunter] deployPosition natural fail silenced: ${e.message}`);
-        } else {
-          console.error(`[hunter] deployPosition gagal: ${e.message}`);
-          await notify(`❌ <b>Deploy gagal:</b>\n<code>${e.message}</code>\n\n<i>Lanjut ke kandidat berikutnya...</i>`);
-        }
-        const deployCycleKey = `${tokenMint}::${poolAddress}`;
-        const deployRecord = cycleReportByKey.get(deployCycleKey);
-        if (deployRecord && String(deployRecord.status || '').toUpperCase() !== 'DEPLOYED') {
-          recordCycleGate(deployRecord, 'EXECUTION', 'FAIL', e?.message || 'EXECUTION_FAILED');
-          finalizeCycleRecord(deployRecord, { status: 'REJECT', stage: 'EXECUTION', reason: e?.message || 'EXECUTION_FAILED' });
+        console.error(`[hunter] deployPosition gagal: ${e.message}`);
+        await notify(`❌ <b>Deploy gagal:</b>\n<code>${e.message}</code>\n\n<i>Lanjut ke kandidat berikutnya...</i>`);
+        if (winner._record) {
+          recordGate(winner._record, 'SCOUT_AGENT', 'FAIL', `EXECUTION_FAILED: ${e.message}`);
         }
         return false;
       }
@@ -1189,13 +1057,28 @@ Balas HANYA JSON valid tanpa Markdown.`;
       return true;
     });
 
-    if (deployed) availableSlots--;
-    await new Promise(r => setTimeout(r, 3000));
+      if (deployed) {
+        if (winner._record) {
+          winner._record.status = 'DEPLOYED';
+          winner._record.stageFailed = '-';
+        }
+        availableSlots--;
+      }
+      await new Promise(r => setTimeout(r, 3000));
+    }
+  } catch (error) {
+    console.error(`[hunter] scanAndDeploy critical error:`, error.message);
+    return;
+  } finally {
+    try {
+      const report = reportManager.generateReport();
+      await notify(report);
+    } catch (e) {
+      console.error("Gagal kirim ke Telegram:", e.message);
+    }
   }
-
-  resolvePendingCycleRecords('Tidak dieksekusi pada siklus ini');
-  await emitCycleReportIfAny();
 }
+
 
 // ── Phase 4: MONITOR loop (while position active) ────────────────
 
@@ -1582,108 +1465,68 @@ function formatGateReport(summary = [], stage = 'UNKNOWN_STAGE') {
   }).join('\n');
 }
 
-const CYCLE_GATE_ORDER = [
-  'BLACKLIST_LOCAL',
-  'STAGE_1_PUBLIC',
-  'STAGE_2_GMGN',
-  'STAGE_3_JUPITER',
-  'MERIDIAN_VETO',
-  'PENDING_RETEST',
-  'SCOUT_AGENT',
-  'GENERAL_AGENT',
-  'EXECUTION',
-];
-
 function createCycleRecord(pool = {}, tokenMint = '', tokenSymbol = '') {
-  const name = pool.tokenXSymbol || pool.name || tokenSymbol || tokenMint.slice(0, 8) || 'UNKNOWN';
-  const poolAddress = pool.address || pool.poolAddress || pool.pool_address || '';
-  const gates = Object.fromEntries(CYCLE_GATE_ORDER.map((gate) => [gate, 'NOT_STARTED']));
   return {
-    name,
-    symbol: tokenSymbol || pool.tokenXSymbol || pool.name?.split('-')[0] || tokenMint.slice(0, 8) || 'UNKNOWN',
-    mint: tokenMint || pool.tokenXMint || pool.tokenX || pool.mint || '',
-    poolAddress,
+    name: tokenSymbol || pool.name || 'UNKNOWN',
+    mint: tokenMint || '',
     status: 'PENDING',
-    stage: 'STAGE_0_DISCOVERY',
     stageFailed: '',
     reason: '',
-    gates,
-    gateReasons: {},
-    gateTrail: [],
+    gates: {
+      STAGE_0_DISCOVERY: 'PASS',
+      BLACKLIST_LOCAL: 'SKIPPED',
+      STAGE_1_PUBLIC: 'SKIPPED',
+      STAGE_2_GMGN: 'SKIPPED',
+      STAGE_3_JUPITER: 'SKIPPED',
+      MERIDIAN_VETO: 'SKIPPED',
+      PENDING_RETEST: 'SKIPPED',
+      FLAT_CONFIG_GATE: 'SKIPPED',
+      SCOUT_AGENT: 'SKIPPED'
+    },
+    metadata: {}
   };
 }
 
-function recordCycleGate(record, gate, state, reason = '') {
-  if (!record || !gate) return;
-  record.gates[gate] = state;
-  if (reason) record.gateReasons[gate] = reason;
-  record.gateTrail.push({ gate, state, reason });
-}
-
-function markCycleGateChain(record, gate, state, reason = '') {
-  recordCycleGate(record, gate, state, reason);
-  const startIdx = CYCLE_GATE_ORDER.indexOf(gate);
-  if (startIdx < 0) return;
-  for (const nextGate of CYCLE_GATE_ORDER.slice(startIdx + 1)) {
-    if (record.gates[nextGate] === 'NOT_STARTED') {
-      recordCycleGate(record, nextGate, state === 'DEFER' ? 'DEFER' : 'SKIPPED');
-    }
-  }
-}
-
-function finalizeCycleRecord(record, { status = 'REJECT', stage = 'UNKNOWN_STAGE', reason = '' } = {}) {
-  if (!record) return null;
-  record.status = status;
-  record.stage = stage;
-  record.stageFailed = status === 'DEPLOYED' ? '' : stage;
-  record.reason = reason || record.reason || '';
-  return record;
-}
-
-function renderCycleGateStatuses(record = {}) {
-  const labels = [
+function recordGate(record, gate, status, reason = '', metadata = {}) {
+  if (record.finalized) return;
+  
+  const gatesOrder = [
+    'STAGE_0_DISCOVERY',
     'BLACKLIST_LOCAL',
     'STAGE_1_PUBLIC',
     'STAGE_2_GMGN',
     'STAGE_3_JUPITER',
     'MERIDIAN_VETO',
     'PENDING_RETEST',
-    'SCOUT_AGENT',
-    'GENERAL_AGENT',
-    'EXECUTION',
+    'FLAT_CONFIG_GATE',
+    'SCOUT_AGENT'
   ];
-  return labels.map((gate) => `${gate}: ${record?.gates?.[gate] || 'NOT_STARTED'}`).join('\n');
-}
+  
+  const currentIdx = gatesOrder.indexOf(gate);
+  if (currentIdx === -1) return;
+  
+  record.gates[gate] = status;
+  if (reason) record.reason = reason;
+  if (metadata) record.metadata = { ...record.metadata, ...metadata };
 
-export function generateFinalCycleReport(cycleReport = []) {
-  const rows = Array.isArray(cycleReport) ? cycleReport.filter(Boolean) : [];
-  const hasDeploy = rows.some((row) => String(row?.status || '').toUpperCase() === 'DEPLOYED');
-  const header = hasDeploy
-    ? `✅ <b>Deploy pada siklus ini</b>`
-    : `🚫 <b>Tidak ada deploy pada siklus ini</b>`;
-  const intro = hasDeploy
-    ? `Alasan utama kandidat:`
-    : `Alasan utama kandidat:`;
-
-  if (rows.length === 0) {
-    return `${header}\n<i>Tidak ada kandidat yang tercatat pada siklus ini.</i>`;
+  if (status === 'FAIL' || status === 'DEFER') {
+    record.status = status === 'FAIL' ? 'REJECT' : 'REJECT'; // Format asks for REJECT/DEPLOYED
+    record.stageFailed = gate;
+    record.finalized = true;
+    // Mark next gates as SKIPPED
+    for (let i = currentIdx + 1; i < gatesOrder.length; i++) {
+      record.gates[gatesOrder[i]] = 'SKIPPED';
+    }
+  } else if (status === 'PASS') {
+    // Continue to next gate
+    if (currentIdx < gatesOrder.length - 1) {
+      record.gates[gatesOrder[currentIdx + 1]] = 'NOT_STARTED'; // Initial state for next gate if we wanted
+    }
   }
-
-  const body = rows.map((row, idx) => {
-    const status = String(row.status || 'REJECT').toUpperCase();
-    const stageFailed = row.stageFailed || row.stage || 'UNKNOWN_STAGE';
-    const reason = row.reason || row.gateReasons?.[stageFailed] || 'Tidak ada alasan tercatat';
-    const gateBlock = renderCycleGateStatuses(row);
-    return (
-      `${idx + 1}. <b>${escapeHTML(row.name || row.symbol || 'UNKNOWN')}</b> — <b>${status}</b>\n` +
-      `Tahap gagal: <code>${escapeHTML(status === 'DEPLOYED' ? '-' : stageFailed)}</code>\n` +
-      `Alasan:\n<pre>${escapeHTML(String(status === 'DEPLOYED' ? row.reason || 'Lolos seluruh gate' : reason).slice(0, 500))}</pre>\n` +
-      `Gate:\n<pre>${escapeHTML(gateBlock)}</pre>`
-    );
-  }).join('\n\n');
-
-  return `${header}\n${intro}\n${body}`;
 }
+
+
+
 
 function classifyMarketRegime() {
   return 'NEUTRAL';
@@ -1733,85 +1576,38 @@ export async function runAutoscreening(bot, chatId, opts = {}) {
     return { report: null };
   }
 
-  await bot.sendMessage(chatId, `🔍 <b>Memulai scan real-time (No Cache)...</b>\nMencari kandidat terbaik.`, { parse_mode: 'HTML' });
+  if (emitReport) {
+    await notify(`🔍 <b>Memulai siklus autoscreening...</b>`);
+  }
 
   try {
-    const limit = Number(cfg.meteoraDiscoveryLimit) || 180;
-    const pools = await discoverHighFeePoolsMeridian({ limit });
-    
-    if (!pools || pools.length === 0) {
-      await bot.sendMessage(chatId, '⚠️ Belum ada kandidat Top 5 yang lolos filter efisiensi saat ini. Menunggu scan berikutnya...', { parse_mode: 'HTML' });
-    } else {
-      // Urutkan berdasarkan Efficiency Score (Volume / TVL), ambil top 5
-      const top5 = [...pools]
-        .sort((a, b) => {
-          const aTvl = Number(a.activeTvl || a.totalTvl || 0) || 1;
-          const bTvl = Number(b.activeTvl || b.totalTvl || 0) || 1;
-          const aVol = Number(a.volume24h || a.volume_24h || a.trade_volume_24h || a.tradeVolume24h || a.volume || a.v24h || 0);
-          const bVol = Number(b.volume24h || b.volume_24h || b.trade_volume_24h || b.tradeVolume24h || b.volume || b.v24h || 0);
-          return (bVol / bTvl) - (aVol / aTvl);
-        })
-        .slice(0, 5);
-
-      if (top5.length === 0) {
-         await bot.sendMessage(chatId, '⚠️ Belum ada kandidat Top 5 yang lolos filter efisiensi saat ini. Menunggu scan berikutnya...', { parse_mode: 'HTML' });
-      } else {
-        const lines = await Promise.all(top5.map(async (pool, i) => {
-          const symbol  = pool.name || pool.tokenXMint?.slice(0, 8) || 'UNKNOWN';
-          const ratio   = ((pool.feeActiveTvlRatio || 0) * 100).toFixed(2);
-          const tvlRaw  = Number(pool.totalTvl || pool.activeTvl || 0);
-          const tvl     = safeNum(tvlRaw, 0).toLocaleString('en-US');
-          const mcap    = safeNum(pool.mcap, 0).toLocaleString('en-US');
-          const volRaw  = Number(pool.volume24h || pool.volume_24h || pool.trade_volume_24h || pool.tradeVolume24h || pool.volume || pool.v24h || 0);
-          const vol     = safeNum(volRaw, 0).toLocaleString('en-US');
-          const effValue= volRaw / (tvlRaw || 1);
-          const eff     = effValue > 1000 ? '>1000' : effValue.toFixed(2);
-          const binStep = pool.binStep || '?';
-          const discoverySource = pool.DISCOVERY_SOURCE || pool.discoverySource || 'METEORA_PRIMARY';
-
-          let stIcon = '⚪';
-          try {
-            const veto = await runMeridianVeto({ mint: pool.tokenXMint || pool.address || '', symbol, pool });
-            if (!veto.veto) {
-              stIcon = `🟢 ${veto.reason || 'PASS'}`;
-            } else {
-              stIcon = `🔴 ${veto.reason || 'VETO'}`;
-            }
-          } catch (e) {
-            stIcon = `⚪ (API skip: ${e.message})`;
-          }
-
-          return (
-            `<b>${i + 1}. ${symbol}</b> [${binStep}]\n` +
-            `   Eff: <code>${eff}x</code> | Fee/TVL: <code>${ratio}%</code>\n` +
-            `   TVL: <code>$${tvl}</code> | Vol: <code>$${vol}</code> | MCap: <code>$${mcap}</code>\n` +
-            `   Status: ${stIcon}\n` +
-            `   Source: <code>${discoverySource}</code>`
-          );
-        }));
-
-        const report = `📊 <b>Top 5 Pool Efisien (Real-time)</b>\n\n` + lines.join('\n\n');
-        if (emitReport) {
-          await bot.sendMessage(chatId, report, { parse_mode: 'HTML', disable_web_page_preview: true });
-        }
-        return { report };
-      }
-    }
+    // Menjalankan pipeline lengkap (screening, gate, deploy, dan reporting akhir via notify)
+    await scanAndDeploy();
   } catch (error) {
-    console.error("⚠️ Loop Error:", error.message);
+    console.error("⚠️ Autoscreening Loop Error:", error.message);
     if (emitReport) {
-      bot.sendMessage(chatId, `❌ Error scanning: ${error.message}. Retrying in 15s...`);
+      await notify(`❌ <b>Error screening:</b> ${error.message}. Retrying in 15s...`);
     }
-    // Retry instan dengan jeda singkat sebelum mati/zombie
     if (_autoScreenTimer) clearTimeout(_autoScreenTimer);
-    _autoScreenTimer = setTimeout(() => runAutoscreening(bot, chatId), 15000);
-    return { report: null }; // Cegah tertimpa set interval default di bawah
+    _autoScreenTimer = setTimeout(() => runAutoscreening(bot, chatId, opts), 15000);
+    return { report: null };
   }
 
   // Rekursif Loop: Eksekusi berulang HANYA setelah proses fetch sebelumnya sepenuhnya selesai
-  const intervalMin = Number(cfg.screeningIntervalMin) || 15;
+  const intervalMin = Number(cfg.intervals?.screeningIntervalMin || cfg.screeningIntervalMin || 15);
   const intervalMs  = intervalMin * 60 * 1000;
-  if (_autoScreenTimer) clearTimeout(_autoScreenTimer); // Bersihkan sisa timer lama
-  _autoScreenTimer = setTimeout(() => runAutoscreening(bot, chatId), intervalMs);
+  
+  if (_autoScreenTimer) clearTimeout(_autoScreenTimer);
+  _autoScreenTimer = setTimeout(() => runAutoscreening(bot, chatId, opts), intervalMs);
+  
   return { report: null };
+}
+
+export async function updatePnlStatus() {
+  // Placeholder for Realtime PnL Status updates if needed
+  // Monitor loop currently handles this internally per position
+}
+
+export async function inventoryManagement() {
+  // Placeholder for periodic portfolio rebalancing / management
 }

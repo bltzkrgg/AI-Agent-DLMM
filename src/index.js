@@ -18,7 +18,7 @@ import TelegramBot              from 'node-telegram-bot-api';
 import { existsSync, readFileSync, writeFileSync, unlinkSync } from 'fs';
 import { initSolana, getWalletBalance }   from './solana/wallet.js';
 import { getConfig, updateConfig, isConfigKeySupported, resolveNestedKey, SETCONFIG_WHITELIST } from './config.js';
-import { runLinearLoop, stopLoop, setNotifyFn, isRunning, getCurrentPosition, getActivePositions, setShutdownInProgress, closeAllActivePositionsByUser, closeAllActivePositionsForShutdown, retryFailedShutdownPositions, runAutoscreening, spawnMonitorForRestoredPositions, startManualCloseWatcher } from './agents/hunterAlpha.js';
+import { runLinearLoop, stopLoop, setNotifyFn, isRunning, getCurrentPosition, getActivePositions, setShutdownInProgress, closeAllActivePositionsByUser, closeAllActivePositionsForShutdown, retryFailedShutdownPositions, runAutoscreening, spawnMonitorForRestoredPositions, startManualCloseWatcher, scanAndDeploy, updatePnlStatus, inventoryManagement } from './agents/hunterAlpha.js';
 import { getActivePositionCount, reconcileStartupPositions, EP_CONFIG } from './sniper/evilPanda.js';
 import { analyzePerformance, formatEvolutionReport }     from './learn/statelessEvolve.js';
 import { generateBriefing, formatActivePositionsTelegram } from './telegram/briefing.js';
@@ -165,11 +165,63 @@ bot.onText(/\/hunt/, async (msg) => {
     bot.sendMessage(msg.chat.id, '⚠️ Loop sudah berjalan.', { parse_mode: 'HTML' });
     return;
   }
-  bot.sendMessage(msg.chat.id, '▶️ <b>Memulai Linear Sniper Loop...</b>', { parse_mode: 'HTML' });
-  runLinearLoop().catch(e => {
-    notify(`❌ <b>Loop crash:</b>\n<code>${escapeHTML(e.message)}</code>`);
+  bot.sendMessage(msg.chat.id, '▶️ <b>Memulai Multi-Agent Scheduler...</b>', { parse_mode: 'HTML' });
+  
+  const cfg = getConfig();
+  
+  // 1. Screening Loop (scanAndDeploy)
+  const runScreening = async () => {
+    while (isRunning()) {
+      try {
+        await scanAndDeploy();
+      } catch (e) {
+        console.error("⚠️ Screening Loop Error:", e.message);
+      }
+      const intervalMin = getConfig().intervals?.screeningIntervalMin || 15;
+      await new Promise(r => setTimeout(r, intervalMin * 60 * 1000));
+    }
+  };
+
+  // 2. Realtime PnL Loop (updatePnlStatus)
+  const runPnl = async () => {
+    while (isRunning()) {
+      try {
+        // Beri jeda kecil agar tidak bertabrakan dengan Telegram Report dari Screening
+        await new Promise(r => setTimeout(r, 2000));
+        await updatePnlStatus();
+      } catch (e) {
+        console.error("⚠️ PnL Loop Error:", e.message);
+      }
+      const intervalSec = getConfig().intervals?.realtimePnlIntervalSec || 300;
+      await new Promise(r => setTimeout(r, intervalSec * 1000));
+    }
+  };
+
+  // 3. Management Loop (inventoryManagement)
+  const runManagement = async () => {
+    while (isRunning()) {
+      try {
+        await new Promise(r => setTimeout(r, 5000));
+        await inventoryManagement();
+      } catch (e) {
+        console.error("⚠️ Management Loop Error:", e.message);
+      }
+      const intervalMin = getConfig().intervals?.managementIntervalMin || 10;
+      await new Promise(r => setTimeout(r, intervalMin * 60 * 1000));
+    }
+  };
+
+  // Trigger LinearLoop to just set _running = true basically, 
+  // or we can just call the loops if we handle `isRunning` state correctly.
+  runLinearLoop().then(() => {
+    runScreening();
+    runPnl();
+    runManagement();
+  }).catch(e => {
+    notify(`❌ <b>Scheduler crash:</b>\n<code>${escapeHTML(e.message)}</code>`);
   });
 });
+
 
 // /stop — hentikan loop (tidak force exit posisi)
 bot.onText(/\/stop$/, async (msg) => {
