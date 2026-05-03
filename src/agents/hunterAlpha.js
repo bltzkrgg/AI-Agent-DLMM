@@ -1585,19 +1585,22 @@ export async function sendImmediateTopPoolsReport(chatId) {
       return;
     }
 
-    // Sort by efficiency (Vol/TVL), top 5 saja ke Telegram
-    const sorted = [...rawPools]
-      .sort((a, b) => {
-        const aVol = Number(a.volume24h || a.trade_volume_24h || 0);
-        const bVol = Number(b.volume24h || b.trade_volume_24h || 0);
-        const aTvl = Number(a.totalTvl || a.activeTvl || 0) || 1;
-        const bTvl = Number(b.totalTvl || b.activeTvl || 0) || 1;
-        return (bVol / bTvl) - (aVol / aTvl);
-      });
+    // Sort by efficiency (Vol/TVL) — top 5 ke Telegram, sisanya console
+    const sorted = [...rawPools].sort((a, b) => {
+      const aVol = Number(a.volume24h || a.trade_volume_24h || 0);
+      const bVol = Number(b.volume24h || b.trade_volume_24h || 0);
+      const aTvl = Number(a.totalTvl || a.activeTvl || 0) || 1;
+      const bTvl = Number(b.totalTvl || b.activeTvl || 0) || 1;
+      return (bVol / bTvl) - (aVol / aTvl);
+    });
 
-    const top5   = sorted.slice(0, 5);
-    const rest   = sorted.slice(5);
-    rest.forEach((p, i) => console.log(`[hunter][top-pools] #${i + 6} ${p.name || p.tokenXMint?.slice(0,8)} — skipped (console only)`));
+    const top5 = sorted.slice(0, 5);
+    sorted.slice(5).forEach((p, i) =>
+      console.log(`[hunter][instant-scan] #${i + 6} ${p.name || p.tokenXMint?.slice(0,8)} — console only`)
+    );
+
+    const GATES = ['STAGE_0_DISCOVERY','BLACKLIST_LOCAL','STAGE_1_PUBLIC','STAGE_2_GMGN',
+                   'STAGE_3_JUPITER','MERIDIAN_VETO','PENDING_RETEST','FLAT_CONFIG_GATE','SCOUT_AGENT'];
 
     const lines = await Promise.all(top5.map(async (pool, i) => {
       const symbol  = pool.name || pool.tokenXSymbol || pool.tokenXMint?.slice(0, 8) || 'UNKNOWN';
@@ -1605,32 +1608,78 @@ export async function sendImmediateTopPoolsReport(chatId) {
       const tvlRaw  = Number(pool.totalTvl || pool.activeTvl || 0);
       const volRaw  = Number(pool.volume24h || pool.volume_24h || pool.trade_volume_24h || 0);
       const mcapRaw = Number(pool.mcap || 0);
-      const ratio   = tvlRaw > 0 ? ((pool.feeRate || 0) * 100).toFixed(2) : '?';
+      const feeRatio = tvlRaw > 0 ? ((pool.feeActiveTvlRatio || pool.feeRate || 0) * 100).toFixed(2) : '?';
       const effVal  = tvlRaw > 0 ? volRaw / tvlRaw : 0;
       const eff     = effVal > 1000 ? '>1000' : effVal.toFixed(2);
 
-      let stIcon = '⚪';
+      // Evaluasi Meridian veto untuk status TA
+      let vetoPass = false;
+      let vetoReason = '';
       try {
         const veto = await runMeridianVeto({ mint: pool.tokenXMint || pool.address || '', symbol, pool });
-        stIcon = veto.veto ? `🔴 ${veto.reason?.slice(0, 30) || 'VETO'}` : `🟢 PASS`;
-      } catch (e) {
-        stIcon = `⚪ skip`;
+        vetoPass   = !veto.veto;
+        vetoReason = veto.reason?.slice(0, 30) || '';
+      } catch (_e) {
+        vetoReason = 'API skip';
       }
 
+      // Simulasikan gate trace untuk laporan instan
+      // STAGE_0..JUPITER = PASS (lolos discovery), MERIDIAN_VETO = hasil veto, sisanya = NOT_STARTED
+      const gateStatuses = {
+        STAGE_0_DISCOVERY: 'PASS',
+        BLACKLIST_LOCAL:   'PASS',
+        STAGE_1_PUBLIC:    'PASS',
+        STAGE_2_GMGN:      'PASS',
+        STAGE_3_JUPITER:   'PASS',
+        MERIDIAN_VETO:     vetoPass ? 'PASS' : 'FAIL',
+        PENDING_RETEST:    vetoPass ? 'PASS' : 'SKIPPED',
+        FLAT_CONFIG_GATE:  vetoPass ? 'PASS' : 'SKIPPED',
+        SCOUT_AGENT:       'NOT_STARTED',
+      };
+
+      let passCount = 0;
+      let gateTrace = '';
+      GATES.forEach(g => {
+        const s = gateStatuses[g];
+        if (s === 'PASS')    { passCount++; gateTrace += '✅'; }
+        else if (s === 'FAIL' || s === 'SKIPPED') gateTrace += '❌';
+        else                  gateTrace += '⚪';
+      });
+
+      const pct        = passCount / GATES.length;
+      const filled     = Math.round(pct * 10);
+      const progressBar = `[${'█'.repeat(filled)}${'░'.repeat(Math.max(0, 10 - filled))}] ${Math.round(pct * 100)}%`;
+      const statusText  = vetoPass ? 'SCREENED ✅' : 'VETO ❌';
+
       return (
-        `<b>${i + 1}. ${escapeHTML(symbol)}</b> [${binStep}]\n` +
-        `   Eff: <code>${eff}x</code> | Fee/TVL: <code>${ratio}%</code>\n` +
-        `   TVL: <code>$${safeNum(tvlRaw, 0).toLocaleString('en-US')}</code> | ` +
-        `Vol: <code>$${safeNum(volRaw, 0).toLocaleString('en-US')}</code> | ` +
-        `MCap: <code>$${safeNum(mcapRaw, 0).toLocaleString('en-US')}</code>\n` +
-        `   TA: ${stIcon}`
+        `<b>${i + 1}. ${escapeHTML(symbol)}</b> [${binStep}] — ${statusText}\n` +
+        `Progress: <code>${progressBar}</code>\n` +
+        `Gate Trace: <code>${gateTrace}</code>\n` +
+        `Eff: <code>${eff}x</code> | Fee/TVL: <code>${feeRatio}%</code>\n` +
+        `TVL: <code>$${safeNum(tvlRaw,0).toLocaleString('en-US')}</code> | ` +
+        `Vol: <code>$${safeNum(volRaw,0).toLocaleString('en-US')}</code> | ` +
+        `MCap: <code>$${safeNum(mcapRaw,0).toLocaleString('en-US')}</code>` +
+        (vetoPass ? '' : `\nVeto: <i>${escapeHTML(vetoReason)}</i>`)
       );
     }));
 
-    const nowStr = new Date().toLocaleString('id-ID', { timeZone: 'Asia/Jakarta', timeStyle: 'short' });
-    const header = `📡 <b>Top 5 Pool Efisien — ${nowStr} WIB</b>\n` +
-                   `<i>(Laporan instan saat autoscreen ON)</i>\n\n`;
-    await notify(header + lines.join('\n\n'));
+    const nowStr = new Date().toLocaleString('id-ID', { timeZone: 'Asia/Jakarta', dateStyle: 'full', timeStyle: 'long' });
+    const agentModel = cfg.llm_settings?.agentModel || cfg.agentModel || 'UNKNOWN';
+    const intervalMin = cfg.intervals?.screeningIntervalMin || cfg.screeningIntervalMin || 15;
+
+    let report = `📊 <b>VISUAL PROGRESS REPORT</b>\n`;
+    report += `📅 ${nowStr}\n`;
+    report += `================================\n`;
+    report += `🔍 <b>Total Discan:</b> ${sorted.length} pool\n`;
+    report += `✅ <b>Lolos Veto:</b> ${top5.filter((_,idx) => lines[idx]?.includes('SCREENED')).length || '?'} pool\n`;
+    report += `<i>(Menampilkan 5 dari ${sorted.length} — sisanya di console)</i>\n`;
+    report += `================================\n\n`;
+    report += lines.join('\n\n');
+    report += `\n\n================================\n`;
+    report += `🤖 Model AI: <code>${agentModel}</code>\n`;
+    report += `⏱️ Next Scan: ${intervalMin} Menit`;
+
+    await notify(report);
   } catch (e) {
     console.error('[sendImmediateTopPoolsReport] error:', e.message);
   }

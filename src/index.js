@@ -80,6 +80,11 @@ const bot = new TelegramBot(process.env.TELEGRAM_BOT_TOKEN, {
   },
 });
 
+// ── Tugas 4: Prevent Node crash saat koneksi Telegram putus ──────
+bot.on('polling_error', (error) => {
+  console.error(`[Telegram Polling Error]: ${error.code} - ${error.message}`);
+});
+
 const transport = createMessageTransport(bot);
 
 async function sendLong(chatId, text, opts = {}) {

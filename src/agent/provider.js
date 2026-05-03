@@ -505,10 +505,18 @@ export async function createMessage({ model, maxTokens = 4096, system, tools, me
   throw err;
 }
 
-const cfg = getConfig();
+// ── AI Discipline Startup Log ─────────────────────────────────────
+// Log ini muncul saat bot pertama kali dijalankan untuk verifikasi
+// bahwa setiap komponen menggunakan model yang tepat.
+const _startupCfg = getConfig();
+const _screeningModel  = resolveModelForComponent('screening');
+const _managementModel = resolveModelForComponent('management');
+const _agentModel      = resolveModelForComponent('agent');
+
 console.log(
-  `🤖 AI Provider : ${PROVIDER}\n` +
-  `   Screening  : ${resolveModel(cfg?.screeningModel)}   (SCREENING_MODEL env)\n` +
-  `   Management : ${resolveModel(cfg?.managementModel)}  (MANAGEMENT_MODEL env)\n` +
-  `   Agent      : ${resolveModel(cfg?.agentModel)}       (AGENT_MODEL env)`
+  `🤖 [AI-DISCIPLINE] Provider: ${PROVIDER}\n` +
+  `   📋 Screening  (SCOUT_AGENT gate)    : ${_screeningModel}\n` +
+  `   🔧 Management (GENERAL_AGENT final) : ${_managementModel}\n` +
+  `   🧠 Agent      (Scout reasoning)     : ${_agentModel}\n` +
+  `   ⚠️  Override AI_MODEL               : ${process.env.AI_MODEL || '(none)'}`
 );

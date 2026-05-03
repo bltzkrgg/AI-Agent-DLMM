@@ -44,7 +44,13 @@ export function enqueueForDeploy(pool, symbol, meta = {}) {
     attempts: 0,
   });
 
-  console.log(`[DeployQueue] ✅ ${symbol} masuk antrian deploy (Entry=${meta.entryReadiness}, Breakout=${meta.breakoutQuality})`);
+  console.log(`[DeployQueue] ✅ ${symbol} masuk antrian deploy real-time (Entry=${meta.entryReadiness}, Breakout=${meta.breakoutQuality})`);
+
+  // Auto-start watcher jika belum jalan — token langsung dipantau setiap 30 detik
+  if (!_watcherTimer) {
+    console.log('[DeployQueue] 👀 Auto-start watcher karena ada token baru masuk antrian');
+    _watcherTimer = setTimeout(runWatcher, 30_000);
+  }
 }
 
 /** Hapus token dari queue */
