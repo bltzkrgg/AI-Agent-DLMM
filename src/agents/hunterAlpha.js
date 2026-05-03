@@ -24,6 +24,7 @@ import { getRuntimeState }        from '../runtime/state.js';
 import { escapeHTML, safeParseAI } from '../utils/safeJson.js';
 import reportManager              from '../utils/reportManager.js';
 import pendingStore               from '../utils/pendingStore.js';
+import { enqueueForDeploy, startDeployQueueWatcher } from '../utils/pendingDeployQueue.js';
 // ── Pool selector: pilih pool terbaik per-token berdasarkan binStep priority ─────────────
 //
 // Input : array pool untuk satu token yang sama (tokenXMint identik)
@@ -717,6 +718,7 @@ ${llmPoolContext}
 Balas HANYA JSON valid tanpa Markdown.`;
       const res = await createMessage({
         model: scoutModel,
+        componentType: 'screening',
         maxTokens: 320,
         messages: [{ role: 'user', content: prompt }]
       });
@@ -740,6 +742,8 @@ Balas HANYA JSON valid tanpa Markdown.`;
         pool._vetoResult = vetoResult;
         pool._marketSnapshot = marketSnapshot;
         pool._llmPoolContext = llmPoolContext;
+        // Masukkan ke Real-time Deploy Queue — watcher akan eksekusi saat kondisi terpenuhi
+        enqueueForDeploy(pool, tokenSymbol, { scoutReason, entryReadiness, breakoutQuality });
         return { ok: true, pool, symbol: tokenSymbol || 'UNKNOWN' };
       }
       const isDeferred = decision.includes('DEFER');
@@ -1559,6 +1563,72 @@ function _legacyEntryGateCompatibility(signals = {}, cfg = {}) {
   void fallbackBodyPct;
   void fallbackHtfTrend;
   return 'PASS';
+}
+
+// ── Immediate Top Pools Report ─────────────────────────────────────
+// Dipanggil saat /autoscreen on — kirim snapshot 5 pool terbaik SEKARANG
+// (sebelum pipeline screening panjang selesai).
+
+export async function sendImmediateTopPoolsReport(chatId) {
+  try {
+    const cfg = getConfig();
+    const limit = Number(cfg.meteoraDiscoveryLimit) || 180;
+    const rawPools = await discoverHighFeePoolsMeridian({ limit });
+
+    if (!rawPools || rawPools.length === 0) {
+      await notify('⚠️ Tidak ada pool ditemukan untuk laporan instan.');
+      return;
+    }
+
+    // Sort by efficiency (Vol/TVL), top 5 saja ke Telegram
+    const sorted = [...rawPools]
+      .sort((a, b) => {
+        const aVol = Number(a.volume24h || a.trade_volume_24h || 0);
+        const bVol = Number(b.volume24h || b.trade_volume_24h || 0);
+        const aTvl = Number(a.totalTvl || a.activeTvl || 0) || 1;
+        const bTvl = Number(b.totalTvl || b.activeTvl || 0) || 1;
+        return (bVol / bTvl) - (aVol / aTvl);
+      });
+
+    const top5   = sorted.slice(0, 5);
+    const rest   = sorted.slice(5);
+    rest.forEach((p, i) => console.log(`[hunter][top-pools] #${i + 6} ${p.name || p.tokenXMint?.slice(0,8)} — skipped (console only)`));
+
+    const lines = await Promise.all(top5.map(async (pool, i) => {
+      const symbol  = pool.name || pool.tokenXSymbol || pool.tokenXMint?.slice(0, 8) || 'UNKNOWN';
+      const binStep = pool.binStep || '?';
+      const tvlRaw  = Number(pool.totalTvl || pool.activeTvl || 0);
+      const volRaw  = Number(pool.volume24h || pool.volume_24h || pool.trade_volume_24h || 0);
+      const mcapRaw = Number(pool.mcap || 0);
+      const ratio   = tvlRaw > 0 ? ((pool.feeRate || 0) * 100).toFixed(2) : '?';
+      const effVal  = tvlRaw > 0 ? volRaw / tvlRaw : 0;
+      const eff     = effVal > 1000 ? '>1000' : effVal.toFixed(2);
+
+      let stIcon = '⚪';
+      try {
+        const veto = await runMeridianVeto({ mint: pool.tokenXMint || pool.address || '', symbol, pool });
+        stIcon = veto.veto ? `🔴 ${veto.reason?.slice(0, 30) || 'VETO'}` : `🟢 PASS`;
+      } catch (e) {
+        stIcon = `⚪ skip`;
+      }
+
+      return (
+        `<b>${i + 1}. ${escapeHTML(symbol)}</b> [${binStep}]\n` +
+        `   Eff: <code>${eff}x</code> | Fee/TVL: <code>${ratio}%</code>\n` +
+        `   TVL: <code>$${safeNum(tvlRaw, 0).toLocaleString('en-US')}</code> | ` +
+        `Vol: <code>$${safeNum(volRaw, 0).toLocaleString('en-US')}</code> | ` +
+        `MCap: <code>$${safeNum(mcapRaw, 0).toLocaleString('en-US')}</code>\n` +
+        `   TA: ${stIcon}`
+      );
+    }));
+
+    const nowStr = new Date().toLocaleString('id-ID', { timeZone: 'Asia/Jakarta', timeStyle: 'short' });
+    const header = `📡 <b>Top 5 Pool Efisien — ${nowStr} WIB</b>\n` +
+                   `<i>(Laporan instan saat autoscreen ON)</i>\n\n`;
+    await notify(header + lines.join('\n\n'));
+  } catch (e) {
+    console.error('[sendImmediateTopPoolsReport] error:', e.message);
+  }
 }
 
 // ── Auto-Screening Manual Runner ───────────────────────────────────

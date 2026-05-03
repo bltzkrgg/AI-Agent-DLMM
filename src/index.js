@@ -18,7 +18,7 @@ import TelegramBot              from 'node-telegram-bot-api';
 import { existsSync, readFileSync, writeFileSync, unlinkSync } from 'fs';
 import { initSolana, getWalletBalance }   from './solana/wallet.js';
 import { getConfig, updateConfig, isConfigKeySupported, resolveNestedKey, SETCONFIG_WHITELIST } from './config.js';
-import { runLinearLoop, stopLoop, setNotifyFn, isRunning, getCurrentPosition, getActivePositions, setShutdownInProgress, closeAllActivePositionsByUser, closeAllActivePositionsForShutdown, retryFailedShutdownPositions, runAutoscreening, spawnMonitorForRestoredPositions, startManualCloseWatcher, scanAndDeploy, updatePnlStatus, inventoryManagement } from './agents/hunterAlpha.js';
+import { runLinearLoop, stopLoop, setNotifyFn, isRunning, getCurrentPosition, getActivePositions, setShutdownInProgress, closeAllActivePositionsByUser, closeAllActivePositionsForShutdown, retryFailedShutdownPositions, runAutoscreening, spawnMonitorForRestoredPositions, startManualCloseWatcher, scanAndDeploy, updatePnlStatus, inventoryManagement, sendImmediateTopPoolsReport } from './agents/hunterAlpha.js';
 import { getActivePositionCount, reconcileStartupPositions, EP_CONFIG } from './sniper/evilPanda.js';
 import { analyzePerformance, formatEvolutionReport }     from './learn/statelessEvolve.js';
 import { generateBriefing, formatActivePositionsTelegram } from './telegram/briefing.js';
@@ -28,6 +28,8 @@ import { safeNum, escapeHTML }            from './utils/safeJson.js';
 import { initializeRpcManager }           from './utils/helius.js';
 import { createMessageTransport }         from './telegram/messageTransport.js';
 import { getTodayResults }                from './db/database.js';
+import { startDeployQueueWatcher, setDeployQueueNotifyFn, setDeployQueueDeployFn, setDeployQueueMonitorFn } from './utils/pendingDeployQueue.js';
+import { deployPosition } from './sniper/evilPanda.js';
 
 // ── PID Lock — cegah multiple instance ───────────────────────────
 const PID_FILE = new URL('../../bot.pid', import.meta.url).pathname;
@@ -560,6 +562,14 @@ bot.onText(/\/autoscreen(?:\s+(on|off))?/, async (msg, match) => {
     );
     // EKSEKUSI LANGSUNG (Fire & Forget, langsung scan saat itu juga)
     runAutoscreening(bot, chatId);
+    // Kirim snapshot Top 5 pool segera tanpa menunggu pipeline panjang selesai
+    sendImmediateTopPoolsReport(chatId);
+
+    // Wire Deploy Queue sekarang agar watcher bisa eksekusi
+    setDeployQueueNotifyFn(notify);
+    setDeployQueueDeployFn(deployPosition);
+    startDeployQueueWatcher();
+
     if (!isRunning()) {
       runLinearLoop().catch((e) => {
         notify(`❌ <b>Loop crash:</b>\n<code>${escapeHTML(e.message)}</code>`);

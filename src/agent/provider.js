@@ -338,8 +338,49 @@ function extractResponseText(response) {
 // Interface tetap sama untuk semua caller — provider-specific logic di sini.
 // Improved: Better validation, fallback chains, and error handling
 
-export async function createMessage({ model, maxTokens = 4096, system, tools, messages, forceModel }) {
-  let resolvedModel = forceModel || resolveModel(model);
+/**
+ * Resolusi model berdasarkan componentType ('screening' | 'management' | 'agent').
+ * Ini memastikan setiap komponen menggunakan model yang sesuai dari .env atau config.
+ */
+export function resolveModelForComponent(componentType) {
+  const cfg = getConfig();
+
+  // Env var override (paling prioritas)
+  if (process.env.AI_MODEL && !BLOCKED_MODELS.has(process.env.AI_MODEL)) {
+    return process.env.AI_MODEL;
+  }
+
+  if (componentType === 'screening') {
+    const m = process.env.SCREENING_MODEL || cfg.llm_settings?.screeningModel || cfg.screeningModel;
+    if (m && !BLOCKED_MODELS.has(m)) return m;
+  } else if (componentType === 'management') {
+    const m = process.env.MANAGEMENT_MODEL || cfg.llm_settings?.managementModel || cfg.managementModel;
+    if (m && !BLOCKED_MODELS.has(m)) return m;
+  } else if (componentType === 'agent') {
+    const m = process.env.AGENT_MODEL || cfg.llm_settings?.agentModel || cfg.agentModel;
+    if (m && !BLOCKED_MODELS.has(m)) return m;
+  }
+
+  // Fallback ke resolveModel standar
+  return resolveModel(cfg.agentModel);
+}
+
+export async function createMessage({ model, maxTokens = 4096, system, tools, messages, forceModel, componentType }) {
+  // Jika componentType disediakan, gunakan model yang sesuai untuk komponen tersebut.
+  // Jika tidak, fallback ke resolveModel standar.
+  let resolvedModel;
+  if (forceModel) {
+    resolvedModel = forceModel;
+  } else if (componentType) {
+    resolvedModel = resolveModelForComponent(componentType);
+  } else {
+    resolvedModel = resolveModel(model);
+  }
+
+  // AI-DISCIPLINE logging
+  if (componentType) {
+    console.log(`[AI-DISCIPLINE] Using ${resolvedModel} for ${componentType}`);
+  }
   let lastError;
 
   // Block minimax models — they fail silently on OpenRouter
