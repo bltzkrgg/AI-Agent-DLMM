@@ -1716,39 +1716,42 @@ let _autoScreenTimer = null;
 
 export async function runAutoscreening(bot, chatId, opts = {}) {
   const cfg = getConfig();
-  const emitReport = opts.emitReport !== false;
-  
-  // Guard rekursif: Hentikan loop jika Autoscreen dimatikan dari config
+
+  // Guard: hentikan loop jika Autoscreen dimatikan
   if (!cfg.autoScreeningEnabled) {
     if (_autoScreenTimer) clearTimeout(_autoScreenTimer);
-    return { report: null };
+    _autoScreenTimer = null;
+    console.log('[hunter] runAutoscreening: autoScreeningEnabled=false, loop dihentikan.');
+    return;
   }
 
-  if (emitReport) {
-    await notify(`🔍 <b>Memulai siklus autoscreening...</b>`);
-  }
-
-  try {
-    // Menjalankan pipeline lengkap (screening, gate, deploy, dan reporting akhir via notify)
-    await scanAndDeploy();
-  } catch (error) {
-    console.error("⚠️ Autoscreening Loop Error:", error.message);
-    if (emitReport) {
-      await notify(`❌ <b>Error screening:</b> ${error.message}. Retrying in 15s...`);
-    }
-    if (_autoScreenTimer) clearTimeout(_autoScreenTimer);
-    _autoScreenTimer = setTimeout(() => runAutoscreening(bot, chatId, opts), 15000);
-    return { report: null };
-  }
-
-  // Rekursif Loop: Eksekusi berulang HANYA setelah proses fetch sebelumnya sepenuhnya selesai
+  // Hitung interval dari config
   const intervalMin = Number(cfg.intervals?.screeningIntervalMin || cfg.screeningIntervalMin || 15);
   const intervalMs  = intervalMin * 60 * 1000;
-  
+
+  // Jadwalkan siklus BERIKUTNYA (bukan langsung — caller sudah eksekusi first run)
   if (_autoScreenTimer) clearTimeout(_autoScreenTimer);
-  _autoScreenTimer = setTimeout(() => runAutoscreening(bot, chatId, opts), intervalMs);
-  
-  return { report: null };
+  _autoScreenTimer = setTimeout(async () => {
+    // Guard ulang saat timer tiba
+    if (!getConfig().autoScreeningEnabled) {
+      console.log('[hunter] runAutoscreening: loop cancelled saat timer tiba (autoscreen OFF).');
+      return;
+    }
+
+    console.log(`[hunter] ⏰ Siklus screening berikutnya dimulai...`);
+    try {
+      // SINGLE SOURCE OF TRUTH: scanAndDeploy → reportManager.generateReport() → notify
+      await scanAndDeploy();
+    } catch (err) {
+      console.error('[hunter] scanAndDeploy loop error:', err.message);
+      await notify(`❌ <b>Loop error:</b>\n<code>${err.message.slice(0, 200)}</code>\n<i>Retry dalam ${intervalMin} menit...</i>`);
+    }
+
+    // Rekursif: daftarkan lagi untuk siklus berikutnya
+    runAutoscreening(bot, chatId, opts);
+  }, intervalMs);
+
+  console.log(`[hunter] 🔁 Siklus berikutnya dijadwalkan dalam ${intervalMin} menit.`);
 }
 
 export async function updatePnlStatus() {

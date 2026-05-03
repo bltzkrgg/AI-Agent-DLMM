@@ -18,7 +18,7 @@ import TelegramBot              from 'node-telegram-bot-api';
 import { existsSync, readFileSync, writeFileSync, unlinkSync } from 'fs';
 import { initSolana, getWalletBalance }   from './solana/wallet.js';
 import { getConfig, updateConfig, isConfigKeySupported, resolveNestedKey, SETCONFIG_WHITELIST } from './config.js';
-import { runLinearLoop, stopLoop, setNotifyFn, isRunning, getCurrentPosition, getActivePositions, setShutdownInProgress, closeAllActivePositionsByUser, closeAllActivePositionsForShutdown, retryFailedShutdownPositions, runAutoscreening, spawnMonitorForRestoredPositions, startManualCloseWatcher, scanAndDeploy, updatePnlStatus, inventoryManagement, sendImmediateTopPoolsReport } from './agents/hunterAlpha.js';
+import { runLinearLoop, stopLoop, setNotifyFn, isRunning, getCurrentPosition, getActivePositions, setShutdownInProgress, closeAllActivePositionsByUser, closeAllActivePositionsForShutdown, retryFailedShutdownPositions, runAutoscreening, spawnMonitorForRestoredPositions, startManualCloseWatcher, scanAndDeploy, updatePnlStatus, inventoryManagement } from './agents/hunterAlpha.js';
 import { getActivePositionCount, reconcileStartupPositions, EP_CONFIG } from './sniper/evilPanda.js';
 import { analyzePerformance, formatEvolutionReport }     from './learn/statelessEvolve.js';
 import { generateBriefing, formatActivePositionsTelegram } from './telegram/briefing.js';
@@ -557,18 +557,29 @@ bot.onText(/\/autoscreen(?:\s+(on|off))?/, async (msg, match) => {
 
   if (after === true) {
     await bot.sendMessage(chatId,
-      `📡 <b>Auto-Screening: ON</b>\n🔍 Memulai inisialisasi scan real-time sekarang...`,
+      `📡 <b>Auto-Screening: ON</b>\n🔍 Eksekusi scan pertama dimulai sekarang...`,
       { parse_mode: 'HTML' }
     );
-    // EKSEKUSI LANGSUNG (Fire & Forget, langsung scan saat itu juga)
-    runAutoscreening(bot, chatId);
-    // Kirim snapshot Top 5 pool segera tanpa menunggu pipeline panjang selesai
-    sendImmediateTopPoolsReport(chatId);
 
     // Wire Deploy Queue sekarang agar watcher bisa eksekusi
     setDeployQueueNotifyFn(notify);
     setDeployQueueDeployFn(deployPosition);
     startDeployQueueWatcher();
+
+    // ── INSTANT FIRST RUN (awaited) ───────────────────────────────────
+    // scanAndDeploy() → top-5 sort → 9-gate eval → reportManager.generateReport()
+    // SINGLE SOURCE OF TRUTH: format laporan identik dengan semua siklus berikutnya
+    try {
+      await scanAndDeploy();
+    } catch (e) {
+      console.error('[autoscreen] Scan pertama gagal:', e.message);
+      await notify(`❌ <b>Scan pertama gagal:</b>\n<code>${escapeHTML(e.message)}</code>\n<i>Loop tetap dilanjutkan...</i>`);
+    }
+
+    // ── LOOP ATTACHMENT ───────────────────────────────────────────────
+    // runAutoscreening hanya menjadi scheduler rekursif untuk siklus ke-2 dst.
+    // Tidak ada fire-and-forget ganda: scan pertama sudah selesai di atas.
+    runAutoscreening(bot, chatId, { emitReport: false });
 
     if (!isRunning()) {
       runLinearLoop().catch((e) => {
