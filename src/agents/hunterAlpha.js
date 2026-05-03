@@ -718,7 +718,7 @@ ${llmPoolContext}
 Balas HANYA JSON valid tanpa Markdown.`;
       const res = await createMessage({
         model: scoutModel,
-        componentType: 'screening',
+        componentType: 'agent',
         maxTokens: 320,
         messages: [{ role: 'user', content: prompt }]
       });
@@ -871,6 +871,7 @@ ${gateSummary || 'N/A'}
 Balas HANYA JSON valid tanpa Markdown.`;
       const res = await createMessage({
         model: managementModel,
+        componentType: 'management',
         maxTokens: 260,
         messages: [{ role: 'user', content: prompt }]
       });

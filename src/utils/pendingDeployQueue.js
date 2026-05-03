@@ -1,5 +1,7 @@
 'use strict';
 
+import { getConfig } from '../config.js';
+
 /**
  * src/utils/pendingDeployQueue.js
  * Real-time Deploy Queue — token yang lolos Scout Agent masuk sini,
@@ -109,14 +111,33 @@ async function runWatcher() {
     }
 
     // Kondisi terpenuhi — eksekusi deploy
-    const poolAddress = pool.address || pool.poolAddress || '';
+    // Resolusi pool address: cek semua field yang mungkin dipakai oleh Meteora API response
+    const poolAddress = pool.address || pool.pool_address || pool.pool || pool.poolAddress || pool.pubkey || '';
     if (!poolAddress) {
-      console.warn(`[DeployQueue] Pool address tidak ditemukan untuk ${symbol}`);
+      console.warn(`[DeployQueue] ⚠️ Pool address tidak ditemukan untuk ${symbol} — semua field: ${JSON.stringify(Object.keys(pool))}`);
       _queue.delete(mint);
+      await safeSend(
+        `⚠️ <b>Deploy Gagal (Queue)</b>\n` +
+        `<b>${symbol}</b> — Pool address tidak valid.\n` +
+        `<i>Tidak ada field address yang tersedia di objek pool.</i>`
+      );
       continue;
     }
 
-    console.log(`[DeployQueue] 🚀 Eksekusi deploy ${symbol} (Pool: ${poolAddress.slice(0, 8)})`);
+    // Validate poolAddress adalah string Solana pubkey (base58, 32-44 chars)
+    if (typeof poolAddress !== 'string' || poolAddress.length < 32 || poolAddress.length > 44) {
+      console.error(`[DeployQueue] ❌ Pool address tidak valid untuk ${symbol}: "${poolAddress}"`);
+      _queue.delete(mint);
+      await safeSend(
+        `❌ <b>Deploy Gagal (Queue)</b>\n` +
+        `<b>${symbol}</b> — Pool address tidak valid (bukan Solana pubkey).`
+      );
+      continue;
+    }
+
+    const cfg = getConfig();
+    const solAmount = cfg.deployAmountSol || 0.1;
+    console.log(`[DeployQueue] 🚀 Attempting deploy for ${symbol} with amount ${solAmount} SOL (Pool: ${poolAddress.slice(0, 8)})`);
     _queue.delete(mint); // Hapus sebelum deploy (idempoten)
 
     await safeSend(
