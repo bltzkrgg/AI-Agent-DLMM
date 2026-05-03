@@ -87,6 +87,20 @@ class ReportManager {
     report += `🚫 <b>Gagal/Reject:</b> ${rejectedTokens.length} token\n`;
     report += `================================\n\n`;
 
+    // Hanya kirim Top 5 ke Telegram — deployed dulu, lalu sort by gate progress
+    const sortedCycle = [...this.currentCycle].sort((a, b) => {
+      const aDeployed = a.finalVerdict === 'DEPLOYED' ? 1 : 0;
+      const bDeployed = b.finalVerdict === 'DEPLOYED' ? 1 : 0;
+      if (aDeployed !== bDeployed) return bDeployed - aDeployed;
+      const aPass = Object.values(a.gates).filter(s => s === 'PASS').length;
+      const bPass = Object.values(b.gates).filter(s => s === 'PASS').length;
+      return bPass - aPass;
+    });
+    const top5Cycle = sortedCycle.slice(0, 5);
+    if (totalScanned > 5) {
+      report += `<i>(Menampilkan 5 dari ${totalScanned} token — sisanya hanya di console log)</i>\n\n`;
+    }
+
     const GATES = [
       'STAGE_0_DISCOVERY',
       'BLACKLIST_LOCAL',
@@ -99,7 +113,7 @@ class ReportManager {
       'SCOUT_AGENT'
     ];
 
-    this.currentCycle.forEach((token, idx) => {
+    top5Cycle.forEach((token, idx) => {
       const isDeployed = token.finalVerdict === 'DEPLOYED';
       const statusIcon = isDeployed ? '✅' : '❌';
       const statusText = isDeployed ? 'DEPLOYED' : 'REJECTED';

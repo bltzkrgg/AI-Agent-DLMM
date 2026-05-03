@@ -81,82 +81,93 @@ function evaluateDeployConditions(entry) {
 
 /** Main watcher loop */
 async function runWatcher() {
-  for (const [mint, entry] of _queue.entries()) {
-    const { symbol, pool, attempts } = entry;
+  // Snapshot entries SEBELUM iterasi agar modifikasi map di dalam loop aman
+  const entries = Array.from(_queue.entries());
 
-    if (attempts >= 3) {
-      console.log(`[DeployQueue] 🗑️ ${symbol} dihapus dari antrian (max attempts)`);
-      _queue.delete(mint);
-      await safeSend(
-        `⏱️ <b>Deploy Queue Expired</b>\n` +
-        `<b>${symbol}</b> dihapus setelah 3x gagal evaluate.`
-      );
-      continue;
-    }
+  for (const [mint, entry] of entries) {
+    // Outer try-catch: satu token gagal tidak boleh crash loop keseluruhan
+    try {
+      // Re-check: mungkin sudah dihapus oleh caller lain
+      if (!_queue.has(mint)) continue;
 
-    entry.attempts++;
-    const check = evaluateDeployConditions(entry);
+      const { symbol, pool } = entry;
 
-    if (!check.ok) {
-      console.log(`[DeployQueue] ⏳ ${symbol} belum siap: ${check.reason} (attempt ${entry.attempts}/3)`);
-      if (check.reason.includes('expired')) {
+      if (entry.attempts >= 3) {
+        console.log(`[DeployQueue] 🗑️ ${symbol} dihapus dari antrian (max attempts)`);
         _queue.delete(mint);
         await safeSend(
           `⏱️ <b>Deploy Queue Expired</b>\n` +
-          `<b>${symbol}</b> — dibatalkan.\n` +
-          `<i>${check.reason}</i>`
+          `<b>${symbol}</b> dihapus setelah 3x gagal evaluate.`
         );
+        continue;
       }
-      continue;
-    }
 
-    // Kondisi terpenuhi — eksekusi deploy
-    // Resolusi pool address: cek semua field yang mungkin dipakai oleh Meteora API response
-    const poolAddress = pool.address || pool.pool_address || pool.pool || pool.poolAddress || pool.pubkey || '';
-    if (!poolAddress) {
-      console.warn(`[DeployQueue] ⚠️ Pool address tidak ditemukan untuk ${symbol} — semua field: ${JSON.stringify(Object.keys(pool))}`);
-      _queue.delete(mint);
+      entry.attempts++;
+      const check = evaluateDeployConditions(entry);
+
+      if (!check.ok) {
+        console.log(`[DeployQueue] ⏳ ${symbol} belum siap: ${check.reason} (attempt ${entry.attempts}/3)`);
+        if (check.reason.includes('expired')) {
+          _queue.delete(mint);
+          await safeSend(
+            `⏱️ <b>Deploy Queue Expired</b>\n` +
+            `<b>${symbol}</b> — dibatalkan.\n` +
+            `<i>${check.reason}</i>`
+          );
+        }
+        continue;
+      }
+
+      // Resolusi pool address — cek semua field yang mungkin dipakai Meteora API
+      const poolAddress = pool.address || pool.pool_address || pool.pool || pool.poolAddress || pool.pubkey || '';
+      if (!poolAddress) {
+        console.warn(`[DeployQueue] ⚠️ Pool address tidak ditemukan untuk ${symbol} — fields: ${JSON.stringify(Object.keys(pool))}`);
+        _queue.delete(mint);
+        await safeSend(
+          `⚠️ <b>Deploy Gagal (Queue)</b>\n` +
+          `<b>${symbol}</b> — Pool address tidak valid.\n` +
+          `<i>Tidak ada field address yang tersedia di objek pool.</i>`
+        );
+        continue;
+      }
+
+      // Validate poolAddress adalah Solana pubkey (base58, 32–44 chars)
+      if (typeof poolAddress !== 'string' || poolAddress.length < 32 || poolAddress.length > 44) {
+        console.error(`[DeployQueue] ❌ Pool address tidak valid untuk ${symbol}: "${poolAddress}"`);
+        _queue.delete(mint);
+        await safeSend(
+          `❌ <b>Deploy Gagal (Queue)</b>\n` +
+          `<b>${symbol}</b> — Pool address bukan Solana pubkey yang valid.`
+        );
+        continue;
+      }
+
+      const cfg = getConfig();
+      const solAmount = cfg.deployAmountSol || 0.1;
+      console.log(`[DeployQueue] 🚀 Attempting deploy for ${symbol} with amount ${solAmount} SOL (Pool: ${poolAddress.slice(0, 8)})`);
+      _queue.delete(mint); // Hapus sebelum deploy (idempoten)
+
       await safeSend(
-        `⚠️ <b>Deploy Gagal (Queue)</b>\n` +
-        `<b>${symbol}</b> — Pool address tidak valid.\n` +
-        `<i>Tidak ada field address yang tersedia di objek pool.</i>`
+        `🚀 <b>Real-time Deploy Triggered!</b>\n` +
+        `Token: <b>${symbol}</b>\n` +
+        `Pool: <code>${poolAddress.slice(0, 8)}</code>\n` +
+        `BinStep: <code>${pool.binStep || '?'}</code>\n` +
+        `Entry: <code>${entry.meta.entryReadiness || 'N/A'}</code> | ` +
+        `Breakout: <code>${entry.meta.breakoutQuality || 'N/A'}</code>\n` +
+        `⏳ <i>Membuka posisi ${solAmount} SOL...</i>`
       );
-      continue;
-    }
 
-    // Validate poolAddress adalah string Solana pubkey (base58, 32-44 chars)
-    if (typeof poolAddress !== 'string' || poolAddress.length < 32 || poolAddress.length > 44) {
-      console.error(`[DeployQueue] ❌ Pool address tidak valid untuk ${symbol}: "${poolAddress}"`);
-      _queue.delete(mint);
-      await safeSend(
-        `❌ <b>Deploy Gagal (Queue)</b>\n` +
-        `<b>${symbol}</b> — Pool address tidak valid (bukan Solana pubkey).`
-      );
-      continue;
-    }
+      if (!_deployFn) {
+        throw new Error('deployFn belum di-set ke DeployQueue — panggil setDeployQueueDeployFn() dulu.');
+      }
 
-    const cfg = getConfig();
-    const solAmount = cfg.deployAmountSol || 0.1;
-    console.log(`[DeployQueue] 🚀 Attempting deploy for ${symbol} with amount ${solAmount} SOL (Pool: ${poolAddress.slice(0, 8)})`);
-    _queue.delete(mint); // Hapus sebelum deploy (idempoten)
-
-    await safeSend(
-      `🚀 <b>Real-time Deploy Triggered!</b>\n` +
-      `Token: <b>${symbol}</b>\n` +
-      `Pool: <code>${poolAddress.slice(0, 8)}</code>\n` +
-      `Entry: <code>${entry.meta.entryReadiness || 'N/A'}</code> | ` +
-      `Breakout: <code>${entry.meta.breakoutQuality || 'N/A'}</code>\n` +
-      `⏳ <i>Membuka posisi...</i>`
-    );
-
-    try {
-      if (!_deployFn) throw new Error('deployFn belum di-set ke DeployQueue');
       const result = await _deployFn(poolAddress);
 
       if (result && typeof result === 'object' && result.dryRun) {
         await safeSend(
           `🧪 <b>Dry-run (Queue Deploy)</b>\n` +
-          `<b>${symbol}</b> — Simulasi selesai, tidak ada tx real.`
+          `<b>${symbol}</b> — Simulasi selesai, tidak ada tx real.\n` +
+          `Range: <code>${result.rangeMin}–${result.rangeMax}</code>`
         );
         continue;
       }
@@ -175,12 +186,17 @@ async function runWatcher() {
           console.error(`[DeployQueue] Monitor loop crash untuk ${symbol}:`, e.message);
         });
       }
-    } catch (e) {
-      console.error(`[DeployQueue] Deploy gagal untuk ${symbol}: ${e.message}`);
+
+    } catch (tokenErr) {
+      // Token-level error: log dan lanjut ke token berikutnya, jangan crash loop
+      const sym = entry?.symbol || mint?.slice(0, 8) || 'UNKNOWN';
+      console.error(`[DeployQueue] ⛔ Error saat proses ${sym}: ${tokenErr.message}`);
+      _queue.delete(mint); // Buang dari queue agar tidak retry tanpa batas
       await safeSend(
         `❌ <b>Deploy Gagal (Queue)</b>\n` +
-        `<b>${symbol}</b> — Pool: <code>${poolAddress.slice(0, 8)}</code>\n` +
-        `Error: <code>${e.message}</code>`
+        `<b>${sym}</b>\n` +
+        `Error: <code>${tokenErr.message.slice(0, 200)}</code>\n` +
+        `<i>Token dikeluarkan dari queue.</i>`
       );
     }
   }

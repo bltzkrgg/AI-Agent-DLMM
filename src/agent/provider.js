@@ -345,24 +345,32 @@ function extractResponseText(response) {
 export function resolveModelForComponent(componentType) {
   const cfg = getConfig();
 
-  // Env var override (paling prioritas)
+  // Env var override (paling prioritas — global override semua komponen)
   if (process.env.AI_MODEL && !BLOCKED_MODELS.has(process.env.AI_MODEL)) {
     return process.env.AI_MODEL;
   }
 
+  let m;
   if (componentType === 'screening') {
-    const m = process.env.SCREENING_MODEL || cfg.llm_settings?.screeningModel || cfg.screeningModel;
-    if (m && !BLOCKED_MODELS.has(m)) return m;
+    m = process.env.SCREENING_MODEL || cfg.llm_settings?.screeningModel || cfg.screeningModel;
   } else if (componentType === 'management') {
-    const m = process.env.MANAGEMENT_MODEL || cfg.llm_settings?.managementModel || cfg.managementModel;
-    if (m && !BLOCKED_MODELS.has(m)) return m;
+    m = process.env.MANAGEMENT_MODEL || cfg.llm_settings?.managementModel || cfg.managementModel;
   } else if (componentType === 'agent') {
-    const m = process.env.AGENT_MODEL || cfg.llm_settings?.agentModel || cfg.agentModel;
-    if (m && !BLOCKED_MODELS.has(m)) return m;
+    m = process.env.AGENT_MODEL || cfg.llm_settings?.agentModel || cfg.agentModel;
   }
 
-  // Fallback ke resolveModel standar
-  return resolveModel(cfg.agentModel);
+  if (m && !BLOCKED_MODELS.has(m)) return m;
+
+  // Jika model untuk componentType ini tidak dikonfigurasi, gunakan agentModel sebagai fallback
+  // tapi log warning agar user tahu ada config yang belum di-set
+  const fallback = cfg.agentModel;
+  if (fallback && !BLOCKED_MODELS.has(fallback)) {
+    console.warn(`[AI-DISCIPLINE] ⚠️ Model untuk componentType="${componentType}" tidak dikonfigurasi. Fallback ke agentModel: ${fallback}`);
+    return fallback;
+  }
+
+  // Last resort
+  return resolveModel(null);
 }
 
 export async function createMessage({ model, maxTokens = 4096, system, tools, messages, forceModel, componentType }) {

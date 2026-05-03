@@ -24,7 +24,7 @@ import { getRuntimeState }        from '../runtime/state.js';
 import { escapeHTML, safeParseAI } from '../utils/safeJson.js';
 import reportManager              from '../utils/reportManager.js';
 import pendingStore               from '../utils/pendingStore.js';
-import { enqueueForDeploy, startDeployQueueWatcher } from '../utils/pendingDeployQueue.js';
+import { enqueueForDeploy, startDeployQueueWatcher, setDeployQueueNotifyFn, setDeployQueueMonitorFn } from '../utils/pendingDeployQueue.js';
 // ── Pool selector: pilih pool terbaik per-token berdasarkan binStep priority ─────────────
 //
 // Input : array pool untuk satu token yang sama (tokenXMint identik)
@@ -78,6 +78,10 @@ let _notifyFn = null;
 export function setNotifyFn(fn) {
   _notifyFn = fn;
   setEvilPandaNotifyFn(fn);
+  // Wire deploy queue notify fn agar notif real-time bisa keluar
+  setDeployQueueNotifyFn(fn);
+  // Wire monitor fn ke deploy queue agar posisi hasil queue masuk monitor loop
+  setDeployQueueMonitorFn((pubkey, sym, poolAddr) => monitorLoop(pubkey, sym, poolAddr));
 }
 async function notify(msg) {
   try { await _notifyFn?.(msg); } catch { /* non-fatal */ }
