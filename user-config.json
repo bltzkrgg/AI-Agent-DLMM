@@ -1,5 +1,5 @@
 {
-  "dryRun": true,
+  "dryRun": false,
   "autonomyMode": "active",
   "requireConfirmation": true,
   "autoScreeningEnabled": true,

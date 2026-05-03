@@ -33,10 +33,23 @@ class ReportManager {
       },
       reason: '',
       finalVerdict: null,
-      details: {}
+      details: {},
+      // Metrics LP: diisi dari pool data saat evaluasi
+      tvl: 0,
+      vol: 0,
+      mcap: 0,
     };
     this.currentCycle.push(tokenReport);
     return tokenReport;
+  }
+
+  /** Set TVL/Vol/MCap metrics untuk ditampilkan di laporan */
+  setMetrics(tokenName, { tvl = 0, vol = 0, mcap = 0 } = {}) {
+    const token = this.currentCycle.find(t => t.name === tokenName);
+    if (!token) return;
+    token.tvl  = Number(tvl)  || token.tvl;
+    token.vol  = Number(vol)  || token.vol;
+    token.mcap = Number(mcap) || token.mcap;
   }
 
   updateGate(tokenName, gateName, result, details = '') {
@@ -143,6 +156,18 @@ class ReportManager {
       report += `<b>${idx+1}. ${token.name}</b> — ${statusText} ${statusIcon}\n`;
       report += `Progress: <code>${progressBar}</code>\n`;
       report += `Gate Trace: <code>${gateTraceStr}</code>\n`;
+
+      // Tampilkan metrics efisiensi jika tersedia
+      const tvlRaw = Number(token.tvl || 0);
+      const volRaw = Number(token.vol || 0);
+      const mcap   = Number(token.mcap || 0);
+      if (tvlRaw > 0 || volRaw > 0) {
+        const effVal = tvlRaw > 0 ? volRaw / tvlRaw : 0;
+        const eff    = effVal > 1000 ? '>1000' : effVal.toFixed(2);
+        report += `Eff: <code>${eff}x</code>`;
+        if (mcap > 0) report += ` | MCap: <code>$${Math.round(mcap).toLocaleString('en-US')}</code>`;
+        report += '\n';
+      }
 
       if (!isDeployed) {
         const failedGate = this.getFirstFailedGate(token) || 'UNKNOWN';

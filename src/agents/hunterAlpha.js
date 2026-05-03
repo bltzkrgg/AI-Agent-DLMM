@@ -540,9 +540,19 @@ export async function scanAndDeploy() {
 
   console.log(`[hunter] ${pools.length} pool ditemukan. Mulai screening...`);
 
-  // ── Phase 2: FILTER — Strict Serial Screening ────────────
-  const scoutCandidates = pools.slice(0, 15);
-  console.log(`[hunter] 🔬 Memulai Strict Serial Screening untuk ${scoutCandidates.length} pool...`);
+    // ── Sort by efficiency (Vol/TVL), evaluasi HANYA Top 5 ─────────────────
+    // Filosofi LP: resource screening hanya untuk kandidat paling efisien.
+    // Pool ke-6 dst TIDAK dievaluasi sama sekali (hemat API & waktu).
+    pools = pools.sort((a, b) => {
+      const aVol = Number(a.volume24h || a.trade_volume_24h || 0);
+      const bVol = Number(b.volume24h || b.trade_volume_24h || 0);
+      const aTvl = Number(a.totalTvl || a.activeTvl || 0) || 1;
+      const bTvl = Number(b.totalTvl || b.activeTvl || 0) || 1;
+      return (bVol / bTvl) - (aVol / aTvl);
+    });
+
+    const scoutCandidates = pools.slice(0, 5); // HANYA Top 5 — tidak ada evaluasi untuk sisa
+    console.log(`[hunter] 🔬 Memulai Strict Serial Screening untuk ${scoutCandidates.length} Top-5 pool (sorted by Vol/TVL efficiency)...`);
   // Jupiter budget dibuat minimal sebesar jumlah kandidat batch ini agar
   // pool yang sudah lolos tahap awal tidak ke-defer prematur sebelum sempat diuji.
   const configuredJupiterBudget = Number(cfg.jupiterMaxChecksPerScan);
@@ -551,7 +561,7 @@ export async function scanAndDeploy() {
       1,
       scoutCandidates.length,
       Number.isFinite(configuredJupiterBudget) && configuredJupiterBudget > 0 ? configuredJupiterBudget : 0,
-      15,
+      5, // Top-5 LP philosophy: max 5 evaluations per cycle
     ),
   };
 
@@ -597,6 +607,12 @@ export async function scanAndDeploy() {
     const tokenSymbol = pool.tokenXSymbol || pool.name?.split('-')[0] || '';
     
     const record = reportManager.addToken(tokenSymbol || 'UNKNOWN', tokenMint || '');
+    // Simpan metrics LP ke report entry agar bisa ditampilkan di visual report
+    reportManager.setMetrics(tokenSymbol || 'UNKNOWN', {
+      tvl:  Number(pool.totalTvl || pool.activeTvl || 0),
+      vol:  Number(pool.volume24h || pool.volume_24h || pool.trade_volume_24h || 0),
+      mcap: Number(pool.mcap || 0),
+    });
     reportManager.updateGate(tokenSymbol, 'STAGE_0_DISCOVERY', 'PASS');
 
     if (!tokenMint) {
@@ -746,8 +762,16 @@ Balas HANYA JSON valid tanpa Markdown.`;
         pool._vetoResult = vetoResult;
         pool._marketSnapshot = marketSnapshot;
         pool._llmPoolContext = llmPoolContext;
-        // Masukkan ke Real-time Deploy Queue — watcher akan eksekusi saat kondisi terpenuhi
+        // Masukkan ke Real-time Deploy Queue — watcher memantau setiap 30 detik
         enqueueForDeploy(pool, tokenSymbol, { scoutReason, entryReadiness, breakoutQuality });
+        // Notifikasi instan ke Telegram — jangan tunggu 15 menit
+        await notify(
+          `⚡ <b>KANDIDAT POTENSIAL!</b>\n` +
+          `Token: <b>${tokenSymbol}</b> masuk pantauan real-time!\n` +
+          `Entry: <code>${entryReadiness || 'N/A'}</code> | Breakout: <code>${breakoutQuality || 'N/A'}</code>\n` +
+          `Alasan: <i>${scoutReason || 'Scout Approved'}</i>\n` +
+          `⏳ <i>Watcher aktif — deploy otomatis saat kondisi terpenuhi.</i>`
+        );
         return { ok: true, pool, symbol: tokenSymbol || 'UNKNOWN' };
       }
       const isDeferred = decision.includes('DEFER');
