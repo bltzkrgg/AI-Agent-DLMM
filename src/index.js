@@ -467,7 +467,7 @@ bot.onText(/\/setconfig(?:\s+(\S+))?(?:\s+(.+))?/, async (msg, match) => {
           `<i>Memulai scan pertama sekarang...</i>`,
           { parse_mode: 'HTML' }
         );
-        await runAutoscreening(bot, chatId);
+        await scanAndDeploy();
         runScreeningLoop();
       } else {
         bot.sendMessage(chatId,
@@ -556,19 +556,26 @@ bot.onText(/\/autoscreen(?:\s+(on|off))?/, async (msg, match) => {
   const after  = result.autoScreeningEnabled;
 
   if (after === true) {
+    // ── Clear interval lama (anti double-execution) ───────────────────
+    if (global.screeningInterval) {
+      clearInterval(global.screeningInterval);
+      global.screeningInterval = null;
+      console.log('[autoscreen] Interval lama dibersihkan.');
+    }
+
     await bot.sendMessage(chatId,
       `📡 <b>Auto-Screening: ON</b>\n🔍 Eksekusi scan pertama dimulai sekarang...`,
       { parse_mode: 'HTML' }
     );
 
-    // Wire Deploy Queue sekarang agar watcher bisa eksekusi
+    // Wire Deploy Queue agar watcher bisa eksekusi
     setDeployQueueNotifyFn(notify);
     setDeployQueueDeployFn(deployPosition);
     startDeployQueueWatcher();
 
-    // ── INSTANT FIRST RUN (awaited) ───────────────────────────────────
+    // ── 1. INSTANT FIRST RUN (awaited) ────────────────────────────────
     // scanAndDeploy() → top-5 sort → 9-gate eval → reportManager.generateReport()
-    // SINGLE SOURCE OF TRUTH: format laporan identik dengan semua siklus berikutnya
+    // SINGLE SOURCE OF TRUTH: format identik dengan semua siklus berikutnya
     try {
       await scanAndDeploy();
     } catch (e) {
@@ -576,18 +583,38 @@ bot.onText(/\/autoscreen(?:\s+(on|off))?/, async (msg, match) => {
       await notify(`❌ <b>Scan pertama gagal:</b>\n<code>${escapeHTML(e.message)}</code>\n<i>Loop tetap dilanjutkan...</i>`);
     }
 
-    // ── LOOP ATTACHMENT ───────────────────────────────────────────────
-    // runAutoscreening hanya menjadi scheduler rekursif untuk siklus ke-2 dst.
-    // Tidak ada fire-and-forget ganda: scan pertama sudah selesai di atas.
-    runAutoscreening(bot, chatId, { emitReport: false });
+    // ── 2. LOOP ATTACHMENT (setInterval) ─────────────────────────────
+    // Pasang interval SETELAH first run selesai — tidak ada race condition.
+    // scanAndDeploy() sama persis yang dipanggil setiap interval.
+    const cfg = getConfig();
+    const intervalMin = Number(cfg.intervals?.screeningIntervalMin || cfg.screeningIntervalMin || 15);
+    const intervalMs  = intervalMin * 60 * 1000;
 
-    if (!isRunning()) {
-      runLinearLoop().catch((e) => {
-        notify(`❌ <b>Loop crash:</b>\n<code>${escapeHTML(e.message)}</code>`);
-      });
-    }
+    global.screeningInterval = setInterval(async () => {
+      // Guard: hentikan jika user sudah /autoscreen off
+      if (!getConfig().autoScreeningEnabled) {
+        clearInterval(global.screeningInterval);
+        global.screeningInterval = null;
+        console.log('[autoscreen] Interval dihentikan karena autoScreeningEnabled=false.');
+        return;
+      }
+      console.log(`[autoscreen] ⏰ Siklus berikutnya dimulai (interval ${intervalMin} menit)...`);
+      try {
+        await scanAndDeploy();
+      } catch (err) {
+        console.error('[autoscreen] Interval scan gagal:', err.message);
+        await notify(`❌ <b>Loop error:</b>\n<code>${err.message.slice(0, 200)}</code>`);
+      }
+    }, intervalMs);
+
+    console.log(`[autoscreen] ✅ Scheduler aktif — siklus berikutnya dalam ${intervalMin} menit.`);
+
   } else {
-    // config autoScreeningEnabled=false akan menghentikan rekursif loop secara otomatis.
+    // ── Hentikan interval saat /autoscreen off ────────────────────────
+    if (global.screeningInterval) {
+      clearInterval(global.screeningInterval);
+      global.screeningInterval = null;
+    }
     bot.sendMessage(chatId,
       `🔕 <b>Auto-Screening: OFF</b>\n` +
       `Loop dihentikan. Gunakan <code>/screening</code> untuk scan manual.`,
@@ -695,9 +722,10 @@ bot.onText(/\/evolve(?:\s+(apply))?/, async (msg, match) => {
 bot.onText(/\/screening/, async (msg) => {
   if (!guard(msg)) return;
   const chatId = msg.chat.id;
-  const result = await runAutoscreening(bot, chatId, { emitReport: false });
-  if (result?.report) {
-    await sendLong(chatId, result.report, { parse_mode: 'HTML' });
+  try {
+    await scanAndDeploy();
+  } catch (e) {
+    await bot.sendMessage(chatId, `❌ <b>Scan gagal:</b>\n<code>${escapeHTML(e.message)}</code>`, { parse_mode: 'HTML' });
   }
 });
 

@@ -567,7 +567,11 @@ export async function scanAndDeploy() {
 
   let winners = [];
   reportManager.newCycle();
-  
+
+  // ── Guard flag lokal (bukan _running global yang hanya true di LinearLoop) ──
+  // scanAndDeploy() harus bisa berjalan independen dari runLinearLoop.
+  let _screening = true;
+
   // 1. Process Pending Store Tokens first
   pendingStore.cleanExpired();
   const pendingTokens = pendingStore.getPendingTokens();
@@ -788,28 +792,30 @@ Balas HANYA JSON valid tanpa Markdown.`;
 
   };
 
-  const candidateChunks = chunkArray(scoutCandidates, 2);
-  for (const chunk of candidateChunks) {
-    if (!_running || winners.length >= 5) break;
-    const settled = await Promise.allSettled(chunk.map(evaluatePool));
-    for (const item of settled) {
-      if (item.status !== 'fulfilled' || !item.value) continue;
-      if (item.value.ok && item.value.pool && winners.length < 5) {
-        winners.push(item.value.pool);
-      } else if (!item.value.ok && item.value.symbol) {
-        // Handled by reportManager automatically inside evaluatePool
-        reportManager.setFinalVerdict(item.value.symbol, 'REJECT', item.value.reason);
+  // ── Evaluasi serial Top-5 (WAJIB 5x log [hunter] 📦 Mengevaluasi...) ──────
+  // Menggunakan for-of serial bukan chunkArray agar tidak ada chunk yang ter-skip
+  // akibat guard _running yang hanya true di LinearLoop.
+  for (const pool of scoutCandidates) {
+    if (!_screening) break;              // hanya berhenti jika kita sendiri yang stop
+    if (winners.length >= 5) break;      // cukup 5 winner
+    try {
+      const result = await evaluatePool(pool);
+      if (!result) continue;
+      if (result.ok && result.pool) {
+        winners.push(result.pool);
+      } else if (result.symbol) {
+        reportManager.setFinalVerdict(result.symbol, 'REJECT', result.reason);
       }
+    } catch (evalErr) {
+      console.error(`[hunter] evaluatePool crash untuk ${pool.tokenXSymbol || pool.name}: ${evalErr.message}`);
     }
-    await sleep(1500);
+    await sleep(800); // throttle antar pool agar API tidak kewalahan
   }
 
   if (winners.length === 0) {
-    const retryCfg = getConfig();
-    const retryMin = getIdleDelayMin(retryCfg);
-    console.log(`[hunter] Tidak ada kandidat lolos Scout. Scan ulang dalam ${retryMin} menit...`);
-    await notify(`🔍 <i>Tidak ada kandidat lolos screening. Scan ulang dalam ${retryMin} menit.</i>`);
-    await sleep(retryMin * 60 * 1000);
+    console.log('[hunter] Tidak ada kandidat lolos screening siklus ini.');
+    await notify(`🔍 <i>Tidak ada kandidat lolos screening siklus ini. Laporan tetap dikirim.</i>`);
+    // TIDAK ada sleep di sini — scheduler di luar yang mengatur jeda antar siklus
     return;
   }
 
