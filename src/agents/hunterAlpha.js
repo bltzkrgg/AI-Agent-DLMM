@@ -703,53 +703,64 @@ export async function scanAndDeploy() {
       const scoutModel = cfg.llm_settings?.agentModel || cfg.screeningModel || cfg.agentModel || 'UNKNOWN';
       console.log(`[hunter] 🧠 LLM stage=SCOUT model=${scoutModel}`);
       const llmPoolContext = buildLlmPoolContext({ pool, screenResult, vetoResult, marketSnapshot });
-      const prompt = `[ROLE: INITIAL SCREENING FILTER FOR DLMM LIQUIDITY PROVIDER]
-Kamu adalah garis pertahanan pertama untuk penyedia likuiditas DLMM Meteora.
-Tugas kamu BUKAN trading spekulatif. Tugas kamu adalah menilai secara mekanis apakah sebuah pool layak masuk shortlist untuk penyediaan likuiditas.
+      const prompt = `[ROLE: MECHANICAL QUANT EVALUATOR — GARIS PERTAHANAN TERAKHIR DLMM LP]
 
-MINDSET UTAMA:
-- Kamu berpikir sebagai Liquidity Provider, bukan trader.
-- Kamu tidak mengejar "buy low sell high".
-- Kamu menilai apakah pool ini sehat, aman, dan punya momentum breakout yang layak untuk dipasang likuiditas.
-- Entry yang kamu cari adalah breakout yang matang, bukan harga yang baru menyentuh supertrend.
-- Jangan entry kalau harga masih terlalu dekat dengan supertrend 15m atau momentum belum terbukti kuat.
-- Jika supertrend 15m belum bullish, jangan entry.
-- Jika candle M5 belum hijau, jangan entry.
-- Jika breakout belum jelas atau belum close kuat, jangan entry.
-- Jika ATH belum close hijau dan momentum belum terbentuk, jangan entry.
-- Jika data safety tidak lengkap atau meragukan, DEFER.
-- Jika ada hard gate safety yang gagal, REJECT.
-- Kalau pool sudah lolos semua filter dan breakout-nya matang, PASS.
+Kamu BUKAN manusia trader yang menganalisis chart visual.
+Kamu adalah evaluator mekanis yang hanya membaca data JSON.
+JANGAN pernah menebak, mengasumsikan, atau mengisi data yang tidak ada di payload.
+JANGAN gunakan insting. Hanya gunakan logika kondisional berbasis nilai numerik di bawah ini.
 
-ATURAN ENTRY YANG WAJIB:
-1. Supertrend 15m harus bullish.
-2. Candle M5 harus hijau.
-3. Breakout harus kuat, close candle harus meyakinkan.
-4. Entry terbaik adalah saat harga sudah break jauh dan valid di atas supertrend 15m bullish, atau saat ATH close hijau terbentuk dengan momentum bullish yang jelas.
-5. Kalau harga cuma nempel supertrend atau baru sedikit naik, jangan entry.
-6. Jangan memaksa entry saat momentum belum terbentuk.
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ATURAN EVALUASI MEKANIS (TERAPKAN BERURUTAN):
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-FOKUS UTAMA KAMU:
-- Volume & Market Cap
-- Safety Data & Contract Security
-- Wash Trading / Bundling Risk
-- Dominasi awal likuiditas
-- Fee opportunity
-- Momentum breakout yang benar-benar hidup
+[RULE 1 — FILTER TREN MAKRO (SuperTrend Hard Gate)]
+  Cek: supertrend_15m atau trend makro dari data.
+  IF supertrend_15m !== "bullish" (atau negatif/tidak ada) → LANGSUNG REJECT.
+  Tidak ada pengecualian. Token dengan tren makro bearish tidak masuk antrian.
 
-DATA POOL:
+[RULE 2 — FILTER MICRO-MOMENTUM (Anti-Falling Knife)]
+  Cek: m5_change (atau price_change_m5 / priceChangeM5).
+  IF m5_change <= 0 → DEFER. (Candle M5 merah atau flat = harga masih turun/diam)
+  Kamu DILARANG KERAS meng-PASS token dengan M5 negatif, sekecil apapun.
+  Ini adalah kunci anti-dump: jangan pernah menjadi penadah pisau jatuh.
+
+[RULE 3 — FILTER BREAKOUT & VOLUME (Konfirmasi Momentum)]
+  IF m5_change > 0 DAN m5_change < 0.5 DAN tidak ada lonjakan volume → DEFER.
+  (Momentum kecil tanpa volume = false breakout, jangan entry)
+  IF m5_change >= 0.5 DAN ada volume lonjakan terkonfirmasi → evaluasi lanjut ke Rule 4.
+
+[RULE 4 — SAFETY & RISK FILTER (Hard Gate Keamanan)]
+  IF data safety tidak lengkap, meragukan, atau ada indikasi:
+    - Wash trading tinggi
+    - Bundling risk
+    - Mint authority belum di-renounce
+    - LP belum di-burn / liquidity terpusat
+  → DEFER (jika data tidak lengkap) atau REJECT (jika ada red flag aktif).
+
+[RULE 5 — KEPUTUSAN FINAL (hanya jika Rule 1–4 lolos semua)]
+  PASS jika:
+    - supertrend_15m = bullish ✓
+    - m5_change > 0.5% ✓
+    - Volume konfirmasi ada ✓
+    - Safety data bersih ✓
+  Jika salah satu syarat tidak terpenuhi, gunakan DEFER atau REJECT sesuai rule di atas.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+DATA POOL (JSON):
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 ${llmPoolContext}
 
-[FORMAT JAWABAN JSON]
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+FORMAT JAWABAN (WAJIB JSON VALID, TANPA MARKDOWN):
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 {
   "decision": "PASS | REJECT | DEFER",
-  "reason": "Alasan singkat berbasis mcap, volume, safety data, breakout strength, atau wash trading risk.",
+  "reason": "Sebutkan NILAI NUMERIK dari parameter yang kamu baca (contoh: 'm5_change=-0.3%, supertrend=bearish → REJECT Rule 1'). Jangan gunakan kata sifat tanpa angka.",
   "safety_score": 0-100,
   "entry_readiness": "LOW | MEDIUM | HIGH",
   "breakout_quality": "WEAK | VALID | STRONG"
-}
-
-Balas HANYA JSON valid tanpa Markdown.`;
+}`;
       const res = await createMessage({
         model: scoutModel,
         componentType: 'agent',
