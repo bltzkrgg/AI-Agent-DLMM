@@ -663,8 +663,18 @@ export async function scanAndDeploy() {
         const rejectReason = vetoResult.reason || 'Meridian veto';
         reportManager.updateGate(tokenSymbol, 'MERIDIAN_VETO', 'FAIL', rejectReason);
         if (isRetestableTaVeto(vetoResult)) {
+          // Simpan ke pendingStore untuk tracking retest antar siklus
           pendingStore.add(tokenMint, tokenSymbol, 0, 0, pool);
           reportManager.updateGate(tokenSymbol, 'PENDING_RETEST', 'DEFER', rejectReason);
+          reportManager.setFinalVerdict(tokenSymbol, 'DEFERRED', rejectReason);
+          // RE-ROUTE: masukkan ke real-time deploy queue agar watcher pantau langsung
+          enqueueForDeploy(pool, tokenSymbol, {
+            scoutReason: rejectReason,
+            entryReadiness: 'MEDIUM',
+            breakoutQuality: 'PENDING_TA',
+            isRetest: true,
+          });
+          console.log(`[hunter] ⏳ ${tokenSymbol} → real-time queue (Meridian DEFER: ${rejectReason})`);
         }
         return { ok: false, symbol: tokenSymbol, stage: 'MERIDIAN_VETO', reason: rejectReason };
       }
@@ -779,10 +789,30 @@ Balas HANYA JSON valid tanpa Markdown.`;
         return { ok: true, pool, symbol: tokenSymbol || 'UNKNOWN' };
       }
       const isDeferred = decision.includes('DEFER');
-      const label = isDeferred ? 'DEFER' : 'FAIL';
       const reason = scoutReason || (isDeferred ? 'Insufficient Information' : 'Weak Breakout');
       console.log(`[hunter] 🤖 ScoutAgent LP ${isDeferred ? 'DEFERRED' : 'REJECTED'}: ${tokenSymbol}${scoreSuffix}${detailSuffix ? ` | ${detailSuffix}` : ''}`);
       reportManager.updateGate(tokenSymbol, 'SCOUT_AGENT', isDeferred ? 'DEFER' : 'FAIL', reason, `Entry=${entryReadiness}, Breakout=${breakoutQuality}`);
+
+      if (isDeferred) {
+        // DEFERRED — masuk real-time queue, bukan buang ke reject
+        reportManager.setFinalVerdict(tokenSymbol, 'DEFERRED', reason);
+        pendingStore.add(tokenMint || '', tokenSymbol, 0, 0, pool);
+        enqueueForDeploy(pool, tokenSymbol, {
+          scoutReason: reason,
+          entryReadiness: entryReadiness || 'MEDIUM',
+          breakoutQuality: breakoutQuality || 'PENDING',
+          isScoutDefer: true,
+        });
+        console.log(`[hunter] ⏳ ${tokenSymbol} → real-time queue (Scout DEFER: ${reason})`);
+        await notify(
+          `⏳ <b>KANDIDAT DITUNDA (Pantauan Aktif)</b>\n` +
+          `Token: <b>${tokenSymbol}</b>\n` +
+          `Entry: <code>${entryReadiness || 'N/A'}</code> | Breakout: <code>${breakoutQuality || 'N/A'}</code>\n` +
+          `Alasan Tunda: <i>${reason}</i>\n` +
+          `👁️‍🗨️ <i>Watcher memantau real-time sampai TA konfirmasi.</i>`
+        );
+      }
+
       return { ok: false, symbol: tokenSymbol || 'UNKNOWN', stage: 'SCOUT_AGENT', reason };
     } catch (e) {
       console.warn(`[hunter] ScoutAgent error pada ${tokenSymbol}: ${e.message}`);

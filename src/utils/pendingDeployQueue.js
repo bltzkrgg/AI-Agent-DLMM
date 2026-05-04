@@ -63,16 +63,19 @@ export function dequeueToken(mint) {
  */
 function evaluateDeployConditions(entry) {
   const { pool, meta } = entry;
+  const isRetest = meta.isRetest || meta.isScoutDefer; // token DEFERRED, butuh waktu lebih lama
 
-  // Kondisi 1: Sudah terlalu lama di antrian (> 5 menit)
-  const ageMs = Date.now() - entry.enqueuedAt;
-  if (ageMs > 5 * 60 * 1000) {
-    return { ok: false, reason: 'Token expired dari antrian (>5 menit)' };
+  // Kondisi 1: Waktu expired di antrian
+  // Token PASS: max 5 menit | Token DEFERRED/RETEST: max 30 menit
+  const ageMs  = Date.now() - entry.enqueuedAt;
+  const maxAge = isRetest ? 30 * 60 * 1000 : 5 * 60 * 1000;
+  if (ageMs > maxAge) {
+    return { ok: false, reason: `Token expired dari antrian (>${isRetest ? '30' : '5'} menit)` };
   }
 
-  // Kondisi 2: Entry readiness tidak boleh LOW
+  // Kondisi 2: Entry readiness tidak boleh LOW (kecuali token retest — beri kesempatan)
   const readiness = String(meta.entryReadiness || '').toUpperCase();
-  if (readiness === 'LOW') {
+  if (readiness === 'LOW' && !isRetest) {
     return { ok: false, reason: `Entry readiness masih LOW` };
   }
 
@@ -96,7 +99,12 @@ async function runWatcher() {
       // Re-check: mungkin sudah dihapus oleh caller lain
       if (!_queue.has(mint)) continue;
 
-      const { symbol, pool } = entry;
+      const { symbol, pool, meta } = entry;
+      const isRetest = meta?.isRetest || meta?.isScoutDefer;
+      const queueType = isRetest ? 'RETEST' : 'DEPLOY';
+
+      // Log real-time monitoring per token
+      console.log(`[DeployQueue] ⏳ Memantau TA untuk token ${symbol} secara real-time... [${queueType}] (attempt ${entry.attempts + 1})`);
 
       if (entry.attempts >= 3) {
         console.log(`[DeployQueue] 🗑️ ${symbol} dihapus dari antrian (max attempts)`);
@@ -207,15 +215,15 @@ async function runWatcher() {
     }
   }
 
-  // Jadwalkan ulang watcher (30 detik)
-  _watcherTimer = setTimeout(runWatcher, 30_000);
+  // Jadwalkan ulang watcher (15 detik — real-time monitoring)
+  _watcherTimer = setTimeout(runWatcher, 15_000);
 }
 
 /** Mulai watcher. Panggil sekali saat startup. */
 export function startDeployQueueWatcher() {
   if (_watcherTimer) return;
-  console.log('[DeployQueue] 👀 Watcher dimulai (interval: 30s)');
-  _watcherTimer = setTimeout(runWatcher, 30_000);
+  console.log('[DeployQueue] 👀 Watcher dimulai (interval: 15s real-time monitoring)');
+  _watcherTimer = setTimeout(runWatcher, 15_000);
 }
 
 /** Hentikan watcher. */

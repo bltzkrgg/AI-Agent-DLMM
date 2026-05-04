@@ -69,7 +69,13 @@ class ReportManager {
     const token = this.currentCycle.find(t => t.name === tokenName);
     if (!token) return;
     token.finalVerdict = verdict;
-    token.status = verdict === 'DEPLOYED' ? 'DEPLOYED' : 'REJECTED';
+    if (verdict === 'DEPLOYED') {
+      token.status = 'DEPLOYED';
+    } else if (verdict === 'DEFERRED') {
+      token.status = 'DEFERRED'; // ⏳ pantauan real-time — bukan reject
+    } else {
+      token.status = 'REJECTED';
+    }
     if (reason) token.reason = reason;
   }
 
@@ -86,9 +92,10 @@ class ReportManager {
       return '🚫 Tidak ada deploy pada siklus ini.';
     }
 
-    const totalScanned = this.currentCycle.length;
-    const deployedTokens = this.currentCycle.filter(t => t.finalVerdict === 'DEPLOYED');
-    const rejectedTokens = this.currentCycle.filter(t => t.finalVerdict !== 'DEPLOYED');
+    const totalScanned    = this.currentCycle.length;
+    const deployedTokens  = this.currentCycle.filter(t => t.finalVerdict === 'DEPLOYED');
+    const deferredTokens  = this.currentCycle.filter(t => t.status === 'DEFERRED' || Object.values(t.gates).some(s => s === 'DEFER'));
+    const rejectedTokens  = this.currentCycle.filter(t => t.finalVerdict !== 'DEPLOYED' && t.status !== 'DEFERRED' && !Object.values(t.gates).some(s => s === 'DEFER'));
 
     const nowStr = new Date().toLocaleString('id-ID', { timeZone: 'Asia/Jakarta', dateStyle: 'full', timeStyle: 'long' });
 
@@ -97,6 +104,7 @@ class ReportManager {
     report += `================================\n`;
     report += `🔍 <b>Total Discan:</b> ${totalScanned} token\n`;
     report += `✅ <b>Lolos Deploy:</b> ${deployedTokens.length} token\n`;
+    report += `⏳ <b>Pantauan Real-time:</b> ${deferredTokens.length} token\n`;
     report += `🚫 <b>Gagal/Reject:</b> ${rejectedTokens.length} token\n`;
     report += `================================\n\n`;
 
@@ -127,9 +135,12 @@ class ReportManager {
     ];
 
     top5Cycle.forEach((token, idx) => {
-      const isDeployed = token.finalVerdict === 'DEPLOYED';
-      const statusIcon = isDeployed ? '✅' : '❌';
-      const statusText = isDeployed ? 'DEPLOYED' : 'REJECTED';
+      const isDeployed  = token.finalVerdict === 'DEPLOYED';
+      // Deteksi DEFERRED: ada gate yang berstatus DEFER (⏳) → bukan reject murni
+      const isDeferring = !isDeployed && Object.values(token.gates).some(s => s === 'DEFER');
+
+      const statusIcon = isDeployed ? '✅' : isDeferring ? '⏳' : '❌';
+      const statusText = isDeployed ? 'DEPLOYED' : isDeferring ? 'PENDING' : 'REJECTED';
       
       let passedGatesCount = 0;
       let gateTraceStr = '';
@@ -169,14 +180,23 @@ class ReportManager {
         report += '\n';
       }
 
-      if (!isDeployed) {
+      if (isDeployed) {
+        // Tidak ada info tambahan untuk deployed
+      } else if (isDeferring) {
+        // PENDING ⏳ — jangan tampilkan "Tahap gagal: UNKNOWN"
+        report += `Status: <i>Menunggu Konfirmasi TA (Real-time Queue)</i>\n`;
+        if (token.reason) {
+          report += `Alasan Tunda: <i>${token.reason}</i>\n`;
+        }
+      } else {
+        // REJECTED ❌ — tampilkan tahap dan alasan
         const failedGate = this.getFirstFailedGate(token) || 'UNKNOWN';
         report += `Tahap gagal: <code>${failedGate}</code>\n`;
         report += `Alasan: <i>${token.reason || 'Tidak ada alasan spesifik'}</i>\n`;
       }
       
       if (token.details.PENDING_RETEST) {
-        report += `⏳ Supertrend Info: ${token.details.PENDING_RETEST}\n`;
+        report += `⏳ TA Info: <i>${token.details.PENDING_RETEST}</i>\n`;
       }
       report += `\n`;
     });
