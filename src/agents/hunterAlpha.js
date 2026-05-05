@@ -813,14 +813,7 @@ export async function scanAndDeploy() {
           pendingStore.add(tokenMint, tokenSymbol, 0, 0, pool);
           reportManager.updateGate(tokenSymbol, 'PENDING_RETEST', 'DEFER', rejectReason);
           reportManager.setFinalVerdict(tokenSymbol, 'DEFERRED', rejectReason);
-          // RE-ROUTE: masukkan ke real-time deploy queue agar watcher pantau langsung
-          enqueueForDeploy(pool, tokenSymbol, {
-            scoutReason: rejectReason,
-            entryReadiness: 'MEDIUM',
-            breakoutQuality: 'PENDING_TA',
-            isRetest: true,
-          });
-          console.log(`[hunter] ⏳ ${tokenSymbol} → real-time queue (Meridian DEFER: ${rejectReason})`);
+          console.log(`[hunter] ⏳ ${tokenSymbol} → pending retest (Meridian DEFER: ${rejectReason})`);
         }
         return { ok: false, symbol: tokenSymbol, stage: 'MERIDIAN_VETO', reason: rejectReason };
       }
@@ -879,15 +872,6 @@ export async function scanAndDeploy() {
         reportManager.setFinalVerdict(tokenSymbol, 'DEFERRED', waitReason);
         console.log(`[hunter] ⏳ ${tokenSymbol} ditahan sebelum LLM: ${waitReason}`);
         pendingStore.add(tokenMint || '', tokenSymbol, 0, 0, pool);
-        enqueueForDeploy(pool, tokenSymbol, {
-          scoutReason: waitReason,
-          entryReadiness: entrySignals.entryReadiness,
-          breakoutQuality: entrySignals.breakoutQuality,
-          entryTimingState: entrySignals.entryTimingState,
-          signalStDistancePct: entrySignals.signalStDistancePct,
-          signalAthDistancePct: entrySignals.signalAthDistancePct,
-          isScoutDefer: true,
-        });
         return { ok: false, symbol: tokenSymbol || 'UNKNOWN', stage: 'SCOUT_AGENT', reason: waitReason };
       }
 
@@ -1052,16 +1036,6 @@ FORMAT JAWABAN (WAJIB JSON VALID, TANPA MARKDOWN):
         // DEFERRED — masuk real-time queue, bukan buang ke reject
         reportManager.setFinalVerdict(tokenSymbol, 'DEFERRED', reason);
         pendingStore.add(tokenMint || '', tokenSymbol, 0, 0, pool);
-        enqueueForDeploy(pool, tokenSymbol, {
-          scoutReason: reason,
-          entryReadiness: entryReadiness || 'MEDIUM',
-          breakoutQuality: breakoutQuality || 'PENDING',
-          entryGateMode: entrySignals.entryGateMode,
-          entryTimingState,
-          signalStDistancePct: entrySignals.signalStDistancePct,
-          signalAthDistancePct: entrySignals.signalAthDistancePct,
-          isScoutDefer: true,
-        });
         console.log(`[hunter] ⏳ ${tokenSymbol} → real-time queue (Scout DEFER: ${reason})`);
         await notify(
           `⏳ <b>KANDIDAT DITUNDA (Pantauan Aktif)</b>\n` +

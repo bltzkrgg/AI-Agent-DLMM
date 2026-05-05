@@ -26,6 +26,18 @@ async function safeSend(msg) {
   }
 }
 
+export function isFreshDeployMeta(meta = {}) {
+  const timingState = String(meta.entryTimingState || '').toUpperCase();
+  const readiness = String(meta.entryReadiness || '').toUpperCase();
+  const breakoutQuality = String(meta.breakoutQuality || '').toUpperCase();
+
+  if (meta.isRetest || meta.isScoutDefer) return false;
+  if (timingState !== 'BREAKOUT' && timingState !== 'ATH_BREAK') return false;
+  if (readiness !== 'HIGH') return false;
+  if (breakoutQuality !== 'VALID' && breakoutQuality !== 'STRONG') return false;
+  return true;
+}
+
 /**
  * Tambahkan token ke queue setelah lolos Scout Agent.
  * @param {Object} pool     - raw pool object dari pipeline
@@ -35,6 +47,14 @@ async function safeSend(msg) {
 export function enqueueForDeploy(pool, symbol, meta = {}) {
   const mint = pool.tokenXMint || pool.mint || '';
   if (!mint || _queue.has(mint)) return;
+
+  if (!isFreshDeployMeta(meta)) {
+    console.log(
+      `[DeployQueue] ⏸️ ${symbol} tidak masuk queue deploy (DEFER / breakout tidak fresh: ` +
+      `Entry=${meta.entryReadiness || 'N/A'}, Breakout=${meta.breakoutQuality || 'N/A'}, Timing=${meta.entryTimingState || 'N/A'})`
+    );
+    return;
+  }
 
   _queue.set(mint, {
     pool,
@@ -66,6 +86,12 @@ function evaluateDeployConditions(entry) {
   const { pool, meta } = entry;
   const isRetest = meta.isRetest || meta.isScoutDefer; // token DEFERRED, butuh waktu lebih lama
   const timingState = String(meta.entryTimingState || '').toUpperCase();
+  const readiness = String(meta.entryReadiness || '').toUpperCase();
+  const breakoutQuality = String(meta.breakoutQuality || '').toUpperCase();
+
+  if (isRetest || meta.isScoutDefer) {
+    return { ok: false, reason: 'Token DEFER tidak boleh deploy via real-time queue' };
+  }
 
   // Kondisi 1: Waktu expired di antrian
   // Token PASS: max 5 menit | Token DEFERRED/RETEST: max 30 menit
@@ -75,10 +101,13 @@ function evaluateDeployConditions(entry) {
     return { ok: false, reason: `Token expired dari antrian (>${isRetest ? '30' : '5'} menit)` };
   }
 
-  // Kondisi 2: Entry readiness tidak boleh LOW (kecuali token retest — beri kesempatan)
-  const readiness = String(meta.entryReadiness || '').toUpperCase();
+  // Kondisi 2: Entry readiness harus HIGH untuk breakout fresh
   if (readiness === 'LOW' && !isRetest) {
     return { ok: false, reason: `Entry readiness masih LOW` };
+  }
+
+  if (readiness !== 'HIGH') {
+    return { ok: false, reason: `Entry readiness belum HIGH (${readiness || 'N/A'})` };
   }
 
   if (timingState === 'NO_TREND') {
@@ -92,6 +121,12 @@ function evaluateDeployConditions(entry) {
   }
   if (timingState === 'TOO_CLOSE') {
     return { ok: false, reason: `Breakout masih terlalu dekat ke Supertrend (${Number(meta.signalStDistancePct || 0).toFixed(2)}%)` };
+  }
+  if (timingState !== 'BREAKOUT' && timingState !== 'ATH_BREAK') {
+    return { ok: false, reason: `Timing belum fresh breakout (${timingState || 'N/A'})` };
+  }
+  if (breakoutQuality !== 'VALID' && breakoutQuality !== 'STRONG') {
+    return { ok: false, reason: `Breakout quality belum valid (${breakoutQuality || 'N/A'})` };
   }
   if (timingState === 'EXTENDED' && String(meta.breakoutQuality || '').toUpperCase() === 'WEAK') {
     return { ok: false, reason: 'Breakout sudah terlalu lewat dan momentum belum kuat' };
