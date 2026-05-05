@@ -136,7 +136,9 @@ function buildEvolutionPrompt(stats, currentConfig) {
     },
     entry: {
       entryGateMode: currentConfig.entryGateMode,
+      entrySupertrendMinDistancePct: currentConfig.entrySupertrendMinDistancePct,
       entrySupertrendMaxDistancePct: currentConfig.entrySupertrendMaxDistancePct,
+      entryBreakoutMinAthDistancePct: currentConfig.entryBreakoutMinAthDistancePct,
       entryRequireVolumeConfirm: currentConfig.entryRequireVolumeConfirm,
       entryMinVolumeRatio: currentConfig.entryMinVolumeRatio,
       entryVolumeLookbackCandles: currentConfig.entryVolumeLookbackCandles,

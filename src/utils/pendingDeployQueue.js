@@ -65,6 +65,7 @@ export function dequeueToken(mint) {
 function evaluateDeployConditions(entry) {
   const { pool, meta } = entry;
   const isRetest = meta.isRetest || meta.isScoutDefer; // token DEFERRED, butuh waktu lebih lama
+  const timingState = String(meta.entryTimingState || '').toUpperCase();
 
   // Kondisi 1: Waktu expired di antrian
   // Token PASS: max 5 menit | Token DEFERRED/RETEST: max 30 menit
@@ -78,6 +79,22 @@ function evaluateDeployConditions(entry) {
   const readiness = String(meta.entryReadiness || '').toUpperCase();
   if (readiness === 'LOW' && !isRetest) {
     return { ok: false, reason: `Entry readiness masih LOW` };
+  }
+
+  if (timingState === 'NO_TREND') {
+    return { ok: false, reason: 'Supertrend 15m belum bullish' };
+  }
+  if (timingState === 'NO_M5') {
+    return { ok: false, reason: 'Momentum M5 belum hijau' };
+  }
+  if (timingState === 'WAIT_FOR_PULLBACK') {
+    return { ok: false, reason: 'Mode retest menunggu pullback yang lebih bersih' };
+  }
+  if (timingState === 'TOO_CLOSE') {
+    return { ok: false, reason: `Breakout masih terlalu dekat ke Supertrend (${Number(meta.signalStDistancePct || 0).toFixed(2)}%)` };
+  }
+  if (timingState === 'EXTENDED' && String(meta.breakoutQuality || '').toUpperCase() === 'WEAK') {
+    return { ok: false, reason: 'Breakout sudah terlalu lewat dan momentum belum kuat' };
   }
 
   // Kondisi 3: TVL minimal (hindari rug liquidity)
@@ -183,7 +200,8 @@ async function runWatcher() {
           `Pool: <code>${poolAddress.slice(0, 8)}</code>\n` +
           `BinStep: <code>${pool.binStep || '?'}</code>\n` +
           `Entry: <code>${entry.meta.entryReadiness || 'N/A'}</code> | ` +
-          `Breakout: <code>${entry.meta.breakoutQuality || 'N/A'}</code>\n` +
+          `Breakout: <code>${entry.meta.breakoutQuality || 'N/A'}</code> | ` +
+          `Timing: <code>${entry.meta.entryTimingState || 'N/A'}</code>\n` +
           `⏳ <i>Membuka posisi ${solAmount} SOL...</i>`
         );
 

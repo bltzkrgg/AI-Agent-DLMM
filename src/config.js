@@ -46,6 +46,7 @@ const DEFAULTS = {
   autonomyMode:         'active',
   autoScreeningEnabled: false,
   requireConfirmation:  true, // true = minta konfirmasi Telegram sebelum deploy
+  entryGateMode:        'lper_breakout',
 
   // ── Intervals ────────────────────────────────────────────────────────────
   managementIntervalMin:    15,
@@ -131,6 +132,9 @@ const DEFAULTS = {
   activeStrategy:         'Evil Panda',
   smartExitRsi:           90,   // RSI(2) threshold untuk Meridian Smart Exit
   depthPct:               90,   // Depth jaring SOL ke bawah (%)
+  entrySupertrendMinDistancePct: 1.5,
+  entrySupertrendMaxDistancePct: 18,
+  entryBreakoutMinAthDistancePct: 95,
   // ATR Guard — dynamic stop loss berbasis volatilitas
   atrGuardEnabled:        true,   // false = pakai stopLossPct static
   atrMultiplier:          1.5,    // SL = atrPct * multiplier
@@ -168,6 +172,7 @@ const CONFIG_BOUNDS = {
   screeningIntervalMin:   { min: 5,     max: 1440 },
   positionUpdateIntervalMin: { min: 1,  max: 1440 },
   realtimePnlIntervalSec: { min: 5,     max: 3600 },
+  entryGateMode:          { type: 'string' },
   jupiterMaxChecksPerScan:{ min: 1,     max: 50 },
   pendingRetestEnabled:   { type: 'boolean' },
   retestIntervalMin:      { min: 1,     max: 1440 },
@@ -223,6 +228,9 @@ const CONFIG_BOUNDS = {
   minHolders:             { min: 0,     max: 1_000_000 },
   smartExitRsi:           { min: 50,    max: 100 },
   depthPct:               { min: 10,    max: 100 },
+  entrySupertrendMinDistancePct: { min: 0, max: 100 },
+  entrySupertrendMaxDistancePct: { min: 0, max: 100 },
+  entryBreakoutMinAthDistancePct: { min: 0, max: 100 },
   okxApiKey:              { type: 'string' },
   maxDailyDrawdownPct:    { min: 0, max: 100 },
   signalWeights:          { type: 'object' },

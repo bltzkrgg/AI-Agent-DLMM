@@ -277,14 +277,111 @@ function formatMaybeBool(value) {
   return 'UNKNOWN';
 }
 
-function buildLlmPoolContext({ pool = {}, screenResult = null, vetoResult = null, marketSnapshot = null, bookedSlots = 0 }) {
+function deriveBreakoutEntrySignals({ pool = {}, vetoResult = null, marketSnapshot = null, cfg = getConfig() } = {}) {
+  const entryGateMode = String(cfg.entryGateMode || 'lper_breakout').toLowerCase();
+  const taTrend = String(
+    marketSnapshot?.quality?.taTrend ||
+    marketSnapshot?.ta?.supertrend?.trend ||
+    vetoResult?.diagnostics?.supertrend15m ||
+    'UNKNOWN'
+  ).toUpperCase();
+
+  const currentPrice = Number(
+    marketSnapshot?.ohlcv?.currentPrice ||
+    marketSnapshot?.price?.currentPrice ||
+    pool?.price ||
+    0
+  );
+  const supertrendValue = Number(marketSnapshot?.ta?.supertrend?.value || 0);
+  const high24h = Number(marketSnapshot?.ohlcv?.high24h || 0);
+  const priceChangeM5 = Number(marketSnapshot?.ohlcv?.priceChangeM5 ?? 0);
+  const priceChangeM15 = Number(marketSnapshot?.ohlcv?.priceChangeM15 ?? 0);
+  const priceChangeH1 = Number(marketSnapshot?.ohlcv?.priceChangeH1 ?? 0);
+  const volume24h = Number(
+    pool?.volume24h ||
+    pool?.volume_24h ||
+    pool?.trade_volume_24h ||
+    pool?.tradeVolume24h ||
+    pool?.volume ||
+    pool?.v24h ||
+    0
+  );
+  const tvl = Number(pool?.activeTvl || pool?.totalTvl || pool?.tvl || 0);
+  const signalStDistancePct = currentPrice > 0 && supertrendValue > 0
+    ? ((currentPrice - supertrendValue) / supertrendValue) * 100
+    : null;
+  const signalAthDistancePct = currentPrice > 0 && high24h > 0
+    ? (currentPrice / high24h) * 100
+    : null;
+  const minDistancePct = Number(cfg.entrySupertrendMinDistancePct ?? 1.5);
+  const maxDistancePct = Number(cfg.entrySupertrendMaxDistancePct ?? 18);
+  const athBreakPct = Number(cfg.entryBreakoutMinAthDistancePct ?? 95);
+  const volumeRatio = tvl > 0 ? volume24h / tvl : null;
+
+  let entryTimingState = 'UNKNOWN';
+  if (taTrend !== 'BULLISH') {
+    entryTimingState = 'NO_TREND';
+  } else if (priceChangeM5 <= 0) {
+    entryTimingState = 'NO_M5';
+  } else if (!Number.isFinite(signalStDistancePct)) {
+    entryTimingState = 'UNKNOWN';
+  } else if (entryGateMode === 'lper_retest' && signalStDistancePct > maxDistancePct) {
+    entryTimingState = 'WAIT_FOR_PULLBACK';
+  } else if (signalStDistancePct < minDistancePct) {
+    entryTimingState = 'TOO_CLOSE';
+  } else if (signalAthDistancePct != null && signalAthDistancePct >= 99) {
+    entryTimingState = 'ATH_BREAK';
+  } else if (signalAthDistancePct != null && signalAthDistancePct >= athBreakPct) {
+    entryTimingState = 'BREAKOUT';
+  } else if (signalStDistancePct > maxDistancePct && (priceChangeM15 < 0.5 || priceChangeM5 < 0.5)) {
+    entryTimingState = 'EXTENDED';
+  } else {
+    entryTimingState = 'BREAKOUT';
+  }
+
+  const entryReadiness =
+    entryTimingState === 'ATH_BREAK' || entryTimingState === 'BREAKOUT' ? 'HIGH'
+      : entryTimingState === 'EXTENDED' ? 'MEDIUM'
+      : entryTimingState === 'TOO_CLOSE' ? 'LOW'
+      : 'LOW';
+
+  const breakoutQuality =
+    entryTimingState === 'ATH_BREAK' ? 'STRONG'
+      : entryTimingState === 'BREAKOUT' ? 'VALID'
+      : entryTimingState === 'EXTENDED' ? 'WEAK'
+      : 'WEAK';
+
+  return {
+    entryTimingState,
+    entryReadiness,
+    breakoutQuality,
+    taTrend,
+    currentPrice,
+    supertrendValue,
+    high24h,
+    priceChangeM5,
+    priceChangeM15,
+    priceChangeH1,
+    signalStDistancePct,
+    signalAthDistancePct,
+    volumeRatio,
+    minDistancePct,
+    maxDistancePct,
+    athBreakPct,
+    entryGateMode,
+    canDeploy: entryTimingState === 'ATH_BREAK' || entryTimingState === 'BREAKOUT',
+  };
+}
+
+function buildLlmPoolContext({ pool = {}, screenResult = null, vetoResult = null, marketSnapshot = null, bookedSlots = 0, entrySignals = null }) {
   const okx = screenResult?.okxSignals || null;
   const gmgn = screenResult?.gmgnMetrics || null;
-  const taTrend = marketSnapshot?.quality?.taTrend || marketSnapshot?.ta?.supertrend?.trend || vetoResult?.diagnostics?.supertrend15m || 'UNKNOWN';
-  const priceChangeM5  = marketSnapshot?.ohlcv?.priceChangeM5;
-  const priceChangeM15 = marketSnapshot?.ohlcv?.priceChangeM15 ?? vetoResult?.diagnostics?.m15_change;
+  const breakout = entrySignals || deriveBreakoutEntrySignals({ pool, vetoResult, marketSnapshot });
+  const taTrend = breakout.taTrend;
+  const priceChangeM5  = breakout.priceChangeM5;
+  const priceChangeM15 = breakout.priceChangeM15 ?? marketSnapshot?.ohlcv?.priceChangeM15 ?? vetoResult?.diagnostics?.m15_change;
   const priceChangeM15Prev = marketSnapshot?.ohlcv?.priceChangeM15Prev;
-  const priceChangeH1  = marketSnapshot?.ohlcv?.priceChangeH1;
+  const priceChangeH1  = breakout.priceChangeH1;
   const taReliable     = marketSnapshot?.quality?.taReliable;
   const athDistancePct = vetoResult?.diagnostics?.athDistancePct;
   const stageWaterfall = screenResult?.stageWaterfall || {};
@@ -311,6 +408,11 @@ function buildLlmPoolContext({ pool = {}, screenResult = null, vetoResult = null
     `- TA M15 Previous: ${formatMaybePct(priceChangeM15Prev)}`,
     `- TA H1 Change: ${formatMaybePct(priceChangeH1)}`,
     `- TA Reliable: ${formatMaybeBool(taReliable)}`,
+    `- Entry Gate Mode: ${breakout.entryGateMode || 'UNKNOWN'}`,
+    `- Entry Timing: ${breakout.entryTimingState || 'UNKNOWN'}`,
+    `- Price vs Supertrend: ${Number.isFinite(Number(breakout.signalStDistancePct)) ? formatMaybePct(breakout.signalStDistancePct, 2) : 'UNKNOWN'}`,
+    `- Price vs 24h High: ${Number.isFinite(Number(breakout.signalAthDistancePct)) ? formatMaybePct(breakout.signalAthDistancePct, 2) : 'UNKNOWN'}`,
+    `- Breakout Hint: ${breakout.breakoutQuality || 'UNKNOWN'}`,
     `- ATH Distance: ${Number.isFinite(Number(athDistancePct)) ? formatMaybePct(athDistancePct, 1) : 'UNKNOWN'}`,
     `- Meridian Gate: ${vetoResult?.veto ? 'FAIL' : 'PASS'} (${vetoResult?.gate || 'NONE'})`,
     `- Meridian Reason: ${vetoResult?.reason || 'UNKNOWN'}`,
@@ -742,6 +844,7 @@ export async function scanAndDeploy() {
     } catch (e) {
       console.warn(`[hunter] MarketSnapshot error pada ${tokenSymbol}: ${e.message}`);
     }
+    const entrySignals = deriveBreakoutEntrySignals({ pool, vetoResult, marketSnapshot, cfg });
 
     // ── SLOT LIMIT GATE (Code-level, sebelum LLM dipanggil) ─────────────────
     // Ini adalah hard gate di kode, bukan LLM. Lebih cepat, hemat API call.
@@ -762,7 +865,32 @@ export async function scanAndDeploy() {
     try {
       const scoutModel = cfg.screeningModel || cfg.agentModel || cfg.llm_settings?.agentModel || 'UNKNOWN';
       console.log(`[hunter] 🧠 LLM stage=SCOUT model=${scoutModel} (slots: ${activeCount}/${maxPositions}, booked=${winners.length}, reserved=${slotUsage.reserved})`);
-      const llmPoolContext = buildLlmPoolContext({ pool, screenResult, vetoResult, marketSnapshot, bookedSlots: winners.length });
+      const llmPoolContext = buildLlmPoolContext({ pool, screenResult, vetoResult, marketSnapshot, bookedSlots: winners.length, entrySignals });
+
+      if (entrySignals.entryTimingState === 'NO_TREND' || entrySignals.entryTimingState === 'NO_M5' || entrySignals.entryTimingState === 'TOO_CLOSE' || entrySignals.entryTimingState === 'WAIT_FOR_PULLBACK') {
+        const waitReason = entrySignals.entryTimingState === 'NO_TREND'
+          ? `Supertrend 15m belum bullish`
+          : entrySignals.entryTimingState === 'NO_M5'
+            ? `Momentum M5 belum hijau`
+            : entrySignals.entryTimingState === 'WAIT_FOR_PULLBACK'
+              ? `Breakout sudah terlalu lewat untuk mode retest (${formatMaybePct(entrySignals.signalStDistancePct, 2)})`
+              : `Breakout terlalu dekat ke Supertrend (${formatMaybePct(entrySignals.signalStDistancePct, 2)})`;
+        reportManager.updateGate(tokenSymbol, 'SCOUT_AGENT', 'DEFER', waitReason);
+        reportManager.setFinalVerdict(tokenSymbol, 'DEFERRED', waitReason);
+        console.log(`[hunter] ⏳ ${tokenSymbol} ditahan sebelum LLM: ${waitReason}`);
+        pendingStore.add(tokenMint || '', tokenSymbol, 0, 0, pool);
+        enqueueForDeploy(pool, tokenSymbol, {
+          scoutReason: waitReason,
+          entryReadiness: entrySignals.entryReadiness,
+          breakoutQuality: entrySignals.breakoutQuality,
+          entryTimingState: entrySignals.entryTimingState,
+          signalStDistancePct: entrySignals.signalStDistancePct,
+          signalAthDistancePct: entrySignals.signalAthDistancePct,
+          isScoutDefer: true,
+        });
+        return { ok: false, symbol: tokenSymbol || 'UNKNOWN', stage: 'SCOUT_AGENT', reason: waitReason };
+      }
+
       const prompt = `[ROLE: INITIAL SCREENING FILTER FOR DLMM LIQUIDITY PROVIDER]
 [ROLE: MECHANICAL QUANT EVALUATOR — ATH SECOND BOUNCE HUNTER DLMM LP]
 
@@ -773,10 +901,11 @@ JANGAN menebak, mengasumsikan, atau mengisi data yang tidak ada di payload.
 breakout yang matang
 Supertrend 15m harus bullish
 Candle M5 harus hijau
+Entry ideal ada saat breakout sudah diakui pasar, bukan saat harga baru nempel supertrend.
 
 MINDSET: AGGRESSIVE FEE HUNTER.
-Tugasmu adalah menangkap tren naik yang SANGAT SEHAT, lalu memanen fee dari pullback sesaat.
-DILARANG KERAS menadah harga yang sedang runtuh (falling knife) ATAU membeli di puncak euforia ekstrem (Blow-Off Top).
+Tugasmu adalah menangkap tren naik yang SANGAT SEHAT, lalu memanen fee selama arus transaksi masih hidup.
+DILARANG KERAS menadah harga yang sedang runtuh (falling knife) ATAU mengejar entry yang terlalu dekat dengan supertrend sebelum breakout diterima.
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 ATURAN EVALUASI MEKANIS (TERAPKAN BERURUTAN — SATU RULE GAGAL = STOP):
@@ -793,20 +922,27 @@ ATURAN EVALUASI MEKANIS (TERAPKAN BERURUTAN — SATU RULE GAGAL = STOP):
   IF nilai BUKAN "BULLISH" → WAJIB REJECT. Berhenti di sini.
   Tidak ada pengecualian. Tren makro bearish/netral = token langsung dibuang.
 
-[RULE 2 — ANTI-CANDLE MERAH (HARAM HUKUMNYA)]
+[RULE 2 — BREAKOUT TIMING]
+  Cek: "Entry Timing", "Price vs Supertrend", dan "Price vs 24h High" dari data.
+  IF Entry Timing = "NO_TREND" → WAJIB REJECT. Berhenti di sini.
+  IF Entry Timing = "NO_M5" → WAJIB DEFER. Berhenti di sini.
+  IF Entry Timing = "TOO_CLOSE" → WAJIB DEFER. Berhenti di sini.
+  Entry ideal adalah breakout yang sudah diakui pasar: harga sudah menjauh secukupnya dari Supertrend, close hijau, dan mendekati/menembus area high terbaru.
+
+[RULE 3 — ANTI-CANDLE MERAH (HARAM HUKUMNYA)]
   Cek: "TA M5 Change" dari data.
   IF TA M5 Change <= 0 (nol atau negatif) → WAJIB DEFER. Berhenti di sini.
   ALASAN: Kita tidak menadah pisau jatuh. Candle M5 merah = harga SEDANG TURUN sekarang.
   MUTLAK. Tidak ada pengecualian seberapa besar pun volume atau MCap-nya.
 
-[RULE 3 — ANTI-DEAD CAT BOUNCE (WAJIB CEK HISTORIS)]
+[RULE 4 — ANTI-DEAD CAT BOUNCE (WAJIB CEK HISTORIS)]
   Cek: "TA M15 Previous" DAN "TA M15 Change" dari data.
   IF TA M15 Previous <= -4.0% (longsor kuat) DAN TA M15 Change < 2.0% (pantulan lemah) → WAJIB DEFER.
   PENJELASAN: M15 Previous negatif tebal = harga baru saja longsor.
   Pantulan M15 yang hanya kecil sesudahnya = Dead Cat, bukan tren pemulihan.
   M5 hijau di atas fondasi yang baru saja longsor = JEBAKAN. Tunggu konfirmasi lebih lanjut.
 
-[RULE 4 — ANTI-BLOW OFF TOP (DARURAT PASAR EUFORIA)]
+[RULE 5 — ANTI-BLOW OFF TOP (DARURAT PASAR EUFORIA)]
   Cek: "TA M15 Change" dari data.
   IF TA M15 Change >= 9.0% → WAJIB DEFER.
   PENJELASAN: Kenaikan M15 ekstrem (>= 9%) adalah tanda Blow-Off Top / klimaks euforia.
@@ -814,17 +950,18 @@ ATURAN EVALUASI MEKANIS (TERAPKAN BERURUTAN — SATU RULE GAGAL = STOP):
   LPer yang masuk di zona ini menjadi EXIT LIQUIDITY untuk paus. DILARANG MASUK.
   Tunggu koreksi dan konfirmasi pemulihan sebelum entry.
 
-[RULE 5 — HEALTHY MOMENTUM ENTRY (ZONA SEHAT LP)]
+[RULE 6 — HEALTHY MOMENTUM ENTRY (ZONA SEHAT LP)]
   LPer mencari zona momentum yang SEHAT, bukan terlalu lemah dan bukan terlalu ekstrem.
   Syarat PASS (semua HARUS terpenuhi):
-  - TA M15 Change HARUS berada di rentang +1.5% HINGGA +8.9% (zona sehat)
+  - Entry Timing HARUS "BREAKOUT" atau "ATH_BREAK"
   - TA M5 Change HARUS > 0.5% (momentum jangka pendek aktif, bukan sekadar hijau nanggung)
   - Volume terkonfirmasi mendukung pergerakan
-  Jika ketiga syarat terpenuhi → WAJIB PASS.
-  Kamu DILARANG DEFER/REJECT token yang memenuhi Rule 5 hanya karena "harga sudah tinggi".
-  Fee dihasilkan dari volatilitas sehat di zona momentum ini.
+  - Breakout Quality HARUS "VALID" atau "STRONG"
+  Jika semua syarat terpenuhi → WAJIB PASS.
+  Kamu DILARANG menahan token yang sudah breakout-valid hanya karena harga "sudah tinggi".
+  Namun jika breakout belum diakui pasar atau masih terlalu dekat ke supertrend, DEFER.
 
-[RULE 6 — SAFETY GATE (Hard Gate Keamanan)]
+[RULE 7 — SAFETY GATE (Hard Gate Keamanan)]
   Cek flag keamanan dari data. IF terdeteksi:
   - Wash trading tinggi / transaksi tidak organik       → REJECT
   - Bundling risk aktif terindikasi                     → REJECT
@@ -835,11 +972,12 @@ ATURAN EVALUASI MEKANIS (TERAPKAN BERURUTAN — SATU RULE GAGAL = STOP):
 [CHECKLIST FINAL — PASS hanya jika SEMUA syarat ini terpenuhi]
   ✓ Slot belum penuh                              → Rule 0
   ✓ TA Supertrend 15m = BULLISH                   → Rule 1
-  ✓ TA M5 Change > 0                              → Rule 2
-  ✓ Bukan Dead Cat (M15 Previous check)           → Rule 3
-  ✓ TA M15 Change < 9.0% (bukan Blow-Off Top)    → Rule 4
-  ✓ TA M15 Change >= 1.5% DAN TA M5 Change > 0.5% → Rule 5
-  ✓ Tidak ada safety red flag                     → Rule 6
+  ✓ Entry Timing = BREAKOUT / ATH_BREAK           → Rule 2
+  ✓ TA M5 Change > 0                              → Rule 3
+  ✓ Bukan Dead Cat (M15 Previous check)           → Rule 4
+  ✓ TA M15 Change < 9.0% (bukan Blow-Off Top)    → Rule 5
+  ✓ Breakout Quality = VALID / STRONG             → Rule 6
+  ✓ Tidak ada safety red flag                     → Rule 7
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 DATA POOL (JSON):
@@ -869,21 +1007,32 @@ FORMAT JAWABAN (WAJIB JSON VALID, TANPA MARKDOWN):
       const safetyScore = Number(parsed?.safety_score);
       const entryReadiness = String(parsed?.entry_readiness || '').trim().toUpperCase();
       const breakoutQuality = String(parsed?.breakout_quality || '').trim().toUpperCase();
+      const entryTimingState = String(entrySignals.entryTimingState || '').trim().toUpperCase();
       const scoreSuffix = Number.isFinite(safetyScore) ? ` (${Math.max(0, Math.min(100, safetyScore))})` : '';
       const detailSuffix = [
         entryReadiness ? `Entry=${entryReadiness}` : '',
         breakoutQuality ? `Breakout=${breakoutQuality}` : '',
+        entryTimingState ? `Timing=${entryTimingState}` : '',
       ].filter(Boolean).join(', ');
       
       if (decision.includes('PASS')) {
         console.log(`[hunter] 🤖 ScoutAgent LP APPROVED: ${tokenSymbol}${scoreSuffix}${detailSuffix ? ` | ${detailSuffix}` : ''}`);
-        reportManager.updateGate(tokenSymbol, 'SCOUT_AGENT', 'PASS', scoutReason || `Entry=${entryReadiness || 'UNKNOWN'}, Breakout=${breakoutQuality || 'UNKNOWN'}`);
+        reportManager.updateGate(tokenSymbol, 'SCOUT_AGENT', 'PASS', scoutReason || `Entry=${entryReadiness || 'UNKNOWN'}, Breakout=${breakoutQuality || 'UNKNOWN'}, Timing=${entryTimingState || 'UNKNOWN'}`);
         pool._screenResult = screenResult;
         pool._vetoResult = vetoResult;
         pool._marketSnapshot = marketSnapshot;
         pool._llmPoolContext = llmPoolContext;
+        pool._entrySignals = entrySignals;
         // Masukkan ke Real-time Deploy Queue — watcher memantau setiap 30 detik
-        enqueueForDeploy(pool, tokenSymbol, { scoutReason, entryReadiness, breakoutQuality });
+        enqueueForDeploy(pool, tokenSymbol, {
+          scoutReason,
+          entryReadiness,
+          breakoutQuality,
+          entryGateMode: entrySignals.entryGateMode,
+          entryTimingState,
+          signalStDistancePct: entrySignals.signalStDistancePct,
+          signalAthDistancePct: entrySignals.signalAthDistancePct,
+        });
         // Notifikasi instan ke Telegram — jangan tunggu 15 menit
         await notify(
           `⚡ <b>KANDIDAT POTENSIAL!</b>\n` +
@@ -897,7 +1046,7 @@ FORMAT JAWABAN (WAJIB JSON VALID, TANPA MARKDOWN):
       const isDeferred = decision.includes('DEFER');
       const reason = scoutReason || (isDeferred ? 'Insufficient Information' : 'Weak Breakout');
       console.log(`[hunter] 🤖 ScoutAgent LP ${isDeferred ? 'DEFERRED' : 'REJECTED'}: ${tokenSymbol}${scoreSuffix}${detailSuffix ? ` | ${detailSuffix}` : ''}`);
-      reportManager.updateGate(tokenSymbol, 'SCOUT_AGENT', isDeferred ? 'DEFER' : 'FAIL', reason, `Entry=${entryReadiness}, Breakout=${breakoutQuality}`);
+      reportManager.updateGate(tokenSymbol, 'SCOUT_AGENT', isDeferred ? 'DEFER' : 'FAIL', reason, `Entry=${entryReadiness}, Breakout=${breakoutQuality}, Timing=${entryTimingState}`);
 
       if (isDeferred) {
         // DEFERRED — masuk real-time queue, bukan buang ke reject
@@ -907,6 +1056,10 @@ FORMAT JAWABAN (WAJIB JSON VALID, TANPA MARKDOWN):
           scoutReason: reason,
           entryReadiness: entryReadiness || 'MEDIUM',
           breakoutQuality: breakoutQuality || 'PENDING',
+          entryGateMode: entrySignals.entryGateMode,
+          entryTimingState,
+          signalStDistancePct: entrySignals.signalStDistancePct,
+          signalAthDistancePct: entrySignals.signalAthDistancePct,
           isScoutDefer: true,
         });
         console.log(`[hunter] ⏳ ${tokenSymbol} → real-time queue (Scout DEFER: ${reason})`);
