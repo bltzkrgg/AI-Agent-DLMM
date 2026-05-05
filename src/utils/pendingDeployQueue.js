@@ -1,6 +1,7 @@
 'use strict';
 
 import { getConfig } from '../config.js';
+import { reserveDeploySlot, releaseDeploySlot } from './deploySlotGuard.js';
 
 /**
  * src/utils/pendingDeployQueue.js
@@ -116,7 +117,6 @@ async function runWatcher() {
         continue;
       }
 
-      entry.attempts++;
       const check = evaluateDeployConditions(entry);
 
       if (!check.ok) {
@@ -159,46 +159,65 @@ async function runWatcher() {
       const cfg = getConfig();
       const solAmount = cfg.deployAmountSol || 0.1;
       console.log(`[DeployQueue] 🚀 Attempting deploy for ${symbol} with amount ${solAmount} SOL (Pool: ${poolAddress.slice(0, 8)})`);
-      _queue.delete(mint); // Hapus sebelum deploy (idempoten)
+      const slotReservation = reserveDeploySlot({
+        owner: 'deployQueueWatcher',
+        mint,
+        symbol,
+        poolAddress,
+        source: isRetest ? 'retestQueue' : 'deployQueue',
+        ttlMs: Number(cfg.deployTimeoutMs || 180_000) + 60_000,
+      });
 
-      await safeSend(
-        `🚀 <b>Real-time Deploy Triggered!</b>\n` +
-        `Token: <b>${symbol}</b>\n` +
-        `Pool: <code>${poolAddress.slice(0, 8)}</code>\n` +
-        `BinStep: <code>${pool.binStep || '?'}</code>\n` +
-        `Entry: <code>${entry.meta.entryReadiness || 'N/A'}</code> | ` +
-        `Breakout: <code>${entry.meta.breakoutQuality || 'N/A'}</code>\n` +
-        `⏳ <i>Membuka posisi ${solAmount} SOL...</i>`
-      );
-
-      if (!_deployFn) {
-        throw new Error('deployFn belum di-set ke DeployQueue — panggil setDeployQueueDeployFn() dulu.');
-      }
-
-      const result = await _deployFn(poolAddress);
-
-      if (result && typeof result === 'object' && result.dryRun) {
-        await safeSend(
-          `🧪 <b>Dry-run (Queue Deploy)</b>\n` +
-          `<b>${symbol}</b> — Simulasi selesai, tidak ada tx real.\n` +
-          `Range: <code>${result.rangeMin}–${result.rangeMax}</code>`
-        );
+      if (!slotReservation.ok) {
+        console.log(`[DeployQueue] ⏳ Slot penuh, ${symbol} tetap di queue (${slotReservation.reason})`);
         continue;
       }
+      entry.attempts++;
+      const reservationId = slotReservation.id;
+      _queue.delete(mint); // Hapus sebelum deploy (idempoten)
 
-      const positionPubkey = typeof result === 'string' ? result : null;
-      await safeSend(
-        `✅ <b>Deploy Berhasil! (Queue)</b>\n` +
-        `<b>${symbol}</b> — <code>DEPLOYED</code>\n` +
-        (positionPubkey ? `Position: <code>${positionPubkey.slice(0, 8)}</code>\n` : '') +
-        `Pool: <code>${poolAddress.slice(0, 8)}</code>\n` +
-        `🔒 <i>Masuk mode monitor...</i>`
-      );
+      try {
+        await safeSend(
+          `🚀 <b>Real-time Deploy Triggered!</b>\n` +
+          `Token: <b>${symbol}</b>\n` +
+          `Pool: <code>${poolAddress.slice(0, 8)}</code>\n` +
+          `BinStep: <code>${pool.binStep || '?'}</code>\n` +
+          `Entry: <code>${entry.meta.entryReadiness || 'N/A'}</code> | ` +
+          `Breakout: <code>${entry.meta.breakoutQuality || 'N/A'}</code>\n` +
+          `⏳ <i>Membuka posisi ${solAmount} SOL...</i>`
+        );
 
-      if (positionPubkey && _monitorFn) {
-        _monitorFn(positionPubkey, symbol, poolAddress).catch(e => {
-          console.error(`[DeployQueue] Monitor loop crash untuk ${symbol}:`, e.message);
-        });
+        if (!_deployFn) {
+          throw new Error('deployFn belum di-set ke DeployQueue — panggil setDeployQueueDeployFn() dulu.');
+        }
+
+        const result = await _deployFn(poolAddress);
+
+        if (result && typeof result === 'object' && result.dryRun) {
+          await safeSend(
+            `🧪 <b>Dry-run (Queue Deploy)</b>\n` +
+            `<b>${symbol}</b> — Simulasi selesai, tidak ada tx real.\n` +
+            `Range: <code>${result.rangeMin}–${result.rangeMax}</code>`
+          );
+          continue;
+        }
+
+        const positionPubkey = typeof result === 'string' ? result : null;
+        await safeSend(
+          `✅ <b>Deploy Berhasil! (Queue)</b>\n` +
+          `<b>${symbol}</b> — <code>DEPLOYED</code>\n` +
+          (positionPubkey ? `Position: <code>${positionPubkey.slice(0, 8)}</code>\n` : '') +
+          `Pool: <code>${poolAddress.slice(0, 8)}</code>\n` +
+          `🔒 <i>Masuk mode monitor...</i>`
+        );
+
+        if (positionPubkey && _monitorFn) {
+          _monitorFn(positionPubkey, symbol, poolAddress).catch(e => {
+            console.error(`[DeployQueue] Monitor loop crash untuk ${symbol}: ${e.message}`);
+          });
+        }
+      } finally {
+        await releaseDeploySlot(reservationId).catch(() => {});
       }
 
     } catch (tokenErr) {

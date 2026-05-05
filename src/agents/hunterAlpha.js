@@ -25,6 +25,7 @@ import { escapeHTML, safeParseAI } from '../utils/safeJson.js';
 import reportManager              from '../utils/reportManager.js';
 import pendingStore               from '../utils/pendingStore.js';
 import { enqueueForDeploy, startDeployQueueWatcher, setDeployQueueNotifyFn, setDeployQueueMonitorFn } from '../utils/pendingDeployQueue.js';
+import { getDeploySlotUsage, reserveDeploySlot, releaseDeploySlot } from '../utils/deploySlotGuard.js';
 // ── Pool selector: pilih pool terbaik per-token berdasarkan binStep priority ─────────────
 //
 // Input : array pool untuk satu token yang sama (tokenXMint identik)
@@ -747,10 +748,11 @@ export async function scanAndDeploy() {
     // winners.length = slot yang sudah di-booking siklus ini tapi belum on-chain
     // (anti-race-condition: tanpa ini, 2 token bisa PASS bersamaan di maxPositions=1)
     const slotCfg      = getConfig();
-    const maxPositions = Number(slotCfg.maxPositions || 1);
-    const activeCount  = getActivePositionKeys().length + winners.length;
+    const slotUsage    = getDeploySlotUsage();
+    const maxPositions = Number(slotCfg.maxPositions || slotUsage.maxPositions || 1);
+    const activeCount  = getActivePositionKeys().length + winners.length + slotUsage.reserved;
     if (activeCount >= maxPositions) {
-      const slotReason = `Slot penuh: ${activeCount}/${maxPositions} (${getActivePositionKeys().length} on-chain + ${winners.length} booked)`;
+      const slotReason = `Slot penuh: ${activeCount}/${maxPositions} (${getActivePositionKeys().length} on-chain + ${winners.length} booked + ${slotUsage.reserved} reserved)`;
       console.log(`[hunter] 🚫 SLOT LIMIT — ${tokenSymbol}: ${slotReason}. LLM di-skip.`);
       reportManager.updateGate(tokenSymbol, 'SCOUT_AGENT', 'DEFER', slotReason);
       reportManager.setFinalVerdict(tokenSymbol, 'DEFERRED', slotReason);
@@ -759,7 +761,7 @@ export async function scanAndDeploy() {
 
     try {
       const scoutModel = cfg.screeningModel || cfg.agentModel || cfg.llm_settings?.agentModel || 'UNKNOWN';
-      console.log(`[hunter] 🧠 LLM stage=SCOUT model=${scoutModel} (slots: ${activeCount}/${maxPositions}, booked=${winners.length})`);
+      console.log(`[hunter] 🧠 LLM stage=SCOUT model=${scoutModel} (slots: ${activeCount}/${maxPositions}, booked=${winners.length}, reserved=${slotUsage.reserved})`);
       const llmPoolContext = buildLlmPoolContext({ pool, screenResult, vetoResult, marketSnapshot, bookedSlots: winners.length });
       const prompt = `[ROLE: INITIAL SCREENING FILTER FOR DLMM LIQUIDITY PROVIDER]
 [ROLE: MECHANICAL QUANT EVALUATOR — ATH SECOND BOUNCE HUNTER DLMM LP]
@@ -1080,9 +1082,10 @@ Balas HANYA JSON valid tanpa Markdown.`;
   const cfg2        = getConfig();
   
   // 1. Kapasitas Slot
-  const maxPositions = cfg2.maxPositions || 1;
-  const activePositionsCount = getActivePositionKeys().length;
-  let availableSlots = maxPositions - activePositionsCount;
+  const usage0 = getDeploySlotUsage();
+  const maxPositions = usage0.maxPositions;
+  const activePositionsCount = usage0.active + usage0.reserved;
+  let availableSlots = usage0.available;
 
   if (availableSlots <= 0) {
     console.log(`[hunter] ⚠️ Kapasitas penuh (Max ${maxPositions}). Bot standby memantau exit...`);
@@ -1139,8 +1142,9 @@ Balas HANYA JSON valid tanpa Markdown.`;
 
     const deployed = await withDeployLock(async () => {
       const currentCfg = getConfig();
-      const maxPositionsNow = currentCfg.maxPositions || 1;
-      const slotsNow = maxPositionsNow - getActivePositionKeys().length;
+      const slotUsage = getDeploySlotUsage();
+      const maxPositionsNow = slotUsage.maxPositions;
+      const slotsNow = slotUsage.available;
       if (slotsNow <= 0) {
         console.log(`[hunter] ⚠️ Slot habis saat reserve. Skip deploy kandidat berikut.`);
         return false;
@@ -1154,22 +1158,36 @@ Balas HANYA JSON valid tanpa Markdown.`;
         return false;
       }
 
-      await notify(
-        `Mengeksekusi <b>${symbol}</b>...\n` +
-        `Tahap lolos:\n<pre>${escapeHTML((winner._gateSummary || [
-          'BLACKLIST_LOCAL: PASS',
-          'STAGE_1_PUBLIC: PASS',
-          'STAGE_2_GMGN: PASS',
-          'STAGE_3_JUPITER: PASS',
-          'SCOUT_AGENT: PASS',
-          'GENERAL_AGENT: DEPLOY',
-        ]).join('\n'))}</pre>\n` +
-        `Deploy: <code>${currentCfg.deployAmountSol || 0.1} SOL</code>\n` +
-        `⏳ <i>Membuka posisi pada pool <code>${poolAddress.slice(0,8)}</code>...</i>`
-      );
+      const slotReservation = reserveDeploySlot({
+        owner: 'hunterAlpha.scanAndDeploy',
+        mint: tokenMint,
+        symbol,
+        poolAddress,
+        source: 'scanAndDeploy',
+        ttlMs: Number(currentCfg.deployTimeoutMs || 180_000) + 60_000,
+      });
+      if (!slotReservation.ok) {
+        console.log(`[hunter] 🚫 Slot reservation gagal untuk ${symbol}: ${slotReservation.reason}`);
+        return false;
+      }
+      const reservationId = slotReservation.id;
 
-      let positionPubkey;
       try {
+        await notify(
+          `Mengeksekusi <b>${symbol}</b>...\n` +
+          `Tahap lolos:\n<pre>${escapeHTML((winner._gateSummary || [
+            'BLACKLIST_LOCAL: PASS',
+            'STAGE_1_PUBLIC: PASS',
+            'STAGE_2_GMGN: PASS',
+            'STAGE_3_JUPITER: PASS',
+            'SCOUT_AGENT: PASS',
+            'GENERAL_AGENT: DEPLOY',
+          ]).join('\n'))}</pre>\n` +
+          `Deploy: <code>${currentCfg.deployAmountSol || 0.1} SOL</code>\n` +
+          `⏳ <i>Membuka posisi pada pool <code>${poolAddress.slice(0,8)}</code>...</i>`
+        );
+
+        let positionPubkey;
         const deployResult = await withTimeout(
           deployPosition(poolAddress),
           Number(currentCfg.deployTimeoutMs || 180_000),
@@ -1191,6 +1209,22 @@ Balas HANYA JSON valid tanpa Markdown.`;
         }
         positionPubkey = deployResult;
         _positionLabels.set(positionPubkey, { symbol });
+        await notify(
+          `✅ <b>Posisi terbuka!</b>\n` +
+          `<b>${escapeHTML(symbol)}</b> — <code>DEPLOYED</code>\n` +
+          `Tahap lolos ringkas: <code>${escapeHTML(toGateCompact(winner._gateSummary || []))}</code>\n` +
+          `Status: <code>DEPLOYED</code>\n` +
+          `Tahap: <code>EXECUTION_SUCCESS</code>\n` +
+          `Position: <code>${positionPubkey.slice(0,8)}</code>\n` +
+          `Pool: <code>${poolAddress.slice(0,8)}</code>\n` +
+          `TP: RSI(2) ≥ ${currentCfg.smartExitRsi || 90} | SL: -${currentCfg.stopLossPct || 10}%\n\n` +
+          `🔒 <i>Masuk mode monitor (Background)...</i>`
+        );
+
+        monitorLoop(positionPubkey, symbol, poolAddress).catch(err => {
+          console.error(`[hunter] Monitor loop crash untuk ${symbol}:`, err);
+        });
+        return true;
       } catch (e) {
         console.error(`[hunter] deployPosition gagal: ${e.message}`);
         if (String(e.message || '').includes('TIMEOUT')) {
@@ -1205,24 +1239,9 @@ Balas HANYA JSON valid tanpa Markdown.`;
           recordGate(winner._record, 'SCOUT_AGENT', 'FAIL', `EXECUTION_FAILED: ${e.message}`);
         }
         return false;
+      } finally {
+        await releaseDeploySlot(reservationId).catch(() => {});
       }
-
-      await notify(
-        `✅ <b>Posisi terbuka!</b>\n` +
-        `<b>${escapeHTML(symbol)}</b> — <code>DEPLOYED</code>\n` +
-        `Tahap lolos ringkas: <code>${escapeHTML(toGateCompact(winner._gateSummary || []))}</code>\n` +
-        `Status: <code>DEPLOYED</code>\n` +
-        `Tahap: <code>EXECUTION_SUCCESS</code>\n` +
-        `Position: <code>${positionPubkey.slice(0,8)}</code>\n` +
-        `Pool: <code>${poolAddress.slice(0,8)}</code>\n` +
-        `TP: RSI(2) ≥ ${currentCfg.smartExitRsi || 90} | SL: -${currentCfg.stopLossPct || 10}%\n\n` +
-        `🔒 <i>Masuk mode monitor (Background)...</i>`
-      );
-
-      monitorLoop(positionPubkey, symbol, poolAddress).catch(err => {
-        console.error(`[hunter] Monitor loop crash untuk ${symbol}:`, err);
-      });
-      return true;
     });
 
       if (deployed) {
