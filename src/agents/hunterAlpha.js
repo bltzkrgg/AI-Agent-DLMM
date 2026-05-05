@@ -699,9 +699,22 @@ export async function scanAndDeploy() {
       console.warn(`[hunter] MarketSnapshot error pada ${tokenSymbol}: ${e.message}`);
     }
 
+    // ── SLOT LIMIT GATE (Code-level, sebelum LLM dipanggil) ─────────────────
+    // Ini adalah hard gate di kode, bukan LLM. Lebih cepat, hemat API call.
+    const slotCfg        = getConfig();
+    const maxPositions   = Number(slotCfg.maxPositions || 1);
+    const activeCount    = getActivePositionKeys().length;
+    if (activeCount >= maxPositions) {
+      const slotReason = `Slot penuh: ${activeCount}/${maxPositions} posisi aktif`;
+      console.log(`[hunter] 🚫 SLOT LIMIT — ${tokenSymbol}: ${slotReason}. LLM di-skip.`);
+      reportManager.updateGate(tokenSymbol, 'SCOUT_AGENT', 'DEFER', slotReason);
+      reportManager.setFinalVerdict(tokenSymbol, 'DEFERRED', slotReason);
+      return { ok: false, symbol: tokenSymbol || 'UNKNOWN', stage: 'SCOUT_AGENT', reason: slotReason };
+    }
+
     try {
       const scoutModel = cfg.llm_settings?.agentModel || cfg.screeningModel || cfg.agentModel || 'UNKNOWN';
-      console.log(`[hunter] 🧠 LLM stage=SCOUT model=${scoutModel}`);
+      console.log(`[hunter] 🧠 LLM stage=SCOUT model=${scoutModel} (slots: ${activeCount}/${maxPositions})`);
       const llmPoolContext = buildLlmPoolContext({ pool, screenResult, vetoResult, marketSnapshot });
       const prompt = `[ROLE: MECHANICAL QUANT EVALUATOR — ATH SECOND BOUNCE HUNTER DLMM LP]
 
@@ -719,6 +732,12 @@ DILARANG KERAS menadah harga yang sedang runtuh (falling knife).
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 ATURAN EVALUASI MEKANIS (TERAPKAN BERURUTAN — SATU RULE GAGAL = STOP):
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+[RULE 0 — SYSTEM CONFIG GATE (Slot Limit)]
+  Data: active_positions dan max_positions dari system context.
+  IF active_positions >= max_positions → WAJIB DEFER.
+  Bot dilarang keras membuka posisi baru saat kuota slot sudah penuh.
+  (Gate ini juga dicek di kode sebelum LLM dipanggil — ini hanya sebagai backup awareness.)
 
 [RULE 1 — MAKRO FILTER (SuperTrend Hard Gate)]
   Cek: supertrend_15m atau field trend makro dari data.
