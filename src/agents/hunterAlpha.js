@@ -257,7 +257,7 @@ function formatMaybeBool(value) {
   return 'UNKNOWN';
 }
 
-function buildLlmPoolContext({ pool = {}, screenResult = null, vetoResult = null, marketSnapshot = null }) {
+function buildLlmPoolContext({ pool = {}, screenResult = null, vetoResult = null, marketSnapshot = null, bookedSlots = 0 }) {
   const okx = screenResult?.okxSignals || null;
   const gmgn = screenResult?.gmgnMetrics || null;
   const taTrend = marketSnapshot?.quality?.taTrend || marketSnapshot?.ta?.supertrend?.trend || vetoResult?.diagnostics?.supertrend15m || 'UNKNOWN';
@@ -273,7 +273,8 @@ function buildLlmPoolContext({ pool = {}, screenResult = null, vetoResult = null
     : [];
 
   // Slot data: injected ke context agar LLM bisa terapkan Rule 0 (Slot Limit Gate)
-  const activeCount  = getActivePositionKeys().length;
+  // bookedSlots = jumlah winner di siklus ini yang sudah di-approve tapi belum on-chain
+  const activeCount  = getActivePositionKeys().length + bookedSlots;
   const maxPositions = Number(getConfig().maxPositions || 1);
 
   return [
@@ -710,11 +711,13 @@ export async function scanAndDeploy() {
 
     // ── SLOT LIMIT GATE (Code-level, sebelum LLM dipanggil) ─────────────────
     // Ini adalah hard gate di kode, bukan LLM. Lebih cepat, hemat API call.
-    const slotCfg        = getConfig();
-    const maxPositions   = Number(slotCfg.maxPositions || 1);
-    const activeCount    = getActivePositionKeys().length;
+    // winners.length = slot yang sudah di-booking siklus ini tapi belum on-chain
+    // (anti-race-condition: tanpa ini, 2 token bisa PASS bersamaan di maxPositions=1)
+    const slotCfg      = getConfig();
+    const maxPositions = Number(slotCfg.maxPositions || 1);
+    const activeCount  = getActivePositionKeys().length + winners.length;
     if (activeCount >= maxPositions) {
-      const slotReason = `Slot penuh: ${activeCount}/${maxPositions} posisi aktif`;
+      const slotReason = `Slot penuh: ${activeCount}/${maxPositions} (${getActivePositionKeys().length} on-chain + ${winners.length} booked)`;
       console.log(`[hunter] 🚫 SLOT LIMIT — ${tokenSymbol}: ${slotReason}. LLM di-skip.`);
       reportManager.updateGate(tokenSymbol, 'SCOUT_AGENT', 'DEFER', slotReason);
       reportManager.setFinalVerdict(tokenSymbol, 'DEFERRED', slotReason);
@@ -723,8 +726,8 @@ export async function scanAndDeploy() {
 
     try {
       const scoutModel = cfg.llm_settings?.agentModel || cfg.screeningModel || cfg.agentModel || 'UNKNOWN';
-      console.log(`[hunter] 🧠 LLM stage=SCOUT model=${scoutModel} (slots: ${activeCount}/${maxPositions})`);
-      const llmPoolContext = buildLlmPoolContext({ pool, screenResult, vetoResult, marketSnapshot });
+      console.log(`[hunter] 🧠 LLM stage=SCOUT model=${scoutModel} (slots: ${activeCount}/${maxPositions}, booked=${winners.length})`);
+      const llmPoolContext = buildLlmPoolContext({ pool, screenResult, vetoResult, marketSnapshot, bookedSlots: winners.length });
       const prompt = `[ROLE: MECHANICAL QUANT EVALUATOR — ATH SECOND BOUNCE HUNTER DLMM LP]
 
 Kamu BUKAN manusia trader yang menganalisis chart visual.
