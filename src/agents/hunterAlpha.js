@@ -15,7 +15,7 @@ import { getConfig }              from '../config.js';
 import { screenToken }            from '../market/coinfilter.js';
 import { runMeridianVeto, discoverHighFeePoolsMeridian } from '../market/meridianVeto.js';
 import { getMarketSnapshot }      from '../market/oracle.js';
-import { deployPosition, monitorPnL, exitPosition, markPositionManuallyClosed, setEvilPandaNotifyFn, setPositionLifecycle, getPositionOnChainStatus, EP_CONFIG, getActivePositionKeys, getPositionMeta } from '../sniper/evilPanda.js';
+import { deployPosition, monitorPnL, exitPosition, markPositionManuallyClosed, setEvilPandaNotifyFn, setPositionLifecycle, getPositionOnChainStatus, EP_CONFIG, getActivePositionKeys, getPositionMeta, reconcileZombiePositions } from '../sniper/evilPanda.js';
 import { createMessage }          from '../agent/provider.js';
 import { getWalletBalance }       from '../solana/wallet.js';
 import { appendDecisionLog }      from '../learn/decisionLog.js';
@@ -191,7 +191,11 @@ async function collectReadyRetestPools(cfg = getConfig()) {
     row.attempts += 1;
     row.nextCheckAt = now + intervalMin * 60 * 1000;
     try {
-      const veto = await runMeridianVeto({ mint, symbol: row.symbol, pool: row.pool });
+      const veto = await withTimeout(
+        runMeridianVeto({ mint, symbol: row.symbol, pool: row.pool }),
+        Number(cfg.retestVetoTimeoutMs || 45_000),
+        'RETEST_MERIDIAN_VETO'
+      );
       if (!veto.veto) {
         _pendingRetestQueue.delete(mint);
         const pool = {
@@ -228,6 +232,21 @@ export function setShutdownInProgress(v = true) { _shutdownInProgress = !!v; }
 
 // ── Delay helper ──────────────────────────────────────────────────
 const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+function withTimeout(promise, ms, label = 'operation') {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`${label}_TIMEOUT_${ms}ms`)), ms);
+    Promise.resolve(promise).then(
+      (value) => { clearTimeout(timer); resolve(value); },
+      (error) => { clearTimeout(timer); reject(error); }
+    );
+  });
+}
+
+function generateFinalCycleReport(CycleReport = []) {
+  void CycleReport;
+  return reportManager.generateReport();
+}
 
 function chunkArray(items, size = 2) {
   const out = [];
@@ -491,7 +510,7 @@ export function stopLoop() {
 // ── Phase 1: SCAN ─────────────────────────────────────────────────
 
 export async function scanAndDeploy() {
-  let cycleReport = [];
+  const CycleReport = [];
 
   try {
     const cfg = getConfig();
@@ -504,6 +523,10 @@ export async function scanAndDeploy() {
       await sleep(10_000);
       return;
     }
+
+    await reconcileZombiePositions({ minAgeMs: 180_000 }).catch((e) => {
+      console.warn(`[hunter] Zombie reconcile non-fatal: ${e.message}`);
+    });
 
     const regime = classifyMarketRegime();
     if (regime === 'BEAR_DEFENSE') {
@@ -591,6 +614,7 @@ export async function scanAndDeploy() {
     let reportEntry = reportManager.currentCycle.find(t => t.name === pending.name);
     if (!reportEntry) {
       reportEntry = reportManager.addToken(pending.name, pending.address);
+      if (!CycleReport.includes(reportEntry)) CycleReport.push(reportEntry);
     }
     
     // Check meridianVeto or TA again for the pending token
@@ -621,6 +645,7 @@ export async function scanAndDeploy() {
     const tokenSymbol = pool.tokenXSymbol || pool.name?.split('-')[0] || '';
     
     const record = reportManager.addToken(tokenSymbol || 'UNKNOWN', tokenMint || '');
+    if (!CycleReport.includes(record)) CycleReport.push(record);
     // Simpan metrics LP ke report entry agar bisa ditampilkan di visual report
     reportManager.setMetrics(tokenSymbol || 'UNKNOWN', {
       tvl:  Number(pool.totalTvl || pool.activeTvl || 0),
@@ -644,7 +669,11 @@ export async function scanAndDeploy() {
 
     let screenResult = null;
     try {
-      screenResult = await screenToken(tokenMint, tokenSymbol, tokenSymbol, { jupiterBudgetRef });
+      screenResult = await withTimeout(
+        screenToken(tokenMint, tokenSymbol, tokenSymbol, { jupiterBudgetRef }),
+        Number(cfg.screenTimeoutMs || 120_000),
+        'SCREEN_TOKEN'
+      );
       const s1 = screenResult?.stageWaterfall?.stage1PublicData || 'UNKNOWN';
       const s2 = screenResult?.stageWaterfall?.stage2GmgnAudit || 'UNKNOWN';
       const s3 = screenResult?.stageWaterfall?.stage3Jupiter || 'UNKNOWN';
@@ -668,7 +697,11 @@ export async function scanAndDeploy() {
 
     let vetoResult = null;
     try {
-      vetoResult = await runMeridianVeto({ mint: tokenMint, symbol: tokenSymbol, pool });
+      vetoResult = await withTimeout(
+        runMeridianVeto({ mint: tokenMint, symbol: tokenSymbol, pool }),
+        Number(cfg.vetoTimeoutMs || 45_000),
+        'MERIDIAN_VETO'
+      );
       if (vetoResult.veto) {
         const rejectReason = vetoResult.reason || 'Meridian veto';
         reportManager.updateGate(tokenSymbol, 'MERIDIAN_VETO', 'FAIL', rejectReason);
@@ -725,14 +758,19 @@ export async function scanAndDeploy() {
     }
 
     try {
-      const scoutModel = cfg.llm_settings?.agentModel || cfg.screeningModel || cfg.agentModel || 'UNKNOWN';
+      const scoutModel = cfg.screeningModel || cfg.agentModel || cfg.llm_settings?.agentModel || 'UNKNOWN';
       console.log(`[hunter] 🧠 LLM stage=SCOUT model=${scoutModel} (slots: ${activeCount}/${maxPositions}, booked=${winners.length})`);
       const llmPoolContext = buildLlmPoolContext({ pool, screenResult, vetoResult, marketSnapshot, bookedSlots: winners.length });
-      const prompt = `[ROLE: MECHANICAL QUANT EVALUATOR — ATH SECOND BOUNCE HUNTER DLMM LP]
+      const prompt = `[ROLE: INITIAL SCREENING FILTER FOR DLMM LIQUIDITY PROVIDER]
+[ROLE: MECHANICAL QUANT EVALUATOR — ATH SECOND BOUNCE HUNTER DLMM LP]
 
 Kamu BUKAN manusia trader yang menganalisis chart visual.
 Kamu adalah evaluator mekanis yang hanya membaca data JSON.
 JANGAN menebak, mengasumsikan, atau mengisi data yang tidak ada di payload.
+
+breakout yang matang
+Supertrend 15m harus bullish
+Candle M5 harus hijau
 
 MINDSET: AGGRESSIVE FEE HUNTER.
 Tugasmu adalah menangkap tren naik yang SANGAT SEHAT, lalu memanen fee dari pullback sesaat.
@@ -816,12 +854,12 @@ FORMAT JAWABAN (WAJIB JSON VALID, TANPA MARKDOWN):
   "entry_readiness": "LOW | MEDIUM | HIGH",
   "breakout_quality": "WEAK | VALID | STRONG"
 }`;
-      const res = await createMessage({
+      const res = await withTimeout(createMessage({
         model: scoutModel,
         componentType: 'agent',
         maxTokens: 320,
         messages: [{ role: 'user', content: prompt }]
-      });
+      }), Number(cfg.llmTimeoutMs || 45_000), 'SCOUT_LLM');
       const rawText = res.content.find(c => c.type === 'text')?.text?.trim() || '';
       const parsed = safeParseAI(rawText, null);
       const decision = String(parsed?.decision || rawText || '').trim().toUpperCase();
@@ -937,7 +975,7 @@ FORMAT JAWABAN (WAJIB JSON VALID, TANPA MARKDOWN):
       });
       const prompt = `[ROLE: PRINCIPAL DLMM LIQUIDITY PROVIDER (FINAL DECISION MAKER)]
 Kamu adalah pengambil keputusan final untuk posisi DLMM.
-Keputusan kamu menentukan apakah modal jadi dipasang, dipertahankan, atau ditarik.
+Keputusan kamu menentukan apakah modal jadi dipasang atau ditolak.
 
 MINDSET UTAMA:
 - Kamu bukan trader.
@@ -945,9 +983,7 @@ MINDSET UTAMA:
 - Kamu tidak mengejar entry dekat supertrend.
 - Kamu justru mencari breakout yang sudah matang: harga break jauh di atas supertrend 15m bullish, atau ATH close hijau dengan momentum bullish yang jelas.
 - Kalau bullish momentum belum terbentuk, jangan deploy.
-- Kalau posisi sudah aktif dan momentum masih bullish, pertahankan posisi.
-- Jangan exit hanya karena profit kecil sempat turun kalau struktur bullish masih valid.
-- Exit hanya kalau struktur rusak, stop loss kena, take profit kena, atau safety memburuk.
+- Jika data ambigu, jangan paksa keputusan.
 
 ATURAN KEPUTUSAN:
 1. DEPLOY jika:
@@ -956,31 +992,19 @@ ATURAN KEPUTUSAN:
    - candle M5 hijau
    - breakout kuat dan valid
    - harga sudah benar-benar menunjukkan momentum bullish yang sehat
-2. HOLD jika:
-   - posisi sudah aktif
-   - supertrend 15m masih bullish
-   - momentum masih sehat
-   - fee capture masih berjalan
-   - belum ada alasan exit yang valid
+2. REJECT jika:
+   - safety data buruk
+   - breakout lemah
+   - momentum bullish tidak valid
+   - risiko modal terlalu tinggi
 3. DEFER jika:
    - data belum cukup
    - momentum belum terbentuk
    - breakout belum matang
    - safety data ambigu
-4. EXIT jika:
-   - momentum bullish patah
-   - stop loss kena
-   - take profit kena
-   - struktur trend rusak
-5. PROTECT_CAPITAL jika:
-   - risiko modal meningkat tajam
-   - safety memburuk
-   - kondisi tidak layak dipertahankan
 
 PRINSIP KERJA:
 - Entry = breakout matang, bukan harga yang baru menyentuh garis.
-- Hold = selama momentum bullish masih hidup.
-- Exit = hanya saat struktur patah atau target risiko tercapai.
 - Kalau ada keraguan, pilih aman.
 
 DATA FINAL:
@@ -992,19 +1016,18 @@ ${gateSummary || 'N/A'}
 
 [FORMAT JAWABAN JSON]
 {
-  "decision": "DEPLOY | HOLD | DEFER | EXIT | PROTECT_CAPITAL",
+  "decision": "DEPLOY | REJECT | DEFER",
   "confidence": 0-100,
-  "il_risk_assessment": "Low | Medium | High - Penjelasan singkat potensi impermanent loss saat ini",
-  "lp_thesis": "1 kalimat konklusif kenapa range ini layak dipasang, dipertahankan, atau wajib dihindari."
+  "lp_thesis": "1 kalimat konklusif kenapa range ini layak dipasang atau wajib dihindari."
 }
 
 Balas HANYA JSON valid tanpa Markdown.`;
-      const res = await createMessage({
+      const res = await withTimeout(createMessage({
         model: managementModel,
         componentType: 'management',
         maxTokens: 260,
         messages: [{ role: 'user', content: prompt }]
-      });
+      }), Number(cfg.llmTimeoutMs || 45_000), 'GENERAL_LLM');
       const rawText = res.content.find(c => c.type === 'text')?.text?.trim() || '';
       const parsed = safeParseAI(rawText, null);
       const decision = String(parsed?.decision || rawText || '').trim().toUpperCase();
@@ -1020,24 +1043,23 @@ Balas HANYA JSON valid tanpa Markdown.`;
         finalWinner = w;
         break; // Segera eksekusi, stop audit sisanya
       } else {
-        const finalDecision = decision.includes('PROTECT_CAPITAL') ? 'PROTECT_CAPITAL'
-          : decision.includes('EXIT') ? 'EXIT'
-          : decision.includes('DEFER') ? 'DEFER'
-          : decision.includes('HOLD') ? 'HOLD'
-          : 'DEFER';
+        const finalDecision = decision.includes('REJECT') ? 'REJECT' : 'DEFER';
         console.log(`[hunter] ✋ GeneralAgent ${finalDecision}: ${sym}${confidenceSuffix}`);
         if (w._record) {
-          recordGate(w._record, 'SCOUT_AGENT', 'FAIL', thesis || finalDecision);
+          recordGate(w._record, 'SCOUT_AGENT', finalDecision === 'REJECT' ? 'FAIL' : 'DEFER', thesis || finalDecision);
         }
         if (thesis) {
           appendDecisionLog({ token: sym, mint: w.tokenXMint || w.tokenX || w.mint || '', decision: 'SCREEN_FAIL',
             gate: 'GENERAL_AGENT', reason: thesis, pool: w.address || w.poolAddress || '', feeRatio: w.feeActiveTvlRatio || 0 });
         }
       }
-    } catch (e) {
-      console.warn(`[hunter] GeneralAgent error pada ${sym}: ${e.message}`);
+      } catch (e) {
+        console.warn(`[hunter] GeneralAgent error pada ${sym}: ${e.message}`);
+        if (w._record) {
+          recordGate(w._record, 'SCOUT_AGENT', 'DEFER', `GeneralAgent timeout/error: ${e.message}`);
+        }
+      }
     }
-  }
 
   if (!finalWinner) {
     const retryCfg = getConfig();
@@ -1148,7 +1170,11 @@ Balas HANYA JSON valid tanpa Markdown.`;
 
       let positionPubkey;
       try {
-        const deployResult = await deployPosition(poolAddress);
+        const deployResult = await withTimeout(
+          deployPosition(poolAddress),
+          Number(currentCfg.deployTimeoutMs || 180_000),
+          'DEPLOY'
+        );
         if (deployResult && typeof deployResult === 'object' && deployResult.dryRun) {
           if (winner._record) {
             recordGate(winner._record, 'SCOUT_AGENT', 'DEFER', 'Dry-run simulation');
@@ -1167,7 +1193,14 @@ Balas HANYA JSON valid tanpa Markdown.`;
         _positionLabels.set(positionPubkey, { symbol });
       } catch (e) {
         console.error(`[hunter] deployPosition gagal: ${e.message}`);
-        await notify(`❌ <b>Deploy gagal:</b>\n<code>${e.message}</code>\n\n<i>Lanjut ke kandidat berikutnya...</i>`);
+        if (String(e.message || '').includes('TIMEOUT')) {
+          await reconcileZombiePositions({ minAgeMs: 180_000 }).catch(() => {});
+        }
+        if (isNaturalDeployError(e)) {
+          console.warn(`[hunter] deployPosition natural fail silenced: ${e.message}`);
+        } else {
+          await notify(`❌ <b>Deploy gagal:</b>\n<code>${e.message}</code>\n\n<i>Lanjut ke kandidat berikutnya...</i>`);
+        }
         if (winner._record) {
           recordGate(winner._record, 'SCOUT_AGENT', 'FAIL', `EXECUTION_FAILED: ${e.message}`);
         }
@@ -1206,7 +1239,7 @@ Balas HANYA JSON valid tanpa Markdown.`;
     return;
   } finally {
     try {
-      const report = reportManager.generateReport();
+      const report = generateFinalCycleReport(CycleReport);
       await notify(report);
     } catch (e) {
       console.error("Gagal kirim ke Telegram:", e.message);

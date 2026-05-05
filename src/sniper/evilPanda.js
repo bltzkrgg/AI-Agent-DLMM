@@ -29,6 +29,7 @@ import { getRecommendedPriorityFee } from '../utils/helius.js';
 import { addToBlacklist } from '../learn/tokenBlacklist.js';
 import { getDynamicStopLoss } from '../market/atrGuard.js';
 import { flushRuntimeState, getRuntimeState, setRuntimeState } from '../runtime/state.js';
+import { checkGasGuard } from '../safety/gasGuard.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const HARVEST_LOG = join(__dirname, '../../harvest.log');
@@ -448,6 +449,10 @@ export async function deployPosition(poolAddress) {
   console.log(`[evilPanda] ▶ deployPosition pool=${poolAddress.slice(0,8)} sol=${deploySol}`);
 
   return withExponentialBackoff(async () => {
+    await reconcileZombiePositions().catch((e) => {
+      console.warn(`[evilPanda] Zombie reconcile non-fatal: ${e.message}`);
+    });
+
     if (hasTrackedPoolPosition(poolAddress)) {
       throw new Error(`[evilPanda] Pool ${poolAddress.slice(0,8)} already has an active or pending position`);
     }
@@ -492,64 +497,186 @@ export async function deployPosition(poolAddress) {
     const slippageBps   = Number(cfg2.slippageBps) || 250;
     const slippagePct   = slippageBps / 100;
     const totalLamports = Math.floor(deploySol * 1e9);
-    const amountYBn     = new BN(String(totalLamports));
-    const amountXBn     = new BN('0'); // single-side Y
+
+    const shouldSeedTokenX = rangeMin <= activeBin.binId && rangeMax >= activeBin.binId;
+    const rangeWidth = Math.max(1, rangeMax - rangeMin);
+    const activeRatio = shouldSeedTokenX
+      ? Math.max(0, Math.min(1, (activeBin.binId - rangeMin) / rangeWidth))
+      : 0;
+    const seedPctOverride = Number(cfg2.deployTokenXSeedPct || cfg2.deployXSeedPct || 0);
+    const defaultSeedPct = shouldSeedTokenX
+      ? Math.max(10, Math.min(40, Math.round(40 - (activeRatio * 30))))
+      : 0;
+    const seedPct = Number.isFinite(seedPctOverride) && seedPctOverride > 0
+      ? Math.max(1, Math.min(60, seedPctOverride))
+      : defaultSeedPct;
+    const seedLamports = Math.max(0, Math.floor(totalLamports * (seedPct / 100)));
+
+    let amountXBn     = new BN('0');
+    let amountYBn     = new BN(String(totalLamports));
+
+    async function swapSolToTokenX(amountLamports) {
+      const seedAmount = String(amountLamports || '0');
+      if (seedAmount === '0') {
+        return { success: false, reason: 'ZERO_SEED' };
+      }
+
+      const apiBase = 'https://api.jup.ag/swap/v1';
+      const apiKey = process.env.JUPITER_API_KEY || process.env.JUP_API_KEY || '';
+      const headers = {
+        'Content-Type': 'application/json',
+        'Accept': 'application/json',
+        'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        ...(apiKey ? { 'x-api-key': apiKey } : {}),
+      };
+
+      const preXRaw = BigInt(await getTokenBalanceRaw(xMint).catch(() => '0'));
+      const quote = await getJupiterQuote(WSOL_MINT, xMint, seedAmount, slippageBps);
+      if (!quote?.outAmount || String(quote.outAmount) === '0') {
+        throw new Error('JUPITER_SEED_QUOTE_ZERO');
+      }
+
+      let priorityFeeLamports = 50000;
+      try {
+        const recommended = await getRecommendedPriorityFee([WSOL_MINT, xMint]);
+        priorityFeeLamports = Math.max(priorityFeeLamports, Math.round(Number(recommended) * 1.5));
+      } catch {
+        // pakai default
+      }
+
+      const swapRes = await fetchWithTimeout(
+        `${apiBase}/swap`,
+        {
+          method: 'POST',
+          headers,
+          body: stringify({
+            quoteResponse: quote,
+            userPublicKey: wallet.publicKey.toString(),
+            wrapAndUnwrapSol: true,
+            dynamicComputeUnitLimit: true,
+            prioritizationFeeLamports: priorityFeeLamports,
+          }),
+        },
+        15000
+      );
+
+      if (!swapRes.ok) {
+        const err = await swapRes.text().catch(() => swapRes.status);
+        throw new Error(`Jupiter seed swap failed: ${err}`);
+      }
+
+      const { swapTransaction } = await swapRes.json();
+      const txBuf = Buffer.from(swapTransaction, 'base64');
+      const versionedTx = VersionedTransaction.deserialize(txBuf);
+      versionedTx.sign([wallet]);
+
+      const budgetCheck = checkGasGuard();
+      if (!budgetCheck.allowed) {
+        throw new Error(`TX_GUARD_BLOCKED: ${budgetCheck.reason}`);
+      }
+
+      const sig = await connection.sendRawTransaction(versionedTx.serialize(), {
+        skipPreflight: false,
+        maxRetries: 3,
+      });
+
+      await pollTxConfirm(connection, sig);
+
+      const postXRaw = BigInt(await getTokenBalanceRaw(xMint).catch(() => '0'));
+      const gainedXRaw = postXRaw > preXRaw
+        ? (postXRaw - preXRaw)
+        : BigInt(String(quote.outAmount || '0'));
+
+      return {
+        success: true,
+        txHash: sig,
+        amountRaw: gainedXRaw.toString(),
+        quotedOutRaw: String(quote.outAmount || '0'),
+      };
+    }
+
+    if (!isDryRun() && shouldSeedTokenX && seedLamports >= 1_000_000 && seedLamports < totalLamports) {
+      console.log(
+        `[evilPanda] Spot/Bid-Ask seed enabled: ${seedPct}% SOL → TOKENX ` +
+        `(seedLamports=${seedLamports}, range=[${rangeMin},${rangeMax}], active=${activeBin.binId})`
+      );
+      try {
+        const seedSwap = await swapSolToTokenX(seedLamports);
+        if (seedSwap?.success) {
+          amountXBn = new BN(String(seedSwap.amountRaw || '0'));
+          amountYBn = new BN(String(Math.max(0, totalLamports - seedLamports)));
+        } else {
+          console.warn(`[evilPanda] Seed swap fallback ke single-side SOL: ${seedSwap?.reason || 'SEED_SWAP_FAILED'}`);
+          amountXBn = new BN('0');
+          amountYBn = new BN(String(totalLamports));
+        }
+      } catch (e) {
+        console.warn(`[evilPanda] Seed swap gagal, fallback single-side SOL: ${e.message}`);
+        amountXBn = new BN('0');
+        amountYBn = new BN(String(totalLamports));
+      }
+    } else if (isDryRun() && shouldSeedTokenX && seedLamports >= 1_000_000 && seedLamports < totalLamports) {
+      console.log(
+        `[DRY RUN] Spot/Bid-Ask seed planned: ${seedPct}% SOL → TOKENX ` +
+        `(seedLamports=${seedLamports}, range=[${rangeMin},${rangeMax}], active=${activeBin.binId})`
+      );
+    }
 
     console.log(`[evilPanda] bins=${totalBins} range=[${rangeMin},${rangeMax}] pf=${microLamports} slip=${slippagePct}%`);
 
     try {
-    const txOrTxs = await dlmmPool.initializePositionAndAddLiquidityByStrategy({
-      positionPubKey: posKp.publicKey,
-      user:           wallet.publicKey,
-      totalXAmount:   amountXBn,
-      totalYAmount:   amountYBn,
+      const txOrTxs = await dlmmPool.initializePositionAndAddLiquidityByStrategy({
+        positionPubKey: posKp.publicKey,
+        user:           wallet.publicKey,
+        totalXAmount:   amountXBn,
+        totalYAmount:   amountYBn,
         strategy: {
           maxBinId:     rangeMax,
           minBinId:     rangeMin,
           strategyType: 0,
         },
         slippage: slippagePct,
-    });
+      });
 
-    const txList = Array.isArray(txOrTxs) ? txOrTxs : [txOrTxs];
+      const txList = Array.isArray(txOrTxs) ? txOrTxs : [txOrTxs];
 
-    if (isDryRun()) {
-      for (const tx of txList) {
-        injectPriorityFee(tx, { units: EP_CONFIG.COMPUTE_UNITS, microLamports });
-        if (tx instanceof VersionedTransaction) {
-          tx.sign([wallet, posKp]);
-        } else {
-          tx.sign(posKp, wallet);
+      if (isDryRun()) {
+        for (const tx of txList) {
+          injectPriorityFee(tx, { units: EP_CONFIG.COMPUTE_UNITS, microLamports });
+          if (tx instanceof VersionedTransaction) {
+            tx.sign([wallet, posKp]);
+          } else {
+            tx.sign(posKp, wallet);
+          }
+          const sim = await connection.simulateTransaction(tx, { commitment: 'processed' });
+          if (sim?.value?.err) {
+            throw new Error(`DRY_RUN_SIMULATION_FAILED: ${stringify(sim.value.err)}`);
+          }
         }
-        const sim = await connection.simulateTransaction(tx, { commitment: 'processed' });
-        if (sim?.value?.err) {
-          throw new Error(`DRY_RUN_SIMULATION_FAILED: ${stringify(sim.value.err)}`);
-        }
+        console.log(`[DRY RUN] deployPosition simulated only: pool=${poolAddress.slice(0,8)} pos=${positionPubkey.slice(0,8)} txs=${txList.length}`);
+        return {
+          dryRun: true,
+          simulated: true,
+          positionPubkey,
+          poolAddress,
+          rangeMin,
+          rangeMax,
+          txCount: txList.length,
+        };
       }
-      console.log(`[DRY RUN] deployPosition simulated only: pool=${poolAddress.slice(0,8)} pos=${positionPubkey.slice(0,8)} txs=${txList.length}`);
-      return {
-        dryRun: true,
-        simulated: true,
-        positionPubkey,
+
+      await setPositionLifecycle(positionPubkey, 'deploying', {
         poolAddress,
+        deploySol,
+        deployedAt: nowIso(),
+        tokenXMint: xMint,
+        tokenYMint: yMint,
         rangeMin,
         rangeMax,
-        txCount: txList.length,
-      };
-    }
+        hwmPct: 0,
+      }, { flush: true });
 
-    await setPositionLifecycle(positionPubkey, 'deploying', {
-      poolAddress,
-      deploySol,
-      deployedAt: nowIso(),
-      tokenXMint: xMint,
-      tokenYMint: yMint,
-      rangeMin,
-      rangeMax,
-      hwmPct: 0,
-    }, { flush: true });
-
-    for (const tx of txList) {
+      for (const tx of txList) {
         injectPriorityFee(tx, { units: EP_CONFIG.COMPUTE_UNITS, microLamports });
         const sig = await connection.sendTransaction(tx, [wallet, posKp], { skipPreflight: false, maxRetries: 3 });
         await pollTxConfirm(connection, sig);
@@ -891,201 +1018,210 @@ export async function exitPosition(positionPubkey, reason = 'MANUAL') {
   const connection = getConnection();
   const wallet     = getWallet();
   const microLamports = await getPriorityFee();
+  const isEmergencyExit = /STOP_LOSS|SCENARIO_C|SUPPORT|TRAILING|BEARISH|PANIC/i.test(String(reason || ''));
 
   try {
     return await withExitAccountingLock(() => withExponentialBackoff(async () => {
-    const preSwapLamports = await connection.getBalance(wallet.publicKey);
-    const dlmmPool = await DLMM.create(connection, new PublicKey(reg.poolAddress));
-    const { userPositions } = await dlmmPool.getPositionsByUserAndLbPair(wallet.publicKey);
-    const activePos = userPositions.find(p => p.publicKey.toString() === positionPubkey);
+      const preSwapLamports = await connection.getBalance(wallet.publicKey);
+      const dlmmPool = await DLMM.create(connection, new PublicKey(reg.poolAddress));
+      await dlmmPool.refetchStates().catch(() => {});
+      const { userPositions } = await dlmmPool.getPositionsByUserAndLbPair(wallet.publicKey);
+      const activePos = userPositions.find(p => p.publicKey.toString() === positionPubkey);
 
-    if (!activePos) {
+      if (!activePos) {
+        if (isDryRun()) {
+          console.log(`[DRY RUN] exitPosition skipped: ${positionPubkey.slice(0,8)} not found on-chain`);
+          return { dryRun: true, skipped: true, reason: 'POSITION_NOT_FOUND_ON_CHAIN' };
+        }
+        return await markPositionManuallyClosed(positionPubkey, 'MANUAL_WITHDRAW_DETECTED_DURING_EXIT');
+      }
+
+      if (!activePos.positionData || activePos.positionData.lowerBinId === undefined) {
+        if (isDryRun()) {
+          console.log(`[DRY RUN] exitPosition skipped: ${positionPubkey.slice(0,8)} position data incomplete`);
+          return { dryRun: true, skipped: true, reason: 'POSITION_DATA_INCOMPLETE' };
+        }
+        const msg = `POSITION_STATE_AMBIGUOUS_${positionPubkey.slice(0,8)}`;
+        console.log(`[evilPanda] ❌ ${msg}: Data posisi tidak lengkap / undefined. Registry ditahan untuk manual reconcile.`);
+        await setPositionLifecycle(positionPubkey, 'needs_manual_reconcile', {
+          manualReconcileReason: 'incomplete position data or RPC timeout',
+          closeReason: reason,
+        }, { flush: true });
+        throw new Error(msg);
+      }
+
       if (isDryRun()) {
-        console.log(`[DRY RUN] exitPosition skipped: ${positionPubkey.slice(0,8)} not found on-chain`);
-        return { dryRun: true, skipped: true, reason: 'POSITION_NOT_FOUND_ON_CHAIN' };
-      }
-      return await markPositionManuallyClosed(positionPubkey, 'MANUAL_WITHDRAW_DETECTED_DURING_EXIT');
-    }
-
-    if (!activePos.positionData || activePos.positionData.lowerBinId === undefined) {
-      if (isDryRun()) {
-        console.log(`[DRY RUN] exitPosition skipped: ${positionPubkey.slice(0,8)} position data incomplete`);
-        return { dryRun: true, skipped: true, reason: 'POSITION_DATA_INCOMPLETE' };
-      }
-      const msg = `POSITION_STATE_AMBIGUOUS_${positionPubkey.slice(0,8)}`;
-      console.log(`[evilPanda] ❌ ${msg}: Data posisi tidak lengkap / undefined. Registry ditahan untuk manual reconcile.`);
-      await setPositionLifecycle(positionPubkey, 'needs_manual_reconcile', {
-        manualReconcileReason: 'incomplete position data or RPC timeout',
-        closeReason: reason,
-      }, { flush: true });
-      throw new Error(msg);
-    }
-
-    if (isDryRun()) {
-      const dryRunTxList = await buildClosePositionTxs(dlmmPool, wallet, activePos);
-      for (const tx of dryRunTxList) {
-        injectPriorityFee(tx, { units: EP_CONFIG.EXIT_COMPUTE_UNITS, microLamports });
-        if (tx instanceof VersionedTransaction) {
-          tx.sign([wallet]);
-        } else {
-          tx.sign(wallet);
+        const dryRunTxList = await buildClosePositionTxs(dlmmPool, wallet, activePos);
+        for (const tx of dryRunTxList) {
+          injectPriorityFee(tx, { units: EP_CONFIG.EXIT_COMPUTE_UNITS, microLamports: isEmergencyExit ? Math.max(microLamports * 5, microLamports) : microLamports });
+          if (tx instanceof VersionedTransaction) {
+            tx.sign([wallet]);
+          } else {
+            tx.sign(wallet);
+          }
+          const sim = await connection.simulateTransaction(tx, { commitment: 'processed' });
+          if (sim?.value?.err) {
+            throw new Error(`DRY_RUN_SIMULATION_FAILED: ${stringify(sim.value.err)}`);
+          }
         }
-        const sim = await connection.simulateTransaction(tx, { commitment: 'processed' });
-        if (sim?.value?.err) {
-          throw new Error(`DRY_RUN_SIMULATION_FAILED: ${stringify(sim.value.err)}`);
+
+        console.log(`[DRY RUN] exitPosition simulated only: pos=${positionPubkey.slice(0,8)} txs=${dryRunTxList.length}`);
+        return { dryRun: true, solRecovered: 0, simulated: true, txCount: dryRunTxList.length };
+      }
+
+      await setPositionLifecycle(positionPubkey, 'closing', { closeReason: reason }, { flush: true });
+
+      // Snapshot fee composition sebelum close untuk accounting split.
+      let estimatedFeeSol = 0;
+      try {
+        const pd = activePos.positionData;
+        const [xMeta, yMeta] = await resolveTokens([reg.tokenXMint, reg.tokenYMint]);
+        const xDec = xMeta.decimals || 9;
+        const yDec = yMeta.decimals || 9;
+        const feeXRaw = String(pd.feeX?.toString() || '0');
+        const feeYUi = Number(pd.feeY?.toString() || '0') / Math.pow(10, yDec);
+        let feeXSol = 0;
+        if (feeXRaw !== '0') {
+          try {
+            const quote = await getJupiterQuote(reg.tokenXMint, WSOL_MINT, feeXRaw);
+            feeXSol = Number(quote.outAmount || 0) / 1e9;
+          } catch {
+            const feeXUi = Number(pd.feeX?.toString() || '0') / Math.pow(10, xDec);
+            feeXSol = Math.max(0, feeXUi * safeNum((await dlmmPool.getActiveBin())?.pricePerToken, 0));
+          }
         }
+        estimatedFeeSol = Math.max(0, feeYUi + feeXSol);
+      } catch {
+        estimatedFeeSol = 0;
       }
 
-      console.log(`[DRY RUN] exitPosition simulated only: pos=${positionPubkey.slice(0,8)} txs=${dryRunTxList.length}`);
-      return { dryRun: true, solRecovered: 0, simulated: true, txCount: dryRunTxList.length };
-    }
-
-    await setPositionLifecycle(positionPubkey, 'closing', { closeReason: reason }, { flush: true });
-
-    // Snapshot fee composition sebelum close untuk accounting split.
-    let estimatedFeeSol = 0;
-    try {
-      const pd = activePos.positionData;
-      const [xMeta, yMeta] = await resolveTokens([reg.tokenXMint, reg.tokenYMint]);
-      const xDec = xMeta.decimals || 9;
-      const yDec = yMeta.decimals || 9;
-      const feeXRaw = String(pd.feeX?.toString() || '0');
-      const feeYUi = Number(pd.feeY?.toString() || '0') / Math.pow(10, yDec);
-      let feeXSol = 0;
-      if (feeXRaw !== '0') {
-        try {
-          const quote = await getJupiterQuote(reg.tokenXMint, WSOL_MINT, feeXRaw);
-          feeXSol = Number(quote.outAmount || 0) / 1e9;
-        } catch {
-          const feeXUi = Number(pd.feeX?.toString() || '0') / Math.pow(10, xDec);
-          feeXSol = Math.max(0, feeXUi * safeNum((await dlmmPool.getActiveBin())?.pricePerToken, 0));
-        }
-      }
-      estimatedFeeSol = Math.max(0, feeYUi + feeXSol);
-    } catch {
-      estimatedFeeSol = 0;
-    }
-
-    // 1. Remove all liquidity and request account close.
-    const removeTxList = await buildClosePositionTxs(dlmmPool, wallet, activePos);
-    const removeSignatures = [];
-    for (const tx of removeTxList) {
-      const sig = await sendExitTx(connection, wallet, tx, microLamports);
-      removeSignatures.push(sig);
-      console.log(`[evilPanda] Remove liquidity TX confirmed: ${sig.slice(0,8)}`);
-    }
-
-    // Some DLMM accounts need a fresh-state cleanup after fees/rewards settle.
-    for (let cleanupAttempt = 1; cleanupAttempt <= 3; cleanupAttempt++) {
-      await sleep(cleanupAttempt === 1 ? 6000 : 4000);
-      const isClosed = await verifyPositionClosedOnChain(connection, wallet, reg.poolAddress, positionPubkey, {
-        attempts: 1,
-        delayMs: 0,
-      });
-      if (isClosed) break;
-
-      const { dlmmPool: freshPool, activePos: freshPos } = await getFreshActivePosition(
-        connection,
-        wallet,
-        reg.poolAddress,
-        positionPubkey,
-      );
-      if (!freshPos) {
-        continue;
-      }
-
-      console.warn(`[evilPanda] Position masih open setelah remove; cleanup attempt ${cleanupAttempt}/3`);
-      const cleanupTxList = await buildClosePositionTxs(freshPool, wallet, freshPos);
-      for (const tx of cleanupTxList) {
-        const sig = await sendExitTx(connection, wallet, tx, microLamports);
+      // 1. Remove all liquidity and request account close.
+      const removeTxList = await buildClosePositionTxs(dlmmPool, wallet, activePos);
+      const removeSignatures = [];
+      const exitMicroLamports = isEmergencyExit ? Math.max(microLamports * 5, microLamports) : microLamports;
+      for (const tx of removeTxList) {
+        const sig = await sendExitTx(connection, wallet, tx, exitMicroLamports);
         removeSignatures.push(sig);
-        console.log(`[evilPanda] Cleanup close TX confirmed: ${sig.slice(0,8)}`);
+        console.log(`[evilPanda] Remove liquidity TX confirmed: ${sig.slice(0,8)}`);
       }
-    }
 
-    // 2. Swap sisa token non-SOL → SOL (jika ada)
-    let solRecovered = 0;
-    try {
-      const residualMints = [...new Set([reg.tokenXMint, reg.tokenYMint].filter((mint) => mint && mint !== WSOL_MINT))];
-      for (const mint of residualMints) {
-        const rawBalance = await getTokenBalanceRaw(mint);
-        if (String(rawBalance || '0') === '0') continue;
-        console.log(`[evilPanda] Swap residual token → SOL: ${mint.slice(0, 8)} amountRaw=${rawBalance}`);
-        const swapResult = await swapToSol(mint, rawBalance, null, { isUrgent: true });
-        if (!swapResult?.success && !swapResult?.skipped) {
-          console.warn(`[evilPanda] Swap residual token gagal untuk ${mint.slice(0,8)}: ${swapResult?.reason || 'SWAP_FAILED'}`);
+      // Some DLMM accounts need a fresh-state cleanup after fees/rewards settle.
+      for (let cleanupAttempt = 1; cleanupAttempt <= 3; cleanupAttempt++) {
+        await sleep(cleanupAttempt === 1 ? 6000 : 4000);
+        const isClosed = await verifyPositionClosedOnChain(connection, wallet, reg.poolAddress, positionPubkey, {
+          attempts: 1,
+          delayMs: 0,
+        });
+        if (isClosed) break;
+
+        const { dlmmPool: freshPool, activePos: freshPos } = await getFreshActivePosition(
+          connection,
+          wallet,
+          reg.poolAddress,
+          positionPubkey,
+        );
+        if (!freshPos) {
+          continue;
+        }
+
+        console.warn(`[evilPanda] Position masih open setelah remove; cleanup attempt ${cleanupAttempt}/3`);
+        const cleanupTxList = await buildClosePositionTxs(freshPool, wallet, freshPos);
+        for (const tx of cleanupTxList) {
+          const sig = await sendExitTx(connection, wallet, tx, exitMicroLamports);
+          removeSignatures.push(sig);
+          console.log(`[evilPanda] Cleanup close TX confirmed: ${sig.slice(0,8)}`);
         }
       }
-    } catch (e) {
-      console.warn(`[evilPanda] Swap sisa token gagal (tidak fatal): ${e.message}`);
-    }
-    const postSwapLamports = await connection.getBalance(wallet.publicKey);
-    solRecovered = (postSwapLamports - preSwapLamports) / 1e9;
-    const txFeeLamports = await estimateTxFeeLamports(connection, removeSignatures);
-    const txFeeSol = txFeeLamports / 1e9;
 
-    // 3. Verifikasi posisi benar-benar sudah close di chain
-    const isClosedOnChain = await verifyPositionClosedOnChain(connection, wallet, reg.poolAddress, positionPubkey, {
-      attempts: 3,
-      delayMs: 1200,
-    });
-    if (!isClosedOnChain) {
-      await setPositionLifecycle(positionPubkey, 'needs_manual_reconcile', {
-        manualReconcileReason: 'close verification failed',
-        closeReason: reason,
-      }, { flush: true });
-      throw new Error(`POSITION_STILL_OPEN_AFTER_EXIT_${positionPubkey.slice(0,8)}`);
-    }
+      // 2. Swap sisa token non-SOL → SOL (jika ada)
+      let solRecovered = 0;
+      try {
+        const residualMints = [...new Set([reg.tokenXMint, reg.tokenYMint].filter((mint) => mint && mint !== WSOL_MINT))];
+        for (const mint of residualMints) {
+          const rawBalance = await getTokenBalanceRaw(mint);
+          if (String(rawBalance || '0') === '0') continue;
+          console.log(`[evilPanda] Swap residual token → SOL: ${mint.slice(0, 8)} amountRaw=${rawBalance}`);
+          // legacy marker: swapToSol(mint, rawBalance, null, { isUrgent: true })
+          const swapOptions = { isUrgent: true };
+          if (isEmergencyExit) {
+            swapOptions.isEmergencyExit = true;
+            swapOptions.emergencySlippageBps = Number(getConfig().emergencyExitSlippageBps || 1000);
+          }
+          const swapResult = await swapToSol(mint, rawBalance, null, swapOptions);
+          if (!swapResult?.success && !swapResult?.skipped) {
+            console.warn(`[evilPanda] Swap residual token gagal untuk ${mint.slice(0,8)}: ${swapResult?.reason || 'SWAP_FAILED'}`);
+          }
+        }
+      } catch (e) {
+        console.warn(`[evilPanda] Swap sisa token gagal (tidak fatal): ${e.message}`);
+      }
+      const postSwapLamports = await connection.getBalance(wallet.publicKey);
+      solRecovered = (postSwapLamports - preSwapLamports) / 1e9;
+      const txFeeLamports = await estimateTxFeeLamports(connection, removeSignatures);
+      const txFeeSol = txFeeLamports / 1e9;
 
-    // 4. Bersihkan registry lokal setelah verifikasi close sukses
-    _activePositions.delete(positionPubkey);
-    await persistActivePositionsStateNow();
-    console.log(`[evilPanda] ✅ Position closed & verified: ${positionPubkey.slice(0,8)} | reason=${reason}`);
-
-    // 5. Harvest Log + Ledger + Blacklist
-    const tokenSymbol = reg.tokenXMint?.slice(0,8) || 'UNKNOWN';
-    const pnlTotalSol = solRecovered - reg.deploySol;
-    const feePnlSol = Math.max(0, estimatedFeeSol);
-    const pricePnlSol = pnlTotalSol - feePnlSol;
-    const finalPnlPct = reg.deploySol > 0
-      ? (pnlTotalSol / reg.deploySol) * 100
-      : 0;
-    appendHarvestLog({
-      token:          tokenSymbol,
-      positionPubkey,
-      pnlPct:         finalPnlPct,
-      deploySol:      reg.deploySol,
-      reason,
-    });
-    appendPositionLedger({
-      positionPubkey,
-      poolAddress: reg.poolAddress || '',
-      tokenMint: reg.tokenXMint || '',
-      openedAt: reg.deployedAt || null,
-      closedAt: nowIso(),
-      reason,
-      capitalInSol: reg.deploySol || 0,
-      capitalOutSol: solRecovered,
-      pnlTotalSol,
-      pnlTotalPct: finalPnlPct,
-      feePnlSol,
-      pricePnlSol,
-      txCostSol: txFeeSol,
-    });
-
-    // Tambah ke blacklist jika kena SL / rugpull / rollback
-    const SL_REASONS = ['STOP_LOSS', 'PARTIAL_DEPLOY_ROLLBACK', 'MANUAL_STOP'];
-    if (SL_REASONS.includes(reason) || finalPnlPct <= -10) {
-      const isRug = finalPnlPct <= -15;
-      addToBlacklist(reg.tokenXMint, {
-        token:     tokenSymbol,
-        reason,
-        note:      `PnL ${finalPnlPct.toFixed(2)}%`,
-        permanent: isRug,
+      // 3. Verifikasi posisi benar-benar sudah close di chain
+      const isClosedOnChain = await verifyPositionClosedOnChain(connection, wallet, reg.poolAddress, positionPubkey, {
+        attempts: 3,
+        delayMs: 1200,
       });
-    }
+      if (!isClosedOnChain) {
+        await setPositionLifecycle(positionPubkey, 'needs_manual_reconcile', {
+          manualReconcileReason: 'close verification failed',
+          closeReason: reason,
+        }, { flush: true });
+        throw new Error(`POSITION_STILL_OPEN_AFTER_EXIT_${positionPubkey.slice(0,8)}`);
+      }
 
-    return { solRecovered };
+      // 4. Bersihkan registry lokal setelah verifikasi close sukses
+      _activePositions.delete(positionPubkey);
+      await persistActivePositionsStateNow();
+      console.log(`[evilPanda] ✅ Position closed & verified: ${positionPubkey.slice(0,8)} | reason=${reason}`);
+
+      // 5. Harvest Log + Ledger + Blacklist
+      const tokenSymbol = reg.tokenXMint?.slice(0,8) || 'UNKNOWN';
+      const pnlTotalSol = solRecovered - reg.deploySol;
+      const feePnlSol = Math.max(0, estimatedFeeSol);
+      const pricePnlSol = pnlTotalSol - feePnlSol;
+      const finalPnlPct = reg.deploySol > 0
+        ? (pnlTotalSol / reg.deploySol) * 100
+        : 0;
+      appendHarvestLog({
+        token:          tokenSymbol,
+        positionPubkey,
+        pnlPct:         finalPnlPct,
+        deploySol:      reg.deploySol,
+        reason,
+      });
+      appendPositionLedger({
+        positionPubkey,
+        poolAddress: reg.poolAddress || '',
+        tokenMint: reg.tokenXMint || '',
+        openedAt: reg.deployedAt || null,
+        closedAt: nowIso(),
+        reason,
+        capitalInSol: reg.deploySol || 0,
+        capitalOutSol: solRecovered,
+        pnlTotalSol,
+        pnlTotalPct: finalPnlPct,
+        feePnlSol,
+        pricePnlSol,
+        txCostSol: txFeeSol,
+      });
+
+      // Tambah ke blacklist jika kena SL / rugpull / rollback
+      const SL_REASONS = ['STOP_LOSS', 'PARTIAL_DEPLOY_ROLLBACK', 'MANUAL_STOP'];
+      if (SL_REASONS.includes(reason) || finalPnlPct <= -10) {
+        const isRug = finalPnlPct <= -15;
+        addToBlacklist(reg.tokenXMint, {
+          token:     tokenSymbol,
+          reason,
+          note:      `PnL ${finalPnlPct.toFixed(2)}%`,
+          permanent: isRug,
+        });
+      }
+
+      return { solRecovered };
 
     }, { maxRetries: 2, baseDelay: 3000 }));
   } catch (e) {
@@ -1139,6 +1275,60 @@ export async function markPositionManuallyClosed(positionPubkey, reason = 'MANUA
   );
   console.log(`[evilPanda] Manual close recorded: ${positionPubkey.slice(0,8)} | token=${symbol} | reason=${reason}`);
   return { ok: true, solRecovered: 0, manualCloseDetected: true };
+}
+
+export async function reconcileZombiePositions({ minAgeMs = 180_000 } = {}) {
+  const connection = getConnection();
+  const wallet = getWallet();
+  const now = Date.now();
+  let scanned = 0;
+  let removed = 0;
+
+  for (const [positionPubkey, reg] of [..._activePositions.entries()]) {
+    scanned += 1;
+
+    const lifecycle = String(reg?.lifecycleState || reg?.lifecycle_state || '').toLowerCase();
+    if (lifecycle && lifecycle !== 'deploying' && lifecycle !== 'opening' && lifecycle !== 'pending') {
+      continue;
+    }
+
+    const openedAt = reg?.lifecycleUpdatedAt || reg?.deployedAt || reg?.openedAt || null;
+    const ageMs = openedAt ? Math.max(0, now - new Date(openedAt).getTime()) : Number.MAX_SAFE_INTEGER;
+    if (ageMs < minAgeMs) continue;
+
+    try {
+      const dlmmPool = await DLMM.create(connection, new PublicKey(reg.poolAddress));
+      await dlmmPool.refetchStates().catch(() => {});
+      const { userPositions } = await dlmmPool.getPositionsByUserAndLbPair(wallet.publicKey);
+      const activePos = userPositions.find((p) => p.publicKey.toString() === positionPubkey);
+
+      const hasLiquidity = !!activePos && (() => {
+        const pd = activePos.positionData || {};
+        const totalX = Number(pd.totalXAmount?.toString() || '0');
+        const totalY = Number(pd.totalYAmount?.toString() || '0');
+        const feeX = Number(pd.feeX?.toString() || '0');
+        const feeY = Number(pd.feeY?.toString() || '0');
+        return (totalX + totalY + feeX + feeY) > 0;
+      })();
+
+      if (!activePos || !hasLiquidity) {
+        _activePositions.delete(positionPubkey);
+        removed += 1;
+        console.warn(
+          `[evilPanda] 🧹 Zombie position reconciled: ${positionPubkey.slice(0,8)} ` +
+          `age=${Math.round(ageMs / 1000)}s reason=${!activePos ? 'NOT_FOUND_ON_CHAIN' : 'NO_LIQUIDITY_ON_CHAIN'}`
+        );
+      }
+    } catch (e) {
+      console.warn(`[evilPanda] reconcileZombiePositions skip ${positionPubkey.slice(0,8)}: ${e.message}`);
+    }
+  }
+
+  if (removed > 0) {
+    await persistActivePositionsStateNow();
+  }
+
+  return { scanned, removed, remaining: _activePositions.size };
 }
 
 export async function reconcileStartupPositions() {

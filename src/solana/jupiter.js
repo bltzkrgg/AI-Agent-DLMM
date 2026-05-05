@@ -177,8 +177,19 @@ export async function getJupiterQuote(inputMint, outputMint, amountRaw, slippage
 // ─── Swap token → SOL ─────────────────────────────────────────────
 
 export async function swapToSOL(inputMint, amountRaw, slippageBps = 250, options = {}) {
-  const { isUrgent = false } = options;
-  const effectiveSlippage = isUrgent ? 500 : slippageBps;
+  const { isUrgent = false, isEmergencyExit = false, emergencySlippageBps = null } = options;
+  const emergencySlippage = Math.max(
+    500,
+    Math.min(
+      1500,
+      Number(emergencySlippageBps || getConfig().emergencyExitSlippageBps || 1000) || 1000
+    )
+  );
+  const effectiveSlippage = isEmergencyExit
+    ? emergencySlippage
+    : isUrgent
+      ? 500
+      : slippageBps;
 
   if (!inputMint || inputMint === SOL_MINT) {
     return { skipped: true, reason: 'Already SOL or no mint provided' };
@@ -187,7 +198,7 @@ export async function swapToSOL(inputMint, amountRaw, slippageBps = 250, options
     return { skipped: true, reason: 'Amount is zero' };
   }
   if (isDryRun()) {
-    console.log(`[DRY RUN] swapToSOL skipped: mint=${inputMint} amount=${amountRaw} urgent=${isUrgent}`);
+    console.log(`[DRY RUN] swapToSOL skipped: mint=${inputMint} amount=${amountRaw} urgent=${isUrgent} emergency=${isEmergencyExit}`);
     return { dryRun: true, skipped: true, reason: 'Dry run mode — TX not executed' };
   }
 
@@ -200,7 +211,7 @@ export async function swapToSOL(inputMint, amountRaw, slippageBps = 250, options
   
   // 🛡️ SURGICAL IMPACT GUARD: Pelindung Modal dari Liquiditas Ampas
   const impact = parseFloat(quote.priceImpactPct || 0);
-  const maxAllowedImpact = isUrgent ? 10.0 : 5.0; // Pelit mode: 5% normal, 10% darurat
+  const maxAllowedImpact = isEmergencyExit ? 15.0 : (isUrgent ? 10.0 : 5.0); // darurat 15%, urgent 10%, normal 5%
   
   if (impact > maxAllowedImpact) {
     const errorMsg = `LIQUIDITY_TRAP: Price impact too high (${impact.toFixed(2)}% > ${maxAllowedImpact}%). ` +
@@ -214,10 +225,11 @@ export async function swapToSOL(inputMint, amountRaw, slippageBps = 250, options
   }
 
   // 2. Get Helius priority fee recommendation (best-effort)
-  let priorityFeeLamports = isUrgent ? 250000 : 50000;
+  let priorityFeeLamports = isEmergencyExit ? 250000 * 5 : (isUrgent ? 250000 : 50000);
   try {
     const recommended = await getRecommendedPriorityFee([inputMint, SOL_MINT]);
-    priorityFeeLamports = Math.max(priorityFeeLamports, Math.round(recommended * 1.5));
+    const feeMultiplier = isEmergencyExit ? 5 : (isUrgent ? 1.5 : 1.0);
+    priorityFeeLamports = Math.max(priorityFeeLamports, Math.round(Number(recommended) * feeMultiplier));
   } catch { /* pakai default */ }
 
   // 3. Get swap transaction
@@ -317,7 +329,8 @@ export async function swapToSOL(inputMint, amountRaw, slippageBps = 250, options
       outAmountLamports: quote.outAmount,
       outSol:     parseFloat(outSol.toFixed(6)),
       priceImpactPct: quote.priceImpactPct || 0,
-      urgent:     isUrgent
+      urgent:     isUrgent,
+      emergencyExit: isEmergencyExit,
     };
   } catch (error) {
     const likelySuccess = await detectLikelySwapSuccess({
@@ -337,7 +350,8 @@ export async function swapToSOL(inputMint, amountRaw, slippageBps = 250, options
         inAmount: amountRaw,
         outAmountLamports: quote.outAmount,
         priceImpactPct: quote.priceImpactPct || 0,
-        urgent: isUrgent
+        urgent: isUrgent,
+        emergencyExit: isEmergencyExit,
       };
     }
     recordTxFailure({ context: 'jupiter.swap', error });
