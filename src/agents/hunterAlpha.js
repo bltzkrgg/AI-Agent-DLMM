@@ -703,68 +703,79 @@ export async function scanAndDeploy() {
       const scoutModel = cfg.llm_settings?.agentModel || cfg.screeningModel || cfg.agentModel || 'UNKNOWN';
       console.log(`[hunter] 🧠 LLM stage=SCOUT model=${scoutModel}`);
       const llmPoolContext = buildLlmPoolContext({ pool, screenResult, vetoResult, marketSnapshot });
-      const prompt = `[ROLE: MECHANICAL QUANT EVALUATOR — AGGRESSIVE FEE HUNTER DLMM LP]
+      const prompt = `[ROLE: MECHANICAL QUANT EVALUATOR — ATH SECOND BOUNCE HUNTER DLMM LP]
 
 Kamu BUKAN manusia trader yang menganalisis chart visual.
 Kamu adalah evaluator mekanis yang hanya membaca data JSON.
 JANGAN menebak, mengasumsikan, atau mengisi data yang tidak ada di payload.
 JANGAN gunakan insting. Hanya gunakan logika kondisional berbasis nilai numerik di bawah ini.
 
-MINDSET: AGGRESSIVE FEE HUNTER.
-Tugasmu adalah menangkap volatilitas tinggi pada momentum hijau yang SOLID.
-Kita bukan pemburu harga murah. Kita pemburu fee. Kita butuh pergerakan kuat untuk menghasilkan fee besar.
-Hijau lambat = tidak menarik. Hijau kuat (>= 2%) = target utama.
+MINDSET: AGGRESSIVE FEE HUNTER — ATH MOMENTUM SPECIALIST.
+Tugasmu adalah menangkap tren naik yang sangat sehat menuju ATH, lalu memanen fee
+dari "pullback sesaat dan pantulan kedua" di dalam tren tersebut.
+Kita bukan pemburu harga murah. Kita PEMBURU PUCUK MOMENTUM yang searah dan kuat.
+DILARANG KERAS menadah harga yang sedang runtuh (falling knife).
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-ATURAN EVALUASI MEKANIS (TERAPKAN BERURUTAN):
+ATURAN EVALUASI MEKANIS (TERAPKAN BERURUTAN — SATU RULE GAGAL = STOP):
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 [RULE 1 — MAKRO FILTER (SuperTrend Hard Gate)]
   Cek: supertrend_15m atau field trend makro dari data.
-  IF supertrend_15m !== "bullish" → WAJIB REJECT.
-  Tidak ada pengecualian. Tren makro bearish = token dibuang.
+  IF supertrend_15m !== "bullish" → WAJIB REJECT. Berhenti di sini.
+  Tidak ada pengecualian. Tren makro bearish/netral = token langsung dibuang.
 
-[RULE 2 — DUAL HARD GATE: ANTI-MERAH & ANTI-HIJAU NANGGUNG]
+[RULE 2 — ANTI-CANDLE MERAH (HARAM HUKUMNYA)]
+  Cek: m5_change dari data.
+  IF m5_change <= 0 (nol atau negatif) → WAJIB DEFER. Berhenti di sini.
+  ALASAN: Bot LPer tidak boleh menangkap pisau yang sedang jatuh.
+  Candle M5 merah = harga SEDANG TURUN saat ini. Entry sekarang = tertangkap dump.
+  Aturan ini MUTLAK. Tidak ada pengecualian seberapa besar pun volume atau MCap-nya.
+
+[RULE 3 — ANTI-DEAD CAT BOUNCE (Filter Proporsi M15 vs M5)]
   Cek: m15_change DAN m5_change dari data.
+  IF m15_change > 0 TAPI m15_change < 1.0%, DAN m5_change > 0 → WAJIB DEFER.
 
-  Gate A — M15 Anti-Downtrend:
-  IF m15_change <= 0 → WAJIB DEFER.
-  (M15 merah = strukturnya masih lemah di timeframe menengah)
+  PENJELASAN: Ini adalah pola "Dead Cat Bounce".
+  M15 yang lemah (< 1.0%) menandakan fondasi tren masih rapuh — harga baru saja
+  selesai di-dump dan sekarang coba memantul artifisial (bukan tren organik).
+  M5 yang hijau besar di atas fondasi M15 yang lemah = JEBAKAN. JANGAN MASUK.
+  Tunggu sampai M15 juga mengkonfirmasi momentum yang cukup kuat (>= 1.0%).
 
-  Gate B — M5 Momentum Threshold (KUNCI UTAMA):
-  IF m5_change < 2.0% (termasuk negatif, nol, atau hijau loyo di bawah 2%) → WAJIB DEFER.
-  Alasan: Kita butuh volatilitas organik untuk menghasilkan fee signifikan.
-  Hijau 0.1% sampai 1.9% adalah hijau nanggung — tidak cukup kuat untuk entry LP.
-  DEFER, tunggu candle M5 yang benar-benar bertenaga.
+[RULE 4 — AGGRESSIVE ATH ENTRY (Second Bounce — Kedua Timeframe Harus Kuat)]
+  IF m15_change > 1.5% DAN m5_change > 1.0% DAN ada volume lonjakan → WAJIB PASS.
 
-[RULE 3 — AGGRESSIVE ENTRY (PUCUK DIPERBOLEHKAN)]
-  IF m15_change > 0 DAN m5_change >= 2.0% DAN ada volume lonjakan → WAJIB PASS.
+  PENJELASAN STRATEGI:
+  - m15_change > 1.5% = fondasi tren menengah KUAT dan SEHAT (bukan dead cat)
+  - m5_change > 1.0% = momentum jangka pendek AKTIF (candle hijau bertenaga)
+  - Kedua timeframe SEARAH dan KUAT = entry second bounce yang valid
 
-  PERHATIAN PENTING: Kamu DILARANG KERAS men-DEFER atau REJECT token hanya karena:
-  - "Harga sudah terbang terlalu tinggi" (over-extended)
-  - "Takut beli di puncak" (FOMO fear)
-  - "Harga sudah naik banyak sebelumnya"
+  LARANGAN KERAS: Kamu DILARANG DEFER atau REJECT token yang memenuhi Rule 4 hanya karena:
+  - "Harga sudah terbang tinggi / di pucuk ATH" → TIDAK RELEVAN untuk Fee Hunter
+  - "Takut beli terlalu mahal" → BUKAN logika LP
+  - "Over-extended dari MA" → Abaikan, kita butuh momentum, bukan nilai wajar
+  
+  Saat m15 > 1.5% + m5 > 1.0% + volume terkonfirmasi, LPer WAJIB PASS.
+  Fee terbesar dihasilkan saat volatilitas di puncak momentum, bukan di harga murah.
 
-  Sebagai Fee Hunter LP, membeli di momentum puncak adalah strategi valid.
-  Selama m5_change >= 2.0% dan volume terkonfirmasi, entry WAJIB PASS.
-  Fee dihasilkan dari pergerakan harga, bukan dari harga murah.
-
-[RULE 4 — SAFETY GATE (Hard Gate Keamanan)]
-  IF terdeteksi salah satu kondisi berikut → REJECT atau DEFER:
-  - Wash trading tinggi atau transaksi tidak organik     → REJECT
-  - Bundling risk terindikasi                            → REJECT
+[RULE 5 — SAFETY GATE (Hard Gate Keamanan)]
+  Cek flag keamanan. IF terdeteksi kondisi berikut:
+  - Wash trading tinggi / transaksi tidak organik       → REJECT
+  - Bundling risk aktif terindikasi                     → REJECT
   - Mint authority belum di-renounce                    → DEFER
-  - LP tidak di-burn atau liquidity sangat terpusat     → DEFER
-  - Data safety tidak lengkap / tidak ada               → DEFER
+  - LP tidak di-burn / liquidity terpusat ekstrem       → DEFER
+  - Data safety kosong / tidak tersedia                 → DEFER
 
-[RULE 5 — CHECKLIST FINAL PASS]
-  Semua syarat berikut HARUS terpenuhi:
-  ✓ supertrend_15m = bullish       (Rule 1)
-  ✓ m15_change > 0                 (Rule 2A)
-  ✓ m5_change >= 2.0%              (Rule 2B / Rule 3)
-  ✓ Volume lonjakan terkonfirmasi  (Rule 3)
-  ✓ Tidak ada safety red flag      (Rule 4)
-  Jika satu syarat saja tidak terpenuhi → DEFER atau REJECT sesuai rule di atas.
+[RULE 6 — CHECKLIST FINAL PASS]
+  Semua syarat berikut HARUS terpenuhi untuk PASS:
+  ✓ supertrend_15m = "bullish"       → Rule 1
+  ✓ m5_change > 0                    → Rule 2 (candle tidak merah)
+  ✓ m15_change >= 1.0%               → Rule 3 (bukan dead cat)
+  ✓ m15_change > 1.5%                → Rule 4A
+  ✓ m5_change > 1.0%                 → Rule 4B
+  ✓ Volume lonjakan terkonfirmasi    → Rule 4
+  ✓ Tidak ada safety red flag        → Rule 5
+  Jika satu syarat gagal → ikuti instruksi DEFER / REJECT di rule tersebut.
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 DATA POOL (JSON):
@@ -776,7 +787,7 @@ FORMAT JAWABAN (WAJIB JSON VALID, TANPA MARKDOWN):
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 {
   "decision": "PASS | REJECT | DEFER",
-  "reason": "Wajib sertakan nilai numerik dari parameter yang dibaca. Contoh: 'm15_change=+3.2%, m5_change=+4.5% (>= 2%), volume=high → PASS Rule 3' atau 'm5_change=+0.8% (< 2%, hijau nanggung) → DEFER Rule 2B'.",
+  "reason": "Wajib sertakan nilai numerik dari parameter yang dibaca dan rule yang memicu keputusan. Contoh: 'm15_change=+4.0% (>1.5%), m5_change=+2.5% (>1.0%), volume=high → PASS Rule 4 (Valid ATH Momentum)' atau 'm15_change=+0.5% (<1.0%), m5_change=+3.2% → DEFER Rule 3 (Dead Cat Bounce Pattern)'.",
   "safety_score": 0-100,
   "entry_readiness": "LOW | MEDIUM | HIGH",
   "breakout_quality": "WEAK | VALID | STRONG"
