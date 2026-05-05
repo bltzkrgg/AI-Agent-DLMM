@@ -651,7 +651,7 @@ async function fetchExitSignal(tokenXMint) {
 function evaluateExitSignal(signal) {
   if (!signal) return { shouldExit: false, scenario: null, reason: 'Signal unavailable — HOLD' };
 
-  const { rsi, close, bbUpper, macdHist } = signal;
+  const { rsi, close, bbUpper, macdHist, direction } = signal;
   const threshold = getConfiguredSmartExitRsi();
 
   const rsiOverbought = rsi != null && rsi >= threshold;
@@ -671,6 +671,17 @@ function evaluateExitSignal(signal) {
       shouldExit: true,
       scenario:   'B',
       reason:     `RSI(2)=${rsi?.toFixed(1)}≥${threshold} + MACD_hist=${macdHist?.toFixed(6)}>0`,
+    };
+  }
+
+  // Skenario C: Market Structure Break — Supertrend berbalik BEARISH
+  // Supertrend flip = support jebol, jangan tunggu RSI overbought.
+  // Exit segera untuk hindari kerugian lebih dalam.
+  if (direction && direction.toLowerCase() === 'bearish') {
+    return {
+      shouldExit: true,
+      scenario:   'C',
+      reason:     'Struktur Support Jebol (Supertrend = BEARISH)',
     };
   }
 

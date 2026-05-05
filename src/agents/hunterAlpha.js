@@ -261,14 +261,20 @@ function buildLlmPoolContext({ pool = {}, screenResult = null, vetoResult = null
   const okx = screenResult?.okxSignals || null;
   const gmgn = screenResult?.gmgnMetrics || null;
   const taTrend = marketSnapshot?.quality?.taTrend || marketSnapshot?.ta?.supertrend?.trend || vetoResult?.diagnostics?.supertrend15m || 'UNKNOWN';
-  const priceChangeM5 = marketSnapshot?.ohlcv?.priceChangeM5;
-  const priceChangeH1 = marketSnapshot?.ohlcv?.priceChangeH1;
-  const taReliable = marketSnapshot?.quality?.taReliable;
+  const priceChangeM5  = marketSnapshot?.ohlcv?.priceChangeM5;
+  const priceChangeM15 = marketSnapshot?.ohlcv?.priceChangeM15 ?? vetoResult?.diagnostics?.m15_change;
+  const priceChangeM15Prev = marketSnapshot?.ohlcv?.priceChangeM15Prev;
+  const priceChangeH1  = marketSnapshot?.ohlcv?.priceChangeH1;
+  const taReliable     = marketSnapshot?.quality?.taReliable;
   const athDistancePct = vetoResult?.diagnostics?.athDistancePct;
   const stageWaterfall = screenResult?.stageWaterfall || {};
   const topFlags = Array.isArray(screenResult?.highFlags)
     ? screenResult.highFlags.slice(0, 3).map((f) => f?.msg).filter(Boolean)
     : [];
+
+  // Slot data: injected ke context agar LLM bisa terapkan Rule 0 (Slot Limit Gate)
+  const activeCount  = getActivePositionKeys().length;
+  const maxPositions = Number(getConfig().maxPositions || 1);
 
   return [
     `- Token: ${pool.tokenXSymbol || pool.name?.split('-')[0] || 'UNKNOWN'}`,
@@ -277,8 +283,11 @@ function buildLlmPoolContext({ pool = {}, screenResult = null, vetoResult = null
     `- Volume 24h: ${formatMaybeUsd(pool.volume24h || pool.volume_24h || pool.trade_volume_24h || pool.volume || 0)}`,
     `- TVL: ${formatMaybeUsd(pool.activeTvl || pool.totalTvl || 0)}`,
     `- Mcap: ${formatMaybeUsd(pool.mcap || 0)}`,
+    `- Slot Posisi: ${activeCount} aktif dari maksimal ${maxPositions}`,
     `- TA Supertrend 15m: ${String(taTrend || 'UNKNOWN').toUpperCase()}`,
     `- TA M5 Change: ${formatMaybePct(priceChangeM5)}`,
+    `- TA M15 Change: ${formatMaybePct(priceChangeM15)}`,
+    `- TA M15 Previous: ${formatMaybePct(priceChangeM15Prev)}`,
     `- TA H1 Change: ${formatMaybePct(priceChangeH1)}`,
     `- TA Reliable: ${formatMaybeBool(taReliable)}`,
     `- ATH Distance: ${Number.isFinite(Number(athDistancePct)) ? formatMaybePct(athDistancePct, 1) : 'UNKNOWN'}`,
