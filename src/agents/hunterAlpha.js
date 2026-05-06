@@ -97,6 +97,8 @@ const _positionLabels = new Map(); // pubkey -> { symbol }
 const _monitoredPositions = new Set();
 const _lastRealtimePnlLogAt = new Map();
 const _pendingRetestQueue = new Map(); // mint -> { pool, symbol, reason, attempts, nextCheckAt, expiresAt }
+let _pendingTaRadarTimer = null;
+let _pendingTaRadarInFlight = false;
 let _manualCloseWatchTimer = null;
 let _manualCloseWatchInFlight = false;
 
@@ -197,23 +199,37 @@ async function collectReadyRetestPools(cfg = getConfig()) {
         Number(cfg.retestVetoTimeoutMs || 45_000),
         'RETEST_MERIDIAN_VETO'
       );
-      if (!veto.veto) {
-        _pendingRetestQueue.delete(mint);
-        const pool = {
-          ...row.pool,
-          _retestReason: row.reason,
-          _retestAttempts: row.attempts,
-        };
-        console.log(`[hunter] ✅ Retest PASS: ${row.symbol} attempts=${row.attempts}`);
-        ready.push(pool);
-        continue;
+      if (veto.veto) {
+        row.lastReason = veto.reason || row.lastReason;
+        if (!isRetestableTaVeto(veto)) {
+          console.log(`[hunter] ❌ Retest dropped: ${row.symbol} — ${row.lastReason}`);
+          _pendingRetestQueue.delete(mint);
+          continue;
+        }
       }
-      row.lastReason = veto.reason || row.lastReason;
-      if (!isRetestableTaVeto(veto)) {
-        console.log(`[hunter] ❌ Retest dropped: ${row.symbol} — ${row.lastReason}`);
-        _pendingRetestQueue.delete(mint);
-        continue;
+
+      const marketSnapshot = await getMarketSnapshot(
+        mint,
+        row.pool?.address || row.pool?.poolAddress || row.pool?.pool || null
+      ).catch(() => null);
+      const entrySignals = deriveBreakoutEntrySignals({ pool: row.pool, vetoResult: veto, marketSnapshot, cfg });
+
+      if (entrySignals.entryTimingState === 'BREAKOUT' || entrySignals.entryTimingState === 'ATH_BREAK') {
+        if (entrySignals.entryReadiness === 'HIGH' && (entrySignals.breakoutQuality === 'VALID' || entrySignals.breakoutQuality === 'STRONG')) {
+          _pendingRetestQueue.delete(mint);
+          const pool = {
+            ...row.pool,
+            _retestReason: row.reason,
+            _retestAttempts: row.attempts,
+            _entrySignals: entrySignals,
+          };
+          console.log(`[hunter] ✅ Retest PASS: ${row.symbol} attempts=${row.attempts}`);
+          ready.push(pool);
+          continue;
+        }
       }
+
+      row.lastReason = `TA belum fresh: ${entrySignals.entryTimingState}/${entrySignals.breakoutQuality}`;
       _pendingRetestQueue.set(mint, row);
       console.log(`[hunter] ⏳ Retest still pending: ${row.symbol} — ${row.lastReason}`);
     } catch (e) {
@@ -460,6 +476,11 @@ function getManualCloseWatchIntervalMs() {
   return Math.max(5000, getRealtimePnlIntervalMs());
 }
 
+function getPendingTaRadarIntervalMs() {
+  const cfg = getConfig();
+  return Math.max(60_000, Math.round((Math.max(1, Number(cfg.retestIntervalMin) || 5)) * 60 * 1000));
+}
+
 export function startManualCloseWatcher() {
   if (_manualCloseWatchTimer) return false;
 
@@ -501,6 +522,137 @@ export function stopManualCloseWatcher() {
   if (!_manualCloseWatchTimer) return false;
   clearInterval(_manualCloseWatchTimer);
   _manualCloseWatchTimer = null;
+  return true;
+}
+
+async function processPendingTaRadar(cfg = getConfig()) {
+  if (cfg.pendingRetestEnabled === false || _pendingRetestQueue.size === 0) return [];
+
+  const now = Date.now();
+  const maxAttempts = Math.max(1, Number(cfg.retestMaxAttempts) || 8);
+  const intervalMin = Math.max(1, Number(cfg.retestIntervalMin) || 5);
+  const ready = [];
+
+  for (const [mint, row] of [..._pendingRetestQueue.entries()]) {
+    if (!row?.pool || hasActiveMint(mint) || isBlacklisted(mint)) {
+      _pendingRetestQueue.delete(mint);
+      continue;
+    }
+    if (row.expiresAt <= now || row.attempts >= maxAttempts) {
+      console.log(`[hunter] ⌛ TA radar expired: ${row.symbol} attempts=${row.attempts}/${maxAttempts}`);
+      _pendingRetestQueue.delete(mint);
+      continue;
+    }
+    if (row.nextCheckAt > now) continue;
+
+    row.attempts += 1;
+    row.nextCheckAt = now + intervalMin * 60 * 1000;
+
+    try {
+      const veto = await withTimeout(
+        runMeridianVeto({ mint, symbol: row.symbol, pool: row.pool }),
+        Number(cfg.retestVetoTimeoutMs || 45_000),
+        'TA_RADAR_MERIDIAN_VETO'
+      );
+
+      if (veto.veto && !isRetestableTaVeto(veto)) {
+        row.lastReason = veto.reason || row.lastReason;
+        console.log(`[hunter] ❌ TA radar dropped: ${row.symbol} — ${row.lastReason}`);
+        _pendingRetestQueue.delete(mint);
+        continue;
+      }
+
+      const marketSnapshot = await getMarketSnapshot(
+        mint,
+        row.pool?.address || row.pool?.poolAddress || row.pool?.pool || null
+      ).catch(() => null);
+      const entrySignals = deriveBreakoutEntrySignals({ pool: row.pool, vetoResult: veto, marketSnapshot, cfg });
+
+      if (entrySignals.entryTimingState === 'BREAKOUT' || entrySignals.entryTimingState === 'ATH_BREAK') {
+        if (entrySignals.entryReadiness === 'HIGH' && (entrySignals.breakoutQuality === 'VALID' || entrySignals.breakoutQuality === 'STRONG')) {
+          _pendingRetestQueue.delete(mint);
+          const pool = {
+            ...row.pool,
+            _retestReason: row.reason,
+            _retestAttempts: row.attempts,
+            _entrySignals: entrySignals,
+          };
+          console.log(`[hunter] ✅ TA radar PASS: ${row.symbol} attempts=${row.attempts}`);
+          ready.push({ pool, symbol: row.symbol, entrySignals, vetoResult: veto, reason: row.reason });
+          continue;
+        }
+      }
+
+      row.lastReason = `TA belum fresh: ${entrySignals.entryTimingState}/${entrySignals.breakoutQuality}`;
+      _pendingRetestQueue.set(mint, row);
+      console.log(`[hunter] ⏳ TA radar pending: ${row.symbol} — ${row.lastReason}`);
+    } catch (e) {
+      row.lastReason = e?.message || 'TA radar error';
+      _pendingRetestQueue.set(mint, row);
+      console.warn(`[hunter] TA radar error ${row.symbol}: ${row.lastReason}`);
+    }
+  }
+
+  return ready;
+}
+
+export function startPendingTaRadarWatcher() {
+  if (_pendingTaRadarTimer) return false;
+  if (getConfig().pendingRetestEnabled === false) {
+    console.log('[hunter] TA radar watcher tidak dijalankan karena pendingRetestEnabled=false');
+    return false;
+  }
+
+  const tick = async () => {
+    if (_pendingTaRadarInFlight) return;
+    if (!isRunning()) return;
+    _pendingTaRadarInFlight = true;
+    try {
+      const cfg = getConfig();
+      if (cfg.pendingRetestEnabled === false) return;
+      const ready = await processPendingTaRadar(cfg);
+      for (const item of ready) {
+        const { pool, symbol, entrySignals, reason } = item;
+        const poolAddress = pool.address || pool.poolAddress || pool.pool || pool.pubkey || '';
+        const tokenMint = pool.tokenXMint || pool.tokenX || pool.mint || '';
+        if (!poolAddress || !tokenMint) continue;
+
+        enqueueForDeploy(pool, symbol, {
+          scoutReason: reason || item.vetoResult?.reason || 'TA Radar Ready',
+          entryReadiness: entrySignals.entryReadiness,
+          breakoutQuality: entrySignals.breakoutQuality,
+          entryGateMode: entrySignals.entryGateMode,
+          entryTimingState: entrySignals.entryTimingState,
+          signalStDistancePct: entrySignals.signalStDistancePct,
+          signalAthDistancePct: entrySignals.signalAthDistancePct,
+        });
+
+        await notify(
+          `🛰️ <b>TA Radar Ready</b>\n` +
+          `Token: <b>${escapeHTML(symbol)}</b>\n` +
+          `Entry: <code>${entrySignals.entryReadiness}</code> | Breakout: <code>${entrySignals.breakoutQuality}</code>\n` +
+          `Timing: <code>${entrySignals.entryTimingState}</code>\n` +
+          `⏳ <i>Masuk deploy watcher real-time.</i>`
+        );
+      }
+    } catch (e) {
+      console.warn(`[hunter] TA radar watcher error: ${e.message}`);
+    } finally {
+      _pendingTaRadarInFlight = false;
+    }
+  };
+
+  _pendingTaRadarTimer = setInterval(tick, getPendingTaRadarIntervalMs());
+  _pendingTaRadarTimer.unref?.();
+  tick().catch((e) => console.warn(`[hunter] TA radar initial tick error: ${e.message}`));
+  console.log(`[hunter] 🛰️ TA radar watcher aktif interval=${Math.round(getPendingTaRadarIntervalMs() / 1000)}s`);
+  return true;
+}
+
+export function stopPendingTaRadarWatcher() {
+  if (!_pendingTaRadarTimer) return false;
+  clearInterval(_pendingTaRadarTimer);
+  _pendingTaRadarTimer = null;
   return true;
 }
 
@@ -811,6 +963,7 @@ export async function scanAndDeploy() {
         if (isRetestableTaVeto(vetoResult)) {
           // Simpan ke pendingStore untuk tracking retest antar siklus
           pendingStore.add(tokenMint, tokenSymbol, 0, 0, pool);
+          addPendingRetest(pool, rejectReason);
           reportManager.updateGate(tokenSymbol, 'PENDING_RETEST', 'DEFER', rejectReason);
           reportManager.setFinalVerdict(tokenSymbol, 'DEFERRED', rejectReason);
           console.log(`[hunter] ⏳ ${tokenSymbol} → pending retest (Meridian DEFER: ${rejectReason})`);
@@ -872,6 +1025,7 @@ export async function scanAndDeploy() {
         reportManager.setFinalVerdict(tokenSymbol, 'DEFERRED', waitReason);
         console.log(`[hunter] ⏳ ${tokenSymbol} ditahan sebelum LLM: ${waitReason}`);
         pendingStore.add(tokenMint || '', tokenSymbol, 0, 0, pool);
+        addPendingRetest(pool, waitReason);
         return { ok: false, symbol: tokenSymbol || 'UNKNOWN', stage: 'SCOUT_AGENT', reason: waitReason };
       }
 
@@ -1036,6 +1190,7 @@ FORMAT JAWABAN (WAJIB JSON VALID, TANPA MARKDOWN):
         // DEFERRED — masuk real-time queue, bukan buang ke reject
         reportManager.setFinalVerdict(tokenSymbol, 'DEFERRED', reason);
         pendingStore.add(tokenMint || '', tokenSymbol, 0, 0, pool);
+        addPendingRetest(pool, reason);
         console.log(`[hunter] ⏳ ${tokenSymbol} → real-time queue (Scout DEFER: ${reason})`);
         await notify(
           `⏳ <b>KANDIDAT DITUNDA (Pantauan Aktif)</b>\n` +

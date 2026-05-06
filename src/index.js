@@ -18,7 +18,7 @@ import TelegramBot              from 'node-telegram-bot-api';
 import { existsSync, readFileSync, writeFileSync, unlinkSync } from 'fs';
 import { initSolana, getWalletBalance }   from './solana/wallet.js';
 import { getConfig, updateConfig, isConfigKeySupported, resolveNestedKey, SETCONFIG_WHITELIST } from './config.js';
-import { runLinearLoop, stopLoop, setNotifyFn, isRunning, getCurrentPosition, getActivePositions, setShutdownInProgress, closeAllActivePositionsByUser, closeAllActivePositionsForShutdown, retryFailedShutdownPositions, runAutoscreening, spawnMonitorForRestoredPositions, startManualCloseWatcher, scanAndDeploy, updatePnlStatus, inventoryManagement } from './agents/hunterAlpha.js';
+import { runLinearLoop, stopLoop, setNotifyFn, isRunning, getCurrentPosition, getActivePositions, setShutdownInProgress, closeAllActivePositionsByUser, closeAllActivePositionsForShutdown, retryFailedShutdownPositions, runAutoscreening, spawnMonitorForRestoredPositions, startManualCloseWatcher, startPendingTaRadarWatcher, stopPendingTaRadarWatcher, scanAndDeploy, updatePnlStatus, inventoryManagement } from './agents/hunterAlpha.js';
 import { getActivePositionCount, reconcileStartupPositions, EP_CONFIG } from './sniper/evilPanda.js';
 import { analyzePerformance, formatEvolutionReport }     from './learn/statelessEvolve.js';
 import { generateBriefing, formatActivePositionsTelegram } from './telegram/briefing.js';
@@ -28,7 +28,7 @@ import { safeNum, escapeHTML }            from './utils/safeJson.js';
 import { initializeRpcManager }           from './utils/helius.js';
 import { createMessageTransport }         from './telegram/messageTransport.js';
 import { getTodayResults }                from './db/database.js';
-import { startDeployQueueWatcher, setDeployQueueNotifyFn, setDeployQueueDeployFn, setDeployQueueMonitorFn } from './utils/pendingDeployQueue.js';
+import { startDeployQueueWatcher, stopDeployQueueWatcher, setDeployQueueNotifyFn, setDeployQueueDeployFn, setDeployQueueMonitorFn } from './utils/pendingDeployQueue.js';
 import { deployPosition } from './sniper/evilPanda.js';
 
 // ── PID Lock — cegah multiple instance ───────────────────────────
@@ -572,6 +572,7 @@ bot.onText(/\/autoscreen(?:\s+(on|off))?/, async (msg, match) => {
     setDeployQueueNotifyFn(notify);
     setDeployQueueDeployFn(deployPosition);
     startDeployQueueWatcher();
+    startPendingTaRadarWatcher();
 
     // ── 1. INSTANT FIRST RUN (awaited) ────────────────────────────────
     // scanAndDeploy() → top-5 sort → 9-gate eval → reportManager.generateReport()
@@ -595,9 +596,10 @@ bot.onText(/\/autoscreen(?:\s+(on|off))?/, async (msg, match) => {
       if (!getConfig().autoScreeningEnabled) {
         clearInterval(global.screeningInterval);
         global.screeningInterval = null;
-        console.log('[autoscreen] Interval dihentikan karena autoScreeningEnabled=false.');
-        return;
-      }
+      console.log('[autoscreen] Interval dihentikan karena autoScreeningEnabled=false.');
+      stopPendingTaRadarWatcher();
+      return;
+    }
       console.log(`[autoscreen] ⏰ Siklus berikutnya dimulai (interval ${intervalMin} menit)...`);
       try {
         await scanAndDeploy();
@@ -615,6 +617,8 @@ bot.onText(/\/autoscreen(?:\s+(on|off))?/, async (msg, match) => {
       clearInterval(global.screeningInterval);
       global.screeningInterval = null;
     }
+    stopPendingTaRadarWatcher();
+    stopDeployQueueWatcher();
     bot.sendMessage(chatId,
       `🔕 <b>Auto-Screening: OFF</b>\n` +
       `Loop dihentikan. Gunakan <code>/screening</code> untuk scan manual.`,
@@ -823,6 +827,8 @@ async function shutdown(signal) {
   setShutdownInProgress(true);
   stopLoop();
   stopScreeningLoop();
+  stopPendingTaRadarWatcher();
+  stopDeployQueueWatcher();
   const active = Array.isArray(getActivePositions()) ? getActivePositions() : [];
   if (active.length > 0) {
     await notify(
@@ -913,7 +919,11 @@ setTimeout(async () => {
     );
 
     // Auto-start screening loop jika diaktifkan
-    if (autoScr) runScreeningLoop();
+    if (autoScr) {
+      startDeployQueueWatcher();
+      startPendingTaRadarWatcher();
+      runScreeningLoop();
+    }
 
     console.log(`✅ Linear Sniper Bot ready. Balance: ${balance} SOL`);
   } catch (e) {
