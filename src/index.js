@@ -18,7 +18,7 @@ import TelegramBot              from 'node-telegram-bot-api';
 import { existsSync, readFileSync, writeFileSync, unlinkSync } from 'fs';
 import { initSolana, getWalletBalance }   from './solana/wallet.js';
 import { getConfig, updateConfig, isConfigKeySupported, resolveNestedKey, SETCONFIG_WHITELIST } from './config.js';
-import { runLinearLoop, stopLoop, setNotifyFn, isRunning, getCurrentPosition, getActivePositions, setShutdownInProgress, closeAllActivePositionsByUser, closeAllActivePositionsForShutdown, retryFailedShutdownPositions, runAutoscreening, spawnMonitorForRestoredPositions, startManualCloseWatcher, startPendingTaRadarWatcher, stopPendingTaRadarWatcher, scanAndDeploy, updatePnlStatus, inventoryManagement } from './agents/hunterAlpha.js';
+import { runLinearLoop, stopLoop, setNotifyFn, isRunning, getCurrentPosition, getActivePositions, setShutdownInProgress, closeAllActivePositionsByUser, closeAllActivePositionsForShutdown, retryFailedShutdownPositions, runAutoscreening, spawnMonitorForRestoredPositions, startManualCloseWatcher, startPendingTaRadarWatcher, stopPendingTaRadarWatcher, startTaWatchWatcher, stopTaWatchWatcher, scanAndDeploy, updatePnlStatus, inventoryManagement } from './agents/hunterAlpha.js';
 import { getActivePositionCount, reconcileStartupPositions, EP_CONFIG } from './sniper/evilPanda.js';
 import { analyzePerformance, formatEvolutionReport }     from './learn/statelessEvolve.js';
 import { generateBriefing, formatActivePositionsTelegram } from './telegram/briefing.js';
@@ -573,6 +573,7 @@ bot.onText(/\/autoscreen(?:\s+(on|off))?/, async (msg, match) => {
     setDeployQueueDeployFn(deployPosition);
     startDeployQueueWatcher();
     startPendingTaRadarWatcher();
+    startTaWatchWatcher();
 
     // ── 1. INSTANT FIRST RUN (awaited) ────────────────────────────────
     // scanAndDeploy() → top-5 sort → 9-gate eval → reportManager.generateReport()
@@ -598,6 +599,7 @@ bot.onText(/\/autoscreen(?:\s+(on|off))?/, async (msg, match) => {
         global.screeningInterval = null;
       console.log('[autoscreen] Interval dihentikan karena autoScreeningEnabled=false.');
       stopPendingTaRadarWatcher();
+      stopTaWatchWatcher();
       return;
     }
       console.log(`[autoscreen] ⏰ Siklus berikutnya dimulai (interval ${intervalMin} menit)...`);
@@ -618,6 +620,7 @@ bot.onText(/\/autoscreen(?:\s+(on|off))?/, async (msg, match) => {
       global.screeningInterval = null;
     }
     stopPendingTaRadarWatcher();
+    stopTaWatchWatcher();
     stopDeployQueueWatcher();
     bot.sendMessage(chatId,
       `🔕 <b>Auto-Screening: OFF</b>\n` +
@@ -828,6 +831,7 @@ async function shutdown(signal) {
   stopLoop();
   stopScreeningLoop();
   stopPendingTaRadarWatcher();
+  stopTaWatchWatcher();
   stopDeployQueueWatcher();
   const active = Array.isArray(getActivePositions()) ? getActivePositions() : [];
   if (active.length > 0) {
@@ -908,6 +912,7 @@ setTimeout(async () => {
       `♻️ Reconcile: <code>${reconcile.restored}/${reconcile.scanned}</code> posisi dipulihkan\n` +
       `🩺 Restored Monitor: <code>${restoredMonitors}</code> loop aktif\n` +
       `👁️ Manual Close Watcher: <code>${manualCloseWatcherStarted ? 'ON' : 'ALREADY_ON'}</code>\n` +
+      `👀 Watch Layer: <code>${cfg.pendingRetestEnabled === false ? 'OFF' : 'ON'}</code>\n` +
       `💰 Balance: <code>${balance} SOL</code>\n` +
       `📐 Deploy: <code>${cfg.deployAmountSol || 0.1} SOL</code>\n` +
       `🎯 TP: <code>RSI(2) ≥ ${cfg.smartExitRsi || 90}</code> | SL: <code>-${cfg.stopLossPct || 10}%</code>\n` +
@@ -922,6 +927,7 @@ setTimeout(async () => {
     if (autoScr) {
       startDeployQueueWatcher();
       startPendingTaRadarWatcher();
+      startTaWatchWatcher();
       runScreeningLoop();
     }
 

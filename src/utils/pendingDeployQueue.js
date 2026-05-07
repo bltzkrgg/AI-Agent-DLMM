@@ -22,7 +22,7 @@ export function setDeployQueueMonitorFn(fn) { _monitorFn = fn; }
 
 async function safeSend(msg) {
   if (_notifyFn) {
-    try { await _notifyFn(msg); } catch (e) { console.error('[DeployQueue] notify error:', e.message); }
+    try { await _notifyFn(msg); } catch (e) { console.error('[QUEUE] notify error:', e.message); }
   }
 }
 
@@ -50,7 +50,7 @@ export function enqueueForDeploy(pool, symbol, meta = {}) {
 
   if (!isFreshDeployMeta(meta)) {
     console.log(
-      `[DeployQueue] ⏸️ ${symbol} tidak masuk queue deploy (DEFER / breakout tidak fresh: ` +
+      `[QUEUE] ⏸️ ${symbol} tidak masuk queue deploy (DEFER / breakout tidak fresh: ` +
       `Entry=${meta.entryReadiness || 'N/A'}, Breakout=${meta.breakoutQuality || 'N/A'}, Timing=${meta.entryTimingState || 'N/A'})`
     );
     return;
@@ -65,11 +65,11 @@ export function enqueueForDeploy(pool, symbol, meta = {}) {
     attempts: 0,
   });
 
-  console.log(`[DeployQueue] ✅ ${symbol} masuk antrian deploy real-time (Entry=${meta.entryReadiness}, Breakout=${meta.breakoutQuality})`);
+  console.log(`[QUEUE] ✅ ${symbol} masuk antrian deploy real-time (Entry=${meta.entryReadiness}, Breakout=${meta.breakoutQuality})`);
 
   // Auto-start watcher jika belum jalan — token langsung dipantau setiap 30 detik
   if (!_watcherTimer) {
-    console.log('[DeployQueue] 👀 Auto-start watcher karena ada token baru masuk antrian');
+    console.log('[QUEUE] 👀 Auto-start watcher karena ada token baru masuk antrian');
     _watcherTimer = setTimeout(runWatcher, 30_000);
   }
 }
@@ -84,52 +84,13 @@ export function dequeueToken(mint) {
  */
 function evaluateDeployConditions(entry) {
   const { pool, meta } = entry;
-  const isRetest = meta.isRetest || meta.isScoutDefer; // token DEFERRED, butuh waktu lebih lama
-  const timingState = String(meta.entryTimingState || '').toUpperCase();
-  const readiness = String(meta.entryReadiness || '').toUpperCase();
-  const breakoutQuality = String(meta.breakoutQuality || '').toUpperCase();
-
-  if (isRetest || meta.isScoutDefer) {
-    return { ok: false, reason: 'Token DEFER tidak boleh deploy via real-time queue' };
-  }
 
   // Kondisi 1: Waktu expired di antrian
-  // Token PASS: max 5 menit | Token DEFERRED/RETEST: max 30 menit
+  // Token watch deploy: maksimal 5 menit di queue sebelum dibuang
   const ageMs  = Date.now() - entry.enqueuedAt;
-  const maxAge = isRetest ? 30 * 60 * 1000 : 5 * 60 * 1000;
+  const maxAge = 5 * 60 * 1000;
   if (ageMs > maxAge) {
-    return { ok: false, reason: `Token expired dari antrian (>${isRetest ? '30' : '5'} menit)` };
-  }
-
-  // Kondisi 2: Entry readiness harus HIGH untuk breakout fresh
-  if (readiness === 'LOW' && !isRetest) {
-    return { ok: false, reason: `Entry readiness masih LOW` };
-  }
-
-  if (readiness !== 'HIGH') {
-    return { ok: false, reason: `Entry readiness belum HIGH (${readiness || 'N/A'})` };
-  }
-
-  if (timingState === 'NO_TREND') {
-    return { ok: false, reason: 'Supertrend 15m belum bullish' };
-  }
-  if (timingState === 'NO_M5') {
-    return { ok: false, reason: 'Momentum M5 belum hijau' };
-  }
-  if (timingState === 'WAIT_FOR_PULLBACK') {
-    return { ok: false, reason: 'Mode retest menunggu pullback yang lebih bersih' };
-  }
-  if (timingState === 'TOO_CLOSE') {
-    return { ok: false, reason: `Breakout masih terlalu dekat ke Supertrend (${Number(meta.signalStDistancePct || 0).toFixed(2)}%)` };
-  }
-  if (timingState !== 'BREAKOUT' && timingState !== 'ATH_BREAK') {
-    return { ok: false, reason: `Timing belum fresh breakout (${timingState || 'N/A'})` };
-  }
-  if (breakoutQuality !== 'VALID' && breakoutQuality !== 'STRONG') {
-    return { ok: false, reason: `Breakout quality belum valid (${breakoutQuality || 'N/A'})` };
-  }
-  if (timingState === 'EXTENDED' && String(meta.breakoutQuality || '').toUpperCase() === 'WEAK') {
-    return { ok: false, reason: 'Breakout sudah terlalu lewat dan momentum belum kuat' };
+    return { ok: false, reason: 'Token expired dari antrian (>5 menit)' };
   }
 
   // Kondisi 3: TVL minimal (hindari rug liquidity)
@@ -157,10 +118,10 @@ async function runWatcher() {
       const queueType = isRetest ? 'RETEST' : 'DEPLOY';
 
       // Log real-time monitoring per token
-      console.log(`[DeployQueue] ⏳ Memantau TA untuk token ${symbol} secara real-time... [${queueType}] (attempt ${entry.attempts + 1})`);
+      console.log(`[QUEUE] ⏳ Memantau TA untuk token ${symbol} secara real-time... [${queueType}] (attempt ${entry.attempts + 1})`);
 
       if (entry.attempts >= 3) {
-        console.log(`[DeployQueue] 🗑️ ${symbol} dihapus dari antrian (max attempts)`);
+        console.log(`[QUEUE] 🗑️ ${symbol} dihapus dari antrian (max attempts)`);
         _queue.delete(mint);
         await safeSend(
           `⏱️ <b>Deploy Queue Expired</b>\n` +
@@ -172,7 +133,7 @@ async function runWatcher() {
       const check = evaluateDeployConditions(entry);
 
       if (!check.ok) {
-        console.log(`[DeployQueue] ⏳ ${symbol} belum siap: ${check.reason} (attempt ${entry.attempts}/3)`);
+        console.log(`[QUEUE] ⏳ ${symbol} belum siap: ${check.reason} (attempt ${entry.attempts}/3)`);
         if (check.reason.includes('expired')) {
           _queue.delete(mint);
           await safeSend(
@@ -187,7 +148,7 @@ async function runWatcher() {
       // Resolusi pool address — cek semua field yang mungkin dipakai Meteora API
       const poolAddress = pool.address || pool.pool_address || pool.pool || pool.poolAddress || pool.pubkey || '';
       if (!poolAddress) {
-        console.warn(`[DeployQueue] ⚠️ Pool address tidak ditemukan untuk ${symbol} — fields: ${JSON.stringify(Object.keys(pool))}`);
+        console.warn(`[QUEUE] ⚠️ Pool address tidak ditemukan untuk ${symbol} — fields: ${JSON.stringify(Object.keys(pool))}`);
         _queue.delete(mint);
         await safeSend(
           `⚠️ <b>Deploy Gagal (Queue)</b>\n` +
@@ -199,7 +160,7 @@ async function runWatcher() {
 
       // Validate poolAddress adalah Solana pubkey (base58, 32–44 chars)
       if (typeof poolAddress !== 'string' || poolAddress.length < 32 || poolAddress.length > 44) {
-        console.error(`[DeployQueue] ❌ Pool address tidak valid untuk ${symbol}: "${poolAddress}"`);
+        console.error(`[QUEUE] ❌ Pool address tidak valid untuk ${symbol}: "${poolAddress}"`);
         _queue.delete(mint);
         await safeSend(
           `❌ <b>Deploy Gagal (Queue)</b>\n` +
@@ -210,7 +171,7 @@ async function runWatcher() {
 
       const cfg = getConfig();
       const solAmount = cfg.deployAmountSol || 0.1;
-      console.log(`[DeployQueue] 🚀 Attempting deploy for ${symbol} with amount ${solAmount} SOL (Pool: ${poolAddress.slice(0, 8)})`);
+      console.log(`[QUEUE] 🚀 Attempting deploy for ${symbol} with amount ${solAmount} SOL (Pool: ${poolAddress.slice(0, 8)})`);
       const slotReservation = reserveDeploySlot({
         owner: 'deployQueueWatcher',
         mint,
@@ -221,7 +182,7 @@ async function runWatcher() {
       });
 
       if (!slotReservation.ok) {
-        console.log(`[DeployQueue] ⏳ Slot penuh, ${symbol} tetap di queue (${slotReservation.reason})`);
+        console.log(`[QUEUE] ⏳ Slot penuh, ${symbol} tetap di queue (${slotReservation.reason})`);
         continue;
       }
       entry.attempts++;
@@ -266,7 +227,7 @@ async function runWatcher() {
 
         if (positionPubkey && _monitorFn) {
           _monitorFn(positionPubkey, symbol, poolAddress).catch(e => {
-            console.error(`[DeployQueue] Monitor loop crash untuk ${symbol}: ${e.message}`);
+            console.error(`[QUEUE] Monitor loop crash untuk ${symbol}: ${e.message}`);
           });
         }
       } finally {
@@ -276,7 +237,7 @@ async function runWatcher() {
     } catch (tokenErr) {
       // Token-level error: log dan lanjut ke token berikutnya, jangan crash loop
       const sym = entry?.symbol || mint?.slice(0, 8) || 'UNKNOWN';
-      console.error(`[DeployQueue] ⛔ Error saat proses ${sym}: ${tokenErr.message}`);
+      console.error(`[QUEUE] ⛔ Error saat proses ${sym}: ${tokenErr.message}`);
       _queue.delete(mint); // Buang dari queue agar tidak retry tanpa batas
       await safeSend(
         `❌ <b>Deploy Gagal (Queue)</b>\n` +
@@ -294,7 +255,7 @@ async function runWatcher() {
 /** Mulai watcher. Panggil sekali saat startup. */
 export function startDeployQueueWatcher() {
   if (_watcherTimer) return;
-  console.log('[DeployQueue] 👀 Watcher dimulai (interval: 15s real-time monitoring)');
+  console.log('[QUEUE] 👀 Watcher dimulai (interval: 15s real-time monitoring)');
   _watcherTimer = setTimeout(runWatcher, 15_000);
 }
 
@@ -305,7 +266,7 @@ export function stopDeployQueueWatcher() {
     _watcherTimer = null;
   }
   _queue.clear();
-  console.log('[DeployQueue] 🛑 Watcher dihentikan');
+  console.log('[QUEUE] 🛑 Watcher dihentikan');
 }
 
 export function getQueueSize()    { return _queue.size; }

@@ -97,8 +97,11 @@ const _positionLabels = new Map(); // pubkey -> { symbol }
 const _monitoredPositions = new Set();
 const _lastRealtimePnlLogAt = new Map();
 const _pendingRetestQueue = new Map(); // mint -> { pool, symbol, reason, attempts, nextCheckAt, expiresAt }
+const _taWatchQueue = new Map(); // mint -> { pool, symbol, reason, attempts, nextCheckAt, expiresAt, source }
 let _pendingTaRadarTimer = null;
 let _pendingTaRadarInFlight = false;
+let _taWatchTimer = null;
+let _taWatchInFlight = false;
 let _manualCloseWatchTimer = null;
 let _manualCloseWatchInFlight = false;
 
@@ -118,6 +121,11 @@ function listActivePositions() {
       hwmPct: Number(meta.hwmPct),
     };
   });
+}
+
+function isWatcherModeActive() {
+  const cfg = getConfig();
+  return isRunning() || cfg.autoScreeningEnabled === true;
 }
 
 function hasActiveMint(mint) {
@@ -169,6 +177,37 @@ function addPendingRetest(pool, reason = 'TA belum valid') {
   console.log(`[hunter] ⏳ Pending retest: ${getPoolSymbol(pool)} — ${reason}`);
 }
 
+function addWatchPassTa(pool, reason = 'TA PASS', source = 'TA') {
+  const cfg = getConfig();
+  if (cfg.pendingRetestEnabled === false) return null;
+
+  const mint = getPoolMint(pool);
+  if (!mint || hasActiveMint(mint)) return null;
+
+  const now = Date.now();
+  const intervalMin = Math.max(1, Number(cfg.retestIntervalMin) || 5);
+  const ttlMin = Math.max(intervalMin, Number(cfg.retestTtlMin) || 60);
+  const existing = _taWatchQueue.get(mint);
+  const symbol = getPoolSymbol(pool);
+
+  const row = {
+    pool,
+    symbol,
+    reason,
+    source,
+    attempts: existing?.attempts || 0,
+    firstSeenAt: existing?.firstSeenAt || now,
+    lastReason: reason,
+    nextCheckAt: now,
+    expiresAt: existing?.expiresAt || (now + ttlMin * 60 * 1000),
+    lastHeartbeatAt: existing?.lastHeartbeatAt || 0,
+  };
+
+  _taWatchQueue.set(mint, row);
+  console.log(`[WATCH] 👀 ${symbol} masuk watch queue (${source}) — ${reason}`);
+  return row;
+}
+
 async function collectReadyRetestPools(cfg = getConfig()) {
   if (cfg.pendingRetestEnabled === false || _pendingRetestQueue.size === 0) return [];
 
@@ -185,7 +224,7 @@ async function collectReadyRetestPools(cfg = getConfig()) {
       continue;
     }
     if (row.expiresAt <= now || row.attempts >= maxAttempts) {
-      console.log(`[hunter] ⌛ Retest expired: ${row.symbol} attempts=${row.attempts}/${maxAttempts}`);
+      console.log(`[SCREEN] ⌛ Retest expired: ${row.symbol} attempts=${row.attempts}/${maxAttempts}`);
       _pendingRetestQueue.delete(mint);
       continue;
     }
@@ -202,7 +241,7 @@ async function collectReadyRetestPools(cfg = getConfig()) {
       if (veto.veto) {
         row.lastReason = veto.reason || row.lastReason;
         if (!isRetestableTaVeto(veto)) {
-          console.log(`[hunter] ❌ Retest dropped: ${row.symbol} — ${row.lastReason}`);
+          console.log(`[SCREEN] ❌ Retest dropped: ${row.symbol} — ${row.lastReason}`);
           _pendingRetestQueue.delete(mint);
           continue;
         }
@@ -223,7 +262,8 @@ async function collectReadyRetestPools(cfg = getConfig()) {
             _retestAttempts: row.attempts,
             _entrySignals: entrySignals,
           };
-          console.log(`[hunter] ✅ Retest PASS: ${row.symbol} attempts=${row.attempts}`);
+          addWatchPassTa(pool, row.reason || 'TA PASS', 'RADAR');
+          console.log(`[WATCH] ✅ Retest PASS → WATCH: ${row.symbol} attempts=${row.attempts}`);
           ready.push(pool);
           continue;
         }
@@ -231,11 +271,11 @@ async function collectReadyRetestPools(cfg = getConfig()) {
 
       row.lastReason = `TA belum fresh: ${entrySignals.entryTimingState}/${entrySignals.breakoutQuality}`;
       _pendingRetestQueue.set(mint, row);
-      console.log(`[hunter] ⏳ Retest still pending: ${row.symbol} — ${row.lastReason}`);
+      console.log(`[SCREEN] ⏳ Retest still pending: ${row.symbol} — ${row.lastReason}`);
     } catch (e) {
       row.lastReason = e?.message || 'Retest error';
       _pendingRetestQueue.set(mint, row);
-      console.warn(`[hunter] Retest error ${row.symbol}: ${row.lastReason}`);
+      console.warn(`[SCREEN] Retest error ${row.symbol}: ${row.lastReason}`);
     }
   }
 
@@ -481,6 +521,11 @@ function getPendingTaRadarIntervalMs() {
   return Math.max(60_000, Math.round((Math.max(1, Number(cfg.retestIntervalMin) || 5)) * 60 * 1000));
 }
 
+function getTaWatchIntervalMs() {
+  const cfg = getConfig();
+  return Math.max(15_000, Math.round((Math.max(1, Number(cfg.watchIntervalSec) || 30)) * 1000));
+}
+
 export function startManualCloseWatcher() {
   if (_manualCloseWatchTimer) return false;
 
@@ -539,7 +584,7 @@ async function processPendingTaRadar(cfg = getConfig()) {
       continue;
     }
     if (row.expiresAt <= now || row.attempts >= maxAttempts) {
-      console.log(`[hunter] ⌛ TA radar expired: ${row.symbol} attempts=${row.attempts}/${maxAttempts}`);
+  console.log(`[RADAR] ⌛ TA radar expired: ${row.symbol} attempts=${row.attempts}/${maxAttempts}`);
       _pendingRetestQueue.delete(mint);
       continue;
     }
@@ -557,7 +602,7 @@ async function processPendingTaRadar(cfg = getConfig()) {
 
       if (veto.veto && !isRetestableTaVeto(veto)) {
         row.lastReason = veto.reason || row.lastReason;
-        console.log(`[hunter] ❌ TA radar dropped: ${row.symbol} — ${row.lastReason}`);
+        console.log(`[RADAR] ❌ TA radar dropped: ${row.symbol} — ${row.lastReason}`);
         _pendingRetestQueue.delete(mint);
         continue;
       }
@@ -577,7 +622,8 @@ async function processPendingTaRadar(cfg = getConfig()) {
             _retestAttempts: row.attempts,
             _entrySignals: entrySignals,
           };
-          console.log(`[hunter] ✅ TA radar PASS: ${row.symbol} attempts=${row.attempts}`);
+          addWatchPassTa(pool, row.reason || 'TA PASS', 'RADAR');
+          console.log(`[RADAR] ✅ TA radar PASS → WATCH: ${row.symbol} attempts=${row.attempts}`);
           ready.push({ pool, symbol: row.symbol, entrySignals, vetoResult: veto, reason: row.reason });
           continue;
         }
@@ -585,11 +631,11 @@ async function processPendingTaRadar(cfg = getConfig()) {
 
       row.lastReason = `TA belum fresh: ${entrySignals.entryTimingState}/${entrySignals.breakoutQuality}`;
       _pendingRetestQueue.set(mint, row);
-      console.log(`[hunter] ⏳ TA radar pending: ${row.symbol} — ${row.lastReason}`);
+      console.log(`[RADAR] ⏳ TA radar pending: ${row.symbol} — ${row.lastReason}`);
     } catch (e) {
       row.lastReason = e?.message || 'TA radar error';
       _pendingRetestQueue.set(mint, row);
-      console.warn(`[hunter] TA radar error ${row.symbol}: ${row.lastReason}`);
+      console.warn(`[RADAR] TA radar error ${row.symbol}: ${row.lastReason}`);
     }
   }
 
@@ -599,17 +645,18 @@ async function processPendingTaRadar(cfg = getConfig()) {
 export function startPendingTaRadarWatcher() {
   if (_pendingTaRadarTimer) return false;
   if (getConfig().pendingRetestEnabled === false) {
-    console.log('[hunter] TA radar watcher tidak dijalankan karena pendingRetestEnabled=false');
+    console.log('[RADAR] TA radar watcher tidak dijalankan karena pendingRetestEnabled=false');
     return false;
   }
 
   const tick = async () => {
     if (_pendingTaRadarInFlight) return;
-    if (!isRunning()) return;
+    if (!isWatcherModeActive()) return;
     _pendingTaRadarInFlight = true;
     try {
       const cfg = getConfig();
       if (cfg.pendingRetestEnabled === false) return;
+      console.log(`[RADAR] 🛰️ heartbeat pending=${_pendingRetestQueue.size} watch=${_taWatchQueue.size}`);
       const ready = await processPendingTaRadar(cfg);
       for (const item of ready) {
         const { pool, symbol, entrySignals, reason } = item;
@@ -617,26 +664,16 @@ export function startPendingTaRadarWatcher() {
         const tokenMint = pool.tokenXMint || pool.tokenX || pool.mint || '';
         if (!poolAddress || !tokenMint) continue;
 
-        enqueueForDeploy(pool, symbol, {
-          scoutReason: reason || item.vetoResult?.reason || 'TA Radar Ready',
-          entryReadiness: entrySignals.entryReadiness,
-          breakoutQuality: entrySignals.breakoutQuality,
-          entryGateMode: entrySignals.entryGateMode,
-          entryTimingState: entrySignals.entryTimingState,
-          signalStDistancePct: entrySignals.signalStDistancePct,
-          signalAthDistancePct: entrySignals.signalAthDistancePct,
-        });
-
         await notify(
-          `🛰️ <b>TA Radar Ready</b>\n` +
+          `🛰️ <b>TA Radar Ready → WATCH</b>\n` +
           `Token: <b>${escapeHTML(symbol)}</b>\n` +
           `Entry: <code>${entrySignals.entryReadiness}</code> | Breakout: <code>${entrySignals.breakoutQuality}</code>\n` +
           `Timing: <code>${entrySignals.entryTimingState}</code>\n` +
-          `⏳ <i>Masuk deploy watcher real-time.</i>`
+          `👀 <i>Masuk watch layer sampai siap masuk queue deploy.</i>`
         );
       }
     } catch (e) {
-      console.warn(`[hunter] TA radar watcher error: ${e.message}`);
+      console.warn(`[RADAR] TA radar watcher error: ${e.message}`);
     } finally {
       _pendingTaRadarInFlight = false;
     }
@@ -644,8 +681,8 @@ export function startPendingTaRadarWatcher() {
 
   _pendingTaRadarTimer = setInterval(tick, getPendingTaRadarIntervalMs());
   _pendingTaRadarTimer.unref?.();
-  tick().catch((e) => console.warn(`[hunter] TA radar initial tick error: ${e.message}`));
-  console.log(`[hunter] 🛰️ TA radar watcher aktif interval=${Math.round(getPendingTaRadarIntervalMs() / 1000)}s`);
+  tick().catch((e) => console.warn(`[RADAR] TA radar initial tick error: ${e.message}`));
+  console.log(`[RADAR] 🛰️ TA radar watcher aktif interval=${Math.round(getPendingTaRadarIntervalMs() / 1000)}s`);
   return true;
 }
 
@@ -653,6 +690,112 @@ export function stopPendingTaRadarWatcher() {
   if (!_pendingTaRadarTimer) return false;
   clearInterval(_pendingTaRadarTimer);
   _pendingTaRadarTimer = null;
+  return true;
+}
+
+async function processTaWatchQueue(cfg = getConfig()) {
+  if (cfg.pendingRetestEnabled === false || _taWatchQueue.size === 0) return [];
+
+  const now = Date.now();
+  const maxAttempts = Math.max(1, Number(cfg.retestMaxAttempts) || 8);
+  const intervalMin = Math.max(1, Number(cfg.retestIntervalMin) || 5);
+  const ready = [];
+
+  for (const [mint, row] of [..._taWatchQueue.entries()]) {
+    if (!row?.pool || hasActiveMint(mint) || isBlacklisted(mint)) {
+      _taWatchQueue.delete(mint);
+      continue;
+    }
+    if (row.expiresAt <= now || row.attempts >= maxAttempts) {
+      console.log(`[WATCH] ⌛ WATCH expired: ${row.symbol} attempts=${row.attempts}/${maxAttempts}`);
+      _taWatchQueue.delete(mint);
+      continue;
+    }
+    if (row.nextCheckAt > now) continue;
+
+    row.attempts += 1;
+    row.nextCheckAt = now + intervalMin * 60 * 1000;
+    row.lastHeartbeatAt = now;
+
+    const pool = row.pool;
+    const symbol = row.symbol || getPoolSymbol(pool);
+    const poolAddress = pool.address || pool.poolAddress || pool.pool || pool.pubkey || '';
+    const tokenMint = pool.tokenXMint || pool.tokenX || pool.mint || '';
+    const slotCfg = getDeploySlotUsage();
+    const maxPositions = Number(cfg.maxPositions || slotCfg.maxPositions || 1);
+    const activeCount = getActivePositionKeys().length + Number(slotCfg.reserved || 0);
+
+    if (activeCount >= maxPositions) {
+      row.lastReason = `Slot penuh: ${activeCount}/${maxPositions}`;
+      _taWatchQueue.set(mint, row);
+      console.log(`[WATCH] ⏳ ${symbol} masih ditahan: ${row.lastReason}`);
+      continue;
+    }
+
+    if (!poolAddress || !tokenMint) {
+      console.log(`[WATCH] ❌ ${symbol} dropped: pool/token mint tidak valid`);
+      _taWatchQueue.delete(mint);
+      continue;
+    }
+
+    _taWatchQueue.delete(mint);
+    console.log(`[WATCH] ✅ ${symbol} siap masuk queue deploy`);
+    ready.push({
+      pool,
+      symbol,
+      meta: {
+        scoutReason: row.reason || 'WATCH Ready',
+        entryReadiness: 'HIGH',
+        breakoutQuality: 'VALID',
+        entryGateMode: 'lper_breakout',
+        entryTimingState: 'BREAKOUT',
+        signalStDistancePct: pool._entrySignals?.signalStDistancePct,
+        signalAthDistancePct: pool._entrySignals?.signalAthDistancePct,
+      },
+    });
+  }
+
+  return ready;
+}
+
+export function startTaWatchWatcher() {
+  if (_taWatchTimer) return false;
+  if (getConfig().pendingRetestEnabled === false) {
+    console.log('[WATCH] TA watch watcher tidak dijalankan karena pendingRetestEnabled=false');
+    return false;
+  }
+
+  const tick = async () => {
+    if (_taWatchInFlight) return;
+    if (!isWatcherModeActive()) return;
+    _taWatchInFlight = true;
+    try {
+      const cfg = getConfig();
+      if (cfg.pendingRetestEnabled === false) return;
+      console.log(`[WATCH] 👀 heartbeat pending=${_taWatchQueue.size}`);
+      const ready = await processTaWatchQueue(cfg);
+      for (const item of ready) {
+        const { pool, symbol, meta } = item;
+        enqueueForDeploy(pool, symbol, meta);
+      }
+    } catch (e) {
+      console.warn(`[WATCH] TA watch watcher error: ${e.message}`);
+    } finally {
+      _taWatchInFlight = false;
+    }
+  };
+
+  _taWatchTimer = setInterval(tick, getTaWatchIntervalMs());
+  _taWatchTimer.unref?.();
+  tick().catch((e) => console.warn(`[WATCH] TA watch initial tick error: ${e.message}`));
+  console.log(`[WATCH] 👀 TA watch watcher aktif interval=${Math.round(getTaWatchIntervalMs() / 1000)}s`);
+  return true;
+}
+
+export function stopTaWatchWatcher() {
+  if (!_taWatchTimer) return false;
+  clearInterval(_taWatchTimer);
+  _taWatchTimer = null;
   return true;
 }
 
@@ -790,43 +933,44 @@ export async function scanAndDeploy() {
 
     const limit = cfg.meteoraDiscoveryLimit || 50;
 
-    console.log(`[hunter] 🔍 SCAN — High-Fee Hunter (binStep priority: ${(cfg.binStepPriority || [200,125,100]).join('>')} )...`);
+    console.log(`[SCREEN] 🔍 SCAN — High-Fee Hunter (binStep priority: ${(cfg.binStepPriority || [200,125,100]).join('>')} )...`);
     await notify('🔍 <b>Memulai scan real-time (No Cache)...</b>\nMengambil data, mohon tunggu.');
 
 
-  let pools = await collectReadyRetestPools(cfg);
-  if (pools.length > 0) {
-    console.log(`[hunter] ${pools.length} kandidat retest siap diproses ulang.`);
+  const radarTransitions = await collectReadyRetestPools(cfg);
+  if (radarTransitions.length > 0) {
+    console.log(`[WATCH] ${radarTransitions.length} kandidat retest naik ke WATCH.`);
     await notify(
-      `♻️ <b>Retest queue aktif</b>\n` +
-      `${pools.length} kandidat TA sudah hijau dan masuk ulang ke pipeline.`
+      `👀 <b>Watch Layer Aktif</b>\n` +
+      `${radarTransitions.length} kandidat TA masuk mode watch dan menunggu slot deploy.`
     );
-  } else {
-    try {
-      // Ambil semua pool dari Meteora/Meridian fallback (sorted by binStep priority + fee ratio)
-      const rawPools = await discoverHighFeePoolsMeridian({ limit });
-
-      // Deduplikasi: satu token mungkin punya beberapa pool.
-      // Pilih pool terbaik per-token berdasarkan binStep priority [200,125,100].
-      const cfg2          = getConfig();
-      const binPriority   = Array.isArray(cfg2.binStepPriority) ? cfg2.binStepPriority.map(Number) : [200, 125, 100];
-      pools               = deduplicatePoolsByToken(rawPools, binPriority);
-
-      console.log(`[hunter] ${rawPools.length} pool raw → ${pools.length} token unik setelah seleksi binStep`);
-    } catch (e) {
-      console.warn(`[hunter] discoverHighFeePoolsMeridian gagal: ${e.message}`);
-      await sleep(60_000);
-      return;
-    }
   }
 
-  if (!pools || pools.length === 0) {
-    console.log('[hunter] Tidak ada pool ditemukan. Tunggu 60 detik...');
+  let pools = [];
+  try {
+    // Ambil semua pool dari Meteora/Meridian fallback (sorted by binStep priority + fee ratio)
+    const rawPools = await discoverHighFeePoolsMeridian({ limit });
+
+    // Deduplikasi: satu token mungkin punya beberapa pool.
+    // Pilih pool terbaik per-token berdasarkan binStep priority [200,125,100].
+    const cfg2          = getConfig();
+    const binPriority   = Array.isArray(cfg2.binStepPriority) ? cfg2.binStepPriority.map(Number) : [200, 125, 100];
+    pools               = deduplicatePoolsByToken(rawPools, binPriority);
+
+    console.log(`[SCREEN] ${rawPools.length} pool raw → ${pools.length} token unik setelah seleksi binStep`);
+  } catch (e) {
+    console.warn(`[hunter] discoverHighFeePoolsMeridian gagal: ${e.message}`);
     await sleep(60_000);
     return;
   }
 
-  console.log(`[hunter] ${pools.length} pool ditemukan. Mulai screening...`);
+  if (!pools || pools.length === 0) {
+    console.log('[SCREEN] Tidak ada pool ditemukan. Tunggu 60 detik...');
+    await sleep(60_000);
+    return;
+  }
+
+  console.log(`[SCREEN] ${pools.length} pool ditemukan. Mulai screening...`);
 
     // ── Sort by efficiency (Vol/TVL), evaluasi HANYA Top 5 ─────────────────
     // Filosofi LP: resource screening hanya untuk kandidat paling efisien.
@@ -840,7 +984,7 @@ export async function scanAndDeploy() {
     });
 
     const scoutCandidates = pools.slice(0, 5); // HANYA Top 5 — tidak ada evaluasi untuk sisa
-    console.log(`[hunter] 🔬 Memulai Strict Serial Screening untuk ${scoutCandidates.length} Top-5 pool (sorted by Vol/TVL efficiency)...`);
+    console.log(`[SCREEN] 🔬 Memulai Strict Serial Screening untuk ${scoutCandidates.length} Top-5 pool (sorted by Vol/TVL efficiency)...`);
   // Jupiter budget dibuat minimal sebesar jumlah kandidat batch ini agar
   // pool yang sudah lolos tahap awal tidak ke-defer prematur sebelum sempat diuji.
   const configuredJupiterBudget = Number(cfg.jupiterMaxChecksPerScan);
@@ -884,11 +1028,10 @@ export async function scanAndDeploy() {
         reportManager.setFinalVerdict(pending.name, 'REJECT', vetoResult.reason);
         pendingStore.remove(pending.address);
       } else {
-        console.log(`🔄 [Pending] Token ${pending.name} berhasil melewati TA, melanjutkan evaluasi...`);
+        console.log(`🔄 [Pending] Token ${pending.name} berhasil melewati TA, naik ke WATCH...`);
         reportManager.updateGate(pending.name, 'PENDING_RETEST', 'PASS', 'Berhasil melewati Supertrend');
         pendingStore.remove(pending.address);
-        // Feed it back to evaluatePool by pushing to scoutCandidates
-        scoutCandidates.unshift(poolData);
+        addWatchPassTa(poolData, 'Berhasil melewati Supertrend', 'SCREEN');
       }
     } catch (e) {
       console.warn(`Error processing pending token ${pending.name}: ${e.message}`);
@@ -966,7 +1109,7 @@ export async function scanAndDeploy() {
           addPendingRetest(pool, rejectReason);
           reportManager.updateGate(tokenSymbol, 'PENDING_RETEST', 'DEFER', rejectReason);
           reportManager.setFinalVerdict(tokenSymbol, 'DEFERRED', rejectReason);
-          console.log(`[hunter] ⏳ ${tokenSymbol} → pending retest (Meridian DEFER: ${rejectReason})`);
+          console.log(`[RADAR] ⏳ ${tokenSymbol} → pending retest (Meridian DEFER: ${rejectReason})`);
         }
         return { ok: false, symbol: tokenSymbol, stage: 'MERIDIAN_VETO', reason: rejectReason };
       }
@@ -1010,7 +1153,7 @@ export async function scanAndDeploy() {
 
     try {
       const scoutModel = cfg.screeningModel || cfg.agentModel || cfg.llm_settings?.agentModel || 'UNKNOWN';
-      console.log(`[hunter] 🧠 LLM stage=SCOUT model=${scoutModel} (slots: ${activeCount}/${maxPositions}, booked=${winners.length}, reserved=${slotUsage.reserved})`);
+      console.log(`[SCREEN] 🧠 LLM stage=SCOUT model=${scoutModel} (slots: ${activeCount}/${maxPositions}, booked=${winners.length}, reserved=${slotUsage.reserved})`);
       const llmPoolContext = buildLlmPoolContext({ pool, screenResult, vetoResult, marketSnapshot, bookedSlots: winners.length, entrySignals });
 
       if (entrySignals.entryTimingState === 'NO_TREND' || entrySignals.entryTimingState === 'NO_M5' || entrySignals.entryTimingState === 'TOO_CLOSE' || entrySignals.entryTimingState === 'WAIT_FOR_PULLBACK') {
@@ -1023,7 +1166,7 @@ export async function scanAndDeploy() {
               : `Breakout terlalu dekat ke Supertrend (${formatMaybePct(entrySignals.signalStDistancePct, 2)})`;
         reportManager.updateGate(tokenSymbol, 'SCOUT_AGENT', 'DEFER', waitReason);
         reportManager.setFinalVerdict(tokenSymbol, 'DEFERRED', waitReason);
-        console.log(`[hunter] ⏳ ${tokenSymbol} ditahan sebelum LLM: ${waitReason}`);
+        console.log(`[SCREEN] ⏳ ${tokenSymbol} ditahan sebelum LLM: ${waitReason}`);
         pendingStore.add(tokenMint || '', tokenSymbol, 0, 0, pool);
         addPendingRetest(pool, waitReason);
         return { ok: false, symbol: tokenSymbol || 'UNKNOWN', stage: 'SCOUT_AGENT', reason: waitReason };
@@ -1154,50 +1297,40 @@ FORMAT JAWABAN (WAJIB JSON VALID, TANPA MARKDOWN):
       ].filter(Boolean).join(', ');
       
       if (decision.includes('PASS')) {
-        console.log(`[hunter] 🤖 ScoutAgent LP APPROVED: ${tokenSymbol}${scoreSuffix}${detailSuffix ? ` | ${detailSuffix}` : ''}`);
+        console.log(`[SCREEN] 🤖 ScoutAgent LP APPROVED: ${tokenSymbol}${scoreSuffix}${detailSuffix ? ` | ${detailSuffix}` : ''}`);
         reportManager.updateGate(tokenSymbol, 'SCOUT_AGENT', 'PASS', scoutReason || `Entry=${entryReadiness || 'UNKNOWN'}, Breakout=${breakoutQuality || 'UNKNOWN'}, Timing=${entryTimingState || 'UNKNOWN'}`);
         pool._screenResult = screenResult;
         pool._vetoResult = vetoResult;
         pool._marketSnapshot = marketSnapshot;
         pool._llmPoolContext = llmPoolContext;
         pool._entrySignals = entrySignals;
-        // Masukkan ke Real-time Deploy Queue — watcher memantau setiap 30 detik
-        enqueueForDeploy(pool, tokenSymbol, {
-          scoutReason,
-          entryReadiness,
-          breakoutQuality,
-          entryGateMode: entrySignals.entryGateMode,
-          entryTimingState,
-          signalStDistancePct: entrySignals.signalStDistancePct,
-          signalAthDistancePct: entrySignals.signalAthDistancePct,
-        });
-        // Notifikasi instan ke Telegram — jangan tunggu 15 menit
+        addWatchPassTa(pool, scoutReason || 'Scout Approved', 'SCOUT');
         await notify(
-          `⚡ <b>KANDIDAT POTENSIAL!</b>\n` +
-          `Token: <b>${tokenSymbol}</b> masuk pantauan real-time!\n` +
+          `👀 <b>WATCH</b>\n` +
+          `Token: <b>${tokenSymbol}</b> masuk watch layer!\n` +
           `Entry: <code>${entryReadiness || 'N/A'}</code> | Breakout: <code>${breakoutQuality || 'N/A'}</code>\n` +
           `Alasan: <i>${scoutReason || 'Scout Approved'}</i>\n` +
-          `⏳ <i>Watcher aktif — deploy otomatis saat kondisi terpenuhi.</i>`
+          `⏳ <i>Watcher aktif — deploy otomatis saat slot tersedia.</i>`
         );
         return { ok: true, pool, symbol: tokenSymbol || 'UNKNOWN' };
       }
       const isDeferred = decision.includes('DEFER');
       const reason = scoutReason || (isDeferred ? 'Insufficient Information' : 'Weak Breakout');
-      console.log(`[hunter] 🤖 ScoutAgent LP ${isDeferred ? 'DEFERRED' : 'REJECTED'}: ${tokenSymbol}${scoreSuffix}${detailSuffix ? ` | ${detailSuffix}` : ''}`);
+      console.log(`[SCREEN] 🤖 ScoutAgent LP ${isDeferred ? 'DEFERRED' : 'REJECTED'}: ${tokenSymbol}${scoreSuffix}${detailSuffix ? ` | ${detailSuffix}` : ''}`);
       reportManager.updateGate(tokenSymbol, 'SCOUT_AGENT', isDeferred ? 'DEFER' : 'FAIL', reason, `Entry=${entryReadiness}, Breakout=${breakoutQuality}, Timing=${entryTimingState}`);
 
       if (isDeferred) {
-        // DEFERRED — masuk real-time queue, bukan buang ke reject
+        // DEFERRED — masuk radar, lalu watch kalau TA nanti fresh
         reportManager.setFinalVerdict(tokenSymbol, 'DEFERRED', reason);
         pendingStore.add(tokenMint || '', tokenSymbol, 0, 0, pool);
         addPendingRetest(pool, reason);
-        console.log(`[hunter] ⏳ ${tokenSymbol} → real-time queue (Scout DEFER: ${reason})`);
+        console.log(`[SCREEN] ⏳ ${tokenSymbol} → pending retest (Scout DEFER: ${reason})`);
         await notify(
-          `⏳ <b>KANDIDAT DITUNDA (Pantauan Aktif)</b>\n` +
+          `⏳ <b>KANDIDAT DITUNDA (RADAR)</b>\n` +
           `Token: <b>${tokenSymbol}</b>\n` +
           `Entry: <code>${entryReadiness || 'N/A'}</code> | Breakout: <code>${breakoutQuality || 'N/A'}</code>\n` +
           `Alasan Tunda: <i>${reason}</i>\n` +
-          `👁️‍🗨️ <i>Watcher memantau real-time sampai TA konfirmasi.</i>`
+          `👁️‍🗨️ <i>Radar memantau real-time sampai TA konfirmasi.</i>`
         );
       }
 
