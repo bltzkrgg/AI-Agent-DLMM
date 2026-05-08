@@ -155,7 +155,8 @@ bot.onText(/\/status/, async (msg) => {
     `${posLine}\n` +
     `Balance: <code>${balance} SOL</code>\n` +
     `Deploy Amount: <code>${cfg.deployAmountSol || 0.1} SOL</code>\n` +
-    `TP: <code>RSI(2) ≥ ${cfg.smartExitRsi || 90}</code> | SL: <code>-${cfg.stopLossPct || 10}%</code>`,
+    `TP: <code>Trail ${cfg.trailingTriggerPct || 10}% → ${cfg.trailingDropPct || 3}% drop</code> | SL: <code>-${cfg.stopLossPct || 10}%</code>\n` +
+    `TA: <code>info only (RSI ref ${cfg.smartExitRsi || 90})</code>`,
     { parse_mode: 'HTML' }
   );
 });
@@ -328,6 +329,8 @@ bot.onText(/\/config/, (msg) => {
   ].join('\n');
   const strategy = [
     `stopLossPct           = ${cfg.stopLossPct}`,
+    `trailingTriggerPct    = ${cfg.trailingTriggerPct}`,
+    `trailingDropPct       = ${cfg.trailingDropPct}`,
     `trailingStopPct       = ${cfg.trailingStopPct}`,
     `atrGuardEnabled       = ${cfg.atrGuardEnabled}`,
     `atrMultiplier         = ${cfg.atrMultiplier}`,
@@ -749,8 +752,8 @@ bot.onText(/\/strategy_report/, async (msg) => {
     `📘 <b>Strategy Report</b>\n\n` +
     `Strategy: <code>${cfg.activeStrategy || 'Evil Panda'}</code>\n` +
     `Deploy: <code>${cfg.deployAmountSol || 0.1} SOL</code>\n` +
-    `TP: <code>RSI(2) ≥ ${cfg.smartExitRsi || 90}</code> | SL: <code>${cfg.stopLossPct || 10}%</code>\n` +
-    `Trailing: <code>${cfg.trailingStopPct || 5}%</code>\n` +
+    `TP: <code>Trail ${cfg.trailingTriggerPct || 10}% → ${cfg.trailingDropPct || 3}% drop</code> | SL: <code>${cfg.stopLossPct || 10}%</code>\n` +
+    `TA: <code>info only (RSI ref ${cfg.smartExitRsi || 90})</code>\n` +
     `Screening: <code>${cfg.autoScreeningEnabled ? 'ON' : 'OFF'}</code>`;
   await sendLong(chatId, text);
 });
@@ -915,7 +918,8 @@ setTimeout(async () => {
       `👀 Watch Layer: <code>${cfg.pendingRetestEnabled === false ? 'OFF' : 'ON'}</code>\n` +
       `💰 Balance: <code>${balance} SOL</code>\n` +
       `📐 Deploy: <code>${cfg.deployAmountSol || 0.1} SOL</code>\n` +
-      `🎯 TP: <code>RSI(2) ≥ ${cfg.smartExitRsi || 90}</code> | SL: <code>-${cfg.stopLossPct || 10}%</code>\n` +
+      `🎯 TP: <code>Trail ${cfg.trailingTriggerPct || 10}% → ${cfg.trailingDropPct || 3}% drop</code> | SL: <code>-${cfg.stopLossPct || 10}%</code>\n` +
+      `ℹ️ TA: <code>info only (RSI ref ${cfg.smartExitRsi || 90})</code>\n` +
       `🔍 DryRun: <code>${cfg.dryRun ? 'ON' : 'OFF'}</code>\n` +
       `📡 Auto Screening: <code>${autoScr ? `ON (${cfg.screeningIntervalMin}m)` : 'OFF'}</code>\n` +
       `📊 Realtime PnL: <code>${cfg.realtimePnlIntervalSec || 15}s</code>\n` +

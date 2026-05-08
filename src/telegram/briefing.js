@@ -196,10 +196,11 @@ export async function generateBriefing(hoursBack = 24) {
     `\n\n⚙️ <b>Config Aktif</b>\n` +
     `   Deploy : <code>${cfg.deployAmountSol} SOL</code> ` +
     `| SL: <code>${cfg.stopLossPct}%</code> ` +
-    `| Trail: <code>${cfg.trailingStopPct}%</code>\n` +
+    `| Trail: <code>${cfg.trailingTriggerPct || 10}% → ${cfg.trailingDropPct || 3}%</code>\n` +
     `   Dry Run: <code>${cfg.dryRun ? 'ON' : 'OFF'}</code> ` +
     `| ATR Guard: <code>${cfg.atrGuardEnabled ? 'ON' : 'OFF'}</code>\n` +
-    `   Realtime PnL: <code>${cfg.realtimePnlIntervalSec || 15}s</code>`;
+    `   Realtime PnL: <code>${cfg.realtimePnlIntervalSec || 15}s</code> ` +
+    `| TA: <code>info only</code>`;
 
   return (
     `📋 <b>Daily Briefing — AI-Agent-DLMM</b>\n` +

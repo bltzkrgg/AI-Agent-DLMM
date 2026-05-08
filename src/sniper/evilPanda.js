@@ -127,6 +127,20 @@ function getConfiguredSmartExitRsi() {
   return Number.isFinite(value) && value > 0 ? value : EP_CONFIG.RSI_EXIT_THRESHOLD;
 }
 
+function getConfiguredTrailingTriggerPct() {
+  const cfg = getConfig();
+  const value = Number(cfg.trailingTriggerPct);
+  return Number.isFinite(value) && value > 0 ? value : EP_CONFIG.TRAILING_TRIGGER_PCT;
+}
+
+function getConfiguredTrailingDropPct() {
+  const cfg = getConfig();
+  const value = Number(cfg.trailingDropPct);
+  if (Number.isFinite(value) && value > 0) return value;
+  const legacy = Number(cfg.trailingStopPct);
+  return Number.isFinite(legacy) && legacy > 0 ? legacy : EP_CONFIG.TRAILING_DROP_PCT;
+}
+
 // ── Harvest Log ───────────────────────────────────────────────────
 // Tulis satu baris CSV ke harvest.log tiap posisi ditutup.
 // Format: timestamp,token,pubkey8,pnlPct,deploySol,reason
@@ -908,49 +922,50 @@ export async function monitorPnL(positionPubkey) {
                exitReason: `Hard SL: PnL=${pnlPct.toFixed(2)}% ≤ -${stopLossPct}%` };
     }
 
-    // ── PRIORITAS 2: Trailing Stop Loss (High Water Mark) ─────────────────
+    // ── PRIORITAS 2: Trailing Profit Lock berbasis config ────────────────
     // Perbarui HWM jika PnL saat ini lebih tinggi dari sebelumnya.
-    // Jika PnL turun > trailingStopPct dari HWM → EXIT.
-    const cfg2           = getConfig();
-    const trailingStopPct = Number(cfg2.trailingStopPct) || 5;
+    // Jika PnL turun > trailingDropPct dari HWM setelah trigger tercapai → TAKE_PROFIT.
+    const trailingTriggerPct = getConfiguredTrailingTriggerPct();
+    const trailingDropPct    = getConfiguredTrailingDropPct();
 
     if (pnlPct > reg.hwmPct) {
       reg.hwmPct = pnlPct; // update HWM in-place (Map entry adalah referensi)
       console.log(`[evilPanda] 📈 New HWM: ${reg.hwmPct.toFixed(2)}%`);
     }
 
-    // Trailing stop aktif hanya jika HWM sudah positif
-    if (reg.hwmPct > 0 && (reg.hwmPct - pnlPct) >= trailingStopPct) {
+    const trailingArmed = trailingTriggerPct > 0 ? reg.hwmPct >= trailingTriggerPct : reg.hwmPct > 0;
+    if (trailingDropPct > 0 && trailingArmed && (reg.hwmPct - pnlPct) >= trailingDropPct) {
       const drawdown = reg.hwmPct - pnlPct;
-      console.log(`[evilPanda] 📉 TRAILING_STOP ${positionPubkey.slice(0,8)} hwm=${reg.hwmPct.toFixed(2)}% pnl=${pnlPct.toFixed(2)}% drop=${drawdown.toFixed(2)}%`);
+      console.log(`[evilPanda] 📈 TAKE_PROFIT (TRAILING) ${positionPubkey.slice(0,8)} hwm=${reg.hwmPct.toFixed(2)}% pnl=${pnlPct.toFixed(2)}% drop=${drawdown.toFixed(2)}%`);
       return {
-        action:       'STOP_LOSS',
+        action:       'TAKE_PROFIT',
         currentValueSol, pnlPct, inRange,
-        exitScenario: 'TRAILING',
-        exitReason:   `Trailing SL: turun ${drawdown.toFixed(2)}% dari HWM ${reg.hwmPct.toFixed(2)}% (limit ${trailingStopPct}%)`,
+        exitScenario: 'TRAILING_PROFIT',
+        exitReason:   `Trailing TP: turun ${drawdown.toFixed(2)}% dari HWM ${reg.hwmPct.toFixed(2)}% (trigger ${trailingTriggerPct}%, drop ${trailingDropPct}%)`,
       };
     }
 
-    // ── PRIORITAS 2: Meridian Smart Exit (TA-driven) ──────────────
+    // ── TA Insight only (tidak memutuskan exit) ─────────────────────────
     // Fetch RSI(2) + BB + MACD dari Meridian, fail-open jika API down.
     const signal     = await fetchExitSignal(reg.tokenXMint);
     const exitDecision = evaluateExitSignal(signal);
 
-    console.log(`[evilPanda] 📊 ${positionPubkey.slice(0,8)} pnl=${pnlPct.toFixed(2)}% val=${currentValueSol.toFixed(4)}SOL | TA: ${exitDecision.reason}`);
+    console.log(`[evilPanda] 📊 ${positionPubkey.slice(0,8)} pnl=${pnlPct.toFixed(2)}% val=${currentValueSol.toFixed(4)}SOL | TA info: ${exitDecision.reason}`);
 
-    if (exitDecision.shouldExit) {
-      console.log(`[evilPanda] 🎯 TAKE_PROFIT Skenario ${exitDecision.scenario}: ${exitDecision.reason}`);
-      return {
-        action:        'TAKE_PROFIT',
-        currentValueSol,
-        pnlPct,
-        inRange,
-        exitScenario:  exitDecision.scenario,
-        exitReason:    exitDecision.reason,
-      };
-    }
-
-    return { action: 'HOLD', currentValueSol, pnlPct, inRange, exitReason: exitDecision.reason };
+    return {
+      action: 'HOLD',
+      currentValueSol,
+      pnlPct,
+      inRange,
+      taReason: exitDecision.reason,
+      taSignal: signal ? {
+        rsi: signal.rsi,
+        close: signal.close,
+        bbUpper: signal.bbUpper,
+        macdHist: signal.macdHist,
+        direction: signal.direction,
+      } : null,
+    };
 
   } catch (e) {
     console.warn(`[evilPanda] monitorPnL error: ${e.message}`);

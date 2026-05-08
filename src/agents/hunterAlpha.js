@@ -1632,7 +1632,7 @@ Balas HANYA JSON valid tanpa Markdown.`;
           `Tahap: <code>EXECUTION_SUCCESS</code>\n` +
           `Position: <code>${positionPubkey.slice(0,8)}</code>\n` +
           `Pool: <code>${poolAddress.slice(0,8)}</code>\n` +
-          `TP: RSI(2) ≥ ${currentCfg.smartExitRsi || 90} | SL: -${currentCfg.stopLossPct || 10}%\n\n` +
+          `TP: trail ${currentCfg.trailingTriggerPct || 10}% → drop ${currentCfg.trailingDropPct || 3}% | SL: -${currentCfg.stopLossPct || 10}%\n\n` +
           `🔒 <i>Masuk mode monitor (Background)...</i>`
         );
 
