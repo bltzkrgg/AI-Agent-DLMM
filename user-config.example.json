@@ -49,6 +49,7 @@
   "positionUpdateIntervalMin": 5,
   "realtimePnlIntervalSec": 15,
   "autoScreeningEnabled": false,
+  "deployQueueExpiryMin": 5,
 
   "radar": {
     "meteoraDiscoveryLimit": 150,

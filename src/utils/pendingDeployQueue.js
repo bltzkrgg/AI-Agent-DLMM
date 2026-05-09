@@ -95,11 +95,11 @@ async function evaluateDeployConditions(entry) {
   const cfg = getConfig();
 
   // Kondisi 1: Waktu expired di antrian
-  // Token watch deploy: maksimal 5 menit di queue sebelum dibuang
+  // Token watch deploy: expiry mengikuti config deployQueueExpiryMin
   const ageMs  = Date.now() - entry.enqueuedAt;
-  const maxAge = 5 * 60 * 1000;
+  const maxAge = Math.max(60_000, Math.round((Math.max(1, Number(cfg.deployQueueExpiryMin) || 5)) * 60 * 1000));
   if (ageMs > maxAge) {
-    return { ok: false, reason: 'Token expired dari antrian (>5 menit)' };
+    return { ok: false, reason: `Token expired dari antrian (> ${Math.round(maxAge / 60000)} menit)` };
   }
 
   const watchWindowSec = Math.max(5, Number(meta.watchWindowSec || cfg.entryFreshWatchWindowSec || 90));

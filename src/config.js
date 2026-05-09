@@ -63,6 +63,7 @@ const DEFAULTS = {
   retestTtlMin:              60,
   retestMaxAttempts:         8,
   retestMaxReadyPerScan:     3,
+  deployQueueExpiryMin:      5,
 
   // ── LLM Models ───────────────────────────────────────────────────────────
   // Priority: process.env > user-config.json[llm.*] > DEFAULTS
@@ -183,6 +184,7 @@ const CONFIG_BOUNDS = {
   retestTtlMin:           { min: 1,     max: 1440 },
   retestMaxAttempts:      { min: 1,     max: 100 },
   retestMaxReadyPerScan:  { min: 1,     max: 20 },
+  deployQueueExpiryMin:   { min: 1,     max: 60 },
   meteoraDiscoveryLimit:  { min: 50,    max: 500 },
   allowedBinSteps:        { type: 'array' },
   binStepPriority:        { type: 'array' },
