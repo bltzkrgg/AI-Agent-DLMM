@@ -27,14 +27,21 @@ async function safeSend(msg) {
 }
 
 export function isFreshDeployMeta(meta = {}) {
+  const cfg = getConfig();
   const timingState = String(meta.entryTimingState || '').toUpperCase();
   const readiness = String(meta.entryReadiness || '').toUpperCase();
   const breakoutQuality = String(meta.breakoutQuality || '').toUpperCase();
+  const signalAthDistancePct = Number(meta.signalAthDistancePct);
+  const signalStDistancePct = Number(meta.signalStDistancePct);
+  const freshAthBreakPct = Number(cfg.entryFreshBreakoutMinAthDistancePct ?? 99.25);
+  const breakoutMinStPct = Number(cfg.entrySupertrendBreakMinPct ?? 1.25);
 
   if (meta.isRetest || meta.isScoutDefer) return false;
   if (timingState !== 'BREAKOUT' && timingState !== 'ATH_BREAK') return false;
   if (readiness !== 'HIGH') return false;
   if (breakoutQuality !== 'VALID' && breakoutQuality !== 'STRONG') return false;
+  if (Number.isFinite(signalAthDistancePct) && signalAthDistancePct < freshAthBreakPct) return false;
+  if (Number.isFinite(signalStDistancePct) && signalStDistancePct < breakoutMinStPct) return false;
   return true;
 }
 

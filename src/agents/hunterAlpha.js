@@ -335,6 +335,10 @@ function formatMaybeBool(value) {
 
 function deriveBreakoutEntrySignals({ pool = {}, vetoResult = null, marketSnapshot = null, cfg = getConfig() } = {}) {
   const entryGateMode = String(cfg.entryGateMode || 'lper_breakout').toLowerCase();
+  const breakoutMinStPct = Number(cfg.entrySupertrendBreakMinPct ?? 1.25);
+  const freshAthBreakPct = Number(cfg.entryFreshBreakoutMinAthDistancePct ?? 99.25);
+  const requireVolumeConfirm = cfg.entryRequireVolumeConfirm !== false;
+  const minVolRatio = Number(cfg.entryMinVolumeRatio || 1.1);
   const taTrend = String(
     marketSnapshot?.quality?.taTrend ||
     marketSnapshot?.ta?.supertrend?.trend ||
@@ -373,26 +377,33 @@ function deriveBreakoutEntrySignals({ pool = {}, vetoResult = null, marketSnapsh
   const maxDistancePct = Number(cfg.entrySupertrendMaxDistancePct ?? 18);
   const athBreakPct = Number(cfg.entryBreakoutMinAthDistancePct ?? 95);
   const volumeRatio = tvl > 0 ? volume24h / tvl : null;
+  const isFreshAthBreak = Number.isFinite(signalAthDistancePct) && signalAthDistancePct >= freshAthBreakPct;
+  const isStrongAthBreak = Number.isFinite(signalAthDistancePct) && signalAthDistancePct >= Math.max(freshAthBreakPct + 0.25, 99.75);
+  const hasValidVolume = !requireVolumeConfirm || (Number.isFinite(volumeRatio) && volumeRatio >= minVolRatio);
 
   let entryTimingState = 'UNKNOWN';
   if (taTrend !== 'BULLISH') {
     entryTimingState = 'NO_TREND';
   } else if (priceChangeM5 <= 0) {
     entryTimingState = 'NO_M5';
+  } else if (requireVolumeConfirm && !hasValidVolume) {
+    entryTimingState = 'WAIT_VOLUME';
   } else if (!Number.isFinite(signalStDistancePct)) {
     entryTimingState = 'UNKNOWN';
   } else if (entryGateMode === 'lper_retest' && signalStDistancePct > maxDistancePct) {
     entryTimingState = 'WAIT_FOR_PULLBACK';
-  } else if (signalStDistancePct < minDistancePct) {
+  } else if (signalStDistancePct < breakoutMinStPct) {
     entryTimingState = 'TOO_CLOSE';
-  } else if (signalAthDistancePct != null && signalAthDistancePct >= 99) {
+  } else if (!isFreshAthBreak) {
+    entryTimingState = 'LATE_BREAKOUT';
+  } else if (isStrongAthBreak) {
     entryTimingState = 'ATH_BREAK';
   } else if (signalAthDistancePct != null && signalAthDistancePct >= athBreakPct) {
     entryTimingState = 'BREAKOUT';
   } else if (signalStDistancePct > maxDistancePct && (priceChangeM15 < 0.5 || priceChangeM5 < 0.5)) {
     entryTimingState = 'EXTENDED';
   } else {
-    entryTimingState = 'BREAKOUT';
+    entryTimingState = 'LATE_BREAKOUT';
   }
 
   const entryReadiness =
@@ -423,6 +434,8 @@ function deriveBreakoutEntrySignals({ pool = {}, vetoResult = null, marketSnapsh
     volumeRatio,
     minDistancePct,
     maxDistancePct,
+    breakoutMinStPct,
+    freshAthBreakPct,
     athBreakPct,
     entryGateMode,
     canDeploy: entryTimingState === 'ATH_BREAK' || entryTimingState === 'BREAKOUT',
@@ -1156,13 +1169,17 @@ export async function scanAndDeploy() {
       console.log(`[SCREEN] 🧠 LLM stage=SCOUT model=${scoutModel} (slots: ${activeCount}/${maxPositions}, booked=${winners.length}, reserved=${slotUsage.reserved})`);
       const llmPoolContext = buildLlmPoolContext({ pool, screenResult, vetoResult, marketSnapshot, bookedSlots: winners.length, entrySignals });
 
-      if (entrySignals.entryTimingState === 'NO_TREND' || entrySignals.entryTimingState === 'NO_M5' || entrySignals.entryTimingState === 'TOO_CLOSE' || entrySignals.entryTimingState === 'WAIT_FOR_PULLBACK') {
+      if (entrySignals.entryTimingState === 'NO_TREND' || entrySignals.entryTimingState === 'NO_M5' || entrySignals.entryTimingState === 'TOO_CLOSE' || entrySignals.entryTimingState === 'WAIT_FOR_PULLBACK' || entrySignals.entryTimingState === 'WAIT_VOLUME' || entrySignals.entryTimingState === 'LATE_BREAKOUT' || entrySignals.entryTimingState === 'EXTENDED') {
         const waitReason = entrySignals.entryTimingState === 'NO_TREND'
           ? `Supertrend 15m belum bullish`
           : entrySignals.entryTimingState === 'NO_M5'
             ? `Momentum M5 belum hijau`
+            : entrySignals.entryTimingState === 'WAIT_VOLUME'
+              ? `Volume belum mengonfirmasi breakout`
             : entrySignals.entryTimingState === 'WAIT_FOR_PULLBACK'
               ? `Breakout sudah terlalu lewat untuk mode retest (${formatMaybePct(entrySignals.signalStDistancePct, 2)})`
+              : entrySignals.entryTimingState === 'LATE_BREAKOUT'
+                ? `Breakout sudah tidak fresh lagi (${formatMaybePct(entrySignals.signalAthDistancePct, 2)} dari high 24h)`
               : `Breakout terlalu dekat ke Supertrend (${formatMaybePct(entrySignals.signalStDistancePct, 2)})`;
         reportManager.updateGate(tokenSymbol, 'SCOUT_AGENT', 'DEFER', waitReason);
         reportManager.setFinalVerdict(tokenSymbol, 'DEFERRED', waitReason);
@@ -1183,6 +1200,7 @@ breakout yang matang
 Supertrend 15m harus bullish
 Candle M5 harus hijau
 Entry ideal ada saat breakout sudah diakui pasar, bukan saat harga baru nempel supertrend.
+Entry yang valid harus breakout fresh: dekat high terbaru, volume menguat, dan belum lewat jauh dari momen tembusnya.
 
 MINDSET: AGGRESSIVE FEE HUNTER.
 Tugasmu adalah menangkap tren naik yang SANGAT SEHAT, lalu memanen fee selama arus transaksi masih hidup.
@@ -1207,7 +1225,9 @@ ATURAN EVALUASI MEKANIS (TERAPKAN BERURUTAN — SATU RULE GAGAL = STOP):
   Cek: "Entry Timing", "Price vs Supertrend", dan "Price vs 24h High" dari data.
   IF Entry Timing = "NO_TREND" → WAJIB REJECT. Berhenti di sini.
   IF Entry Timing = "NO_M5" → WAJIB DEFER. Berhenti di sini.
+  IF Entry Timing = "WAIT_VOLUME" → WAJIB DEFER. Berhenti di sini.
   IF Entry Timing = "TOO_CLOSE" → WAJIB DEFER. Berhenti di sini.
+  IF Entry Timing = "LATE_BREAKOUT" → WAJIB DEFER. Berhenti di sini.
   Entry ideal adalah breakout yang sudah diakui pasar: harga sudah menjauh secukupnya dari Supertrend, close hijau, dan mendekati/menembus area high terbaru.
 
 [RULE 3 — ANTI-CANDLE MERAH (HARAM HUKUMNYA)]

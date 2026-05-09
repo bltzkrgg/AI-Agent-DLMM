@@ -47,6 +47,8 @@ const DEFAULTS = {
   autoScreeningEnabled: false,
   requireConfirmation:  true, // true = minta konfirmasi Telegram sebelum deploy
   entryGateMode:        'lper_breakout',
+  entrySupertrendBreakMinPct: 1.25,
+  entryFreshBreakoutMinAthDistancePct: 99.25,
 
   // ── Intervals ────────────────────────────────────────────────────────────
   managementIntervalMin:    15,
@@ -230,6 +232,8 @@ const CONFIG_BOUNDS = {
   depthPct:               { min: 10,    max: 100 },
   entrySupertrendMinDistancePct: { min: 0, max: 100 },
   entrySupertrendMaxDistancePct: { min: 0, max: 100 },
+  entrySupertrendBreakMinPct: { min: 0, max: 100 },
+  entryFreshBreakoutMinAthDistancePct: { min: 0, max: 100 },
   entryBreakoutMinAthDistancePct: { min: 0, max: 100 },
   okxApiKey:              { type: 'string' },
   maxDailyDrawdownPct:    { min: 0, max: 100 },
