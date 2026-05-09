@@ -124,6 +124,8 @@
   "entrySupertrendMaxDistancePct": 18,
   "entrySupertrendBreakMinPct": 1.25,
   "entryFreshBreakoutMinAthDistancePct": 99.25,
+  "entryFreshWatchWindowSec": 90,
+  "entryFreshBreakoutMaxDriftPct": 2.5,
   "entryRequireVolumeConfirm": true,
   "entryMinVolumeRatio": 1.1,
   "entryVolumeLookbackCandles": 20,

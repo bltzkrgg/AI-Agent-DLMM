@@ -49,6 +49,8 @@ const DEFAULTS = {
   entryGateMode:        'lper_breakout',
   entrySupertrendBreakMinPct: 1.25,
   entryFreshBreakoutMinAthDistancePct: 99.25,
+  entryFreshWatchWindowSec: 90,
+  entryFreshBreakoutMaxDriftPct: 2.5,
 
   // ── Intervals ────────────────────────────────────────────────────────────
   managementIntervalMin:    15,
@@ -234,6 +236,8 @@ const CONFIG_BOUNDS = {
   entrySupertrendMaxDistancePct: { min: 0, max: 100 },
   entrySupertrendBreakMinPct: { min: 0, max: 100 },
   entryFreshBreakoutMinAthDistancePct: { min: 0, max: 100 },
+  entryFreshWatchWindowSec: { min: 5, max: 600 },
+  entryFreshBreakoutMaxDriftPct: { min: 0.1, max: 100 },
   entryBreakoutMinAthDistancePct: { min: 0, max: 100 },
   okxApiKey:              { type: 'string' },
   maxDailyDrawdownPct:    { min: 0, max: 100 },

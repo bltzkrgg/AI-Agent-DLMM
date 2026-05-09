@@ -189,6 +189,9 @@ function addWatchPassTa(pool, reason = 'TA PASS', source = 'TA') {
   const ttlMin = Math.max(intervalMin, Number(cfg.retestTtlMin) || 60);
   const existing = _taWatchQueue.get(mint);
   const symbol = getPoolSymbol(pool);
+  const signals = pool?._entrySignals || {};
+  const watchWindowSec = Math.max(5, Number(cfg.entryFreshWatchWindowSec) || 90);
+  const maxDriftPct = Math.max(0.1, Number(cfg.entryFreshBreakoutMaxDriftPct) || 2.5);
 
   const row = {
     pool,
@@ -201,6 +204,15 @@ function addWatchPassTa(pool, reason = 'TA PASS', source = 'TA') {
     nextCheckAt: now,
     expiresAt: existing?.expiresAt || (now + ttlMin * 60 * 1000),
     lastHeartbeatAt: existing?.lastHeartbeatAt || 0,
+    snapshotAt: existing?.snapshotAt || now,
+    snapshotPrice: existing?.snapshotPrice ?? signals.currentPrice ?? null,
+    snapshotHigh24h: existing?.snapshotHigh24h ?? signals.high24h ?? null,
+    snapshotStDistancePct: existing?.snapshotStDistancePct ?? signals.signalStDistancePct ?? null,
+    snapshotAthDistancePct: existing?.snapshotAthDistancePct ?? signals.signalAthDistancePct ?? null,
+    snapshotM5Change: existing?.snapshotM5Change ?? signals.priceChangeM5 ?? null,
+    snapshotM15Change: existing?.snapshotM15Change ?? signals.priceChangeM15 ?? null,
+    watchWindowSec: existing?.watchWindowSec || watchWindowSec,
+    maxDriftPct: existing?.maxDriftPct || maxDriftPct,
   };
 
   _taWatchQueue.set(mint, row);
@@ -261,6 +273,15 @@ async function collectReadyRetestPools(cfg = getConfig()) {
             _retestReason: row.reason,
             _retestAttempts: row.attempts,
             _entrySignals: entrySignals,
+            _watchSnapshotAt: row.snapshotAt || now,
+            _watchSnapshotPrice: row.snapshotPrice ?? entrySignals.currentPrice ?? null,
+            _watchSnapshotHigh24h: row.snapshotHigh24h ?? entrySignals.high24h ?? null,
+            _watchSnapshotStDistancePct: row.snapshotStDistancePct ?? entrySignals.signalStDistancePct ?? null,
+            _watchSnapshotAthDistancePct: row.snapshotAthDistancePct ?? entrySignals.signalAthDistancePct ?? null,
+            _watchSnapshotM5Change: row.snapshotM5Change ?? entrySignals.priceChangeM5 ?? null,
+            _watchSnapshotM15Change: row.snapshotM15Change ?? entrySignals.priceChangeM15 ?? null,
+            _watchWindowSec: row.watchWindowSec || Math.max(5, Number(cfg.entryFreshWatchWindowSec) || 90),
+            _watchMaxDriftPct: row.maxDriftPct || Math.max(0.1, Number(cfg.entryFreshBreakoutMaxDriftPct) || 2.5),
           };
           addWatchPassTa(pool, row.reason || 'TA PASS', 'RADAR');
           console.log(`[WATCH] ✅ Retest PASS → WATCH: ${row.symbol} attempts=${row.attempts}`);
@@ -764,6 +785,11 @@ async function processTaWatchQueue(cfg = getConfig()) {
         entryTimingState: 'BREAKOUT',
         signalStDistancePct: pool._entrySignals?.signalStDistancePct,
         signalAthDistancePct: pool._entrySignals?.signalAthDistancePct,
+        snapshotAt: row.snapshotAt || now,
+        snapshotPrice: row.snapshotPrice ?? pool._entrySignals?.currentPrice ?? null,
+        snapshotHigh24h: row.snapshotHigh24h ?? pool._entrySignals?.high24h ?? null,
+        watchWindowSec: row.watchWindowSec || Math.max(5, Number(cfg.entryFreshWatchWindowSec) || 90),
+        maxDriftPct: row.maxDriftPct || Math.max(0.1, Number(cfg.entryFreshBreakoutMaxDriftPct) || 2.5),
       },
     });
   }
@@ -1178,8 +1204,10 @@ export async function scanAndDeploy() {
               ? `Volume belum mengonfirmasi breakout`
             : entrySignals.entryTimingState === 'WAIT_FOR_PULLBACK'
               ? `Breakout sudah terlalu lewat untuk mode retest (${formatMaybePct(entrySignals.signalStDistancePct, 2)})`
-              : entrySignals.entryTimingState === 'LATE_BREAKOUT'
+            : entrySignals.entryTimingState === 'LATE_BREAKOUT'
                 ? `Breakout sudah tidak fresh lagi (${formatMaybePct(entrySignals.signalAthDistancePct, 2)} dari high 24h)`
+              : entrySignals.entryTimingState === 'EXTENDED'
+                ? `Breakout sudah terlalu melebar dari supertrend (${formatMaybePct(entrySignals.signalStDistancePct, 2)})`
               : `Breakout terlalu dekat ke Supertrend (${formatMaybePct(entrySignals.signalStDistancePct, 2)})`;
         reportManager.updateGate(tokenSymbol, 'SCOUT_AGENT', 'DEFER', waitReason);
         reportManager.setFinalVerdict(tokenSymbol, 'DEFERRED', waitReason);

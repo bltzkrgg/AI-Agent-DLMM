@@ -1,6 +1,7 @@
 'use strict';
 
 import { getConfig } from '../config.js';
+import { getMarketSnapshot } from '../market/oracle.js';
 import { reserveDeploySlot, releaseDeploySlot } from './deploySlotGuard.js';
 
 /**
@@ -89,8 +90,9 @@ export function dequeueToken(mint) {
 /**
  * Cek kondisi pasar sebelum deploy.
  */
-function evaluateDeployConditions(entry) {
+async function evaluateDeployConditions(entry) {
   const { pool, meta } = entry;
+  const cfg = getConfig();
 
   // Kondisi 1: Waktu expired di antrian
   // Token watch deploy: maksimal 5 menit di queue sebelum dibuang
@@ -98,6 +100,39 @@ function evaluateDeployConditions(entry) {
   const maxAge = 5 * 60 * 1000;
   if (ageMs > maxAge) {
     return { ok: false, reason: 'Token expired dari antrian (>5 menit)' };
+  }
+
+  const watchWindowSec = Math.max(5, Number(meta.watchWindowSec || cfg.entryFreshWatchWindowSec || 90));
+  const maxDriftPct = Math.max(0.1, Number(meta.maxDriftPct || cfg.entryFreshBreakoutMaxDriftPct || 2.5));
+  const snapshotAt = Number(meta.snapshotAt || entry.enqueuedAt || 0);
+  if (snapshotAt > 0 && (Date.now() - snapshotAt) > watchWindowSec * 1000) {
+    return { ok: false, reason: `WATCH terlalu lama (${Math.round((Date.now() - snapshotAt) / 1000)}s > ${watchWindowSec}s)` };
+  }
+
+  const mint = pool.tokenXMint || pool.mint || '';
+  const poolAddress = pool.address || pool.pool_address || pool.pool || pool.poolAddress || pool.pubkey || '';
+  const liveSnapshot = mint
+    ? await getMarketSnapshot(mint, poolAddress || null).catch(() => null)
+    : null;
+  const livePrice = Number(liveSnapshot?.ohlcv?.currentPrice || liveSnapshot?.price?.currentPrice || pool?.price || 0);
+  const snapshotPrice = Number(meta.snapshotPrice || 0);
+  if (Number.isFinite(snapshotPrice) && snapshotPrice > 0 && Number.isFinite(livePrice) && livePrice > 0) {
+    const driftPct = Math.abs(((livePrice - snapshotPrice) / snapshotPrice) * 100);
+    if (driftPct > maxDriftPct) {
+      return { ok: false, reason: `Breakout bergeser ${driftPct.toFixed(2)}% dari snapshot (> ${maxDriftPct}%)` };
+    }
+  }
+
+  if (liveSnapshot) {
+    const liveTrend = String(
+      liveSnapshot?.quality?.taTrend ||
+      liveSnapshot?.ta?.supertrend?.trend ||
+      'UNKNOWN'
+    ).toUpperCase();
+    const liveM5 = Number(liveSnapshot?.ohlcv?.priceChangeM5 ?? 0);
+    if (liveTrend !== 'BULLISH' || liveM5 <= 0) {
+      return { ok: false, reason: `Freshness hilang: trend=${liveTrend || 'UNKNOWN'} m5=${liveM5.toFixed(2)}%` };
+    }
   }
 
   // Kondisi 3: TVL minimal (hindari rug liquidity)
@@ -137,7 +172,7 @@ async function runWatcher() {
         continue;
       }
 
-      const check = evaluateDeployConditions(entry);
+      const check = await evaluateDeployConditions(entry);
 
       if (!check.ok) {
         console.log(`[QUEUE] ⏳ ${symbol} belum siap: ${check.reason} (attempt ${entry.attempts}/3)`);
