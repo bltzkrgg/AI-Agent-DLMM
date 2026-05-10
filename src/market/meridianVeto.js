@@ -17,7 +17,7 @@
 'use strict';
 
 import { getConfig }            from '../config.js';
-import { fetchWithTimeout }     from '../utils/safeJson.js';
+import { fetchWithTimeout, withRetry } from '../utils/safeJson.js';
 import { calculateSupertrend }  from '../utils/ta.js';
 import * as oracle              from './oracle.js';
 
@@ -56,8 +56,15 @@ function getMeridianHeaders() {
 export async function checkSupertrendVeto(mint, currentRealtimePrice = 0) {
   try {
     const url = `${getMeridianBase()}/chart-indicators/${mint}?interval=15_MINUTE`;
-    const res = await fetchWithTimeout(url, { headers: getMeridianHeaders() }, 3000);
-    
+    const cfg = getConfig();
+    const timeoutMs = Math.max(3000, Number(cfg.meridianSupertrendTimeoutMs) || 8000);
+    const retries = Math.max(1, Number(cfg.meridianSupertrendRetries) || 2);
+    const res = await withRetry(
+      () => fetchWithTimeout(url, { headers: getMeridianHeaders() }, timeoutMs),
+      retries,
+      500
+    );
+
     if (!res.ok) {
       return { veto: true, reason: `[FAIL_CLOSED] Meridian Supertrend API ${res.status} — safety data unavailable` };
     }

@@ -95,6 +95,8 @@ const DEFAULTS = {
   // ── Meridian API ──────────────────────────────────────────────────────────
   publicApiKey:        '',
   agentMeridianApiUrl: 'https://api.agentmeridian.xyz/api',
+  meridianSupertrendTimeoutMs: 8000,
+  meridianSupertrendRetries:   2,
   lpAgentRelayEnabled: false,   // true = route Jupiter/Meteora lewat Meridian relay
   maxAthDistancePct:   15,
   dominanceMinPct:     15,
