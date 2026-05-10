@@ -45,6 +45,7 @@ const DEFAULTS = {
   canaryMaxPositions:   1,
   autonomyMode:         'active',
   autoScreeningEnabled: false,
+  screeningTopPoolsLimit: 5,
   requireConfirmation:  true, // true = minta konfirmasi Telegram sebelum deploy
   entryGateMode:        'lper_breakout',
   entrySupertrendBreakMinPct: 1.25,
@@ -177,6 +178,7 @@ const CONFIG_BOUNDS = {
   autoScreeningEnabled:   { type: 'boolean' },
   managementIntervalMin:  { min: 1,     max: 1440 },
   screeningIntervalMin:   { min: 5,     max: 1440 },
+  screeningTopPoolsLimit: { min: 1,     max: 20 },
   positionUpdateIntervalMin: { min: 1,  max: 1440 },
   realtimePnlIntervalSec: { min: 5,     max: 3600 },
   entryGateMode:          { type: 'string' },
@@ -447,6 +449,7 @@ export const SETCONFIG_WHITELIST = {
   maxMcapUsd:             { section: 'discovery',  type: 'number',  desc: 'Market Cap maksimum token (USD, 0 = tidak filter)' },
   // ── Screening ─────────────────────────────────────────────────────
   autoScreeningEnabled:   { section: 'screening',  type: 'boolean', desc: 'Aktifkan auto-screening berkala (true/false)' },
+  screeningTopPoolsLimit: { section: 'screening',  type: 'number',  desc: 'Jumlah top pool internal yang dievaluasi per siklus (1–20)' },
   screeningIntervalMin:   { section: 'screening',  type: 'number',  desc: 'Interval auto-screening (menit, 5–1440)' },
   realtimePnlIntervalSec: { section: 'management', type: 'number',  desc: 'Interval log realtime PnL di terminal (detik, 5–3600)' },
   jupiterMaxChecksPerScan:{ section: 'screening',  type: 'number',  desc: 'Maks cek Jupiter per siklus scan' },

@@ -318,6 +318,7 @@ bot.onText(/\/config/, (msg) => {
   ].join('\n');
   const discovery = [
     `meteoraDiscoveryLimit = ${cfg.meteoraDiscoveryLimit}`,
+    `screeningTopPoolsLimit = ${cfg.screeningTopPoolsLimit}`,
     `discoveryTimeframe    = ${cfg.discoveryTimeframe}`,
     `discoveryCategory     = ${cfg.discoveryCategory}`,
     `minTvl                = ${cfg.minTvl}`,

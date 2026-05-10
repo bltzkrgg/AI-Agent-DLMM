@@ -46,6 +46,7 @@
 
   "managementIntervalMin": 10,
   "screeningIntervalMin": 15,
+  "screeningTopPoolsLimit": 5,
   "positionUpdateIntervalMin": 5,
   "realtimePnlIntervalSec": 15,
   "autoScreeningEnabled": false,

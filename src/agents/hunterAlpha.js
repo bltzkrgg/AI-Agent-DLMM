@@ -1011,9 +1011,11 @@ export async function scanAndDeploy() {
 
   console.log(`[SCREEN] ${pools.length} pool ditemukan. Mulai screening...`);
 
-    // ── Sort by efficiency (Vol/TVL), evaluasi HANYA Top 5 ─────────────────
+    const screeningTopPoolsLimit = Math.max(1, Number(cfg.screeningTopPoolsLimit) || 5);
+
+    // ── Sort by efficiency (Vol/TVL), evaluasi HANYA top pool configurable ───
     // Filosofi LP: resource screening hanya untuk kandidat paling efisien.
-    // Pool ke-6 dst TIDAK dievaluasi sama sekali (hemat API & waktu).
+    // Pool di luar batas ini TIDAK dievaluasi sama sekali (hemat API & waktu).
     pools = pools.sort((a, b) => {
       const aVol = Number(a.volume24h || a.trade_volume_24h || 0);
       const bVol = Number(b.volume24h || b.trade_volume_24h || 0);
@@ -1022,8 +1024,8 @@ export async function scanAndDeploy() {
       return (bVol / bTvl) - (aVol / aTvl);
     });
 
-    const scoutCandidates = pools.slice(0, 5); // HANYA Top 5 — tidak ada evaluasi untuk sisa
-    console.log(`[SCREEN] 🔬 Memulai Strict Serial Screening untuk ${scoutCandidates.length} Top-5 pool (sorted by Vol/TVL efficiency)...`);
+    const scoutCandidates = pools.slice(0, screeningTopPoolsLimit);
+    console.log(`[SCREEN] 🔬 Memulai Strict Serial Screening untuk ${scoutCandidates.length} Top-${screeningTopPoolsLimit} pool (sorted by Vol/TVL efficiency)...`);
   // Jupiter budget dibuat minimal sebesar jumlah kandidat batch ini agar
   // pool yang sudah lolos tahap awal tidak ke-defer prematur sebelum sempat diuji.
   const configuredJupiterBudget = Number(cfg.jupiterMaxChecksPerScan);
@@ -1032,7 +1034,7 @@ export async function scanAndDeploy() {
       1,
       scoutCandidates.length,
       Number.isFinite(configuredJupiterBudget) && configuredJupiterBudget > 0 ? configuredJupiterBudget : 0,
-      5, // Top-5 LP philosophy: max 5 evaluations per cycle
+      screeningTopPoolsLimit,
     ),
   };
 
@@ -1391,12 +1393,12 @@ FORMAT JAWABAN (WAJIB JSON VALID, TANPA MARKDOWN):
 
   };
 
-  // ── Evaluasi serial Top-5 (WAJIB 5x log [hunter] 📦 Mengevaluasi...) ──────
+  // ── Evaluasi serial top pool configurable ──────────────────────────────────
   // Menggunakan for-of serial bukan chunkArray agar tidak ada chunk yang ter-skip
   // akibat guard _running yang hanya true di LinearLoop.
   for (const pool of scoutCandidates) {
     if (!_screening) break;              // hanya berhenti jika kita sendiri yang stop
-    if (winners.length >= 5) break;      // cukup 5 winner
+    if (winners.length >= screeningTopPoolsLimit) break;      // cukup top pool limit
     try {
       const result = await evaluatePool(pool);
       if (!result) continue;
@@ -1570,7 +1572,7 @@ Balas HANYA JSON valid tanpa Markdown.`;
   });
 
   if (eligibleWinners.length === 0) {
-    console.log('[hunter] Semua kandidat Top 5 sudah ada di posisi aktif. Standby...');
+    console.log(`[hunter] Semua kandidat Top-${screeningTopPoolsLimit} sudah ada di posisi aktif. Standby...`);
     await notify(
       `⚠️ <b>Deploy ditahan</b>\n` +
       `Tahap: <code>DEDUPLICATION</code>\n` +
@@ -2226,7 +2228,9 @@ export async function sendImmediateTopPoolsReport(chatId) {
       return;
     }
 
-    // Sort by efficiency (Vol/TVL) — top 5 ke Telegram, sisanya console
+    const screeningTopPoolsLimit = Math.max(1, Number(cfg.screeningTopPoolsLimit) || 5);
+
+    // Sort by efficiency (Vol/TVL) — top pool configurable ke Telegram, sisanya console
     const sorted = [...rawPools].sort((a, b) => {
       const aVol = Number(a.volume24h || a.trade_volume_24h || 0);
       const bVol = Number(b.volume24h || b.trade_volume_24h || 0);
@@ -2235,15 +2239,15 @@ export async function sendImmediateTopPoolsReport(chatId) {
       return (bVol / bTvl) - (aVol / aTvl);
     });
 
-    const top5 = sorted.slice(0, 5);
-    sorted.slice(5).forEach((p, i) =>
-      console.log(`[hunter][instant-scan] #${i + 6} ${p.name || p.tokenXMint?.slice(0,8)} — console only`)
+    const topPools = sorted.slice(0, screeningTopPoolsLimit);
+    sorted.slice(screeningTopPoolsLimit).forEach((p, i) =>
+      console.log(`[hunter][instant-scan] #${i + screeningTopPoolsLimit + 1} ${p.name || p.tokenXMint?.slice(0,8)} — console only`)
     );
 
     const GATES = ['STAGE_0_DISCOVERY','BLACKLIST_LOCAL','STAGE_1_PUBLIC','STAGE_2_GMGN',
                    'STAGE_3_JUPITER','MERIDIAN_VETO','PENDING_RETEST','FLAT_CONFIG_GATE','SCOUT_AGENT'];
 
-    const lines = await Promise.all(top5.map(async (pool, i) => {
+    const lines = await Promise.all(topPools.map(async (pool, i) => {
       const symbol  = pool.name || pool.tokenXSymbol || pool.tokenXMint?.slice(0, 8) || 'UNKNOWN';
       const binStep = pool.binStep || '?';
       const tvlRaw  = Number(pool.totalTvl || pool.activeTvl || 0);
@@ -2312,8 +2316,8 @@ export async function sendImmediateTopPoolsReport(chatId) {
     report += `📅 ${nowStr}\n`;
     report += `================================\n`;
     report += `🔍 <b>Total Discan:</b> ${sorted.length} pool\n`;
-    report += `✅ <b>Lolos Veto:</b> ${top5.filter((_,idx) => lines[idx]?.includes('SCREENED')).length || '?'} pool\n`;
-    report += `<i>(Menampilkan 5 dari ${sorted.length} — sisanya di console)</i>\n`;
+    report += `✅ <b>Lolos Veto:</b> ${topPools.filter((_,idx) => lines[idx]?.includes('SCREENED')).length || '?'} pool\n`;
+    report += `<i>(Menampilkan ${screeningTopPoolsLimit} dari ${sorted.length} — sisanya di console)</i>\n`;
     report += `================================\n\n`;
     report += lines.join('\n\n');
     report += `\n\n================================\n`;
