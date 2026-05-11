@@ -3,6 +3,12 @@
   "autonomyMode": "active",
   "requireConfirmation": true,
   "autoScreeningEnabled": true,
+  "screeningTopPoolsLimit": 10,
+  "deployQueueExpiryMin": 5,
+  "taWatchEnabled": true,
+  "taWatchMaxPools": 10,
+  "taWatchExpiryMin": 60,
+  "watchIntervalSec": 30,
   "finance": {
     "deployAmountSol": 0.5,
     "maxPositions": 1,
@@ -54,7 +60,7 @@
     ],
     "stopLossPct": 10,
     "trailingStopPct": 5,
-    "trailingTriggerPct": 1,
+    "trailingTriggerPct": 0.3,
     "trailingDropPct": 0.1,
     "smartExitRsi": 90,
     "maxHoldHours": 24,
@@ -81,5 +87,5 @@
     "lpAgentRelayEnabled": false
   },
   "deployAmountSol": 0.1,
-  "maxPositions": 2
+  "maxPositions": 1
 }

@@ -93,6 +93,35 @@ test('realtime PnL terminal interval is configurable', async () => {
   assert.equal(cfg.realtimePnlIntervalSec, 30);
 });
 
+test('watch layer config keys are supported and persist via updateConfig', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'dlmm-watch-config-'));
+  const configPath = join(root, 'user-config.json');
+
+  process.env.BOT_CONFIG_PATH = configPath;
+  const configModule = await importFresh(join(repoRoot, 'src/config.js'));
+
+  assert.equal(configModule.isConfigKeySupported('taWatchEnabled'), true);
+  assert.equal(configModule.isConfigKeySupported('taWatchMaxPools'), true);
+  assert.equal(configModule.isConfigKeySupported('taWatchExpiryMin'), true);
+  assert.equal(configModule.isConfigKeySupported('watchIntervalSec'), true);
+  assert.equal(configModule.resolveNestedKey('watch.maxPools')?.flatKey, 'taWatchMaxPools');
+  assert.equal(configModule.resolveNestedKey('watch.expiryMin')?.flatKey, 'taWatchExpiryMin');
+  assert.equal(configModule.resolveNestedKey('watch.watchIntervalSec')?.flatKey, 'watchIntervalSec');
+
+  configModule.updateConfig({
+    taWatchEnabled: true,
+    taWatchMaxPools: 12,
+    taWatchExpiryMin: 45,
+    watchIntervalSec: 20,
+  });
+
+  const cfg = configModule.getConfig();
+  assert.equal(cfg.taWatchEnabled, true);
+  assert.equal(cfg.taWatchMaxPools, 12);
+  assert.equal(cfg.taWatchExpiryMin, 45);
+  assert.equal(cfg.watchIntervalSec, 20);
+});
+
 test('entry capacity respects deployment stage and clamps overrides', async () => {
   const root = mkdtempSync(join(tmpdir(), 'dlmm-entry-capacity-'));
   const configPath = join(root, 'user-config.json');

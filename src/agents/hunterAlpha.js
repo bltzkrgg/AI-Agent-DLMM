@@ -177,21 +177,55 @@ function addPendingRetest(pool, reason = 'TA belum valid') {
   console.log(`[hunter] ⏳ Pending retest: ${getPoolSymbol(pool)} — ${reason}`);
 }
 
+function getWatchConfig(cfg = getConfig()) {
+  return {
+    enabled: cfg.taWatchEnabled !== false,
+    maxPools: Math.max(1, Number(cfg.taWatchMaxPools) || 10),
+    expiryMin: Math.max(5, Number(cfg.taWatchExpiryMin) || 60),
+  };
+}
+
+function computeTaWatchPriorityScore({ pool = {}, entrySignals = {}, row = {}, now = Date.now() } = {}) {
+  const readiness = String(entrySignals.entryReadiness || '').toUpperCase();
+  const breakout = String(entrySignals.breakoutQuality || '').toUpperCase();
+  const timing = String(entrySignals.entryTimingState || '').toUpperCase();
+  const trend = String(entrySignals.taTrend || '').toUpperCase();
+  const volumeRatio = Number(entrySignals.volumeRatio || 0);
+  const m5 = Number(entrySignals.priceChangeM5 || 0);
+  const stDistance = Number(entrySignals.signalStDistancePct || 0);
+  const ageSec = Math.max(0, Math.round(((now - Number(row.firstSeenAt || now)) || 0) / 1000));
+  const freshnessBonus = Math.max(0, 90 - Math.floor(ageSec / 30));
+
+  let score = 0;
+  score += readiness === 'HIGH' ? 220 : readiness === 'MEDIUM' ? 120 : 30;
+  score += breakout === 'STRONG' ? 180 : breakout === 'VALID' ? 120 : 20;
+  score += timing === 'ATH_BREAK' ? 120 : timing === 'BREAKOUT' ? 90 : 0;
+  score += trend === 'BULLISH' ? 80 : 0;
+  score += Math.max(0, Math.min(60, volumeRatio * 35));
+  score += Math.max(0, Math.min(50, m5 * 12));
+  score += Math.max(0, Math.min(35, stDistance));
+  score += freshnessBonus;
+
+  if (pool?._watchSnapshotAt) score += 10;
+  return score;
+}
+
 function addWatchPassTa(pool, reason = 'TA PASS', source = 'TA') {
   const cfg = getConfig();
-  if (cfg.pendingRetestEnabled === false) return null;
+  const watchCfg = getWatchConfig(cfg);
 
   const mint = getPoolMint(pool);
-  if (!mint || hasActiveMint(mint)) return null;
+  if (!mint || hasActiveMint(mint)) return { admitted: false, reason: 'Mint aktif / tidak valid', row: null, evicted: null };
 
   const now = Date.now();
-  const intervalMin = Math.max(1, Number(cfg.retestIntervalMin) || 5);
-  const ttlMin = Math.max(intervalMin, Number(cfg.retestTtlMin) || 60);
   const existing = _taWatchQueue.get(mint);
   const symbol = getPoolSymbol(pool);
   const signals = pool?._entrySignals || {};
   const watchWindowSec = Math.max(5, Number(cfg.entryFreshWatchWindowSec) || 90);
   const maxDriftPct = Math.max(0.1, Number(cfg.entryFreshBreakoutMaxDriftPct) || 2.5);
+  const priorityScore = computeTaWatchPriorityScore({ pool, entrySignals: signals, row: existing || {}, now });
+  const effectiveMaxPools = watchCfg.enabled ? watchCfg.maxPools : Number.MAX_SAFE_INTEGER;
+  const effectiveExpiryMin = watchCfg.expiryMin;
 
   const row = {
     pool,
@@ -202,7 +236,7 @@ function addWatchPassTa(pool, reason = 'TA PASS', source = 'TA') {
     firstSeenAt: existing?.firstSeenAt || now,
     lastReason: reason,
     nextCheckAt: now,
-    expiresAt: existing?.expiresAt || (now + ttlMin * 60 * 1000),
+    expiresAt: existing?.expiresAt || (now + effectiveExpiryMin * 60 * 1000),
     lastHeartbeatAt: existing?.lastHeartbeatAt || 0,
     snapshotAt: existing?.snapshotAt || now,
     snapshotPrice: existing?.snapshotPrice ?? signals.currentPrice ?? null,
@@ -213,11 +247,43 @@ function addWatchPassTa(pool, reason = 'TA PASS', source = 'TA') {
     snapshotM15Change: existing?.snapshotM15Change ?? signals.priceChangeM15 ?? null,
     watchWindowSec: existing?.watchWindowSec || watchWindowSec,
     maxDriftPct: existing?.maxDriftPct || maxDriftPct,
+    priorityScore,
   };
 
-  _taWatchQueue.set(mint, row);
-  console.log(`[WATCH] 👀 ${symbol} masuk watch queue (${source}) — ${reason}`);
-  return row;
+  if (existing) {
+    _taWatchQueue.set(mint, row);
+    console.log(`[WATCH] 👀 ${symbol} refresh watch queue (${source}) — ${reason}`);
+    return { admitted: true, row, evicted: null, reason: null };
+  }
+
+  if (_taWatchQueue.size < effectiveMaxPools) {
+    _taWatchQueue.set(mint, row);
+    console.log(`[WATCH] 👀 ${symbol} masuk watch queue (${source}) — ${reason}`);
+    return { admitted: true, row, evicted: null, reason: null };
+  }
+
+  const sortedByWeakest = [..._taWatchQueue.entries()].sort((a, b) => {
+    const aScore = Number(a[1]?.priorityScore || 0);
+    const bScore = Number(b[1]?.priorityScore || 0);
+    if (aScore !== bScore) return aScore - bScore;
+    return Number(a[1]?.firstSeenAt || 0) - Number(b[1]?.firstSeenAt || 0);
+  });
+  const weakest = sortedByWeakest[0];
+  const weakestScore = Number(weakest?.[1]?.priorityScore || 0);
+
+  if (priorityScore > weakestScore) {
+    _taWatchQueue.delete(weakest[0]);
+    _taWatchQueue.set(mint, row);
+    console.log(
+      `[WATCH] 🔀 ${symbol} menggantikan watch terlemah ${weakest?.[1]?.symbol || weakest?.[0]?.slice(0,8)} ` +
+      `(score ${priorityScore} > ${weakestScore})`
+    );
+    return { admitted: true, row, evicted: weakest[1], reason: null };
+  }
+
+  const rejectReason = `WATCH penuh (${_taWatchQueue.size}/${watchCfg.maxPools}) dan score tidak cukup (${priorityScore} <= ${weakestScore})`;
+  console.log(`[WATCH] ⛔ ${symbol} tidak masuk watch: ${rejectReason}`);
+  return { admitted: false, row: null, evicted: null, reason: rejectReason };
 }
 
 async function collectReadyRetestPools(cfg = getConfig()) {
@@ -267,7 +333,6 @@ async function collectReadyRetestPools(cfg = getConfig()) {
 
       if (entrySignals.entryTimingState === 'BREAKOUT' || entrySignals.entryTimingState === 'ATH_BREAK') {
         if (entrySignals.entryReadiness === 'HIGH' && (entrySignals.breakoutQuality === 'VALID' || entrySignals.breakoutQuality === 'STRONG')) {
-          _pendingRetestQueue.delete(mint);
           const pool = {
             ...row.pool,
             _retestReason: row.reason,
@@ -283,9 +348,20 @@ async function collectReadyRetestPools(cfg = getConfig()) {
             _watchWindowSec: row.watchWindowSec || Math.max(5, Number(cfg.entryFreshWatchWindowSec) || 90),
             _watchMaxDriftPct: row.maxDriftPct || Math.max(0.1, Number(cfg.entryFreshBreakoutMaxDriftPct) || 2.5),
           };
-          addWatchPassTa(pool, row.reason || 'TA PASS', 'RADAR');
-          console.log(`[WATCH] ✅ Retest PASS → WATCH: ${row.symbol} attempts=${row.attempts}`);
-          ready.push(pool);
+          const watchResult = addWatchPassTa(pool, row.reason || 'TA PASS', 'RADAR');
+          if (watchResult?.admitted) {
+            _pendingRetestQueue.delete(mint);
+            if (watchResult.evicted?.pool) {
+              addPendingRetest(watchResult.evicted.pool, 'WATCH digeser oleh prioritas lebih kuat');
+            }
+            console.log(`[WATCH] ✅ Retest PASS → WATCH: ${row.symbol} attempts=${row.attempts}`);
+            ready.push(pool);
+            continue;
+          }
+
+          row.lastReason = watchResult?.reason || 'WATCH penuh';
+          _pendingRetestQueue.set(mint, row);
+          console.log(`[WATCH] ⏳ Retest PASS tapi belum bisa masuk WATCH: ${row.symbol} — ${row.lastReason}`);
           continue;
         }
       }
@@ -649,16 +725,26 @@ async function processPendingTaRadar(cfg = getConfig()) {
 
       if (entrySignals.entryTimingState === 'BREAKOUT' || entrySignals.entryTimingState === 'ATH_BREAK') {
         if (entrySignals.entryReadiness === 'HIGH' && (entrySignals.breakoutQuality === 'VALID' || entrySignals.breakoutQuality === 'STRONG')) {
-          _pendingRetestQueue.delete(mint);
           const pool = {
             ...row.pool,
             _retestReason: row.reason,
             _retestAttempts: row.attempts,
             _entrySignals: entrySignals,
           };
-          addWatchPassTa(pool, row.reason || 'TA PASS', 'RADAR');
-          console.log(`[RADAR] ✅ TA radar PASS → WATCH: ${row.symbol} attempts=${row.attempts}`);
-          ready.push({ pool, symbol: row.symbol, entrySignals, vetoResult: veto, reason: row.reason });
+          const watchResult = addWatchPassTa(pool, row.reason || 'TA PASS', 'RADAR');
+          if (watchResult?.admitted) {
+            _pendingRetestQueue.delete(mint);
+            if (watchResult.evicted?.pool) {
+              addPendingRetest(watchResult.evicted.pool, 'WATCH digeser oleh prioritas lebih kuat');
+            }
+            console.log(`[RADAR] ✅ TA radar PASS → WATCH: ${row.symbol} attempts=${row.attempts}`);
+            ready.push({ pool, symbol: row.symbol, entrySignals, vetoResult: veto, reason: row.reason });
+            continue;
+          }
+
+          row.lastReason = watchResult?.reason || 'WATCH penuh';
+          _pendingRetestQueue.set(mint, row);
+          console.log(`[RADAR] ⏳ TA radar PASS tapi belum bisa masuk WATCH: ${row.symbol} — ${row.lastReason}`);
           continue;
         }
       }
@@ -728,14 +814,26 @@ export function stopPendingTaRadarWatcher() {
 }
 
 async function processTaWatchQueue(cfg = getConfig()) {
-  if (cfg.pendingRetestEnabled === false || _taWatchQueue.size === 0) return [];
+  if (_taWatchQueue.size === 0) return [];
 
   const now = Date.now();
   const maxAttempts = Math.max(1, Number(cfg.retestMaxAttempts) || 8);
-  const intervalMin = Math.max(1, Number(cfg.retestIntervalMin) || 5);
+  const watchIntervalSec = Math.max(15, Number(cfg.watchIntervalSec) || 30);
   const ready = [];
 
-  for (const [mint, row] of [..._taWatchQueue.entries()]) {
+  const sortedEntries = [..._taWatchQueue.entries()].map(([mint, row]) => {
+    row.priorityScore = computeTaWatchPriorityScore({ pool: row.pool, entrySignals: row.pool?._entrySignals || {}, row, now });
+    return [mint, row];
+  }).sort((a, b) => {
+    const aScore = Number(a[1]?.priorityScore || 0);
+    const bScore = Number(b[1]?.priorityScore || 0);
+    if (aScore !== bScore) return bScore - aScore;
+    const aSeen = Number(a[1]?.firstSeenAt || 0);
+    const bSeen = Number(b[1]?.firstSeenAt || 0);
+    return aSeen - bSeen;
+  });
+
+  for (const [mint, row] of sortedEntries) {
     if (!row?.pool || hasActiveMint(mint) || isBlacklisted(mint)) {
       _taWatchQueue.delete(mint);
       continue;
@@ -748,7 +846,8 @@ async function processTaWatchQueue(cfg = getConfig()) {
     if (row.nextCheckAt > now) continue;
 
     row.attempts += 1;
-    row.nextCheckAt = now + intervalMin * 60 * 1000;
+    row.priorityScore = computeTaWatchPriorityScore({ pool: row.pool, entrySignals: row.pool?._entrySignals || {}, row, now });
+    row.nextCheckAt = now + watchIntervalSec * 1000;
     row.lastHeartbeatAt = now;
 
     const pool = row.pool;
@@ -799,10 +898,6 @@ async function processTaWatchQueue(cfg = getConfig()) {
 
 export function startTaWatchWatcher() {
   if (_taWatchTimer) return false;
-  if (getConfig().pendingRetestEnabled === false) {
-    console.log('[WATCH] TA watch watcher tidak dijalankan karena pendingRetestEnabled=false');
-    return false;
-  }
 
   const tick = async () => {
     if (_taWatchInFlight) return;
@@ -810,7 +905,6 @@ export function startTaWatchWatcher() {
     _taWatchInFlight = true;
     try {
       const cfg = getConfig();
-      if (cfg.pendingRetestEnabled === false) return;
       console.log(`[WATCH] 👀 heartbeat pending=${_taWatchQueue.size}`);
       const ready = await processTaWatchQueue(cfg);
       for (const item of ready) {
@@ -1072,7 +1166,11 @@ export async function scanAndDeploy() {
         console.log(`🔄 [Pending] Token ${pending.name} berhasil melewati TA, naik ke WATCH...`);
         reportManager.updateGate(pending.name, 'PENDING_RETEST', 'PASS', 'Berhasil melewati Supertrend');
         pendingStore.remove(pending.address);
-        addWatchPassTa(poolData, 'Berhasil melewati Supertrend', 'SCREEN');
+        const watchResult = addWatchPassTa(poolData, 'Berhasil melewati Supertrend', 'SCREEN');
+        if (!watchResult?.admitted) {
+          reportManager.updateGate(pending.name, 'PENDING_RETEST', 'DEFER', watchResult?.reason || 'WATCH penuh');
+          addPendingRetest(poolData, watchResult?.reason || 'WATCH penuh');
+        }
       }
     } catch (e) {
       console.warn(`Error processing pending token ${pending.name}: ${e.message}`);
@@ -1354,15 +1452,35 @@ FORMAT JAWABAN (WAJIB JSON VALID, TANPA MARKDOWN):
         pool._marketSnapshot = marketSnapshot;
         pool._llmPoolContext = llmPoolContext;
         pool._entrySignals = entrySignals;
-        addWatchPassTa(pool, scoutReason || 'Scout Approved', 'SCOUT');
+        const watchResult = addWatchPassTa(pool, scoutReason || 'Scout Approved', 'SCOUT');
+        if (watchResult?.admitted) {
+          if (watchResult.evicted?.pool) {
+            addPendingRetest(watchResult.evicted.pool, 'WATCH digeser oleh prioritas lebih kuat');
+          }
+          await notify(
+            `👀 <b>WATCH</b>\n` +
+            `Token: <b>${tokenSymbol}</b> masuk watch layer!\n` +
+            `Entry: <code>${entryReadiness || 'N/A'}</code> | Breakout: <code>${breakoutQuality || 'N/A'}</code>\n` +
+            `Alasan: <i>${scoutReason || 'Scout Approved'}</i>\n` +
+            `⏳ <i>Watcher aktif — deploy otomatis saat slot tersedia.</i>`
+          );
+          return { ok: true, pool, symbol: tokenSymbol || 'UNKNOWN' };
+        }
+
+        const watchFallbackReason = watchResult?.reason || 'WATCH penuh';
+        reportManager.updateGate(tokenSymbol, 'SCOUT_AGENT', 'DEFER', watchFallbackReason, `Entry=${entryReadiness}, Breakout=${breakoutQuality}, Timing=${entryTimingState}`);
+        reportManager.setFinalVerdict(tokenSymbol, 'DEFERRED', watchFallbackReason);
+        pendingStore.add(tokenMint || '', tokenSymbol, 0, 0, pool);
+        addPendingRetest(pool, watchFallbackReason);
+        console.log(`[SCREEN] ⏳ ${tokenSymbol} → pending retest (WATCH fallback: ${watchFallbackReason})`);
         await notify(
-          `👀 <b>WATCH</b>\n` +
-          `Token: <b>${tokenSymbol}</b> masuk watch layer!\n` +
+          `⏳ <b>KANDIDAT DITUNDA (WATCH FULL)</b>\n` +
+          `Token: <b>${tokenSymbol}</b>\n` +
           `Entry: <code>${entryReadiness || 'N/A'}</code> | Breakout: <code>${breakoutQuality || 'N/A'}</code>\n` +
-          `Alasan: <i>${scoutReason || 'Scout Approved'}</i>\n` +
-          `⏳ <i>Watcher aktif — deploy otomatis saat slot tersedia.</i>`
+          `Alasan Tunda: <i>${watchFallbackReason}</i>\n` +
+          `👁️‍🗨️ <i>Radar memantau real-time sampai slot WATCH longgar.</i>`
         );
-        return { ok: true, pool, symbol: tokenSymbol || 'UNKNOWN' };
+        return { ok: false, symbol: tokenSymbol || 'UNKNOWN', stage: 'SCOUT_AGENT', reason: watchFallbackReason };
       }
       const isDeferred = decision.includes('DEFER');
       const reason = scoutReason || (isDeferred ? 'Insufficient Information' : 'Weak Breakout');

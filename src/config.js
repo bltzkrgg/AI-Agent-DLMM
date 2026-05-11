@@ -52,6 +52,10 @@ const DEFAULTS = {
   entryFreshBreakoutMinAthDistancePct: 99.25,
   entryFreshWatchWindowSec: 90,
   entryFreshBreakoutMaxDriftPct: 2.5,
+  taWatchEnabled:       true,
+  taWatchMaxPools:      10,
+  taWatchExpiryMin:     60,
+  watchIntervalSec:     30,
 
   // ── Intervals ────────────────────────────────────────────────────────────
   managementIntervalMin:    15,
@@ -244,6 +248,10 @@ const CONFIG_BOUNDS = {
   entryFreshBreakoutMinAthDistancePct: { min: 0, max: 100 },
   entryFreshWatchWindowSec: { min: 5, max: 600 },
   entryFreshBreakoutMaxDriftPct: { min: 0.1, max: 100 },
+  taWatchEnabled:         { type: 'boolean' },
+  taWatchMaxPools:        { min: 1, max: 50 },
+  taWatchExpiryMin:       { min: 5, max: 720 },
+  watchIntervalSec:       { min: 15, max: 3600 },
   entryBreakoutMinAthDistancePct: { min: 0, max: 100 },
   okxApiKey:              { type: 'string' },
   maxDailyDrawdownPct:    { min: 0, max: 100 },
@@ -284,6 +292,13 @@ const NESTED_SECTION_MAP = {
     smartExitRsi:       'smartExitRsi',
     maxHoldHours:       'maxHoldHours',
     outOfRangeWaitMinutes: 'outOfRangeWaitMinutes',
+  },
+
+  watch: {
+    enabled:          'taWatchEnabled',
+    maxPools:         'taWatchMaxPools',
+    expiryMin:        'taWatchExpiryMin',
+    watchIntervalSec: 'watchIntervalSec',
   },
 
   // discovery: parameter pencarian pool Meteora
@@ -458,6 +473,10 @@ export const SETCONFIG_WHITELIST = {
   retestTtlMin:           { section: 'screening',  type: 'number',  desc: 'Batas umur pending retest (menit)' },
   retestMaxAttempts:      { section: 'screening',  type: 'number',  desc: 'Maks percobaan retest per pool' },
   retestMaxReadyPerScan:  { section: 'screening',  type: 'number',  desc: 'Maks kandidat retest siap per scan' },
+  taWatchEnabled:         { section: 'watch',      type: 'boolean', desc: 'Aktifkan sticky TA watch layer' },
+  taWatchMaxPools:        { section: 'watch',      type: 'number',  desc: 'Maks kandidat yang bisa tinggal di WATCH (1–50)' },
+  taWatchExpiryMin:       { section: 'watch',      type: 'number',  desc: 'Batas umur kandidat di WATCH (menit)' },
+  watchIntervalSec:       { section: 'watch',      type: 'number',  desc: 'Interval cek WATCH aktif (detik, 15–3600)' },
 };
 
 // ── resolveNestedKey ─────────────────────────────────────────────────────────

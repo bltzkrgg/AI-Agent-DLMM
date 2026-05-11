@@ -51,6 +51,10 @@
   "realtimePnlIntervalSec": 15,
   "autoScreeningEnabled": false,
   "deployQueueExpiryMin": 5,
+  "taWatchEnabled": true,
+  "taWatchMaxPools": 10,
+  "taWatchExpiryMin": 60,
+  "watchIntervalSec": 30,
 
   "radar": {
     "meteoraDiscoveryLimit": 150,

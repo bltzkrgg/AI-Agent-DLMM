@@ -333,6 +333,10 @@ bot.onText(/\/config/, (msg) => {
     `trailingTriggerPct    = ${cfg.trailingTriggerPct}`,
     `trailingDropPct       = ${cfg.trailingDropPct}`,
     `trailingStopPct       = ${cfg.trailingStopPct}`,
+    `taWatchEnabled        = ${cfg.taWatchEnabled}`,
+    `taWatchMaxPools       = ${cfg.taWatchMaxPools}`,
+    `taWatchExpiryMin      = ${cfg.taWatchExpiryMin}`,
+    `watchIntervalSec      = ${cfg.watchIntervalSec}`,
     `atrGuardEnabled       = ${cfg.atrGuardEnabled}`,
     `atrMultiplier         = ${cfg.atrMultiplier}`,
     `dryRun                = ${cfg.dryRun}`,
@@ -385,11 +389,16 @@ bot.onText(/\/setconfig(?:\s+(\S+))?(?:\s+(.+))?/, async (msg, match) => {
       `<b>💰 Finance:</b>\n${bySection('finance')}\n\n` +
       `<b>🔍 Discovery:</b>\n${bySection('discovery')}\n\n` +
       `<b>📡 Screening:</b>\n${bySection('screening')}\n\n` +
+      `<b>👀 Watch:</b>\n${bySection('watch')}\n\n` +
       `<b>🩺 Management:</b>\n${bySection('management')}\n\n` +
       `<i>Contoh:\n` +
       `/setconfig deployAmountSol 1.5\n` +
       `/setconfig discovery.timeframe 1h\n` +
       `/setconfig autoScreeningEnabled false\n` +
+      `/setconfig watch.enabled true\n` +
+      `/setconfig watch.maxPools 10\n` +
+      `/setconfig watch.expiryMin 60\n` +
+      `/setconfig watch.watchIntervalSec 30\n` +
       `/setconfig realtimePnlIntervalSec 15\n` +
       `/setconfig screeningIntervalMin 30</i>`,
       { parse_mode: 'HTML' }
@@ -916,13 +925,15 @@ setTimeout(async () => {
       `♻️ Reconcile: <code>${reconcile.restored}/${reconcile.scanned}</code> posisi dipulihkan\n` +
       `🩺 Restored Monitor: <code>${restoredMonitors}</code> loop aktif\n` +
       `👁️ Manual Close Watcher: <code>${manualCloseWatcherStarted ? 'ON' : 'ALREADY_ON'}</code>\n` +
-      `👀 Watch Layer: <code>${cfg.pendingRetestEnabled === false ? 'OFF' : 'ON'}</code>\n` +
+      `👀 Watch Layer: <code>${cfg.taWatchEnabled === false ? 'OFF' : 'ON'}</code>\n` +
+      `🛰️ Radar Layer: <code>${cfg.pendingRetestEnabled === false ? 'OFF' : 'ON'}</code>\n` +
       `💰 Balance: <code>${balance} SOL</code>\n` +
       `📐 Deploy: <code>${cfg.deployAmountSol || 0.1} SOL</code>\n` +
       `🎯 TP: <code>Trail ${cfg.trailingTriggerPct || 10}% → ${cfg.trailingDropPct || 3}% drop</code> | SL: <code>-${cfg.stopLossPct || 10}%</code>\n` +
       `ℹ️ TA: <code>info only (RSI ref ${cfg.smartExitRsi || 90})</code>\n` +
       `🔍 DryRun: <code>${cfg.dryRun ? 'ON' : 'OFF'}</code>\n` +
       `📡 Auto Screening: <code>${autoScr ? `ON (${cfg.screeningIntervalMin}m)` : 'OFF'}</code>\n` +
+      `👀 Watch: <code>${cfg.taWatchEnabled === false ? 'OFF' : 'ON'} (${cfg.taWatchMaxPools || 10} max)</code>\n` +
       `📊 Realtime PnL: <code>${cfg.realtimePnlIntervalSec || 15}s</code>\n` +
       `⚡ API Engine: <code>Jupiter V1 Direct (api.jup.ag/swap/v1)</code>\n\n` +
       `Ketik /hunt untuk mulai loop, /screening untuk scan manual.`
