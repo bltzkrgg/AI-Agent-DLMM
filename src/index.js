@@ -1019,22 +1019,20 @@ setTimeout(async () => {
     console.log(`✅ Jupiter V1 Direct — api.jup.ag/swap/v1 (fallback: lite-api.jup.ag)`);
 
     await notify(
-      `🚀 <b>Linear Sniper Bot dimulai!</b>\n\n` +
-      `♻️ Reconcile: <code>${reconcile.restored}/${reconcile.scanned}</code> posisi dipulihkan\n` +
-      `🩺 Restored Monitor: <code>${restoredMonitors}</code> loop aktif\n` +
+      `🚀 <b>Linear Sniper Bot aktif</b>\n\n` +
+      `♻️ Reconcile: <code>${reconcile.restored}/${reconcile.scanned}</code>\n` +
+      `🩺 Restored Monitor: <code>${restoredMonitors}</code>\n` +
       `👁️ Manual Close Watcher: <code>${manualCloseWatcherStarted ? 'ON' : 'ALREADY_ON'}</code>\n` +
-      `👀 Watch Layer: <code>${cfg.taWatchEnabled === false ? 'OFF' : 'ON'}</code>\n` +
+      `👁️ Watch Layer: <code>${cfg.taWatchEnabled === false ? 'OFF' : 'ON'}</code>\n` +
       `🛰️ Radar Layer: <code>${cfg.pendingRetestEnabled === false ? 'OFF' : 'ON'}</code>\n` +
       `💰 Balance: <code>${balance} SOL</code>\n` +
       `📐 Deploy: <code>${cfg.deployAmountSol || 0.1} SOL</code>\n` +
-      `🎯 TP: <code>Trail ${cfg.trailingTriggerPct || 10}% → ${cfg.trailingDropPct || 3}% drop</code> | SL: <code>-${cfg.stopLossPct || 10}%</code>\n` +
-      `ℹ️ TA: <code>info only (RSI ref ${cfg.smartExitRsi || 90})</code>\n` +
-      `🔍 DryRun: <code>${cfg.dryRun ? 'ON' : 'OFF'}</code>\n` +
+      `🎯 TP: <code>Trail ${cfg.trailingTriggerPct || 10}% → ${cfg.trailingDropPct || 3}%</code> | ` +
+      `SL: <code>-${cfg.stopLossPct || 10}%</code>\n` +
       `📡 Auto Screening: <code>${autoScr ? `ON (${cfg.screeningIntervalMin}m)` : 'OFF'}</code>\n` +
-      `👀 Watch: <code>${cfg.taWatchEnabled === false ? 'OFF' : 'ON'} (${cfg.taWatchMaxPools || 10} max)</code>\n` +
-      `📊 Realtime PnL: <code>${cfg.realtimePnlIntervalSec || 15}s</code>\n` +
-      `⚡ API Engine: <code>Jupiter V1 Direct (api.jup.ag/swap/v1)</code>\n\n` +
-      `Ketik /start untuk melihat semua command, /hunt untuk mulai loop, /screening untuk scan manual.`
+      `👀 Watch: <code>ON (${cfg.taWatchMaxPools || 10} max)</code>\n` +
+      `📊 Realtime PnL: <code>${cfg.realtimePnlIntervalSec || 15}s</code>\n\n` +
+      `Ketik /start untuk lihat command.`
     );
 
     // Auto-start screening loop jika diaktifkan
