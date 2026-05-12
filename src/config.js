@@ -473,6 +473,7 @@ export const SETCONFIG_WHITELIST = {
   retestTtlMin:           { section: 'screening',  type: 'number',  desc: 'Batas umur pending retest (menit)' },
   retestMaxAttempts:      { section: 'screening',  type: 'number',  desc: 'Maks percobaan retest per pool' },
   retestMaxReadyPerScan:  { section: 'screening',  type: 'number',  desc: 'Maks kandidat retest siap per scan' },
+  deployQueueExpiryMin:   { section: 'watch',      type: 'number',  desc: 'Batas umur antrean deploy (menit)' },
   taWatchEnabled:         { section: 'watch',      type: 'boolean', desc: 'Aktifkan sticky TA watch layer' },
   taWatchMaxPools:        { section: 'watch',      type: 'number',  desc: 'Maks kandidat yang bisa tinggal di WATCH (1–50)' },
   taWatchExpiryMin:       { section: 'watch',      type: 'number',  desc: 'Batas umur kandidat di WATCH (menit)' },

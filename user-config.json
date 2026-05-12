@@ -4,7 +4,7 @@
   "requireConfirmation": true,
   "autoScreeningEnabled": true,
   "screeningTopPoolsLimit": 10,
-  "deployQueueExpiryMin": 5,
+  "deployQueueExpiryMin": 60,
   "taWatchEnabled": true,
   "taWatchMaxPools": 10,
   "taWatchExpiryMin": 60,

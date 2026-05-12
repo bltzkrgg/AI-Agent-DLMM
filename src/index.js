@@ -499,6 +499,7 @@ bot.onText(/\/setconfig(?:\s+(\S+))?(?:\s+(.+))?/, async (msg, match) => {
       `/setconfig watch.maxPools 10\n` +
       `/setconfig watch.expiryMin 60\n` +
       `/setconfig watch.watchIntervalSec 30\n` +
+      `/setconfig deployQueueExpiryMin 60\n` +
       `/setconfig realtimePnlIntervalSec 15\n` +
       `/setconfig screeningIntervalMin 30</i>`,
       { parse_mode: 'HTML' }
