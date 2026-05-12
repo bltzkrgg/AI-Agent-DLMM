@@ -15,6 +15,7 @@ import { getConfig }              from '../config.js';
 import { screenToken }            from '../market/coinfilter.js';
 import { runMeridianVeto, discoverHighFeePoolsMeridian } from '../market/meridianVeto.js';
 import { getMarketSnapshot }      from '../market/oracle.js';
+import { getPoolInfo }            from '../solana/meteora.js';
 import { deployPosition, monitorPnL, exitPosition, markPositionManuallyClosed, setEvilPandaNotifyFn, setPositionLifecycle, getPositionOnChainStatus, EP_CONFIG, getActivePositionKeys, getPositionMeta, reconcileZombiePositions } from '../sniper/evilPanda.js';
 import { createMessage }          from '../agent/provider.js';
 import { getWalletBalance }       from '../solana/wallet.js';
@@ -24,7 +25,7 @@ import { getRuntimeState }        from '../runtime/state.js';
 import { escapeHTML, safeParseAI } from '../utils/safeJson.js';
 import reportManager              from '../utils/reportManager.js';
 import pendingStore               from '../utils/pendingStore.js';
-import { enqueueForDeploy, startDeployQueueWatcher, setDeployQueueNotifyFn, setDeployQueueMonitorFn } from '../utils/pendingDeployQueue.js';
+import { enqueueForDeploy, isFreshDeployMeta, startDeployQueueWatcher, setDeployQueueNotifyFn, setDeployQueueMonitorFn } from '../utils/pendingDeployQueue.js';
 import { getDeploySlotUsage, reserveDeploySlot, releaseDeploySlot } from '../utils/deploySlotGuard.js';
 // ── Pool selector: pilih pool terbaik per-token berdasarkan binStep priority ─────────────
 //
@@ -125,7 +126,7 @@ function listActivePositions() {
 
 function isWatcherModeActive() {
   const cfg = getConfig();
-  return isRunning() || cfg.autoScreeningEnabled === true;
+  return isRunning() || cfg.autoScreeningEnabled === true || _pendingRetestQueue.size > 0 || _taWatchQueue.size > 0;
 }
 
 function hasActiveMint(mint) {
@@ -284,6 +285,102 @@ function addWatchPassTa(pool, reason = 'TA PASS', source = 'TA') {
   const rejectReason = `WATCH penuh (${_taWatchQueue.size}/${watchCfg.maxPools}) dan score tidak cukup (${priorityScore} <= ${weakestScore})`;
   console.log(`[WATCH] ⛔ ${symbol} tidak masuk watch: ${rejectReason}`);
   return { admitted: false, row: null, evicted: null, reason: rejectReason };
+}
+
+export async function submitManualCaPool(poolAddress, { source = 'TELEGRAM_CA' } = {}) {
+  const cfg = getConfig();
+  const address = String(poolAddress || '').trim();
+  if (!address) {
+    return { ok: false, status: 'INVALID', reason: 'Pool address kosong' };
+  }
+
+  console.log(`[MANUAL] 📥 CA diterima: ${address}`);
+
+  let poolInfo;
+  try {
+    poolInfo = await getPoolInfo(address);
+  } catch (e) {
+    const reason = `Gagal baca pool Meteora: ${e.message}`;
+    console.warn(`[MANUAL] ❌ ${reason}`);
+    return { ok: false, status: 'INVALID', reason };
+  }
+
+  const tokenMint = String(poolInfo.tokenX || poolInfo.tokenXMint || poolInfo.mint || '').trim();
+  const symbol = poolInfo.tokenXSymbol || poolInfo.name?.split('-')[0] || tokenMint.slice(0, 8) || 'UNKNOWN';
+  if (!tokenMint) {
+    const reason = 'Token mint tidak tersedia dari pool Meteora';
+    console.warn(`[MANUAL] ❌ ${symbol}: ${reason}`);
+    return { ok: false, status: 'INVALID', symbol, reason };
+  }
+
+  if (hasActiveMint(tokenMint) || hasActivePoolAddress(address)) {
+    const reason = 'Token/pool sudah aktif';
+    console.log(`[MANUAL] 🔁 ${symbol} dilewati: ${reason}`);
+    return { ok: false, status: 'DUPLICATE', symbol, reason };
+  }
+
+  const marketSnapshot = await getMarketSnapshot(tokenMint, address).catch(() => null);
+  const entrySignals = deriveBreakoutEntrySignals({ pool: poolInfo, marketSnapshot, cfg });
+  const now = Date.now();
+  const watchWindowSec = Math.max(5, Number(cfg.entryFreshWatchWindowSec) || 90);
+  const maxDriftPct = Math.max(0.1, Number(cfg.entryFreshBreakoutMaxDriftPct) || 2.5);
+
+  const pool = {
+    ...poolInfo,
+    address,
+    poolAddress: address,
+    tokenXMint: tokenMint,
+    tokenXSymbol: symbol,
+    name: poolInfo.name || `${symbol}/SOL`,
+    _entrySignals: entrySignals,
+    _watchSnapshotAt: now,
+    _watchSnapshotPrice: entrySignals.currentPrice ?? marketSnapshot?.price?.currentPrice ?? null,
+    _watchSnapshotHigh24h: entrySignals.high24h ?? marketSnapshot?.ohlcv?.high24h ?? null,
+    _watchSnapshotStDistancePct: entrySignals.signalStDistancePct ?? null,
+    _watchSnapshotAthDistancePct: entrySignals.signalAthDistancePct ?? null,
+    _watchSnapshotM5Change: entrySignals.priceChangeM5 ?? null,
+    _watchSnapshotM15Change: entrySignals.priceChangeM15 ?? null,
+  };
+
+  const queueMeta = {
+    scoutReason: 'Manual CA input',
+    entryReadiness: entrySignals.entryReadiness,
+    breakoutQuality: entrySignals.breakoutQuality,
+    entryGateMode: entrySignals.entryGateMode,
+    entryTimingState: entrySignals.entryTimingState,
+    signalStDistancePct: entrySignals.signalStDistancePct,
+    signalAthDistancePct: entrySignals.signalAthDistancePct,
+    snapshotAt: now,
+    snapshotPrice: pool._watchSnapshotPrice,
+    snapshotHigh24h: pool._watchSnapshotHigh24h,
+    watchWindowSec,
+    maxDriftPct,
+  };
+
+  const readyForQueue = isFreshDeployMeta(queueMeta);
+
+  if (readyForQueue) {
+    console.log(`[MANUAL] 🟡 ${symbol} fresh → deploy queue`);
+    enqueueForDeploy(pool, symbol, queueMeta);
+    return { ok: true, status: 'QUEUE', symbol, poolAddress: address, tokenMint, entrySignals };
+  }
+
+  const watchResult = addWatchPassTa(pool, 'Manual CA input', source);
+  if (!watchResult?.admitted) {
+    console.log(`[MANUAL] ⛔ ${symbol} ditolak dari WATCH: ${watchResult?.reason || 'WATCH penuh'}`);
+    return { ok: false, status: 'DROP', symbol, poolAddress: address, tokenMint, reason: watchResult?.reason || 'WATCH penuh' };
+  }
+
+  console.log(`[MANUAL] 👀 ${symbol} masuk WATCH`);
+  return {
+    ok: true,
+    status: 'WATCH',
+    symbol,
+    poolAddress: address,
+    tokenMint,
+    entrySignals,
+    watch: watchResult.row,
+  };
 }
 
 async function collectReadyRetestPools(cfg = getConfig()) {

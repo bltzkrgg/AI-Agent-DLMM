@@ -28,6 +28,14 @@ test('/strategy_report and /claim_fees handlers are registered', () => {
   assert.match(content, /bot\.onText\(\/\\\/claim_fees/);
 });
 
+test('/ca handler is registered and exposed in /start help', () => {
+  const indexPath = join(__dirname, '../src/index.js');
+  const content = readFileSync(indexPath, 'utf-8');
+
+  assert.match(content, /bot\.onText\(\/\\\/ca/);
+  assert.match(content, /\/ca\s+— Masukkan pool Meteora manual dari CA/);
+});
+
 test('/strategy_report uses sendLong transport to avoid Telegram length limit issues', () => {
   const indexPath = join(__dirname, '../src/index.js');
   const content = readFileSync(indexPath, 'utf-8');

@@ -18,7 +18,7 @@ import TelegramBot              from 'node-telegram-bot-api';
 import { existsSync, readFileSync, writeFileSync, unlinkSync } from 'fs';
 import { initSolana, getWalletBalance }   from './solana/wallet.js';
 import { getConfig, updateConfig, isConfigKeySupported, resolveNestedKey, SETCONFIG_WHITELIST } from './config.js';
-import { runLinearLoop, stopLoop, setNotifyFn, isRunning, getCurrentPosition, getActivePositions, setShutdownInProgress, closeAllActivePositionsByUser, closeAllActivePositionsForShutdown, retryFailedShutdownPositions, runAutoscreening, spawnMonitorForRestoredPositions, startManualCloseWatcher, startPendingTaRadarWatcher, stopPendingTaRadarWatcher, startTaWatchWatcher, stopTaWatchWatcher, scanAndDeploy, updatePnlStatus, inventoryManagement } from './agents/hunterAlpha.js';
+import { runLinearLoop, stopLoop, setNotifyFn, isRunning, getCurrentPosition, getActivePositions, setShutdownInProgress, closeAllActivePositionsByUser, closeAllActivePositionsForShutdown, retryFailedShutdownPositions, runAutoscreening, spawnMonitorForRestoredPositions, startManualCloseWatcher, startPendingTaRadarWatcher, stopPendingTaRadarWatcher, startTaWatchWatcher, stopTaWatchWatcher, scanAndDeploy, updatePnlStatus, inventoryManagement, submitManualCaPool } from './agents/hunterAlpha.js';
 import { getActivePositionCount, reconcileStartupPositions, EP_CONFIG } from './sniper/evilPanda.js';
 import { analyzePerformance, formatEvolutionReport }     from './learn/statelessEvolve.js';
 import { generateBriefing, formatActivePositionsTelegram } from './telegram/briefing.js';
@@ -107,6 +107,7 @@ async function urgentNotify(msg) {
 
 // Register notify ke hunterAlpha
 setNotifyFn(notify);
+setDeployQueueDeployFn(deployPosition);
 
 // ── Commands ──────────────────────────────────────────────────────
 
@@ -125,6 +126,7 @@ bot.onText(/\/start/, (msg) => {
     `/screening   — Scan manual top pool sekarang\n` +
     `/autoscreen  — Toggle auto-screening (on/off)\n` +
     `/evolve      — Analisis harvest.log + saran config terbaru\n` +
+    `/ca         — Masukkan pool Meteora manual dari CA\n` +
     `/stop        — Hentikan loop\n` +
     `/exit        — Force exit posisi aktif\n` +
     `/balance     — Saldo wallet\n` +
@@ -133,6 +135,80 @@ bot.onText(/\/start/, (msg) => {
     `/dryrun      — Toggle dry run mode`,
     { parse_mode: 'HTML' }
   );
+});
+
+// /ca <pool_address> — manual input pool Meteora ke WATCH/QUEUE
+bot.onText(/\/ca(?:\s+(\S+))?/, async (msg, match) => {
+  if (!guard(msg)) return;
+  const chatId = msg.chat.id;
+  const poolAddress = String(match?.[1] || '').trim();
+
+  if (!poolAddress) {
+    bot.sendMessage(
+      chatId,
+      `ℹ️ <b>Gunakan /ca</b>\n` +
+      `Format: <code>/ca &lt;pool_address&gt;</code>\n` +
+      `Contoh: <code>/ca 6EQKNJD6KMTQv9KmhKDjs1jm1SRsNVGNqdKeEEiJpump</code>`,
+      { parse_mode: 'HTML' }
+    );
+    return;
+  }
+
+  await bot.sendMessage(
+    chatId,
+    `📥 <b>CA diterima</b>\n` +
+    `<code>${escapeHTML(poolAddress)}</code>\n` +
+    `<i>Bot akan cek WATCH → QUEUE → DEPLOY berdasarkan freshness.</i>`,
+    { parse_mode: 'HTML' }
+  );
+
+  try {
+    const result = await submitManualCaPool(poolAddress, { source: 'TELEGRAM_CA' });
+    if (result?.ok) {
+      setDeployQueueNotifyFn(notify);
+      setDeployQueueDeployFn(deployPosition);
+      startDeployQueueWatcher();
+      startTaWatchWatcher();
+    }
+
+    if (result?.status === 'QUEUE') {
+      await bot.sendMessage(
+        chatId,
+        `🟡 <b>QUEUE READY</b>\n` +
+        `<b>${escapeHTML(result.symbol || 'UNKNOWN')}</b>\n` +
+        `ST: <code>${escapeHTML(result.entrySignals?.taTrend || 'UNKNOWN')}</code> | ` +
+        `M5: <code>${Number(result.entrySignals?.priceChangeM5 || 0).toFixed(2)}%</code> | ` +
+        `Breakout: <code>${escapeHTML(result.entrySignals?.breakoutQuality || 'UNKNOWN')}</code>\n` +
+        `<i>Sudah masuk antrean deploy.</i>`,
+        { parse_mode: 'HTML' }
+      );
+    } else if (result?.status === 'WATCH') {
+      await bot.sendMessage(
+        chatId,
+        `✅ <b>WATCH</b>\n` +
+        `<b>${escapeHTML(result.symbol || 'UNKNOWN')}</b>\n` +
+        `ST: <code>${escapeHTML(result.entrySignals?.taTrend || 'UNKNOWN')}</code> | ` +
+        `M5: <code>${Number(result.entrySignals?.priceChangeM5 || 0).toFixed(2)}%</code> | ` +
+        `Breakout: <code>${escapeHTML(result.entrySignals?.breakoutQuality || 'UNKNOWN')}</code>\n` +
+        `<i>Dipantau sampai siap naik queue.</i>`,
+        { parse_mode: 'HTML' }
+      );
+    } else {
+      await bot.sendMessage(
+        chatId,
+        `❌ <b>DROP</b>\n` +
+        `<b>${escapeHTML(result?.symbol || poolAddress.slice(0, 8))}</b>\n` +
+        `Reason: <i>${escapeHTML(result?.reason || 'Gagal memproses CA')}</i>`,
+        { parse_mode: 'HTML' }
+      );
+    }
+  } catch (e) {
+    await bot.sendMessage(
+      chatId,
+      `❌ <b>CA error</b>\n<code>${escapeHTML(e.message)}</code>`,
+      { parse_mode: 'HTML' }
+    );
+  }
 });
 
 // /status — status posisi saat ini
