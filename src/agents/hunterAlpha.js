@@ -200,7 +200,7 @@ function computeTaWatchPriorityScore({ pool = {}, entrySignals = {}, row = {}, n
   let score = 0;
   score += readiness === 'HIGH' ? 220 : readiness === 'MEDIUM' ? 120 : 30;
   score += breakout === 'STRONG' ? 180 : breakout === 'VALID' ? 120 : 20;
-  score += timing === 'ATH_BREAK' ? 120 : timing === 'BREAKOUT' ? 90 : 0;
+  score += timing === 'ATH_BREAK' ? 120 : timing === 'BREAKOUT' ? 90 : timing === 'LP_LIVE' ? 95 : 0;
   score += trend === 'BULLISH' ? 80 : 0;
   score += Math.max(0, Math.min(60, volumeRatio * 35));
   score += Math.max(0, Math.min(50, m5 * 12));
@@ -222,8 +222,8 @@ function addWatchPassTa(pool, reason = 'TA PASS', source = 'TA') {
   const existing = _taWatchQueue.get(mint);
   const symbol = getPoolSymbol(pool);
   const signals = pool?._entrySignals || {};
-  const watchWindowSec = Math.max(5, Number(cfg.entryFreshWatchWindowSec) || 90);
-  const maxDriftPct = Math.max(0.1, Number(cfg.entryFreshBreakoutMaxDriftPct) || 2.5);
+  const watchWindowSec = getLpWatchWindowSec(cfg);
+  const maxDriftPct = getLpMaxDriftPct(cfg);
   const priorityScore = computeTaWatchPriorityScore({ pool, entrySignals: signals, row: existing || {}, now });
   const effectiveMaxPools = watchCfg.enabled ? watchCfg.maxPools : Number.MAX_SAFE_INTEGER;
   const effectiveExpiryMin = watchCfg.expiryMin;
@@ -380,8 +380,8 @@ export async function submitManualCaPool(poolAddress, { source = 'TELEGRAM_CA' }
   const marketSnapshot = await getMarketSnapshot(tokenMint, resolved.poolAddress || address).catch(() => null);
   const entrySignals = deriveBreakoutEntrySignals({ pool: poolInfo, marketSnapshot, cfg });
   const now = Date.now();
-  const watchWindowSec = Math.max(5, Number(cfg.entryFreshWatchWindowSec) || 90);
-  const maxDriftPct = Math.max(0.1, Number(cfg.entryFreshBreakoutMaxDriftPct) || 2.5);
+  const watchWindowSec = getLpWatchWindowSec(cfg);
+  const maxDriftPct = getLpMaxDriftPct(cfg);
 
   const pool = {
     ...poolInfo,
@@ -488,7 +488,7 @@ async function collectReadyRetestPools(cfg = getConfig()) {
       ).catch(() => null);
       const entrySignals = deriveBreakoutEntrySignals({ pool: row.pool, vetoResult: veto, marketSnapshot, cfg });
 
-      if (entrySignals.entryTimingState === 'BREAKOUT' || entrySignals.entryTimingState === 'ATH_BREAK') {
+      if (isLPLiveTimingState(entrySignals.entryTimingState)) {
         if (entrySignals.entryReadiness === 'HIGH' && (entrySignals.breakoutQuality === 'VALID' || entrySignals.breakoutQuality === 'STRONG')) {
           const pool = {
             ...row.pool,
@@ -587,8 +587,31 @@ function formatMaybeBool(value) {
   return 'UNKNOWN';
 }
 
+function getEntryGateMode(cfg = getConfig()) {
+  return String(cfg?.entryGateMode || 'lp_fee_flow').trim().toLowerCase();
+}
+
+function isLpEntryMode(cfg = getConfig()) {
+  return getEntryGateMode(cfg).includes('lp');
+}
+
+function getLpWatchWindowSec(cfg = getConfig(), fallback = 90) {
+  const base = Math.max(5, Number(cfg.entryFreshWatchWindowSec) || fallback);
+  return isLpEntryMode(cfg) ? Math.max(180, base) : base;
+}
+
+function getLpMaxDriftPct(cfg = getConfig(), fallback = 2.5) {
+  const base = Math.max(0.1, Number(cfg.entryFreshBreakoutMaxDriftPct) || fallback);
+  return isLpEntryMode(cfg) ? Math.max(8, base) : base;
+}
+
+function isLPLiveTimingState(state = '') {
+  return ['LP_LIVE', 'RECLAIM', 'RECLAIM_LIVE', 'BREAKOUT', 'ATH_BREAK'].includes(String(state || '').toUpperCase());
+}
+
 function deriveBreakoutEntrySignals({ pool = {}, vetoResult = null, marketSnapshot = null, cfg = getConfig() } = {}) {
-  const entryGateMode = String(cfg.entryGateMode || 'lper_breakout').toLowerCase();
+  const entryGateMode = getEntryGateMode(cfg);
+  const isLpMode = isLpEntryMode(cfg);
   const breakoutMinStPct = Number(cfg.entrySupertrendBreakMinPct ?? 1.25);
   const freshAthBreakPct = Number(cfg.entryFreshBreakoutMinAthDistancePct ?? 99.25);
   const requireVolumeConfirm = cfg.entryRequireVolumeConfirm !== false;
@@ -644,24 +667,31 @@ function deriveBreakoutEntrySignals({ pool = {}, vetoResult = null, marketSnapsh
     entryTimingState = 'WAIT_VOLUME';
   } else if (!Number.isFinite(signalStDistancePct)) {
     entryTimingState = 'UNKNOWN';
-  } else if (entryGateMode === 'lper_retest' && signalStDistancePct > maxDistancePct) {
-    entryTimingState = 'WAIT_FOR_PULLBACK';
-  } else if (signalStDistancePct < breakoutMinStPct) {
-    entryTimingState = 'TOO_CLOSE';
-  } else if (!isFreshAthBreak) {
-    entryTimingState = 'LATE_BREAKOUT';
-  } else if (isStrongAthBreak) {
-    entryTimingState = 'ATH_BREAK';
-  } else if (signalAthDistancePct != null && signalAthDistancePct >= athBreakPct) {
-    entryTimingState = 'BREAKOUT';
-  } else if (signalStDistancePct > maxDistancePct && (priceChangeM15 < 0.5 || priceChangeM5 < 0.5)) {
-    entryTimingState = 'EXTENDED';
   } else {
-    entryTimingState = 'LATE_BREAKOUT';
+    const aboveSupertrend = signalStDistancePct > 0;
+    if (!aboveSupertrend) {
+      entryTimingState = 'TOO_CLOSE';
+    } else if (isLpMode) {
+      entryTimingState = 'LP_LIVE';
+    } else if (entryGateMode === 'lper_retest' && signalStDistancePct > maxDistancePct) {
+      entryTimingState = 'WAIT_FOR_PULLBACK';
+    } else if (signalStDistancePct < breakoutMinStPct) {
+      entryTimingState = 'TOO_CLOSE';
+    } else if (!isFreshAthBreak) {
+      entryTimingState = 'LATE_BREAKOUT';
+    } else if (isStrongAthBreak) {
+      entryTimingState = 'ATH_BREAK';
+    } else if (signalAthDistancePct != null && signalAthDistancePct >= athBreakPct) {
+      entryTimingState = 'BREAKOUT';
+    } else if (signalStDistancePct > maxDistancePct && (priceChangeM15 < 0.5 || priceChangeM5 < 0.5)) {
+      entryTimingState = 'EXTENDED';
+    } else {
+      entryTimingState = 'LATE_BREAKOUT';
+    }
   }
 
   const entryReadiness =
-    entryTimingState === 'ATH_BREAK' || entryTimingState === 'BREAKOUT' ? 'HIGH'
+    entryTimingState === 'ATH_BREAK' || entryTimingState === 'BREAKOUT' || entryTimingState === 'LP_LIVE' ? 'HIGH'
       : entryTimingState === 'EXTENDED' ? 'MEDIUM'
       : entryTimingState === 'TOO_CLOSE' ? 'LOW'
       : 'LOW';
@@ -669,8 +699,10 @@ function deriveBreakoutEntrySignals({ pool = {}, vetoResult = null, marketSnapsh
   const breakoutQuality =
     entryTimingState === 'ATH_BREAK' ? 'STRONG'
       : entryTimingState === 'BREAKOUT' ? 'VALID'
-      : entryTimingState === 'EXTENDED' ? 'WEAK'
-      : 'WEAK';
+      : entryTimingState === 'LP_LIVE'
+        ? ((Number.isFinite(volumeRatio) && volumeRatio >= (minVolRatio * 1.5)) || priceChangeM15 >= 2 ? 'STRONG' : 'VALID')
+        : entryTimingState === 'EXTENDED' ? 'WEAK'
+        : 'WEAK';
 
   return {
     entryTimingState,
@@ -692,7 +724,7 @@ function deriveBreakoutEntrySignals({ pool = {}, vetoResult = null, marketSnapsh
     freshAthBreakPct,
     athBreakPct,
     entryGateMode,
-    canDeploy: entryTimingState === 'ATH_BREAK' || entryTimingState === 'BREAKOUT',
+    canDeploy: entryTimingState === 'ATH_BREAK' || entryTimingState === 'BREAKOUT' || entryTimingState === 'LP_LIVE',
   };
 }
 
@@ -735,7 +767,7 @@ function buildLlmPoolContext({ pool = {}, screenResult = null, vetoResult = null
     `- Entry Timing: ${breakout.entryTimingState || 'UNKNOWN'}`,
     `- Price vs Supertrend: ${Number.isFinite(Number(breakout.signalStDistancePct)) ? formatMaybePct(breakout.signalStDistancePct, 2) : 'UNKNOWN'}`,
     `- Price vs 24h High: ${Number.isFinite(Number(breakout.signalAthDistancePct)) ? formatMaybePct(breakout.signalAthDistancePct, 2) : 'UNKNOWN'}`,
-    `- Breakout Hint: ${breakout.breakoutQuality || 'UNKNOWN'}`,
+    `- Entry Flow Hint: ${breakout.breakoutQuality || 'UNKNOWN'}`,
     `- ATH Distance: ${Number.isFinite(Number(athDistancePct)) ? formatMaybePct(athDistancePct, 1) : 'UNKNOWN'}`,
     `- Meridian Gate: ${vetoResult?.veto ? 'FAIL' : 'PASS'} (${vetoResult?.gate || 'NONE'})`,
     `- Meridian Reason: ${vetoResult?.reason || 'UNKNOWN'}`,
@@ -880,7 +912,7 @@ async function processPendingTaRadar(cfg = getConfig()) {
       ).catch(() => null);
       const entrySignals = deriveBreakoutEntrySignals({ pool: row.pool, vetoResult: veto, marketSnapshot, cfg });
 
-      if (entrySignals.entryTimingState === 'BREAKOUT' || entrySignals.entryTimingState === 'ATH_BREAK') {
+      if (isLPLiveTimingState(entrySignals.entryTimingState)) {
         if (entrySignals.entryReadiness === 'HIGH' && (entrySignals.breakoutQuality === 'VALID' || entrySignals.breakoutQuality === 'STRONG')) {
           const pool = {
             ...row.pool,
@@ -1037,15 +1069,15 @@ async function processTaWatchQueue(cfg = getConfig()) {
         scoutReason: row.reason || 'WATCH Ready',
         entryReadiness: 'HIGH',
         breakoutQuality: 'VALID',
-        entryGateMode: 'lper_breakout',
-        entryTimingState: 'BREAKOUT',
+        entryGateMode: 'lp_fee_flow',
+        entryTimingState: 'LP_LIVE',
         signalStDistancePct: pool._entrySignals?.signalStDistancePct,
         signalAthDistancePct: pool._entrySignals?.signalAthDistancePct,
         snapshotAt: row.snapshotAt || now,
         snapshotPrice: row.snapshotPrice ?? pool._entrySignals?.currentPrice ?? null,
         snapshotHigh24h: row.snapshotHigh24h ?? pool._entrySignals?.high24h ?? null,
-        watchWindowSec: row.watchWindowSec || Math.max(5, Number(cfg.entryFreshWatchWindowSec) || 90),
-        maxDriftPct: row.maxDriftPct || Math.max(0.1, Number(cfg.entryFreshBreakoutMaxDriftPct) || 2.5),
+        watchWindowSec: row.watchWindowSec || getLpWatchWindowSec(cfg),
+        maxDriftPct: row.maxDriftPct || getLpMaxDriftPct(cfg),
       },
     });
   }
@@ -1481,15 +1513,16 @@ Kamu BUKAN manusia trader yang menganalisis chart visual.
 Kamu adalah evaluator mekanis yang hanya membaca data JSON.
 JANGAN menebak, mengasumsikan, atau mengisi data yang tidak ada di payload.
 
-breakout yang matang
+LP STYLE ENTRY
 Supertrend 15m harus bullish
 Candle M5 harus hijau
-Entry ideal ada saat breakout sudah diakui pasar, bukan saat harga baru nempel supertrend.
-Entry yang valid harus breakout fresh: dekat high terbaru, volume menguat, dan belum lewat jauh dari momen tembusnya.
+Volume harus mendukung
+Entry ideal ada saat price reclaim/bounce sehat di area atas yang masih hidup buat fee flow.
+Entry yang valid bukan cari breakout paling awal, tapi area yang masih bisa bolak-balik dan dipanen.
 
-MINDSET: AGGRESSIVE FEE HUNTER.
-Tugasmu adalah menangkap tren naik yang SANGAT SEHAT, lalu memanen fee selama arus transaksi masih hidup.
-DILARANG KERAS menadah harga yang sedang runtuh (falling knife) ATAU mengejar entry yang terlalu dekat dengan supertrend sebelum breakout diterima.
+MINDSET: FEE FLOW HUNTER.
+Tugasmu adalah menjaga modal tetap utuh sambil memanen fee selama market masih hidup.
+DILARANG KERAS menadah harga yang sedang runtuh (falling knife) atau memaksa entry saat struktur sudah patah.
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 ATURAN EVALUASI MEKANIS (TERAPKAN BERURUTAN — SATU RULE GAGAL = STOP):
@@ -1512,8 +1545,7 @@ ATURAN EVALUASI MEKANIS (TERAPKAN BERURUTAN — SATU RULE GAGAL = STOP):
   IF Entry Timing = "NO_M5" → WAJIB DEFER. Berhenti di sini.
   IF Entry Timing = "WAIT_VOLUME" → WAJIB DEFER. Berhenti di sini.
   IF Entry Timing = "TOO_CLOSE" → WAJIB DEFER. Berhenti di sini.
-  IF Entry Timing = "LATE_BREAKOUT" → WAJIB DEFER. Berhenti di sini.
-  Entry ideal adalah breakout yang sudah diakui pasar: harga sudah menjauh secukupnya dari Supertrend, close hijau, dan mendekati/menembus area high terbaru.
+  Entry ideal adalah price reclaim/bounce sehat di area atas yang masih hidup: supertrend bullish, M5 hijau, volume mendukung, dan arus fee masih bisa jalan.
 
 [RULE 3 — ANTI-CANDLE MERAH (HARAM HUKUMNYA)]
   Cek: "TA M5 Change" dari data.
@@ -1536,16 +1568,16 @@ ATURAN EVALUASI MEKANIS (TERAPKAN BERURUTAN — SATU RULE GAGAL = STOP):
   LPer yang masuk di zona ini menjadi EXIT LIQUIDITY untuk paus. DILARANG MASUK.
   Tunggu koreksi dan konfirmasi pemulihan sebelum entry.
 
-[RULE 6 — HEALTHY MOMENTUM ENTRY (ZONA SEHAT LP)]
-  LPer mencari zona momentum yang SEHAT, bukan terlalu lemah dan bukan terlalu ekstrem.
+[RULE 6 — HEALTHY FEE FLOW ENTRY (ZONA SEHAT LP)]
+  LPer mencari zona fee flow yang SEHAT, bukan terlalu lemah dan bukan terlalu kaku.
   Syarat PASS (semua HARUS terpenuhi):
-  - Entry Timing HARUS "BREAKOUT" atau "ATH_BREAK"
-  - TA M5 Change HARUS > 0.5% (momentum jangka pendek aktif, bukan sekadar hijau nanggung)
+  - Entry Timing HARUS "LP_LIVE", "BREAKOUT", atau "ATH_BREAK"
+  - TA M5 Change HARUS > 0 (momentum jangka pendek masih hidup)
   - Volume terkonfirmasi mendukung pergerakan
   - Breakout Quality HARUS "VALID" atau "STRONG"
   Jika semua syarat terpenuhi → WAJIB PASS.
-  Kamu DILARANG menahan token yang sudah breakout-valid hanya karena harga "sudah tinggi".
-  Namun jika breakout belum diakui pasar atau masih terlalu dekat ke supertrend, DEFER.
+  Kamu DILARANG menahan token yang sudah fee-flow valid hanya karena harga "sudah tinggi".
+  Namun jika market belum bullish, M5 merah, atau volume lemah, DEFER.
 
 [RULE 7 — SAFETY GATE (Hard Gate Keamanan)]
   Cek flag keamanan dari data. IF terdeteksi:
@@ -1558,7 +1590,7 @@ ATURAN EVALUASI MEKANIS (TERAPKAN BERURUTAN — SATU RULE GAGAL = STOP):
 [CHECKLIST FINAL — PASS hanya jika SEMUA syarat ini terpenuhi]
   ✓ Slot belum penuh                              → Rule 0
   ✓ TA Supertrend 15m = BULLISH                   → Rule 1
-  ✓ Entry Timing = BREAKOUT / ATH_BREAK           → Rule 2
+  ✓ Entry Timing = LP_LIVE / BREAKOUT / ATH_BREAK → Rule 2
   ✓ TA M5 Change > 0                              → Rule 3
   ✓ Bukan Dead Cat (M15 Previous check)           → Rule 4
   ✓ TA M15 Change < 9.0% (bukan Blow-Off Top)    → Rule 5
@@ -2463,7 +2495,7 @@ function classifyMarketRegime() {
 // entryGateMode + entrySupertrendMaxDistancePct + entryRequireVolumeConfirm + entryMinVolumeRatio
 // entryRequireHtfAlignment + entryHtfAllowNeutral + priceChangeM5 + priceChangeH1
 function _legacyEntryGateCompatibility(signals = {}, cfg = {}) {
-  const entryGateMode = cfg.entryGateMode || 'lper_retest';
+  const entryGateMode = String(cfg.entryGateMode || 'lp_fee_flow').toLowerCase();
   const maxDistancePct = Number(cfg.entrySupertrendMaxDistancePct || 2.5);
   const signalStDistancePct = Number(signals.signalStDistancePct || 0);
   if (entryGateMode === 'lper_retest' && signalStDistancePct > maxDistancePct) return 'WAIT_FOR_PULLBACK';

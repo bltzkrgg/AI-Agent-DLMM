@@ -158,7 +158,8 @@ test('hunter sends realtime PnL snapshots to Telegram on configured interval', (
 test('scout agent prompt uses DLMM LP breakout screening fields', () => {
   const src = readFileSync(hunterPath, 'utf8');
   assert.match(src, /INITIAL SCREENING FILTER FOR DLMM LIQUIDITY PROVIDER/);
-  assert.match(src, /breakout yang matang/);
+  assert.match(src, /LP STYLE ENTRY/);
+  assert.match(src, /price reclaim\/bounce sehat/);
   assert.match(src, /Supertrend 15m harus bullish/);
   assert.match(src, /Candle M5 harus hijau/);
   assert.match(src, /TA Supertrend 15m:/);

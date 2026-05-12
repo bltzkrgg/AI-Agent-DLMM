@@ -29,20 +29,29 @@ async function safeSend(msg) {
 
 export function isFreshDeployMeta(meta = {}) {
   const cfg = getConfig();
+  const lpMode = String(meta.entryGateMode || cfg.entryGateMode || '').toLowerCase().includes('lp');
   const timingState = String(meta.entryTimingState || '').toUpperCase();
   const readiness = String(meta.entryReadiness || '').toUpperCase();
   const breakoutQuality = String(meta.breakoutQuality || '').toUpperCase();
   const signalAthDistancePct = Number(meta.signalAthDistancePct);
   const signalStDistancePct = Number(meta.signalStDistancePct);
-  const freshAthBreakPct = Number(cfg.entryFreshBreakoutMinAthDistancePct ?? 99.25);
-  const breakoutMinStPct = Number(cfg.entrySupertrendBreakMinPct ?? 1.25);
 
   if (meta.isRetest || meta.isScoutDefer) return false;
-  if (timingState !== 'BREAKOUT' && timingState !== 'ATH_BREAK') return false;
+  if (lpMode) {
+    if (timingState !== 'LP_LIVE' && timingState !== 'BREAKOUT' && timingState !== 'ATH_BREAK') return false;
+  } else if (timingState !== 'BREAKOUT' && timingState !== 'ATH_BREAK') {
+    return false;
+  }
   if (readiness !== 'HIGH') return false;
   if (breakoutQuality !== 'VALID' && breakoutQuality !== 'STRONG') return false;
-  if (Number.isFinite(signalAthDistancePct) && signalAthDistancePct < freshAthBreakPct) return false;
-  if (Number.isFinite(signalStDistancePct) && signalStDistancePct < breakoutMinStPct) return false;
+  if (!lpMode) {
+    const freshAthBreakPct = Number(cfg.entryFreshBreakoutMinAthDistancePct ?? 99.25);
+    const breakoutMinStPct = Number(cfg.entrySupertrendBreakMinPct ?? 1.25);
+    if (Number.isFinite(signalAthDistancePct) && signalAthDistancePct < freshAthBreakPct) return false;
+    if (Number.isFinite(signalStDistancePct) && signalStDistancePct < breakoutMinStPct) return false;
+  } else if (Number.isFinite(signalStDistancePct) && signalStDistancePct <= 0) {
+    return false;
+  }
   return true;
 }
 
@@ -58,7 +67,7 @@ export function enqueueForDeploy(pool, symbol, meta = {}) {
 
   if (!isFreshDeployMeta(meta)) {
     console.log(
-      `[QUEUE] ⏸️ ${symbol} tidak masuk queue deploy (DEFER / breakout tidak fresh: ` +
+      `[QUEUE] ⏸️ ${symbol} tidak masuk queue deploy (DEFER / LP flow belum siap: ` +
       `Entry=${meta.entryReadiness || 'N/A'}, Breakout=${meta.breakoutQuality || 'N/A'}, Timing=${meta.entryTimingState || 'N/A'})`
     );
     return;
@@ -93,17 +102,26 @@ export function dequeueToken(mint) {
 async function evaluateDeployConditions(entry) {
   const { pool, meta } = entry;
   const cfg = getConfig();
+  const lpMode = String(meta.entryGateMode || cfg.entryGateMode || '').toLowerCase().includes('lp');
 
   // Kondisi 1: Waktu expired di antrian
   // Token watch deploy: expiry mengikuti config deployQueueExpiryMin
   const ageMs  = Date.now() - entry.enqueuedAt;
-  const maxAge = Math.max(60_000, Math.round((Math.max(1, Number(cfg.deployQueueExpiryMin) || 5)) * 60 * 1000));
+  const maxAgeMinutes = Math.max(
+    lpMode ? 10 : 5,
+    Math.max(1, Number(cfg.deployQueueExpiryMin) || (lpMode ? 10 : 5))
+  );
+  const maxAge = Math.max(60_000, Math.round(maxAgeMinutes * 60 * 1000));
   if (ageMs > maxAge) {
     return { ok: false, reason: `Token expired dari antrian (> ${Math.round(maxAge / 60000)} menit)` };
   }
 
-  const watchWindowSec = Math.max(5, Number(meta.watchWindowSec || cfg.entryFreshWatchWindowSec || 90));
-  const maxDriftPct = Math.max(0.1, Number(meta.maxDriftPct || cfg.entryFreshBreakoutMaxDriftPct || 2.5));
+  const watchWindowSec = lpMode
+    ? Math.max(180, Number(meta.watchWindowSec || cfg.entryFreshWatchWindowSec || 180))
+    : Math.max(5, Number(meta.watchWindowSec || cfg.entryFreshWatchWindowSec || 90));
+  const maxDriftPct = lpMode
+    ? Math.max(8, Number(meta.maxDriftPct || cfg.entryFreshBreakoutMaxDriftPct || 8))
+    : Math.max(0.1, Number(meta.maxDriftPct || cfg.entryFreshBreakoutMaxDriftPct || 2.5));
   const snapshotAt = Number(meta.snapshotAt || entry.enqueuedAt || 0);
   if (snapshotAt > 0 && (Date.now() - snapshotAt) > watchWindowSec * 1000) {
     return { ok: false, reason: `WATCH terlalu lama (${Math.round((Date.now() - snapshotAt) / 1000)}s > ${watchWindowSec}s)` };

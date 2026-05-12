@@ -125,7 +125,7 @@
   "slCooldownMinutes": 120,
   "oorAlertIntervalMin": 30,
   "minAtrPctForEntry": 2.0,
-  "entryGateMode": "lper_breakout",
+  "entryGateMode": "lp_fee_flow",
   "entrySupertrendMinDistancePct": 1.5,
   "entrySupertrendMaxDistancePct": 18,
   "entrySupertrendBreakMinPct": 1.25,

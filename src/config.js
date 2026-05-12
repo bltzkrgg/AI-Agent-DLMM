@@ -47,7 +47,7 @@ const DEFAULTS = {
   autoScreeningEnabled: false,
   screeningTopPoolsLimit: 5,
   requireConfirmation:  true, // true = minta konfirmasi Telegram sebelum deploy
-  entryGateMode:        'lper_breakout',
+  entryGateMode:        'lp_fee_flow',
   entrySupertrendBreakMinPct: 1.25,
   entryFreshBreakoutMinAthDistancePct: 99.25,
   entryFreshWatchWindowSec: 90,
