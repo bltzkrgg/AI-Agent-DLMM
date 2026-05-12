@@ -115,55 +115,21 @@ function guard(msg) {
   return msg.from?.id === ALLOWED_ID;
 }
 
-// /start — daftar command
-bot.onText(/\/start/, (msg) => {
-  if (!guard(msg)) return;
-  bot.sendMessage(msg.chat.id,
-    `🤖 <b>Linear Sniper Bot</b>\n\n` +
-    `<b>Commands:</b>\n` +
-    `/status    — Status posisi aktif\n` +
-    `/hunt      — Mulai loop sniper\n` +
-    `/screening   — Scan manual top pool sekarang\n` +
-    `/autoscreen  — Toggle auto-screening (on/off)\n` +
-    `/evolve      — Analisis harvest.log + saran config terbaru\n` +
-    `/ca         — Masukkan pool Meteora manual dari CA\n` +
-    `/stop        — Hentikan loop\n` +
-    `/exit        — Force exit posisi aktif\n` +
-    `/balance     — Saldo wallet\n` +
-    `/config      — Tampilkan config saat ini\n` +
-    `/setconfig   — Ubah config (key value)\n` +
-    `/dryrun      — Toggle dry run mode`,
-    { parse_mode: 'HTML' }
-  );
-});
+function isLikelySolanaAddress(text = '') {
+  return /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(String(text || '').trim());
+}
 
-// /ca <pool_address> — manual input pool Meteora ke WATCH/QUEUE
-bot.onText(/\/ca(?:\s+(\S+))?/, async (msg, match) => {
-  if (!guard(msg)) return;
-  const chatId = msg.chat.id;
-  const poolAddress = String(match?.[1] || '').trim();
-
-  if (!poolAddress) {
-    bot.sendMessage(
-      chatId,
-      `ℹ️ <b>Gunakan /ca</b>\n` +
-      `Format: <code>/ca &lt;pool_address&gt;</code>\n` +
-      `Contoh: <code>/ca 6EQKNJD6KMTQv9KmhKDjs1jm1SRsNVGNqdKeEEiJpump</code>`,
-      { parse_mode: 'HTML' }
-    );
-    return;
-  }
-
+async function processManualCaInput(chatId, poolAddress, { source = 'TELEGRAM_CA', announce = 'CA diterima' } = {}) {
   await bot.sendMessage(
     chatId,
-    `📥 <b>CA diterima</b>\n` +
+    `📥 <b>${escapeHTML(announce)}</b>\n` +
     `<code>${escapeHTML(poolAddress)}</code>\n` +
     `<i>Bot akan cek WATCH → QUEUE → DEPLOY berdasarkan freshness.</i>`,
     { parse_mode: 'HTML' }
   );
 
   try {
-    const result = await submitManualCaPool(poolAddress, { source: 'TELEGRAM_CA' });
+    const result = await submitManualCaPool(poolAddress, { source });
     if (result?.ok) {
       setDeployQueueNotifyFn(notify);
       setDeployQueueDeployFn(deployPosition);
@@ -202,13 +168,69 @@ bot.onText(/\/ca(?:\s+(\S+))?/, async (msg, match) => {
         { parse_mode: 'HTML' }
       );
     }
+    return result;
   } catch (e) {
     await bot.sendMessage(
       chatId,
       `❌ <b>CA error</b>\n<code>${escapeHTML(e.message)}</code>`,
       { parse_mode: 'HTML' }
     );
+    return { ok: false, status: 'ERROR', reason: e.message };
   }
+}
+
+// /start — daftar command
+bot.onText(/\/start/, (msg) => {
+  if (!guard(msg)) return;
+  bot.sendMessage(msg.chat.id,
+    `🤖 <b>Linear Sniper Bot</b>\n\n` +
+    `<b>Commands:</b>\n` +
+    `/start     — Lihat semua command\n` +
+    `/status    — Status posisi aktif\n` +
+    `/hunt      — Mulai loop sniper\n` +
+    `/screening   — Scan manual top pool sekarang\n` +
+    `/autoscreen  — Toggle auto-screening (on/off)\n` +
+    `/evolve      — Analisis harvest.log + saran config terbaru\n` +
+    `/ca         — Masukkan pool Meteora manual dari CA (atau kirim CA langsung)\n` +
+    `/stop        — Hentikan loop\n` +
+    `/exit        — Force exit posisi aktif\n` +
+    `/balance     — Saldo wallet\n` +
+    `/config      — Tampilkan config saat ini\n` +
+    `/setconfig   — Ubah config (key value)\n` +
+    `/dryrun      — Toggle dry run mode`,
+    { parse_mode: 'HTML' }
+  );
+});
+
+// /ca <pool_address> — manual input pool Meteora ke WATCH/QUEUE
+bot.onText(/\/ca(?:\s+(\S+))?/, async (msg, match) => {
+  if (!guard(msg)) return;
+  const chatId = msg.chat.id;
+  const poolAddress = String(match?.[1] || '').trim();
+
+  if (!poolAddress) {
+    bot.sendMessage(
+      chatId,
+      `ℹ️ <b>Gunakan /ca</b>\n` +
+      `Format: <code>/ca &lt;pool_address&gt;</code>\n` +
+      `Contoh: <code>/ca 6EQKNJD6KMTQv9KmhKDjs1jm1SRsNVGNqdKeEEiJpump</code>`,
+      { parse_mode: 'HTML' }
+    );
+    return;
+  }
+
+  await processManualCaInput(chatId, poolAddress, { source: 'TELEGRAM_CA', announce: 'CA diterima' });
+});
+
+// Raw CA input — jika user kirim pool address langsung, jalankan flow /ca yang sama
+bot.on('message', async (msg) => {
+  if (!guard(msg)) return;
+  const text = String(msg.text || '').trim();
+  if (!text || text.startsWith('/')) return;
+  if (!isLikelySolanaAddress(text)) return;
+
+  const chatId = msg.chat.id;
+  await processManualCaInput(chatId, text, { source: 'TELEGRAM_RAW_CA', announce: 'CA terdeteksi langsung' });
 });
 
 // /status — status posisi saat ini
@@ -1012,7 +1034,7 @@ setTimeout(async () => {
       `👀 Watch: <code>${cfg.taWatchEnabled === false ? 'OFF' : 'ON'} (${cfg.taWatchMaxPools || 10} max)</code>\n` +
       `📊 Realtime PnL: <code>${cfg.realtimePnlIntervalSec || 15}s</code>\n` +
       `⚡ API Engine: <code>Jupiter V1 Direct (api.jup.ag/swap/v1)</code>\n\n` +
-      `Ketik /hunt untuk mulai loop, /screening untuk scan manual.`
+      `Ketik /start untuk melihat semua command, /hunt untuk mulai loop, /screening untuk scan manual.`
     );
 
     // Auto-start screening loop jika diaktifkan
