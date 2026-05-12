@@ -287,6 +287,63 @@ function addWatchPassTa(pool, reason = 'TA PASS', source = 'TA') {
   return { admitted: false, row: null, evicted: null, reason: rejectReason };
 }
 
+async function resolveManualCaPool(address, cfg = getConfig()) {
+  const tokenMint = String(address || '').trim();
+  const binStepPriority = Array.isArray(cfg.binStepPriority) && cfg.binStepPriority.length > 0
+    ? cfg.binStepPriority.map(Number).filter(Number.isFinite)
+    : [200, 125, 100];
+
+  try {
+    const poolInfo = await getPoolInfo(tokenMint);
+    return {
+      ok: true,
+      kind: 'POOL',
+      poolInfo,
+      tokenMint: String(poolInfo.tokenX || poolInfo.tokenXMint || poolInfo.mint || '').trim(),
+      poolAddress: String(poolInfo.address || tokenMint).trim(),
+      symbol: poolInfo.tokenXSymbol || poolInfo.name?.split('-')[0] || tokenMint.slice(0, 8) || 'UNKNOWN',
+      resolutionNote: 'Direct Meteora pool address',
+    };
+  } catch (directPoolError) {
+    const broadLimit = Math.max(
+      150,
+      Number(cfg.meteoraDiscoveryLimit) || 50,
+      Number(cfg.screeningTopPoolsLimit) || 10
+    );
+
+    const discoveryPools = await discoverHighFeePoolsMeridian({ limit: broadLimit }).catch((e) => {
+      throw new Error(`Gagal discovery pool Meteora untuk CA token: ${e.message}`);
+    });
+
+    const matches = discoveryPools.filter((pool) => {
+      const xMint = String(pool?.tokenXMint || pool?.tokenX || pool?.mint || '').trim();
+      const yMint = String(pool?.tokenYMint || pool?.tokenY || '').trim();
+      const poolAddress = String(pool?.address || pool?.poolAddress || pool?.pool_address || '').trim();
+      return tokenMint === xMint || tokenMint === yMint || tokenMint === poolAddress;
+    });
+
+    if (matches.length === 0) {
+      throw new Error(`Tidak ada pool Meteora yang cocok untuk mint ${tokenMint.slice(0, 8)}...`);
+    }
+
+    const bestPool = selectBestPoolByBinStep(matches, binStepPriority);
+    if (!bestPool) {
+      throw new Error(`Pool Meteora ditemukan tapi gagal dipilih untuk mint ${tokenMint.slice(0, 8)}...`);
+    }
+
+    return {
+      ok: true,
+      kind: 'TOKEN',
+      poolInfo: bestPool,
+      tokenMint: String(bestPool.tokenXMint || bestPool.tokenX || bestPool.mint || '').trim(),
+      poolAddress: String(bestPool.address || bestPool.poolAddress || bestPool.pool_address || '').trim(),
+      symbol: bestPool.tokenXSymbol || bestPool.name?.split('-')[0] || tokenMint.slice(0, 8) || 'UNKNOWN',
+      resolutionNote: `Token mint resolved via Meteora discovery (${matches.length} match${matches.length === 1 ? '' : 'es'})`,
+      discoveryCount: discoveryPools.length,
+    };
+  }
+}
+
 export async function submitManualCaPool(poolAddress, { source = 'TELEGRAM_CA' } = {}) {
   const cfg = getConfig();
   const address = String(poolAddress || '').trim();
@@ -296,30 +353,31 @@ export async function submitManualCaPool(poolAddress, { source = 'TELEGRAM_CA' }
 
   console.log(`[MANUAL] 📥 CA diterima: ${address}`);
 
-  let poolInfo;
+  let resolved;
   try {
-    poolInfo = await getPoolInfo(address);
+    resolved = await resolveManualCaPool(address, cfg);
   } catch (e) {
-    const reason = `Gagal baca pool Meteora: ${e.message}`;
+    const reason = `Gagal resolve CA ke pool Meteora: ${e.message}`;
     console.warn(`[MANUAL] ❌ ${reason}`);
     return { ok: false, status: 'INVALID', reason };
   }
 
-  const tokenMint = String(poolInfo.tokenX || poolInfo.tokenXMint || poolInfo.mint || '').trim();
-  const symbol = poolInfo.tokenXSymbol || poolInfo.name?.split('-')[0] || tokenMint.slice(0, 8) || 'UNKNOWN';
+  const poolInfo = resolved.poolInfo;
+  const tokenMint = String(resolved.tokenMint || poolInfo.tokenX || poolInfo.tokenXMint || poolInfo.mint || '').trim();
+  const symbol = resolved.symbol || poolInfo.tokenXSymbol || poolInfo.name?.split('-')[0] || tokenMint.slice(0, 8) || 'UNKNOWN';
   if (!tokenMint) {
     const reason = 'Token mint tidak tersedia dari pool Meteora';
     console.warn(`[MANUAL] ❌ ${symbol}: ${reason}`);
     return { ok: false, status: 'INVALID', symbol, reason };
   }
 
-  if (hasActiveMint(tokenMint) || hasActivePoolAddress(address)) {
+  if (hasActiveMint(tokenMint) || hasActivePoolAddress(resolved.poolAddress || address)) {
     const reason = 'Token/pool sudah aktif';
     console.log(`[MANUAL] 🔁 ${symbol} dilewati: ${reason}`);
     return { ok: false, status: 'DUPLICATE', symbol, reason };
   }
 
-  const marketSnapshot = await getMarketSnapshot(tokenMint, address).catch(() => null);
+  const marketSnapshot = await getMarketSnapshot(tokenMint, resolved.poolAddress || address).catch(() => null);
   const entrySignals = deriveBreakoutEntrySignals({ pool: poolInfo, marketSnapshot, cfg });
   const now = Date.now();
   const watchWindowSec = Math.max(5, Number(cfg.entryFreshWatchWindowSec) || 90);
@@ -327,8 +385,8 @@ export async function submitManualCaPool(poolAddress, { source = 'TELEGRAM_CA' }
 
   const pool = {
     ...poolInfo,
-    address,
-    poolAddress: address,
+    address: resolved.poolAddress || address,
+    poolAddress: resolved.poolAddress || address,
     tokenXMint: tokenMint,
     tokenXSymbol: symbol,
     name: poolInfo.name || `${symbol}/SOL`,
@@ -362,24 +420,26 @@ export async function submitManualCaPool(poolAddress, { source = 'TELEGRAM_CA' }
   if (readyForQueue) {
     console.log(`[MANUAL] 🟡 ${symbol} fresh → deploy queue`);
     enqueueForDeploy(pool, symbol, queueMeta);
-    return { ok: true, status: 'QUEUE', symbol, poolAddress: address, tokenMint, entrySignals };
+    return { ok: true, status: 'QUEUE', kind: resolved.kind, symbol, poolAddress: resolved.poolAddress || address, tokenMint, entrySignals, resolutionNote: resolved.resolutionNote };
   }
 
   const watchResult = addWatchPassTa(pool, 'Manual CA input', source);
   if (!watchResult?.admitted) {
     console.log(`[MANUAL] ⛔ ${symbol} ditolak dari WATCH: ${watchResult?.reason || 'WATCH penuh'}`);
-    return { ok: false, status: 'DROP', symbol, poolAddress: address, tokenMint, reason: watchResult?.reason || 'WATCH penuh' };
+    return { ok: false, status: 'DROP', kind: resolved.kind, symbol, poolAddress: resolved.poolAddress || address, tokenMint, reason: watchResult?.reason || 'WATCH penuh' };
   }
 
-  console.log(`[MANUAL] 👀 ${symbol} masuk WATCH`);
+  console.log(`[MANUAL] 👀 ${symbol} masuk WATCH (${resolved.kind})`);
   return {
     ok: true,
     status: 'WATCH',
+    kind: resolved.kind,
     symbol,
-    poolAddress: address,
+    poolAddress: resolved.poolAddress || address,
     tokenMint,
     entrySignals,
     watch: watchResult.row,
+    resolutionNote: resolved.resolutionNote,
   };
 }
 

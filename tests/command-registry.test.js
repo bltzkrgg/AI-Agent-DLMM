@@ -33,7 +33,7 @@ test('/ca handler is registered and exposed in /start help', () => {
   const content = readFileSync(indexPath, 'utf-8');
 
   assert.match(content, /bot\.onText\(\/\\\/ca/);
-  assert.match(content, /\/ca\s+— Masukkan pool Meteora manual dari CA \(atau kirim CA langsung\)/);
+  assert.match(content, /\/ca\s+— Masukkan CA token \/ pool Meteora manual/);
   assert.match(content, /bot\.on\('message'/);
 });
 

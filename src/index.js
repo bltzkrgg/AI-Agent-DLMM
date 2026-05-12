@@ -142,10 +142,11 @@ async function processManualCaInput(chatId, poolAddress, { source = 'TELEGRAM_CA
         chatId,
         `🟡 <b>QUEUE READY</b>\n` +
         `<b>${escapeHTML(result.symbol || 'UNKNOWN')}</b>\n` +
+        `Mode: <code>${escapeHTML(result.kind || 'UNKNOWN')}</code>\n` +
         `ST: <code>${escapeHTML(result.entrySignals?.taTrend || 'UNKNOWN')}</code> | ` +
         `M5: <code>${Number(result.entrySignals?.priceChangeM5 || 0).toFixed(2)}%</code> | ` +
         `Breakout: <code>${escapeHTML(result.entrySignals?.breakoutQuality || 'UNKNOWN')}</code>\n` +
-        `<i>Sudah masuk antrean deploy.</i>`,
+        `<i>${escapeHTML(result.resolutionNote || 'Sudah masuk antrean deploy.')}</i>`,
         { parse_mode: 'HTML' }
       );
     } else if (result?.status === 'WATCH') {
@@ -153,10 +154,11 @@ async function processManualCaInput(chatId, poolAddress, { source = 'TELEGRAM_CA
         chatId,
         `✅ <b>WATCH</b>\n` +
         `<b>${escapeHTML(result.symbol || 'UNKNOWN')}</b>\n` +
+        `Mode: <code>${escapeHTML(result.kind || 'UNKNOWN')}</code>\n` +
         `ST: <code>${escapeHTML(result.entrySignals?.taTrend || 'UNKNOWN')}</code> | ` +
         `M5: <code>${Number(result.entrySignals?.priceChangeM5 || 0).toFixed(2)}%</code> | ` +
         `Breakout: <code>${escapeHTML(result.entrySignals?.breakoutQuality || 'UNKNOWN')}</code>\n` +
-        `<i>Dipantau sampai siap naik queue.</i>`,
+        `<i>${escapeHTML(result.resolutionNote || 'Dipantau sampai siap naik queue.')}</i>`,
         { parse_mode: 'HTML' }
       );
     } else {
@@ -191,7 +193,7 @@ bot.onText(/\/start/, (msg) => {
     `/screening   — Scan manual top pool sekarang\n` +
     `/autoscreen  — Toggle auto-screening (on/off)\n` +
     `/evolve      — Analisis harvest.log + saran config terbaru\n` +
-    `/ca         — Masukkan pool Meteora manual dari CA (atau kirim CA langsung)\n` +
+    `/ca         — Masukkan CA token / pool Meteora manual\n` +
     `/stop        — Hentikan loop\n` +
     `/exit        — Force exit posisi aktif\n` +
     `/balance     — Saldo wallet\n` +
@@ -212,7 +214,7 @@ bot.onText(/\/ca(?:\s+(\S+))?/, async (msg, match) => {
     bot.sendMessage(
       chatId,
       `ℹ️ <b>Gunakan /ca</b>\n` +
-      `Format: <code>/ca &lt;pool_address&gt;</code>\n` +
+      `Format: <code>/ca &lt;token_ca_atau_pool&gt;</code>\n` +
       `Contoh: <code>/ca 6EQKNJD6KMTQv9KmhKDjs1jm1SRsNVGNqdKeEEiJpump</code>`,
       { parse_mode: 'HTML' }
     );
