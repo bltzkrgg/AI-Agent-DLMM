@@ -107,17 +107,27 @@ async function evaluateDeployConditions(entry) {
   const lpMode = String(meta.entryGateMode || cfg.entryGateMode || '').toLowerCase().includes('lp');
   const mint = pool.tokenXMint || pool.mint || '';
   const poolAddress = pool.address || pool.pool_address || pool.pool || pool.poolAddress || pool.pubkey || '';
+  const metaTrend = String(meta.taTrend || meta.liveTrend || '').toUpperCase();
+  const metaM5 = Number(meta.priceChangeM5 ?? meta.snapshotM5Change ?? 0);
   const liveSnapshot = mint
     ? await getMarketSnapshot(mint, poolAddress || null).catch(() => null)
     : null;
-  const liveTrend = String(
+  const liveTrendRaw = String(
     liveSnapshot?.quality?.taTrend ||
     liveSnapshot?.ta?.supertrend?.trend ||
-    meta.taTrend ||
-    meta.liveTrend ||
     'UNKNOWN'
   ).toUpperCase();
-  const liveM5 = Number(liveSnapshot?.ohlcv?.priceChangeM5 ?? meta.priceChangeM5 ?? meta.snapshotM5Change ?? 0);
+  const liveM5Raw = Number(liveSnapshot?.ohlcv?.priceChangeM5 ?? 0);
+  const liveTrend = lpMode
+    ? (
+      ['BULLISH', 'BEARISH'].includes(liveTrendRaw)
+        ? liveTrendRaw
+        : (metaTrend || liveTrendRaw)
+    )
+    : (liveTrendRaw || metaTrend);
+  const liveM5 = lpMode
+    ? (Number.isFinite(liveM5Raw) && liveM5Raw !== 0 ? liveM5Raw : metaM5)
+    : Number(liveSnapshot?.ohlcv?.priceChangeM5 ?? meta.priceChangeM5 ?? meta.snapshotM5Change ?? 0);
 
   // Kondisi 1: Waktu expired di antrian
   // Token watch deploy: expiry mengikuti config deployQueueExpiryMin
