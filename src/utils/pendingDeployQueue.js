@@ -40,6 +40,7 @@ export function isFreshDeployMeta(meta = {}) {
   if (meta.isRetest || meta.isScoutDefer) return false;
   if (lpMode) {
     if (timingState !== 'LP_LIVE' && timingState !== 'BREAKOUT' && timingState !== 'ATH_BREAK') return false;
+    if (taTrend !== 'BULLISH') return false;
   } else if (timingState !== 'BREAKOUT' && timingState !== 'ATH_BREAK') {
     return false;
   }
@@ -120,7 +121,7 @@ async function evaluateDeployConditions(entry) {
   const liveM5Raw = Number(liveSnapshot?.ohlcv?.priceChangeM5 ?? 0);
   const liveTrend = lpMode
     ? (
-      ['BULLISH', 'BEARISH'].includes(liveTrendRaw)
+      ['BULLISH', 'BEARISH', 'NEUTRAL'].includes(liveTrendRaw)
         ? liveTrendRaw
         : (metaTrend || liveTrendRaw)
     )

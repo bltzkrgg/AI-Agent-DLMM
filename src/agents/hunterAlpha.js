@@ -222,6 +222,9 @@ function addWatchPassTa(pool, reason = 'TA PASS', source = 'TA') {
   const existing = _taWatchQueue.get(mint);
   const symbol = getPoolSymbol(pool);
   const signals = pool?._entrySignals || {};
+  if (String(signals.taTrend || '').toUpperCase() === 'BEARISH') {
+    return { admitted: false, reason: 'Supertrend 15m bearish', row: null, evicted: null };
+  }
   const watchWindowSec = getLpWatchWindowSec(cfg);
   const maxDriftPct = getLpMaxDriftPct(cfg);
   const priorityScore = computeTaWatchPriorityScore({ pool, entrySignals: signals, row: existing || {}, now });
@@ -381,6 +384,11 @@ export async function submitManualCaPool(poolAddress, { source = 'TELEGRAM_CA' }
 
   const marketSnapshot = await getMarketSnapshot(tokenMint, resolved.poolAddress || address).catch(() => null);
   const entrySignals = deriveBreakoutEntrySignals({ pool: poolInfo, marketSnapshot, cfg });
+  if (String(entrySignals.taTrend || '').toUpperCase() === 'BEARISH') {
+    const reason = 'Supertrend 15m bearish';
+    console.log(`[MANUAL] ❌ ${symbol} DROP: ${reason}`);
+    return { ok: false, status: 'DROP', kind: resolved.kind, symbol, poolAddress: resolved.poolAddress || address, tokenMint, entrySignals, reason };
+  }
   const now = Date.now();
   const watchWindowSec = getLpWatchWindowSec(cfg);
   const maxDriftPct = getLpMaxDriftPct(cfg);
@@ -492,6 +500,12 @@ async function collectReadyRetestPools(cfg = getConfig()) {
         row.pool?.address || row.pool?.poolAddress || row.pool?.pool || null
       ).catch(() => null);
       const entrySignals = deriveBreakoutEntrySignals({ pool: row.pool, vetoResult: veto, marketSnapshot, cfg });
+      if (entrySignals.entryTimingState === 'BEARISH_TREND') {
+        row.lastReason = 'Supertrend 15m bearish';
+        console.log(`[SCREEN] ❌ Retest dropped: ${row.symbol} — ${row.lastReason}`);
+        _pendingRetestQueue.delete(mint);
+        continue;
+      }
 
       if (isLPLiveTimingState(entrySignals.entryTimingState)) {
         if (entrySignals.entryReadiness === 'HIGH' && (entrySignals.breakoutQuality === 'VALID' || entrySignals.breakoutQuality === 'STRONG')) {
@@ -664,7 +678,9 @@ function deriveBreakoutEntrySignals({ pool = {}, vetoResult = null, marketSnapsh
   const hasValidVolume = !requireVolumeConfirm || (Number.isFinite(volumeRatio) && volumeRatio >= minVolRatio);
 
   let entryTimingState = 'UNKNOWN';
-  if (taTrend !== 'BULLISH') {
+  if (taTrend === 'BEARISH') {
+    entryTimingState = 'BEARISH_TREND';
+  } else if (taTrend !== 'BULLISH') {
     entryTimingState = 'NO_TREND';
   } else if (priceChangeM5 <= 0) {
     entryTimingState = 'NO_M5';
@@ -916,6 +932,12 @@ async function processPendingTaRadar(cfg = getConfig()) {
         row.pool?.address || row.pool?.poolAddress || row.pool?.pool || null
       ).catch(() => null);
       const entrySignals = deriveBreakoutEntrySignals({ pool: row.pool, vetoResult: veto, marketSnapshot, cfg });
+      if (entrySignals.entryTimingState === 'BEARISH_TREND') {
+        row.lastReason = 'Supertrend 15m bearish';
+        console.log(`[RADAR] ❌ TA radar dropped: ${row.symbol} — ${row.lastReason}`);
+        _pendingRetestQueue.delete(mint);
+        continue;
+      }
 
       if (isLPLiveTimingState(entrySignals.entryTimingState)) {
         if (entrySignals.entryReadiness === 'HIGH' && (entrySignals.breakoutQuality === 'VALID' || entrySignals.breakoutQuality === 'STRONG')) {
@@ -1491,8 +1513,10 @@ export async function scanAndDeploy() {
       console.log(`[SCREEN] 🧠 LLM stage=SCOUT model=${scoutModel} (slots: ${activeCount}/${maxPositions}, booked=${winners.length}, reserved=${slotUsage.reserved})`);
       const llmPoolContext = buildLlmPoolContext({ pool, screenResult, vetoResult, marketSnapshot, bookedSlots: winners.length, entrySignals });
 
-      if (entrySignals.entryTimingState === 'NO_TREND' || entrySignals.entryTimingState === 'NO_M5' || entrySignals.entryTimingState === 'TOO_CLOSE' || entrySignals.entryTimingState === 'WAIT_FOR_PULLBACK' || entrySignals.entryTimingState === 'WAIT_VOLUME' || entrySignals.entryTimingState === 'LATE_BREAKOUT' || entrySignals.entryTimingState === 'EXTENDED') {
-        const waitReason = entrySignals.entryTimingState === 'NO_TREND'
+      if (entrySignals.entryTimingState === 'BEARISH_TREND' || entrySignals.entryTimingState === 'NO_TREND' || entrySignals.entryTimingState === 'NO_M5' || entrySignals.entryTimingState === 'TOO_CLOSE' || entrySignals.entryTimingState === 'WAIT_FOR_PULLBACK' || entrySignals.entryTimingState === 'WAIT_VOLUME' || entrySignals.entryTimingState === 'LATE_BREAKOUT' || entrySignals.entryTimingState === 'EXTENDED') {
+        const waitReason = entrySignals.entryTimingState === 'BEARISH_TREND'
+          ? `Supertrend 15m bearish`
+          : entrySignals.entryTimingState === 'NO_TREND'
           ? `Supertrend 15m belum bullish`
           : entrySignals.entryTimingState === 'NO_M5'
             ? `Momentum M5 belum hijau`
@@ -1505,11 +1529,14 @@ export async function scanAndDeploy() {
               : entrySignals.entryTimingState === 'EXTENDED'
                 ? `Breakout sudah terlalu melebar dari supertrend (${formatMaybePct(entrySignals.signalStDistancePct, 2)})`
               : `Breakout terlalu dekat ke Supertrend (${formatMaybePct(entrySignals.signalStDistancePct, 2)})`;
-        reportManager.updateGate(tokenSymbol, 'SCOUT_AGENT', 'DEFER', waitReason);
-        reportManager.setFinalVerdict(tokenSymbol, 'DEFERRED', waitReason);
+        const bearishTrend = entrySignals.entryTimingState === 'BEARISH_TREND';
+        reportManager.updateGate(tokenSymbol, 'SCOUT_AGENT', bearishTrend ? 'FAIL' : 'DEFER', waitReason);
+        reportManager.setFinalVerdict(tokenSymbol, bearishTrend ? 'REJECT' : 'DEFERRED', waitReason);
         console.log(`[SCREEN] ⏳ ${tokenSymbol} ditahan sebelum LLM: ${waitReason}`);
-        pendingStore.add(tokenMint || '', tokenSymbol, 0, 0, pool);
-        addPendingRetest(pool, waitReason);
+        if (!bearishTrend) {
+          pendingStore.add(tokenMint || '', tokenSymbol, 0, 0, pool);
+          addPendingRetest(pool, waitReason);
+        }
         return { ok: false, symbol: tokenSymbol || 'UNKNOWN', stage: 'SCOUT_AGENT', reason: waitReason };
       }
 
@@ -1521,11 +1548,12 @@ Kamu adalah evaluator mekanis yang hanya membaca data JSON.
 JANGAN menebak, mengasumsikan, atau mengisi data yang tidak ada di payload.
 
 LP STYLE ENTRY
-Supertrend 15m harus bullish
-Candle M5 harus hijau
-Volume harus mendukung
-Entry ideal ada saat price reclaim/bounce sehat di area atas yang masih hidup buat fee flow.
+Supertrend 15m harus bullish.
+Candle M5 harus hijau.
+Volume HARUS mendukung.
+Entry ideal adalah closed green reclaim / bounce sehat; price reclaim/bounce sehat di area atas yang masih hidup buat fee flow.
 Entry yang valid bukan cari breakout paling awal, tapi area yang masih bisa bolak-balik dan dipanen.
+Jika Supertrend 15m BEARISH → REJECT. Jika NEUTRAL/UNKNOWN → DEFER/HOLD, jangan deploy.
 
 MINDSET: FEE FLOW HUNTER.
 Tugasmu adalah menjaga modal tetap utuh sambil memanen fee selama market masih hidup.
@@ -1544,15 +1572,16 @@ ATURAN EVALUASI MEKANIS (TERAPKAN BERURUTAN — SATU RULE GAGAL = STOP):
 [RULE 1 — MAKRO FILTER]
   Cek: "TA Supertrend 15m" dari data.
   IF nilai BUKAN "BULLISH" → WAJIB REJECT. Berhenti di sini.
-  Tidak ada pengecualian. Tren makro bearish/netral = token langsung dibuang.
+  Tidak ada pengecualian untuk deploy. BEARISH = REJECT. NEUTRAL/UNKNOWN = DEFER/HOLD.
 
-[RULE 2 — BREAKOUT TIMING]
+[RULE 2 — LP ENTRY TIMING]
   Cek: "Entry Timing", "Price vs Supertrend", dan "Price vs 24h High" dari data.
+  IF Entry Timing = "BEARISH_TREND" → WAJIB REJECT. Berhenti di sini.
   IF Entry Timing = "NO_TREND" → WAJIB REJECT. Berhenti di sini.
   IF Entry Timing = "NO_M5" → WAJIB DEFER. Berhenti di sini.
   IF Entry Timing = "WAIT_VOLUME" → WAJIB DEFER. Berhenti di sini.
   IF Entry Timing = "TOO_CLOSE" → WAJIB DEFER. Berhenti di sini.
-  Entry ideal adalah price reclaim/bounce sehat di area atas yang masih hidup: supertrend bullish, M5 hijau, volume mendukung, dan arus fee masih bisa jalan.
+  Entry ideal adalah closed green reclaim / bounce sehat di area atas yang masih hidup: supertrend bullish, M5 hijau, volume mendukung, dan arus fee masih bisa jalan.
 
 [RULE 3 — ANTI-CANDLE MERAH (HARAM HUKUMNYA)]
   Cek: "TA M5 Change" dari data.
@@ -1579,6 +1608,7 @@ ATURAN EVALUASI MEKANIS (TERAPKAN BERURUTAN — SATU RULE GAGAL = STOP):
   LPer mencari zona fee flow yang SEHAT, bukan terlalu lemah dan bukan terlalu kaku.
   Syarat PASS (semua HARUS terpenuhi):
   - Entry Timing HARUS "LP_LIVE", "BREAKOUT", atau "ATH_BREAK"
+  - TA Supertrend 15m HARUS "BULLISH"
   - TA M5 Change HARUS > 0 (momentum jangka pendek masih hidup)
   - Volume terkonfirmasi mendukung pergerakan
   - Breakout Quality HARUS "VALID" atau "STRONG"

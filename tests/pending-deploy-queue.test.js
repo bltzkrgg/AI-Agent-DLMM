@@ -8,12 +8,14 @@ test('fresh deploy meta allows breakout-valid, high-readiness entries including 
     entryTimingState: 'BREAKOUT',
     entryReadiness: 'HIGH',
     breakoutQuality: 'VALID',
+    taTrend: 'BULLISH',
   }), true);
 
   assert.equal(isFreshDeployMeta({
     entryTimingState: 'ATH_BREAK',
     entryReadiness: 'HIGH',
     breakoutQuality: 'STRONG',
+    taTrend: 'BULLISH',
   }), true);
 
   assert.equal(isFreshDeployMeta({
@@ -27,12 +29,14 @@ test('fresh deploy meta allows breakout-valid, high-readiness entries including 
     entryTimingState: 'BREAKOUT',
     entryReadiness: 'MEDIUM',
     breakoutQuality: 'VALID',
+    taTrend: 'BULLISH',
   }), false);
 
   assert.equal(isFreshDeployMeta({
     entryTimingState: 'LP_LIVE',
     entryReadiness: 'HIGH',
     breakoutQuality: 'VALID',
+    taTrend: 'BULLISH',
   }), true);
 
   assert.equal(isFreshDeployMeta({
@@ -40,5 +44,18 @@ test('fresh deploy meta allows breakout-valid, high-readiness entries including 
     entryReadiness: 'HIGH',
     breakoutQuality: 'VALID',
     taTrend: 'BEARISH',
+  }), false);
+
+  assert.equal(isFreshDeployMeta({
+    entryTimingState: 'LP_LIVE',
+    entryReadiness: 'HIGH',
+    breakoutQuality: 'VALID',
+    taTrend: 'NEUTRAL',
+  }), false);
+
+  assert.equal(isFreshDeployMeta({
+    entryTimingState: 'LP_LIVE',
+    entryReadiness: 'HIGH',
+    breakoutQuality: 'VALID',
   }), false);
 });
