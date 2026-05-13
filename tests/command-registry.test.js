@@ -33,7 +33,8 @@ test('/ca handler is registered and exposed in /start help', () => {
   const content = readFileSync(indexPath, 'utf-8');
 
   assert.match(content, /bot\.onText\(\/\\\/ca/);
-  assert.match(content, /\/ca\s+— Masukkan CA token \/ pool Meteora manual/);
+  assert.match(content, /\/ca\s+— kirim CA \/ pool Meteora/);
+  assert.match(content, /HOLD = pantau dulu, DROP = buang/);
   assert.match(content, /bot\.on\('message'/);
 });
 
@@ -55,4 +56,11 @@ test('/config and startup messages expose realtime PnL interval', () => {
   assert.match(content, /realtimePnlIntervalSec/);
   assert.match(content, /Realtime PnL/);
   assert.match(content, /realtimePnlSec/);
+});
+
+test('telegram cycle report labels deferred scout state as HOLD', () => {
+  const reporterPath = join(__dirname, '../src/utils/reporter.js');
+  const content = readFileSync(reporterPath, 'utf-8');
+
+  assert.match(content, /DEFER\/HOLD/);
 });

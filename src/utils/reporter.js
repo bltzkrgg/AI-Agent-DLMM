@@ -36,7 +36,7 @@ export async function sendTelegramCycleReport(cycleReport) {
         let state = row.gates[gate] || 'SKIPPED';
         if (gate === 'SCOUT_AGENT' && state === 'DEFER') {
           const metadata = row.metadata || {};
-          state = `DEFER (Entry=${metadata.entry || 'N/A'}, Breakout=${metadata.breakout || 'N/A'})`;
+          state = `DEFER/HOLD (Entry=${metadata.entry || 'N/A'}, Breakout=${metadata.breakout || 'N/A'})`;
         }
         report += `${gate}: ${state}\n`;
       });
@@ -72,4 +72,3 @@ export async function sendTelegramCycleReport(cycleReport) {
     })
   });
 }
-

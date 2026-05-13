@@ -17,6 +17,11 @@ let _monitorFn = null;
 let _watcherTimer = null;
 const _queue   = new Map(); // mint -> entry
 
+function formatPct(value, digits = 2) {
+  const num = Number(value);
+  return Number.isFinite(num) ? `${num.toFixed(digits)}%` : 'UNKNOWN';
+}
+
 export function setDeployQueueNotifyFn(fn) { _notifyFn  = fn; }
 export function setDeployQueueDeployFn(fn) { _deployFn  = fn; }
 export function setDeployQueueMonitorFn(fn) { _monitorFn = fn; }
@@ -25,6 +30,63 @@ async function safeSend(msg) {
   if (_notifyFn) {
     try { await _notifyFn(msg); } catch (e) { console.error('[QUEUE] notify error:', e.message); }
   }
+}
+
+function resolveQueueSignalSources({ meta = {}, liveSnapshot = null } = {}) {
+  const metaTrendRaw = String(meta.taTrend || meta.liveTrend || '').toUpperCase();
+  const metaM5Raw = Number(meta.priceChangeM5 ?? meta.snapshotM5Change ?? 0);
+  const liveTrendRaw = String(
+    liveSnapshot?.quality?.taTrend ||
+    liveSnapshot?.ta?.supertrend?.trend ||
+    'UNKNOWN'
+  ).toUpperCase();
+  const liveM5Raw = Number(liveSnapshot?.ohlcv?.priceChangeM5 ?? 0);
+  const liveTrendKnown = ['BULLISH', 'BEARISH', 'NEUTRAL'].includes(liveTrendRaw);
+  const liveM5Known = Number.isFinite(liveM5Raw) && liveM5Raw !== 0;
+
+  return {
+    trend: liveTrendKnown ? liveTrendRaw : (metaTrendRaw || 'UNKNOWN'),
+    trendSource: liveTrendKnown ? 'live' : (metaTrendRaw ? 'queue' : 'unknown'),
+    m5: liveM5Known ? liveM5Raw : (Number.isFinite(metaM5Raw) && metaM5Raw !== 0 ? metaM5Raw : 0),
+    m5Source: liveM5Known ? 'live' : (Number.isFinite(metaM5Raw) && metaM5Raw !== 0 ? 'queue' : 'unknown'),
+    liveTrendRaw,
+    liveM5Raw,
+    metaTrendRaw,
+    metaM5Raw,
+  };
+}
+
+export function summarizeQueueDecision({ meta = {}, liveSnapshot = null, cfg = getConfig(), lpMode = false } = {}) {
+  const signals = resolveQueueSignalSources({ meta, liveSnapshot });
+  const timingState = String(meta.entryTimingState || '').toUpperCase();
+
+  let decision = 'DEPLOY';
+  let reason = '';
+
+  if (lpMode) {
+    if (signals.trend === 'BEARISH') {
+      decision = 'DROP';
+      reason = `Supertrend 15m bearish (${signals.trendSource})`;
+    } else if (signals.trend !== 'BULLISH' || signals.m5 <= 0) {
+      decision = 'HOLD';
+      reason = `Freshness hilang: trend=${signals.trend || 'UNKNOWN'} (${signals.trendSource}) m5=${formatPct(signals.m5)} (${signals.m5Source})`;
+    }
+  } else if (timingState !== 'BREAKOUT' && timingState !== 'ATH_BREAK') {
+    decision = 'HOLD';
+    reason = `Timing belum fresh: ${timingState || 'UNKNOWN'}`;
+  }
+
+  return {
+    ...signals,
+    lpMode,
+    timingState,
+    decision,
+    reason,
+    queueExpiryMin: Math.max(
+      lpMode ? 1 : 5,
+      Math.max(1, Number(cfg.deployQueueExpiryMin) || (lpMode ? 60 : 5))
+    ),
+  };
 }
 
 export function isFreshDeployMeta(meta = {}) {
@@ -108,49 +170,64 @@ async function evaluateDeployConditions(entry) {
   const lpMode = String(meta.entryGateMode || cfg.entryGateMode || '').toLowerCase().includes('lp');
   const mint = pool.tokenXMint || pool.mint || '';
   const poolAddress = pool.address || pool.pool_address || pool.pool || pool.poolAddress || pool.pubkey || '';
-  const metaTrend = String(meta.taTrend || meta.liveTrend || '').toUpperCase();
   const metaM5 = Number(meta.priceChangeM5 ?? meta.snapshotM5Change ?? 0);
   const liveSnapshot = mint
     ? await getMarketSnapshot(mint, poolAddress || null).catch(() => null)
     : null;
-  const liveTrendRaw = String(
-    liveSnapshot?.quality?.taTrend ||
-    liveSnapshot?.ta?.supertrend?.trend ||
-    'UNKNOWN'
-  ).toUpperCase();
-  const liveM5Raw = Number(liveSnapshot?.ohlcv?.priceChangeM5 ?? 0);
-  const liveTrend = lpMode
-    ? (
-      ['BULLISH', 'BEARISH', 'NEUTRAL'].includes(liveTrendRaw)
-        ? liveTrendRaw
-        : (metaTrend || liveTrendRaw)
-    )
-    : (liveTrendRaw || metaTrend);
-  const liveM5 = lpMode
-    ? (Number.isFinite(liveM5Raw) && liveM5Raw !== 0 ? liveM5Raw : metaM5)
-    : Number(liveSnapshot?.ohlcv?.priceChangeM5 ?? meta.priceChangeM5 ?? meta.snapshotM5Change ?? 0);
+  const queueSignals = summarizeQueueDecision({ meta, liveSnapshot, cfg, lpMode });
+  const { trend: liveTrend, trendSource, m5: liveM5, m5Source, decision: freshnessDecision } = queueSignals;
 
   // Kondisi 1: Waktu expired di antrian
   // Token watch deploy: expiry mengikuti config deployQueueExpiryMin
   const ageMs  = Date.now() - entry.enqueuedAt;
-  const maxAgeMinutes = Math.max(
-    lpMode ? 1 : 5,
-    Math.max(1, Number(cfg.deployQueueExpiryMin) || (lpMode ? 60 : 5))
-  );
+  const maxAgeMinutes = queueSignals.queueExpiryMin;
   const maxAge = Math.max(60_000, Math.round(maxAgeMinutes * 60 * 1000));
   if (ageMs > maxAge) {
-    return { ok: false, reason: `Token expired dari antrian (> ${Math.round(maxAge / 60000)} menit)` };
+    return {
+      ok: false,
+      decision: 'DROP',
+      reason: `Token expired dari antrian (> ${Math.round(maxAge / 60000)} menit)`,
+      trendSource,
+      m5Source,
+      liveTrend,
+      liveM5,
+    };
   }
 
   if (lpMode) {
     const tvl = Number(pool.totalTvl || pool.activeTvl || 0);
     if (tvl < 5000) {
-      return { ok: false, reason: `TVL terlalu rendah: $${tvl.toLocaleString()}` };
+      return {
+        ok: false,
+        decision: 'HOLD',
+        reason: `TVL terlalu rendah: $${tvl.toLocaleString()}`,
+        trendSource,
+        m5Source,
+        liveTrend,
+        liveM5,
+      };
     }
-    if (liveTrend !== 'BULLISH' || liveM5 <= 0) {
-      return { ok: false, reason: `Freshness hilang: trend=${liveTrend || 'UNKNOWN'} m5=${liveM5.toFixed(2)}%` };
+    if (freshnessDecision !== 'DEPLOY') {
+      return {
+        ok: false,
+        decision: freshnessDecision,
+        reason: freshnessDecision === 'DROP'
+          ? queueSignals.reason
+          : `Freshness hilang: trend=${liveTrend || 'UNKNOWN'} (${trendSource}) m5=${formatPct(liveM5)} (${m5Source})`,
+        trendSource,
+        m5Source,
+        liveTrend,
+        liveM5,
+      };
     }
-    return { ok: true };
+    return {
+      ok: true,
+      decision: 'DEPLOY',
+      trendSource,
+      m5Source,
+      liveTrend,
+      liveM5,
+    };
   }
 
   const watchWindowSec = lpMode
@@ -161,7 +238,15 @@ async function evaluateDeployConditions(entry) {
     : Math.max(0.1, Number(meta.maxDriftPct || cfg.entryFreshBreakoutMaxDriftPct || 2.5));
   const snapshotAt = Number(meta.snapshotAt || entry.enqueuedAt || 0);
   if (snapshotAt > 0 && (Date.now() - snapshotAt) > watchWindowSec * 1000) {
-    return { ok: false, reason: `WATCH terlalu lama (${Math.round((Date.now() - snapshotAt) / 1000)}s > ${watchWindowSec}s)` };
+    return {
+      ok: false,
+      decision: 'HOLD',
+      reason: `WATCH terlalu lama (${Math.round((Date.now() - snapshotAt) / 1000)}s > ${watchWindowSec}s)`,
+      trendSource,
+      m5Source,
+      liveTrend,
+      liveM5,
+    };
   }
 
   const livePrice = Number(liveSnapshot?.ohlcv?.currentPrice || liveSnapshot?.price?.currentPrice || pool?.price || 0);
@@ -169,23 +254,54 @@ async function evaluateDeployConditions(entry) {
   if (Number.isFinite(snapshotPrice) && snapshotPrice > 0 && Number.isFinite(livePrice) && livePrice > 0) {
     const driftPct = Math.abs(((livePrice - snapshotPrice) / snapshotPrice) * 100);
     if (driftPct > maxDriftPct) {
-      return { ok: false, reason: `Breakout bergeser ${driftPct.toFixed(2)}% dari snapshot (> ${maxDriftPct}%)` };
+      return {
+        ok: false,
+        decision: 'HOLD',
+        reason: `Breakout bergeser ${driftPct.toFixed(2)}% dari snapshot (> ${maxDriftPct}%)`,
+        trendSource,
+        m5Source,
+        liveTrend,
+        liveM5,
+      };
     }
   }
 
   if (liveSnapshot) {
     if (liveTrend !== 'BULLISH' || liveM5 <= 0) {
-      return { ok: false, reason: `Freshness hilang: trend=${liveTrend || 'UNKNOWN'} m5=${liveM5.toFixed(2)}%` };
+      return {
+        ok: false,
+        decision: liveTrend === 'BEARISH' ? 'DROP' : 'HOLD',
+        reason: `Freshness hilang: trend=${liveTrend || 'UNKNOWN'} (${trendSource}) m5=${formatPct(liveM5)} (${m5Source})`,
+        trendSource,
+        m5Source,
+        liveTrend,
+        liveM5,
+      };
     }
   }
 
   // Kondisi 3: TVL minimal (hindari rug liquidity)
   const tvl = Number(pool.totalTvl || pool.activeTvl || 0);
   if (tvl < 5000) {
-    return { ok: false, reason: `TVL terlalu rendah: $${tvl.toLocaleString()}` };
+    return {
+      ok: false,
+      decision: 'HOLD',
+      reason: `TVL terlalu rendah: $${tvl.toLocaleString()}`,
+      trendSource,
+      m5Source,
+      liveTrend,
+      liveM5,
+    };
   }
 
-  return { ok: true };
+  return {
+    ok: true,
+    decision: 'DEPLOY',
+    trendSource,
+    m5Source,
+    liveTrend,
+    liveM5,
+  };
 }
 
 /** Main watcher loop */
@@ -217,14 +333,22 @@ async function runWatcher() {
       }
 
       const check = await evaluateDeployConditions(entry);
+      const decision = String(check.decision || (check.ok ? 'DEPLOY' : 'HOLD')).toUpperCase();
 
       if (!check.ok) {
-        console.log(`[QUEUE] ⏳ ${symbol} belum siap: ${check.reason} (attempt ${entry.attempts}/3)`);
-        if (check.reason.includes('expired')) {
+        console.log(
+          `[QUEUE] ⏳ ${symbol} belum siap [${decision}] ` +
+          `trend=${check.liveTrend || 'UNKNOWN'} (${check.trendSource || 'unknown'}) ` +
+          `m5=${formatPct(check.liveM5)} (${check.m5Source || 'unknown'}) ` +
+          `reason=${check.reason} (attempt ${entry.attempts}/3)`
+        );
+        if (decision === 'DROP' || check.reason.includes('expired')) {
           _queue.delete(mint);
           await safeSend(
-            `⏱️ <b>Deploy Queue Expired</b>\n` +
-            `<b>${symbol}</b> — dibatalkan.\n` +
+            `❌ <b>Deploy Queue ${decision === 'DROP' ? 'Drop' : 'Expired'}</b>\n` +
+            `<b>${symbol}</b>\n` +
+            `Trend: <code>${check.liveTrend || 'UNKNOWN'}</code> (<code>${check.trendSource || 'unknown'}</code>)\n` +
+            `M5: <code>${formatPct(check.liveM5)}</code> (<code>${check.m5Source || 'unknown'}</code>)\n` +
             `<i>${check.reason}</i>`
           );
         }
@@ -257,7 +381,12 @@ async function runWatcher() {
 
       const cfg = getConfig();
       const solAmount = cfg.deployAmountSol || 0.1;
-      console.log(`[QUEUE] 🚀 Attempting deploy for ${symbol} with amount ${solAmount} SOL (Pool: ${poolAddress.slice(0, 8)})`);
+      console.log(
+        `[QUEUE] 🚀 Attempting deploy for ${symbol} ` +
+        `decision=${decision} trend=${check.liveTrend || 'UNKNOWN'} (${check.trendSource || 'unknown'}) ` +
+        `m5=${formatPct(check.liveM5)} (${check.m5Source || 'unknown'}) ` +
+        `amount=${solAmount} SOL (Pool: ${poolAddress.slice(0, 8)})`
+      );
       const slotReservation = reserveDeploySlot({
         owner: 'deployQueueWatcher',
         mint,
@@ -280,6 +409,9 @@ async function runWatcher() {
           `🚀 <b>Real-time Deploy Triggered!</b>\n` +
           `Token: <b>${symbol}</b>\n` +
           `Pool: <code>${poolAddress.slice(0, 8)}</code>\n` +
+          `Trend: <code>${check.liveTrend || 'UNKNOWN'}</code> (<code>${check.trendSource || 'unknown'}</code>)\n` +
+          `M5: <code>${formatPct(check.liveM5)}</code> (<code>${check.m5Source || 'unknown'}</code>)\n` +
+          `Decision: <code>${decision}</code>\n` +
           `BinStep: <code>${pool.binStep || '?'}</code>\n` +
           `Entry: <code>${entry.meta.entryReadiness || 'N/A'}</code> | ` +
           `Breakout: <code>${entry.meta.breakoutQuality || 'N/A'}</code> | ` +

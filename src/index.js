@@ -124,7 +124,7 @@ async function processManualCaInput(chatId, poolAddress, { source = 'TELEGRAM_CA
     chatId,
     `📥 <b>${escapeHTML(announce)}</b>\n` +
     `<code>${escapeHTML(poolAddress)}</code>\n` +
-    `<i>Bot akan cek WATCH → QUEUE → DEPLOY berdasarkan freshness.</i>`,
+    `<i>Bot akan cek WATCH → QUEUE → DEPLOY. HOLD = pantau dulu, DROP = buang.</i>`,
     { parse_mode: 'HTML' }
   );
 
@@ -140,8 +140,9 @@ async function processManualCaInput(chatId, poolAddress, { source = 'TELEGRAM_CA
     if (result?.status === 'QUEUE') {
       await bot.sendMessage(
         chatId,
-        `🟡 <b>QUEUE READY</b>\n` +
+        `🟡 <b>QUEUE</b>\n` +
         `<b>${escapeHTML(result.symbol || 'UNKNOWN')}</b>\n` +
+        `State: <code>DEPLOY</code>\n` +
         `Mode: <code>${escapeHTML(result.kind || 'UNKNOWN')}</code>\n` +
         `ST: <code>${escapeHTML(result.entrySignals?.taTrend || 'UNKNOWN')}</code> | ` +
         `M5: <code>${Number(result.entrySignals?.priceChangeM5 || 0).toFixed(2)}%</code> | ` +
@@ -152,8 +153,9 @@ async function processManualCaInput(chatId, poolAddress, { source = 'TELEGRAM_CA
     } else if (result?.status === 'WATCH') {
       await bot.sendMessage(
         chatId,
-        `✅ <b>WATCH</b>\n` +
+        `👀 <b>WATCH</b>\n` +
         `<b>${escapeHTML(result.symbol || 'UNKNOWN')}</b>\n` +
+        `State: <code>HOLD</code>\n` +
         `Mode: <code>${escapeHTML(result.kind || 'UNKNOWN')}</code>\n` +
         `ST: <code>${escapeHTML(result.entrySignals?.taTrend || 'UNKNOWN')}</code> | ` +
         `M5: <code>${Number(result.entrySignals?.priceChangeM5 || 0).toFixed(2)}%</code> | ` +
@@ -166,6 +168,7 @@ async function processManualCaInput(chatId, poolAddress, { source = 'TELEGRAM_CA
         chatId,
         `❌ <b>DROP</b>\n` +
         `<b>${escapeHTML(result?.symbol || poolAddress.slice(0, 8))}</b>\n` +
+        `State: <code>DROP</code>\n` +
         `Reason: <i>${escapeHTML(result?.reason || 'Gagal memproses CA')}</i>`,
         { parse_mode: 'HTML' }
       );
@@ -187,19 +190,19 @@ bot.onText(/\/start/, (msg) => {
   bot.sendMessage(msg.chat.id,
     `🤖 <b>Linear Sniper Bot</b>\n\n` +
     `<b>Commands:</b>\n` +
-    `/start     — Lihat semua command\n` +
-    `/status    — Status posisi aktif\n` +
-    `/hunt      — Mulai loop sniper\n` +
-    `/screening   — Scan manual top pool sekarang\n` +
-    `/autoscreen  — Toggle auto-screening (on/off)\n` +
-    `/evolve      — Analisis harvest.log + saran config terbaru\n` +
-    `/ca         — Masukkan CA token / pool Meteora manual\n` +
-    `/stop        — Hentikan loop\n` +
-    `/exit        — Force exit posisi aktif\n` +
-    `/balance     — Saldo wallet\n` +
-    `/config      — Tampilkan config saat ini\n` +
-    `/setconfig   — Ubah config (key value)\n` +
-    `/dryrun      — Toggle dry run mode`,
+    `/start — lihat semua command\n` +
+    `/status — posisi aktif\n` +
+    `/hunt — mulai loop\n` +
+    `/screening — scan manual top pool\n` +
+    `/autoscreen — on/off auto-screening\n` +
+    `/ca — kirim CA / pool Meteora\n` +
+    `/evolve — saran config dari harvest.log\n` +
+    `/balance — saldo wallet\n` +
+    `/config — tampilkan config\n` +
+    `/setconfig — ubah config\n` +
+    `/dryrun — toggle dry run\n` +
+    `/stop — hentikan loop\n` +
+    `/exit — force exit posisi aktif`,
     { parse_mode: 'HTML' }
   );
 });
@@ -1035,7 +1038,7 @@ setTimeout(async () => {
       `📡 Auto Screening: <code>${autoScr ? `ON (${cfg.screeningIntervalMin}m)` : 'OFF'}</code>\n` +
       `👀 Watch: <code>ON (${cfg.taWatchMaxPools || 10} max)</code>\n` +
       `📊 Realtime PnL: <code>${cfg.realtimePnlIntervalSec || 15}s</code>\n\n` +
-      `Ketik /start untuk lihat command.`
+      `Ketik /start untuk lihat command, /ca untuk kirim CA manual.`
     );
 
     // Auto-start screening loop jika diaktifkan
