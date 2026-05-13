@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { isFreshDeployMeta, summarizeQueueDecision } from '../src/utils/pendingDeployQueue.js';
+import { isFreshDeployMeta, isReliableLiveSnapshot, summarizeQueueDecision } from '../src/utils/pendingDeployQueue.js';
 
 test('fresh deploy meta allows breakout-valid, high-readiness entries including LP live timing', () => {
   assert.equal(isFreshDeployMeta({
@@ -102,4 +102,16 @@ test('queue freshness resolves live vs queued signals for LP-style chart scenari
   assert.equal(liveBearish.decision, 'DROP');
   assert.equal(liveBearish.trendSource, 'live');
   assert.equal(liveBearish.trend, 'BEARISH');
+});
+
+test('queue treats fallback momentum proxy as unreliable live confirmation', () => {
+  assert.equal(isReliableLiveSnapshot(null), false);
+  assert.equal(isReliableLiveSnapshot({
+    dataSource: 'momentum-proxy',
+    ohlcv: { historySuccess: false },
+  }), false);
+  assert.equal(isReliableLiveSnapshot({
+    dataSource: 'dexscreener-ohlcv',
+    ohlcv: { historySuccess: true },
+  }), true);
 });

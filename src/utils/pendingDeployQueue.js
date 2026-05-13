@@ -16,6 +16,9 @@ let _deployFn  = null;
 let _monitorFn = null;
 let _watcherTimer = null;
 const _queue   = new Map(); // mint -> entry
+const _snapshotCache = new Map(); // key -> { at, snapshot }
+const _snapshotInflight = new Map(); // key -> Promise
+const SNAPSHOT_CACHE_TTL_MS = 12_000;
 
 function formatPct(value, digits = 2) {
   const num = Number(value);
@@ -30,6 +33,42 @@ async function safeSend(msg) {
   if (_notifyFn) {
     try { await _notifyFn(msg); } catch (e) { console.error('[QUEUE] notify error:', e.message); }
   }
+}
+
+function getSnapshotCacheKey(mint = '', poolAddress = '') {
+  return `${mint || 'unknown'}:${poolAddress || 'nopool'}`;
+}
+
+export function isReliableLiveSnapshot(snapshot = null) {
+  if (!snapshot) return false;
+  const source = String(snapshot.dataSource || snapshot.ohlcv?.source || '').toLowerCase();
+  if (!snapshot.ohlcv?.historySuccess) return false;
+  if (source.includes('momentum-proxy')) return false;
+  return true;
+}
+
+async function getCachedMarketSnapshot(mint, poolAddress = null) {
+  if (!mint) return null;
+  const key = getSnapshotCacheKey(mint, poolAddress || '');
+  const now = Date.now();
+  const cached = _snapshotCache.get(key);
+  if (cached && (now - cached.at) <= SNAPSHOT_CACHE_TTL_MS) {
+    return cached.snapshot;
+  }
+
+  if (_snapshotInflight.has(key)) {
+    return _snapshotInflight.get(key);
+  }
+
+  const task = getMarketSnapshot(mint, poolAddress || null)
+    .catch(() => null)
+    .then((snapshot) => {
+      _snapshotCache.set(key, { at: Date.now(), snapshot });
+      _snapshotInflight.delete(key);
+      return snapshot;
+    });
+  _snapshotInflight.set(key, task);
+  return task;
 }
 
 function resolveQueueSignalSources({ meta = {}, liveSnapshot = null } = {}) {
@@ -170,12 +209,9 @@ async function evaluateDeployConditions(entry) {
   const lpMode = String(meta.entryGateMode || cfg.entryGateMode || '').toLowerCase().includes('lp');
   const mint = pool.tokenXMint || pool.mint || '';
   const poolAddress = pool.address || pool.pool_address || pool.pool || pool.poolAddress || pool.pubkey || '';
-  const metaM5 = Number(meta.priceChangeM5 ?? meta.snapshotM5Change ?? 0);
-  const liveSnapshot = mint
-    ? await getMarketSnapshot(mint, poolAddress || null).catch(() => null)
-    : null;
-  const queueSignals = summarizeQueueDecision({ meta, liveSnapshot, cfg, lpMode });
-  const { trend: liveTrend, trendSource, m5: liveM5, m5Source, decision: freshnessDecision } = queueSignals;
+  const queueSignals = summarizeQueueDecision({ meta, liveSnapshot: null, cfg, lpMode });
+  let activeSignals = queueSignals;
+  let { trend: liveTrend, trendSource, m5: liveM5, m5Source, decision: freshnessDecision } = activeSignals;
 
   // Kondisi 1: Waktu expired di antrian
   // Token watch deploy: expiry mengikuti config deployQueueExpiryMin
@@ -207,6 +243,7 @@ async function evaluateDeployConditions(entry) {
         liveM5,
       };
     }
+
     if (freshnessDecision !== 'DEPLOY') {
       return {
         ok: false,
@@ -220,6 +257,29 @@ async function evaluateDeployConditions(entry) {
         liveM5,
       };
     }
+
+    const liveSnapshot = await getCachedMarketSnapshot(mint, poolAddress || null);
+    if (liveSnapshot) {
+      const liveSignals = summarizeQueueDecision({ meta, liveSnapshot, cfg, lpMode });
+      const liveReliable = isReliableLiveSnapshot(liveSnapshot);
+      activeSignals = liveReliable ? liveSignals : queueSignals;
+      ({ trend: liveTrend, trendSource, m5: liveM5, m5Source, decision: freshnessDecision } = activeSignals);
+
+      if (liveReliable && freshnessDecision !== 'DEPLOY') {
+        return {
+          ok: false,
+          decision: freshnessDecision,
+          reason: freshnessDecision === 'DROP'
+            ? liveSignals.reason
+            : `Freshness hilang: trend=${liveTrend || 'UNKNOWN'} (${trendSource}) m5=${formatPct(liveM5)} (${m5Source})`,
+          trendSource,
+          m5Source,
+          liveTrend,
+          liveM5,
+        };
+      }
+    }
+
     return {
       ok: true,
       decision: 'DEPLOY',
@@ -247,6 +307,12 @@ async function evaluateDeployConditions(entry) {
       liveTrend,
       liveM5,
     };
+  }
+
+  const liveSnapshot = await getCachedMarketSnapshot(mint, poolAddress || null);
+  if (liveSnapshot) {
+    const liveSignals = summarizeQueueDecision({ meta, liveSnapshot, cfg, lpMode });
+    ({ trend: liveTrend, trendSource, m5: liveM5, m5Source } = liveSignals);
   }
 
   const livePrice = Number(liveSnapshot?.ohlcv?.currentPrice || liveSnapshot?.price?.currentPrice || pool?.price || 0);

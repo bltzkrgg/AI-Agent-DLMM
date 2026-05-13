@@ -1,53 +1,55 @@
 # LP Agent Follow-up Tasks for 5.4 Mini
 
-Scope: helper work only. Do not change core entry or deploy policy without a GPT-5.5 review.
+Scope: implementation helper work only. Do not change core LP entry policy without a GPT-5.5 review.
 
-## Locked LP Entry Policy
+## GPT-5.5 Locked Architecture
 
-Entry may proceed only when all are true:
+Queue flow is now `metadata-first`, `cache-first`, and `live-check-final`.
 
-- Pool/token safety passes.
-- Supertrend 15m is `BULLISH`.
-- M5 momentum is positive.
-- Volume confirms the move.
-- Entry state is a healthy LP fee-flow state such as `LP_LIVE`, `BREAKOUT`, or `ATH_BREAK`.
-
-Hard outcomes:
-
-- `BEARISH` trend: `DROP` / `REJECT`.
-- `NEUTRAL` or `UNKNOWN` trend: `HOLD` / `DEFER`, no deploy.
-- Queue is technical execution only: slot, duplicate, pool address, TVL, and final hard safety.
+- Screening/watch/manual CA must carry entry metadata into queue.
+- Queue first evaluates queued metadata: trend, M5, timing, readiness, breakout quality, TVL, and expiry.
+- `BEARISH` metadata remains hard `DROP` / no queue.
+- `NEUTRAL` or missing metadata remains `HOLD` / no deploy.
+- Live snapshot is final confirmation, not the first gate for every queue tick.
+- Live snapshot is cached per mint/pool for a short TTL.
+- Momentum proxy / fallback snapshots are not trusted as live rejection data.
+- Reliable live `BEARISH` still overrides queued metadata and drops.
+- Reliable live `NEUTRAL` or non-positive M5 holds.
 
 ## Tasks for 5.4 Mini
 
-1. Improve logs without changing behavior.
-   - Show trend source: live snapshot vs queued meta.
-   - Show M5 source: live snapshot vs queued meta.
-   - Show decision: `DEPLOY`, `HOLD`, or `DROP`.
+1. Add focused tests around queue architecture.
+   - LP bullish metadata can proceed when live snapshot is missing.
+   - Momentum proxy live snapshot does not override bullish metadata.
+   - Reliable live bearish still drops.
+   - Reliable live neutral still holds.
 
-2. Add chart-scenario tests.
-   - Bullish closed green reclaim should pass queue metadata.
-   - Bearish trend should not enter WATCH or QUEUE.
-   - Neutral trend should stay pending/hold and never deploy.
-   - Missing live snapshot may use queued bullish metadata only when trend is not explicitly neutral/bearish.
+2. Improve logging without changing behavior.
+   - Show when queue used `queue` metadata vs `live` snapshot.
+   - Show when live snapshot was ignored because it was unreliable fallback.
+   - Keep Telegram copy short and operational.
 
-3. Review Telegram status copy.
-   - Keep messages short.
-   - Make `WATCH`, `QUEUE`, `DEPLOY`, `HOLD`, and `DROP` reasons obvious.
-   - Avoid trader-style wording when the state is LP fee-flow.
+3. Audit metadata propagation.
+   - Manual CA must include `taTrend`, `priceChangeM5`, `entryTimingState`, snapshot price, and pool address.
+   - Auto screening must include the same fields.
+   - WATCH to QUEUE must preserve the same fields.
 
-4. Audit duplicated radar/retest flow.
-   - Confirm both pending retest paths treat `BEARISH_TREND` as drop.
-   - Confirm neutral trend remains watchable but not deployable.
+4. Add lightweight observability.
+   - Count snapshot cache hit/miss in local logs.
+   - Do not add external telemetry.
+   - Do not increase network calls.
 
-5. Produce a short report.
-   - List changed files.
-   - List tests added.
-   - List remaining risks.
+5. Prepare memory-layer implementation plan.
+   - Pool decision memory.
+   - Cooldown.
+   - Priority scoring.
+   - Outcome learning.
+   - Keep this as a plan unless GPT-5.5 approves the core policy.
 
-Do not edit:
+## Do Not Edit
 
 - Exit policy / TP / SL config.
 - Deploy transaction flow.
 - Wallet, RPC, or Meteora SDK integration.
 - GMGN safety thresholds.
+- Core hard-gate policy: reliable bearish is always reject/drop.
