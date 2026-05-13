@@ -19,6 +19,8 @@ const _queue   = new Map(); // mint -> entry
 const _snapshotCache = new Map(); // key -> { at, snapshot }
 const _snapshotInflight = new Map(); // key -> Promise
 const SNAPSHOT_CACHE_TTL_MS = 12_000;
+let _snapshotCacheHits = 0;
+let _snapshotCacheMisses = 0;
 
 function formatPct(value, digits = 2) {
   const num = Number(value);
@@ -47,19 +49,33 @@ export function isReliableLiveSnapshot(snapshot = null) {
   return true;
 }
 
+export function getSnapshotCacheStats() {
+  return {
+    hits: _snapshotCacheHits,
+    misses: _snapshotCacheMisses,
+    size: _snapshotCache.size,
+  };
+}
+
 async function getCachedMarketSnapshot(mint, poolAddress = null) {
   if (!mint) return null;
   const key = getSnapshotCacheKey(mint, poolAddress || '');
   const now = Date.now();
   const cached = _snapshotCache.get(key);
   if (cached && (now - cached.at) <= SNAPSHOT_CACHE_TTL_MS) {
+    _snapshotCacheHits += 1;
+    console.log(`[QUEUE] 🧠 Snapshot cache hit ${mint.slice(0, 8)} hits=${_snapshotCacheHits} misses=${_snapshotCacheMisses}`);
     return cached.snapshot;
   }
 
   if (_snapshotInflight.has(key)) {
+    _snapshotCacheHits += 1;
+    console.log(`[QUEUE] 🧠 Snapshot inflight reuse ${mint.slice(0, 8)} hits=${_snapshotCacheHits} misses=${_snapshotCacheMisses}`);
     return _snapshotInflight.get(key);
   }
 
+  _snapshotCacheMisses += 1;
+  console.log(`[QUEUE] 🧠 Snapshot cache miss ${mint.slice(0, 8)} hits=${_snapshotCacheHits} misses=${_snapshotCacheMisses}`);
   const task = getMarketSnapshot(mint, poolAddress || null)
     .catch(() => null)
     .then((snapshot) => {
@@ -262,6 +278,12 @@ async function evaluateDeployConditions(entry) {
     if (liveSnapshot) {
       const liveSignals = summarizeQueueDecision({ meta, liveSnapshot, cfg, lpMode });
       const liveReliable = isReliableLiveSnapshot(liveSnapshot);
+      if (!liveReliable) {
+        console.log(
+          `[QUEUE] 🧊 Ignored unreliable live snapshot for ${mint.slice(0, 8)} ` +
+          `(source=${String(liveSnapshot.dataSource || liveSnapshot.ohlcv?.source || 'unknown')})`
+        );
+      }
       activeSignals = liveReliable ? liveSignals : queueSignals;
       ({ trend: liveTrend, trendSource, m5: liveM5, m5Source, decision: freshnessDecision } = activeSignals);
 
@@ -312,6 +334,12 @@ async function evaluateDeployConditions(entry) {
   const liveSnapshot = await getCachedMarketSnapshot(mint, poolAddress || null);
   if (liveSnapshot) {
     const liveSignals = summarizeQueueDecision({ meta, liveSnapshot, cfg, lpMode });
+    if (!isReliableLiveSnapshot(liveSnapshot)) {
+      console.log(
+        `[QUEUE] 🧊 Ignored unreliable live snapshot for ${mint.slice(0, 8)} ` +
+        `(source=${String(liveSnapshot.dataSource || liveSnapshot.ohlcv?.source || 'unknown')})`
+      );
+    }
     ({ trend: liveTrend, trendSource, m5: liveM5, m5Source } = liveSignals);
   }
 
