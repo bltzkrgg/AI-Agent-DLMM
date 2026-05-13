@@ -108,12 +108,20 @@ async function evaluateDeployConditions(entry) {
   // Token watch deploy: expiry mengikuti config deployQueueExpiryMin
   const ageMs  = Date.now() - entry.enqueuedAt;
   const maxAgeMinutes = Math.max(
-    lpMode ? 10 : 5,
-    Math.max(1, Number(cfg.deployQueueExpiryMin) || (lpMode ? 10 : 5))
+    lpMode ? 1 : 5,
+    Math.max(1, Number(cfg.deployQueueExpiryMin) || (lpMode ? 60 : 5))
   );
   const maxAge = Math.max(60_000, Math.round(maxAgeMinutes * 60 * 1000));
   if (ageMs > maxAge) {
     return { ok: false, reason: `Token expired dari antrian (> ${Math.round(maxAge / 60000)} menit)` };
+  }
+
+  if (lpMode) {
+    const tvl = Number(pool.totalTvl || pool.activeTvl || 0);
+    if (tvl < 5000) {
+      return { ok: false, reason: `TVL terlalu rendah: $${tvl.toLocaleString()}` };
+    }
+    return { ok: true };
   }
 
   const watchWindowSec = lpMode

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 
 import { isFreshDeployMeta } from '../src/utils/pendingDeployQueue.js';
 
-test('fresh deploy meta only allows breakout-valid, high-readiness entries', () => {
+test('fresh deploy meta allows breakout-valid, high-readiness entries including LP live timing', () => {
   assert.equal(isFreshDeployMeta({
     entryTimingState: 'BREAKOUT',
     entryReadiness: 'HIGH',
@@ -28,4 +28,10 @@ test('fresh deploy meta only allows breakout-valid, high-readiness entries', () 
     entryReadiness: 'MEDIUM',
     breakoutQuality: 'VALID',
   }), false);
+
+  assert.equal(isFreshDeployMeta({
+    entryTimingState: 'LP_LIVE',
+    entryReadiness: 'HIGH',
+    breakoutQuality: 'VALID',
+  }), true);
 });
