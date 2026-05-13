@@ -246,6 +246,8 @@ function addWatchPassTa(pool, reason = 'TA PASS', source = 'TA') {
     snapshotAthDistancePct: existing?.snapshotAthDistancePct ?? signals.signalAthDistancePct ?? null,
     snapshotM5Change: existing?.snapshotM5Change ?? signals.priceChangeM5 ?? null,
     snapshotM15Change: existing?.snapshotM15Change ?? signals.priceChangeM15 ?? null,
+    taTrend: existing?.taTrend ?? signals.taTrend ?? null,
+    priceChangeM5: existing?.priceChangeM5 ?? signals.priceChangeM5 ?? null,
     watchWindowSec: existing?.watchWindowSec || watchWindowSec,
     maxDriftPct: existing?.maxDriftPct || maxDriftPct,
     priorityScore,
@@ -398,6 +400,7 @@ export async function submitManualCaPool(poolAddress, { source = 'TELEGRAM_CA' }
     _watchSnapshotAthDistancePct: entrySignals.signalAthDistancePct ?? null,
     _watchSnapshotM5Change: entrySignals.priceChangeM5 ?? null,
     _watchSnapshotM15Change: entrySignals.priceChangeM15 ?? null,
+    _watchTaTrend: entrySignals.taTrend ?? null,
   };
 
   const queueMeta = {
@@ -408,6 +411,8 @@ export async function submitManualCaPool(poolAddress, { source = 'TELEGRAM_CA' }
     entryTimingState: entrySignals.entryTimingState,
     signalStDistancePct: entrySignals.signalStDistancePct,
     signalAthDistancePct: entrySignals.signalAthDistancePct,
+    taTrend: entrySignals.taTrend,
+    priceChangeM5: entrySignals.priceChangeM5,
     snapshotAt: now,
     snapshotPrice: pool._watchSnapshotPrice,
     snapshotHigh24h: pool._watchSnapshotHigh24h,
@@ -1071,8 +1076,10 @@ async function processTaWatchQueue(cfg = getConfig()) {
         breakoutQuality: 'VALID',
         entryGateMode: 'lp_fee_flow',
         entryTimingState: 'LP_LIVE',
+        taTrend: pool._entrySignals?.taTrend,
         signalStDistancePct: pool._entrySignals?.signalStDistancePct,
         signalAthDistancePct: pool._entrySignals?.signalAthDistancePct,
+        priceChangeM5: pool._entrySignals?.priceChangeM5,
         snapshotAt: row.snapshotAt || now,
         snapshotPrice: row.snapshotPrice ?? pool._entrySignals?.currentPrice ?? null,
         snapshotHigh24h: row.snapshotHigh24h ?? pool._entrySignals?.high24h ?? null,

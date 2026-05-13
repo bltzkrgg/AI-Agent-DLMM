@@ -33,6 +33,7 @@ export function isFreshDeployMeta(meta = {}) {
   const timingState = String(meta.entryTimingState || '').toUpperCase();
   const readiness = String(meta.entryReadiness || '').toUpperCase();
   const breakoutQuality = String(meta.breakoutQuality || '').toUpperCase();
+  const taTrend = String(meta.taTrend || meta.liveTrend || '').toUpperCase();
   const signalAthDistancePct = Number(meta.signalAthDistancePct);
   const signalStDistancePct = Number(meta.signalStDistancePct);
 
@@ -44,6 +45,7 @@ export function isFreshDeployMeta(meta = {}) {
   }
   if (readiness !== 'HIGH') return false;
   if (breakoutQuality !== 'VALID' && breakoutQuality !== 'STRONG') return false;
+  if (taTrend && taTrend !== 'BULLISH') return false;
   if (!lpMode) {
     const freshAthBreakPct = Number(cfg.entryFreshBreakoutMinAthDistancePct ?? 99.25);
     const breakoutMinStPct = Number(cfg.entrySupertrendBreakMinPct ?? 1.25);
@@ -103,6 +105,19 @@ async function evaluateDeployConditions(entry) {
   const { pool, meta } = entry;
   const cfg = getConfig();
   const lpMode = String(meta.entryGateMode || cfg.entryGateMode || '').toLowerCase().includes('lp');
+  const mint = pool.tokenXMint || pool.mint || '';
+  const poolAddress = pool.address || pool.pool_address || pool.pool || pool.poolAddress || pool.pubkey || '';
+  const liveSnapshot = mint
+    ? await getMarketSnapshot(mint, poolAddress || null).catch(() => null)
+    : null;
+  const liveTrend = String(
+    liveSnapshot?.quality?.taTrend ||
+    liveSnapshot?.ta?.supertrend?.trend ||
+    meta.taTrend ||
+    meta.liveTrend ||
+    'UNKNOWN'
+  ).toUpperCase();
+  const liveM5 = Number(liveSnapshot?.ohlcv?.priceChangeM5 ?? meta.priceChangeM5 ?? meta.snapshotM5Change ?? 0);
 
   // Kondisi 1: Waktu expired di antrian
   // Token watch deploy: expiry mengikuti config deployQueueExpiryMin
@@ -121,6 +136,9 @@ async function evaluateDeployConditions(entry) {
     if (tvl < 5000) {
       return { ok: false, reason: `TVL terlalu rendah: $${tvl.toLocaleString()}` };
     }
+    if (liveTrend !== 'BULLISH' || liveM5 <= 0) {
+      return { ok: false, reason: `Freshness hilang: trend=${liveTrend || 'UNKNOWN'} m5=${liveM5.toFixed(2)}%` };
+    }
     return { ok: true };
   }
 
@@ -135,11 +153,6 @@ async function evaluateDeployConditions(entry) {
     return { ok: false, reason: `WATCH terlalu lama (${Math.round((Date.now() - snapshotAt) / 1000)}s > ${watchWindowSec}s)` };
   }
 
-  const mint = pool.tokenXMint || pool.mint || '';
-  const poolAddress = pool.address || pool.pool_address || pool.pool || pool.poolAddress || pool.pubkey || '';
-  const liveSnapshot = mint
-    ? await getMarketSnapshot(mint, poolAddress || null).catch(() => null)
-    : null;
   const livePrice = Number(liveSnapshot?.ohlcv?.currentPrice || liveSnapshot?.price?.currentPrice || pool?.price || 0);
   const snapshotPrice = Number(meta.snapshotPrice || 0);
   if (Number.isFinite(snapshotPrice) && snapshotPrice > 0 && Number.isFinite(livePrice) && livePrice > 0) {
@@ -150,12 +163,6 @@ async function evaluateDeployConditions(entry) {
   }
 
   if (liveSnapshot) {
-    const liveTrend = String(
-      liveSnapshot?.quality?.taTrend ||
-      liveSnapshot?.ta?.supertrend?.trend ||
-      'UNKNOWN'
-    ).toUpperCase();
-    const liveM5 = Number(liveSnapshot?.ohlcv?.priceChangeM5 ?? 0);
     if (liveTrend !== 'BULLISH' || liveM5 <= 0) {
       return { ok: false, reason: `Freshness hilang: trend=${liveTrend || 'UNKNOWN'} m5=${liveM5.toFixed(2)}%` };
     }

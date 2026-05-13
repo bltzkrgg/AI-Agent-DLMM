@@ -34,4 +34,11 @@ test('fresh deploy meta allows breakout-valid, high-readiness entries including 
     entryReadiness: 'HIGH',
     breakoutQuality: 'VALID',
   }), true);
+
+  assert.equal(isFreshDeployMeta({
+    entryTimingState: 'LP_LIVE',
+    entryReadiness: 'HIGH',
+    breakoutQuality: 'VALID',
+    taTrend: 'BEARISH',
+  }), false);
 });
