@@ -58,6 +58,29 @@ test('fresh deploy meta allows breakout-valid, high-readiness entries including 
     entryReadiness: 'HIGH',
     breakoutQuality: 'VALID',
   }), false);
+
+  assert.equal(isFreshDeployMeta({
+    entryTimingState: 'LP_LIVE',
+    entryReadiness: 'HIGH',
+    breakoutQuality: 'VALID',
+    taTrend: 'NEUTRAL',
+    queueTrustedWatch: true,
+  }), true);
+
+  assert.equal(isFreshDeployMeta({
+    entryTimingState: 'LP_LIVE',
+    entryReadiness: 'HIGH',
+    breakoutQuality: 'VALID',
+    queueTrustedWatch: true,
+  }), true);
+
+  assert.equal(isFreshDeployMeta({
+    entryTimingState: 'LP_LIVE',
+    entryReadiness: 'HIGH',
+    breakoutQuality: 'VALID',
+    taTrend: 'BEARISH',
+    queueTrustedWatch: true,
+  }), false);
 });
 
 test('queue freshness resolves live vs queued signals for LP-style chart scenarios', () => {
@@ -102,6 +125,46 @@ test('queue freshness resolves live vs queued signals for LP-style chart scenari
   assert.equal(liveBearish.decision, 'DROP');
   assert.equal(liveBearish.trendSource, 'live');
   assert.equal(liveBearish.trend, 'BEARISH');
+});
+
+test('trusted WATCH-ready LP entries deploy unless a real bearish veto appears', () => {
+  const trustedWatchMeta = {
+    entryTimingState: 'LP_LIVE',
+    entryReadiness: 'HIGH',
+    breakoutQuality: 'VALID',
+    queueTrustedWatch: true,
+    taTrend: 'NEUTRAL',
+    priceChangeM5: 0,
+  };
+
+  const fromQueue = summarizeQueueDecision({
+    meta: trustedWatchMeta,
+    liveSnapshot: null,
+    lpMode: true,
+  });
+  assert.equal(fromQueue.decision, 'DEPLOY');
+  assert.equal(fromQueue.reason.includes('Trusted WATCH ready'), true);
+
+  const liveNeutral = summarizeQueueDecision({
+    meta: trustedWatchMeta,
+    liveSnapshot: {
+      quality: { taTrend: 'NEUTRAL' },
+      ohlcv: { priceChangeM5: 0 },
+    },
+    lpMode: true,
+  });
+  assert.equal(liveNeutral.decision, 'DEPLOY');
+  assert.equal(liveNeutral.trendSource, 'live');
+
+  const liveBearish = summarizeQueueDecision({
+    meta: trustedWatchMeta,
+    liveSnapshot: {
+      quality: { taTrend: 'BEARISH' },
+      ohlcv: { priceChangeM5: 1.25 },
+    },
+    lpMode: true,
+  });
+  assert.equal(liveBearish.decision, 'DROP');
 });
 
 test('queue treats fallback momentum proxy as unreliable live confirmation', () => {

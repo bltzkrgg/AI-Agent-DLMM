@@ -111,9 +111,20 @@ function resolveQueueSignalSources({ meta = {}, liveSnapshot = null } = {}) {
   };
 }
 
+function isTrustedLpWatchMeta(meta = {}) {
+  const timingState = String(meta.entryTimingState || '').toUpperCase();
+  const readiness = String(meta.entryReadiness || '').toUpperCase();
+  const breakoutQuality = String(meta.breakoutQuality || '').toUpperCase();
+  return meta.queueTrustedWatch === true &&
+    timingState === 'LP_LIVE' &&
+    readiness === 'HIGH' &&
+    (breakoutQuality === 'VALID' || breakoutQuality === 'STRONG');
+}
+
 export function summarizeQueueDecision({ meta = {}, liveSnapshot = null, cfg = getConfig(), lpMode = false } = {}) {
   const signals = resolveQueueSignalSources({ meta, liveSnapshot });
   const timingState = String(meta.entryTimingState || '').toUpperCase();
+  const trustedLpWatch = isTrustedLpWatchMeta(meta);
 
   let decision = 'DEPLOY';
   let reason = '';
@@ -122,6 +133,9 @@ export function summarizeQueueDecision({ meta = {}, liveSnapshot = null, cfg = g
     if (signals.trend === 'BEARISH') {
       decision = 'DROP';
       reason = `Supertrend 15m bearish (${signals.trendSource})`;
+    } else if (trustedLpWatch) {
+      decision = 'DEPLOY';
+      reason = `Trusted WATCH ready (${signals.trendSource}/${signals.m5Source})`;
     } else if (signals.trend !== 'BULLISH' || signals.m5 <= 0) {
       decision = 'HOLD';
       reason = `Freshness hilang: trend=${signals.trend || 'UNKNOWN'} (${signals.trendSource}) m5=${formatPct(signals.m5)} (${signals.m5Source})`;
@@ -153,23 +167,26 @@ export function isFreshDeployMeta(meta = {}) {
   const taTrend = String(meta.taTrend || meta.liveTrend || '').toUpperCase();
   const signalAthDistancePct = Number(meta.signalAthDistancePct);
   const signalStDistancePct = Number(meta.signalStDistancePct);
+  const trustedLpWatch = isTrustedLpWatchMeta(meta);
 
   if (meta.isRetest || meta.isScoutDefer) return false;
   if (lpMode) {
     if (timingState !== 'LP_LIVE' && timingState !== 'BREAKOUT' && timingState !== 'ATH_BREAK') return false;
-    if (taTrend !== 'BULLISH') return false;
+    if (taTrend === 'BEARISH') return false;
+    if (!trustedLpWatch && taTrend !== 'BULLISH') return false;
   } else if (timingState !== 'BREAKOUT' && timingState !== 'ATH_BREAK') {
     return false;
   }
   if (readiness !== 'HIGH') return false;
   if (breakoutQuality !== 'VALID' && breakoutQuality !== 'STRONG') return false;
-  if (taTrend && taTrend !== 'BULLISH') return false;
+  if (taTrend === 'BEARISH') return false;
+  if (taTrend && taTrend !== 'BULLISH' && !trustedLpWatch) return false;
   if (!lpMode) {
     const freshAthBreakPct = Number(cfg.entryFreshBreakoutMinAthDistancePct ?? 99.25);
     const breakoutMinStPct = Number(cfg.entrySupertrendBreakMinPct ?? 1.25);
     if (Number.isFinite(signalAthDistancePct) && signalAthDistancePct < freshAthBreakPct) return false;
     if (Number.isFinite(signalStDistancePct) && signalStDistancePct < breakoutMinStPct) return false;
-  } else if (Number.isFinite(signalStDistancePct) && signalStDistancePct <= 0) {
+  } else if (!trustedLpWatch && Number.isFinite(signalStDistancePct) && signalStDistancePct <= 0) {
     return false;
   }
   return true;
@@ -188,7 +205,10 @@ export function enqueueForDeploy(pool, symbol, meta = {}) {
   if (!isFreshDeployMeta(meta)) {
     console.log(
       `[QUEUE] ⏸️ ${symbol} tidak masuk queue deploy (DEFER / LP flow belum siap: ` +
-      `Entry=${meta.entryReadiness || 'N/A'}, Breakout=${meta.breakoutQuality || 'N/A'}, Timing=${meta.entryTimingState || 'N/A'})`
+      `Entry=${meta.entryReadiness || 'N/A'}, Breakout=${meta.breakoutQuality || 'N/A'}, ` +
+      `Timing=${meta.entryTimingState || 'N/A'}, Trend=${meta.taTrend || meta.liveTrend || 'N/A'}, ` +
+      `M5=${formatPct(meta.priceChangeM5 ?? meta.snapshotM5Change)}, ` +
+      `STDist=${formatPct(meta.signalStDistancePct)}, TrustedWatch=${meta.queueTrustedWatch === true ? 'YES' : 'NO'})`
     );
     return;
   }

@@ -25,8 +25,9 @@ test('watch promotion preserves the same LP metadata fields for deploy queue', (
 
   assert.match(hunterSrc, /entryTimingState:\s*'LP_LIVE'/);
   assert.match(hunterSrc, /breakoutQuality:\s*'VALID'/);
-  assert.match(hunterSrc, /taTrend: pool\._entrySignals\?\.taTrend/);
-  assert.match(hunterSrc, /priceChangeM5: pool\._entrySignals\?\.priceChangeM5/);
+  assert.match(hunterSrc, /queueTrustedWatch:\s*true/);
+  assert.match(hunterSrc, /taTrend: pool\._entrySignals\?\.taTrend \?\? row\.taTrend/);
+  assert.match(hunterSrc, /priceChangeM5: pool\._entrySignals\?\.priceChangeM5 \?\? row\.priceChangeM5/);
   assert.match(hunterSrc, /snapshotAt: row\.snapshotAt \|\| now/);
 });
 

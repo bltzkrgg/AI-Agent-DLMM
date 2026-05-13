@@ -4,17 +4,18 @@ Scope: implementation helper work only. Do not change core LP entry policy witho
 
 ## GPT-5.5 Locked Architecture
 
-Queue flow is now `metadata-first`, `cache-first`, and `live-check-final`.
+Queue flow is now `WATCH-trusted`, `metadata-first`, `cache-first`, and `bearish-veto-final`.
 
 - Screening/watch/manual CA must carry entry metadata into queue.
-- Queue first evaluates queued metadata: trend, M5, timing, readiness, breakout quality, TVL, and expiry.
-- `BEARISH` metadata remains hard `DROP` / no queue.
-- `NEUTRAL` or missing metadata remains `HOLD` / no deploy.
+- WATCH-ready candidates with `Entry=HIGH`, `Breakout=VALID/STRONG`, and `Timing=LP_LIVE` are trusted for queue admission.
+- Queue first evaluates queued metadata: timing, readiness, breakout quality, WATCH trust, TVL, and expiry.
+- `BEARISH` metadata remains hard `DROP` / no queue, even when WATCH-trusted.
+- `NEUTRAL` or missing trend no longer blocks a trusted WATCH candidate.
 - Live snapshot is final confirmation, not the first gate for every queue tick.
 - Live snapshot is cached per mint/pool for a short TTL.
 - Momentum proxy / fallback snapshots are not trusted as live rejection data.
 - Reliable live `BEARISH` still overrides queued metadata and drops.
-- Reliable live `NEUTRAL` or non-positive M5 holds.
+- Reliable live `NEUTRAL` or non-positive M5 does not override trusted WATCH metadata.
 
 ## Tasks for 5.4 Mini
 
@@ -22,10 +23,11 @@ Queue flow is now `metadata-first`, `cache-first`, and `live-check-final`.
    - LP bullish metadata can proceed when live snapshot is missing.
    - Momentum proxy live snapshot does not override bullish metadata.
    - Reliable live bearish still drops.
-   - Reliable live neutral still holds.
+   - Trusted WATCH metadata deploys through neutral/missing live freshness.
 
 2. Improve logging without changing behavior.
    - Show when queue used `queue` metadata vs `live` snapshot.
+   - Show `TrustedWatch=YES/NO`, trend, M5, and ST distance whenever queue admission is denied.
    - Show when live snapshot was ignored because it was unreliable fallback.
    - Keep Telegram copy short and operational.
 
