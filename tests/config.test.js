@@ -72,9 +72,13 @@ test('config falls back to backup when primary file is empty or corrupt', async 
 
   const recoveredModule = await importFresh(join(repoRoot, 'src/config.js'));
   const cfg = recoveredModule.getConfig();
+  const restoredPrimary = readFileSync(configPath, 'utf-8');
+  const backup = readFileSync(`${configPath}.bak`, 'utf-8');
 
   assert.equal(cfg.deployAmountSol, 0.8);
   assert.equal(cfg.maxPositions, 2);
+  assert.notEqual(restoredPrimary.trim(), '');
+  assert.equal(restoredPrimary, backup);
 });
 
 test('strategy overrides merge safely without replacing core config', async () => {

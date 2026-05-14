@@ -18,7 +18,7 @@
  *   - src/index.js               (Telegram bot, status)
  */
 
-import { readFileSync, existsSync, writeFileSync, renameSync, unlinkSync } from 'fs';
+import { readFileSync, existsSync, writeFileSync, renameSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { stringify } from './utils/safeJson.js';
@@ -401,6 +401,16 @@ function safeParseJSON(raw) {
   }
 }
 
+function persistConfigSnapshot(path, snapshot, label = 'config') {
+  const serialized = typeof snapshot === 'string'
+    ? snapshot
+    : stringify(snapshot, 2);
+  const tmpPath = `${path}.tmp.${process.pid}`;
+  writeFileSync(tmpPath, serialized, 'utf8');
+  renameSync(tmpPath, path);
+  return serialized;
+}
+
 function readConfigFile(path, label = 'config') {
   if (!existsSync(path)) return null;
   try {
@@ -423,6 +433,12 @@ function loadUserConfig() {
   const backup = readConfigFile(CONFIG_BACKUP_PATH, 'backup');
   if (backup) {
     console.warn(`⚠️ [config] Menggunakan backup config dari ${CONFIG_BACKUP_PATH}`);
+    try {
+      persistConfigSnapshot(CONFIG_PATH, backup, 'primary-restore');
+      console.warn(`✅ [config] Primary config dipulihkan dari backup: ${CONFIG_PATH}`);
+    } catch (e) {
+      console.error(`⚠️ [config] Gagal memulihkan primary config dari backup: ${e.message}`);
+    }
     return backup;
   }
   return {};
@@ -626,20 +642,13 @@ export function updateConfig(updates) {
   // Baca file asli (nested atau flat), merge flat updates di root
   const rawCurrent = loadUserConfig();
   const merged = { ...rawCurrent, ...validated };
-  const serialized = stringify(merged, 2);
-  const tmpPath = `${CONFIG_PATH}.tmp.${process.pid}`;
-
   try {
-    writeFileSync(tmpPath, serialized, 'utf8');
-    renameSync(tmpPath, CONFIG_PATH);
-    writeFileSync(CONFIG_BACKUP_PATH, serialized, 'utf8');
+    const serialized = persistConfigSnapshot(CONFIG_PATH, merged, 'primary');
+    persistConfigSnapshot(CONFIG_BACKUP_PATH, serialized, 'backup');
     console.log(`✅ Config updated & persisted to user-config.json: ${Object.keys(validated).join(', ')}`);
   } catch (writeErr) {
     // File mungkin terkunci sementara — update tetap aktif di memory, tapi tidak tersimpan
     console.error(`⚠️ Config write failed (in-memory only): ${writeErr.message}`);
-    try {
-      if (existsSync(tmpPath)) unlinkSync(tmpPath);
-    } catch {}
   }
 
   return getConfig();
