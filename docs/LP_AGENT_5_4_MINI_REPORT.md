@@ -7,6 +7,7 @@ Scope completed:
 - Momentum proxy fallback is ignored as a live rejection source.
 - Cache hit, miss, and fallback logs were added for local observability.
 - LP metadata propagation remains intact across manual CA, WATCH, and queue promotion.
+- Memory-layer blueprint now exists as a separate plan with a clear GPT-5.5 / 5.4 Mini split.
 
 Changed files:
 

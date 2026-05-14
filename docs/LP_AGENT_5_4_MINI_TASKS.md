@@ -48,6 +48,7 @@ Queue flow is now `WATCH-trusted`, `metadata-first`, `cache-first`, and `bearish
    - Outcome learning.
    - Keep this as a plan unless GPT-5.5 approves the core policy.
    - Canonical draft: `docs/LP_AGENT_MEMORY_LAYER_PLAN.md`.
+   - GPT-5.5 handles the runtime memory core; 5.4 Mini handles tests, logs, and validation only.
 
 ## Do Not Edit
 
