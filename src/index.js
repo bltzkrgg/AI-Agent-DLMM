@@ -901,7 +901,6 @@ bot.onText(/\/screening/, async (msg) => {
   if (!guard(msg)) return;
   const chatId = msg.chat.id;
   try {
-    await sendImmediateTopPoolsReport(chatId);
     const result = await scanAndDeploy();
     if (result?.report) {
       await sendLong(chatId, result.report, { parse_mode: 'HTML' });
