@@ -2,6 +2,7 @@
 
 import { getConfig } from '../config.js';
 import { getMarketSnapshot } from '../market/oracle.js';
+import { getPoolMemorySignal, recordPoolDeploy } from '../market/poolMemory.js';
 import { reserveDeploySlot, releaseDeploySlot } from './deploySlotGuard.js';
 
 /**
@@ -267,6 +268,19 @@ async function evaluateDeployConditions(entry) {
   }
 
   if (lpMode) {
+    const memorySignal = getPoolMemorySignal(pool);
+    if (memorySignal.cooldownActive) {
+      return {
+        ok: false,
+        decision: 'HOLD',
+        reason: `Pool memory cooldown aktif (${memorySignal.reason})`,
+        trendSource,
+        m5Source,
+        liveTrend,
+        liveM5,
+      };
+    }
+
     const tvl = Number(pool.totalTvl || pool.activeTvl || 0);
     if (tvl < 5000) {
       return {
@@ -495,6 +509,16 @@ async function runWatcher() {
 
       const cfg = getConfig();
       const solAmount = cfg.deployAmountSol || 0.1;
+      recordPoolDeploy({
+        pool,
+        reason: meta?.scoutReason || 'QUEUE_DEPLOY',
+        source: 'DEPLOY_QUEUE',
+        snapshot: {
+          ...meta,
+          recentTrend: check.liveTrend,
+          recentM5: check.liveM5,
+        },
+      });
       console.log(
         `[QUEUE] 🚀 Attempting deploy for ${symbol} ` +
         `decision=${decision} trend=${check.liveTrend || 'UNKNOWN'} (${check.trendSource || 'unknown'}) ` +

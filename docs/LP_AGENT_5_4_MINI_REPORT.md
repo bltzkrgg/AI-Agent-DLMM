@@ -8,6 +8,7 @@ Scope completed:
 - Cache hit, miss, and fallback logs were added for local observability.
 - LP metadata propagation remains intact across manual CA, WATCH, and queue promotion.
 - Memory-layer blueprint now exists as a separate plan with a clear GPT-5.5 / 5.4 Mini split.
+- GPT-5.5 runtime memory core has been implemented: local pool memory, cooldown, priority adjustment, and close outcome write-back.
 
 Changed files:
 
@@ -16,6 +17,8 @@ Changed files:
 - `tests/metadata-propagation.test.js`
 - `docs/LP_AGENT_5_4_MINI_TASKS.md`
 - `docs/LP_AGENT_MEMORY_LAYER_PLAN.md`
+- `src/market/poolMemory.js`
+- `tests/pool-memory.test.js`
 
 Tests added:
 

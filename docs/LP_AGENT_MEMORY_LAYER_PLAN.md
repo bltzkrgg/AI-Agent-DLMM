@@ -113,6 +113,22 @@ The bot should behave like this:
 - Verify no additional network calls happen on entry.
 - Keep the implementation honest on latency and observability.
 
+## Runtime Status
+
+GPT-5.5 runtime core is implemented:
+
+- `src/market/poolMemory.js` owns the local per-pool memory schema and helpers.
+- WATCH reads memory for cooldown and priority scoring.
+- Deploy queue reads memory cooldown before deploy.
+- Evil Panda writes deploy and close outcomes back into memory.
+- Tests cover profit boosts, repeated-loss cooldown, and WATCH/DEPLOY decision writes.
+
+Remaining helper work belongs to 5.4 Mini:
+
+- More operator-facing logs.
+- More latency observability.
+- Broader audit coverage around entry snapshots.
+
 ## Suggested Implementation Order
 
 1. Add memory schema and local state helpers.

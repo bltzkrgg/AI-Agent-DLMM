@@ -28,6 +28,7 @@ import { resolveTokens, WSOL_MINT } from '../utils/tokenMeta.js';
 import { getRecommendedPriorityFee } from '../utils/helius.js';
 import { addToBlacklist } from '../learn/tokenBlacklist.js';
 import { getDynamicStopLoss } from '../market/atrGuard.js';
+import { recordPoolDeploy, recordPoolOutcome } from '../market/poolMemory.js';
 import { flushRuntimeState, getRuntimeState, setRuntimeState } from '../runtime/state.js';
 import { checkGasGuard } from '../safety/gasGuard.js';
 
@@ -711,6 +712,12 @@ export async function deployPosition(poolAddress) {
       rangeMax,
       hwmPct:      0,
     }, { flush: true });
+    recordPoolDeploy({
+      key: xMint || poolAddress,
+      pool: { tokenXMint: xMint, poolAddress, address: poolAddress },
+      reason: 'POSITION_OPEN',
+      source: 'EVIL_PANDA',
+    });
 
     console.log(`[evilPanda] ✅ Position open: ${positionPubkey.slice(0,8)}`);
     return positionPubkey;
@@ -1223,6 +1230,15 @@ export async function exitPosition(positionPubkey, reason = 'MANUAL') {
         pricePnlSol,
         txCostSol: txFeeSol,
       });
+      recordPoolOutcome({
+        key: reg.tokenXMint || reg.poolAddress,
+        tokenMint: reg.tokenXMint || '',
+        poolAddress: reg.poolAddress || '',
+        symbol: tokenSymbol,
+        pnlPct: finalPnlPct,
+        pnlSol: pnlTotalSol,
+        reason,
+      });
 
       // Tambah ke blacklist jika kena SL / rugpull / rollback
       const SL_REASONS = ['STOP_LOSS', 'PARTIAL_DEPLOY_ROLLBACK', 'MANUAL_STOP'];
@@ -1276,6 +1292,15 @@ export async function markPositionManuallyClosed(positionPubkey, reason = 'MANUA
     capitalInSol: safeNum(reg.deploySol, 0),
     accountingStatus: 'manual_close_pnl_unknown',
     manualCloseDetected: true,
+  });
+  recordPoolOutcome({
+    key: reg.tokenXMint || reg.poolAddress,
+    tokenMint: reg.tokenXMint || '',
+    poolAddress: reg.poolAddress || '',
+    symbol: tokenSymbol,
+    pnlPct: 0,
+    pnlSol: 0,
+    reason,
   });
 
   const symbol = reg.tokenXMint?.slice(0, 8) || 'UNKNOWN';

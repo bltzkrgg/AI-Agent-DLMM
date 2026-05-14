@@ -15,6 +15,7 @@ import { getConfig }              from '../config.js';
 import { screenToken }            from '../market/coinfilter.js';
 import { runMeridianVeto, discoverHighFeePoolsMeridian } from '../market/meridianVeto.js';
 import { getMarketSnapshot }      from '../market/oracle.js';
+import { getPoolMemorySignal, recordPoolDecision } from '../market/poolMemory.js';
 import { getPoolInfo }            from '../solana/meteora.js';
 import { deployPosition, monitorPnL, exitPosition, markPositionManuallyClosed, setEvilPandaNotifyFn, setPositionLifecycle, getPositionOnChainStatus, EP_CONFIG, getActivePositionKeys, getPositionMeta, reconcileZombiePositions } from '../sniper/evilPanda.js';
 import { createMessage }          from '../agent/provider.js';
@@ -208,6 +209,7 @@ function computeTaWatchPriorityScore({ pool = {}, entrySignals = {}, row = {}, n
   score += freshnessBonus;
 
   if (pool?._watchSnapshotAt) score += 10;
+  score += Number(row.memoryPriorityDelta || 0);
   return score;
 }
 
@@ -225,9 +227,19 @@ function addWatchPassTa(pool, reason = 'TA PASS', source = 'TA') {
   if (String(signals.taTrend || '').toUpperCase() === 'BEARISH') {
     return { admitted: false, reason: 'Supertrend 15m bearish', row: null, evicted: null };
   }
+  const memorySignal = getPoolMemorySignal(pool, now);
+  if (memorySignal.cooldownActive) {
+    return { admitted: false, reason: `Pool memory cooldown: ${symbol} (${memorySignal.reason})`, row: null, evicted: null };
+  }
   const watchWindowSec = getLpWatchWindowSec(cfg);
   const maxDriftPct = getLpMaxDriftPct(cfg);
-  const priorityScore = computeTaWatchPriorityScore({ pool, entrySignals: signals, row: existing || {}, now });
+  const memoryPriorityDelta = Number(memorySignal.priorityDelta || 0);
+  const priorityScore = computeTaWatchPriorityScore({
+    pool,
+    entrySignals: signals,
+    row: { ...(existing || {}), memoryPriorityDelta },
+    now,
+  });
   const effectiveMaxPools = watchCfg.enabled ? watchCfg.maxPools : Number.MAX_SAFE_INTEGER;
   const effectiveExpiryMin = watchCfg.expiryMin;
 
@@ -253,8 +265,21 @@ function addWatchPassTa(pool, reason = 'TA PASS', source = 'TA') {
     priceChangeM5: existing?.priceChangeM5 ?? signals.priceChangeM5 ?? null,
     watchWindowSec: existing?.watchWindowSec || watchWindowSec,
     maxDriftPct: existing?.maxDriftPct || maxDriftPct,
+    memoryPriorityDelta,
+    memoryReason: memorySignal.reason,
     priorityScore,
   };
+  recordPoolDecision({
+    pool,
+    decision: 'WATCH',
+    reason,
+    source,
+    snapshot: {
+      ...signals,
+      recentTrend: signals.taTrend,
+      recentM5: signals.priceChangeM5,
+    },
+  });
 
   if (existing) {
     _taWatchQueue.set(mint, row);
