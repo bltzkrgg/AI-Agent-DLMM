@@ -48,6 +48,6 @@ test('pool memory observability stays on local hot path only', () => {
   assert.match(hunterSrc, /formatMemorySignal/);
   assert.match(hunterSrc, /memory=.*delta=.*lookup=/);
   assert.match(queueSrc, /Memory advisory/);
-  assert.match(queueSrc, /Memory hold/);
+  assert.doesNotMatch(queueSrc, /Memory hold/);
   assert.doesNotMatch(memorySrc, /createMessage|getMarketSnapshot|fetchWithTimeout|fetch\(/);
 });

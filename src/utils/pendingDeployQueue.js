@@ -278,24 +278,6 @@ async function evaluateDeployConditions(entry) {
 
   if (lpMode) {
     const memorySignal = getPoolMemorySignal(pool);
-    if (memorySignal.cooldownActive) {
-      console.log(
-        `[QUEUE] 🧠 Memory hold ${mint.slice(0, 8)} ` +
-        `reason=${memorySignal.reason} lookup=${memorySignal.lookupMs || 0}ms`
-      );
-      return {
-        ok: false,
-        decision: 'HOLD',
-        reason: `Pool memory cooldown aktif (${memorySignal.reason})`,
-        trendSource,
-        m5Source,
-        liveTrend,
-        liveM5,
-        deferUntil: memorySignal.rentCooldownActive
-          ? memorySignal.rentCooldownUntil
-          : memorySignal.cooldownUntil,
-      };
-    }
     if (memorySignal.memory && Number(memorySignal.priorityDelta || 0) !== 0) {
       console.log(
         `[QUEUE] 🧠 Memory advisory ${mint.slice(0, 8)} ` +
@@ -605,28 +587,15 @@ async function runWatcher() {
         }
         if (result && typeof result === 'object' && result.blocked) {
           const blockedByRent = String(result.reason || '').includes('VETO_NON_REFUNDABLE_RENT');
-          const cooldownUntil = Number(result.cooldownUntil || 0);
-          if (blockedByRent && cooldownUntil > Date.now()) {
-            entry.nextEligibleAt = cooldownUntil;
-            entry.deferReason = result.detail || result.reason || 'VETO_NON_REFUNDABLE_RENT';
-            entry.enqueuedAt = Date.now();
-            _queue.set(mint, entry);
-            await safeSend(
-              `⏳ <b>Deploy Ditahan (Queue)</b>\n` +
-              `<b>${symbol}</b> — <code>${result.reason || 'VETO_NON_REFUNDABLE_RENT'}</code>\n` +
-              `Pool: <code>${poolAddress.slice(0, 8)}</code>\n` +
-              `Cooldown: <code>${Math.max(1, Math.round((cooldownUntil - Date.now()) / 60000))} menit</code>\n` +
-              `<i>Queue menunggu pool ini saja sampai rent cooldown habis.</i>`
-            );
-            continue;
-          }
           await safeSend(
-            `⛔ <b>Deploy Ditolak (Queue)</b>\n` +
+            `${blockedByRent ? '⛔ <b>Deploy Ditolak (Queue)</b>' : '⛔ <b>Deploy Ditolak (Queue)</b>'}\n` +
             `<b>${symbol}</b> — <code>${result.reason || 'DEPLOY_BLOCKED'}</code>\n` +
             `Pool: <code>${poolAddress.slice(0, 8)}</code>\n` +
             `Range: <code>${result.rangeMin}-${result.rangeMax}</code> (max ${result.rangeMaxBins} bin)\n` +
             (result.detail ? `Detail: <code>${escapeHTML(String(result.detail).slice(0, 240))}</code>\n` : '') +
-            `<i>Queue menghormati veto non-refundable rent.</i>`
+            (blockedByRent
+              ? `<i>Range akan dievaluasi ulang pada scan berikutnya. Tidak ada rent cooldown.</i>`
+              : `<i>Queue menghormati veto deploy.</i>`)
           );
           continue;
         }

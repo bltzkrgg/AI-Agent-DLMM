@@ -153,8 +153,6 @@ export function recordPoolRentFailure({
     return updateRuntimeCollectionItem(POOL_MEMORY_KEY, memoryKey, (existing) => {
       const next = buildBaseMemory(existing, now);
       const nextRentFailureCount = Math.max(0, Number(next.rentFailureCount || 0)) + 1;
-      const cooldownMs = nextRentFailureCount <= 1 ? RENT_COOLDOWN_FIRST_MS : RENT_COOLDOWN_REPEAT_MS;
-      const rentCooldownUntil = now + cooldownMs;
 
       next.lastSeenAt = now;
       next.lastDecision = 'RENT_BLOCKED';
@@ -163,15 +161,14 @@ export function recordPoolRentFailure({
       next.recentTrend = compact.trend;
       next.recentM5 = compact.m5;
       next.rentFailureCount = nextRentFailureCount;
-      next.rentCooldownUntil = rentCooldownUntil;
+      next.rentCooldownUntil = 0;
       next.rentLastFailedAt = now;
       next.rentLastFailedRange = rangeMin !== null && rangeMax !== null ? `${rangeMin}-${rangeMax}` : next.rentLastFailedRange || null;
       next.rentLastDetail = detail || next.rentLastDetail || null;
       next.poolAddress = poolAddress || next.poolAddress || null;
       next.tokenMint = tokenMint || next.tokenMint || memoryKey;
       next.symbol = symbol || next.symbol || null;
-      next.priorityScore = Math.max(-100, Math.min(100, next.priorityScore - 20));
-      next.cooldownUntil = Math.max(Number(next.cooldownUntil || 0), rentCooldownUntil);
+      next.priorityScore = Math.max(-100, Math.min(100, next.priorityScore - 8));
       next.history = [
         ...next.history,
         {
@@ -272,9 +269,9 @@ export function getPoolMemorySignal(input = {}, now = nowMs()) {
 
   const rentCooldownUntil = Number(memory.rentCooldownUntil || 0);
   const cooldownUntil = Number(memory.cooldownUntil || 0);
-  const rentCooldownActive = rentCooldownUntil > now;
+  const rentCooldownActive = false;
   const genericCooldownActive = cooldownUntil > now;
-  const cooldownActive = rentCooldownActive || genericCooldownActive;
+  const cooldownActive = genericCooldownActive;
   const priorityScore = Number(memory.priorityScore || 0);
   const successCount = Number(memory.successCount || 0);
   const failureCount = Number(memory.failureCount || 0);
@@ -287,13 +284,13 @@ export function getPoolMemorySignal(input = {}, now = nowMs()) {
     cooldownActive,
     cooldownUntil,
     rentCooldownActive,
-    rentCooldownUntil,
+    rentCooldownUntil: 0,
     priorityDelta,
     lookupMs,
-    reason: rentCooldownActive
-      ? `POOL_RENT_COOLDOWN_${Math.ceil((rentCooldownUntil - now) / 60000)}m`
-      : genericCooldownActive
+    reason: genericCooldownActive
         ? `POOL_MEMORY_COOLDOWN_${Math.ceil((cooldownUntil - now) / 60000)}m`
+      : Number(memory.rentFailureCount || 0) > 0
+        ? `POOL_RENT_BLOCKED_${Number(memory.rentFailureCount || 0)}`
       : `POOL_MEMORY_DELTA_${priorityDelta}`,
   };
 }

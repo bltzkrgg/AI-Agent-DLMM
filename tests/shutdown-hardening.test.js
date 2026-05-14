@@ -89,7 +89,8 @@ test('blocked deploy results are handled by hunter and queue callers', () => {
   assert.match(hunterSrc, /recordGate\(winner\._record, 'SCOUT_AGENT', 'DEFER'/);
   assert.match(queueSrc, /result && typeof result === 'object' && result\.blocked/);
   assert.match(queueSrc, /Deploy Ditolak \(Queue\)/);
-  assert.match(queueSrc, /Queue menghormati veto non-refundable rent/);
+  assert.match(queueSrc, /Range akan dievaluasi ulang pada scan berikutnya\. Tidak ada rent cooldown\./);
+  assert.doesNotMatch(queueSrc, /Queue menghormati veto non-refundable rent/);
 });
 
 test('monolith monitor treats missing active position as stop loss fail-safe', () => {

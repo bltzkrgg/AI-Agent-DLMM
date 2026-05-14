@@ -75,11 +75,11 @@ test('pool memory applies rent cooldown only to the affected pool and clears on 
 
   const row = memory.getPoolMemory(key);
   assert.equal(row.rentFailureCount, 1);
-  assert.equal(row.rentCooldownUntil > Date.now(), true);
+  assert.equal(row.rentCooldownUntil, 0);
 
   const signal = memory.getPoolMemorySignal(key);
-  assert.equal(signal.rentCooldownActive, true);
-  assert.match(signal.reason, /POOL_RENT_COOLDOWN_/);
+  assert.equal(signal.cooldownActive, false);
+  assert.match(signal.reason, /POOL_RENT_BLOCKED_/);
 
   memory.recordPoolOutcome({
     key,
@@ -111,7 +111,8 @@ test('pool memory keeps rent cooldown isolated by pool address even when mint ma
   const signalA = memory.getPoolMemorySignal({ tokenMint: mint, poolAddress: poolA });
   const signalB = memory.getPoolMemorySignal({ tokenMint: mint, poolAddress: poolB });
 
-  assert.equal(signalA.rentCooldownActive, true);
+  assert.equal(signalA.cooldownActive, false);
+  assert.match(signalA.reason, /POOL_RENT_BLOCKED_/);
   assert.equal(signalB.cooldownActive, false);
   assert.equal(signalB.reason, 'NO_MEMORY');
 });
