@@ -213,6 +213,12 @@ function computeTaWatchPriorityScore({ pool = {}, entrySignals = {}, row = {}, n
   return score;
 }
 
+function formatMemorySignal(signal = {}) {
+  const delta = Number(signal.priorityDelta || 0);
+  const lookupMs = Number(signal.lookupMs || 0);
+  return `memory=${signal.reason || 'NO_MEMORY'} delta=${delta} lookup=${lookupMs}ms`;
+}
+
 function addWatchPassTa(pool, reason = 'TA PASS', source = 'TA') {
   const cfg = getConfig();
   const watchCfg = getWatchConfig(cfg);
@@ -229,6 +235,7 @@ function addWatchPassTa(pool, reason = 'TA PASS', source = 'TA') {
   }
   const memorySignal = getPoolMemorySignal(pool, now);
   if (memorySignal.cooldownActive) {
+    console.log(`[WATCH] 🧠 ${symbol} ditahan memory cooldown (${formatMemorySignal(memorySignal)})`);
     return { admitted: false, reason: `Pool memory cooldown: ${symbol} (${memorySignal.reason})`, row: null, evicted: null };
   }
   const watchWindowSec = getLpWatchWindowSec(cfg);
@@ -283,13 +290,13 @@ function addWatchPassTa(pool, reason = 'TA PASS', source = 'TA') {
 
   if (existing) {
     _taWatchQueue.set(mint, row);
-    console.log(`[WATCH] 👀 ${symbol} refresh watch queue (${source}) — ${reason}`);
+    console.log(`[WATCH] 👀 ${symbol} refresh watch queue (${source}) — ${reason} | ${formatMemorySignal(memorySignal)}`);
     return { admitted: true, row, evicted: null, reason: null };
   }
 
   if (_taWatchQueue.size < effectiveMaxPools) {
     _taWatchQueue.set(mint, row);
-    console.log(`[WATCH] 👀 ${symbol} masuk watch queue (${source}) — ${reason}`);
+    console.log(`[WATCH] 👀 ${symbol} masuk watch queue (${source}) — ${reason} | ${formatMemorySignal(memorySignal)}`);
     return { admitted: true, row, evicted: null, reason: null };
   }
 

@@ -182,13 +182,16 @@ export function recordPoolOutcome({
 }
 
 export function getPoolMemorySignal(input = {}, now = nowMs()) {
+  const startedAt = nowMs();
   const memory = getPoolMemory(input);
+  const lookupMs = Math.max(0, nowMs() - startedAt);
   if (!memory) {
     return {
       memory: null,
       cooldownActive: false,
       cooldownUntil: 0,
       priorityDelta: 0,
+      lookupMs,
       reason: 'NO_MEMORY',
     };
   }
@@ -207,6 +210,7 @@ export function getPoolMemorySignal(input = {}, now = nowMs()) {
     cooldownActive,
     cooldownUntil,
     priorityDelta,
+    lookupMs,
     reason: cooldownActive
       ? `POOL_MEMORY_COOLDOWN_${Math.ceil((cooldownUntil - now) / 60000)}m`
       : `POOL_MEMORY_DELTA_${priorityDelta}`,

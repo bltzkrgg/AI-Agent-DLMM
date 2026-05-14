@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync } from 'node:fs';
+import { mkdtempSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -87,4 +87,23 @@ test('pool memory records WATCH and DEPLOY decisions without outcome churn', asy
   assert.equal(row.lastOutcome, null);
   assert.equal(row.recentTrend, 'UNKNOWN');
   assert.equal(row.successCount, 0);
+});
+
+test('pool memory signal includes lightweight lookup observability', async () => {
+  const memory = await loadPoolMemory();
+  const key = 'MintObs111111111111111111111111111111111111';
+
+  const emptySignal = memory.getPoolMemorySignal(key);
+  assert.equal(emptySignal.reason, 'NO_MEMORY');
+  assert.equal(Number.isFinite(emptySignal.lookupMs), true);
+
+  memory.recordPoolOutcome({ key, tokenMint: key, pnlPct: 1.1, reason: 'TAKE_PROFIT' });
+  const signal = memory.getPoolMemorySignal(key);
+  assert.equal(signal.memory.lastOutcome, 'PROFIT');
+  assert.equal(Number.isFinite(signal.lookupMs), true);
+});
+
+test('pool memory module does not import network or LLM dependencies', () => {
+  const src = readFileSync(join(repoRoot, 'src/market/poolMemory.js'), 'utf8');
+  assert.doesNotMatch(src, /createMessage|getMarketSnapshot|fetchWithTimeout|fetch\(/);
 });

@@ -270,6 +270,10 @@ async function evaluateDeployConditions(entry) {
   if (lpMode) {
     const memorySignal = getPoolMemorySignal(pool);
     if (memorySignal.cooldownActive) {
+      console.log(
+        `[QUEUE] 🧠 Memory hold ${mint.slice(0, 8)} ` +
+        `reason=${memorySignal.reason} lookup=${memorySignal.lookupMs || 0}ms`
+      );
       return {
         ok: false,
         decision: 'HOLD',
@@ -279,6 +283,12 @@ async function evaluateDeployConditions(entry) {
         liveTrend,
         liveM5,
       };
+    }
+    if (memorySignal.memory && Number(memorySignal.priorityDelta || 0) !== 0) {
+      console.log(
+        `[QUEUE] 🧠 Memory advisory ${mint.slice(0, 8)} ` +
+        `delta=${memorySignal.priorityDelta} reason=${memorySignal.reason} lookup=${memorySignal.lookupMs || 0}ms`
+      );
     }
 
     const tvl = Number(pool.totalTvl || pool.activeTvl || 0);

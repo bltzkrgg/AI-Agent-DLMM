@@ -125,9 +125,9 @@ GPT-5.5 runtime core is implemented:
 
 Remaining helper work belongs to 5.4 Mini:
 
-- More operator-facing logs.
-- More latency observability.
-- Broader audit coverage around entry snapshots.
+- Operator-facing memory logs are implemented.
+- Lookup latency observability is implemented.
+- Hot-path audit coverage verifies no LLM/network calls in pool memory.
 
 ## Suggested Implementation Order
 

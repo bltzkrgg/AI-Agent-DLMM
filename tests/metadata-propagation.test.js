@@ -39,3 +39,15 @@ test('queue helper emits cache and fallback observability logs', () => {
   assert.match(queueSrc, /Snapshot inflight reuse/);
   assert.match(queueSrc, /Ignored unreliable live snapshot/);
 });
+
+test('pool memory observability stays on local hot path only', () => {
+  const hunterSrc = readSource('src/agents/hunterAlpha.js');
+  const queueSrc = readSource('src/utils/pendingDeployQueue.js');
+  const memorySrc = readSource('src/market/poolMemory.js');
+
+  assert.match(hunterSrc, /formatMemorySignal/);
+  assert.match(hunterSrc, /memory=.*delta=.*lookup=/);
+  assert.match(queueSrc, /Memory advisory/);
+  assert.match(queueSrc, /Memory hold/);
+  assert.doesNotMatch(memorySrc, /createMessage|getMarketSnapshot|fetchWithTimeout|fetch\(/);
+});

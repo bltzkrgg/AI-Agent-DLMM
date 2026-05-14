@@ -9,6 +9,7 @@ Scope completed:
 - LP metadata propagation remains intact across manual CA, WATCH, and queue promotion.
 - Memory-layer blueprint now exists as a separate plan with a clear GPT-5.5 / 5.4 Mini split.
 - GPT-5.5 runtime memory core has been implemented: local pool memory, cooldown, priority adjustment, and close outcome write-back.
+- GPT-5.4 Mini helper layer has been completed: memory logs, lookup latency observability, and no-network/no-LLM hot-path audits.
 
 Changed files:
 
@@ -25,6 +26,7 @@ Tests added:
 - queue cache and fallback reliability
 - manual CA metadata propagation
 - WATCH to queue metadata preservation
+- pool memory cooldown, priority, lookup latency, and local-only hot-path audit
 
 Impact by situation:
 
@@ -33,6 +35,7 @@ Impact by situation:
 - Reliable bearish live snapshot: still drops.
 - Neutral live snapshot no longer blocks trusted WATCH flow.
 - Repeated queue ticks on the same mint: faster because the snapshot is cached briefly.
+- Memory reads stay local and emit lookup timing so entry latency can be observed.
 
 Remaining risk:
 
