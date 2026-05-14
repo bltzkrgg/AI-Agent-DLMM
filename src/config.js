@@ -140,6 +140,7 @@ const DEFAULTS = {
   trailingDropPct:        3.0,
   maxHoldHours:           72,
   outOfRangeWaitMinutes:  30,   // Tunggu N menit OOR sebelum close
+  deployRangeMaxBins:     68,   // Lebar range deploy monolith
   maxDailyPriorityFeeSol: 0.2,
   maxDailyDrawdownPct:    6,
   activeStrategy:         'Evil Panda',
@@ -234,6 +235,7 @@ const CONFIG_BOUNDS = {
   trailingDropPct:        { min: 0.1,   max: 20 },
   maxHoldHours:           { min: 1,     max: 168 },
   outOfRangeWaitMinutes:  { min: 1,     max: 1440 },
+  deployRangeMaxBins:     { min: 5,     max: 68 },
   maxDailyPriorityFeeSol: { min: 0.01,  max: 10 },
   // Discovery bounds
   discoveryTimeframe:     { type: 'string' },
@@ -293,6 +295,7 @@ const NESTED_SECTION_MAP = {
     smartExitRsi:       'smartExitRsi',
     maxHoldHours:       'maxHoldHours',
     outOfRangeWaitMinutes: 'outOfRangeWaitMinutes',
+    deployRangeMaxBins: 'deployRangeMaxBins',
   },
 
   watch: {
@@ -501,6 +504,7 @@ export const SETCONFIG_WHITELIST = {
   taWatchMaxPools:        { section: 'watch',      type: 'number',  desc: 'Maks kandidat yang bisa tinggal di WATCH (1–50)' },
   taWatchExpiryMin:       { section: 'watch',      type: 'number',  desc: 'Batas umur kandidat di WATCH (menit)' },
   watchIntervalSec:       { section: 'watch',      type: 'number',  desc: 'Interval cek WATCH aktif (detik, 15–3600)' },
+  deployRangeMaxBins:     { section: 'strategy',   type: 'number',  desc: 'Batas lebar range deploy monolith (bin, 5–68)' },
 };
 
 // ── resolveNestedKey ─────────────────────────────────────────────────────────

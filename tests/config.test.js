@@ -22,10 +22,14 @@ test('config rejects unknown keys and merges nested signal weights safely', asyn
 
   assert.equal(configModule.isConfigKeySupported('deployAmountSol'), true);
   assert.equal(configModule.isConfigKeySupported('autonomyMode'), true);
+  assert.equal(configModule.isConfigKeySupported('deployRangeMaxBins'), true);
   assert.equal(configModule.isConfigKeySupported('totallyUnknownKey'), false);
+
+  assert.equal(configModule.resolveNestedKey('strategy.deployRangeMaxBins')?.flatKey, 'deployRangeMaxBins');
 
   configModule.updateConfig({
     signalWeights: { volume: 0.99 },
+    deployRangeMaxBins: 48,
     totallyUnknownKey: 123,
   });
 
@@ -36,6 +40,7 @@ test('config rejects unknown keys and merges nested signal weights safely', asyn
     volume: 0.99,
     holderCount: 0.3,
   });
+  assert.equal(saved.deployRangeMaxBins, 48);
   assert.equal('totallyUnknownKey' in saved, false);
 });
 
@@ -153,6 +158,27 @@ test('watch layer config keys are supported and persist via updateConfig', async
   assert.equal(cfg.taWatchMaxPools, 12);
   assert.equal(cfg.taWatchExpiryMin, 45);
   assert.equal(cfg.watchIntervalSec, 20);
+});
+
+test('deploy range max bins is configurable and persisted via updateConfig', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'dlmm-deploy-range-config-'));
+  const configPath = join(root, 'user-config.json');
+
+  process.env.BOT_CONFIG_PATH = configPath;
+  const configModule = await importFresh(join(repoRoot, 'src/config.js'));
+
+  assert.equal(configModule.resolveNestedKey('deployRangeMaxBins')?.flatKey, 'deployRangeMaxBins');
+  assert.equal(configModule.resolveNestedKey('strategy.deployRangeMaxBins')?.flatKey, 'deployRangeMaxBins');
+
+  configModule.updateConfig({
+    deployRangeMaxBins: 40,
+  });
+
+  const cfg = configModule.getConfig();
+  assert.equal(cfg.deployRangeMaxBins, 40);
+
+  const saved = JSON.parse(readFileSync(configPath, 'utf-8'));
+  assert.equal(saved.deployRangeMaxBins, 40);
 });
 
 test('entry capacity respects deployment stage and clamps overrides', async () => {

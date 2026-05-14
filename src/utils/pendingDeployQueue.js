@@ -28,6 +28,15 @@ function formatPct(value, digits = 2) {
   return Number.isFinite(num) ? `${num.toFixed(digits)}%` : 'UNKNOWN';
 }
 
+function escapeHTML(text = '') {
+  return String(text)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
 export function setDeployQueueNotifyFn(fn) { _notifyFn  = fn; }
 export function setDeployQueueDeployFn(fn) { _deployFn  = fn; }
 export function setDeployQueueMonitorFn(fn) { _monitorFn = fn; }
@@ -578,6 +587,17 @@ async function runWatcher() {
             `🧪 <b>Dry-run (Queue Deploy)</b>\n` +
             `<b>${symbol}</b> — Simulasi selesai, tidak ada tx real.\n` +
             `Range: <code>${result.rangeMin}–${result.rangeMax}</code>`
+          );
+          continue;
+        }
+        if (result && typeof result === 'object' && result.blocked) {
+          await safeSend(
+            `⛔ <b>Deploy Ditolak (Queue)</b>\n` +
+            `<b>${symbol}</b> — <code>${result.reason || 'DEPLOY_BLOCKED'}</code>\n` +
+            `Pool: <code>${poolAddress.slice(0, 8)}</code>\n` +
+            `Range: <code>${result.rangeMin}-${result.rangeMax}</code> (max ${result.rangeMaxBins} bin)\n` +
+            (result.detail ? `Detail: <code>${escapeHTML(String(result.detail).slice(0, 240))}</code>\n` : '') +
+            `<i>Queue menghormati veto non-refundable rent.</i>`
           );
           continue;
         }

@@ -68,12 +68,26 @@ test('evilPanda uses monolith positions with one Meteora account for the full ra
   const src = readFileSync(evilPandaPath, 'utf8');
   assert.match(src, /const posKp = Keypair\.generate\(\)/);
   assert.match(src, /let rangeMax = activeBin\.binId - offsetMinBins/);
-  assert.match(src, /if \(\(rangeMax - rangeMin\) > 68\) \{ rangeMin = rangeMax - 68; \}/);
+  assert.match(src, /const rangeMaxBins = getConfiguredDeployRangeMaxBins\(\)/);
+  assert.match(src, /if \(\(rangeMax - rangeMin \+ 1\) > rangeMaxBins\)/);
+  assert.match(src, /assertRangeDoesNotRequireBinArrayInit/);
+  assert.match(src, /VETO_NON_REFUNDABLE_RENT/);
   assert.doesNotMatch(src, /rangeMax = activeBin\.binId - offsetMinBins - 1/);
   assert.doesNotMatch(src, /rangeMax - rangeMin > 1000/);
   assert.match(src, /initializePositionAndAddLiquidityByStrategy/);
   assert.match(src, /sendTransaction\(tx, \[wallet, posKp\]/);
   assert.match(src, /const activePos = userPositions\.find\(p => p\.publicKey\.toString\(\) === positionPubkey\)/);
+});
+
+test('blocked deploy results are handled by hunter and queue callers', () => {
+  const hunterSrc = readFileSync(hunterPath, 'utf8');
+  const queueSrc = readFileSync(resolve(process.cwd(), 'src/utils/pendingDeployQueue.js'), 'utf8');
+  assert.match(hunterSrc, /deployResult && typeof deployResult === 'object' && deployResult\.blocked/);
+  assert.match(hunterSrc, /Deploy Ditolak/);
+  assert.match(hunterSrc, /recordGate\(winner\._record, 'SCOUT_AGENT', 'DEFER'/);
+  assert.match(queueSrc, /result && typeof result === 'object' && result\.blocked/);
+  assert.match(queueSrc, /Deploy Ditolak \(Queue\)/);
+  assert.match(queueSrc, /Queue menghormati veto non-refundable rent/);
 });
 
 test('monolith monitor treats missing active position as stop loss fail-safe', () => {

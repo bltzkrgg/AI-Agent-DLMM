@@ -436,6 +436,7 @@ bot.onText(/\/config/, (msg) => {
     `trailingTriggerPct    = ${cfg.trailingTriggerPct}`,
     `trailingDropPct       = ${cfg.trailingDropPct}`,
     `trailingStopPct       = ${cfg.trailingStopPct}`,
+    `deployRangeMaxBins    = ${cfg.deployRangeMaxBins}`,
     `taWatchEnabled        = ${cfg.taWatchEnabled}`,
     `taWatchMaxPools       = ${cfg.taWatchMaxPools}`,
     `taWatchExpiryMin      = ${cfg.taWatchExpiryMin}`,
@@ -493,6 +494,7 @@ bot.onText(/\/setconfig(?:\s+(\S+))?(?:\s+(.+))?/, async (msg, match) => {
       `<b>🔍 Discovery:</b>\n${bySection('discovery')}\n\n` +
       `<b>📡 Screening:</b>\n${bySection('screening')}\n\n` +
       `<b>👀 Watch:</b>\n${bySection('watch')}\n\n` +
+      `<b>🎯 Strategy:</b>\n${bySection('strategy')}\n\n` +
       `<b>🩺 Management:</b>\n${bySection('management')}\n\n` +
       `<i>Contoh:\n` +
       `/setconfig deployAmountSol 1.5\n` +
@@ -503,6 +505,7 @@ bot.onText(/\/setconfig(?:\s+(\S+))?(?:\s+(.+))?/, async (msg, match) => {
       `/setconfig watch.expiryMin 60\n` +
       `/setconfig watch.watchIntervalSec 30\n` +
       `/setconfig deployQueueExpiryMin 60\n` +
+      `/setconfig strategy.deployRangeMaxBins 48\n` +
       `/setconfig realtimePnlIntervalSec 15\n` +
       `/setconfig screeningIntervalMin 30</i>`,
       { parse_mode: 'HTML' }

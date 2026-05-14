@@ -32,6 +32,7 @@ import { recordPoolDeploy, recordPoolOutcome } from '../market/poolMemory.js';
 import { flushRuntimeState, getRuntimeState, setRuntimeState } from '../runtime/state.js';
 import { clearPositionRuntimeState } from '../app/positionRuntimeState.js';
 import { checkGasGuard } from '../safety/gasGuard.js';
+import { assertRangeDoesNotRequireBinArrayInit } from '../solana/meteora.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const HARVEST_LOG = join(__dirname, '../../harvest.log');
@@ -141,6 +142,13 @@ function getConfiguredTrailingDropPct() {
   if (Number.isFinite(value) && value > 0) return value;
   const legacy = Number(cfg.trailingStopPct);
   return Number.isFinite(legacy) && legacy > 0 ? legacy : EP_CONFIG.TRAILING_DROP_PCT;
+}
+
+function getConfiguredDeployRangeMaxBins() {
+  const cfg = getConfig();
+  const value = Number(cfg.deployRangeMaxBins);
+  if (Number.isFinite(value) && value >= 5) return Math.min(68, Math.floor(value));
+  return 68;
 }
 
 // ── Harvest Log ───────────────────────────────────────────────────
@@ -499,8 +507,11 @@ export async function deployPosition(poolAddress) {
 
     let rangeMax = activeBin.binId - offsetMinBins;
     let rangeMin = activeBin.binId - offsetMaxBins;
+    const rangeMaxBins = getConfiguredDeployRangeMaxBins();
 
-    if ((rangeMax - rangeMin) > 68) { rangeMin = rangeMax - 68; }
+    if ((rangeMax - rangeMin + 1) > rangeMaxBins) {
+      rangeMin = rangeMax - (rangeMaxBins - 1);
+    }
     if (rangeMin > rangeMax)        rangeMin = rangeMax - 2;
 
     const totalBins = rangeMax - rangeMin + 1;
@@ -527,6 +538,23 @@ export async function deployPosition(poolAddress) {
       ? Math.max(1, Math.min(60, seedPctOverride))
       : defaultSeedPct;
     const seedLamports = Math.max(0, Math.floor(totalLamports * (seedPct / 100)));
+
+    try {
+      await assertRangeDoesNotRequireBinArrayInit(connection, poolPubkey, rangeMin, rangeMax);
+    } catch (e) {
+      if (String(e?.message || '').startsWith('BIN_ARRAY_RENT_REQUIRED')) {
+        console.warn(`[evilPanda] VETO_NON_REFUNDABLE_RENT ${poolAddress.slice(0,8)} range=[${rangeMin},${rangeMax}] ${e.message}`);
+        return {
+          blocked: true,
+          reason: 'VETO_NON_REFUNDABLE_RENT',
+          detail: e.message,
+          rangeMin,
+          rangeMax,
+          rangeMaxBins,
+        };
+      }
+      throw e;
+    }
 
     let amountXBn     = new BN('0');
     let amountYBn     = new BN(String(totalLamports));

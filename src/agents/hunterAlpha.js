@@ -2181,6 +2181,28 @@ Balas HANYA JSON valid tanpa Markdown.`;
           );
           return false;
         }
+        if (deployResult && typeof deployResult === 'object' && deployResult.blocked) {
+          const reasonText = deployResult.reason || 'DEPLOY_BLOCKED';
+          const detailText = deployResult.detail ? `\nDetail: <code>${escapeHTML(String(deployResult.detail).slice(0, 240))}</code>` : '';
+          if (winner._record) {
+            recordGate(winner._record, 'SCOUT_AGENT', 'DEFER', reasonText, {
+              blocked: true,
+              detail: deployResult.detail || '',
+              rangeMin: deployResult.rangeMin,
+              rangeMax: deployResult.rangeMax,
+              rangeMaxBins: deployResult.rangeMaxBins,
+            });
+          }
+          await notify(
+            `⛔ <b>Deploy Ditolak</b>\n` +
+            `<b>${escapeHTML(symbol)}</b> — <code>${reasonText}</code>\n` +
+            `Pool: <code>${poolAddress.slice(0,8)}</code>\n` +
+            `Range: <code>${deployResult.rangeMin}-${deployResult.rangeMax}</code> (max ${deployResult.rangeMaxBins} bin)\n` +
+            `${detailText}\n` +
+            `<i>Pool tidak dideploy karena memicu non-refundable rent.</i>`
+          );
+          return false;
+        }
         positionPubkey = deployResult;
         _positionLabels.set(positionPubkey, { symbol });
         await notify(
