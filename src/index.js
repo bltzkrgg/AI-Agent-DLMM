@@ -910,10 +910,7 @@ bot.onText(/\/screening/, async (msg) => {
   if (!guard(msg)) return;
   const chatId = msg.chat.id;
   try {
-    const result = await scanAndDeploy();
-    if (result?.report) {
-      await sendLong(chatId, result.report, { parse_mode: 'HTML' });
-    }
+    await scanAndDeploy();
   } catch (e) {
     await bot.sendMessage(chatId, `❌ <b>Scan gagal:</b>\n<code>${escapeHTML(e.message)}</code>`, { parse_mode: 'HTML' });
   }
