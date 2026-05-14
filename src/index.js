@@ -928,6 +928,7 @@ bot.onText(/\/claim_fees(?:\s+(\S+))?/, async (msg) => {
 // Research sessions state
 
 let   _screeningLoopTimer = null;
+let   _screeningScanInFlight = false;
 let _lastDailyLossAlertAt = 0;
 
 async function runScreeningLoop() {
@@ -969,11 +970,19 @@ async function runScreeningLoop() {
       console.warn('[screening-loop] error:', e.message);
     }
 
+    if (_screeningScanInFlight) {
+      console.log('[screening-loop] ⏭️ Skip tick: scan masih berjalan.');
+      return;
+    }
+
+    _screeningScanInFlight = true;
     try {
       console.log('[screening-loop] ⏰ Tick autoscreen → scanAndDeploy()');
       await scanAndDeploy();
     } catch (e) {
       console.error('[screening-loop] scanAndDeploy error:', e.message);
+    } finally {
+      _screeningScanInFlight = false;
     }
   };
 
@@ -987,6 +996,7 @@ function stopScreeningLoop() {
     clearInterval(_screeningLoopTimer);
     _screeningLoopTimer = null;
   }
+  _screeningScanInFlight = false;
 }
 
 // ── Graceful Shutdown ─────────────────────────────────────────────

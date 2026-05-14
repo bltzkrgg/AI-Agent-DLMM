@@ -212,6 +212,8 @@ test('/autoscreen sends top-pools snapshot before the scan loop', () => {
   assert.match(src, /setNotifyMuted\(false\)/);
   assert.match(src, /startAutoScreeningRuntime\(chatId, \{ snapshotTopPools: true \}\)/);
   assert.match(src, /stopScreeningLoop\(\);[\s\S]*runScreeningLoop\(\);/);
+  assert.match(src, /let\s+_screeningScanInFlight\s*=\s*false;/);
+  assert.match(src, /if \(_screeningScanInFlight\) \{\s*console\.log\('\[screening-loop\] ⏭️ Skip tick: scan masih berjalan\.'\);/);
   assert.doesNotMatch(src, /global\.screeningInterval/);
 });
 
