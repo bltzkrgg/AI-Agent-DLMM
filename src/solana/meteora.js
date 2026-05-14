@@ -1994,31 +1994,64 @@ export async function getPositionFeeInfo(poolAddress, positionAddress) {
  * Throws BIN_ARRAY_RENT_REQUIRED if any are missing — caller must abort the deploy.
  * Returns { safe: true, unchecked: true } optimistically if the RPC call fails.
  */
-export async function assertRangeDoesNotRequireBinArrayInit(connection, lbPairPubkey, lowerBinId, upperBinId) {
+export async function inspectRangeBinArrayInitStatus(connection, lbPairPubkey, lowerBinId, upperBinId) {
   try {
-    const lowerArrayIdx = Math.floor(lowerBinId / BINS_PER_ARRAY);
-    const upperArrayIdx = Math.floor(upperBinId / BINS_PER_ARRAY);
+    const lower = Math.floor(Number(lowerBinId));
+    const upper = Math.floor(Number(upperBinId));
+    const lowerArrayIdx = Math.floor(lower / BINS_PER_ARRAY);
+    const upperArrayIdx = Math.floor(upper / BINS_PER_ARRAY);
 
+    const arrayStatuses = [];
     const pdas = [];
     for (let idx = lowerArrayIdx; idx <= upperArrayIdx; idx++) {
       const [pda] = PublicKey.findProgramAddressSync(
         [Buffer.from('bin_array'), lbPairPubkey.toBuffer(), new BN(idx).toArrayLike(Buffer, 'le', 8)],
         DLMM_PROGRAM_ID,
       );
-      pdas.push(pda);
+      pdas.push({ idx, pda });
     }
 
-    const accounts = await connection.getMultipleAccountsInfo(pdas);
-    const uninitializedCount = accounts.filter((a) => a === null).length;
+    const accounts = await connection.getMultipleAccountsInfo(pdas.map((item) => item.pda));
+    let uninitializedCount = 0;
+    for (let i = 0; i < pdas.length; i++) {
+      const status = accounts[i] ? 'initialized' : 'missing';
+      if (status === 'missing') uninitializedCount += 1;
+      arrayStatuses.push({
+        idx: pdas[i].idx,
+        pda: pdas[i].pda.toBase58(),
+        initialized: status === 'initialized',
+      });
+    }
 
+    const estimatedRentSol = (uninitializedCount * BIN_ARRAY_RENT_SOL).toFixed(3);
+    return {
+      safe: uninitializedCount === 0,
+      unchecked: false,
+      lowerArrayIdx,
+      upperArrayIdx,
+      checkedArrays: pdas.length,
+      uninitializedCount,
+      estimatedRentSol,
+      arrayStatuses,
+    };
+  } catch (e) {
+    if (String(e?.message || '').startsWith('BIN_ARRAY_RENT_REQUIRED')) throw e;
+    console.warn(`[meteora] inspectRangeBinArrayInitStatus RPC failed, proceeding optimistically: ${e.message}`);
+    return { safe: true, unchecked: true, arrayStatuses: [] };
+  }
+}
+
+export async function assertRangeDoesNotRequireBinArrayInit(connection, lbPairPubkey, lowerBinId, upperBinId) {
+  try {
+    const status = await inspectRangeBinArrayInitStatus(connection, lbPairPubkey, lowerBinId, upperBinId);
+    const uninitializedCount = Number(status.uninitializedCount || 0);
     if (uninitializedCount > 0) {
-      const estimatedRentSol = (uninitializedCount * BIN_ARRAY_RENT_SOL).toFixed(3);
       throw new Error(
-        `BIN_ARRAY_RENT_REQUIRED: ${uninitializedCount} uninitialized bin array(s) in range [${lowerBinId}, ${upperBinId}] — estimated non-refundable rent: ~${estimatedRentSol} SOL`,
+        `BIN_ARRAY_RENT_REQUIRED: ${uninitializedCount} uninitialized bin array(s) in range [${lowerBinId}, ${upperBinId}] — estimated non-refundable rent: ~${status.estimatedRentSol || (uninitializedCount * BIN_ARRAY_RENT_SOL).toFixed(3)} SOL`,
       );
     }
 
-    return { safe: true, uninitializedCount: 0, checkedArrays: pdas.length };
+    return { safe: true, uninitializedCount: 0, checkedArrays: Number(status.checkedArrays || 0) };
   } catch (e) {
     if (e.message.startsWith('BIN_ARRAY_RENT_REQUIRED')) throw e;
     console.warn(`[meteora] assertRangeDoesNotRequireBinArrayInit RPC failed, proceeding optimistically: ${e.message}`);

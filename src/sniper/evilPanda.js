@@ -32,7 +32,8 @@ import { recordPoolDeploy, recordPoolOutcome } from '../market/poolMemory.js';
 import { flushRuntimeState, getRuntimeState, setRuntimeState } from '../runtime/state.js';
 import { clearPositionRuntimeState } from '../app/positionRuntimeState.js';
 import { checkGasGuard } from '../safety/gasGuard.js';
-import { assertRangeDoesNotRequireBinArrayInit } from '../solana/meteora.js';
+import { assertRangeDoesNotRequireBinArrayInit, inspectRangeBinArrayInitStatus } from '../solana/meteora.js';
+import { selectRentFreeRange } from '../utils/binRangePolicy.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const HARVEST_LOG = join(__dirname, '../../harvest.log');
@@ -149,6 +150,15 @@ function getConfiguredDeployRangeMaxBins() {
   const value = Number(cfg.deployRangeMaxBins);
   if (Number.isFinite(value) && value >= 5) return Math.min(68, Math.floor(value));
   return 68;
+}
+
+function escapeHTML(text = '') {
+  return String(text)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
 }
 
 // ── Harvest Log ───────────────────────────────────────────────────
@@ -539,21 +549,73 @@ export async function deployPosition(poolAddress) {
       : defaultSeedPct;
     const seedLamports = Math.max(0, Math.floor(totalLamports * (seedPct / 100)));
 
+    let rentGuardStatus = null;
     try {
-      await assertRangeDoesNotRequireBinArrayInit(connection, poolPubkey, rangeMin, rangeMax);
+      rentGuardStatus = await inspectRangeBinArrayInitStatus(connection, poolPubkey, rangeMin, rangeMax);
     } catch (e) {
-      if (String(e?.message || '').startsWith('BIN_ARRAY_RENT_REQUIRED')) {
-        console.warn(`[evilPanda] VETO_NON_REFUNDABLE_RENT ${poolAddress.slice(0,8)} range=[${rangeMin},${rangeMax}] ${e.message}`);
+      if (!String(e?.message || '').startsWith('BIN_ARRAY_RENT_REQUIRED')) {
+        throw e;
+      }
+    }
+
+    if (rentGuardStatus && !rentGuardStatus.unchecked && !rentGuardStatus.safe) {
+      const adjusted = selectRentFreeRange({
+        desiredMin: rangeMin,
+        desiredMax: rangeMax,
+        maxBins: rangeMaxBins,
+        arrayStatuses: rentGuardStatus.arrayStatuses,
+      });
+
+      if (adjusted) {
+        const prevMin = rangeMin;
+        const prevMax = rangeMax;
+        rangeMin = adjusted.rangeMin;
+        rangeMax = adjusted.rangeMax;
+        const adjustedWidth = rangeMax - rangeMin + 1;
+        console.warn(
+          `[evilPanda] RANGE_ADJUSTED_FOR_RENT ${poolAddress.slice(0,8)} desired=[${prevMin},${prevMax}] adjusted=[${rangeMin},${rangeMax}] ` +
+          `checkedArrays=${rentGuardStatus.checkedArrays || 0} maxBins=${rangeMaxBins}`
+        );
+        await notify(
+          `↪️ <b>Range Disesuaikan</b>\n` +
+          `Pool: <code>${poolAddress.slice(0,8)}</code>\n` +
+          `Range awal: <code>${prevMin}-${prevMax}</code>\n` +
+          `Range aman: <code>${rangeMin}-${rangeMax}</code>\n` +
+          `Lebar: <code>${adjustedWidth} bin</code> | Max: <code>${rangeMaxBins} bin</code>\n` +
+          `<i>Range awal menyentuh bin array baru, jadi bot menahan rent dan lanjut pakai sub-range yang sudah initialized.</i>`
+        );
+      } else {
+        const detail = `BIN_ARRAY_RENT_REQUIRED: ${rentGuardStatus.uninitializedCount || 0} uninitialized bin array(s) in range [${rangeMin}, ${rangeMax}] — estimated non-refundable rent: ~${rentGuardStatus.estimatedRentSol || 'unknown'} SOL`;
+        console.warn(`[evilPanda] VETO_NON_REFUNDABLE_RENT ${poolAddress.slice(0,8)} range=[${rangeMin},${rangeMax}] ${detail}`);
         return {
           blocked: true,
           reason: 'VETO_NON_REFUNDABLE_RENT',
-          detail: e.message,
+          detail,
           rangeMin,
           rangeMax,
           rangeMaxBins,
         };
       }
-      throw e;
+    }
+
+    if (!rentGuardStatus?.unchecked) {
+      try {
+        await assertRangeDoesNotRequireBinArrayInit(connection, poolPubkey, rangeMin, rangeMax);
+      } catch (e) {
+        if (String(e?.message || '').startsWith('BIN_ARRAY_RENT_REQUIRED')) {
+          const detail = e.message;
+          console.warn(`[evilPanda] VETO_NON_REFUNDABLE_RENT ${poolAddress.slice(0,8)} range=[${rangeMin},${rangeMax}] ${detail}`);
+          return {
+            blocked: true,
+            reason: 'VETO_NON_REFUNDABLE_RENT',
+            detail,
+            rangeMin,
+            rangeMax,
+            rangeMaxBins,
+          };
+        }
+        throw e;
+      }
     }
 
     let amountXBn     = new BN('0');

@@ -70,8 +70,10 @@ test('evilPanda uses monolith positions with one Meteora account for the full ra
   assert.match(src, /let rangeMax = activeBin\.binId - offsetMinBins/);
   assert.match(src, /const rangeMaxBins = getConfiguredDeployRangeMaxBins\(\)/);
   assert.match(src, /if \(\(rangeMax - rangeMin \+ 1\) > rangeMaxBins\)/);
+  assert.match(src, /selectRentFreeRange/);
   assert.match(src, /assertRangeDoesNotRequireBinArrayInit/);
   assert.match(src, /VETO_NON_REFUNDABLE_RENT/);
+  assert.match(src, /RANGE_ADJUSTED_FOR_RENT/);
   assert.doesNotMatch(src, /rangeMax = activeBin\.binId - offsetMinBins - 1/);
   assert.doesNotMatch(src, /rangeMax - rangeMin > 1000/);
   assert.match(src, /initializePositionAndAddLiquidityByStrategy/);
