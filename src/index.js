@@ -30,6 +30,7 @@ import { createMessageTransport }         from './telegram/messageTransport.js';
 import { getTodayResults }                from './db/database.js';
 import { startDeployQueueWatcher, stopDeployQueueWatcher, setDeployQueueNotifyFn, setDeployQueueDeployFn, setDeployQueueMonitorFn } from './utils/pendingDeployQueue.js';
 import { deployPosition } from './sniper/evilPanda.js';
+import { sendImmediateTopPoolsReport }    from './agents/hunterAlpha.js';
 
 // ── PID Lock — cegah multiple instance ───────────────────────────
 const PID_FILE = new URL('../../bot.pid', import.meta.url).pathname;
@@ -84,11 +85,53 @@ const transport = createMessageTransport(bot);
 
 async function sendLong(chatId, text, opts = {}) {
   const MAX = 4000;
-  if (text.length <= MAX) {
-    return bot.sendMessage(chatId, text, opts).catch(() => {});
+  const rawText = String(text ?? '');
+
+  const sendChunk = async (chunk) => {
+    try {
+      await bot.sendMessage(chatId, chunk, opts);
+      return true;
+    } catch (_err) {
+      if (opts?.parse_mode === 'HTML') {
+        try {
+          await bot.sendMessage(chatId, chunk.replace(/<\/?[^>]+>/g, ''), { ...opts, parse_mode: undefined });
+          return true;
+        } catch (_fallbackErr) {
+          return false;
+        }
+      }
+      return false;
+    }
+  };
+
+  if (rawText.length <= MAX) {
+    return sendChunk(rawText);
   }
-  for (let i = 0; i < text.length; i += MAX) {
-    await bot.sendMessage(chatId, text.slice(i, i + MAX), opts).catch(() => {});
+
+  const lines = rawText.split('\n');
+  let buffer = '';
+  for (const line of lines) {
+    const candidate = buffer ? `${buffer}\n${line}` : line;
+    if (candidate.length > MAX) {
+      if (buffer) {
+        await sendChunk(buffer);
+        buffer = '';
+      }
+      if (line.length > MAX) {
+        for (let i = 0; i < line.length; i += MAX) {
+          const slice = line.slice(i, i + MAX);
+          await sendChunk(slice);
+        }
+      } else {
+        buffer = line;
+      }
+      continue;
+    }
+    buffer = candidate;
+  }
+
+  if (buffer) {
+    await sendChunk(buffer);
   }
 }
 
@@ -695,6 +738,14 @@ bot.onText(/\/autoscreen(?:\s+(on|off))?/, async (msg, match) => {
     startPendingTaRadarWatcher();
     startTaWatchWatcher();
 
+    // Snapshot top pools instan agar user tetap melihat kandidat teratas
+    // walau siklus screening berikutnya tidak meloloskan kandidat apa pun.
+    try {
+      await sendImmediateTopPoolsReport(chatId);
+    } catch (e) {
+      console.error('[autoscreen] Snapshot top pools gagal:', e.message);
+    }
+
     // ── 1. INSTANT FIRST RUN (awaited) ────────────────────────────────
     // scanAndDeploy() → top-5 sort → 9-gate eval → reportManager.generateReport()
     // SINGLE SOURCE OF TRUTH: format identik dengan semua siklus berikutnya
@@ -850,7 +901,7 @@ bot.onText(/\/screening/, async (msg) => {
   if (!guard(msg)) return;
   const chatId = msg.chat.id;
   try {
-    // runAutoscreening(bot, chatId, { emitReport: false })
+    await sendImmediateTopPoolsReport(chatId);
     const result = await scanAndDeploy();
     if (result?.report) {
       await sendLong(chatId, result.report, { parse_mode: 'HTML' });

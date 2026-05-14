@@ -203,9 +203,10 @@ test('general agent final decision prompt requires mature breakout momentum', ()
   assert.match(src, /DEPLOY jika:/);
 });
 
-test('/screening command returns report-only mode before sending long output', () => {
+test('/screening and /autoscreen send top-pools snapshot before the scan loop', () => {
   const src = readFileSync(join(process.cwd(), 'src/index.js'), 'utf8');
-  assert.match(src, /runAutoscreening\(bot, chatId, \{ emitReport: false \}\)/);
+  assert.match(src, /sendImmediateTopPoolsReport\(chatId\)/);
+  assert.match(src, /Snapshot top pools instan/);
   assert.match(src, /if \(result\?\.report\)/);
   assert.match(src, /sendLong\(chatId, result\.report/);
 });
