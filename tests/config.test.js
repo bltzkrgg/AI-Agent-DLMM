@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, readFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -37,6 +37,39 @@ test('config rejects unknown keys and merges nested signal weights safely', asyn
     holderCount: 0.3,
   });
   assert.equal('totallyUnknownKey' in saved, false);
+});
+
+test('config update writes atomic backup alongside primary file', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'dlmm-config-backup-'));
+  const configPath = join(root, 'user-config.json');
+
+  process.env.BOT_CONFIG_PATH = configPath;
+  const configModule = await importFresh(join(repoRoot, 'src/config.js'));
+
+  configModule.updateConfig({ deployAmountSol: 0.7 });
+
+  const saved = JSON.parse(readFileSync(configPath, 'utf-8'));
+  const backup = JSON.parse(readFileSync(`${configPath}.bak`, 'utf-8'));
+
+  assert.equal(saved.deployAmountSol, 0.7);
+  assert.equal(backup.deployAmountSol, 0.7);
+});
+
+test('config falls back to backup when primary file is empty or corrupt', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'dlmm-config-recover-'));
+  const configPath = join(root, 'user-config.json');
+
+  process.env.BOT_CONFIG_PATH = configPath;
+  const initialModule = await importFresh(join(repoRoot, 'src/config.js'));
+  initialModule.updateConfig({ deployAmountSol: 0.8, maxPositions: 2 });
+
+  writeFileSync(configPath, '', 'utf-8');
+
+  const recoveredModule = await importFresh(join(repoRoot, 'src/config.js'));
+  const cfg = recoveredModule.getConfig();
+
+  assert.equal(cfg.deployAmountSol, 0.8);
+  assert.equal(cfg.maxPositions, 2);
 });
 
 test('strategy overrides merge safely without replacing core config', async () => {

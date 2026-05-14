@@ -18,13 +18,14 @@
  *   - src/index.js               (Telegram bot, status)
  */
 
-import { readFileSync, existsSync, writeFileSync } from 'fs';
+import { readFileSync, existsSync, writeFileSync, renameSync, unlinkSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { stringify } from './utils/safeJson.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const CONFIG_PATH = process.env.BOT_CONFIG_PATH || join(__dirname, '../user-config.json');
+const CONFIG_BACKUP_PATH = `${CONFIG_PATH}.bak`;
 
 // ── DEFAULTS ──────────────────────────────────────────────────────────────────
 // Semua nilai default dalam format flat. Nilai ini digunakan jika kunci tidak
@@ -397,9 +398,31 @@ function safeParseJSON(raw) {
   }
 }
 
+function readConfigFile(path, label = 'config') {
+  if (!existsSync(path)) return null;
+  try {
+    const raw = readFileSync(path, 'utf-8');
+    if (!String(raw || '').trim()) {
+      console.warn(`⚠️ [config] ${label} file kosong: ${path}`);
+      return null;
+    }
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : null;
+  } catch (e) {
+    console.warn(`⚠️ [config] ${label} file gagal dibaca (${path}): ${e.message}`);
+    return null;
+  }
+}
+
 function loadUserConfig() {
-  if (!existsSync(CONFIG_PATH)) return {};
-  return safeParseJSON(readFileSync(CONFIG_PATH, 'utf-8'));
+  const primary = readConfigFile(CONFIG_PATH, 'primary');
+  if (primary) return primary;
+  const backup = readConfigFile(CONFIG_BACKUP_PATH, 'backup');
+  if (backup) {
+    console.warn(`⚠️ [config] Menggunakan backup config dari ${CONFIG_BACKUP_PATH}`);
+    return backup;
+  }
+  return {};
 }
 
 // ── getConfig ─────────────────────────────────────────────────────────────────
@@ -599,13 +622,20 @@ export function updateConfig(updates) {
   // Baca file asli (nested atau flat), merge flat updates di root
   const rawCurrent = loadUserConfig();
   const merged = { ...rawCurrent, ...validated };
+  const serialized = stringify(merged, 2);
+  const tmpPath = `${CONFIG_PATH}.tmp.${process.pid}`;
 
   try {
-    writeFileSync(CONFIG_PATH, stringify(merged, 2));
+    writeFileSync(tmpPath, serialized, 'utf8');
+    renameSync(tmpPath, CONFIG_PATH);
+    writeFileSync(CONFIG_BACKUP_PATH, serialized, 'utf8');
     console.log(`✅ Config updated & persisted to user-config.json: ${Object.keys(validated).join(', ')}`);
   } catch (writeErr) {
     // File mungkin terkunci sementara — update tetap aktif di memory, tapi tidak tersimpan
     console.error(`⚠️ Config write failed (in-memory only): ${writeErr.message}`);
+    try {
+      if (existsSync(tmpPath)) unlinkSync(tmpPath);
+    } catch {}
   }
 
   return getConfig();
