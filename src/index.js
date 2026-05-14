@@ -153,6 +153,33 @@ async function runSilentScan() {
   }
 }
 
+async function startAutoScreeningRuntime(chatId, { snapshotTopPools = false } = {}) {
+  setDeployQueueNotifyFn(notify);
+  setDeployQueueDeployFn(deployPosition);
+  startDeployQueueWatcher();
+  startPendingTaRadarWatcher();
+  startTaWatchWatcher();
+
+  if (snapshotTopPools) {
+    try {
+      await sendImmediateTopPoolsReport(chatId);
+    } catch (e) {
+      console.error('[autoscreen] Snapshot top pools gagal:', e.message);
+    }
+  }
+}
+
+function stopAutoScreeningRuntime() {
+  if (global.screeningInterval) {
+    clearInterval(global.screeningInterval);
+    global.screeningInterval = null;
+  }
+  stopScreeningLoop();
+  stopPendingTaRadarWatcher();
+  stopTaWatchWatcher();
+  stopDeployQueueWatcher();
+}
+
 async function urgentNotify(msg) {
   await notify(msg);
 }
@@ -639,6 +666,7 @@ bot.onText(/\/setconfig(?:\s+(\S+))?(?:\s+(.+))?/, async (msg, match) => {
           `<i>Memulai scan pertama sekarang...</i>`,
           { parse_mode: 'HTML' }
         );
+        await startAutoScreeningRuntime(chatId, { snapshotTopPools: true });
         await runSilentScan();
         runScreeningLoop();
       } else {
@@ -650,7 +678,7 @@ bot.onText(/\/setconfig(?:\s+(\S+))?(?:\s+(.+))?/, async (msg, match) => {
       }
     } else {
       // Stop loop
-      stopScreeningLoop();
+      stopAutoScreeningRuntime();
       bot.sendMessage(chatId,
         `🔕 <b>Auto-Screening: OFF</b>\n` +
         `Loop dihentikan. Gunakan <code>/screening</code> untuk scan manual.`,
@@ -741,19 +769,7 @@ bot.onText(/\/autoscreen(?:\s+(on|off))?/, async (msg, match) => {
     );
 
     // Wire Deploy Queue agar watcher bisa eksekusi
-    setDeployQueueNotifyFn(notify);
-    setDeployQueueDeployFn(deployPosition);
-    startDeployQueueWatcher();
-    startPendingTaRadarWatcher();
-    startTaWatchWatcher();
-
-    // Snapshot top pools instan agar user tetap melihat kandidat teratas
-    // walau siklus screening berikutnya tidak meloloskan kandidat apa pun.
-    try {
-      await sendImmediateTopPoolsReport(chatId);
-    } catch (e) {
-      console.error('[autoscreen] Snapshot top pools gagal:', e.message);
-    }
+    await startAutoScreeningRuntime(chatId, { snapshotTopPools: true });
 
     // ── 1. INSTANT FIRST RUN (awaited) ────────────────────────────────
     // scanAndDeploy() → top-5 sort → 9-gate eval → reportManager.generateReport()
@@ -774,12 +790,11 @@ bot.onText(/\/autoscreen(?:\s+(on|off))?/, async (msg, match) => {
 
     global.screeningInterval = setInterval(async () => {
       // Guard: hentikan jika user sudah /autoscreen off
-      if (!getConfig().autoScreeningEnabled) {
-        clearInterval(global.screeningInterval);
-        global.screeningInterval = null;
+    if (!getConfig().autoScreeningEnabled) {
+      clearInterval(global.screeningInterval);
+      global.screeningInterval = null;
       console.log('[autoscreen] Interval dihentikan karena autoScreeningEnabled=false.');
-      stopPendingTaRadarWatcher();
-      stopTaWatchWatcher();
+      stopAutoScreeningRuntime();
       return;
     }
       console.log(`[autoscreen] ⏰ Siklus berikutnya dimulai (interval ${intervalMin} menit)...`);
@@ -795,13 +810,7 @@ bot.onText(/\/autoscreen(?:\s+(on|off))?/, async (msg, match) => {
 
   } else {
     // ── Hentikan interval saat /autoscreen off ────────────────────────
-    if (global.screeningInterval) {
-      clearInterval(global.screeningInterval);
-      global.screeningInterval = null;
-    }
-    stopPendingTaRadarWatcher();
-    stopTaWatchWatcher();
-    stopDeployQueueWatcher();
+    stopAutoScreeningRuntime();
     bot.sendMessage(chatId,
       `🔕 <b>Auto-Screening: OFF</b>\n` +
       `Loop dihentikan. Gunakan <code>/screening</code> untuk scan manual.`,
