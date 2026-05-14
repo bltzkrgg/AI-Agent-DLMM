@@ -56,6 +56,49 @@ test('position runtime state persists peak pnl and oor markers', async () => {
   assert.equal(state.oorSince, 123456);
 });
 
+test('out-of-range monitor state waits, expires, and clears correctly', async () => {
+  const { evaluateOutOfRangeMonitorState } = await importFresh(join(repoRoot, 'src/agents/hunterAlpha.js'));
+
+  const waiting = evaluateOutOfRangeMonitorState({
+    positionPubkey: 'pos-oor-1',
+    symbol: 'OOR1',
+    status: { inRange: false, currentValueSol: 0.4, pnlPct: -2.2 },
+    runtimeState: {},
+    cfg: { outOfRangeWaitMinutes: 1 },
+    now: 0,
+  });
+
+  assert.equal(waiting.shouldExit, false);
+  assert.equal(waiting.runtimePatch.oorSince, 0);
+  assert.match(waiting.notifyMessage, /OOR Watch/);
+
+  const expired = evaluateOutOfRangeMonitorState({
+    positionPubkey: 'pos-oor-1',
+    symbol: 'OOR1',
+    status: { inRange: false, currentValueSol: 0.4, pnlPct: -2.2 },
+    runtimeState: { oorSince: 0, lastOorAlertAt: 0 },
+    cfg: { outOfRangeWaitMinutes: 1 },
+    now: 61_000,
+  });
+
+  assert.equal(expired.shouldExit, true);
+  assert.equal(expired.exitReason, 'OUT_OF_RANGE_1M');
+  assert.match(expired.notifyMessage, /OOR Timeout/);
+
+  const recovered = evaluateOutOfRangeMonitorState({
+    positionPubkey: 'pos-oor-1',
+    symbol: 'OOR1',
+    status: { inRange: true, currentValueSol: 0.4, pnlPct: -2.2 },
+    runtimeState: { oorSince: 0, lastOorAlertAt: 0 },
+    cfg: { outOfRangeWaitMinutes: 1 },
+    now: 90_000,
+  });
+
+  assert.equal(recovered.clearOorMarkers, true);
+  assert.deepEqual(recovered.runtimePatch, { oorSince: null, lastOorAlertAt: null });
+  assert.match(recovered.notifyMessage, /OOR recovered/);
+});
+
 test('position lifecycle state is stored alongside close records', async (t) => {
   const root = mkdtempSync(join(tmpdir(), 'dlmm-db-'));
   process.env.BOT_DB_PATH = join(root, 'test.db');

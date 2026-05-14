@@ -172,3 +172,12 @@ test('MAX_HOLD_EXIT: healer computes maxHoldTriggered and emits correct trigger 
   assert.match(src, /if \(maxHoldTriggered\)\s*\{\s*decision\s*=\s*'CLOSE'/);
   assert.match(src, /maxHoldTriggered\s*\?\s*'MAX_HOLD_EXIT'/);
 });
+
+// ─── Source: OOR exit respects config wait and emits OUT_OF_RANGE ──
+test('OUT_OF_RANGE: hunter uses config wait and emits OUT_OF_RANGE exit reason', () => {
+  const src = readFileSync(join(repoRoot, 'src/agents/hunterAlpha.js'), 'utf-8');
+
+  assert.match(src, /outOfRangeWaitMinutes/);
+  assert.match(src, /OUT_OF_RANGE/);
+  assert.match(src, /evaluateOutOfRangeMonitorState/);
+});

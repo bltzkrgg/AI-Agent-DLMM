@@ -23,6 +23,7 @@ import { getWalletBalance }       from '../solana/wallet.js';
 import { appendDecisionLog }      from '../learn/decisionLog.js';
 import { isBlacklisted }          from '../learn/tokenBlacklist.js';
 import { getRuntimeState }        from '../runtime/state.js';
+import { getPositionRuntimeState, updatePositionRuntimeState } from '../app/positionRuntimeState.js';
 import { escapeHTML, safeParseAI } from '../utils/safeJson.js';
 import reportManager              from '../utils/reportManager.js';
 import pendingStore               from '../utils/pendingStore.js';
@@ -90,6 +91,134 @@ async function notify(msg) {
   try { await _notifyFn?.(msg); } catch { /* non-fatal */ }
 }
 
+function getOutOfRangeWaitMs(cfg = getConfig()) {
+  const minutes = Number(cfg?.outOfRangeWaitMinutes);
+  const safeMinutes = Number.isFinite(minutes) && minutes > 0 ? minutes : 30;
+  return Math.max(60_000, Math.round(safeMinutes * 60_000));
+}
+
+function formatDurationFromMs(ms = 0) {
+  const safeMs = Math.max(0, Number(ms) || 0);
+  const minutes = safeMs / 60_000;
+  if (minutes >= 60) return `${(minutes / 60).toFixed(1)} jam`;
+  if (minutes >= 10) return `${minutes.toFixed(0)} menit`;
+  return `${minutes.toFixed(1)} menit`;
+}
+
+function buildOorWaitingMessage({ symbol, positionPubkey, elapsedMs, waitMs, currentValueSol, pnlPct }) {
+  const sign = pnlPct >= 0 ? '+' : '';
+  return (
+    `⏳ <b>OOR Watch</b>\n` +
+    `Token: <b>${escapeHTML(symbol)}</b>\n` +
+    `Position: <code>${positionPubkey.slice(0, 8)}</code>\n` +
+    `PnL: <code>${sign}${pnlPct.toFixed(2)}%</code>\n` +
+    `Value: <code>${currentValueSol.toFixed(4)} SOL</code>\n` +
+    `Durasi OOR: <code>${formatDurationFromMs(elapsedMs)}</code> / batas <code>${formatDurationFromMs(waitMs)}</code>\n` +
+    `<i>Posisi masih dipantau sesuai config.</i>`
+  );
+}
+
+function buildOorExpiredMessage({ symbol, positionPubkey, elapsedMs, waitMs, currentValueSol, pnlPct, inRange }) {
+  const sign = pnlPct >= 0 ? '+' : '';
+  return (
+    `⏱️ <b>OOR Timeout</b>\n` +
+    `Token: <b>${escapeHTML(symbol)}</b>\n` +
+    `Position: <code>${positionPubkey.slice(0, 8)}</code>\n` +
+    `PnL: <code>${sign}${pnlPct.toFixed(2)}%</code>\n` +
+    `Value: <code>${currentValueSol.toFixed(4)} SOL</code>\n` +
+    `Range: <code>${inRange ? 'IN_RANGE' : 'OUT_OF_RANGE'}</code>\n` +
+    `Durasi OOR: <code>${formatDurationFromMs(elapsedMs)}</code> / batas <code>${formatDurationFromMs(waitMs)}</code>\n` +
+    `<i>Config OOR sudah lewat, posisi akan ditutup sekarang.</i>`
+  );
+}
+
+function buildOorRecoveredMessage({ symbol, positionPubkey }) {
+  return (
+    `↩️ <b>OOR recovered</b>\n` +
+    `Token: <b>${escapeHTML(symbol)}</b>\n` +
+    `Position: <code>${positionPubkey.slice(0, 8)}</code>\n` +
+    `<i>Posisi kembali masuk range, countdown OOR dibersihkan.</i>`
+  );
+}
+
+export function evaluateOutOfRangeMonitorState({
+  positionPubkey,
+  symbol,
+  status,
+  runtimeState,
+  cfg,
+  now = Date.now(),
+} = {}) {
+  const inRange = status?.inRange === true;
+  const waitMs = getOutOfRangeWaitMs(cfg);
+  const oorSince = Number.isFinite(runtimeState?.oorSince) ? runtimeState.oorSince : null;
+  const lastOorAlertAt = Number.isFinite(runtimeState?.lastOorAlertAt) ? runtimeState.lastOorAlertAt : null;
+
+  if (inRange) {
+    if (oorSince !== null || lastOorAlertAt !== null) {
+      return {
+        shouldExit: false,
+        clearOorMarkers: true,
+        runtimePatch: { oorSince: null, lastOorAlertAt: null },
+        notifyMessage: buildOorRecoveredMessage({ symbol, positionPubkey }),
+        logMessage: `[hunter] ${symbol} kembali IN_RANGE, OOR timer dibersihkan.`,
+      };
+    }
+
+    return {
+      shouldExit: false,
+      clearOorMarkers: false,
+      runtimePatch: null,
+      notifyMessage: null,
+      logMessage: null,
+    };
+  }
+
+  const nextOorSince = oorSince ?? now;
+  const elapsedMs = Math.max(0, now - nextOorSince);
+  const remainingMs = Math.max(0, waitMs - elapsedMs);
+  const shouldAlert = lastOorAlertAt === null || (now - lastOorAlertAt) >= OOR_ALERT_COOLDOWN_MS;
+  const runtimePatch = {
+    oorSince: nextOorSince,
+    lastOorAlertAt: shouldAlert ? now : lastOorAlertAt,
+  };
+
+  if (elapsedMs >= waitMs) {
+    return {
+      shouldExit: true,
+      clearOorMarkers: false,
+      runtimePatch,
+      notifyMessage: buildOorExpiredMessage({
+        symbol,
+        positionPubkey,
+        elapsedMs,
+        waitMs,
+        currentValueSol: Number(status?.currentValueSol) || 0,
+        pnlPct: Number(status?.pnlPct) || 0,
+        inRange,
+      }),
+      logMessage: `[hunter] ${symbol} OOR timeout: elapsed=${elapsedMs}ms wait=${waitMs}ms remaining=${remainingMs}ms`,
+      exitReason: `OUT_OF_RANGE_${Math.round(waitMs / 60_000)}M`,
+    };
+  }
+
+  return {
+    shouldExit: false,
+    clearOorMarkers: false,
+    runtimePatch,
+    notifyMessage: shouldAlert ? buildOorWaitingMessage({
+      symbol,
+      positionPubkey,
+      elapsedMs,
+      waitMs,
+      currentValueSol: Number(status?.currentValueSol) || 0,
+      pnlPct: Number(status?.pnlPct) || 0,
+    }) : null,
+    logMessage: shouldAlert ? `[hunter] ${symbol} OOR wait: elapsed=${elapsedMs}ms remaining=${remainingMs}ms wait=${waitMs}ms` : null,
+    exitReason: null,
+  };
+}
+
 // ── State ─────────────────────────────────────────────────────────
 let _running   = false;
 let _deployLock = false;
@@ -106,6 +235,7 @@ let _taWatchTimer = null;
 let _taWatchInFlight = false;
 let _manualCloseWatchTimer = null;
 let _manualCloseWatchInFlight = false;
+const OOR_ALERT_COOLDOWN_MS = 60_000;
 
 function listActivePositions() {
   const keys = getActivePositionKeys();
@@ -2145,18 +2275,36 @@ async function monitorLoop(positionPubkey, symbol, poolAddress) {
       const meta = getPositionMeta(positionPubkey) || {};
       const deploySol = Number(meta.deploySol || 0);
       const currentLifecycle = meta.lifecycleState || meta.lifecycle_state || 'open';
+      const runtimeState = getPositionRuntimeState(positionPubkey);
+      const oorState = evaluateOutOfRangeMonitorState({
+        positionPubkey,
+        symbol,
+        status,
+        runtimeState,
+        cfg: getConfig(),
+      });
+      if (oorState.runtimePatch) {
+        await updatePositionRuntimeState(positionPubkey, oorState.runtimePatch);
+      }
       const lifecycleExtra = {
         currentValueSol,
         pnlPct,
         inRange,
         deploySol,
+        oorState: inRange ? 'IN_RANGE' : 'OUT_OF_RANGE',
       };
       if (Number.isFinite(Number(meta.hwmPct))) {
         lifecycleExtra.hwmPct = Number(meta.hwmPct);
       }
+      if (oorState.runtimePatch?.oorSince !== undefined) {
+        lifecycleExtra.oorSince = oorState.runtimePatch.oorSince;
+      } else if (Number.isFinite(runtimeState?.oorSince)) {
+        lifecycleExtra.oorSince = runtimeState.oorSince;
+      }
       const nextStatus = {
         ...status,
         deploySol,
+        oorSince: oorState.runtimePatch?.oorSince ?? runtimeState?.oorSince ?? null,
       };
       await setPositionLifecycle(positionPubkey, currentLifecycle, lifecycleExtra);
       status = nextStatus;
@@ -2175,11 +2323,6 @@ async function monitorLoop(positionPubkey, symbol, poolAddress) {
         await markPositionManuallyClosed(positionPubkey, 'MANUAL_WITHDRAW_DETECTED');
         _positionLabels.delete(positionPubkey);
         return;
-      }
-
-      if (shouldLogRealtimePnl(positionPubkey)) {
-        logRealtimePnl({ positionPubkey, symbol, status });
-        await notifyRealtimePnl({ positionPubkey, symbol, status });
       }
 
       // Exit trigger
@@ -2206,6 +2349,26 @@ async function monitorLoop(positionPubkey, symbol, poolAddress) {
         );
         await safeExit(positionPubkey, 'STOP_LOSS');
         return;
+      }
+
+      if (action === 'HOLD') {
+        if (oorState.logMessage) {
+          console.log(oorState.logMessage);
+        }
+        if (oorState.notifyMessage) {
+          await notify(oorState.notifyMessage);
+        }
+        if (oorState.shouldExit) {
+          await safeExit(positionPubkey, oorState.exitReason || 'OUT_OF_RANGE');
+          return;
+        }
+      }
+
+      if (shouldLogRealtimePnl(positionPubkey)) {
+        logRealtimePnl({ positionPubkey, symbol, status });
+        if (!(action === 'HOLD' && oorState.notifyMessage)) {
+          await notifyRealtimePnl({ positionPubkey, symbol, status });
+        }
       }
     }
 

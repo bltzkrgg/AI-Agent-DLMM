@@ -30,6 +30,7 @@ import { addToBlacklist } from '../learn/tokenBlacklist.js';
 import { getDynamicStopLoss } from '../market/atrGuard.js';
 import { recordPoolDeploy, recordPoolOutcome } from '../market/poolMemory.js';
 import { flushRuntimeState, getRuntimeState, setRuntimeState } from '../runtime/state.js';
+import { clearPositionRuntimeState } from '../app/positionRuntimeState.js';
 import { checkGasGuard } from '../safety/gasGuard.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -1040,7 +1041,7 @@ export async function exitPosition(positionPubkey, reason = 'MANUAL') {
   const connection = getConnection();
   const wallet     = getWallet();
   const microLamports = await getPriorityFee();
-  const isEmergencyExit = /STOP_LOSS|SCENARIO_C|SUPPORT|TRAILING|BEARISH|PANIC/i.test(String(reason || ''));
+  const isEmergencyExit = /STOP_LOSS|SCENARIO_C|SUPPORT|TRAILING|BEARISH|PANIC|OUT_OF_RANGE/i.test(String(reason || ''));
 
   try {
     return await withExitAccountingLock(() => withExponentialBackoff(async () => {
@@ -1198,6 +1199,7 @@ export async function exitPosition(positionPubkey, reason = 'MANUAL') {
       // 4. Bersihkan registry lokal setelah verifikasi close sukses
       _activePositions.delete(positionPubkey);
       await persistActivePositionsStateNow();
+      clearPositionRuntimeState(positionPubkey);
       console.log(`[evilPanda] ✅ Position closed & verified: ${positionPubkey.slice(0,8)} | reason=${reason}`);
 
       // 5. Harvest Log + Ledger + Blacklist
@@ -1273,6 +1275,7 @@ export async function markPositionManuallyClosed(positionPubkey, reason = 'MANUA
   console.log(`[evilPanda] ℹ️ Manual close realtime: ${positionPubkey.slice(0,8)} reason=${reason}`);
   _activePositions.delete(positionPubkey);
   await persistActivePositionsStateNow();
+  clearPositionRuntimeState(positionPubkey);
 
   const tokenSymbol = reg.tokenXMint?.slice(0, 8) || 'UNKNOWN';
   appendHarvestLog({
