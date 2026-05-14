@@ -59,6 +59,40 @@ test('pool memory applies cooldown after repeated losses', async () => {
   assert.equal(signal.priorityDelta < 0, true);
 });
 
+test('pool memory applies rent cooldown only to the affected pool and clears on success', async () => {
+  const memory = await loadPoolMemory();
+  const key = 'MintRent11111111111111111111111111111111111';
+
+  memory.recordPoolRentFailure({
+    key,
+    tokenMint: key,
+    poolAddress: 'PoolRent11111111111111111111111111111111111',
+    symbol: 'RENT',
+    rangeMin: -626,
+    rangeMax: -567,
+    detail: 'BIN_ARRAY_RENT_REQUIRED: 1 uninitialized bin array',
+  });
+
+  const row = memory.getPoolMemory(key);
+  assert.equal(row.rentFailureCount, 1);
+  assert.equal(row.rentCooldownUntil > Date.now(), true);
+
+  const signal = memory.getPoolMemorySignal(key);
+  assert.equal(signal.rentCooldownActive, true);
+  assert.match(signal.reason, /POOL_RENT_COOLDOWN_/);
+
+  memory.recordPoolOutcome({
+    key,
+    tokenMint: key,
+    pnlPct: 1.2,
+    reason: 'TAKE_PROFIT',
+  });
+
+  const after = memory.getPoolMemory(key);
+  assert.equal(after.rentFailureCount, 0);
+  assert.equal(after.rentCooldownUntil, 0);
+});
+
 test('pool memory records WATCH and DEPLOY decisions without outcome churn', async () => {
   const memory = await loadPoolMemory();
   const key = 'MintWatch1111111111111111111111111111111111';

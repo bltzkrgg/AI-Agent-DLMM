@@ -28,7 +28,7 @@ import { resolveTokens, WSOL_MINT } from '../utils/tokenMeta.js';
 import { getRecommendedPriorityFee } from '../utils/helius.js';
 import { addToBlacklist } from '../learn/tokenBlacklist.js';
 import { getDynamicStopLoss } from '../market/atrGuard.js';
-import { recordPoolDeploy, recordPoolOutcome } from '../market/poolMemory.js';
+import { recordPoolDeploy, recordPoolOutcome, recordPoolRentFailure } from '../market/poolMemory.js';
 import { flushRuntimeState, getRuntimeState, setRuntimeState } from '../runtime/state.js';
 import { clearPositionRuntimeState } from '../app/positionRuntimeState.js';
 import { checkGasGuard } from '../safety/gasGuard.js';
@@ -587,6 +587,24 @@ export async function deployPosition(poolAddress) {
       } else {
         const detail = `BIN_ARRAY_RENT_REQUIRED: ${rentGuardStatus.uninitializedCount || 0} uninitialized bin array(s) in range [${rangeMin}, ${rangeMax}] — estimated non-refundable rent: ~${rentGuardStatus.estimatedRentSol || 'unknown'} SOL`;
         console.warn(`[evilPanda] VETO_NON_REFUNDABLE_RENT ${poolAddress.slice(0,8)} range=[${rangeMin},${rangeMax}] ${detail}`);
+        const rentMemory = recordPoolRentFailure({
+          pool: { tokenXMint: xMint, address: poolAddress },
+          tokenMint: xMint,
+          poolAddress,
+          symbol: poolAddress.slice(0, 8),
+          detail,
+          rangeMin,
+          rangeMax,
+          snapshot: {
+            taTrend: 'UNKNOWN',
+            priceChangeM5: 0,
+            entryReadiness: 'HIGH',
+            breakoutQuality: 'VALID',
+            entryTimingState: 'LP_LIVE',
+          },
+          source: 'DEPLOY_RENT_GUARD',
+        });
+        const rentCooldownUntil = Number(rentMemory?.rentCooldownUntil || 0);
         return {
           blocked: true,
           reason: 'VETO_NON_REFUNDABLE_RENT',
@@ -594,6 +612,10 @@ export async function deployPosition(poolAddress) {
           rangeMin,
           rangeMax,
           rangeMaxBins,
+          cooldownUntil: rentCooldownUntil,
+          cooldownMs: rentCooldownUntil > Date.now()
+            ? Math.max(0, rentCooldownUntil - Date.now())
+            : 0,
         };
       }
     }
@@ -605,6 +627,24 @@ export async function deployPosition(poolAddress) {
         if (String(e?.message || '').startsWith('BIN_ARRAY_RENT_REQUIRED')) {
           const detail = e.message;
           console.warn(`[evilPanda] VETO_NON_REFUNDABLE_RENT ${poolAddress.slice(0,8)} range=[${rangeMin},${rangeMax}] ${detail}`);
+          const rentMemory = recordPoolRentFailure({
+            pool: { tokenXMint: xMint, address: poolAddress },
+            tokenMint: xMint,
+            poolAddress,
+            symbol: poolAddress.slice(0, 8),
+            detail,
+            rangeMin,
+            rangeMax,
+            snapshot: {
+              taTrend: 'UNKNOWN',
+              priceChangeM5: 0,
+              entryReadiness: 'HIGH',
+              breakoutQuality: 'VALID',
+            entryTimingState: 'LP_LIVE',
+          },
+          source: 'DEPLOY_RENT_GUARD_ASSERT',
+          });
+          const rentCooldownUntil = Number(rentMemory?.rentCooldownUntil || 0);
           return {
             blocked: true,
             reason: 'VETO_NON_REFUNDABLE_RENT',
@@ -612,6 +652,10 @@ export async function deployPosition(poolAddress) {
             rangeMin,
             rangeMax,
             rangeMaxBins,
+            cooldownUntil: rentCooldownUntil,
+            cooldownMs: rentCooldownUntil > Date.now()
+              ? Math.max(0, rentCooldownUntil - Date.now())
+              : 0,
           };
         }
         throw e;

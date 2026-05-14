@@ -291,6 +291,9 @@ async function evaluateDeployConditions(entry) {
         m5Source,
         liveTrend,
         liveM5,
+        deferUntil: memorySignal.rentCooldownActive
+          ? memorySignal.rentCooldownUntil
+          : memorySignal.cooldownUntil,
       };
     }
     if (memorySignal.memory && Number(memorySignal.priorityDelta || 0) !== 0) {
@@ -465,6 +468,10 @@ async function runWatcher() {
       const { symbol, pool, meta } = entry;
       const isRetest = meta?.isRetest || meta?.isScoutDefer;
       const queueType = isRetest ? 'RETEST' : 'DEPLOY';
+      const deferUntil = Number(entry.nextEligibleAt || 0);
+      if (deferUntil > Date.now()) {
+        continue;
+      }
 
       // Log real-time monitoring per token
       console.log(`[QUEUE] ⏳ Memantau TA untuk token ${symbol} secara real-time... [${queueType}] (attempt ${entry.attempts + 1})`);
@@ -489,6 +496,12 @@ async function runWatcher() {
           `m5=${formatPct(check.liveM5)} (${check.m5Source || 'unknown'}) ` +
           `reason=${check.reason} (attempt ${entry.attempts}/3)`
         );
+        if (check.deferUntil && Number(check.deferUntil) > Date.now()) {
+          entry.nextEligibleAt = Number(check.deferUntil);
+          entry.deferReason = check.reason;
+          entry.deferNotifiedAt = entry.deferNotifiedAt || Date.now();
+          entry.enqueuedAt = Date.now();
+        }
         if (decision === 'DROP' || check.reason.includes('expired')) {
           _queue.delete(mint);
           await safeSend(
@@ -591,6 +604,22 @@ async function runWatcher() {
           continue;
         }
         if (result && typeof result === 'object' && result.blocked) {
+          const blockedByRent = String(result.reason || '').includes('VETO_NON_REFUNDABLE_RENT');
+          const cooldownUntil = Number(result.cooldownUntil || 0);
+          if (blockedByRent && cooldownUntil > Date.now()) {
+            entry.nextEligibleAt = cooldownUntil;
+            entry.deferReason = result.detail || result.reason || 'VETO_NON_REFUNDABLE_RENT';
+            entry.enqueuedAt = Date.now();
+            _queue.set(mint, entry);
+            await safeSend(
+              `⏳ <b>Deploy Ditahan (Queue)</b>\n` +
+              `<b>${symbol}</b> — <code>${result.reason || 'VETO_NON_REFUNDABLE_RENT'}</code>\n` +
+              `Pool: <code>${poolAddress.slice(0, 8)}</code>\n` +
+              `Cooldown: <code>${Math.max(1, Math.round((cooldownUntil - Date.now()) / 60000))} menit</code>\n` +
+              `<i>Queue menunggu pool ini saja sampai rent cooldown habis.</i>`
+            );
+            continue;
+          }
           await safeSend(
             `⛔ <b>Deploy Ditolak (Queue)</b>\n` +
             `<b>${symbol}</b> — <code>${result.reason || 'DEPLOY_BLOCKED'}</code>\n` +
