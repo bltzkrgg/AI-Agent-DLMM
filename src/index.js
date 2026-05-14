@@ -170,10 +170,6 @@ async function startAutoScreeningRuntime(chatId, { snapshotTopPools = false } = 
 }
 
 function stopAutoScreeningRuntime() {
-  if (global.screeningInterval) {
-    clearInterval(global.screeningInterval);
-    global.screeningInterval = null;
-  }
   stopScreeningLoop();
   stopPendingTaRadarWatcher();
   stopTaWatchWatcher();
@@ -757,11 +753,7 @@ bot.onText(/\/autoscreen(?:\s+(on|off))?/, async (msg, match) => {
 
   if (after === true) {
     // ── Clear interval lama (anti double-execution) ───────────────────
-    if (global.screeningInterval) {
-      clearInterval(global.screeningInterval);
-      global.screeningInterval = null;
-      console.log('[autoscreen] Interval lama dibersihkan.');
-    }
+    stopScreeningLoop();
 
     await bot.sendMessage(chatId,
       `📡 <b>Auto-Screening: ON</b>\n🔍 Eksekusi scan pertama dimulai sekarang...`,
@@ -788,24 +780,7 @@ bot.onText(/\/autoscreen(?:\s+(on|off))?/, async (msg, match) => {
     const intervalMin = Number(cfg.intervals?.screeningIntervalMin || cfg.screeningIntervalMin || 15);
     const intervalMs  = intervalMin * 60 * 1000;
 
-    global.screeningInterval = setInterval(async () => {
-      // Guard: hentikan jika user sudah /autoscreen off
-    if (!getConfig().autoScreeningEnabled) {
-      clearInterval(global.screeningInterval);
-      global.screeningInterval = null;
-      console.log('[autoscreen] Interval dihentikan karena autoScreeningEnabled=false.');
-      stopAutoScreeningRuntime();
-      return;
-    }
-      console.log(`[autoscreen] ⏰ Siklus berikutnya dimulai (interval ${intervalMin} menit)...`);
-      try {
-        await scanAndDeploy();
-      } catch (err) {
-        console.error('[autoscreen] Interval scan gagal:', err.message);
-        await notify(`❌ <b>Loop error:</b>\n<code>${err.message.slice(0, 200)}</code>`);
-      }
-    }, intervalMs);
-
+    runScreeningLoop();
     console.log(`[autoscreen] ✅ Scheduler aktif — siklus berikutnya dalam ${intervalMin} menit.`);
 
   } else {

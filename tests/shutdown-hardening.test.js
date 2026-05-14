@@ -211,6 +211,8 @@ test('/autoscreen sends top-pools snapshot before the scan loop', () => {
   assert.match(src, /await runSilentScan\(\);/);
   assert.match(src, /setNotifyMuted\(false\)/);
   assert.match(src, /startAutoScreeningRuntime\(chatId, \{ snapshotTopPools: true \}\)/);
+  assert.match(src, /stopScreeningLoop\(\);[\s\S]*runScreeningLoop\(\);/);
+  assert.doesNotMatch(src, /global\.screeningInterval/);
 });
 
 test('active position analyst prompt holds through healthy bullish momentum', () => {
