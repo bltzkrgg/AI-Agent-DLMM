@@ -207,9 +207,10 @@ test('/autoscreen sends top-pools snapshot before the scan loop', () => {
   const src = readFileSync(join(process.cwd(), 'src/index.js'), 'utf8');
   assert.match(src, /sendImmediateTopPoolsReport\(chatId\)/);
   assert.match(src, /Snapshot top pools instan/);
-  assert.match(src, /bot\.onText\(\/\\\/screening\/, async \(msg\) => \{/);
-  assert.match(src, /const result = await scanAndDeploy\(\);/);
-  assert.match(src, /if \(result\?\.report\)/);
+  assert.match(src, /async function runSilentScan\(\)/);
+  assert.match(src, /setNotifyMuted\(true\)/);
+  assert.match(src, /await runSilentScan\(\);/);
+  assert.match(src, /setNotifyMuted\(false\)/);
 });
 
 test('active position analyst prompt holds through healthy bullish momentum', () => {

@@ -18,7 +18,7 @@ import TelegramBot              from 'node-telegram-bot-api';
 import { existsSync, readFileSync, writeFileSync, unlinkSync } from 'fs';
 import { initSolana, getWalletBalance }   from './solana/wallet.js';
 import { getConfig, updateConfig, isConfigKeySupported, resolveNestedKey, SETCONFIG_WHITELIST } from './config.js';
-import { runLinearLoop, stopLoop, setNotifyFn, isRunning, getCurrentPosition, getActivePositions, setShutdownInProgress, closeAllActivePositionsByUser, closeAllActivePositionsForShutdown, retryFailedShutdownPositions, runAutoscreening, spawnMonitorForRestoredPositions, startManualCloseWatcher, startPendingTaRadarWatcher, stopPendingTaRadarWatcher, startTaWatchWatcher, stopTaWatchWatcher, scanAndDeploy, updatePnlStatus, inventoryManagement, submitManualCaPool } from './agents/hunterAlpha.js';
+import { runLinearLoop, stopLoop, setNotifyFn, setNotifyMuted, isRunning, getCurrentPosition, getActivePositions, setShutdownInProgress, closeAllActivePositionsByUser, closeAllActivePositionsForShutdown, retryFailedShutdownPositions, runAutoscreening, spawnMonitorForRestoredPositions, startManualCloseWatcher, startPendingTaRadarWatcher, stopPendingTaRadarWatcher, startTaWatchWatcher, stopTaWatchWatcher, scanAndDeploy, updatePnlStatus, inventoryManagement, submitManualCaPool } from './agents/hunterAlpha.js';
 import { getActivePositionCount, reconcileStartupPositions, EP_CONFIG } from './sniper/evilPanda.js';
 import { analyzePerformance, formatEvolutionReport }     from './learn/statelessEvolve.js';
 import { generateBriefing, formatActivePositionsTelegram } from './telegram/briefing.js';
@@ -142,6 +142,15 @@ async function notify(msg, opts = {}) {
   try {
     await sendLong(CHAT_ID, msg, { parse_mode: 'HTML', ...opts });
   } catch {}
+}
+
+async function runSilentScan() {
+  setNotifyMuted(true);
+  try {
+    return await scanAndDeploy();
+  } finally {
+    setNotifyMuted(false);
+  }
 }
 
 async function urgentNotify(msg) {
@@ -630,7 +639,7 @@ bot.onText(/\/setconfig(?:\s+(\S+))?(?:\s+(.+))?/, async (msg, match) => {
           `<i>Memulai scan pertama sekarang...</i>`,
           { parse_mode: 'HTML' }
         );
-        await scanAndDeploy();
+        await runSilentScan();
         runScreeningLoop();
       } else {
         bot.sendMessage(chatId,
@@ -750,7 +759,7 @@ bot.onText(/\/autoscreen(?:\s+(on|off))?/, async (msg, match) => {
     // scanAndDeploy() → top-5 sort → 9-gate eval → reportManager.generateReport()
     // SINGLE SOURCE OF TRUTH: format identik dengan semua siklus berikutnya
     try {
-      await scanAndDeploy();
+      await runSilentScan();
     } catch (e) {
       console.error('[autoscreen] Scan pertama gagal:', e.message);
       await notify(`❌ <b>Scan pertama gagal:</b>\n<code>${escapeHTML(e.message)}</code>\n<i>Loop tetap dilanjutkan...</i>`);

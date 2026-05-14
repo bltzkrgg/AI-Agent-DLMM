@@ -79,6 +79,7 @@ function deduplicatePoolsByToken(pools, binStepPriority) {
 
 // ── Notify helper (diset dari index.js) ──────────────────────────
 let _notifyFn = null;
+let _notifyMuted = false;
 export function setNotifyFn(fn) {
   _notifyFn = fn;
   setEvilPandaNotifyFn(fn);
@@ -87,7 +88,11 @@ export function setNotifyFn(fn) {
   // Wire monitor fn ke deploy queue agar posisi hasil queue masuk monitor loop
   setDeployQueueMonitorFn((pubkey, sym, poolAddr) => monitorLoop(pubkey, sym, poolAddr));
 }
+export function setNotifyMuted(value) {
+  _notifyMuted = Boolean(value);
+}
 async function notify(msg) {
+  if (_notifyMuted) return;
   try { await _notifyFn?.(msg); } catch { /* non-fatal */ }
 }
 
@@ -2255,7 +2260,11 @@ Balas HANYA JSON valid tanpa Markdown.`;
   } finally {
     try {
       const report = generateFinalCycleReport(CycleReport);
-      await notify(report);
+      if (_notifyMuted) {
+        console.log(report);
+      } else {
+        await notify(report);
+      }
     } catch (e) {
       console.error("Gagal kirim ke Telegram:", e.message);
     }
