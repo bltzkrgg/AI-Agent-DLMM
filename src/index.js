@@ -968,6 +968,13 @@ async function runScreeningLoop() {
     } catch (e) {
       console.warn('[screening-loop] error:', e.message);
     }
+
+    try {
+      console.log('[screening-loop] ⏰ Tick autoscreen → scanAndDeploy()');
+      await scanAndDeploy();
+    } catch (e) {
+      console.error('[screening-loop] scanAndDeploy error:', e.message);
+    }
   };
 
   // Hanya jalankan background interval (tanpa memanggil tick seketika)
