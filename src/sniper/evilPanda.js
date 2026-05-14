@@ -1367,7 +1367,7 @@ export async function exitPosition(positionPubkey, reason = 'MANUAL') {
         txCostSol: txFeeSol,
       });
       recordPoolOutcome({
-        key: reg.tokenXMint || reg.poolAddress,
+        key: reg.poolAddress || reg.tokenXMint,
         tokenMint: reg.tokenXMint || '',
         poolAddress: reg.poolAddress || '',
         symbol: tokenSymbol,
@@ -1431,7 +1431,7 @@ export async function markPositionManuallyClosed(positionPubkey, reason = 'MANUA
     manualCloseDetected: true,
   });
   recordPoolOutcome({
-    key: reg.tokenXMint || reg.poolAddress,
+    key: reg.poolAddress || reg.tokenXMint,
     tokenMint: reg.tokenXMint || '',
     poolAddress: reg.poolAddress || '',
     symbol: tokenSymbol,

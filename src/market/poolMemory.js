@@ -22,13 +22,13 @@ function normalizeKey(value = '') {
 export function getPoolMemoryKey(input = {}) {
   if (typeof input === 'string') return normalizeKey(input);
   return normalizeKey(
-    input.tokenXMint ||
-    input.tokenMint ||
-    input.mint ||
     input.poolAddress ||
     input.address ||
     input.pool ||
     input.pubkey ||
+    input.tokenXMint ||
+    input.tokenMint ||
+    input.mint ||
     ''
   );
 }
@@ -144,7 +144,7 @@ export function recordPoolRentFailure({
   snapshot = {},
   source = 'DEPLOY_RENT_GUARD',
 } = {}) {
-  const memoryKey = getPoolMemoryKey(key || tokenMint || poolAddress || pool);
+  const memoryKey = getPoolMemoryKey(key || poolAddress || pool || tokenMint);
   if (!memoryKey) return null;
   const now = nowMs();
   const compact = compactSnapshot(snapshot);
@@ -204,7 +204,7 @@ export function recordPoolOutcome({
   reason = 'CLOSE',
   snapshot = {},
 } = {}) {
-  const memoryKey = getPoolMemoryKey(key || tokenMint || poolAddress || pool);
+  const memoryKey = getPoolMemoryKey(key || poolAddress || pool || tokenMint);
   if (!memoryKey) return null;
   const now = nowMs();
   const outcome = classifyOutcome({ pnlPct, reason });

@@ -93,6 +93,29 @@ test('pool memory applies rent cooldown only to the affected pool and clears on 
   assert.equal(after.rentCooldownUntil, 0);
 });
 
+test('pool memory keeps rent cooldown isolated by pool address even when mint matches', async () => {
+  const memory = await loadPoolMemory();
+  const mint = 'MintShared1111111111111111111111111111111111';
+  const poolA = 'PoolSharedA111111111111111111111111111111111';
+  const poolB = 'PoolSharedB111111111111111111111111111111111';
+
+  memory.recordPoolRentFailure({
+    tokenMint: mint,
+    poolAddress: poolA,
+    symbol: 'SHARED',
+    rangeMin: -10,
+    rangeMax: 10,
+    detail: 'BIN_ARRAY_RENT_REQUIRED: 1 uninitialized bin array',
+  });
+
+  const signalA = memory.getPoolMemorySignal({ tokenMint: mint, poolAddress: poolA });
+  const signalB = memory.getPoolMemorySignal({ tokenMint: mint, poolAddress: poolB });
+
+  assert.equal(signalA.rentCooldownActive, true);
+  assert.equal(signalB.cooldownActive, false);
+  assert.equal(signalB.reason, 'NO_MEMORY');
+});
+
 test('pool memory records WATCH and DEPLOY decisions without outcome churn', async () => {
   const memory = await loadPoolMemory();
   const key = 'MintWatch1111111111111111111111111111111111';
