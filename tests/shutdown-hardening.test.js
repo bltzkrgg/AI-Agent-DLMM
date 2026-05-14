@@ -206,9 +206,9 @@ test('general agent final decision prompt requires mature breakout momentum', ()
 test('/autoscreen sends top-pools snapshot before the scan loop', () => {
   const src = readFileSync(join(process.cwd(), 'src/index.js'), 'utf8');
   assert.match(src, /sendImmediateTopPoolsReport\(chatId\)/);
-  assert.match(src, /async function runSilentScan\(\)/);
+  assert.match(src, /async function runSilentScan\(\{ emitFinalReport = false \} = \{\}\)/);
   assert.match(src, /setNotifyMuted\(true\)/);
-  assert.match(src, /await runSilentScan\(\);/);
+  assert.match(src, /await runSilentScan\(\{ emitFinalReport: false \}\);/);
   assert.match(src, /setNotifyMuted\(false\)/);
   assert.match(src, /startAutoScreeningRuntime\(chatId, \{ snapshotTopPools: true \}\)/);
   assert.match(src, /stopScreeningLoop\(\);[\s\S]*runScreeningLoop\(\);/);

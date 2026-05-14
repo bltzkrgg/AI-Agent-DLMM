@@ -144,10 +144,10 @@ async function notify(msg, opts = {}) {
   } catch {}
 }
 
-async function runSilentScan() {
+async function runSilentScan({ emitFinalReport = false } = {}) {
   setNotifyMuted(true);
   try {
-    return await scanAndDeploy();
+    return await scanAndDeploy({ emitFinalReport });
   } finally {
     setNotifyMuted(false);
   }
@@ -764,10 +764,9 @@ bot.onText(/\/autoscreen(?:\s+(on|off))?/, async (msg, match) => {
     await startAutoScreeningRuntime(chatId, { snapshotTopPools: true });
 
     // ── 1. INSTANT FIRST RUN (awaited) ────────────────────────────────
-    // scanAndDeploy() → top-5 sort → 9-gate eval → reportManager.generateReport()
-    // SINGLE SOURCE OF TRUTH: format identik dengan semua siklus berikutnya
+    // first-run autoscreen: snapshot top pools muncul, final cycle report disenyapkan
     try {
-      await runSilentScan();
+      await runSilentScan({ emitFinalReport: false });
     } catch (e) {
       console.error('[autoscreen] Scan pertama gagal:', e.message);
       await notify(`❌ <b>Scan pertama gagal:</b>\n<code>${escapeHTML(e.message)}</code>\n<i>Loop tetap dilanjutkan...</i>`);

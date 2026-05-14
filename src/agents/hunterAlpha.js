@@ -1428,7 +1428,7 @@ export function stopLoop() {
 
 // ── Phase 1: SCAN ─────────────────────────────────────────────────
 
-export async function scanAndDeploy() {
+export async function scanAndDeploy({ emitFinalReport = true } = {}) {
   const CycleReport = [];
 
   try {
@@ -2258,6 +2258,10 @@ Balas HANYA JSON valid tanpa Markdown.`;
     console.error(`[hunter] scanAndDeploy critical error:`, error.message);
     return;
   } finally {
+    if (!emitFinalReport) {
+      console.log('[hunter] Final cycle report disenyapkan untuk first-run autoscreen.');
+      return;
+    }
     try {
       const report = generateFinalCycleReport(CycleReport);
       if (_notifyMuted) {
