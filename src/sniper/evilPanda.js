@@ -61,7 +61,9 @@ const EP_CONFIG = {
 const _activePositions = new Map();
 let _exitAccountingLock = false;
 let _notifyFn = null;
-const RENT_FREE_SEARCH_SLACK_ARRAYS = 3;
+// Bounded search radius for rent-free fallback slices on the same pool.
+// This only affects pools that already tripped the rent guard.
+const RENT_FREE_SEARCH_SLACK_ARRAYS = 6;
 
 export function setEvilPandaNotifyFn(fn) {
   _notifyFn = typeof fn === 'function' ? fn : null;
