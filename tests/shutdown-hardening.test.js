@@ -93,7 +93,7 @@ test('blocked deploy results are handled by hunter and queue callers', () => {
   assert.match(hunterSrc, /recordGate\(winner\._record, 'SCOUT_AGENT', 'DEFER'/);
   assert.match(queueSrc, /result && typeof result === 'object' && result\.blocked/);
   assert.match(queueSrc, /Deploy Ditolak \(Queue\)/);
-  assert.match(queueSrc, /Range akan dievaluasi ulang pada scan berikutnya\. Tidak ada rent cooldown\./);
+  assert.match(queueSrc, /Adjust range gagal\. Pool ini veto tanpa cooldown\./);
   assert.doesNotMatch(queueSrc, /Queue menghormati veto non-refundable rent/);
 });
 

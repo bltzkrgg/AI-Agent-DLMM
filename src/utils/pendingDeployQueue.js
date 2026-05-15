@@ -590,11 +590,11 @@ async function runWatcher() {
           await safeSend(
             `${blockedByRent ? '⛔ <b>Deploy Ditolak (Queue)</b>' : '⛔ <b>Deploy Ditolak (Queue)</b>'}\n` +
             `<b>${symbol}</b> — <code>${result.reason || 'DEPLOY_BLOCKED'}</code>\n` +
-            `Pool: <code>${poolAddress.slice(0, 8)}</code>\n` +
-            `Range: <code>${result.rangeMin}-${result.rangeMax}</code> (max ${result.rangeMaxBins} bin)\n` +
-            (result.detail ? `Detail: <code>${escapeHTML(String(result.detail).slice(0, 240))}</code>\n` : '') +
-            (blockedByRent
-              ? `<i>Range akan dievaluasi ulang pada scan berikutnya. Tidak ada rent cooldown.</i>`
+          `Pool: <code>${poolAddress.slice(0, 8)}</code>\n` +
+          `Range: <code>${result.rangeMin}-${result.rangeMax}</code> (max ${result.rangeMaxBins} bin)\n` +
+          (result.detail ? `Detail: <code>${escapeHTML(String(result.detail).slice(0, 240))}</code>\n` : '') +
+          (blockedByRent
+              ? `<i>Adjust range gagal. Pool ini veto tanpa cooldown.</i>`
               : `<i>Queue menghormati veto deploy.</i>`)
           );
           continue;
