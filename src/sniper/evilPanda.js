@@ -28,6 +28,7 @@ import { resolveTokens, WSOL_MINT } from '../utils/tokenMeta.js';
 import { getRecommendedPriorityFee } from '../utils/helius.js';
 import { addToBlacklist } from '../learn/tokenBlacklist.js';
 import { getDynamicStopLoss } from '../market/atrGuard.js';
+import { getDLMMPoolData } from '../market/oracle.js';
 import { recordPoolDeploy, recordPoolOutcome, recordPoolRentFailure } from '../market/poolMemory.js';
 import { flushRuntimeState, getRuntimeState, setRuntimeState } from '../runtime/state.js';
 import { clearPositionRuntimeState } from '../app/positionRuntimeState.js';
@@ -64,6 +65,18 @@ let _notifyFn = null;
 // Bounded search radius for rent-free fallback slices on the same pool.
 // This only affects pools that already tripped the rent guard.
 const RENT_FREE_SEARCH_SLACK_ARRAYS = 100;
+
+async function resolveNonRefundableFeeFlag(poolAddress, explicitFlag = null) {
+  if (explicitFlag === true) return true;
+  if (explicitFlag === false) return false;
+
+  try {
+    const poolData = await getDLMMPoolData(poolAddress);
+    return Boolean(poolData?.hasNonRefundableFees);
+  } catch {
+    return false;
+  }
+}
 
 export function setEvilPandaNotifyFn(fn) {
   _notifyFn = typeof fn === 'function' ? fn : null;
@@ -536,14 +549,20 @@ async function estimateTxFeeLamports(connection, signatures = []) {
  * Buka posisi DLMM Evil Panda (single-side SOL, 90% range di bawah harga aktif).
  *
  * @param {string} poolAddress  - Pubkey pool DLMM
+ * @param {object} [deployOptions]
+ * @param {boolean|null} [deployOptions.hasNonRefundableFees]
  * @returns {Promise<string>}   - positionPubkey (string)
  */
-export async function deployPosition(poolAddress) {
+export async function deployPosition(poolAddress, deployOptions = {}) {
   const cfg        = getConfig();
   const deploySol  = cfg.deployAmountSol || 0.1;
   const connection = getConnection();
   const wallet     = getWallet();
   const poolPubkey = new PublicKey(poolAddress);
+  const hasNonRefundableFees = await resolveNonRefundableFeeFlag(
+    poolAddress,
+    deployOptions?.hasNonRefundableFees ?? null,
+  );
 
   console.log(`[evilPanda] ▶ deployPosition pool=${poolAddress.slice(0,8)} sol=${deploySol}`);
 
@@ -615,15 +634,17 @@ export async function deployPosition(poolAddress) {
     const seedLamports = Math.max(0, Math.floor(totalLamports * (seedPct / 100)));
 
     let rentGuardStatus = null;
-    try {
-      rentGuardStatus = await inspectRangeBinArrayInitStatus(connection, poolPubkey, rangeMin, rangeMax);
-    } catch (e) {
-      if (!String(e?.message || '').startsWith('BIN_ARRAY_RENT_REQUIRED')) {
-        throw e;
+    if (hasNonRefundableFees) {
+      try {
+        rentGuardStatus = await inspectRangeBinArrayInitStatus(connection, poolPubkey, rangeMin, rangeMax);
+      } catch (e) {
+        if (!String(e?.message || '').startsWith('BIN_ARRAY_RENT_REQUIRED')) {
+          throw e;
+        }
       }
     }
 
-    if (rentGuardStatus && !rentGuardStatus.unchecked && !rentGuardStatus.safe) {
+    if (hasNonRefundableFees && rentGuardStatus && !rentGuardStatus.unchecked && !rentGuardStatus.safe) {
       const rentAdjustedResult = await findAdaptiveRentFreeRange({
         connection,
         poolPubkey,
@@ -691,7 +712,7 @@ export async function deployPosition(poolAddress) {
       }
     }
 
-    if (!rentGuardStatus?.unchecked) {
+    if (hasNonRefundableFees && !rentGuardStatus?.unchecked) {
       try {
         await assertRangeDoesNotRequireBinArrayInit(connection, poolPubkey, rangeMin, rangeMax);
       } catch (e) {

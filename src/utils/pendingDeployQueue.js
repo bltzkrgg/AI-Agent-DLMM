@@ -575,7 +575,13 @@ async function runWatcher() {
           throw new Error('deployFn belum di-set ke DeployQueue — panggil setDeployQueueDeployFn() dulu.');
         }
 
-        const result = await _deployFn(poolAddress);
+        const result = await _deployFn(poolAddress, {
+          hasNonRefundableFees:
+            pool?._marketSnapshot?.pool?.hasNonRefundableFees ??
+            pool?.hasNonRefundableFees ??
+            meta?.hasNonRefundableFees ??
+            false,
+        });
 
         if (result && typeof result === 'object' && result.dryRun) {
           await safeSend(

@@ -576,6 +576,7 @@ export async function submitManualCaPool(poolAddress, { source = 'TELEGRAM_CA' }
     _watchSnapshotM5Change: entrySignals.priceChangeM5 ?? null,
     _watchSnapshotM15Change: entrySignals.priceChangeM15 ?? null,
     _watchTaTrend: entrySignals.taTrend ?? null,
+    hasNonRefundableFees: Boolean(marketSnapshot?.pool?.hasNonRefundableFees),
   };
 
   const queueMeta = {
@@ -593,6 +594,7 @@ export async function submitManualCaPool(poolAddress, { source = 'TELEGRAM_CA' }
     snapshotHigh24h: pool._watchSnapshotHigh24h,
     watchWindowSec,
     maxDriftPct,
+    hasNonRefundableFees: pool.hasNonRefundableFees,
   };
 
   const readyForQueue = isFreshDeployMeta(queueMeta);
@@ -681,6 +683,7 @@ async function collectReadyRetestPools(cfg = getConfig()) {
             _retestReason: row.reason,
             _retestAttempts: row.attempts,
             _entrySignals: entrySignals,
+            hasNonRefundableFees: Boolean(marketSnapshot?.pool?.hasNonRefundableFees),
             _watchSnapshotAt: row.snapshotAt || now,
             _watchSnapshotPrice: row.snapshotPrice ?? entrySignals.currentPrice ?? null,
             _watchSnapshotHigh24h: row.snapshotHigh24h ?? entrySignals.high24h ?? null,
@@ -1113,6 +1116,7 @@ async function processPendingTaRadar(cfg = getConfig()) {
             _retestReason: row.reason,
             _retestAttempts: row.attempts,
             _entrySignals: entrySignals,
+            hasNonRefundableFees: Boolean(marketSnapshot?.pool?.hasNonRefundableFees),
           };
           const watchResult = addWatchPassTa(pool, row.reason || 'TA PASS', 'RADAR');
           if (watchResult?.admitted) {
@@ -1846,6 +1850,7 @@ FORMAT JAWABAN (WAJIB JSON VALID, TANPA MARKDOWN):
         pool._screenResult = screenResult;
         pool._vetoResult = vetoResult;
         pool._marketSnapshot = marketSnapshot;
+        pool.hasNonRefundableFees = Boolean(marketSnapshot?.pool?.hasNonRefundableFees);
         pool._llmPoolContext = llmPoolContext;
         pool._entrySignals = entrySignals;
         const watchResult = addWatchPassTa(pool, scoutReason || 'Scout Approved', 'SCOUT');
@@ -2168,7 +2173,12 @@ Balas HANYA JSON valid tanpa Markdown.`;
 
         let positionPubkey;
         const deployResult = await withTimeout(
-          deployPosition(poolAddress),
+          deployPosition(poolAddress, {
+            hasNonRefundableFees:
+              pool?.hasNonRefundableFees ??
+              marketSnapshot?.pool?.hasNonRefundableFees ??
+              false,
+          }),
           Number(currentCfg.deployTimeoutMs || 180_000),
           'DEPLOY'
         );
