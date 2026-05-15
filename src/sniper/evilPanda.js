@@ -63,7 +63,7 @@ let _exitAccountingLock = false;
 let _notifyFn = null;
 // Bounded search radius for rent-free fallback slices on the same pool.
 // This only affects pools that already tripped the rent guard.
-const RENT_FREE_SEARCH_SLACK_ARRAYS = 6;
+const RENT_FREE_SEARCH_SLACK_ARRAYS = 12;
 
 export function setEvilPandaNotifyFn(fn) {
   _notifyFn = typeof fn === 'function' ? fn : null;
