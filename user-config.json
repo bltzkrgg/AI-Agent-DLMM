@@ -65,6 +65,7 @@
     "smartExitRsi": 90,
     "maxHoldHours": 24,
     "outOfRangeWaitMinutes": 30,
+    "deployRangeMaxBins": 68,
     "atrGuardEnabled": true,
     "atrMultiplier": 1.5,
     "maxDynamicSl": 20,
