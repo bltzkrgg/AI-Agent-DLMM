@@ -33,7 +33,7 @@ import { flushRuntimeState, getRuntimeState, setRuntimeState } from '../runtime/
 import { clearPositionRuntimeState } from '../app/positionRuntimeState.js';
 import { checkGasGuard } from '../safety/gasGuard.js';
 import { assertRangeDoesNotRequireBinArrayInit, inspectRangeBinArrayInitStatus } from '../solana/meteora.js';
-import { selectRentFreeRange } from '../utils/binRangePolicy.js';
+import { BIN_ARRAY_SIZE, selectRentFreeRange } from '../utils/binRangePolicy.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const HARVEST_LOG = join(__dirname, '../../harvest.log');
@@ -566,15 +566,41 @@ export async function deployPosition(poolAddress) {
         arrayStatuses: rentGuardStatus.arrayStatuses,
       });
 
-      if (adjusted) {
+      let widenedAdjusted = null;
+      let widenedGuardStatus = null;
+      const widenedSlackArrays = 1;
+      const widenedMin = rangeMin - (BIN_ARRAY_SIZE * widenedSlackArrays);
+      const widenedMax = rangeMax + (BIN_ARRAY_SIZE * widenedSlackArrays);
+
+      if (!adjusted) {
+        try {
+          widenedGuardStatus = await inspectRangeBinArrayInitStatus(connection, poolPubkey, widenedMin, widenedMax);
+          if (widenedGuardStatus && !widenedGuardStatus.unchecked) {
+            widenedAdjusted = selectRentFreeRange({
+              desiredMin: widenedMin,
+              desiredMax: widenedMax,
+              maxBins: rangeMaxBins,
+              arrayStatuses: widenedGuardStatus.arrayStatuses,
+            });
+          }
+        } catch (e) {
+          if (!String(e?.message || '').startsWith('BIN_ARRAY_RENT_REQUIRED')) {
+            throw e;
+          }
+        }
+      }
+
+      const rentAdjusted = adjusted || widenedAdjusted;
+      if (rentAdjusted) {
         const prevMin = rangeMin;
         const prevMax = rangeMax;
-        rangeMin = adjusted.rangeMin;
-        rangeMax = adjusted.rangeMax;
+        rangeMin = rentAdjusted.rangeMin;
+        rangeMax = rentAdjusted.rangeMax;
         const adjustedWidth = rangeMax - rangeMin + 1;
         console.warn(
           `[evilPanda] RANGE_ADJUSTED_FOR_RENT ${poolAddress.slice(0,8)} desired=[${prevMin},${prevMax}] adjusted=[${rangeMin},${rangeMax}] ` +
-          `checkedArrays=${rentGuardStatus.checkedArrays || 0} maxBins=${rangeMaxBins}`
+          `checkedArrays=${rentGuardStatus.checkedArrays || 0} maxBins=${rangeMaxBins}` +
+          (widenedAdjusted ? ` widened=[${widenedMin},${widenedMax}]` : '')
         );
         await notify(
           `↪️ <b>Range Disesuaikan</b>\n` +
@@ -582,7 +608,7 @@ export async function deployPosition(poolAddress) {
           `Range awal: <code>${prevMin}-${prevMax}</code>\n` +
           `Range aman: <code>${rangeMin}-${rangeMax}</code>\n` +
           `Lebar: <code>${adjustedWidth} bin</code> | Max: <code>${rangeMaxBins} bin</code>\n` +
-          `<i>Range awal menyentuh bin array baru, jadi bot menahan rent dan lanjut pakai sub-range yang sudah initialized.</i>`
+          `<i>Range awal menyentuh bin array baru, jadi bot geser ke slice yang masih rent-free dan tetap lanjut deploy.</i>`
         );
       } else {
         const detail = `BIN_ARRAY_RENT_REQUIRED: ${rentGuardStatus.uninitializedCount || 0} uninitialized bin array(s) in range [${rangeMin}, ${rangeMax}] — estimated non-refundable rent: ~${rentGuardStatus.estimatedRentSol || 'unknown'} SOL`;
