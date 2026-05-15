@@ -59,7 +59,7 @@ test('pool memory applies cooldown after repeated losses', async () => {
   assert.equal(signal.priorityDelta < 0, true);
 });
 
-test('pool memory applies rent cooldown only to the affected pool and clears on success', async () => {
+test('pool memory records non-refundable fee history only on the affected pool and clears on success', async () => {
   const memory = await loadPoolMemory();
   const key = 'MintRent11111111111111111111111111111111111';
 
@@ -79,7 +79,7 @@ test('pool memory applies rent cooldown only to the affected pool and clears on 
 
   const signal = memory.getPoolMemorySignal(key);
   assert.equal(signal.cooldownActive, false);
-  assert.match(signal.reason, /POOL_RENT_BLOCKED_/);
+  assert.match(signal.reason, /POOL_NON_REFUNDABLE_FEE_HISTORY_/);
   assert.equal(signal.priorityDelta, 0);
 
   memory.recordPoolOutcome({
@@ -94,7 +94,7 @@ test('pool memory applies rent cooldown only to the affected pool and clears on 
   assert.equal(after.rentCooldownUntil, 0);
 });
 
-test('pool memory keeps rent cooldown isolated by pool address even when mint matches', async () => {
+test('pool memory keeps non-refundable fee history isolated by pool address even when mint matches', async () => {
   const memory = await loadPoolMemory();
   const mint = 'MintShared1111111111111111111111111111111111';
   const poolA = 'PoolSharedA111111111111111111111111111111111';
@@ -113,7 +113,7 @@ test('pool memory keeps rent cooldown isolated by pool address even when mint ma
   const signalB = memory.getPoolMemorySignal({ tokenMint: mint, poolAddress: poolB });
 
   assert.equal(signalA.cooldownActive, false);
-  assert.match(signalA.reason, /POOL_RENT_BLOCKED_/);
+  assert.match(signalA.reason, /POOL_NON_REFUNDABLE_FEE_HISTORY_/);
   assert.equal(signalA.priorityDelta, 0);
   assert.equal(signalB.cooldownActive, false);
   assert.equal(signalB.reason, 'NO_MEMORY');

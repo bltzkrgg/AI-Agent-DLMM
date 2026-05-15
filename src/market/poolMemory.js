@@ -289,7 +289,7 @@ export function getPoolMemorySignal(input = {}, now = nowMs()) {
     reason: genericCooldownActive
         ? `POOL_MEMORY_COOLDOWN_${Math.ceil((cooldownUntil - now) / 60000)}m`
       : Number(memory.rentFailureCount || 0) > 0
-        ? `POOL_RENT_BLOCKED_${Number(memory.rentFailureCount || 0)}`
+        ? `POOL_NON_REFUNDABLE_FEE_HISTORY_${Number(memory.rentFailureCount || 0)}`
       : `POOL_MEMORY_DELTA_${priorityDelta}`,
   };
 }
