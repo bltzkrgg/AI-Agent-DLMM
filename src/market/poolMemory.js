@@ -168,7 +168,6 @@ export function recordPoolRentFailure({
       next.poolAddress = poolAddress || next.poolAddress || null;
       next.tokenMint = tokenMint || next.tokenMint || memoryKey;
       next.symbol = symbol || next.symbol || null;
-      next.priorityScore = Math.max(-100, Math.min(100, next.priorityScore - 8));
       next.history = [
         ...next.history,
         {

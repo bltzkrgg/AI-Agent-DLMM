@@ -61,6 +61,7 @@ const EP_CONFIG = {
 const _activePositions = new Map();
 let _exitAccountingLock = false;
 let _notifyFn = null;
+const RENT_FREE_SEARCH_SLACK_ARRAYS = 3;
 
 export function setEvilPandaNotifyFn(fn) {
   _notifyFn = typeof fn === 'function' ? fn : null;
@@ -69,6 +70,68 @@ export function setEvilPandaNotifyFn(fn) {
 async function notify(msg) {
   if (!_notifyFn) return;
   await _notifyFn(msg).catch(() => {});
+}
+
+async function findAdaptiveRentFreeRange({
+  connection,
+  poolPubkey,
+  desiredMin,
+  desiredMax,
+  maxBins,
+  initialStatus = null,
+} = {}) {
+  const plans = [
+    {
+      slackArrays: 0,
+      searchMin: desiredMin,
+      searchMax: desiredMax,
+      status: initialStatus,
+    },
+  ];
+
+  for (let slackArrays = 1; slackArrays <= RENT_FREE_SEARCH_SLACK_ARRAYS; slackArrays++) {
+    plans.push({
+      slackArrays,
+      searchMin: desiredMin - (BIN_ARRAY_SIZE * slackArrays),
+      searchMax: desiredMax + (BIN_ARRAY_SIZE * slackArrays),
+      status: null,
+    });
+  }
+
+  for (const plan of plans) {
+    let status = plan.status;
+    if (!status) {
+      try {
+        status = await inspectRangeBinArrayInitStatus(connection, poolPubkey, plan.searchMin, plan.searchMax);
+      } catch (e) {
+        if (!String(e?.message || '').startsWith('BIN_ARRAY_RENT_REQUIRED')) {
+          throw e;
+        }
+        continue;
+      }
+    }
+
+    if (!status || status.unchecked) continue;
+
+    const adjusted = selectRentFreeRange({
+      desiredMin: plan.searchMin,
+      desiredMax: plan.searchMax,
+      maxBins,
+      arrayStatuses: status.arrayStatuses,
+    });
+
+    if (adjusted) {
+      return {
+        adjusted,
+        searchSlackArrays: plan.slackArrays,
+        searchMin: plan.searchMin,
+        searchMax: plan.searchMax,
+        status,
+      };
+    }
+  }
+
+  return null;
 }
 
 async function persistActivePositionsState() {
@@ -559,38 +622,16 @@ export async function deployPosition(poolAddress) {
     }
 
     if (rentGuardStatus && !rentGuardStatus.unchecked && !rentGuardStatus.safe) {
-      const adjusted = selectRentFreeRange({
+      const rentAdjustedResult = await findAdaptiveRentFreeRange({
+        connection,
+        poolPubkey,
         desiredMin: rangeMin,
         desiredMax: rangeMax,
         maxBins: rangeMaxBins,
-        arrayStatuses: rentGuardStatus.arrayStatuses,
+        initialStatus: rentGuardStatus,
       });
 
-      let widenedAdjusted = null;
-      let widenedGuardStatus = null;
-      const widenedSlackArrays = 1;
-      const widenedMin = rangeMin - (BIN_ARRAY_SIZE * widenedSlackArrays);
-      const widenedMax = rangeMax + (BIN_ARRAY_SIZE * widenedSlackArrays);
-
-      if (!adjusted) {
-        try {
-          widenedGuardStatus = await inspectRangeBinArrayInitStatus(connection, poolPubkey, widenedMin, widenedMax);
-          if (widenedGuardStatus && !widenedGuardStatus.unchecked) {
-            widenedAdjusted = selectRentFreeRange({
-              desiredMin: widenedMin,
-              desiredMax: widenedMax,
-              maxBins: rangeMaxBins,
-              arrayStatuses: widenedGuardStatus.arrayStatuses,
-            });
-          }
-        } catch (e) {
-          if (!String(e?.message || '').startsWith('BIN_ARRAY_RENT_REQUIRED')) {
-            throw e;
-          }
-        }
-      }
-
-      const rentAdjusted = adjusted || widenedAdjusted;
+      const rentAdjusted = rentAdjustedResult?.adjusted || null;
       if (rentAdjusted) {
         const prevMin = rangeMin;
         const prevMax = rangeMax;
@@ -600,7 +641,9 @@ export async function deployPosition(poolAddress) {
         console.warn(
           `[evilPanda] RANGE_ADJUSTED_FOR_RENT ${poolAddress.slice(0,8)} desired=[${prevMin},${prevMax}] adjusted=[${rangeMin},${rangeMax}] ` +
           `checkedArrays=${rentGuardStatus.checkedArrays || 0} maxBins=${rangeMaxBins}` +
-          (widenedAdjusted ? ` widened=[${widenedMin},${widenedMax}]` : '')
+          (rentAdjustedResult?.searchSlackArrays > 0
+            ? ` searchSlack=${rentAdjustedResult.searchSlackArrays}`
+            : '')
         );
         await notify(
           `↪️ <b>Range Disesuaikan</b>\n` +

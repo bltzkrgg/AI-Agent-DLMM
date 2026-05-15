@@ -74,8 +74,9 @@ test('evilPanda uses monolith positions with one Meteora account for the full ra
   assert.match(src, /assertRangeDoesNotRequireBinArrayInit/);
   assert.match(src, /VETO_NON_REFUNDABLE_RENT/);
   assert.match(src, /RANGE_ADJUSTED_FOR_RENT/);
-  assert.match(src, /widenedSlackArrays = 1/);
-  assert.match(src, /widenedGuardStatus = await inspectRangeBinArrayInitStatus/);
+  assert.match(src, /RENT_FREE_SEARCH_SLACK_ARRAYS/);
+  assert.match(src, /findAdaptiveRentFreeRange/);
+  assert.match(src, /searchSlackArrays/);
   assert.match(src, /geser ke slice yang masih rent-free dan tetap lanjut deploy/);
   assert.doesNotMatch(src, /rangeMax = activeBin\.binId - offsetMinBins - 1/);
   assert.doesNotMatch(src, /rangeMax - rangeMin > 1000/);
