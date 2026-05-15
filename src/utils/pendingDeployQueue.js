@@ -594,7 +594,7 @@ async function runWatcher() {
           `Range: <code>${result.rangeMin}-${result.rangeMax}</code> (max ${result.rangeMaxBins} bin)\n` +
           (result.detail ? `Detail: <code>${escapeHTML(String(result.detail).slice(0, 240))}</code>\n` : '') +
           (blockedByRent
-              ? `<i>Adjust range gagal. Pool ini veto tanpa cooldown.</i>`
+              ? `<i>Adjust range gagal untuk pool/range ini. Pool lain tetap normal.</i>`
               : `<i>Queue menghormati veto deploy.</i>`)
           );
           continue;

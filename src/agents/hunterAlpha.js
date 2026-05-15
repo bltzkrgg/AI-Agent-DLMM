@@ -2201,10 +2201,10 @@ Balas HANYA JSON valid tanpa Markdown.`;
           await notify(
             `⛔ <b>Deploy Ditolak</b>\n` +
             `<b>${escapeHTML(symbol)}</b> — <code>${reasonText}</code>\n` +
-            `Pool: <code>${poolAddress.slice(0,8)}</code>\n` +
-            `Range: <code>${deployResult.rangeMin}-${deployResult.rangeMax}</code> (max ${deployResult.rangeMaxBins} bin)\n` +
-            `${detailText}\n` +
-            `<i>Pool tidak dideploy karena memicu non-refundable rent.</i>`
+          `Pool: <code>${poolAddress.slice(0,8)}</code>\n` +
+          `Range: <code>${deployResult.rangeMin}-${deployResult.rangeMax}</code> (max ${deployResult.rangeMaxBins} bin)\n` +
+          `${detailText}\n` +
+          `<i>Pool/range ini tidak dideploy karena memicu non-refundable rent. Pool lain tetap normal.</i>`
           );
           return false;
         }
