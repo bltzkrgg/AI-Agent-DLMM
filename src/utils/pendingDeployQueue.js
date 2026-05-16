@@ -2,6 +2,7 @@
 
 import { getConfig } from '../config.js';
 import { getMarketSnapshot } from '../market/oracle.js';
+import { checkSupertrendVeto } from '../market/meridianVeto.js';
 import { getPoolMemorySignal, recordPoolDeploy } from '../market/poolMemory.js';
 import { reserveDeploySlot, releaseDeploySlot } from './deploySlotGuard.js';
 
@@ -20,6 +21,7 @@ const _queue   = new Map(); // mint -> entry
 const _snapshotCache = new Map(); // key -> { at, snapshot }
 const _snapshotInflight = new Map(); // key -> Promise
 const SNAPSHOT_CACHE_TTL_MS = 12_000;
+const FINAL_ST_CACHE_TTL_MS = 15_000;
 let _snapshotCacheHits = 0;
 let _snapshotCacheMisses = 0;
 
@@ -131,6 +133,94 @@ function isTrustedLpWatchMeta(meta = {}) {
     (breakoutQuality === 'VALID' || breakoutQuality === 'STRONG');
 }
 
+function normalizeSupertrendDirection(value = '') {
+  const trend = String(value || '').toUpperCase();
+  if (trend === 'BULLISH' || trend === 'BEARISH') return trend;
+  return 'UNKNOWN';
+}
+
+function readCachedSupertrend15m(meta = {}, pool = {}) {
+  const direction = normalizeSupertrendDirection(
+    meta.finalSupertrend15m ||
+    meta.supertrend15m ||
+    meta.taTrend ||
+    meta.liveTrend ||
+    pool?._entrySignals?.taTrend ||
+    pool?._watchTaTrend
+  );
+  const at = Number(
+    meta.supertrend15mAt ||
+    meta.taTrendAt ||
+    meta.snapshotAt ||
+    pool?._watchSnapshotAt ||
+    0
+  );
+  return { direction, at };
+}
+
+export function isFreshBullishSupertrend15m(meta = {}, pool = {}, now = Date.now(), ttlMs = FINAL_ST_CACHE_TTL_MS) {
+  const cached = readCachedSupertrend15m(meta, pool);
+  return cached.direction === 'BULLISH' && cached.at > 0 && (now - cached.at) <= ttlMs;
+}
+
+export async function getFinalSupertrendDeployDecision({
+  mint = '',
+  symbol = '',
+  pool = {},
+  meta = {},
+  currentPrice = 0,
+  now = Date.now(),
+  ttlMs = FINAL_ST_CACHE_TTL_MS,
+  checkFn = checkSupertrendVeto,
+} = {}) {
+  const label = symbol || mint?.slice?.(0, 8) || 'UNKNOWN';
+  const cached = readCachedSupertrend15m(meta, pool);
+  const fresh = cached.at > 0 && (now - cached.at) <= ttlMs;
+
+  if (fresh) {
+    if (cached.direction === 'BULLISH') {
+      return { ok: true, action: 'ALLOW', reason: 'fresh cached Supertrend 15m bullish', source: 'cache', direction: 'BULLISH' };
+    }
+    if (cached.direction === 'BEARISH') {
+      return { ok: false, action: 'VETO', reason: 'fresh cached Supertrend 15m bearish', source: 'cache', direction: 'BEARISH' };
+    }
+  }
+
+  if (!mint) {
+    return { ok: false, action: 'HOLD', reason: 'missing mint for final Supertrend 15m check', source: 'unknown', direction: cached.direction || 'UNKNOWN' };
+  }
+
+  try {
+    const result = await checkFn(mint, currentPrice);
+    const direction = normalizeSupertrendDirection(result?.direction);
+    if (!result?.veto && direction === 'BULLISH') {
+      return { ok: true, action: 'ALLOW', reason: result.reason || 'fresh Supertrend 15m bullish', source: 'fresh_fetch', direction: 'BULLISH' };
+    }
+    if (direction === 'BEARISH' || String(result?.reason || '').toUpperCase().includes('BEARISH')) {
+      return { ok: false, action: 'VETO', reason: result?.reason || 'fresh Supertrend 15m bearish', source: 'fresh_fetch', direction: 'BEARISH' };
+    }
+    return { ok: false, action: 'HOLD', reason: result?.reason || 'Supertrend 15m unavailable', source: 'fresh_fetch', direction: direction || 'UNKNOWN' };
+  } catch (e) {
+    return { ok: false, action: 'HOLD', reason: e?.message || `Supertrend 15m check failed for ${label}`, source: 'unknown', direction: 'UNKNOWN' };
+  }
+}
+
+export async function ensureFinalSupertrendBullish(args = {}) {
+  const decision = await getFinalSupertrendDeployDecision(args);
+  const label = args.symbol || args.mint?.slice?.(0, 8) || 'UNKNOWN';
+  const mintShort = args.mint?.slice?.(0, 8) || 'UNKNOWN';
+  if (decision.action === 'ALLOW') {
+    console.log(`[QUEUE] FINAL_ST_GATE_PASS ${label}/${mintShort} source=${decision.source} reason=${decision.reason}`);
+  } else if (decision.action === 'VETO') {
+    console.log(`[QUEUE] FINAL_ST_GATE_VETO ${label}/${mintShort} source=${decision.source} direction=${decision.direction} reason=${decision.reason}`);
+  } else if (decision.source === 'fresh_fetch' || decision.source === 'unknown') {
+    console.log(`[QUEUE] FINAL_ST_GATE_HOLD_ERROR ${label}/${mintShort} source=${decision.source} reason=${decision.reason}`);
+  } else {
+    console.log(`[QUEUE] FINAL_ST_GATE_HOLD_STALE ${label}/${mintShort} source=${decision.source} reason=${decision.reason}`);
+  }
+  return decision;
+}
+
 export function summarizeQueueDecision({ meta = {}, liveSnapshot = null, cfg = getConfig(), lpMode = false } = {}) {
   const signals = resolveQueueSignalSources({ meta, liveSnapshot });
   const timingState = String(meta.entryTimingState || '').toUpperCase();
@@ -143,6 +233,9 @@ export function summarizeQueueDecision({ meta = {}, liveSnapshot = null, cfg = g
     if (signals.trend === 'BEARISH') {
       decision = 'DROP';
       reason = `Supertrend 15m bearish (${signals.trendSource})`;
+    } else if (trustedLpWatch && signals.trend !== 'BULLISH') {
+      decision = 'HOLD';
+      reason = `Trusted WATCH menunggu Supertrend 15m bullish (${signals.trendSource})`;
     } else if (trustedLpWatch) {
       decision = 'DEPLOY';
       reason = `Trusted WATCH ready (${signals.trendSource}/${signals.m5Source})`;
@@ -183,14 +276,14 @@ export function isFreshDeployMeta(meta = {}) {
   if (lpMode) {
     if (timingState !== 'LP_LIVE' && timingState !== 'BREAKOUT' && timingState !== 'ATH_BREAK') return false;
     if (taTrend === 'BEARISH') return false;
-    if (!trustedLpWatch && taTrend !== 'BULLISH') return false;
+    if (taTrend !== 'BULLISH') return false;
   } else if (timingState !== 'BREAKOUT' && timingState !== 'ATH_BREAK') {
     return false;
   }
   if (readiness !== 'HIGH') return false;
   if (breakoutQuality !== 'VALID' && breakoutQuality !== 'STRONG') return false;
   if (taTrend === 'BEARISH') return false;
-  if (taTrend && taTrend !== 'BULLISH' && !trustedLpWatch) return false;
+  if (taTrend && taTrend !== 'BULLISH') return false;
   if (!lpMode) {
     const freshAthBreakPct = Number(cfg.entryFreshBreakoutMinAthDistancePct ?? 99.25);
     const breakoutMinStPct = Number(cfg.entrySupertrendBreakMinPct ?? 1.25);
@@ -518,6 +611,31 @@ async function runWatcher() {
           `❌ <b>Deploy Gagal (Queue)</b>\n` +
           `<b>${symbol}</b> — Pool address bukan Solana pubkey yang valid.`
         );
+        continue;
+      }
+
+      const currentPrice = Number(
+        pool?._entrySignals?.currentPrice ||
+        meta?.currentPrice ||
+        pool?.price ||
+        pool?.pool_price ||
+        0
+      );
+      const finalSt = await ensureFinalSupertrendBullish({ mint, symbol, pool, meta, currentPrice });
+      if (!finalSt.ok) {
+        if (finalSt.action === 'VETO') {
+          _queue.delete(mint);
+          await safeSend(
+            `❌ <b>Deploy Queue Drop</b>\n` +
+            `<b>${symbol}</b>\n` +
+            `ST 15m: <code>${finalSt.direction || 'UNKNOWN'}</code> (<code>${finalSt.source}</code>)\n` +
+            `<i>${escapeHTML(finalSt.reason)}</i>`
+          );
+        } else {
+          entry.nextEligibleAt = Date.now() + 15_000;
+          entry.deferReason = finalSt.reason;
+          console.log(`[QUEUE] ⏸️ ${symbol} HOLD sebelum deploy: ${finalSt.reason}`);
+        }
         continue;
       }
 

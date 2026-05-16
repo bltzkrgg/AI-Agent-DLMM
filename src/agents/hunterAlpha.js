@@ -27,7 +27,7 @@ import { getPositionRuntimeState, updatePositionRuntimeState } from '../app/posi
 import { escapeHTML, safeParseAI } from '../utils/safeJson.js';
 import reportManager              from '../utils/reportManager.js';
 import pendingStore               from '../utils/pendingStore.js';
-import { enqueueForDeploy, isFreshDeployMeta, startDeployQueueWatcher, setDeployQueueNotifyFn, setDeployQueueMonitorFn } from '../utils/pendingDeployQueue.js';
+import { enqueueForDeploy, ensureFinalSupertrendBullish, isFreshDeployMeta, startDeployQueueWatcher, setDeployQueueNotifyFn, setDeployQueueMonitorFn } from '../utils/pendingDeployQueue.js';
 import { getDeploySlotUsage, reserveDeploySlot, releaseDeploySlot } from '../utils/deploySlotGuard.js';
 // ── Pool selector: pilih pool terbaik per-token berdasarkan binStep priority ─────────────
 //
@@ -551,11 +551,6 @@ export async function submitManualCaPool(poolAddress, { source = 'TELEGRAM_CA' }
 
   const marketSnapshot = await getMarketSnapshot(tokenMint, resolved.poolAddress || address).catch(() => null);
   const entrySignals = deriveBreakoutEntrySignals({ pool: poolInfo, marketSnapshot, cfg });
-  if (String(entrySignals.taTrend || '').toUpperCase() === 'BEARISH') {
-    const reason = 'Supertrend 15m bearish';
-    console.log(`[MANUAL] ❌ ${symbol} DROP: ${reason}`);
-    return { ok: false, status: 'DROP', kind: resolved.kind, symbol, poolAddress: resolved.poolAddress || address, tokenMint, entrySignals, reason };
-  }
   const now = Date.now();
   const watchWindowSec = getLpWatchWindowSec(cfg);
   const maxDriftPct = getLpMaxDriftPct(cfg);
@@ -578,6 +573,23 @@ export async function submitManualCaPool(poolAddress, { source = 'TELEGRAM_CA' }
     _watchTaTrend: entrySignals.taTrend ?? null,
     hasNonRefundableFees: Boolean(marketSnapshot?.pool?.hasNonRefundableFees),
   };
+
+  const manualStGate = await ensureFinalSupertrendBullish({
+    mint: tokenMint,
+    symbol,
+    pool,
+    meta: {
+      taTrend: entrySignals.taTrend,
+      snapshotAt: now,
+    },
+    currentPrice: entrySignals.currentPrice ?? marketSnapshot?.price?.currentPrice ?? 0,
+  });
+  if (!manualStGate.ok) {
+    const status = manualStGate.action === 'VETO' ? 'DROP' : 'HOLD';
+    const reason = manualStGate.reason || 'Supertrend 15m belum confirmed bullish';
+    console.log(`[MANUAL] ${status === 'DROP' ? '❌' : '⏸️'} ${symbol} ${status}: ${reason}`);
+    return { ok: false, status, kind: resolved.kind, symbol, poolAddress: resolved.poolAddress || address, tokenMint, entrySignals, reason };
+  }
 
   const queueMeta = {
     scoutReason: 'Manual CA input',
@@ -2139,6 +2151,34 @@ Balas HANYA JSON valid tanpa Markdown.`;
       const symbol      = winner.tokenXSymbol || winner.name?.split('-')[0] || poolAddress.slice(0,8);
       if (hasActiveMint(tokenMint) || hasActivePoolAddress(poolAddress)) {
         console.log(`[hunter] 🔁 ${symbol} / ${poolAddress.slice(0,8)} sudah aktif. Skip double-entry.`);
+        return false;
+      }
+
+      const finalSt = await ensureFinalSupertrendBullish({
+        mint: tokenMint,
+        symbol,
+        pool: winner,
+        meta: {
+          taTrend: winner?._entrySignals?.taTrend,
+          snapshotAt: winner?._watchSnapshotAt || winner?._entrySignals?.snapshotAt,
+        },
+        currentPrice: winner?._entrySignals?.currentPrice || winner?.price || winner?.pool_price || 0,
+      });
+      if (!finalSt.ok) {
+        const reasonText = finalSt.reason || 'Supertrend 15m belum confirmed bullish';
+        console.log(`[hunter] ${finalSt.action === 'VETO' ? '❌' : '⏸️'} Final ST gate ${symbol}: ${reasonText}`);
+        if (winner._record) {
+          recordGate(winner._record, 'SCOUT_AGENT', finalSt.action === 'VETO' ? 'FAIL' : 'DEFER', reasonText);
+        }
+        if (finalSt.action !== 'VETO') {
+          addPendingRetest(winner, reasonText);
+        }
+        await notify(
+          `${finalSt.action === 'VETO' ? '⛔ <b>Deploy Ditolak</b>' : '⏸️ <b>Deploy Ditahan</b>'}\n` +
+          `<b>${escapeHTML(symbol)}</b> — <code>FINAL_ST_GATE_${finalSt.action}</code>\n` +
+          `ST 15m: <code>${escapeHTML(finalSt.direction || 'UNKNOWN')}</code> (<code>${escapeHTML(finalSt.source || 'unknown')}</code>)\n` +
+          `<i>${escapeHTML(reasonText)}</i>`
+        );
         return false;
       }
 
