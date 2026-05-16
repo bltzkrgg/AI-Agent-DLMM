@@ -143,16 +143,14 @@ function readCachedSupertrend15m(meta = {}, pool = {}) {
   const direction = normalizeSupertrendDirection(
     meta.finalSupertrend15m ||
     meta.supertrend15m ||
-    meta.taTrend ||
-    meta.liveTrend ||
-    pool?._entrySignals?.taTrend ||
-    pool?._watchTaTrend
+    pool?._finalSupertrend15m ||
+    pool?._supertrend15m
   );
   const at = Number(
+    meta.finalSupertrend15mAt ||
     meta.supertrend15mAt ||
-    meta.taTrendAt ||
-    meta.snapshotAt ||
-    pool?._watchSnapshotAt ||
+    pool?._finalSupertrend15mAt ||
+    pool?._supertrend15mAt ||
     0
   );
   return { direction, at };
@@ -233,9 +231,6 @@ export function summarizeQueueDecision({ meta = {}, liveSnapshot = null, cfg = g
     if (signals.trend === 'BEARISH') {
       decision = 'DROP';
       reason = `Supertrend 15m bearish (${signals.trendSource})`;
-    } else if (trustedLpWatch && signals.trend !== 'BULLISH') {
-      decision = 'HOLD';
-      reason = `Trusted WATCH menunggu Supertrend 15m bullish (${signals.trendSource})`;
     } else if (trustedLpWatch) {
       decision = 'DEPLOY';
       reason = `Trusted WATCH ready (${signals.trendSource}/${signals.m5Source})`;
@@ -276,14 +271,14 @@ export function isFreshDeployMeta(meta = {}) {
   if (lpMode) {
     if (timingState !== 'LP_LIVE' && timingState !== 'BREAKOUT' && timingState !== 'ATH_BREAK') return false;
     if (taTrend === 'BEARISH') return false;
-    if (taTrend !== 'BULLISH') return false;
+    if (!trustedLpWatch && taTrend !== 'BULLISH') return false;
   } else if (timingState !== 'BREAKOUT' && timingState !== 'ATH_BREAK') {
     return false;
   }
   if (readiness !== 'HIGH') return false;
   if (breakoutQuality !== 'VALID' && breakoutQuality !== 'STRONG') return false;
   if (taTrend === 'BEARISH') return false;
-  if (taTrend && taTrend !== 'BULLISH') return false;
+  if (taTrend && taTrend !== 'BULLISH' && !trustedLpWatch) return false;
   if (!lpMode) {
     const freshAthBreakPct = Number(cfg.entryFreshBreakoutMinAthDistancePct ?? 99.25);
     const breakoutMinStPct = Number(cfg.entrySupertrendBreakMinPct ?? 1.25);

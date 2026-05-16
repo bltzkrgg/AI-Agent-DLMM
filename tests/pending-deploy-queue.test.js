@@ -1,6 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 
+import { checkSupertrendVeto } from '../src/market/meridianVeto.js';
 import {
   getFinalSupertrendDeployDecision,
   isFreshBullishSupertrend15m,
@@ -71,14 +73,14 @@ test('fresh deploy meta allows breakout-valid, high-readiness entries including 
     breakoutQuality: 'VALID',
     taTrend: 'NEUTRAL',
     queueTrustedWatch: true,
-  }), false);
+  }), true);
 
   assert.equal(isFreshDeployMeta({
     entryTimingState: 'LP_LIVE',
     entryReadiness: 'HIGH',
     breakoutQuality: 'VALID',
     queueTrustedWatch: true,
-  }), false);
+  }), true);
 
   assert.equal(isFreshDeployMeta({
     entryTimingState: 'LP_LIVE',
@@ -133,7 +135,7 @@ test('queue freshness resolves live vs queued signals for LP-style chart scenari
   assert.equal(liveBearish.trend, 'BEARISH');
 });
 
-test('trusted WATCH-ready LP entries still require bullish 15m trend', () => {
+test('trusted WATCH-ready LP entries can prepare queue but still need final ST gate', async () => {
   const trustedWatchMeta = {
     entryTimingState: 'LP_LIVE',
     entryReadiness: 'HIGH',
@@ -148,8 +150,8 @@ test('trusted WATCH-ready LP entries still require bullish 15m trend', () => {
     liveSnapshot: null,
     lpMode: true,
   });
-  assert.equal(fromQueue.decision, 'HOLD');
-  assert.equal(fromQueue.reason.includes('Supertrend 15m bullish'), true);
+  assert.equal(fromQueue.decision, 'DEPLOY');
+  assert.equal(fromQueue.reason.includes('Trusted WATCH ready'), true);
 
   const liveNeutral = summarizeQueueDecision({
     meta: trustedWatchMeta,
@@ -159,7 +161,7 @@ test('trusted WATCH-ready LP entries still require bullish 15m trend', () => {
     },
     lpMode: true,
   });
-  assert.equal(liveNeutral.decision, 'HOLD');
+  assert.equal(liveNeutral.decision, 'DEPLOY');
   assert.equal(liveNeutral.trendSource, 'live');
 
   const liveBearish = summarizeQueueDecision({
@@ -171,16 +173,23 @@ test('trusted WATCH-ready LP entries still require bullish 15m trend', () => {
     lpMode: true,
   });
   assert.equal(liveBearish.decision, 'DROP');
+
+  const finalGate = await getFinalSupertrendDeployDecision({
+    mint: 'Mint111111111111111111111111111111111111111',
+    meta: trustedWatchMeta,
+    checkFn: async () => ({ veto: true, direction: 'UNKNOWN', reason: 'Supertrend 15m unavailable' }),
+  });
+  assert.equal(finalGate.action, 'HOLD');
 });
 
 test('final Supertrend deploy gate allows only fresh bullish cache', async () => {
   const now = 1_700_000_000_000;
 
-  assert.equal(isFreshBullishSupertrend15m({ taTrend: 'BULLISH', snapshotAt: now - 5_000 }, {}, now), true);
+  assert.equal(isFreshBullishSupertrend15m({ supertrend15m: 'BULLISH', supertrend15mAt: now - 5_000 }, {}, now), true);
 
   const freshBullish = await getFinalSupertrendDeployDecision({
     mint: 'Mint111111111111111111111111111111111111111',
-    meta: { taTrend: 'BULLISH', snapshotAt: now - 5_000 },
+    meta: { supertrend15m: 'BULLISH', supertrend15mAt: now - 5_000 },
     now,
     checkFn: async () => { throw new Error('should not fetch fresh ST'); },
   });
@@ -189,11 +198,35 @@ test('final Supertrend deploy gate allows only fresh bullish cache', async () =>
 
   const freshBearish = await getFinalSupertrendDeployDecision({
     mint: 'Mint111111111111111111111111111111111111111',
-    meta: { taTrend: 'BEARISH', snapshotAt: now - 5_000 },
+    meta: { supertrend15m: 'BEARISH', supertrend15mAt: now - 5_000 },
     now,
   });
   assert.equal(freshBearish.action, 'VETO');
   assert.equal(freshBearish.direction, 'BEARISH');
+});
+
+test('final Supertrend deploy gate does not trust generic taTrend snapshot cache', async () => {
+  const now = 1_700_000_000_000;
+  let calls = 0;
+
+  const decision = await getFinalSupertrendDeployDecision({
+    mint: 'Mint111111111111111111111111111111111111111',
+    meta: { taTrend: 'BULLISH', liveTrend: 'BULLISH', snapshotAt: now - 5_000 },
+    pool: {
+      _entrySignals: { taTrend: 'BULLISH' },
+      _watchTaTrend: 'BULLISH',
+      _watchSnapshotAt: now - 5_000,
+    },
+    now,
+    checkFn: async () => {
+      calls += 1;
+      return { veto: false, direction: 'BULLISH', reason: 'PASS: Trend 15m BULLISH via Meridian API' };
+    },
+  });
+
+  assert.equal(calls, 1);
+  assert.equal(decision.action, 'ALLOW');
+  assert.equal(decision.source, 'fresh_fetch');
 });
 
 test('final Supertrend deploy gate refreshes stale cache and fails closed on error', async () => {
@@ -202,7 +235,7 @@ test('final Supertrend deploy gate refreshes stale cache and fails closed on err
 
   const staleThenBearish = await getFinalSupertrendDeployDecision({
     mint: 'Mint111111111111111111111111111111111111111',
-    meta: { taTrend: 'BULLISH', snapshotAt: now - 60_000 },
+    meta: { supertrend15m: 'BULLISH', supertrend15mAt: now - 60_000 },
     now,
     checkFn: async () => {
       calls += 1;
@@ -224,6 +257,45 @@ test('final Supertrend deploy gate refreshes stale cache and fails closed on err
   assert.equal(fetchError.action, 'HOLD');
   assert.equal(fetchError.ok, false);
   assert.match(fetchError.reason, /network unavailable/);
+});
+
+test('manual CA final gate does not pass generic taTrend snapshot cache', () => {
+  const hunterSrc = readFileSync(new URL('../src/agents/hunterAlpha.js', import.meta.url), 'utf8');
+  const start = hunterSrc.indexOf('const manualStGate = await ensureFinalSupertrendBullish({');
+  assert.notEqual(start, -1);
+  const end = hunterSrc.indexOf('});', start);
+  const manualGateBlock = hunterSrc.slice(start, end);
+  assert.match(manualGateBlock, /meta: \{\}/);
+  assert.doesNotMatch(manualGateBlock, /taTrend: entrySignals\.taTrend/);
+  assert.doesNotMatch(manualGateBlock, /snapshotAt: now/);
+});
+
+test('checkSupertrendVeto only passes exact bullish direction', async () => {
+  const originalFetch = global.fetch;
+  try {
+    global.fetch = async () => ({
+      ok: true,
+      status: 200,
+      json: async () => ({ latest: { supertrend: { direction: 'neutral' } } }),
+      headers: { get: () => null },
+    });
+    const neutral = await checkSupertrendVeto('Mint111111111111111111111111111111111111111');
+    assert.equal(neutral.veto, true);
+    assert.equal(neutral.direction, 'UNKNOWN');
+    assert.match(neutral.reason, /unsupported Supertrend 15m direction/);
+
+    global.fetch = async () => ({
+      ok: true,
+      status: 200,
+      json: async () => ({ latest: { supertrend: { direction: 'bullish' } } }),
+      headers: { get: () => null },
+    });
+    const bullish = await checkSupertrendVeto('Mint111111111111111111111111111111111111111');
+    assert.equal(bullish.veto, false);
+    assert.equal(bullish.direction, 'BULLISH');
+  } finally {
+    global.fetch = originalFetch;
+  }
 });
 
 test('queue treats fallback momentum proxy as unreliable live confirmation', () => {

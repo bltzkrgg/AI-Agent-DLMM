@@ -578,10 +578,7 @@ export async function submitManualCaPool(poolAddress, { source = 'TELEGRAM_CA' }
     mint: tokenMint,
     symbol,
     pool,
-    meta: {
-      taTrend: entrySignals.taTrend,
-      snapshotAt: now,
-    },
+    meta: {},
     currentPrice: entrySignals.currentPrice ?? marketSnapshot?.price?.currentPrice ?? 0,
   });
   if (!manualStGate.ok) {
@@ -2158,10 +2155,7 @@ Balas HANYA JSON valid tanpa Markdown.`;
         mint: tokenMint,
         symbol,
         pool: winner,
-        meta: {
-          taTrend: winner?._entrySignals?.taTrend,
-          snapshotAt: winner?._watchSnapshotAt || winner?._entrySignals?.snapshotAt,
-        },
+        meta: {},
         currentPrice: winner?._entrySignals?.currentPrice || winner?.price || winner?.pool_price || 0,
       });
       if (!finalSt.ok) {
