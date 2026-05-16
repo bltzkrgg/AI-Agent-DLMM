@@ -70,7 +70,7 @@ export async function checkSupertrendVeto(mint, currentRealtimePrice = 0) {
     }
     
     const data = await res.json().catch(() => null);
-    const direction = String(data?.latest?.supertrend?.direction || '').toLowerCase();
+    const direction = String(data?.latest?.supertrend?.direction || '').trim().toLowerCase();
     if (!direction) {
       return { veto: true, reason: '[FAIL_CLOSED] Meridian Supertrend missing direction', direction: 'UNKNOWN' };
     }
@@ -83,7 +83,7 @@ export async function checkSupertrendVeto(mint, currentRealtimePrice = 0) {
       return { veto: true, reason: `VETO: Trend 15m BEARISH via Meridian API`, direction: 'BEARISH' };
     }
 
-    return { veto: true, reason: `VETO: unsupported Supertrend 15m direction: ${direction || 'UNKNOWN'}`, direction: 'UNKNOWN' };
+    return { veto: true, reason: `[FAIL_CLOSED] Meridian Supertrend unsupported direction: ${direction || 'UNKNOWN'}`, direction: 'UNKNOWN' };
   } catch (e) {
     return { veto: true, reason: `[FAIL_CLOSED] Meridian Supertrend exception: ${e.message}`, direction: 'UNKNOWN' };
   }

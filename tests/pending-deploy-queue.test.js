@@ -282,7 +282,7 @@ test('checkSupertrendVeto only passes exact bullish direction', async () => {
     const neutral = await checkSupertrendVeto('Mint111111111111111111111111111111111111111');
     assert.equal(neutral.veto, true);
     assert.equal(neutral.direction, 'UNKNOWN');
-    assert.match(neutral.reason, /unsupported Supertrend 15m direction/);
+    assert.match(neutral.reason, /\[FAIL_CLOSED\] Meridian Supertrend unsupported direction/);
 
     global.fetch = async () => ({
       ok: true,
