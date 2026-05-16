@@ -240,3 +240,19 @@ test('deploy natural failures are silenced from Telegram notifications', () => {
   assert.match(src, /'blockhash'/);
   assert.match(src, /deployPosition natural fail silenced/);
 });
+
+test('exit telegram messages display Meteora fee-only PnL', () => {
+  const hunterSrc = readFileSync(hunterPath, 'utf8');
+  const evilPandaSrc = readFileSync(evilPandaPath, 'utf8');
+
+  assert.match(evilPandaSrc, /export async function calculateFeeOnlyPnl/);
+  assert.match(evilPandaSrc, /feePnlPct = Number\(deploySol\) > 0 \? \(feePnlSol \/ Number\(deploySol\)\) \* 100 : 0/);
+  assert.match(evilPandaSrc, /return \{ action: 'STOP_LOSS', currentValueSol, pnlPct, \.\.\.feeOnlyPnl, inRange/);
+  assert.match(evilPandaSrc, /currentValueSol, pnlPct, \.\.\.feeOnlyPnl, inRange/);
+
+  assert.match(hunterSrc, /PnL Fee: <code>\$\{feeSign\}\$\{feePnlPct\.toFixed\(2\)\}%<\/code>/);
+  assert.match(hunterSrc, /Fee Value: <code>\$\{feePnlSol\.toFixed\(6\)\} SOL<\/code>/);
+  assert.match(hunterSrc, /Position Value: <code>\$\{currentValueSol\.toFixed\(4\)\} SOL<\/code>/);
+  assert.match(hunterSrc, /return \{ ok: true, solRecovered, feePnlSol, feePnlPct \}/);
+  assert.doesNotMatch(hunterSrc, /`PnL: <code>\+?\$\{pnlPct\.toFixed\(2\)\}%<\/code>\\n`/);
+});

@@ -87,6 +87,46 @@ async function notify(msg) {
   await _notifyFn(msg).catch(() => {});
 }
 
+export async function calculateFeeOnlyPnl({
+  feeXRaw = '0',
+  feeYRaw = '0',
+  xDec = 9,
+  yDec = 9,
+  tokenXMint = '',
+  deploySol = 0,
+  activeBinPrice = 0,
+  quoteFn = getJupiterQuote,
+} = {}) {
+  const feeXRawStr = String(feeXRaw || '0');
+  const safeXDec = Number.isFinite(Number(xDec)) ? Number(xDec) : 9;
+  const safeYDec = Number.isFinite(Number(yDec)) ? Number(yDec) : 9;
+  const feeYUi = Math.max(0, safeNum(feeYRaw, 0) / Math.pow(10, safeYDec));
+  let feeXSol = 0;
+  let feePnlSource = feeXRawStr === '0' ? 'none' : 'pool_price';
+
+  if (feeXRawStr !== '0') {
+    try {
+      const quote = await quoteFn(tokenXMint, WSOL_MINT, feeXRawStr);
+      feeXSol = Math.max(0, Number(quote?.outAmount || 0) / 1e9);
+      feePnlSource = 'jupiter';
+    } catch {
+      const feeXUi = Math.max(0, safeNum(feeXRawStr, 0) / Math.pow(10, safeXDec));
+      feeXSol = Math.max(0, feeXUi * safeNum(activeBinPrice, 0));
+      feePnlSource = feeXSol > 0 ? 'pool_price' : 'none';
+    }
+  }
+
+  const feePnlSol = Math.max(0, feeYUi + feeXSol);
+  const feePnlPct = Number(deploySol) > 0 ? (feePnlSol / Number(deploySol)) * 100 : 0;
+  return {
+    feePnlSol,
+    feePnlPct,
+    feeXUi: Math.max(0, safeNum(feeXRawStr, 0) / Math.pow(10, safeXDec)),
+    feeYUi,
+    feePnlSource,
+  };
+}
+
 async function findAdaptiveRentFreeRange({
   connection,
   poolPubkey,
@@ -1090,7 +1130,7 @@ function evaluateExitSignal(signal) {
 export async function monitorPnL(positionPubkey) {
   const reg = _activePositions.get(positionPubkey);
   if (!reg) {
-    return { action: 'ERROR', currentValueSol: 0, pnlPct: 0, inRange: false,
+    return { action: 'ERROR', currentValueSol: 0, pnlPct: 0, feePnlSol: 0, feePnlPct: 0, feePnlSource: 'none', inRange: false,
              error: `Position ${positionPubkey.slice(0,8)} not in registry` };
   }
 
@@ -1110,6 +1150,9 @@ export async function monitorPnL(positionPubkey) {
         action: 'MANUAL_CLOSED',
         currentValueSol: 0,
         pnlPct: 0,
+        feePnlSol: 0,
+        feePnlPct: 0,
+        feePnlSource: 'none',
         inRange: false,
         note: 'Position not found on-chain — assumed manually withdrawn',
       };
@@ -1126,6 +1169,15 @@ export async function monitorPnL(positionPubkey) {
     const totalYUi = Number(pd.totalYAmount?.toString() || '0') / Math.pow(10, yDec);
     const feeXUi   = Number(pd.feeX?.toString() || '0')         / Math.pow(10, xDec);
     const feeYUi   = Number(pd.feeY?.toString() || '0')         / Math.pow(10, yDec);
+    const feeOnlyPnl = await calculateFeeOnlyPnl({
+      feeXRaw: pd.feeX?.toString() || '0',
+      feeYRaw: pd.feeY?.toString() || '0',
+      xDec,
+      yDec,
+      tokenXMint: reg.tokenXMint,
+      deploySol: reg.deploySol,
+      activeBinPrice: rawPrice,
+    });
 
     const totalXRawToSell = Math.floor((totalXUi + feeXUi) * Math.pow(10, xDec)).toString();
 
@@ -1152,7 +1204,7 @@ export async function monitorPnL(positionPubkey) {
     const stopLossPct = getConfiguredStopLossPct();
     if (pnlPct <= -stopLossPct) {
       console.log(`[evilPanda] 🛑 STOP_LOSS ${positionPubkey.slice(0,8)} pnl=${pnlPct.toFixed(2)}%`);
-      return { action: 'STOP_LOSS', currentValueSol, pnlPct, inRange,
+      return { action: 'STOP_LOSS', currentValueSol, pnlPct, ...feeOnlyPnl, inRange,
                exitReason: `Hard SL: PnL=${pnlPct.toFixed(2)}% ≤ -${stopLossPct}%` };
     }
 
@@ -1173,7 +1225,7 @@ export async function monitorPnL(positionPubkey) {
       console.log(`[evilPanda] 📈 TAKE_PROFIT (TRAILING) ${positionPubkey.slice(0,8)} hwm=${reg.hwmPct.toFixed(2)}% pnl=${pnlPct.toFixed(2)}% drop=${drawdown.toFixed(2)}%`);
       return {
         action:       'TAKE_PROFIT',
-        currentValueSol, pnlPct, inRange,
+        currentValueSol, pnlPct, ...feeOnlyPnl, inRange,
         exitScenario: 'TRAILING_PROFIT',
         exitReason:   `Trailing TP: turun ${drawdown.toFixed(2)}% dari HWM ${reg.hwmPct.toFixed(2)}% (trigger ${trailingTriggerPct}%, drop ${trailingDropPct}%)`,
       };
@@ -1190,6 +1242,7 @@ export async function monitorPnL(positionPubkey) {
       action: 'HOLD',
       currentValueSol,
       pnlPct,
+      ...feeOnlyPnl,
       inRange,
       taReason: exitDecision.reason,
       taSignal: signal ? {
@@ -1203,7 +1256,7 @@ export async function monitorPnL(positionPubkey) {
 
   } catch (e) {
     console.warn(`[evilPanda] monitorPnL error: ${e.message}`);
-    return { action: 'ERROR', currentValueSol: 0, pnlPct: 0, inRange: false, error: e.message };
+    return { action: 'ERROR', currentValueSol: 0, pnlPct: 0, feePnlSol: 0, feePnlPct: 0, feePnlSource: 'none', inRange: false, error: e.message };
   }
 }
 
@@ -1322,26 +1375,29 @@ export async function exitPosition(positionPubkey, reason = 'MANUAL') {
 
       // Snapshot fee composition sebelum close untuk accounting split.
       let estimatedFeeSol = 0;
+      let estimatedFeePct = 0;
+      let estimatedFeeSource = 'none';
       try {
         const pd = activePos.positionData;
         const [xMeta, yMeta] = await resolveTokens([reg.tokenXMint, reg.tokenYMint]);
         const xDec = xMeta.decimals || 9;
         const yDec = yMeta.decimals || 9;
-        const feeXRaw = String(pd.feeX?.toString() || '0');
-        const feeYUi = Number(pd.feeY?.toString() || '0') / Math.pow(10, yDec);
-        let feeXSol = 0;
-        if (feeXRaw !== '0') {
-          try {
-            const quote = await getJupiterQuote(reg.tokenXMint, WSOL_MINT, feeXRaw);
-            feeXSol = Number(quote.outAmount || 0) / 1e9;
-          } catch {
-            const feeXUi = Number(pd.feeX?.toString() || '0') / Math.pow(10, xDec);
-            feeXSol = Math.max(0, feeXUi * safeNum((await dlmmPool.getActiveBin())?.pricePerToken, 0));
-          }
-        }
-        estimatedFeeSol = Math.max(0, feeYUi + feeXSol);
+        const feeOnly = await calculateFeeOnlyPnl({
+          feeXRaw: pd.feeX?.toString() || '0',
+          feeYRaw: pd.feeY?.toString() || '0',
+          xDec,
+          yDec,
+          tokenXMint: reg.tokenXMint,
+          deploySol: reg.deploySol,
+          activeBinPrice: safeNum((await dlmmPool.getActiveBin())?.pricePerToken, 0),
+        });
+        estimatedFeeSol = feeOnly.feePnlSol;
+        estimatedFeePct = feeOnly.feePnlPct;
+        estimatedFeeSource = feeOnly.feePnlSource;
       } catch {
         estimatedFeeSol = 0;
+        estimatedFeePct = 0;
+        estimatedFeeSource = 'none';
       }
 
       // 1. Remove all liquidity and request account close.
@@ -1480,7 +1536,14 @@ export async function exitPosition(positionPubkey, reason = 'MANUAL') {
         });
       }
 
-      return { solRecovered };
+      return {
+        solRecovered,
+        feePnlSol,
+        feePnlPct: estimatedFeePct,
+        feePnlSource: estimatedFeeSource,
+        pnlTotalSol,
+        pnlTotalPct: finalPnlPct,
+      };
 
     }, { maxRetries: 2, baseDelay: 3000 }));
   } catch (e) {

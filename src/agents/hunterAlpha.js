@@ -2351,6 +2351,9 @@ async function monitorLoop(positionPubkey, symbol, poolAddress) {
       }
 
       const { action, currentValueSol, pnlPct, inRange } = status;
+      const feePnlSol = Math.max(0, Number(status?.feePnlSol || 0));
+      const feePnlPct = Math.max(0, Number(status?.feePnlPct || 0));
+      const feeSign = feePnlPct > 0 ? '+' : '';
       const meta = getPositionMeta(positionPubkey) || {};
       const deploySol = Number(meta.deploySol || 0);
       const currentLifecycle = meta.lifecycleState || meta.lifecycle_state || 'open';
@@ -2409,8 +2412,9 @@ async function monitorLoop(positionPubkey, symbol, poolAddress) {
         await notify(
           `🎉 <b>TAKE PROFIT!</b>\n` +
           `Token: <b>${symbol}</b>\n` +
-          `PnL: <code>+${pnlPct.toFixed(2)}%</code>\n` +
-          `Value: <code>${currentValueSol.toFixed(4)} SOL</code>\n` +
+          `PnL Fee: <code>${feeSign}${feePnlPct.toFixed(2)}%</code>\n` +
+          `Fee Value: <code>${feePnlSol.toFixed(6)} SOL</code>\n` +
+          `Position Value: <code>${currentValueSol.toFixed(4)} SOL</code>\n` +
           (status.exitScenario ? `📊 Skenario <b>${status.exitScenario}</b>: <code>${status.exitReason || ''}</code>\n` : '') +
           `\n⏳ <i>Menutup posisi...</i>`
         );
@@ -2422,8 +2426,9 @@ async function monitorLoop(positionPubkey, symbol, poolAddress) {
         await notify(
           `🛑 <b>STOP LOSS!</b>\n` +
           `Token: <b>${symbol}</b>\n` +
-          `PnL: <code>${pnlPct.toFixed(2)}%</code>\n` +
-          `Value: <code>${currentValueSol.toFixed(4)} SOL</code>\n\n` +
+          `PnL Fee: <code>${feeSign}${feePnlPct.toFixed(2)}%</code>\n` +
+          `Fee Value: <code>${feePnlSol.toFixed(6)} SOL</code>\n` +
+          `Position Value: <code>${currentValueSol.toFixed(4)} SOL</code>\n\n` +
           `⏳ <i>Menutup posisi...</i>`
         );
         await safeExit(positionPubkey, 'STOP_LOSS');
@@ -2499,14 +2504,19 @@ async function safeExit(positionPubkey, reason) {
       return { ok: true, dryRun: true, simulated: true };
     }
     const { solRecovered } = exitResult;
+    const feePnlSol = Math.max(0, Number(exitResult?.feePnlSol || 0));
+    const feePnlPct = Math.max(0, Number(exitResult?.feePnlPct || 0));
+    const feeSign = feePnlPct > 0 ? '+' : '';
     const balance = await getWalletBalance();
     success = true;
     await notify(
       `✅ <b>Posisi ditutup (${reason})</b>\n` +
       `Position: <code>${positionPubkey.slice(0,8)}</code>\n` +
+      `PnL Fee: <code>${feeSign}${feePnlPct.toFixed(2)}%</code>\n` +
+      `Fee Value: <code>${feePnlSol.toFixed(6)} SOL</code>\n` +
       `Balance: <code>${balance} SOL</code>`
     );
-    return { ok: true, solRecovered };
+    return { ok: true, solRecovered, feePnlSol, feePnlPct };
   } catch (e) {
     console.error(`[hunter] exitPosition error: ${e.message}`);
     await notify(
