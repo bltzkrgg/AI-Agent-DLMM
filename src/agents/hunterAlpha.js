@@ -234,6 +234,7 @@ const _monitoredPositions = new Set();
 const _lastRealtimePnlLogAt = new Map();
 const _pendingRetestQueue = new Map(); // mint -> { pool, symbol, reason, attempts, nextCheckAt, expiresAt }
 const _taWatchQueue = new Map(); // mint -> { pool, symbol, reason, attempts, nextCheckAt, expiresAt, source }
+const OPERATOR_DISCOVERY_PAUSED_KEY = 'operatorDiscoveryPaused';
 let _pendingTaRadarTimer = null;
 let _pendingTaRadarInFlight = false;
 let _taWatchTimer = null;
@@ -241,6 +242,11 @@ let _taWatchInFlight = false;
 let _manualCloseWatchTimer = null;
 let _manualCloseWatchInFlight = false;
 const OOR_ALERT_COOLDOWN_MS = 60_000;
+
+function isOperatorDiscoveryPaused() {
+  const state = getRuntimeState(OPERATOR_DISCOVERY_PAUSED_KEY, null);
+  return state === true || state?.paused === true;
+}
 
 function listActivePositions() {
   const keys = getActivePositionKeys();
@@ -1445,6 +1451,10 @@ export async function scanAndDeploy({ emitFinalReport = true } = {}) {
   const CycleReport = [];
 
   try {
+    if (isOperatorDiscoveryPaused()) {
+      return { blocked: true, policy: 'OPERATOR_DISCOVERY_PAUSED' };
+    }
+
     const cfg = getConfig();
 
     const cb = getRuntimeState('hunter-circuit-breaker', null);

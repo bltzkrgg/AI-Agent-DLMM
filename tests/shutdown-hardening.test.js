@@ -64,6 +64,38 @@ test('telegram exit command closes all active positions with verification summar
   assert.match(hunterSrc, /MANUAL_EXIT_NOT_VERIFIED/);
 });
 
+test('/stop pauses autonomous discovery without disabling operator commands', () => {
+  const indexSrc = readFileSync(indexPath, 'utf8');
+  const hunterSrc = readFileSync(hunterPath, 'utf8');
+  const queueSrc = readFileSync(resolve(process.cwd(), 'src/utils/pendingDeployQueue.js'), 'utf8');
+  const stopStart = indexSrc.indexOf('bot.onText(/\\/stop$/');
+  assert.notEqual(stopStart, -1);
+  const stopEnd = indexSrc.indexOf('// /exit', stopStart);
+  const stopBlock = indexSrc.slice(stopStart, stopEnd);
+
+  assert.match(indexSrc, /const OPERATOR_DISCOVERY_PAUSED_KEY = 'operatorDiscoveryPaused'/);
+  assert.match(indexSrc, /function pauseDiscovery/);
+  assert.match(indexSrc, /function resumeDiscovery/);
+  assert.match(stopBlock, /pauseDiscovery\('TELEGRAM_STOP'\)/);
+  assert.match(stopBlock, /stopAutoScreeningRuntime\(\)/);
+  assert.match(stopBlock, /Existing positions are not force-closed/);
+  assert.doesNotMatch(stopBlock, /bot\.stopPolling\(/);
+  assert.doesNotMatch(stopBlock, /closeAllActivePositions/);
+
+  assert.match(indexSrc, /resumeDiscovery\('TELEGRAM_AUTOSCREEN_ON'\)/);
+  assert.match(indexSrc, /resumeDiscovery\('TELEGRAM_HUNT'\)/);
+  assert.match(indexSrc, /resumeDiscovery\('TELEGRAM_SCREENING_ON'\)/);
+  assert.match(indexSrc, /Screening is paused by <code>\/stop<\/code>/);
+  assert.match(indexSrc, /if \(isDiscoveryPaused\(\)\) \{\s*await bot\.sendMessage\(chatId, `⏸️ \$\{getPausedMessage\(\)\}`/);
+  assert.match(indexSrc, /const discoveryPaused = isDiscoveryPaused\(\)/);
+  assert.match(indexSrc, /if \(autoScr && !discoveryPaused\)/);
+
+  assert.match(hunterSrc, /OPERATOR_DISCOVERY_PAUSED_KEY = 'operatorDiscoveryPaused'/);
+  assert.match(hunterSrc, /policy: 'OPERATOR_DISCOVERY_PAUSED'/);
+  assert.match(queueSrc, /OPERATOR_DISCOVERY_PAUSED_KEY = 'operatorDiscoveryPaused'/);
+  assert.match(queueSrc, /if \(isOperatorDiscoveryPaused\(\)\) \{\s*_watcherTimer = null;\s*return;/);
+});
+
 test('evilPanda uses monolith positions with one Meteora account for the full range', () => {
   const src = readFileSync(evilPandaPath, 'utf8');
   assert.match(src, /const posKp = Keypair\.generate\(\)/);

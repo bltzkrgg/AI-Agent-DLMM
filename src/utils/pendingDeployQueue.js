@@ -4,6 +4,7 @@ import { getConfig } from '../config.js';
 import { getMarketSnapshot } from '../market/oracle.js';
 import { checkSupertrendVeto } from '../market/meridianVeto.js';
 import { getPoolMemorySignal, recordPoolDeploy } from '../market/poolMemory.js';
+import { getRuntimeState } from '../runtime/state.js';
 import { reserveDeploySlot, releaseDeploySlot } from './deploySlotGuard.js';
 
 /**
@@ -22,6 +23,7 @@ const _snapshotCache = new Map(); // key -> { at, snapshot }
 const _snapshotInflight = new Map(); // key -> Promise
 const SNAPSHOT_CACHE_TTL_MS = 12_000;
 const FINAL_ST_CACHE_TTL_MS = 15_000;
+const OPERATOR_DISCOVERY_PAUSED_KEY = 'operatorDiscoveryPaused';
 let _snapshotCacheHits = 0;
 let _snapshotCacheMisses = 0;
 
@@ -42,6 +44,11 @@ function escapeHTML(text = '') {
 export function setDeployQueueNotifyFn(fn) { _notifyFn  = fn; }
 export function setDeployQueueDeployFn(fn) { _deployFn  = fn; }
 export function setDeployQueueMonitorFn(fn) { _monitorFn = fn; }
+
+function isOperatorDiscoveryPaused() {
+  const state = getRuntimeState(OPERATOR_DISCOVERY_PAUSED_KEY, null);
+  return state === true || state?.paused === true;
+}
 
 async function safeSend(msg) {
   if (_notifyFn) {
@@ -526,6 +533,11 @@ async function evaluateDeployConditions(entry) {
 
 /** Main watcher loop */
 async function runWatcher() {
+  if (isOperatorDiscoveryPaused()) {
+    _watcherTimer = null;
+    return;
+  }
+
   // Snapshot entries SEBELUM iterasi agar modifikasi map di dalam loop aman
   const entries = Array.from(_queue.entries());
 

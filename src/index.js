@@ -28,6 +28,7 @@ import { safeNum, escapeHTML }            from './utils/safeJson.js';
 import { initializeRpcManager }           from './utils/helius.js';
 import { createMessageTransport }         from './telegram/messageTransport.js';
 import { getTodayResults }                from './db/database.js';
+import { deleteRuntimeState, getRuntimeState, setRuntimeState } from './runtime/state.js';
 import { startDeployQueueWatcher, stopDeployQueueWatcher, setDeployQueueNotifyFn, setDeployQueueDeployFn, setDeployQueueMonitorFn } from './utils/pendingDeployQueue.js';
 import { deployPosition } from './sniper/evilPanda.js';
 import { sendImmediateTopPoolsReport }    from './agents/hunterAlpha.js';
@@ -137,6 +138,32 @@ async function sendLong(chatId, text, opts = {}) {
 
 // ── Notify helper ─────────────────────────────────────────────────
 const CHAT_ID = ALLOWED_ID; // bot hanya punya satu user
+const OPERATOR_DISCOVERY_PAUSED_KEY = 'operatorDiscoveryPaused';
+
+function isDiscoveryPaused() {
+  const state = getRuntimeState(OPERATOR_DISCOVERY_PAUSED_KEY, null);
+  return state === true || state?.paused === true;
+}
+
+function pauseDiscovery(reason = 'TELEGRAM_STOP') {
+  setRuntimeState(OPERATOR_DISCOVERY_PAUSED_KEY, {
+    paused: true,
+    reason,
+    pausedAt: Date.now(),
+  });
+  console.log(`[operator-stop] discovery/deploy paused reason=${reason}`);
+}
+
+function resumeDiscovery(reason = 'OPERATOR_RESUME') {
+  if (isDiscoveryPaused()) {
+    deleteRuntimeState(OPERATOR_DISCOVERY_PAUSED_KEY);
+    console.log(`[operator-stop] resumed by ${reason}`);
+  }
+}
+
+function getPausedMessage() {
+  return `Discovery/deploy is paused by <code>/stop</code>. Use <code>/autoscreen on</code>, <code>/hunt</code>, or <code>/screening on</code> to resume.`;
+}
 
 async function notify(msg, opts = {}) {
   try {
@@ -145,6 +172,9 @@ async function notify(msg, opts = {}) {
 }
 
 async function runSilentScan({ emitFinalReport = false } = {}) {
+  if (isDiscoveryPaused()) {
+    return { blocked: true, policy: 'OPERATOR_DISCOVERY_PAUSED' };
+  }
   setNotifyMuted(true);
   try {
     return await scanAndDeploy({ emitFinalReport });
@@ -154,6 +184,9 @@ async function runSilentScan({ emitFinalReport = false } = {}) {
 }
 
 async function startAutoScreeningRuntime(chatId, { snapshotTopPools = false } = {}) {
+  if (isDiscoveryPaused()) {
+    return false;
+  }
   setDeployQueueNotifyFn(notify);
   setDeployQueueDeployFn(deployPosition);
   startDeployQueueWatcher();
@@ -195,6 +228,11 @@ function isLikelySolanaAddress(text = '') {
 }
 
 async function processManualCaInput(chatId, poolAddress, { source = 'TELEGRAM_CA', announce = 'CA diterima' } = {}) {
+  if (isDiscoveryPaused()) {
+    await bot.sendMessage(chatId, `⏸️ ${getPausedMessage()}`, { parse_mode: 'HTML' });
+    return;
+  }
+
   await bot.sendMessage(
     chatId,
     `📥 <b>${escapeHTML(announce)}</b>\n` +
@@ -342,6 +380,7 @@ bot.onText(/\/status/, async (msg) => {
 // /hunt — mulai loop
 bot.onText(/\/hunt/, async (msg) => {
   if (!guard(msg)) return;
+  resumeDiscovery('TELEGRAM_HUNT');
   if (isRunning()) {
     bot.sendMessage(msg.chat.id, '⚠️ Loop sudah berjalan.', { parse_mode: 'HTML' });
     return;
@@ -410,11 +449,14 @@ bot.onText(/\/hunt/, async (msg) => {
 // /stop — hentikan loop (tidak force exit posisi)
 bot.onText(/\/stop$/, async (msg) => {
   if (!guard(msg)) return;
+  pauseDiscovery('TELEGRAM_STOP');
   stopLoop();
+  stopAutoScreeningRuntime();
   bot.sendMessage(msg.chat.id,
-    `⏹ <b>Stop signal dikirim.</b>\n\n` +
-    `Loop akan berhenti setelah siklus saat ini selesai.\n` +
-    `Gunakan <code>/exit</code> untuk force-close posisi aktif.`,
+    `⏹ <b>Autonomous discovery/deploy paused.</b>\n\n` +
+    `Existing positions are not force-closed.\n` +
+    `Use <code>/autoscreen on</code>, <code>/hunt</code>, or <code>/screening on</code> to resume.\n` +
+    `Use <code>/exit</code> only if you want to force-close active positions.`,
     { parse_mode: 'HTML' }
   );
 });
@@ -654,6 +696,15 @@ bot.onText(/\/setconfig(?:\s+(\S+))?(?:\s+(.+))?/, async (msg, match) => {
   // ── Efek samping khusus: autoScreeningEnabled ─────────────────────
   if (flatKey === 'autoScreeningEnabled') {
     if (after === true) {
+      if (isDiscoveryPaused()) {
+        bot.sendMessage(chatId,
+          `📡 <b>Auto-Screening: ON</b>\n` +
+          `Config disimpan, tetapi discovery/deploy masih paused oleh <code>/stop</code>.\n` +
+          `Gunakan <code>/autoscreen on</code>, <code>/hunt</code>, atau <code>/screening on</code> untuk resume.`,
+          { parse_mode: 'HTML' }
+        );
+        return;
+      }
       // Start loop jika belum berjalan
       if (!_screeningLoopTimer) {
         await bot.sendMessage(chatId,
@@ -752,6 +803,7 @@ bot.onText(/\/autoscreen(?:\s+(on|off))?/, async (msg, match) => {
   const after  = result.autoScreeningEnabled;
 
   if (after === true) {
+    resumeDiscovery('TELEGRAM_AUTOSCREEN_ON');
     // ── Clear interval lama (anti double-execution) ───────────────────
     stopScreeningLoop();
 
@@ -889,9 +941,24 @@ bot.onText(/\/evolve(?:\s+(apply))?/, async (msg, match) => {
 });
 
 // ── /screening — scan manual top pool sekarang ────────────────────
-bot.onText(/\/screening/, async (msg) => {
+bot.onText(/\/screening(?:\s+(on))?/, async (msg, match) => {
   if (!guard(msg)) return;
   const chatId = msg.chat.id;
+  const resume = String(match?.[1] || '').toLowerCase() === 'on';
+  if (isDiscoveryPaused() && !resume) {
+    await bot.sendMessage(
+      chatId,
+      `⏸️ Screening is paused by <code>/stop</code>. Use <code>/screening on</code> to resume and scan.`,
+      { parse_mode: 'HTML' }
+    );
+    return;
+  }
+
+  if (resume) {
+    resumeDiscovery('TELEGRAM_SCREENING_ON');
+    await startAutoScreeningRuntime(chatId, { snapshotTopPools: false });
+  }
+
   try {
     await scanAndDeploy();
   } catch (e) {
@@ -947,6 +1014,10 @@ async function runScreeningLoop() {
   const tick = async () => {
     // Selalu baca config FRESH setiap tick agar perubahan /setconfig langsung efektif
     const cfg = getConfig();
+    if (isDiscoveryPaused()) {
+      stopScreeningLoop();
+      return;
+    }
 
     // Guard: hentikan diri sendiri jika dinonaktifkan via /setconfig
     if (!cfg.autoScreeningEnabled) {
@@ -1079,6 +1150,7 @@ setTimeout(async () => {
     const balance = await getWalletBalance();
     const cfg     = getConfig();
     const autoScr = cfg.autoScreeningEnabled;
+    const discoveryPaused = isDiscoveryPaused();
 
     // Log startup Jupiter
     console.log(`✅ Jupiter V1 Direct — api.jup.ag/swap/v1 (fallback: lite-api.jup.ag)`);
@@ -1094,14 +1166,14 @@ setTimeout(async () => {
       `📐 Deploy: <code>${cfg.deployAmountSol || 0.1} SOL</code>\n` +
       `🎯 TP: <code>Trail ${cfg.trailingTriggerPct || 10}% → ${cfg.trailingDropPct || 3}%</code> | ` +
       `SL: <code>-${cfg.stopLossPct || 10}%</code>\n` +
-      `📡 Auto Screening: <code>${autoScr ? `ON (${cfg.screeningIntervalMin}m)` : 'OFF'}</code>\n` +
+      `📡 Auto Screening: <code>${discoveryPaused ? 'PAUSED by /stop' : autoScr ? `ON (${cfg.screeningIntervalMin}m)` : 'OFF'}</code>\n` +
       `👀 Watch: <code>ON (${cfg.taWatchMaxPools || 10} max)</code>\n` +
       `📊 Realtime PnL: <code>${cfg.realtimePnlIntervalSec || 15}s</code>\n\n` +
       `Ketik /start untuk lihat command, /ca untuk kirim CA manual.`
     );
 
     // Auto-start screening loop jika diaktifkan
-    if (autoScr) {
+    if (autoScr && !discoveryPaused) {
       startDeployQueueWatcher();
       startPendingTaRadarWatcher();
       startTaWatchWatcher();
