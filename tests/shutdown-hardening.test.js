@@ -208,6 +208,24 @@ test('hunter sends realtime PnL snapshots to Telegram on configured interval', (
   assert.match(src, /await notifyRealtimePnl\(\{ positionPubkey, symbol, status \}\)/);
 });
 
+test('hunter wires Pool Impact Guard only inside active monitor loop', () => {
+  const src = readFileSync(hunterPath, 'utf8');
+  const monitorStart = src.indexOf('async function monitorLoop');
+  assert.notEqual(monitorStart, -1);
+  const monitorEnd = src.indexOf('export function spawnMonitorForRestoredPositions', monitorStart);
+  const monitorBlock = src.slice(monitorStart, monitorEnd);
+
+  assert.match(src, /import \{ evaluatePoolImpactGuard \} from '\.\.\/risk\/poolImpactGuard\.js'/);
+  assert.match(monitorBlock, /poolImpactGuardEnabled === true/);
+  assert.match(monitorBlock, /poolImpactCheckIntervalMs/);
+  assert.match(monitorBlock, /lastPoolImpactCheckAt/);
+  assert.match(monitorBlock, /canRunPoolImpactGuard/);
+  assert.match(monitorBlock, /poolImpactSamples: nextPoolImpactSamples\.slice\(-20\)/);
+  assert.match(monitorBlock, /evaluatePoolImpactGuard\(\{/);
+  assert.match(monitorBlock, /poolImpactDecision\.action === 'FORCE_EXIT'/);
+  assert.match(monitorBlock, /safeExit\(positionPubkey, 'POOL_IMPACT_GUARD'\)/);
+});
+
 test('scout agent prompt uses DLMM LP breakout screening fields', () => {
   const src = readFileSync(hunterPath, 'utf8');
   assert.match(src, /INITIAL SCREENING FILTER FOR DLMM LIQUIDITY PROVIDER/);

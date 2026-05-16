@@ -2385,7 +2385,9 @@ async function monitorLoop(positionPubkey, symbol, poolAddress) {
       const previousSample = nextPoolImpactSamples.length >= 2 ? nextPoolImpactSamples[nextPoolImpactSamples.length - 2] : null;
       const poolImpactIntervalMs = Math.max(1000, Number(cfg?.poolImpactCheckIntervalMs || 3000));
       const lastPoolImpactCheckAt = Number(runtimeState?.lastPoolImpactCheckAt || 0);
+      const canRunPoolImpactGuard = !/closing|closed/i.test(String(currentLifecycle || ''));
       const shouldCheckPoolImpact = cfg?.poolImpactGuardEnabled === true &&
+        canRunPoolImpactGuard &&
         (!lastPoolImpactCheckAt || (Date.now() - lastPoolImpactCheckAt) >= poolImpactIntervalMs);
       const poolImpactDecision = shouldCheckPoolImpact
         ? evaluatePoolImpactGuard({
