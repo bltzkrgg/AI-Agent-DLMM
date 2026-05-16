@@ -141,6 +141,14 @@ const DEFAULTS = {
   maxHoldHours:           72,
   outOfRangeWaitMinutes:  30,   // Tunggu N menit OOR sebelum close
   deployRangeMaxBins:     68,   // Lebar range deploy monolith
+  poolImpactGuardEnabled: true,
+  poolImpactCheckIntervalMs: 3000,
+  poolImpactPriceDropWarnPct: 2.5,
+  poolImpactPriceDropPreExitPct: 4,
+  poolImpactPriceDropForceExitPct: 6,
+  poolImpactConsecutiveDropTicks: 3,
+  poolImpactLowerRangeBufferPct: 15,
+  poolImpactAlertCooldownMs: 60000,
   maxDailyPriorityFeeSol: 0.2,
   maxDailyDrawdownPct:    6,
   activeStrategy:         'Evil Panda',
@@ -236,6 +244,14 @@ const CONFIG_BOUNDS = {
   maxHoldHours:           { min: 1,     max: 168 },
   outOfRangeWaitMinutes:  { min: 1,     max: 1440 },
   deployRangeMaxBins:     { min: 5,     max: 68 },
+  poolImpactGuardEnabled: { type: 'boolean' },
+  poolImpactCheckIntervalMs: { min: 1000, max: 60000 },
+  poolImpactPriceDropWarnPct: { min: 0.1, max: 50 },
+  poolImpactPriceDropPreExitPct: { min: 0.1, max: 50 },
+  poolImpactPriceDropForceExitPct: { min: 0.1, max: 80 },
+  poolImpactConsecutiveDropTicks: { min: 1, max: 20 },
+  poolImpactLowerRangeBufferPct: { min: 0, max: 100 },
+  poolImpactAlertCooldownMs: { min: 1000, max: 3600000 },
   maxDailyPriorityFeeSol: { min: 0.01,  max: 10 },
   // Discovery bounds
   discoveryTimeframe:     { type: 'string' },
@@ -521,6 +537,8 @@ export const SETCONFIG_WHITELIST = {
   taWatchExpiryMin:       { section: 'watch',      type: 'number',  desc: 'Batas umur kandidat di WATCH (menit)' },
   watchIntervalSec:       { section: 'watch',      type: 'number',  desc: 'Interval cek WATCH aktif (detik, 15–3600)' },
   deployRangeMaxBins:     { section: 'strategy',   type: 'number',  desc: 'Batas lebar range deploy monolith (bin, 5–68)' },
+  poolImpactGuardEnabled: { section: 'strategy',   type: 'boolean', desc: 'Aktifkan Pool Impact Exit Guard' },
+  poolImpactPriceDropForceExitPct: { section: 'strategy', type: 'number', desc: 'Drop harga pool untuk emergency exit (%)' },
 };
 
 // ── resolveNestedKey ─────────────────────────────────────────────────────────

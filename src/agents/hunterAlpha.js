@@ -24,6 +24,7 @@ import { appendDecisionLog }      from '../learn/decisionLog.js';
 import { isBlacklisted }          from '../learn/tokenBlacklist.js';
 import { getRuntimeState }        from '../runtime/state.js';
 import { getPositionRuntimeState, updatePositionRuntimeState } from '../app/positionRuntimeState.js';
+import { evaluatePoolImpactGuard } from '../risk/poolImpactGuard.js';
 import { escapeHTML, safeParseAI } from '../utils/safeJson.js';
 import reportManager              from '../utils/reportManager.js';
 import pendingStore               from '../utils/pendingStore.js';
@@ -2368,6 +2369,36 @@ async function monitorLoop(positionPubkey, symbol, poolAddress) {
       const deploySol = Number(meta.deploySol || 0);
       const currentLifecycle = meta.lifecycleState || meta.lifecycle_state || 'open';
       const runtimeState = getPositionRuntimeState(positionPubkey);
+      const nextPoolImpactSamples = Array.isArray(runtimeState.poolImpactSamples)
+        ? runtimeState.poolImpactSamples.slice(-19)
+        : [];
+      const currentBin = Number.isFinite(Number(status?.activeBinId)) ? Number(status.activeBinId) : null;
+      const currentPrice = Number.isFinite(Number(status?.activePrice)) ? Number(status.activePrice) : null;
+      if (currentBin !== null || currentPrice !== null) {
+        nextPoolImpactSamples.push({
+          activeBin: currentBin,
+          price: currentPrice,
+          at: Date.now(),
+        });
+      }
+      const previousSample = nextPoolImpactSamples.length >= 2 ? nextPoolImpactSamples[nextPoolImpactSamples.length - 2] : null;
+      const poolImpactDecision = evaluatePoolImpactGuard({
+        entryActiveBin: status?.entryActiveBin ?? meta.entryActiveBin,
+        currentActiveBin: currentBin,
+        previousActiveBin: previousSample?.activeBin,
+        entryPrice: status?.entryPrice ?? meta.entryPrice,
+        currentPrice,
+        previousPrice: previousSample?.price,
+        lowerBin: status?.rangeMin ?? meta.rangeMin,
+        upperBin: status?.rangeMax ?? meta.rangeMax,
+        recentSamples: nextPoolImpactSamples,
+        config: getConfig(),
+      });
+      if (currentBin !== null || currentPrice !== null) {
+        await updatePositionRuntimeState(positionPubkey, {
+          poolImpactSamples: nextPoolImpactSamples.slice(-20),
+        });
+      }
       const oorState = evaluateOutOfRangeMonitorState({
         positionPubkey,
         symbol,
@@ -2446,6 +2477,31 @@ async function monitorLoop(positionPubkey, symbol, poolAddress) {
       }
 
       if (action === 'HOLD') {
+        if (poolImpactDecision.action === 'FORCE_EXIT') {
+          const priceDrop = Number(poolImpactDecision.metrics?.priceDropPctFromEntry || 0);
+          const activeBinDelta = Number(poolImpactDecision.metrics?.activeBinDeltaFromEntry || 0);
+          const lowerRisk = poolImpactDecision.metrics?.isOutOfRange ? 'out of range' : 'near lower bin';
+          await notify(
+            `🐋 <b>POOL IMPACT EXIT!</b>\n` +
+            `Token: <b>${symbol}</b>\n` +
+            `Reason: <code>${escapeHTML(poolImpactDecision.reasons.join(', ') || 'pool_impact_guard')}</code>\n` +
+            `Price Drop: <code>-${priceDrop.toFixed(2)}%</code>\n` +
+            `Active Bin Δ: <code>${activeBinDelta}</code>\n` +
+            `Range Risk: <code>${lowerRisk}</code>\n` +
+            `\n⏳ <i>Menutup posisi...</i>`
+          );
+          await safeExit(positionPubkey, 'POOL_IMPACT_GUARD');
+          return;
+        }
+        if (poolImpactDecision.action === 'PRE_EXIT') {
+          const now = Date.now();
+          const lastAlertAt = Number(runtimeState?.lastPoolImpactAlertAt || 0);
+          const cooldownMs = Number(getConfig()?.poolImpactAlertCooldownMs || 60_000);
+          if (!lastAlertAt || (now - lastAlertAt) >= cooldownMs) {
+            await updatePositionRuntimeState(positionPubkey, { lastPoolImpactAlertAt: now });
+            console.log(`[hunter] pool impact pre-exit ${positionPubkey.slice(0,8)} ${poolImpactDecision.reasons.join(',')}`);
+          }
+        }
         if (oorState.logMessage) {
           console.log(oorState.logMessage);
         }

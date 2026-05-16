@@ -955,6 +955,8 @@ export async function deployPosition(poolAddress, deployOptions = {}) {
         tokenYMint: yMint,
         rangeMin,
         rangeMax,
+        entryActiveBin: safeNum(activeBin.binId, 0),
+        entryPrice: safeNum(activeBin.pricePerToken, 0),
         hwmPct: 0,
       }, { flush: true });
 
@@ -977,6 +979,8 @@ export async function deployPosition(poolAddress, deployOptions = {}) {
       tokenYMint:  yMint,
       rangeMin,
       rangeMax,
+      entryActiveBin: safeNum(activeBin.binId, 0),
+      entryPrice: safeNum(activeBin.pricePerToken, 0),
       hwmPct:      0,
     }, { flush: true });
     recordPoolDeploy({
@@ -1199,6 +1203,8 @@ export async function monitorPnL(positionPubkey) {
       ? ((currentValueSol - reg.deploySol) / reg.deploySol) * 100
       : 0;
     const inRange = activeBin.binId >= reg.rangeMin && activeBin.binId <= reg.rangeMax;
+    const entryActiveBin = Number.isFinite(Number(reg.entryActiveBin)) ? Number(reg.entryActiveBin) : null;
+    const entryPrice = Number.isFinite(Number(reg.entryPrice)) ? Number(reg.entryPrice) : null;
 
     // ── PRIORITAS 1: Hard Stop Loss ───────────────────────────────────────
     const stopLossPct = getConfiguredStopLossPct();
@@ -1244,6 +1250,12 @@ export async function monitorPnL(positionPubkey) {
       pnlPct,
       ...feeOnlyPnl,
       inRange,
+      activeBinId: activeBin.binId,
+      activePrice: rawPrice,
+      entryActiveBin,
+      entryPrice,
+      rangeMin: reg.rangeMin,
+      rangeMax: reg.rangeMax,
       taReason: exitDecision.reason,
       taSignal: signal ? {
         rsi: signal.rsi,
@@ -1695,6 +1707,8 @@ export async function reconcileStartupPositions() {
         tokenYMint: row.tokenYMint || '',
         rangeMin: safeNum(row.rangeMin, 0),
         rangeMax: safeNum(row.rangeMax, 0),
+        entryActiveBin: Number.isFinite(Number(row.entryActiveBin)) ? Number(row.entryActiveBin) : null,
+        entryPrice: Number.isFinite(Number(row.entryPrice)) ? Number(row.entryPrice) : null,
         hwmPct: safeNum(row.hwmPct, 0),
         lifecycleState: row.lifecycleState || row.lifecycle_state || 'open',
         lifecycle_state: row.lifecycle_state || row.lifecycleState || 'open',
