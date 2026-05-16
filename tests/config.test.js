@@ -118,6 +118,11 @@ test('safer defaults stay conservative for real-capital usage', async () => {
   assert.equal(cfg.realtimePnlIntervalSec, 15);
   assert.equal(cfg.maxDailyDrawdownPct, 6);
   assert.equal(cfg.maxPriceImpactPct, 1.5);
+  assert.equal(cfg.poolImpactGuardEnabled, false);
+  assert.equal(cfg.poolImpactCheckIntervalMs, 3000);
+  assert.equal(cfg.poolImpactPriceDropForceExitPct, 6);
+  assert.equal(cfg.poolImpactConsecutiveDropTicks, 3);
+  assert.equal(cfg.poolImpactLowerRangeBufferPct, 15);
   assert.deepEqual(cfg.allowedBinSteps, [100, 125]);
 });
 
@@ -183,6 +188,49 @@ test('deploy range max bins is configurable and persisted via updateConfig', asy
 
   const saved = JSON.parse(readFileSync(configPath, 'utf-8'));
   assert.equal(saved.deployRangeMaxBins, 40);
+});
+
+test('pool impact guard config keys are supported and persisted via user config', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'dlmm-pool-impact-config-'));
+  const configPath = join(root, 'user-config.json');
+
+  process.env.BOT_CONFIG_PATH = configPath;
+  const configModule = await importFresh(join(repoRoot, 'src/config.js'));
+
+  assert.equal(configModule.isConfigKeySupported('poolImpactGuardEnabled'), true);
+  assert.equal(configModule.isConfigKeySupported('poolImpactCheckIntervalMs'), true);
+  assert.equal(configModule.isConfigKeySupported('poolImpactPriceDropWarnPct'), true);
+  assert.equal(configModule.isConfigKeySupported('poolImpactPriceDropPreExitPct'), true);
+  assert.equal(configModule.isConfigKeySupported('poolImpactPriceDropForceExitPct'), true);
+  assert.equal(configModule.isConfigKeySupported('poolImpactConsecutiveDropTicks'), true);
+  assert.equal(configModule.isConfigKeySupported('poolImpactLowerRangeBufferPct'), true);
+  assert.equal(configModule.isConfigKeySupported('poolImpactAlertCooldownMs'), true);
+
+  configModule.updateConfig({
+    poolImpactGuardEnabled: true,
+    poolImpactCheckIntervalMs: 5000,
+    poolImpactPriceDropWarnPct: 3,
+    poolImpactPriceDropPreExitPct: 5,
+    poolImpactPriceDropForceExitPct: 8,
+    poolImpactConsecutiveDropTicks: 4,
+    poolImpactLowerRangeBufferPct: 20,
+    poolImpactAlertCooldownMs: 120000,
+  });
+
+  const cfg = configModule.getConfig();
+  assert.equal(cfg.poolImpactGuardEnabled, true);
+  assert.equal(cfg.poolImpactCheckIntervalMs, 5000);
+  assert.equal(cfg.poolImpactPriceDropWarnPct, 3);
+  assert.equal(cfg.poolImpactPriceDropPreExitPct, 5);
+  assert.equal(cfg.poolImpactPriceDropForceExitPct, 8);
+  assert.equal(cfg.poolImpactConsecutiveDropTicks, 4);
+  assert.equal(cfg.poolImpactLowerRangeBufferPct, 20);
+  assert.equal(cfg.poolImpactAlertCooldownMs, 120000);
+
+  const saved = JSON.parse(readFileSync(configPath, 'utf-8'));
+  assert.equal(saved.poolImpactGuardEnabled, true);
+  assert.equal(saved.poolImpactCheckIntervalMs, 5000);
+  assert.equal(saved.poolImpactPriceDropForceExitPct, 8);
 });
 
 test('entry capacity respects deployment stage and clamps overrides', async () => {

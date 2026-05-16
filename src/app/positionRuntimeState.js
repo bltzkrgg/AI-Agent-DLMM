@@ -24,6 +24,7 @@ function normalizeRuntimeState(state = {}) {
     pendingSwap: state.pendingSwap === true,
     poolImpactSamples,
     lastPoolImpactAlertAt: Number.isFinite(state.lastPoolImpactAlertAt) ? state.lastPoolImpactAlertAt : null,
+    lastPoolImpactCheckAt: Number.isFinite(state.lastPoolImpactCheckAt) ? state.lastPoolImpactCheckAt : null,
     updatedAt: Number.isFinite(state.updatedAt) ? state.updatedAt : Date.now(),
   };
 }

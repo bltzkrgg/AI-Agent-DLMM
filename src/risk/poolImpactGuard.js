@@ -1,7 +1,7 @@
 'use strict';
 
 const DEFAULTS = {
-  poolImpactGuardEnabled: true,
+  poolImpactGuardEnabled: false,
   poolImpactPriceDropWarnPct: 2.5,
   poolImpactPriceDropPreExitPct: 4,
   poolImpactPriceDropForceExitPct: 6,
@@ -88,22 +88,42 @@ export function evaluatePoolImpactGuard({
   const reasons = [];
   let score = 0;
   let action = 'PASS';
+  const lowerRangeBufferPct = Number(cfg.poolImpactLowerRangeBufferPct);
+  const consecutiveDropThreshold = Number(cfg.poolImpactConsecutiveDropTicks);
+  const hasRecentImpactConfirmation =
+    metrics.priceDropPctFromPrevious > 0 ||
+    metrics.activeBinDeltaFromPrevious < 0 ||
+    metrics.distanceToLowerPct <= lowerRangeBufferPct ||
+    metrics.consecutiveDownTicks >= consecutiveDropThreshold;
+  const hasLowerBoundImpactConfirmation =
+    metrics.priceDropPctFromPrevious > 0 ||
+    metrics.activeBinDeltaFromPrevious < 0 ||
+    metrics.consecutiveDownTicks >= consecutiveDropThreshold;
 
-  if (lower !== null && currentBin <= lower) {
-    reasons.push('out_of_range_lower');
+  if (lower !== null && currentBin < lower) {
+    reasons.push('below_lower_range');
     score += 100;
     return buildDecision('FORCE_EXIT', score, reasons, metrics);
   }
 
-  if (metrics.priceDropPctFromEntry >= Number(cfg.poolImpactPriceDropForceExitPct)) {
+  if (lower !== null && currentBin === lower && hasLowerBoundImpactConfirmation) {
+    reasons.push('lower_bound_confirmed_impact');
+    score += 90;
+    return buildDecision('FORCE_EXIT', score, reasons, metrics);
+  }
+
+  if (
+    metrics.priceDropPctFromEntry >= Number(cfg.poolImpactPriceDropForceExitPct) &&
+    hasRecentImpactConfirmation
+  ) {
     reasons.push('price_drop_force');
     score += 90;
     return buildDecision('FORCE_EXIT', score, reasons, metrics);
   }
 
   if (
-    metrics.consecutiveDownTicks >= Number(cfg.poolImpactConsecutiveDropTicks) &&
-    metrics.distanceToLowerPct <= Number(cfg.poolImpactLowerRangeBufferPct)
+    metrics.consecutiveDownTicks >= consecutiveDropThreshold &&
+    metrics.distanceToLowerPct <= lowerRangeBufferPct
   ) {
     reasons.push('consecutive_down_near_lower_range');
     score += 85;
@@ -118,7 +138,7 @@ export function evaluatePoolImpactGuard({
 
   if (
     metrics.activeBinDeltaFromPrevious < 0 &&
-    metrics.distanceToLowerPct <= Number(cfg.poolImpactLowerRangeBufferPct)
+    metrics.distanceToLowerPct <= lowerRangeBufferPct
   ) {
     reasons.push('down_tick_near_lower_range');
     score += 45;

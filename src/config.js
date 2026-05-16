@@ -141,7 +141,7 @@ const DEFAULTS = {
   maxHoldHours:           72,
   outOfRangeWaitMinutes:  30,   // Tunggu N menit OOR sebelum close
   deployRangeMaxBins:     68,   // Lebar range deploy monolith
-  poolImpactGuardEnabled: true,
+  poolImpactGuardEnabled: false,
   poolImpactCheckIntervalMs: 3000,
   poolImpactPriceDropWarnPct: 2.5,
   poolImpactPriceDropPreExitPct: 4,
@@ -538,7 +538,13 @@ export const SETCONFIG_WHITELIST = {
   watchIntervalSec:       { section: 'watch',      type: 'number',  desc: 'Interval cek WATCH aktif (detik, 15–3600)' },
   deployRangeMaxBins:     { section: 'strategy',   type: 'number',  desc: 'Batas lebar range deploy monolith (bin, 5–68)' },
   poolImpactGuardEnabled: { section: 'strategy',   type: 'boolean', desc: 'Aktifkan Pool Impact Exit Guard' },
+  poolImpactCheckIntervalMs: { section: 'strategy', type: 'number', desc: 'Interval evaluasi Pool Impact Guard (ms)' },
+  poolImpactPriceDropWarnPct: { section: 'strategy', type: 'number', desc: 'Drop harga pool untuk warning (%)' },
+  poolImpactPriceDropPreExitPct: { section: 'strategy', type: 'number', desc: 'Drop harga pool untuk pre-exit (%)' },
   poolImpactPriceDropForceExitPct: { section: 'strategy', type: 'number', desc: 'Drop harga pool untuk emergency exit (%)' },
+  poolImpactConsecutiveDropTicks: { section: 'strategy', type: 'number', desc: 'Jumlah tick active-bin turun untuk konfirmasi impact' },
+  poolImpactLowerRangeBufferPct: { section: 'strategy', type: 'number', desc: 'Buffer risiko dekat lower range (%)' },
+  poolImpactAlertCooldownMs: { section: 'strategy', type: 'number', desc: 'Cooldown alert Pool Impact Guard (ms)' },
 };
 
 // ── resolveNestedKey ─────────────────────────────────────────────────────────

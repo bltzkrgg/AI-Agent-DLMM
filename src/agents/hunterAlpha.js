@@ -2369,6 +2369,7 @@ async function monitorLoop(positionPubkey, symbol, poolAddress) {
       const deploySol = Number(meta.deploySol || 0);
       const currentLifecycle = meta.lifecycleState || meta.lifecycle_state || 'open';
       const runtimeState = getPositionRuntimeState(positionPubkey);
+      const cfg = getConfig();
       const nextPoolImpactSamples = Array.isArray(runtimeState.poolImpactSamples)
         ? runtimeState.poolImpactSamples.slice(-19)
         : [];
@@ -2382,21 +2383,28 @@ async function monitorLoop(positionPubkey, symbol, poolAddress) {
         });
       }
       const previousSample = nextPoolImpactSamples.length >= 2 ? nextPoolImpactSamples[nextPoolImpactSamples.length - 2] : null;
-      const poolImpactDecision = evaluatePoolImpactGuard({
-        entryActiveBin: status?.entryActiveBin ?? meta.entryActiveBin,
-        currentActiveBin: currentBin,
-        previousActiveBin: previousSample?.activeBin,
-        entryPrice: status?.entryPrice ?? meta.entryPrice,
-        currentPrice,
-        previousPrice: previousSample?.price,
-        lowerBin: status?.rangeMin ?? meta.rangeMin,
-        upperBin: status?.rangeMax ?? meta.rangeMax,
-        recentSamples: nextPoolImpactSamples,
-        config: getConfig(),
-      });
+      const poolImpactIntervalMs = Math.max(1000, Number(cfg?.poolImpactCheckIntervalMs || 3000));
+      const lastPoolImpactCheckAt = Number(runtimeState?.lastPoolImpactCheckAt || 0);
+      const shouldCheckPoolImpact = cfg?.poolImpactGuardEnabled === true &&
+        (!lastPoolImpactCheckAt || (Date.now() - lastPoolImpactCheckAt) >= poolImpactIntervalMs);
+      const poolImpactDecision = shouldCheckPoolImpact
+        ? evaluatePoolImpactGuard({
+            entryActiveBin: status?.entryActiveBin ?? meta.entryActiveBin,
+            currentActiveBin: currentBin,
+            previousActiveBin: previousSample?.activeBin,
+            entryPrice: status?.entryPrice ?? meta.entryPrice,
+            currentPrice,
+            previousPrice: previousSample?.price,
+            lowerBin: status?.rangeMin ?? meta.rangeMin,
+            upperBin: status?.rangeMax ?? meta.rangeMax,
+            recentSamples: nextPoolImpactSamples,
+            config: cfg,
+          })
+        : { action: 'PASS', score: 0, reasons: ['throttled_or_disabled'], metrics: {} };
       if (currentBin !== null || currentPrice !== null) {
         await updatePositionRuntimeState(positionPubkey, {
           poolImpactSamples: nextPoolImpactSamples.slice(-20),
+          ...(shouldCheckPoolImpact ? { lastPoolImpactCheckAt: Date.now() } : {}),
         });
       }
       const oorState = evaluateOutOfRangeMonitorState({
@@ -2496,7 +2504,7 @@ async function monitorLoop(positionPubkey, symbol, poolAddress) {
         if (poolImpactDecision.action === 'PRE_EXIT') {
           const now = Date.now();
           const lastAlertAt = Number(runtimeState?.lastPoolImpactAlertAt || 0);
-          const cooldownMs = Number(getConfig()?.poolImpactAlertCooldownMs || 60_000);
+          const cooldownMs = Number(cfg?.poolImpactAlertCooldownMs || 60_000);
           if (!lastAlertAt || (now - lastAlertAt) >= cooldownMs) {
             await updatePositionRuntimeState(positionPubkey, { lastPoolImpactAlertAt: now });
             console.log(`[hunter] pool impact pre-exit ${positionPubkey.slice(0,8)} ${poolImpactDecision.reasons.join(',')}`);
