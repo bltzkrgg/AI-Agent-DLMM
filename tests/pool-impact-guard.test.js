@@ -93,6 +93,20 @@ test('pool impact guard evaluates stable and emergency conditions deterministica
   });
   assert.notEqual(slowDrift.action, 'FORCE_EXIT');
 
+  const slowDriftWithTinyRecentDrop = evaluatePoolImpactGuard({
+    entryActiveBin: 100,
+    currentActiveBin: 100,
+    previousActiveBin: 100,
+    entryPrice: 1,
+    currentPrice: 0.9299,
+    previousPrice: 0.93,
+    lowerBin: 80,
+    upperBin: 120,
+    recentSamples: [{ activeBin: 100, price: 0.93 }, { activeBin: 100, price: 0.9299 }],
+    config,
+  });
+  assert.notEqual(slowDriftWithTinyRecentDrop.action, 'FORCE_EXIT');
+
   const forceByDrop = evaluatePoolImpactGuard({
     entryActiveBin: 100,
     currentActiveBin: 96,
@@ -111,6 +125,34 @@ test('pool impact guard evaluates stable and emergency conditions deterministica
     config,
   });
   assert.equal(forceByDrop.action, 'FORCE_EXIT');
+
+  const forceByMeaningfulRecentDrop = evaluatePoolImpactGuard({
+    entryActiveBin: 100,
+    currentActiveBin: 100,
+    previousActiveBin: 100,
+    entryPrice: 1,
+    currentPrice: 0.92,
+    previousPrice: 0.95,
+    lowerBin: 80,
+    upperBin: 120,
+    recentSamples: [{ activeBin: 100, price: 0.95 }, { activeBin: 100, price: 0.92 }],
+    config,
+  });
+  assert.equal(forceByMeaningfulRecentDrop.action, 'FORCE_EXIT');
+
+  const lowerBoundTinyRecentDrop = evaluatePoolImpactGuard({
+    entryActiveBin: 100,
+    currentActiveBin: 90,
+    previousActiveBin: 90,
+    entryPrice: 1,
+    currentPrice: 0.9299,
+    previousPrice: 0.93,
+    lowerBin: 90,
+    upperBin: 110,
+    recentSamples: [{ activeBin: 90, price: 0.93 }, { activeBin: 90, price: 0.9299 }],
+    config,
+  });
+  assert.notEqual(lowerBoundTinyRecentDrop.action, 'FORCE_EXIT');
 
   const forceByLowerConfirmed = evaluatePoolImpactGuard({
     entryActiveBin: 100,

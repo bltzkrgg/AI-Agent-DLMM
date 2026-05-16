@@ -90,13 +90,18 @@ export function evaluatePoolImpactGuard({
   let action = 'PASS';
   const lowerRangeBufferPct = Number(cfg.poolImpactLowerRangeBufferPct);
   const consecutiveDropThreshold = Number(cfg.poolImpactConsecutiveDropTicks);
+  const recentDropConfirmPct = Number(cfg.poolImpactPriceDropWarnPct);
+  const recentPriceDropConfirmed = metrics.priceDropPctFromPrevious >= recentDropConfirmPct;
+  const nearLowerRangeConfirmed = lower !== null &&
+    currentBin > lower &&
+    metrics.distanceToLowerPct <= lowerRangeBufferPct;
   const hasRecentImpactConfirmation =
-    metrics.priceDropPctFromPrevious > 0 ||
+    recentPriceDropConfirmed ||
     metrics.activeBinDeltaFromPrevious < 0 ||
-    metrics.distanceToLowerPct <= lowerRangeBufferPct ||
+    nearLowerRangeConfirmed ||
     metrics.consecutiveDownTicks >= consecutiveDropThreshold;
   const hasLowerBoundImpactConfirmation =
-    metrics.priceDropPctFromPrevious > 0 ||
+    recentPriceDropConfirmed ||
     metrics.activeBinDeltaFromPrevious < 0 ||
     metrics.consecutiveDownTicks >= consecutiveDropThreshold;
 
