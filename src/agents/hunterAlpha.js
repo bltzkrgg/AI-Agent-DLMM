@@ -21,7 +21,7 @@ import { deployPosition, monitorPnL, exitPosition, markPositionManuallyClosed, s
 import { createMessage }          from '../agent/provider.js';
 import { getWalletBalance }       from '../solana/wallet.js';
 import { appendDecisionLog }      from '../learn/decisionLog.js';
-import { extractPoolPatternFeatures, evaluatePoolPatternLearning, applyPoolPatternLearningDelta, recordPoolPatternEntry } from '../learn/poolPatternLearning.js';
+import { applyPoolPatternLearningToScore, extractPoolPatternFeatures, recordPoolPatternEntry } from '../learn/poolPatternLearning.js';
 import { isBlacklisted }          from '../learn/tokenBlacklist.js';
 import { getRuntimeState }        from '../runtime/state.js';
 import { getPositionRuntimeState, updatePositionRuntimeState } from '../app/positionRuntimeState.js';
@@ -332,16 +332,6 @@ function getWatchConfig(cfg = getConfig()) {
 
 function computeTaWatchPriorityScore({ pool = {}, entrySignals = {}, row = {}, now = Date.now() } = {}) {
   const cfg = getConfig();
-  const patternFeatures = extractPoolPatternFeatures({
-    pool,
-    entrySignals,
-    cfg,
-    tokenMint: pool?.tokenXMint || pool?.tokenX || pool?.mint || '',
-    poolAddress: pool?.address || pool?.poolAddress || pool?.pool || '',
-    symbol: pool?.tokenXSymbol || pool?.name || '',
-    entryReason: row?.lastReason || '',
-  });
-  const patternLearning = evaluatePoolPatternLearning(patternFeatures, cfg);
   const readiness = String(entrySignals.entryReadiness || '').toUpperCase();
   const breakout = String(entrySignals.breakoutQuality || '').toUpperCase();
   const timing = String(entrySignals.entryTimingState || '').toUpperCase();
@@ -364,13 +354,28 @@ function computeTaWatchPriorityScore({ pool = {}, entrySignals = {}, row = {}, n
 
   if (pool?._watchSnapshotAt) score += 10;
   score += Number(row.memoryPriorityDelta || 0);
-  const finalScore = applyPoolPatternLearningDelta(score, patternLearning);
-  if (patternLearning.enabled) {
-    const tag = patternLearning.shadowMode ? 'PATTERN_LEARNING_SHADOW' : 'PATTERN_LEARNING_APPLIED';
+  const pattern = applyPoolPatternLearningToScore({
+    baseScore: score,
+    candidate: {
+      pool,
+      entrySignals,
+      row,
+      tokenMint: pool?.tokenXMint || pool?.tokenX || pool?.mint || '',
+      poolAddress: pool?.address || pool?.poolAddress || pool?.pool || '',
+      symbol: pool?.tokenXSymbol || pool?.name || '',
+      entryReason: row?.lastReason || '',
+    },
+    config: cfg,
+    now,
+  });
+  const finalScore = pattern.score;
+  if (pattern.learningDecision.enabled) {
+    const tag = pattern.learningDecision.shadowMode ? 'PATTERN_LEARNING_SHADOW' : 'PATTERN_LEARNING_APPLIED';
     console.log(
-      `[${tag}] ${patternFeatures.symbol || patternFeatures.tokenMint || 'UNKNOWN'} ` +
-      `fp=${patternLearning.reasons[0] || 'NO_FP'} samples=${patternLearning.sampleCount} ` +
-      `delta=${patternLearning.delta.toFixed(2)} applied=${patternLearning.appliedDelta.toFixed(2)} score=${finalScore.toFixed(2)}`
+      `[${tag}] ${pattern.candidateFeatures.symbol || pattern.candidateFeatures.tokenMint || 'UNKNOWN'} ` +
+      `fp=${pattern.learningDecision.reasons[0] || 'NO_FP'} samples=${pattern.learningDecision.sampleCount} ` +
+      `base=${pattern.baseScore.toFixed(2)} delta=${Number(pattern.learningDecision.delta || 0).toFixed(2)} ` +
+      `shadow=${pattern.shadowScore.toFixed(2)} applied=${pattern.appliedDelta.toFixed(2)} score=${finalScore.toFixed(2)}`
     );
   }
   return finalScore;

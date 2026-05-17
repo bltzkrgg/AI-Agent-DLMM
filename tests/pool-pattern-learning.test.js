@@ -63,6 +63,75 @@ test('pool pattern learning builds fingerprint safely and evaluates disabled mod
   assert.equal(disabled.appliedDelta, 0);
 });
 
+test('pool pattern learning score wrapper keeps disabled shadow and active modes bounded', async () => {
+  makeIsolatedEnv('dlmm-pattern-learning-wrapper-');
+  const mod = await importFresh(join(repoRoot, 'src/learn/poolPatternLearning.js'));
+  const candidate = baseFeatures();
+
+  const disabled = mod.applyPoolPatternLearningToScore({
+    baseScore: 74,
+    candidate,
+    config: {
+      poolPatternLearningEnabled: false,
+      poolPatternLearningShadowMode: true,
+      poolPatternLearningMinSamples: 2,
+      poolPatternLearningMaxScoreDelta: 8,
+      poolPatternLearningLookbackDays: 14,
+    },
+  });
+  assert.equal(disabled.mode, 'disabled');
+  assert.equal(disabled.score, 74);
+  assert.equal(disabled.shadowScore, 74);
+
+  const cfgShadow = {
+    poolPatternLearningEnabled: true,
+    poolPatternLearningShadowMode: true,
+    poolPatternLearningMinSamples: 2,
+    poolPatternLearningMaxScoreDelta: 8,
+    poolPatternLearningLookbackDays: 14,
+  };
+  mod.recordPoolPatternOutcome({
+    positionPubkey: 'PosWrap1',
+    features: candidate,
+    outcome: { feePnlPct: 1.2, feePnlSol: 0.001, totalPnlPct: 4, pnlSol: 0.02, exitReason: 'TAKE_PROFIT' },
+    cfg: cfgShadow,
+  });
+  mod.recordPoolPatternOutcome({
+    positionPubkey: 'PosWrap2',
+    features: candidate,
+    outcome: { feePnlPct: 0.8, feePnlSol: 0.0008, totalPnlPct: 2, pnlSol: 0.01, exitReason: 'TAKE_PROFIT' },
+    cfg: cfgShadow,
+  });
+  const shadow = mod.applyPoolPatternLearningToScore({
+    baseScore: 74,
+    candidate,
+    config: cfgShadow,
+  });
+  assert.equal(shadow.mode, 'shadow');
+  assert.equal(shadow.score, 74);
+  assert.ok(shadow.shadowScore >= 74);
+  assert.equal(shadow.appliedDelta, 0);
+
+  const cfgActive = { ...cfgShadow, poolPatternLearningShadowMode: false, poolPatternLearningMaxScoreDelta: 1 };
+  const active = mod.applyPoolPatternLearningToScore({
+    baseScore: 74,
+    candidate,
+    config: cfgActive,
+  });
+  assert.equal(active.mode, 'active');
+  assert.ok(active.score >= 74);
+  assert.ok(active.score <= 75);
+  assert.equal(active.score, 74 + active.appliedDelta);
+
+  const sparse = mod.applyPoolPatternLearningToScore({
+    baseScore: 74,
+    candidate: { tokenMint: 'MintSparse', poolAddress: '', symbol: '' },
+    config: cfgActive,
+  });
+  assert.doesNotThrow(() => sparse);
+  assert.equal(Number.isFinite(sparse.score), true);
+});
+
 test('entry and outcome logging do not throw with sparse optional fields', async () => {
   const { logPath } = makeIsolatedEnv('dlmm-pattern-learning-sparse-');
   const mod = await importFresh(join(repoRoot, 'src/learn/poolPatternLearning.js'));

@@ -284,6 +284,46 @@ export function applyPoolPatternLearningDelta(baseScore = 0, decision = {}) {
   return safeBase + delta;
 }
 
+export function applyPoolPatternLearningToScore({
+  baseScore = 0,
+  candidate = {},
+  config = {},
+  now = nowMs(),
+} = {}) {
+  const safeBaseScore = Number.isFinite(Number(baseScore)) ? Number(baseScore) : 0;
+  const pool = candidate?.pool || candidate || {};
+  const entrySignals = candidate?.entrySignals || candidate?._entrySignals || {};
+  const row = candidate?.row || {};
+  const candidateFeatures = candidate?.features && typeof candidate.features === 'object'
+    ? candidate.features
+    : extractPoolPatternFeatures({
+        pool,
+        entrySignals,
+        cfg: config,
+        tokenMint: candidate?.tokenMint || pool?.tokenXMint || pool?.tokenX || pool?.mint || '',
+        poolAddress: candidate?.poolAddress || pool?.address || pool?.poolAddress || pool?.pool || '',
+        symbol: candidate?.symbol || pool?.tokenXSymbol || pool?.name || '',
+        entryReason: candidate?.entryReason || row?.lastReason || '',
+      });
+  const learningDecision = evaluatePoolPatternLearning(candidateFeatures, config);
+  const shadowScore = safeBaseScore + Number(learningDecision.delta || 0);
+  const score = learningDecision.enabled && learningDecision.shadowMode === false
+    ? applyPoolPatternLearningDelta(safeBaseScore, learningDecision)
+    : safeBaseScore;
+  const mode = !learningDecision.enabled ? 'disabled' : (learningDecision.shadowMode ? 'shadow' : 'active');
+
+  return {
+    score,
+    baseScore: safeBaseScore,
+    shadowScore,
+    learningDecision,
+    appliedDelta: Number(learningDecision.appliedDelta || 0),
+    mode,
+    candidateFeatures,
+    now,
+  };
+}
+
 export function evaluatePoolPatternLearning(candidateFeatures = {}, cfg = {}) {
   const enabled = cfg.poolPatternLearningEnabled === true;
   const shadowMode = cfg.poolPatternLearningShadowMode !== false;
