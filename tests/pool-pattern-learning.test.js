@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -61,6 +61,72 @@ test('pool pattern learning builds fingerprint safely and evaluates disabled mod
   assert.equal(disabled.enabled, false);
   assert.equal(disabled.delta, 0);
   assert.equal(disabled.appliedDelta, 0);
+});
+
+test('entry and outcome logging do not throw with sparse optional fields', async () => {
+  const { logPath } = makeIsolatedEnv('dlmm-pattern-learning-sparse-');
+  const mod = await importFresh(join(repoRoot, 'src/learn/poolPatternLearning.js'));
+  const cfg = {
+    poolPatternLearningEnabled: true,
+    poolPatternLearningShadowMode: true,
+    poolPatternLearningMinSamples: 1,
+    poolPatternLearningMaxScoreDelta: 8,
+    poolPatternLearningLookbackDays: 14,
+  };
+
+  assert.doesNotThrow(() => mod.recordPoolPatternEntry({
+    positionPubkey: 'PosSparse',
+    features: {
+      tokenMint: 'MintSparse111111111111111111111111111111111',
+      poolAddress: '',
+      symbol: '',
+      binStep: null,
+      tvl: null,
+      volume24h: null,
+      volumeTvlRatio: null,
+      mcap: null,
+      holderCount: null,
+      supertrend15m: 'UNKNOWN',
+      feeActiveTvlRatio: null,
+      rangeWidthBins: null,
+      entryActiveBin: null,
+      entryReason: '',
+    },
+    cfg,
+  }));
+
+  assert.doesNotThrow(() => mod.recordPoolPatternOutcome({
+    positionPubkey: 'PosSparse',
+    features: {
+      tokenMint: 'MintSparse111111111111111111111111111111111',
+      poolAddress: '',
+      symbol: '',
+      binStep: null,
+      tvl: null,
+      volume24h: null,
+      volumeTvlRatio: null,
+      mcap: null,
+      holderCount: null,
+      supertrend15m: 'UNKNOWN',
+      feeActiveTvlRatio: null,
+      rangeWidthBins: null,
+      entryActiveBin: null,
+      entryReason: '',
+    },
+    outcome: {
+      feePnlPct: 0,
+      feePnlSol: 0,
+      totalPnlPct: -1.5,
+      pnlSol: -0.01,
+      exitReason: 'MANUAL_STOP',
+      holdDurationMs: 0,
+    },
+    cfg,
+  }));
+
+  const raw = readFileSync(logPath, 'utf8');
+  assert.match(raw, /"type":"ENTRY"/);
+  assert.match(raw, /"type":"OUTCOME"/);
 });
 
 test('shadow mode computes delta but does not apply score changes', async () => {

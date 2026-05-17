@@ -123,7 +123,22 @@ test('safer defaults stay conservative for real-capital usage', async () => {
   assert.equal(cfg.poolImpactPriceDropForceExitPct, 6);
   assert.equal(cfg.poolImpactConsecutiveDropTicks, 3);
   assert.equal(cfg.poolImpactLowerRangeBufferPct, 15);
+  assert.equal(cfg.poolPatternLearningEnabled, false);
+  assert.equal(cfg.poolPatternLearningShadowMode, true);
+  assert.equal(cfg.poolPatternLearningMinSamples, 10);
+  assert.equal(cfg.poolPatternLearningMaxScoreDelta, 8);
+  assert.equal(cfg.poolPatternLearningLookbackDays, 14);
   assert.deepEqual(cfg.allowedBinSteps, [100, 125]);
+});
+
+test('user-config.example includes pool pattern learning keys', () => {
+  const raw = readFileSync(join(repoRoot, 'user-config.example.json'), 'utf-8');
+  const parsed = JSON.parse(raw);
+  assert.equal(parsed.poolPatternLearningEnabled, false);
+  assert.equal(parsed.poolPatternLearningShadowMode, true);
+  assert.equal(parsed.poolPatternLearningMinSamples, 10);
+  assert.equal(parsed.poolPatternLearningMaxScoreDelta, 8);
+  assert.equal(parsed.poolPatternLearningLookbackDays, 14);
 });
 
 test('realtime PnL terminal interval is configurable', async () => {
