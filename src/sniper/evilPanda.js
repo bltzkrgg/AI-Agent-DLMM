@@ -154,6 +154,16 @@ export function buildDlmmDeployStrategyArgs({
   };
 }
 
+export function buildDlmmSdkStrategyFromDeployArgs(deployArgs = {}) {
+  return {
+    maxBinId: Number(deployArgs.rangeMax),
+    minBinId: Number(deployArgs.rangeMin),
+    strategyType: Number.isFinite(Number(deployArgs.strategyType))
+      ? Number(deployArgs.strategyType)
+      : SPOT_STRATEGY_TYPE,
+  };
+}
+
 async function resolveNonRefundableFeeFlag(poolAddress, explicitFlag = null) {
   if (explicitFlag === true) return true;
   if (explicitFlag === false) return false;
@@ -1012,23 +1022,25 @@ export async function deployPosition(poolAddress, deployOptions = {}) {
       throw preflightErr;
     }
 
+    const safeRangeMin = Number(deployArgs.rangeMin);
+    const safeRangeMax = Number(deployArgs.rangeMax);
+    const finalTotalBins = safeRangeMax - safeRangeMin + 1;
+    const sdkStrategy = buildDlmmSdkStrategyFromDeployArgs(deployArgs);
+
     if (deployArgs.adjustedBelowActive) {
       console.warn(
         `[evilPanda] DLMM_RANGE_ADJUST_SINGLE_SIDE pool=${poolAddress.slice(0,8)} ` +
-        `active=${deployArgs.activeBinId} original=[${rangeMin},${rangeMax}] adjusted=[${deployArgs.rangeMin},${deployArgs.rangeMax}]`
+        `active=${deployArgs.activeBinId} original=[${rangeMin},${rangeMax}] adjusted=[${safeRangeMin},${safeRangeMax}]`
       );
     }
-    rangeMin = deployArgs.rangeMin;
-    rangeMax = deployArgs.rangeMax;
-    const finalTotalBins = rangeMax - rangeMin + 1;
 
     console.log(
       `[evilPanda] DLMM_PRECHECK_OK pool=${poolAddress} active=${deployArgs.activeBinId} ` +
-      `range=[${rangeMin},${rangeMax}] amountX=${deployArgs.amountXBn.toString()} amountY=${deployArgs.amountYBn.toString()} ` +
+      `range=[${safeRangeMin},${safeRangeMax}] amountX=${deployArgs.amountXBn.toString()} amountY=${deployArgs.amountYBn.toString()} ` +
       `shouldSeedTokenX=${shouldSeedTokenX} seedSwapSucceeded=${deployArgs.amountXBn.gt(new BN('0'))} ` +
       `strategyType=${deployArgs.strategyType} slippage=${slippagePct}%`
     );
-    console.log(`[evilPanda] bins=${finalTotalBins} range=[${rangeMin},${rangeMax}] pf=${microLamports} slip=${slippagePct}%`);
+    console.log(`[evilPanda] bins=${finalTotalBins} range=[${safeRangeMin},${safeRangeMax}] pf=${microLamports} slip=${slippagePct}%`);
 
     try {
       const txOrTxs = await dlmmPool.initializePositionAndAddLiquidityByStrategy({
@@ -1036,11 +1048,7 @@ export async function deployPosition(poolAddress, deployOptions = {}) {
         user:           wallet.publicKey,
         totalXAmount:   deployArgs.amountXBn,
         totalYAmount:   deployArgs.amountYBn,
-        strategy: {
-          maxBinId:     rangeMax,
-          minBinId:     rangeMin,
-          strategyType: deployArgs.strategyType,
-        },
+        strategy: sdkStrategy,
         slippage: slippagePct,
       });
 
@@ -1065,8 +1073,8 @@ export async function deployPosition(poolAddress, deployOptions = {}) {
           simulated: true,
           positionPubkey,
           poolAddress,
-          rangeMin,
-          rangeMax,
+          rangeMin: safeRangeMin,
+          rangeMax: safeRangeMax,
           txCount: txList.length,
         };
       }
@@ -1077,8 +1085,8 @@ export async function deployPosition(poolAddress, deployOptions = {}) {
         deployedAt: nowIso(),
         tokenXMint: xMint,
         tokenYMint: yMint,
-        rangeMin,
-        rangeMax,
+        rangeMin: safeRangeMin,
+        rangeMax: safeRangeMax,
         entryActiveBin: safeNum(activeBin.binId, 0),
         entryPrice: safeNum(activeBin.pricePerToken, 0),
         hwmPct: 0,
@@ -1107,8 +1115,8 @@ export async function deployPosition(poolAddress, deployOptions = {}) {
       deployedAt:  nowIso(),
       tokenXMint:  xMint,
       tokenYMint:  yMint,
-      rangeMin,
-      rangeMax,
+      rangeMin: safeRangeMin,
+      rangeMax: safeRangeMax,
       entryActiveBin: safeNum(activeBin.binId, 0),
       entryPrice: safeNum(activeBin.pricePerToken, 0),
       hwmPct:      0,

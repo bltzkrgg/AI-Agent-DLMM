@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import BN from 'bn.js';
 
-import { buildDlmmDeployStrategyArgs } from '../src/sniper/evilPanda.js';
+import { buildDlmmDeployStrategyArgs, buildDlmmSdkStrategyFromDeployArgs } from '../src/sniper/evilPanda.js';
 import { StrategyType } from '@meteora-ag/dlmm';
 
 test('single-side quote including active bin is adjusted below active bin', () => {
@@ -70,4 +70,23 @@ test('strategy type defaults to SDK Spot enum when available', () => {
 
   const expectedSpot = Number(StrategyType?.Spot ?? 0);
   assert.equal(out.strategyType, expectedSpot);
+});
+
+test('final SDK strategy is built from adjusted deployArgs range, not original unsafe range', () => {
+  const activeBinId = 1000;
+  const originalRangeMin = 932;
+  const originalRangeMax = 1000;
+  const deployArgs = buildDlmmDeployStrategyArgs({
+    activeBinId,
+    rangeMin: originalRangeMin,
+    rangeMax: originalRangeMax,
+    amountXBn: new BN('0'),
+    amountYBn: new BN('250000000'),
+  });
+
+  const strategy = buildDlmmSdkStrategyFromDeployArgs(deployArgs);
+  assert.equal(strategy.maxBinId, deployArgs.rangeMax);
+  assert.equal(strategy.minBinId, deployArgs.rangeMin);
+  assert.ok(strategy.maxBinId < activeBinId);
+  assert.notEqual(strategy.maxBinId, originalRangeMax);
 });
