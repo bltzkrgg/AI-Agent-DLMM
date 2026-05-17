@@ -510,56 +510,46 @@ export function isConfigKeySupported(key) {
 
 export const SETCONFIG_WHITELIST = {
   // ── Finance ──────────────────────────────────────────────────────
-  deployAmountSol:        { section: 'finance',    type: 'number',  desc: 'Modal SOL per posisi (0.01–50)' },
-  maxPositions:           { section: 'finance',    type: 'number',  desc: 'Maks posisi bersamaan (1–20)' },
-  minSolToOpen:           { section: 'finance',    type: 'number',  desc: 'Saldo minimum buka posisi' },
-  gasReserve:             { section: 'finance',    type: 'number',  desc: 'Cadangan gas SOL' },
-  dailyLossLimitUsd:      { section: 'finance',    type: 'number',  desc: 'Batas rugi harian (USD)' },
-  maxDailyPriorityFeeSol: { section: 'finance',    type: 'number',  desc: 'Batas fee prioritas/hari' },
-  slippageBps:            { section: 'finance',    type: 'number',  desc: 'Slippage (bps, 10–1000)' },
-  // ── Discovery ─────────────────────────────────────────────────────
-  meteoraDiscoveryLimit:  { section: 'discovery',  type: 'number',  desc: 'Jumlah pool discan per siklus' },
-  discoveryTimeframe:     { section: 'discovery',  type: 'string',  desc: 'Timeframe chart (1m/5m/15m/1h)' },
-  discoveryCategory:      { section: 'discovery',  type: 'string',  desc: 'Kategori pool (trending/new/…)' },
-  minTvl:                 { section: 'discovery',  type: 'number',  desc: 'TVL minimum pool (USD)' },
-  maxTvl:                 { section: 'discovery',  type: 'number',  desc: 'TVL maksimum pool (USD)' },
-  minVolume:              { section: 'discovery',  type: 'number',  desc: 'Volume minimum (USD)' },
-  maxVolume:              { section: 'discovery',  type: 'number',  desc: 'Volume maksimum (USD, 0 = unlimited)' },
-  minHolders:             { section: 'discovery',  type: 'number',  desc: 'Holder minimum token' },
-  minOrganic:             { section: 'discovery',  type: 'number',  desc: 'Organic score minimum (0–100)' },
-  maxPoolAgeDays:         { section: 'discovery',  type: 'number',  desc: '[DEPRECATED] Gunakan maxPoolAgeHours. Umur pool maksimum (hari)' },
-  minMcap:                { section: 'discovery',  type: 'number',  desc: 'Market Cap minimum token (USD, 0 = tidak filter)' },
-  maxMcapUsd:             { section: 'discovery',  type: 'number',  desc: 'Market Cap maksimum token (USD, 0 = tidak filter)' },
-  // ── Screening ─────────────────────────────────────────────────────
-  autoScreeningEnabled:   { section: 'screening',  type: 'boolean', desc: 'Aktifkan auto-screening berkala (true/false)' },
-  screeningTopPoolsLimit: { section: 'screening',  type: 'number',  desc: 'Jumlah top pool internal yang dievaluasi per siklus (1–20)' },
-  screeningIntervalMin:   { section: 'screening',  type: 'number',  desc: 'Interval auto-screening (menit, 5–1440)' },
-  realtimePnlIntervalSec: { section: 'management', type: 'number',  desc: 'Interval log realtime PnL di terminal (detik, 5–3600)' },
-  jupiterMaxChecksPerScan:{ section: 'screening',  type: 'number',  desc: 'Maks cek Jupiter per siklus scan' },
-  pendingRetestEnabled:   { section: 'screening',  type: 'boolean', desc: 'Aktifkan pending retest TA' },
-  retestIntervalMin:      { section: 'screening',  type: 'number',  desc: 'Interval cek ulang pending TA (menit)' },
-  retestTtlMin:           { section: 'screening',  type: 'number',  desc: 'Batas umur pending retest (menit)' },
-  retestMaxAttempts:      { section: 'screening',  type: 'number',  desc: 'Maks percobaan retest per pool' },
-  retestMaxReadyPerScan:  { section: 'screening',  type: 'number',  desc: 'Maks kandidat retest siap per scan' },
-  deployQueueExpiryMin:   { section: 'watch',      type: 'number',  desc: 'Batas umur antrean deploy (menit)' },
-  taWatchEnabled:         { section: 'watch',      type: 'boolean', desc: 'Aktifkan sticky TA watch layer' },
-  taWatchMaxPools:        { section: 'watch',      type: 'number',  desc: 'Maks kandidat yang bisa tinggal di WATCH (1–50)' },
-  taWatchExpiryMin:       { section: 'watch',      type: 'number',  desc: 'Batas umur kandidat di WATCH (menit)' },
-  watchIntervalSec:       { section: 'watch',      type: 'number',  desc: 'Interval cek WATCH aktif (detik, 15–3600)' },
-  deployRangeMaxBins:     { section: 'strategy',   type: 'number',  desc: 'Batas lebar range deploy monolith (bin, 5–68)' },
-  poolImpactGuardEnabled: { section: 'strategy',   type: 'boolean', desc: 'Aktifkan Pool Impact Exit Guard' },
-  poolImpactCheckIntervalMs: { section: 'strategy', type: 'number', desc: 'Interval evaluasi Pool Impact Guard (ms)' },
-  poolImpactPriceDropWarnPct: { section: 'strategy', type: 'number', desc: 'Drop harga pool untuk warning (%)' },
-  poolImpactPriceDropPreExitPct: { section: 'strategy', type: 'number', desc: 'Drop harga pool untuk pre-exit (%)' },
-  poolImpactPriceDropForceExitPct: { section: 'strategy', type: 'number', desc: 'Drop harga pool untuk emergency exit (%)' },
-  poolImpactConsecutiveDropTicks: { section: 'strategy', type: 'number', desc: 'Jumlah tick active-bin turun untuk konfirmasi impact' },
-  poolImpactLowerRangeBufferPct: { section: 'strategy', type: 'number', desc: 'Buffer risiko dekat lower range (%)' },
-  poolImpactAlertCooldownMs: { section: 'strategy', type: 'number', desc: 'Cooldown alert Pool Impact Guard (ms)' },
-  poolPatternLearningEnabled: { section: 'strategy', type: 'boolean', desc: 'Aktifkan Pool Pattern Learning' },
-  poolPatternLearningShadowMode: { section: 'strategy', type: 'boolean', desc: 'Mode bayangan (hitung delta tanpa apply ke score)' },
-  poolPatternLearningMinSamples: { section: 'strategy', type: 'number', desc: 'Minimum sample pattern sebelum delta dipakai' },
-  poolPatternLearningMaxScoreDelta: { section: 'strategy', type: 'number', desc: 'Batas bonus/penalty score pattern learning' },
-  poolPatternLearningLookbackDays: { section: 'strategy', type: 'number', desc: 'Window hari untuk data pattern learning' },
+  deployAmountSol:        { section: 'finance',            type: 'number',  desc: 'Modal SOL per posisi (0.01–50)' },
+  maxPositions:           { section: 'finance',            type: 'number',  desc: 'Maks posisi bersamaan (1–20)' },
+  minSolToOpen:           { section: 'finance',            type: 'number',  desc: 'Saldo minimum buka posisi' },
+  gasReserve:             { section: 'finance',            type: 'number',  desc: 'Cadangan gas SOL' },
+  slippageBps:            { section: 'finance',            type: 'number',  desc: 'Slippage (bps, 10–1000)' },
+  dailyLossLimitUsd:      { section: 'finance',            type: 'number',  desc: 'Batas rugi harian (USD)' },
+  maxDailyPriorityFeeSol: { section: 'finance',            type: 'number',  desc: 'Batas fee prioritas/hari' },
+
+  // ── Discovery Quality ────────────────────────────────────────────
+  minTvl:                 { section: 'discovery',          type: 'number',  desc: 'TVL minimum pool (USD)' },
+  maxTvl:                 { section: 'discovery',          type: 'number',  desc: 'TVL maksimum pool (USD)' },
+  minVolume:              { section: 'discovery',          type: 'number',  desc: 'Volume minimum (USD)' },
+  maxVolume:              { section: 'discovery',          type: 'number',  desc: 'Volume maksimum (USD, 0 = unlimited)' },
+  minHolders:             { section: 'discovery',          type: 'number',  desc: 'Holder minimum token' },
+  minOrganic:             { section: 'discovery',          type: 'number',  desc: 'Organic score minimum (0–100)' },
+  minMcap:                { section: 'discovery',          type: 'number',  desc: 'Market Cap minimum token (USD, 0 = tidak filter)' },
+
+  // ── Watch / Queue ────────────────────────────────────────────────
+  watchIntervalSec:       { section: 'watch',              type: 'number',  desc: 'Interval cek WATCH aktif (detik, 15–3600)' },
+  deployQueueExpiryMin:   { section: 'watch',              type: 'number',  desc: 'Batas umur antrean deploy (menit)' },
+  taWatchEnabled:         { section: 'watch',              type: 'boolean', desc: 'Aktifkan sticky TA watch layer' },
+  taWatchMaxPools:        { section: 'watch',              type: 'number',  desc: 'Maks kandidat yang bisa tinggal di WATCH (1–50)' },
+  taWatchExpiryMin:       { section: 'watch',              type: 'number',  desc: 'Batas umur kandidat di WATCH (menit)' },
+
+  // ── OOR Monitoring ───────────────────────────────────────────────
+  outOfRangeWaitMinutes:  { section: 'oor',                type: 'number',  desc: 'Waktu tunggu OOR sebelum close (menit)' },
+
+  // ── Pool Impact Guard ────────────────────────────────────────────
+  poolImpactGuardEnabled:         { section: 'poolImpactGuard',     type: 'boolean', desc: 'Aktifkan Pool Impact Exit Guard' },
+  poolImpactPriceDropWarnPct:     { section: 'poolImpactGuard',     type: 'number',  desc: 'Drop harga pool untuk warning (%)' },
+  poolImpactPriceDropPreExitPct:  { section: 'poolImpactGuard',     type: 'number',  desc: 'Drop harga pool untuk pre-exit (%)' },
+  poolImpactPriceDropForceExitPct:{ section: 'poolImpactGuard',     type: 'number',  desc: 'Drop harga pool untuk emergency exit (%)' },
+  poolImpactConsecutiveDropTicks: { section: 'poolImpactGuard',     type: 'number',  desc: 'Jumlah tick active-bin turun untuk konfirmasi impact' },
+  poolImpactLowerRangeBufferPct:  { section: 'poolImpactGuard',     type: 'number',  desc: 'Buffer risiko dekat lower range (%)' },
+
+  // ── Pool Pattern Learning ────────────────────────────────────────
+  poolPatternLearningEnabled:     { section: 'poolPatternLearning', type: 'boolean', desc: 'Aktifkan Pool Pattern Learning' },
+  poolPatternLearningShadowMode:  { section: 'poolPatternLearning', type: 'boolean', desc: 'Mode bayangan (hitung delta tanpa apply ke score)' },
+  poolPatternLearningMinSamples:  { section: 'poolPatternLearning', type: 'number',  desc: 'Minimum sample pattern sebelum delta dipakai' },
+  poolPatternLearningMaxScoreDelta:{ section: 'poolPatternLearning',type: 'number',  desc: 'Batas bonus/penalty score pattern learning' },
 };
 
 // ── resolveNestedKey ─────────────────────────────────────────────────────────

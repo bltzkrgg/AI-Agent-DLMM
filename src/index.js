@@ -609,22 +609,17 @@ bot.onText(/\/setconfig(?:\s+(\S+))?(?:\s+(.+))?/, async (msg, match) => {
       `atau:   <code>/setconfig [section].[key] [value]</code>\n\n` +
       `<b>💰 Finance:</b>\n${bySection('finance')}\n\n` +
       `<b>🔍 Discovery:</b>\n${bySection('discovery')}\n\n` +
-      `<b>📡 Screening:</b>\n${bySection('screening')}\n\n` +
       `<b>👀 Watch:</b>\n${bySection('watch')}\n\n` +
-      `<b>🎯 Strategy:</b>\n${bySection('strategy')}\n\n` +
-      `<b>🩺 Management:</b>\n${bySection('management')}\n\n` +
+      `<b>📉 OOR:</b>\n${bySection('oor')}\n\n` +
+      `<b>🛡️ Pool Impact Guard:</b>\n${bySection('poolImpactGuard')}\n\n` +
+      `<b>🧠 Pool Pattern Learning:</b>\n${bySection('poolPatternLearning')}\n\n` +
       `<i>Contoh:\n` +
       `/setconfig deployAmountSol 1.5\n` +
-      `/setconfig discovery.timeframe 1h\n` +
-      `/setconfig autoScreeningEnabled false\n` +
-      `/setconfig watch.enabled true\n` +
-      `/setconfig watch.maxPools 10\n` +
-      `/setconfig watch.expiryMin 60\n` +
-      `/setconfig watch.watchIntervalSec 30\n` +
-      `/setconfig deployQueueExpiryMin 60\n` +
-      `/setconfig strategy.deployRangeMaxBins 48\n` +
-      `/setconfig realtimePnlIntervalSec 15\n` +
-      `/setconfig screeningIntervalMin 30</i>`,
+      `/setconfig minTvl 50000\n` +
+      `/setconfig taWatchEnabled true\n` +
+      `/setconfig outOfRangeWaitMinutes 45\n` +
+      `/setconfig poolImpactGuardEnabled true\n` +
+      `/setconfig poolPatternLearningShadowMode true</i>`,
       { parse_mode: 'HTML' }
     );
     return;
@@ -643,8 +638,7 @@ bot.onText(/\/setconfig(?:\s+(\S+))?(?:\s+(.+))?/, async (msg, match) => {
   const resolved = resolveNestedKey(rawKey);
   if (!resolved) {
     bot.sendMessage(chatId,
-      `❌ Key <code>${escapeHTML(rawKey)}</code> tidak dikenali atau tidak diizinkan.\n` +
-      `Lihat daftar key: <code>/setconfig ?</code>`,
+      `❌ Unsupported /setconfig key. Use /config or /setconfig to see supported keys.`,
       { parse_mode: 'HTML' }
     );
     return;

@@ -25,7 +25,7 @@ test('config rejects unknown keys and merges nested signal weights safely', asyn
   assert.equal(configModule.isConfigKeySupported('deployRangeMaxBins'), true);
   assert.equal(configModule.isConfigKeySupported('totallyUnknownKey'), false);
 
-  assert.equal(configModule.resolveNestedKey('strategy.deployRangeMaxBins')?.flatKey, 'deployRangeMaxBins');
+  assert.equal(configModule.resolveNestedKey('strategy.outOfRangeWaitMinutes')?.flatKey, 'outOfRangeWaitMinutes');
 
   configModule.updateConfig({
     signalWeights: { volume: 0.99 },
@@ -191,8 +191,9 @@ test('deploy range max bins is configurable and persisted via updateConfig', asy
   process.env.BOT_CONFIG_PATH = configPath;
   const configModule = await importFresh(join(repoRoot, 'src/config.js'));
 
-  assert.equal(configModule.resolveNestedKey('deployRangeMaxBins')?.flatKey, 'deployRangeMaxBins');
-  assert.equal(configModule.resolveNestedKey('strategy.deployRangeMaxBins')?.flatKey, 'deployRangeMaxBins');
+  // deployRangeMaxBins tetap supported di config runtime, tapi sengaja tidak diekspos via /setconfig.
+  assert.equal(configModule.resolveNestedKey('deployRangeMaxBins'), null);
+  assert.equal(configModule.resolveNestedKey('strategy.deployRangeMaxBins'), null);
 
   configModule.updateConfig({
     deployRangeMaxBins: 40,
@@ -282,6 +283,35 @@ test('pool pattern learning config keys are supported and persisted via user con
   assert.equal(saved.poolPatternLearningMinSamples, 12);
   assert.equal(saved.poolPatternLearningMaxScoreDelta, 6);
   assert.equal(saved.poolPatternLearningLookbackDays, 21);
+});
+
+test('/setconfig whitelist is curated for operational keys only', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'dlmm-setconfig-whitelist-'));
+  const configPath = join(root, 'user-config.json');
+  process.env.BOT_CONFIG_PATH = configPath;
+  const configModule = await importFresh(join(repoRoot, 'src/config.js'));
+
+  const keys = Object.keys(configModule.SETCONFIG_WHITELIST);
+
+  assert.equal(keys.includes('deployAmountSol'), true);
+  assert.equal(keys.includes('minTvl'), true);
+  assert.equal(keys.includes('watchIntervalSec'), true);
+  assert.equal(keys.includes('outOfRangeWaitMinutes'), true);
+  assert.equal(keys.includes('poolImpactGuardEnabled'), true);
+  assert.equal(keys.includes('poolPatternLearningEnabled'), true);
+
+  assert.equal(keys.includes('maxPoolAgeDays'), false);
+  assert.equal(keys.includes('maxMcapUsd'), false);
+  assert.equal(keys.includes('screeningIntervalMin'), false);
+  assert.equal(keys.includes('realtimePnlIntervalSec'), false);
+  assert.equal(keys.includes('jupiterMaxChecksPerScan'), false);
+  assert.equal(keys.includes('retestIntervalMin'), false);
+  assert.equal(keys.includes('retestTtlMin'), false);
+  assert.equal(keys.includes('retestMaxAttempts'), false);
+  assert.equal(keys.includes('retestMaxReadyPerScan'), false);
+  assert.equal(keys.includes('poolImpactCheckIntervalMs'), false);
+  assert.equal(keys.includes('poolImpactAlertCooldownMs'), false);
+  assert.equal(keys.includes('poolPatternLearningLookbackDays'), false);
 });
 
 test('entry capacity respects deployment stage and clamps overrides', async () => {
