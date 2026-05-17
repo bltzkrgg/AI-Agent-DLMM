@@ -60,42 +60,98 @@ function getSnapshotCacheKey(mint = '', poolAddress = '') {
   return `${mint || 'unknown'}:${poolAddress || 'nopool'}`;
 }
 
-export function isReliableLiveSnapshot(snapshot = null) {
-  if (!snapshot) return false;
+export function getLiveSnapshotReliability(snapshot = null) {
+  if (!snapshot) return { reliable: false, reason: 'SNAPSHOT_NULL' };
   const source = String(snapshot.dataSource || snapshot.ohlcv?.source || '').toLowerCase();
-  if (!snapshot.ohlcv?.historySuccess) return false;
-  if (source.includes('momentum-proxy')) return false;
-  return true;
+  const historySuccess = snapshot.ohlcv?.historySuccess === true;
+  const fallbackReliable = snapshot?.quality?.fallbackReliable === true;
+  if (!historySuccess && !fallbackReliable) {
+    return { reliable: false, reason: 'OHLCV_HISTORY_UNAVAILABLE' };
+  }
+  if (source.includes('momentum-proxy')) {
+    return { reliable: false, reason: 'MOMENTUM_PROXY_ONLY' };
+  }
+  return { reliable: true, reason: fallbackReliable ? 'FALLBACK_RELIABLE' : 'OHLCV_HISTORY_OK' };
 }
 
-export function getSnapshotCacheStats() {
-  return {
-    hits: _snapshotCacheHits,
-    misses: _snapshotCacheMisses,
-    size: _snapshotCache.size,
-  };
+export function isReliableLiveSnapshot(snapshot = null) {
+  return getLiveSnapshotReliability(snapshot).reliable;
 }
 
-async function getCachedMarketSnapshot(mint, poolAddress = null) {
+export function buildUnreliableLiveSnapshotLog({
+  symbol = '',
+  mint = '',
+  poolAddress = '',
+  snapshot = null,
+  poolAddressPassed = false,
+} = {}) {
+  const reliability = getLiveSnapshotReliability(snapshot);
+  const issues = Array.isArray(snapshot?.quality?.issues)
+    ? snapshot.quality.issues.slice(0, 3).join('|')
+    : '';
+  const candlesLen = Array.isArray(snapshot?.ohlcv?.candles)
+    ? snapshot.ohlcv.candles.length
+    : (Number(snapshot?.ohlcv?.ta?.candleCount) || 0);
+  return (
+    `[QUEUE] 🧊 Ignored unreliable live snapshot ${symbol || mint?.slice(0, 8) || 'UNKNOWN'} ` +
+    `mint=${mint || 'unknown'} pool=${poolAddress || 'unknown'} ` +
+    `source=${String(snapshot?.dataSource || 'unknown')} ` +
+    `ohlcvSource=${String(snapshot?.ohlcv?.source || 'unknown')} ` +
+    `historySuccess=${snapshot?.ohlcv?.historySuccess === true ? 'true' : 'false'} ` +
+    `candles=${candlesLen} taSource=${String(snapshot?.quality?.taSource || 'unknown')} ` +
+    `issues=[${issues || 'none'}] m5=${formatPct(snapshot?.ohlcv?.priceChangeM5)} ` +
+    `poolAddressPassed=${poolAddressPassed ? 'yes' : 'no'} reason=${reliability.reason}`
+  );
+}
+
+function logUnreliableLiveSnapshot({
+  symbol = '',
+  mint = '',
+  poolAddress = '',
+  snapshot = null,
+  poolAddressPassed = false,
+} = {}) {
+  console.log(buildUnreliableLiveSnapshotLog({
+    symbol,
+    mint,
+    poolAddress,
+    snapshot,
+    poolAddressPassed,
+  }));
+}
+
+async function getCachedMarketSnapshot(mint, poolAddress = null, symbol = '') {
   if (!mint) return null;
   const key = getSnapshotCacheKey(mint, poolAddress || '');
   const now = Date.now();
   const cached = _snapshotCache.get(key);
   if (cached && (now - cached.at) <= SNAPSHOT_CACHE_TTL_MS) {
     _snapshotCacheHits += 1;
-    console.log(`[QUEUE] 🧠 Snapshot cache hit ${mint.slice(0, 8)} hits=${_snapshotCacheHits} misses=${_snapshotCacheMisses}`);
+    console.log(
+      `[QUEUE] 🧠 Snapshot cache hit ${symbol || mint.slice(0, 8)} ` +
+      `pool=${(poolAddress || '').slice(0, 8) || 'none'} ` +
+      `hits=${_snapshotCacheHits} misses=${_snapshotCacheMisses}`
+    );
     return cached.snapshot;
   }
 
   if (_snapshotInflight.has(key)) {
     _snapshotCacheHits += 1;
-    console.log(`[QUEUE] 🧠 Snapshot inflight reuse ${mint.slice(0, 8)} hits=${_snapshotCacheHits} misses=${_snapshotCacheMisses}`);
+    console.log(
+      `[QUEUE] 🧠 Snapshot inflight reuse ${symbol || mint.slice(0, 8)} ` +
+      `pool=${(poolAddress || '').slice(0, 8) || 'none'} ` +
+      `hits=${_snapshotCacheHits} misses=${_snapshotCacheMisses}`
+    );
     return _snapshotInflight.get(key);
   }
 
   _snapshotCacheMisses += 1;
-  console.log(`[QUEUE] 🧠 Snapshot cache miss ${mint.slice(0, 8)} hits=${_snapshotCacheHits} misses=${_snapshotCacheMisses}`);
-  const task = getMarketSnapshot(mint, poolAddress || null)
+  console.log(
+    `[QUEUE] 🧠 Snapshot cache miss ${symbol || mint.slice(0, 8)} ` +
+    `pool=${(poolAddress || '').slice(0, 8) || 'none'} poolAddressPassed=${poolAddress ? 'yes' : 'no'} ` +
+    `hits=${_snapshotCacheHits} misses=${_snapshotCacheMisses}`
+  );
+  const task = getMarketSnapshot(mint, poolAddress || null, { from: 'deploy_queue' })
     .catch(() => null)
     .then((snapshot) => {
       _snapshotCache.set(key, { at: Date.now(), snapshot });
@@ -104,6 +160,14 @@ async function getCachedMarketSnapshot(mint, poolAddress = null) {
     });
   _snapshotInflight.set(key, task);
   return task;
+}
+
+export function getSnapshotCacheStats() {
+  return {
+    hits: _snapshotCacheHits,
+    misses: _snapshotCacheMisses,
+    size: _snapshotCache.size,
+  };
 }
 
 function resolveQueueSignalSources({ meta = {}, liveSnapshot = null } = {}) {
@@ -432,15 +496,18 @@ async function evaluateDeployConditions(entry) {
       };
     }
 
-    const liveSnapshot = await getCachedMarketSnapshot(mint, poolAddress || null);
+    const liveSnapshot = await getCachedMarketSnapshot(mint, poolAddress || null, entry.symbol || '');
     if (liveSnapshot) {
       const liveSignals = summarizeQueueDecision({ meta, liveSnapshot, cfg, lpMode });
       const liveReliable = isReliableLiveSnapshot(liveSnapshot);
       if (!liveReliable) {
-        console.log(
-          `[QUEUE] 🧊 Ignored unreliable live snapshot for ${mint.slice(0, 8)} ` +
-          `(source=${String(liveSnapshot.dataSource || liveSnapshot.ohlcv?.source || 'unknown')})`
-        );
+        logUnreliableLiveSnapshot({
+          symbol: entry.symbol || '',
+          mint,
+          poolAddress,
+          snapshot: liveSnapshot,
+          poolAddressPassed: Boolean(poolAddress),
+        });
       }
       activeSignals = liveReliable ? liveSignals : queueSignals;
       ({ trend: liveTrend, trendSource, m5: liveM5, m5Source, decision: freshnessDecision } = activeSignals);
@@ -499,14 +566,17 @@ async function evaluateDeployConditions(entry) {
     };
   }
 
-  const liveSnapshot = await getCachedMarketSnapshot(mint, poolAddress || null);
+  const liveSnapshot = await getCachedMarketSnapshot(mint, poolAddress || null, entry.symbol || '');
   if (liveSnapshot) {
     const liveSignals = summarizeQueueDecision({ meta, liveSnapshot, cfg, lpMode });
     if (!isReliableLiveSnapshot(liveSnapshot)) {
-      console.log(
-        `[QUEUE] 🧊 Ignored unreliable live snapshot for ${mint.slice(0, 8)} ` +
-        `(source=${String(liveSnapshot.dataSource || liveSnapshot.ohlcv?.source || 'unknown')})`
-      );
+      logUnreliableLiveSnapshot({
+        symbol: entry.symbol || '',
+        mint,
+        poolAddress,
+        snapshot: liveSnapshot,
+        poolAddressPassed: Boolean(poolAddress),
+      });
     }
     ({ trend: liveTrend, trendSource, m5: liveM5, m5Source } = liveSignals);
   }

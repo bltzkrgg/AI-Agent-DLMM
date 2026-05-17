@@ -4,7 +4,9 @@ import { readFileSync } from 'node:fs';
 
 import { checkSupertrendVeto } from '../src/market/meridianVeto.js';
 import {
+  buildUnreliableLiveSnapshotLog,
   getFinalSupertrendDeployDecision,
+  getLiveSnapshotReliability,
   isFreshBullishSupertrend15m,
   isFreshDeployMeta,
   isReliableLiveSnapshot,
@@ -351,4 +353,48 @@ test('queue treats fallback momentum proxy as unreliable live confirmation', () 
     dataSource: 'dexscreener-ohlcv',
     ohlcv: { historySuccess: true },
   }), true);
+});
+
+test('queue marks explicit pool-specific fallback as reliable only when flagged', () => {
+  const fallbackReliable = {
+    dataSource: 'meridian-fallback',
+    ohlcv: { historySuccess: false, source: 'meridian-fallback', priceChangeM5: 1.2 },
+    quality: { fallbackReliable: true, taSource: 'Meridian-15m' },
+  };
+  const fallbackIncomplete = {
+    dataSource: 'meridian-fallback',
+    ohlcv: { historySuccess: false, source: 'meridian-fallback', priceChangeM5: 0 },
+    quality: { fallbackReliable: false, taSource: 'unknown' },
+  };
+
+  assert.equal(isReliableLiveSnapshot(fallbackReliable), true);
+  assert.equal(getLiveSnapshotReliability(fallbackReliable).reason, 'FALLBACK_RELIABLE');
+  assert.equal(isReliableLiveSnapshot(fallbackIncomplete), false);
+  assert.equal(getLiveSnapshotReliability(fallbackIncomplete).reason, 'OHLCV_HISTORY_UNAVAILABLE');
+});
+
+test('queue unreliable snapshot diagnostic log includes source/history/issues/poolAddress', () => {
+  const line = buildUnreliableLiveSnapshotLog({
+    symbol: 'BURNIE',
+    mint: 'Mint111111111111111111111111111111111111111',
+    poolAddress: 'Pool11111111111111111111111111111111111111',
+    poolAddressPassed: true,
+    snapshot: {
+      dataSource: 'unknown',
+      ohlcv: { source: 'unknown', historySuccess: false, priceChangeM5: 0, ta: { candleCount: 0 } },
+      quality: { taSource: 'unknown', issues: ['OHLCV_UNAVAILABLE'] },
+    },
+  });
+
+  assert.match(line, /BURNIE/);
+  assert.match(line, /pool=Pool11111/);
+  assert.match(line, /source=unknown/);
+  assert.match(line, /historySuccess=false/);
+  assert.match(line, /issues=\[OHLCV_UNAVAILABLE\]/);
+  assert.match(line, /poolAddressPassed=yes/);
+});
+
+test('queue snapshot path passes poolAddress to market snapshot resolver', () => {
+  const src = readFileSync(new URL('../src/utils/pendingDeployQueue.js', import.meta.url), 'utf8');
+  assert.match(src, /getMarketSnapshot\(mint, poolAddress \|\| null, \{ from: 'deploy_queue' \}\)/);
 });

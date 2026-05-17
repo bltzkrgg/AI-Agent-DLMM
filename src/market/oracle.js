@@ -16,18 +16,76 @@ const BIRDEYE_BASE = 'https://public-api.birdeye.so';
 // Fallback 2: Jupiter spot price momentum proxy when both candle sources fail.
 
 let birdeyeCooldownUntil = 0;
+const MERIDIAN_FALLBACK_TTL_MS = 45_000;
+const _meridianFallbackCache = new Map(); // key -> { at, value }
+
+function getOracleFallbackCacheKey(tokenMint = '', poolAddress = '') {
+  return `${tokenMint || 'unknown'}:${poolAddress || 'nopool'}`;
+}
+
+function normalizeMeridianTrend(direction = '') {
+  const dir = String(direction || '').trim().toLowerCase();
+  if (dir === 'bullish') return 'BULLISH';
+  if (dir === 'bearish') return 'BEARISH';
+  if (dir === 'neutral') return 'NEUTRAL';
+  return 'UNKNOWN';
+}
+
+function toFiniteNumber(value, fallback = null) {
+  const num = Number(value);
+  return Number.isFinite(num) ? num : fallback;
+}
+
+function buildMergedMeridianFallback({
+  meridian = null,
+  dexPair = null,
+  dexFallbackMeta = null,
+  poolAddress = null,
+} = {}) {
+  if (!meridian) return null;
+  const mergedM5 = Number.isFinite(dexFallbackMeta?.priceChangeM5) && dexFallbackMeta.priceChangeM5 !== 0
+    ? dexFallbackMeta.priceChangeM5
+    : meridian.priceChangeM5;
+  const trend = String(meridian?.ta?.supertrend?.trend || '').toUpperCase();
+  const trendKnown = trend === 'BULLISH' || trend === 'BEARISH' || trend === 'NEUTRAL';
+  const poolSpecific = Boolean(poolAddress) && Boolean(dexPair?.poolMatched);
+  const fallbackReliable = poolSpecific && trendKnown && Number.isFinite(mergedM5) && mergedM5 !== 0;
+  return {
+    ...meridian,
+    source: 'meridian-fallback',
+    poolMatched: Boolean(dexPair?.poolMatched),
+    priceChangeM5: mergedM5,
+    fallbackReliable,
+  };
+}
 
 export async function getOHLCV(tokenMint, poolAddress = null) {
-  const dex = await buildOHLCVFromDexScreener(tokenMint);
+  const dexPair = await resolveDexScreenerPairContext(tokenMint, poolAddress || null);
+  const dex = await buildOHLCVFromDexScreener(tokenMint, dexPair);
   if (dex?.historySuccess) return dex;
+
+  const dexFallbackMeta = dexPair?.dexMeta ? {
+    priceChangeM5: safeNum(dexPair.dexMeta?.priceChange?.m5 ?? 0),
+    priceChangeH1: safeNum(dexPair.dexMeta?.priceChange?.h1 ?? 0),
+    buyVolume: safeNum(dexPair.dexMeta?.txns?.h1?.buys ?? 0),
+    sellVolume: safeNum(dexPair.dexMeta?.txns?.h1?.sells ?? 0),
+  } : null;
 
   if (Date.now() < birdeyeCooldownUntil) {
     console.warn(`[oracle] Birdeye throttled, using DexScreener/Jupiter fallback...`);
+    const meridian = await buildPoolSpecificMeridianFallback(tokenMint, poolAddress || null);
+    const mergedFallback = buildMergedMeridianFallback({
+      meridian,
+      dexPair,
+      dexFallbackMeta,
+      poolAddress,
+    });
+    if (mergedFallback) return mergedFallback;
     return buildMomentumProxyOHLCV(tokenMint);
   }
 
   const backoffStepsMs = [500, 1000];
-  let birdeye = await buildOHLCVFromBirdeye(tokenMint);
+  let birdeye = await buildOHLCVFromBirdeye(tokenMint, dexFallbackMeta);
 
   for (let i = 0; i < backoffStepsMs.length; i++) {
     const retryAfterSec = Number(birdeye?.retryAfterSec ?? 0);
@@ -38,7 +96,7 @@ export async function getOHLCV(tokenMint, poolAddress = null) {
       ? Math.max(250, retryAfterSec * 1000)
       : backoffStepsMs[i];
     await new Promise(r => setTimeout(r, waitMs));
-    birdeye = await buildOHLCVFromBirdeye(tokenMint);
+    birdeye = await buildOHLCVFromBirdeye(tokenMint, dexFallbackMeta);
   }
 
   if (birdeye?.status === 'THROTTLED') {
@@ -46,10 +104,27 @@ export async function getOHLCV(tokenMint, poolAddress = null) {
     const cooldownMs = retryAfterSec > 0 ? retryAfterSec * 1000 : 2 * 60 * 1000;
     birdeyeCooldownUntil = Date.now() + cooldownMs;
     console.warn(`[oracle] Birdeye throttled (${cooldownMs}ms cooldown), using DexScreener/Jupiter fallback...`);
+    const meridian = await buildPoolSpecificMeridianFallback(tokenMint, poolAddress || null);
+    const mergedFallback = buildMergedMeridianFallback({
+      meridian,
+      dexPair,
+      dexFallbackMeta,
+      poolAddress,
+    });
+    if (mergedFallback) return mergedFallback;
     return buildMomentumProxyOHLCV(tokenMint);
   }
 
   if (birdeye?.historySuccess) return birdeye;
+
+  const meridian = await buildPoolSpecificMeridianFallback(tokenMint, poolAddress || null);
+  const mergedFallback = buildMergedMeridianFallback({
+    meridian,
+    dexPair,
+    dexFallbackMeta,
+    poolAddress,
+  });
+  if (mergedFallback) return mergedFallback;
 
   return buildMomentumProxyOHLCV(tokenMint);
 }
@@ -98,11 +173,8 @@ function isCandleSeriesStale(candles = [], maxStaleMinutes = 90) {
   return ageMinutes > Math.max(1, Number(maxStaleMinutes || 90));
 }
 
-async function buildOHLCVFromDexScreener(tokenMint) {
+async function resolveDexScreenerPairContext(tokenMint, poolAddress = null) {
   try {
-    const staleThreshold = 30;
-
-    // Step 1: resolve the Solana pair address for this token mint
     const pairRes = await fetchWithTimeout(
       `https://api.dexscreener.com/latest/dex/tokens/${tokenMint}`,
       { headers: { Accept: 'application/json' } },
@@ -110,12 +182,37 @@ async function buildOHLCVFromDexScreener(tokenMint) {
     );
     if (!pairRes.ok) return null;
     const pairData = await pairRes.json().catch(() => null);
-    const pairs = pairData?.pairs;
-    if (!Array.isArray(pairs) || pairs.length === 0) return null;
+    const pairs = Array.isArray(pairData?.pairs) ? pairData.pairs : [];
+    if (pairs.length === 0) return null;
 
-    // Prefer the pair with the highest liquidity (first entry is usually the best)
-    const pairAddress = pairs[0]?.pairAddress;
-    const dexMeta = pairs[0];
+    let selected = pairs[0];
+    let poolMatched = false;
+    if (poolAddress) {
+      const wanted = String(poolAddress).trim();
+      const match = pairs.find((p) => String(p?.pairAddress || '').trim() === wanted);
+      if (match) {
+        selected = match;
+        poolMatched = true;
+      }
+    }
+
+    return {
+      pairAddress: selected?.pairAddress || '',
+      dexMeta: selected || null,
+      poolMatched,
+      pairCount: pairs.length,
+    };
+  } catch {
+    return null;
+  }
+}
+
+async function buildOHLCVFromDexScreener(tokenMint, pairContext = null) {
+  try {
+    const staleThreshold = 30;
+    const resolved = pairContext || await resolveDexScreenerPairContext(tokenMint, null);
+    const pairAddress = resolved?.pairAddress || '';
+    const dexMeta = resolved?.dexMeta || null;
     if (!pairAddress) return null;
 
     // Step 2: fetch 15m candles
@@ -614,6 +711,84 @@ async function buildOHLCVFromBirdeye(tokenMint, dexFallback = null) {
   }
 }
 
+async function buildPoolSpecificMeridianFallback(tokenMint, poolAddress = null) {
+  const cfg = getConfig();
+  const base = String(cfg.agentMeridianApiUrl || 'https://api.agentmeridian.xyz/api').replace(/\/+$/, '');
+  const headers = { Accept: 'application/json' };
+  if (cfg.publicApiKey) headers['x-api-key'] = cfg.publicApiKey;
+  const cacheKey = getOracleFallbackCacheKey(tokenMint, poolAddress || '');
+  const now = Date.now();
+  const cached = _meridianFallbackCache.get(cacheKey);
+  if (cached && (now - cached.at) <= MERIDIAN_FALLBACK_TTL_MS) {
+    return cached.value;
+  }
+
+  try {
+    const [chartRes, priceRes] = await Promise.all([
+      fetchWithTimeout(`${base}/chart-indicators/${tokenMint}?interval=15_MINUTE`, { headers }, 6000),
+      fetchWithTimeout(`${base}/price-info/${tokenMint}`, { headers }, 6000),
+    ]);
+    if (!chartRes.ok || !priceRes.ok) return null;
+    const chart = await chartRes.json().catch(() => null);
+    const price = await priceRes.json().catch(() => null);
+
+    const trend = normalizeMeridianTrend(chart?.latest?.supertrend?.direction);
+    const priceChangeM5 = toFiniteNumber(
+      price?.price_change_m5 ??
+      price?.priceChangeM5 ??
+      chart?.latest?.price_change_m5 ??
+      chart?.latest?.priceChangeM5,
+      null
+    );
+    const currentPrice = toFiniteNumber(
+      price?.price ??
+      price?.price_usd ??
+      chart?.latest?.close ??
+      chart?.latest?.price,
+      null
+    );
+
+    if (!['BULLISH', 'BEARISH', 'NEUTRAL'].includes(trend)) return null;
+    if (!Number.isFinite(priceChangeM5) || !Number.isFinite(currentPrice) || currentPrice <= 0) return null;
+
+    const fallback = {
+      tokenMint,
+      poolAddress: poolAddress || null,
+      timeframe: '15m',
+      source: 'meridian-fallback',
+      currentPrice,
+      atrPct: null,
+      priceChangeM5,
+      priceChangeH1: toFiniteNumber(price?.price_change_h1 ?? price?.priceChangeH1, 0),
+      high24h: currentPrice,
+      low24h: currentPrice,
+      range24hPct: 0,
+      buyVolume: 0,
+      sellVolume: 0,
+      trend: trend === 'BULLISH' ? 'UPTREND' : (trend === 'BEARISH' ? 'DOWNTREND' : 'SIDEWAYS'),
+      volatilityCategory: 'LOW',
+      ta: {
+        supertrend: {
+          trend,
+          value: currentPrice,
+          atr: null,
+          changed: false,
+          source: 'Meridian-15m',
+        },
+        candleCount: 1,
+        historySuccess: false,
+      },
+      historySuccess: false,
+      historyAgeMinutes: null,
+      fallbackReliable: true,
+    };
+    _meridianFallbackCache.set(cacheKey, { at: now, value: fallback });
+    return fallback;
+  } catch {
+    return null;
+  }
+}
+
 // ─── OHLCV History (Birdeye) ─────────────────────────────────────
 
 export async function getHistoryOHLCV(tokenMint) {
@@ -622,7 +797,15 @@ export async function getHistoryOHLCV(tokenMint) {
 
 // ─── Full DLMM Snapshot ──────────────────────────────────────────
 
-export async function getMarketSnapshot(tokenMint, poolAddress = null) {
+export async function getMarketSnapshot(tokenMint, poolAddress = null, options = {}) {
+  const caller = String(options?.from || 'unknown');
+  const usingPoolAddress = Boolean(poolAddress);
+  if (caller === 'deploy_queue') {
+    console.log(
+      `[oracle] getMarketSnapshot queue token=${tokenMint?.slice?.(0, 8) || 'unknown'} ` +
+      `pool=${poolAddress ? String(poolAddress).slice(0, 8) : 'none'} poolAddressUsed=${usingPoolAddress ? 'yes' : 'no'}`
+    );
+  }
   const [ohlcvR, poolR, onChainR, sentimentR, smartMoneyR, jupiterPriceR, meteoraPriceR] = await Promise.allSettled([
     getOHLCV(tokenMint, poolAddress),
     poolAddress ? getDLMMPoolData(poolAddress) : Promise.resolve(null),
