@@ -28,6 +28,41 @@ const PVP_MIN_ACTIVE_TVL  = 5_000;
 const PVP_MIN_HOLDERS     = 500;
 const PVP_MIN_GLOBAL_FEES = 30;   // SOL
 const DOMINANCE_MIN_PCT   = 15;   // Pool kita harus ≥ 15% dari total likuiditas token
+const ALLOWED_QUOTE_SYMBOLS = new Set(['SOL', 'WSOL']);
+const ALLOWED_QUOTE_MINTS = new Set(['So11111111111111111111111111111111111111112']);
+
+function getQuoteTokenInfo(pool = {}) {
+  const symbol = String(
+    pool?.tokenYSymbol ||
+    pool?.quoteSymbol ||
+    pool?.quote?.symbol ||
+    pool?.token_y?.symbol ||
+    ''
+  ).trim().toUpperCase();
+  const mint = String(
+    pool?.tokenYMint ||
+    pool?.quoteMint ||
+    pool?.quote?.mint ||
+    pool?.token_y?.address ||
+    pool?.token_y ||
+    ''
+  ).trim();
+  return { symbol, mint };
+}
+
+export function isSupportedQuoteToken(pool = {}) {
+  const { symbol, mint } = getQuoteTokenInfo(pool);
+  return ALLOWED_QUOTE_SYMBOLS.has(symbol) || ALLOWED_QUOTE_MINTS.has(mint);
+}
+
+export function getQuoteTokenLabel(pool = {}) {
+  const { symbol, mint } = getQuoteTokenInfo(pool);
+  return symbol || mint || 'UNKNOWN';
+}
+
+function buildUnsupportedQuoteReason(pool = {}) {
+  return `Unsupported quote token ${getQuoteTokenLabel(pool)}; expected SOL/WSOL`;
+}
 
 // ── API helpers ───────────────────────────────────────────────────
 
@@ -413,6 +448,7 @@ export async function discoverHighFeePoolsMeridian({ limit = 50 } = {}) {
   const normalized = rawPools
     .map((p) => normalizePool(p, discoverySource))
     .filter(p => {
+      if (!isSupportedQuoteToken(p)) return false;
       // Hanya pool dengan binStep yang ada di priority list
       return binStepPriority.includes(p.binStep);
     })
@@ -441,7 +477,7 @@ function normalizePool(p, discoverySource = 'MERIDIAN') {
     tokenXMint:        p.token_x?.address || p.base?.mint || '',
     tokenXSymbol:      p.token_x?.symbol  || p.base?.symbol || '',
     tokenYMint:        p.token_y?.address || p.quote?.mint  || '',
-    tokenYSymbol:      p.token_y?.symbol  || p.quote?.symbol || 'SOL',
+    tokenYSymbol:      p.token_y?.symbol  || p.quote?.symbol || '',
     binStep,
     feePct:            Number(p.fee_pct || 0),
     feeActiveTvlRatio: parseFloat(feeTvl.toFixed(6)),
@@ -500,7 +536,14 @@ export async function runMeridianVeto(token) {
       pvpGate: 'UNKNOWN',
       dominanceGate: pool ? 'UNKNOWN' : 'SKIPPED',
       volumeGate: 'SKIPPED',
+      quoteGate: pool ? 'UNKNOWN' : 'SKIPPED',
     };
+
+    if (pool && !isSupportedQuoteToken(pool)) {
+      const reason = buildUnsupportedQuoteReason(pool);
+      diagnostics.quoteGate = 'FAIL';
+      return setCacheAndReturn({ veto: true, reason, gate: 'UNSUPPORTED_QUOTE_TOKEN', diagnostics });
+    }
     
     const currentPrice = pool ? Number(pool.price || pool.pool_price || pool.currentPrice || 0) : 0;
 

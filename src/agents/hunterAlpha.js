@@ -13,7 +13,7 @@
 
 import { getConfig }              from '../config.js';
 import { screenToken }            from '../market/coinfilter.js';
-import { runMeridianVeto, discoverHighFeePoolsMeridian } from '../market/meridianVeto.js';
+import { runMeridianVeto, discoverHighFeePoolsMeridian, isSupportedQuoteToken, getQuoteTokenLabel } from '../market/meridianVeto.js';
 import { getMarketSnapshot }      from '../market/oracle.js';
 import { getPoolMemorySignal, recordPoolDecision } from '../market/poolMemory.js';
 import { getPoolInfo }            from '../solana/meteora.js';
@@ -3047,12 +3047,16 @@ export async function sendImmediateTopPoolsReport(chatId) {
       // Evaluasi Meridian veto untuk status TA
       let vetoPass = false;
       let vetoReason = '';
-      try {
-        const veto = await runMeridianVeto({ mint: pool.tokenXMint || pool.address || '', symbol, pool });
-        vetoPass   = !veto.veto;
-        vetoReason = veto.reason?.slice(0, 30) || '';
-      } catch (_e) {
-        vetoReason = 'API skip';
+      if (!isSupportedQuoteToken(pool)) {
+        vetoReason = `Unsupported quote token ${getQuoteTokenLabel(pool)}; expected SOL/WSOL`;
+      } else {
+        try {
+          const veto = await runMeridianVeto({ mint: pool.tokenXMint || pool.address || '', symbol, pool });
+          vetoPass   = !veto.veto;
+          vetoReason = veto.reason || '';
+        } catch (_e) {
+          vetoReason = 'API skip';
+        }
       }
 
       // Simulasikan gate trace untuk laporan instan

@@ -2,7 +2,7 @@
 
 import { getConfig } from '../config.js';
 import { getMarketSnapshot } from '../market/oracle.js';
-import { checkSupertrendVeto } from '../market/meridianVeto.js';
+import { checkSupertrendVeto, isSupportedQuoteToken, getQuoteTokenLabel } from '../market/meridianVeto.js';
 import { getPoolMemorySignal, recordPoolDeploy } from '../market/poolMemory.js';
 import { getRuntimeState } from '../runtime/state.js';
 import { reserveDeploySlot, releaseDeploySlot } from './deploySlotGuard.js';
@@ -297,6 +297,10 @@ export function isFreshDeployMeta(meta = {}) {
   return true;
 }
 
+function isSupportedQuotePool(pool = {}) {
+  return isSupportedQuoteToken(pool);
+}
+
 /**
  * Tambahkan token ke queue setelah lolos Scout Agent.
  * @param {Object} pool     - raw pool object dari pipeline
@@ -306,6 +310,11 @@ export function isFreshDeployMeta(meta = {}) {
 export function enqueueForDeploy(pool, symbol, meta = {}) {
   const mint = pool.tokenXMint || pool.mint || '';
   if (!mint || _queue.has(mint)) return;
+
+  if (!isSupportedQuotePool(pool)) {
+    console.log(`[QUEUE] ⛔ ${symbol} ditolak: unsupported quote token ${getQuoteTokenLabel(pool)}; expected SOL/WSOL`);
+    return;
+  }
 
   if (!isFreshDeployMeta(meta)) {
     console.log(
@@ -347,6 +356,17 @@ export function dequeueToken(mint) {
 async function evaluateDeployConditions(entry) {
   const { pool, meta } = entry;
   const cfg = getConfig();
+  if (!isSupportedQuotePool(pool)) {
+    return {
+      ok: false,
+      decision: 'DROP',
+      reason: `Unsupported quote token ${getQuoteTokenLabel(pool)}; expected SOL/WSOL`,
+      trendSource: 'unknown',
+      m5Source: 'unknown',
+      liveTrend: 'UNKNOWN',
+      liveM5: 0,
+    };
+  }
   const lpMode = String(meta.entryGateMode || cfg.entryGateMode || '').toLowerCase().includes('lp');
   const mint = pool.tokenXMint || pool.mint || '';
   const poolAddress = pool.address || pool.pool_address || pool.pool || pool.poolAddress || pool.pubkey || '';
