@@ -64,12 +64,19 @@ export function getLiveSnapshotReliability(snapshot = null) {
   if (!snapshot) return { reliable: false, reason: 'SNAPSHOT_NULL' };
   const source = String(snapshot.dataSource || snapshot.ohlcv?.source || '').toLowerCase();
   const historySuccess = snapshot.ohlcv?.historySuccess === true;
-  const fallbackReliable = snapshot?.quality?.fallbackReliable === true;
-  if (!historySuccess && !fallbackReliable) {
-    return { reliable: false, reason: 'OHLCV_HISTORY_UNAVAILABLE' };
+  const fallbackReliable = snapshot?.ohlcv?.fallbackReliable === true ||
+    snapshot?.quality?.fallbackReliable === true ||
+    snapshot?.fallbackReliable === true;
+  const isMeridianFallback = source.includes('meridian-fallback') || source.includes('meridian');
+
+  if (fallbackReliable && isMeridianFallback) {
+    return { reliable: true, reason: 'MERIDIAN_FALLBACK_RELIABLE' };
   }
   if (source.includes('momentum-proxy')) {
     return { reliable: false, reason: 'MOMENTUM_PROXY_ONLY' };
+  }
+  if (!historySuccess) {
+    return { reliable: false, reason: 'OHLCV_HISTORY_UNAVAILABLE' };
   }
   return { reliable: true, reason: fallbackReliable ? 'FALLBACK_RELIABLE' : 'OHLCV_HISTORY_OK' };
 }
@@ -89,6 +96,9 @@ export function buildUnreliableLiveSnapshotLog({
   const issues = Array.isArray(snapshot?.quality?.issues)
     ? snapshot.quality.issues.slice(0, 3).join('|')
     : '';
+  const fallbackReliable = snapshot?.ohlcv?.fallbackReliable === true ||
+    snapshot?.quality?.fallbackReliable === true ||
+    snapshot?.fallbackReliable === true;
   const candlesLen = Array.isArray(snapshot?.ohlcv?.candles)
     ? snapshot.ohlcv.candles.length
     : (Number(snapshot?.ohlcv?.ta?.candleCount) || 0);
@@ -98,6 +108,7 @@ export function buildUnreliableLiveSnapshotLog({
     `source=${String(snapshot?.dataSource || 'unknown')} ` +
     `ohlcvSource=${String(snapshot?.ohlcv?.source || 'unknown')} ` +
     `historySuccess=${snapshot?.ohlcv?.historySuccess === true ? 'true' : 'false'} ` +
+    `fallbackReliable=${fallbackReliable ? 'true' : 'false'} ` +
     `candles=${candlesLen} taSource=${String(snapshot?.quality?.taSource || 'unknown')} ` +
     `issues=[${issues || 'none'}] m5=${formatPct(snapshot?.ohlcv?.priceChangeM5)} ` +
     `poolAddressPassed=${poolAddressPassed ? 'yes' : 'no'} reason=${reliability.reason}`

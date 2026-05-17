@@ -358,19 +358,29 @@ test('queue treats fallback momentum proxy as unreliable live confirmation', () 
 test('queue marks explicit pool-specific fallback as reliable only when flagged', () => {
   const fallbackReliable = {
     dataSource: 'meridian-fallback',
-    ohlcv: { historySuccess: false, source: 'meridian-fallback', priceChangeM5: 1.2 },
-    quality: { fallbackReliable: true, taSource: 'Meridian-15m' },
+    ohlcv: { historySuccess: false, source: 'meridian-fallback', priceChangeM5: 1.2, fallbackReliable: true },
+    quality: { taSource: 'Meridian-15m' },
   };
   const fallbackIncomplete = {
     dataSource: 'meridian-fallback',
     ohlcv: { historySuccess: false, source: 'meridian-fallback', priceChangeM5: 0 },
-    quality: { fallbackReliable: false, taSource: 'unknown' },
+    quality: { taSource: 'unknown' },
+  };
+  const fallbackUnknownSource = {
+    dataSource: 'unknown',
+    ohlcv: { historySuccess: false, source: 'unknown', priceChangeM5: 1.3, fallbackReliable: true },
+  };
+  const momentumProxy = {
+    dataSource: 'momentum-proxy',
+    ohlcv: { historySuccess: true, source: 'momentum-proxy', priceChangeM5: 1.3, fallbackReliable: true },
   };
 
   assert.equal(isReliableLiveSnapshot(fallbackReliable), true);
-  assert.equal(getLiveSnapshotReliability(fallbackReliable).reason, 'FALLBACK_RELIABLE');
+  assert.equal(getLiveSnapshotReliability(fallbackReliable).reason, 'MERIDIAN_FALLBACK_RELIABLE');
   assert.equal(isReliableLiveSnapshot(fallbackIncomplete), false);
   assert.equal(getLiveSnapshotReliability(fallbackIncomplete).reason, 'OHLCV_HISTORY_UNAVAILABLE');
+  assert.equal(isReliableLiveSnapshot(fallbackUnknownSource), false);
+  assert.equal(isReliableLiveSnapshot(momentumProxy), false);
 });
 
 test('queue unreliable snapshot diagnostic log includes source/history/issues/poolAddress', () => {
@@ -390,8 +400,29 @@ test('queue unreliable snapshot diagnostic log includes source/history/issues/po
   assert.match(line, /pool=Pool11111/);
   assert.match(line, /source=unknown/);
   assert.match(line, /historySuccess=false/);
+  assert.match(line, /fallbackReliable=false/);
   assert.match(line, /issues=\[OHLCV_UNAVAILABLE\]/);
   assert.match(line, /poolAddressPassed=yes/);
+});
+
+test('reliable meridian fallback still holds when trend or m5 cannot be resolved', () => {
+  const decision = summarizeQueueDecision({
+    meta: {
+      entryTimingState: 'LP_LIVE',
+      entryReadiness: 'HIGH',
+      breakoutQuality: 'VALID',
+      queueTrustedWatch: true,
+    },
+    liveSnapshot: {
+      dataSource: 'meridian-fallback',
+      ohlcv: { source: 'meridian-fallback', historySuccess: false, fallbackReliable: true, priceChangeM5: 0 },
+      quality: { taSource: 'Meridian-15m', taTrend: 'UNKNOWN' },
+      ta: { supertrend: { trend: 'UNKNOWN' } },
+    },
+    lpMode: true,
+  });
+
+  assert.equal(decision.decision, 'HOLD');
 });
 
 test('queue snapshot path passes poolAddress to market snapshot resolver', () => {
