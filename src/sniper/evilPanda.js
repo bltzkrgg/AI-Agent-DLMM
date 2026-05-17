@@ -298,6 +298,10 @@ export async function ensureFinalRentCheckedDeployArgs({
 
     try {
       await assertRangeFn(connection, poolPubkey, Number(rebuilt.rangeMin), Number(rebuilt.rangeMax));
+      console.log(
+        `[evilPanda] FINAL_RENT_GUARD_PASS pool=${poolAddress.slice(0,8)} ` +
+        `range=[${Number(rebuilt.rangeMin)},${Number(rebuilt.rangeMax)}] reason=adjusted_recheck_ok`
+      );
     } catch (finalErr) {
       if (!isRentRequiredError(finalErr)) throw finalErr;
       return {
@@ -1182,6 +1186,11 @@ export async function deployPosition(poolAddress, deployOptions = {}) {
       `range=[${safeRangeMin},${safeRangeMax}] amountX=${deployArgs.amountXBn.toString()} amountY=${deployArgs.amountYBn.toString()} ` +
       `shouldSeedTokenX=${shouldSeedTokenX} seedSwapSucceeded=${deployArgs.amountXBn.gt(new BN('0'))} ` +
       `strategyType=${deployArgs.strategyType} slippage=${slippagePct}%`
+    );
+    console.log(
+      `[evilPanda] FINAL_SDK_RANGE pool=${poolAddress.slice(0,8)} ` +
+      `rentGuard=${finalRentGuard.guard || 'UNKNOWN'} checked=[${rentCheckedRangeMin},${rentCheckedRangeMax}] ` +
+      `strategy=[${sdkStrategy.minBinId},${sdkStrategy.maxBinId}]`
     );
     console.log(`[evilPanda] bins=${finalTotalBins} range=[${safeRangeMin},${safeRangeMax}] pf=${microLamports} slip=${slippagePct}%`);
 

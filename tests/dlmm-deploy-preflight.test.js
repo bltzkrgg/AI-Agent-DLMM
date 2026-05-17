@@ -231,3 +231,39 @@ test('final rent guard vetoes when no safe final range exists and does not call 
   assert.equal(out.blocked, true);
   assert.equal(out.reason, 'VETO_NON_REFUNDABLE_RENT');
 });
+
+test('SDK strategy range equals final rent-checked deployArgs range', async () => {
+  const deployArgs = buildDlmmDeployStrategyArgs({
+    activeBinId: 1000,
+    rangeMin: 932,
+    rangeMax: 1000,
+    amountXBn: new BN('0'),
+    amountYBn: new BN('55'),
+  });
+
+  const out = await ensureFinalRentCheckedDeployArgs({
+    hasNonRefundableFees: true,
+    connection: {},
+    poolPubkey: {},
+    poolAddress: '11111111111111111111111111111111',
+    tokenXMint: 'Mint111111111111111111111111111111111111111',
+    checkedRangeMin: 932,
+    checkedRangeMax: 1000,
+    rangeMaxBins: 100,
+    activeBinId: 1000,
+    deployArgs,
+    assertRangeFn: async (_connection, _poolPubkey, minBinId, maxBinId) => {
+      if (minBinId === deployArgs.rangeMin && maxBinId === deployArgs.rangeMax) {
+        throw new Error('BIN_ARRAY_RENT_REQUIRED: unsafe range');
+      }
+    },
+    findAdaptiveFn: async () => ({
+      adjusted: { rangeMin: 900, rangeMax: 970 },
+    }),
+  });
+
+  assert.equal(out.ok, true);
+  const sdkStrategy = buildDlmmSdkStrategyFromDeployArgs(out.deployArgs);
+  assert.equal(sdkStrategy.minBinId, out.deployArgs.rangeMin);
+  assert.equal(sdkStrategy.maxBinId, out.deployArgs.rangeMax);
+});
