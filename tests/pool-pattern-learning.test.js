@@ -132,6 +132,99 @@ test('pool pattern learning score wrapper keeps disabled shadow and active modes
   assert.equal(Number.isFinite(sparse.score), true);
 });
 
+test('candidate ordering wrapper preserves disabled/shadow and reorders only in active mode', async () => {
+  makeIsolatedEnv('dlmm-pattern-learning-order-');
+  const mod = await importFresh(join(repoRoot, 'src/learn/poolPatternLearning.js'));
+  const positive = baseFeatures({ symbol: 'POS', tokenMint: 'MintPos111', binStep: 100, supertrend15m: 'BULLISH' });
+  const negative = baseFeatures({ symbol: 'NEG', tokenMint: 'MintNeg111', binStep: 125, supertrend15m: 'BEARISH' });
+  const sparse = { symbol: 'SPARSE', tokenMint: 'MintSparseOrder111', poolAddress: '' };
+
+  const disabled = mod.applyPoolPatternLearningToCandidates(
+    [
+      { item: negative, baseScore: 50, candidate: { features: negative, symbol: negative.symbol, tokenMint: negative.tokenMint } },
+      { item: positive, baseScore: 50, candidate: { features: positive, symbol: positive.symbol, tokenMint: positive.tokenMint } },
+    ],
+    {
+      poolPatternLearningEnabled: false,
+      poolPatternLearningShadowMode: true,
+      poolPatternLearningMinSamples: 2,
+      poolPatternLearningMaxScoreDelta: 8,
+      poolPatternLearningLookbackDays: 14,
+    }
+  );
+  assert.equal(disabled.mode, 'disabled');
+  assert.equal(disabled.candidates[0].symbol, 'NEG');
+  assert.equal(disabled.candidates[1].symbol, 'POS');
+
+  const cfgShadow = {
+    poolPatternLearningEnabled: true,
+    poolPatternLearningShadowMode: true,
+    poolPatternLearningMinSamples: 2,
+    poolPatternLearningMaxScoreDelta: 8,
+    poolPatternLearningLookbackDays: 14,
+  };
+  mod.recordPoolPatternOutcome({
+    positionPubkey: 'PosOrder1',
+    features: positive,
+    outcome: { feePnlPct: 1.5, totalPnlPct: 6, pnlSol: 0.02, exitReason: 'TAKE_PROFIT' },
+    cfg: cfgShadow,
+  });
+  mod.recordPoolPatternOutcome({
+    positionPubkey: 'PosOrder2',
+    features: positive,
+    outcome: { feePnlPct: 1.1, totalPnlPct: 4, pnlSol: 0.01, exitReason: 'TAKE_PROFIT' },
+    cfg: cfgShadow,
+  });
+  mod.recordPoolPatternOutcome({
+    positionPubkey: 'NegOrder1',
+    features: negative,
+    outcome: { feePnlPct: 0.2, totalPnlPct: -14, pnlSol: -0.03, exitReason: 'STOP_LOSS' },
+    cfg: cfgShadow,
+  });
+  mod.recordPoolPatternOutcome({
+    positionPubkey: 'NegOrder2',
+    features: negative,
+    outcome: { feePnlPct: 0.1, totalPnlPct: -10, pnlSol: -0.02, exitReason: 'POOL_IMPACT_GUARD' },
+    cfg: cfgShadow,
+  });
+
+  const shadow = mod.applyPoolPatternLearningToCandidates(
+    [
+      { item: negative, baseScore: 50, candidate: { features: negative, symbol: negative.symbol, tokenMint: negative.tokenMint } },
+      { item: positive, baseScore: 50, candidate: { features: positive, symbol: positive.symbol, tokenMint: positive.tokenMint } },
+    ],
+    cfgShadow
+  );
+  assert.equal(shadow.mode, 'shadow');
+  assert.equal(shadow.candidates[0].symbol, 'NEG');
+  assert.equal(shadow.candidates[1].symbol, 'POS');
+  assert.equal(shadow.diagnostics.length, 2);
+
+  const active = mod.applyPoolPatternLearningToCandidates(
+    [
+      { item: negative, baseScore: 50, candidate: { features: negative, symbol: negative.symbol, tokenMint: negative.tokenMint } },
+      { item: positive, baseScore: 50, candidate: { features: positive, symbol: positive.symbol, tokenMint: positive.tokenMint } },
+      { item: sparse, baseScore: 50, candidate: sparse },
+    ],
+    { ...cfgShadow, poolPatternLearningShadowMode: false, poolPatternLearningMaxScoreDelta: 1 }
+  );
+  assert.equal(active.mode, 'active');
+  assert.equal(active.candidates.length, 3);
+  assert.equal(active.candidates[0].symbol, 'POS');
+  assert.equal(active.candidates.some((c) => c.symbol === 'NEG'), true);
+  assert.equal(active.candidates.some((c) => c.symbol === 'SPARSE'), true);
+
+  const belowMin = mod.applyPoolPatternLearningToCandidates(
+    [
+      { item: negative, baseScore: 50, candidate: { features: negative, symbol: negative.symbol, tokenMint: negative.tokenMint } },
+      { item: positive, baseScore: 49, candidate: { features: positive, symbol: positive.symbol, tokenMint: positive.tokenMint } },
+    ],
+    { ...cfgShadow, poolPatternLearningShadowMode: false, poolPatternLearningMinSamples: 99 }
+  );
+  assert.equal(belowMin.candidates[0].symbol, 'NEG');
+  assert.equal(belowMin.candidates[1].symbol, 'POS');
+});
+
 test('entry and outcome logging do not throw with sparse optional fields', async () => {
   const { logPath } = makeIsolatedEnv('dlmm-pattern-learning-sparse-');
   const mod = await importFresh(join(repoRoot, 'src/learn/poolPatternLearning.js'));

@@ -21,7 +21,7 @@ import { deployPosition, monitorPnL, exitPosition, markPositionManuallyClosed, s
 import { createMessage }          from '../agent/provider.js';
 import { getWalletBalance }       from '../solana/wallet.js';
 import { appendDecisionLog }      from '../learn/decisionLog.js';
-import { applyPoolPatternLearningToScore, extractPoolPatternFeatures, recordPoolPatternEntry } from '../learn/poolPatternLearning.js';
+import { applyPoolPatternLearningToCandidates, applyPoolPatternLearningToScore, extractPoolPatternFeatures, recordPoolPatternEntry } from '../learn/poolPatternLearning.js';
 import { isBlacklisted }          from '../learn/tokenBlacklist.js';
 import { getRuntimeState }        from '../runtime/state.js';
 import { getPositionRuntimeState, updatePositionRuntimeState } from '../app/positionRuntimeState.js';
@@ -1983,6 +1983,43 @@ FORMAT JAWABAN (WAJIB JSON VALID, TANPA MARKDOWN):
     await notify(`🔍 <i>Tidak ada kandidat lolos screening siklus ini. Laporan tetap dikirim.</i>`);
     // TIDAK ada sleep di sini — scheduler di luar yang mengatur jeda antar siklus
     return;
+  }
+
+  const winnerLearning = applyPoolPatternLearningToCandidates(
+    winners.map((pool, index) => ({
+      item: pool,
+      baseScore: winners.length - index,
+      candidate: {
+        pool,
+        entrySignals: pool?._entrySignals || {},
+        row: { lastReason: toGateCompact(pool?._gateSummary || []) },
+        tokenMint: pool?.tokenXMint || pool?.tokenX || pool?.mint || '',
+        poolAddress: pool?.address || pool?.poolAddress || pool?.pool || '',
+        symbol: pool?.tokenXSymbol || pool?.name || '',
+        entryReason: toGateCompact(pool?._gateSummary || []),
+      },
+    })),
+    cfg
+  );
+  if (winnerLearning.mode === 'shadow') {
+    for (const d of winnerLearning.diagnostics) {
+      console.log(
+        `[PATTERN_LEARNING_SHADOW] ${d.symbol || d.tokenMint || 'UNKNOWN'} ` +
+        `base=${Number(d.baseScore || 0).toFixed(2)} delta=${Number(d.delta || 0).toFixed(2)} ` +
+        `shadow=${Number(d.shadowScore || d.baseScore || 0).toFixed(2)} samples=${Number(d.sampleCount || 0)} ` +
+        `reason=${(d.reasons?.[0] || 'NO_REASON')}`
+      );
+    }
+  } else if (winnerLearning.mode === 'active') {
+    for (const d of winnerLearning.diagnostics) {
+      console.log(
+        `[PATTERN_LEARNING_APPLIED] ${d.symbol || d.tokenMint || 'UNKNOWN'} ` +
+        `base=${Number(d.baseScore || 0).toFixed(2)} applied=${Number(d.appliedDelta || 0).toFixed(2)} ` +
+        `score=${Number(d.score || d.baseScore || 0).toFixed(2)} samples=${Number(d.sampleCount || 0)} ` +
+        `reason=${(d.reasons?.[0] || 'NO_REASON')}`
+      );
+    }
+    winners = winnerLearning.candidates;
   }
 
 

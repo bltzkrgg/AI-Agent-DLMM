@@ -324,6 +324,63 @@ export function applyPoolPatternLearningToScore({
   };
 }
 
+export function applyPoolPatternLearningToCandidates(candidates = [], config = {}, { now = nowMs() } = {}) {
+  const list = Array.isArray(candidates) ? candidates : [];
+  const rows = list.map((entry, index) => {
+    const item = entry && typeof entry === 'object' && 'item' in entry ? entry.item : entry;
+    const rawBase = entry && typeof entry === 'object' && 'baseScore' in entry ? entry.baseScore : null;
+    const baseScore = Number.isFinite(Number(rawBase)) ? Number(rawBase) : (list.length - index);
+    const candidatePayload = entry && typeof entry === 'object' && entry.candidate && typeof entry.candidate === 'object'
+      ? entry.candidate
+      : item;
+    const scored = applyPoolPatternLearningToScore({
+      baseScore,
+      candidate: candidatePayload,
+      config,
+      now,
+    });
+    const symbol = scored.candidateFeatures?.symbol || candidatePayload?.symbol || item?.symbol || '';
+    const tokenMint = scored.candidateFeatures?.tokenMint || candidatePayload?.tokenMint || item?.tokenMint || '';
+    return {
+      index,
+      item,
+      scored,
+      symbol,
+      tokenMint,
+    };
+  });
+
+  const mode = rows[0]?.scored?.mode || 'disabled';
+  const shouldReorder = mode === 'active';
+  const sorted = shouldReorder
+    ? rows.slice().sort((a, b) => {
+        if (b.scored.score !== a.scored.score) return b.scored.score - a.scored.score;
+        return a.index - b.index;
+      })
+    : rows;
+
+  const diagnostics = rows.map((row) => ({
+    index: row.index,
+    symbol: row.symbol,
+    tokenMint: row.tokenMint,
+    baseScore: row.scored.baseScore,
+    score: row.scored.score,
+    shadowScore: row.scored.shadowScore,
+    appliedDelta: row.scored.appliedDelta,
+    delta: Number(row.scored.learningDecision?.delta || 0),
+    sampleCount: Number(row.scored.learningDecision?.sampleCount || 0),
+    reasons: Array.isArray(row.scored.learningDecision?.reasons) ? row.scored.learningDecision.reasons : [],
+    mode: row.scored.mode,
+    learningDecision: row.scored.learningDecision,
+  }));
+
+  return {
+    candidates: sorted.map((row) => row.item),
+    diagnostics,
+    mode,
+  };
+}
+
 export function evaluatePoolPatternLearning(candidateFeatures = {}, cfg = {}) {
   const enabled = cfg.poolPatternLearningEnabled === true;
   const shadowMode = cfg.poolPatternLearningShadowMode !== false;
