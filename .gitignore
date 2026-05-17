@@ -26,3 +26,5 @@ data/
 daily-risk-state.json
 daily-pnl-state.json
 daily-pnl-ledger.jsonl
+blacklist.json
+harvest.log
