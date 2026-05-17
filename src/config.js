@@ -52,6 +52,12 @@ const DEFAULTS = {
   entryFreshBreakoutMinAthDistancePct: 99.25,
   entryFreshWatchWindowSec: 90,
   entryFreshBreakoutMaxDriftPct: 2.5,
+  entryCandleSanityEnabled: true,
+  entryRequireGreenCandle: true,
+  entryRequireVolumeConfirm: true,
+  entryMinVolumeRatio: 1.5,
+  entryVolumeLookbackCandles: 12,
+  entryCandleMaxAgeSec: 420,
   taWatchEnabled:       true,
   taWatchMaxPools:      10,
   taWatchExpiryMin:     60,
@@ -269,6 +275,12 @@ const CONFIG_BOUNDS = {
   entryFreshBreakoutMinAthDistancePct: { min: 0, max: 100 },
   entryFreshWatchWindowSec: { min: 5, max: 600 },
   entryFreshBreakoutMaxDriftPct: { min: 0.1, max: 100 },
+  entryCandleSanityEnabled: { type: 'boolean' },
+  entryRequireGreenCandle: { type: 'boolean' },
+  entryRequireVolumeConfirm: { type: 'boolean' },
+  entryMinVolumeRatio: { min: 0, max: 20 },
+  entryVolumeLookbackCandles: { min: 1, max: 100 },
+  entryCandleMaxAgeSec: { min: 60, max: 1800 },
   taWatchEnabled:         { type: 'boolean' },
   taWatchMaxPools:        { min: 1, max: 50 },
   taWatchExpiryMin:       { min: 5, max: 720 },
@@ -523,6 +535,10 @@ export const SETCONFIG_WHITELIST = {
   minOrganic:             { section: 'discovery',          type: 'number',  desc: 'Organic score minimum (0–100)' },
   minMcap:                { section: 'discovery',          type: 'number',  desc: 'Market Cap minimum token (USD, 0 = tidak filter)' },
   maxMcap:                { section: 'discovery',          type: 'number',  desc: 'Market Cap maksimum token (USD, 0 = tidak filter)' },
+
+  // ── Entry Final Sanity ─────────────────────────────────────────
+  entryCandleSanityEnabled:{ section: 'entry',              type: 'boolean', desc: 'Aktifkan final candle sanity gate' },
+  entryMinVolumeRatio:    { section: 'entry',              type: 'number',  desc: 'Rasio volume candle entry vs rata-rata' },
 
   // ── Watch / Queue ────────────────────────────────────────────────
   watchIntervalSec:       { section: 'watch',              type: 'number',  desc: 'Interval cek WATCH aktif (detik, 15–3600)' },

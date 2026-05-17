@@ -1,0 +1,54 @@
+'use strict';
+
+export const EXIT_REASON_CATEGORIES = Object.freeze([
+  'TAKE_PROFIT',
+  'STOP_LOSS',
+  'TRAILING_STOP',
+  'OUT_OF_RANGE',
+  'POOL_IMPACT_GUARD',
+  'MANUAL_EXIT',
+  'MANUAL_STOP',
+  'SAFE_EXIT',
+  'VETO_NON_REFUNDABLE_RENT',
+  'DEPLOY_FAILED',
+  'UNKNOWN',
+]);
+
+export function normalizeExitReason(reason = '', context = {}) {
+  const raw = String(reason || '').trim();
+  const text = raw.toUpperCase();
+  const source = String(context?.source || '').toUpperCase();
+
+  if (!text && !source) return 'UNKNOWN';
+  if (text.includes('VETO_NON_REFUNDABLE_RENT') || text.includes('BIN_ARRAY_RENT_REQUIRED')) {
+    return 'VETO_NON_REFUNDABLE_RENT';
+  }
+  if (text.includes('POOL_IMPACT_GUARD') || text.includes('POOL IMPACT')) return 'POOL_IMPACT_GUARD';
+  if (text.includes('OUT_OF_RANGE') || text === 'OOR' || text.includes(' OOR')) return 'OUT_OF_RANGE';
+  if (text.includes('TRAILING')) return 'TRAILING_STOP';
+  if (text.includes('STOP_LOSS') || text.includes('HARD SL')) return 'STOP_LOSS';
+  if (text.includes('MANUAL_STOP')) return 'MANUAL_STOP';
+  if (text.includes('MANUAL_COMMAND') || text.includes('MANUAL_EXIT') || text.includes('MANUAL_WITHDRAW')) {
+    return 'MANUAL_EXIT';
+  }
+  if (text.includes('TAKE_PROFIT') || text.includes('TAKE PROFIT')) return 'TAKE_PROFIT';
+  if (
+    text.includes('PARTIAL_DEPLOY_ROLLBACK') ||
+    text.includes('DEPLOY_FAILED') ||
+    text.includes('DEPLOY FAILED') ||
+    text.includes('EXECUTION_FAILED')
+  ) {
+    return 'DEPLOY_FAILED';
+  }
+  if (
+    text.includes('SAFE_EXIT') ||
+    text.includes('SHUTDOWN') ||
+    text.includes('LOOP_STOPPED') ||
+    text.includes('MONITOR_ERROR') ||
+    text.includes('STATUS_ERROR')
+  ) {
+    return 'SAFE_EXIT';
+  }
+
+  return 'UNKNOWN';
+}

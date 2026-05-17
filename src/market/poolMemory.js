@@ -1,11 +1,12 @@
 'use strict';
 
 import { getRuntimeCollectionItem, updateRuntimeCollectionItem } from '../runtime/state.js';
+import { normalizeExitReason } from '../utils/exitReasons.js';
 
 export const POOL_MEMORY_KEY = 'lpPoolDecisionMemory';
 
-const PROFIT_REASONS = /TAKE_PROFIT|TRAILING_PROFIT|MANUAL_PROFIT/i;
-const LOSS_REASONS = /STOP_LOSS|RUG|ROLLBACK|OUT_OF_RANGE|MANUAL_STOP/i;
+const PROFIT_REASONS = /TAKE_PROFIT|TRAILING_STOP/i;
+const LOSS_REASONS = /STOP_LOSS|OUT_OF_RANGE|POOL_IMPACT_GUARD|MANUAL_STOP|DEPLOY_FAILED/i;
 const MAX_HISTORY = 12;
 const LOSS_COOLDOWN_MS = 30 * 60 * 1000;
 const RENT_COOLDOWN_FIRST_MS = 30 * 60 * 1000;
@@ -35,7 +36,7 @@ export function getPoolMemoryKey(input = {}) {
 
 function classifyOutcome({ pnlPct = 0, reason = '' } = {}) {
   const pct = Number(pnlPct);
-  const text = String(reason || '');
+  const text = normalizeExitReason(reason);
   if (Number.isFinite(pct) && pct > 0) return 'PROFIT';
   if (Number.isFinite(pct) && pct < 0) return 'LOSS';
   if (PROFIT_REASONS.test(text)) return 'PROFIT';

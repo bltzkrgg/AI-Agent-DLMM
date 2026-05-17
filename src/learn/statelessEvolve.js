@@ -21,6 +21,7 @@ import { join, dirname }            from 'path';
 import { fileURLToPath }            from 'url';
 import { getConfig, updateConfig, isConfigKeySupported } from '../config.js';
 import { createMessage }            from '../agent/provider.js';
+import { normalizeExitReason }      from '../utils/exitReasons.js';
 
 const __dirname  = dirname(fileURLToPath(import.meta.url));
 const HARVEST_LOG = join(__dirname, '../../harvest.log');
@@ -30,8 +31,7 @@ const HARVEST_LOG = join(__dirname, '../../harvest.log');
 const COL = { TS: 0, TOKEN: 1, PUBKEY: 2, PNL: 3, SOL: 4, REASON: 5 };
 
 // Reason categories
-const WIN_REASONS  = ['TAKE_PROFIT_A', 'TAKE_PROFIT_B', 'TRAILING_STOP', 'MANUAL_PROFIT'];
-const LOSS_REASONS = ['STOP_LOSS', 'TRAILING_STOP_LOSS', 'OUT_OF_RANGE', 'PARTIAL_DEPLOY_ROLLBACK'];
+const WIN_REASONS  = ['TAKE_PROFIT', 'TRAILING_STOP'];
 
 // ── parseHarvestLog ───────────────────────────────────────────────
 
@@ -49,14 +49,17 @@ export function parseHarvestLog(maxEntries = 50) {
       const cols = line.split(',');
       const pnl  = parseFloat(cols[COL.PNL]) || 0;
       const sol  = parseFloat(cols[COL.SOL]) || 0;
+      const rawReason = cols[COL.REASON]?.trim() || 'UNKNOWN';
+      const normalizedReason = normalizeExitReason(rawReason, { pnlPct: pnl });
       return {
         ts:     cols[COL.TS]     || '',
         token:  cols[COL.TOKEN]  || 'UNKNOWN',
         pubkey: cols[COL.PUBKEY] || '',
         pnl,
         sol,
-        reason: cols[COL.REASON]?.trim() || 'UNKNOWN',
-        isWin:  pnl > 0 || WIN_REASONS.includes(cols[COL.REASON]?.trim()),
+        reason: normalizedReason,
+        rawReason,
+        isWin:  pnl > 0 || WIN_REASONS.includes(normalizedReason),
       };
     });
 }

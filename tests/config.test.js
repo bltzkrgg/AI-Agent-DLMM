@@ -126,6 +126,12 @@ test('safer defaults stay conservative for real-capital usage', async () => {
   assert.equal(cfg.poolPatternLearningMinSamples, 10);
   assert.equal(cfg.poolPatternLearningMaxScoreDelta, 8);
   assert.equal(cfg.poolPatternLearningLookbackDays, 14);
+  assert.equal(cfg.entryCandleSanityEnabled, true);
+  assert.equal(cfg.entryRequireGreenCandle, true);
+  assert.equal(cfg.entryRequireVolumeConfirm, true);
+  assert.equal(cfg.entryMinVolumeRatio, 1.5);
+  assert.equal(cfg.entryVolumeLookbackCandles, 12);
+  assert.equal(cfg.entryCandleMaxAgeSec, 420);
   assert.deepEqual(cfg.allowedBinSteps, [100, 125]);
 });
 
@@ -137,6 +143,12 @@ test('user-config.example includes pool pattern learning keys', () => {
   assert.equal(parsed.poolPatternLearningMinSamples, 10);
   assert.equal(parsed.poolPatternLearningMaxScoreDelta, 8);
   assert.equal(parsed.poolPatternLearningLookbackDays, 14);
+  assert.equal(parsed.entryCandleSanityEnabled, true);
+  assert.equal(parsed.entryRequireGreenCandle, true);
+  assert.equal(parsed.entryRequireVolumeConfirm, true);
+  assert.equal(parsed.entryMinVolumeRatio, 1.5);
+  assert.equal(parsed.entryVolumeLookbackCandles, 12);
+  assert.equal(parsed.entryCandleMaxAgeSec, 420);
   assert.equal(parsed.maxMcap, 0);
 });
 
@@ -311,6 +323,8 @@ test('/setconfig whitelist is curated for operational keys only', async () => {
   assert.equal(keys.includes('outOfRangeWaitMinutes'), true);
   assert.equal(keys.includes('poolImpactGuardEnabled'), true);
   assert.equal(keys.includes('poolPatternLearningEnabled'), true);
+  assert.equal(keys.includes('entryCandleSanityEnabled'), true);
+  assert.equal(keys.includes('entryMinVolumeRatio'), true);
 
   assert.equal(keys.includes('maxPoolAgeDays'), false);
   assert.equal(keys.includes('maxMcapUsd'), false);
@@ -324,6 +338,10 @@ test('/setconfig whitelist is curated for operational keys only', async () => {
   assert.equal(keys.includes('poolImpactCheckIntervalMs'), false);
   assert.equal(keys.includes('poolImpactAlertCooldownMs'), false);
   assert.equal(keys.includes('poolPatternLearningLookbackDays'), false);
+  assert.equal(keys.includes('entryRequireGreenCandle'), false);
+  assert.equal(keys.includes('entryRequireVolumeConfirm'), false);
+  assert.equal(keys.includes('entryVolumeLookbackCandles'), false);
+  assert.equal(keys.includes('entryCandleMaxAgeSec'), false);
 });
 
 test('nested discovery maxMcap and legacy maxMcapUsd both map to canonical maxMcap', async () => {

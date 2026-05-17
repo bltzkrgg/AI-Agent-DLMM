@@ -59,9 +59,10 @@ function buildMergedMeridianFallback({
   };
 }
 
-export async function getOHLCV(tokenMint, poolAddress = null) {
+export async function getOHLCV(tokenMint, poolAddress = null, options = {}) {
+  const includeEntryCandles5m = options?.includeEntryCandles5m === true;
   const dexPair = await resolveDexScreenerPairContext(tokenMint, poolAddress || null);
-  const dex = await buildOHLCVFromDexScreener(tokenMint, dexPair);
+  const dex = await buildOHLCVFromDexScreener(tokenMint, dexPair, { includeEntryCandles5m });
   if (dex?.historySuccess) return dex;
 
   const dexFallbackMeta = dexPair?.dexMeta ? {
@@ -85,7 +86,7 @@ export async function getOHLCV(tokenMint, poolAddress = null) {
   }
 
   const backoffStepsMs = [500, 1000];
-  let birdeye = await buildOHLCVFromBirdeye(tokenMint, dexFallbackMeta);
+  let birdeye = await buildOHLCVFromBirdeye(tokenMint, dexFallbackMeta, { includeEntryCandles5m });
 
   for (let i = 0; i < backoffStepsMs.length; i++) {
     const retryAfterSec = Number(birdeye?.retryAfterSec ?? 0);
@@ -96,7 +97,7 @@ export async function getOHLCV(tokenMint, poolAddress = null) {
       ? Math.max(250, retryAfterSec * 1000)
       : backoffStepsMs[i];
     await new Promise(r => setTimeout(r, waitMs));
-    birdeye = await buildOHLCVFromBirdeye(tokenMint, dexFallbackMeta);
+    birdeye = await buildOHLCVFromBirdeye(tokenMint, dexFallbackMeta, { includeEntryCandles5m });
   }
 
   if (birdeye?.status === 'THROTTLED') {
@@ -173,6 +174,39 @@ function isCandleSeriesStale(candles = [], maxStaleMinutes = 90) {
   return ageMinutes > Math.max(1, Number(maxStaleMinutes || 90));
 }
 
+function mapDexCandle(c) {
+  if (Array.isArray(c)) {
+    const tsSec = c[0] > 1e12 ? Math.floor(c[0] / 1000) : Number(c[0]);
+    return { time: tsSec, open: Number(c[1]), high: Number(c[2]), low: Number(c[3]), close: Number(c[4]), volume: Number(c[5] ?? 0) };
+  }
+  const tsSec = Number(c.time ?? c.t) > 1e12 ? Math.floor(Number(c.time ?? c.t) / 1000) : Number(c.time ?? c.t);
+  return {
+    time: tsSec,
+    open: Number(c.o ?? c.open),
+    high: Number(c.h ?? c.high),
+    low: Number(c.l ?? c.low),
+    close: Number(c.c ?? c.close),
+    volume: Number(c.v ?? c.volume ?? 0),
+  };
+}
+
+async function fetchDexScreenerCandles(pairAddress, resolution = 15, timeoutMs = 3000) {
+  if (!pairAddress) return [];
+  const candleRes = await fetchWithTimeout(
+    `https://io.dexscreener.com/dex/candles/v3/solana/${pairAddress}?res=${resolution}&cb=1`,
+    { headers: { Accept: 'application/json' } },
+    timeoutMs
+  );
+  if (!candleRes.ok) return [];
+  const candleJson = await candleRes.json().catch(() => null);
+  const rawCandles = candleJson?.candles ?? candleJson?.data?.candles ?? [];
+  if (!Array.isArray(rawCandles) || rawCandles.length === 0) return [];
+  return rawCandles
+    .map(mapDexCandle)
+    .filter((c) => Number.isFinite(c.time) && Number.isFinite(c.close) && c.close > 0)
+    .sort((a, b) => a.time - b.time);
+}
+
 async function resolveDexScreenerPairContext(tokenMint, poolAddress = null) {
   try {
     const pairRes = await fetchWithTimeout(
@@ -207,7 +241,7 @@ async function resolveDexScreenerPairContext(tokenMint, poolAddress = null) {
   }
 }
 
-async function buildOHLCVFromDexScreener(tokenMint, pairContext = null) {
+async function buildOHLCVFromDexScreener(tokenMint, pairContext = null, options = {}) {
   try {
     const staleThreshold = 30;
     const resolved = pairContext || await resolveDexScreenerPairContext(tokenMint, null);
@@ -215,37 +249,7 @@ async function buildOHLCVFromDexScreener(tokenMint, pairContext = null) {
     const dexMeta = resolved?.dexMeta || null;
     if (!pairAddress) return null;
 
-    // Step 2: fetch 15m candles
-    const candleRes = await fetchWithTimeout(
-      `https://io.dexscreener.com/dex/candles/v3/solana/${pairAddress}?res=15&cb=1`,
-      { headers: { Accept: 'application/json' } },
-      3000
-    );
-    if (!candleRes.ok) return null;
-    const candleJson = await candleRes.json().catch(() => null);
-
-    // DexScreener v3 candle format: { candles: [[ts_ms, o, h, l, c, v], ...] }
-    const rawCandles = candleJson?.candles ?? candleJson?.data?.candles ?? [];
-    if (!Array.isArray(rawCandles) || rawCandles.length === 0) return null;
-
-    const mapped = rawCandles.map((c) => {
-      // Array form: [time_ms, open, high, low, close, volume]
-      if (Array.isArray(c)) {
-        const tsSec = c[0] > 1e12 ? Math.floor(c[0] / 1000) : Number(c[0]);
-        return { time: tsSec, open: Number(c[1]), high: Number(c[2]), low: Number(c[3]), close: Number(c[4]), volume: Number(c[5] ?? 0) };
-      }
-      // Object form: { time, open, high, low, close, volume }
-      const tsSec = Number(c.time ?? c.t) > 1e12 ? Math.floor(Number(c.time ?? c.t) / 1000) : Number(c.time ?? c.t);
-      return {
-        time: tsSec,
-        open: Number(c.o ?? c.open),
-        high: Number(c.h ?? c.high),
-        low: Number(c.l ?? c.low),
-        close: Number(c.c ?? c.close),
-        volume: Number(c.v ?? c.volume ?? 0),
-      };
-    }).filter((c) => Number.isFinite(c.time) && Number.isFinite(c.close) && c.close > 0)
-      .sort((a, b) => a.time - b.time);
+    const mapped = await fetchDexScreenerCandles(pairAddress, 15, 3000);
 
     if (mapped.length < 10) return null;
 
@@ -267,6 +271,24 @@ async function buildOHLCVFromDexScreener(tokenMint, pairContext = null) {
     const priceChangeH1 = safeNum(dexMeta?.priceChange?.h1 ?? 0);
     const buyVolume = safeNum(dexMeta?.txns?.h1?.buys ?? 0);
     const sellVolume = safeNum(dexMeta?.txns?.h1?.sells ?? 0);
+    let entryCandleFields = {};
+    if (options?.includeEntryCandles5m === true) {
+      let entryCandles5m = [];
+      try {
+        const mapped5m = await fetchDexScreenerCandles(pairAddress, 5, 2500);
+        const closed5m = mapped5m.slice(0, -1);
+        if (closed5m.length >= 3 && !isCandleSeriesStale(closed5m, 15)) {
+          entryCandles5m = closed5m.slice(-30);
+        }
+      } catch {
+        entryCandles5m = [];
+      }
+      entryCandleFields = {
+        entryCandleTimeframe: '5m',
+        entryCandles5m,
+        entryCandle5m: entryCandles5m[entryCandles5m.length - 1] || null,
+      };
+    }
 
     const st = ta.calculateSupertrend(closedCandles, 10, 3);
     return {
@@ -314,6 +336,7 @@ async function buildOHLCVFromDexScreener(tokenMint, pairContext = null) {
       historySuccess: true,
       historyAgeMinutes,
       historyWindowSec: safeNum(last.time - first.time),
+      ...entryCandleFields,
     };
   } catch {
     return null;
@@ -582,7 +605,7 @@ export function computeSnapshotQuality({
   };
 }
 
-async function getHistoryOHLCVFromBirdeye(tokenMint, lookbackHours = 12) {
+async function getHistoryOHLCVFromBirdeye(tokenMint, lookbackHours = 12, interval = '15m') {
   const apiKey = process.env.BIRDEYE_API_KEY;
   if (!apiKey || !tokenMint) return null;
 
@@ -590,7 +613,7 @@ async function getHistoryOHLCVFromBirdeye(tokenMint, lookbackHours = 12) {
     const now = Math.floor(Date.now() / 1000);
     const timeFrom = now - (Math.max(2, lookbackHours) * 3600);
     const res = await fetchWithTimeout(
-      `${BIRDEYE_BASE}/defi/ohlcv?address=${tokenMint}&type=15m&time_from=${timeFrom}&time_to=${now}`,
+      `${BIRDEYE_BASE}/defi/ohlcv?address=${tokenMint}&type=${encodeURIComponent(interval)}&time_from=${timeFrom}&time_to=${now}`,
       {
         headers: {
           'X-API-KEY': apiKey,
@@ -634,9 +657,9 @@ async function getHistoryOHLCVFromBirdeye(tokenMint, lookbackHours = 12) {
   }
 }
 
-async function buildOHLCVFromBirdeye(tokenMint, dexFallback = null) {
+async function buildOHLCVFromBirdeye(tokenMint, dexFallback = null, options = {}) {
   try {
-    const history = await getHistoryOHLCVFromBirdeye(tokenMint, 12);
+    const history = await getHistoryOHLCVFromBirdeye(tokenMint, 12, '15m');
     if (history?.status === 'THROTTLED') return history;
     if (!Array.isArray(history) || history.length < 12) return null;
 
@@ -658,6 +681,26 @@ async function buildOHLCVFromBirdeye(tokenMint, dexFallback = null) {
     const priceChangeH1 = dexFallback?.priceChangeH1 ?? 0;
     const buyVolume = safeNum(dexFallback?.buyVolume ?? 0);
     const sellVolume = safeNum(dexFallback?.sellVolume ?? 0);
+    let entryCandleFields = {};
+    if (options?.includeEntryCandles5m === true) {
+      let entryCandles5m = [];
+      try {
+        const history5m = await getHistoryOHLCVFromBirdeye(tokenMint, 4, '5m');
+        if (Array.isArray(history5m) && history5m.length >= 4) {
+          const closed5m = history5m.slice(0, -1);
+          if (closed5m.length >= 3 && !isCandleSeriesStale(closed5m, 15)) {
+            entryCandles5m = closed5m.slice(-30);
+          }
+        }
+      } catch {
+        entryCandles5m = [];
+      }
+      entryCandleFields = {
+        entryCandleTimeframe: '5m',
+        entryCandles5m,
+        entryCandle5m: entryCandles5m[entryCandles5m.length - 1] || null,
+      };
+    }
 
     const st = ta.calculateSupertrend(closedCandles, 10, 3);
     return {
@@ -705,6 +748,7 @@ async function buildOHLCVFromBirdeye(tokenMint, dexFallback = null) {
       historySuccess: true,
       historyAgeMinutes,
       historyWindowSec: safeNum(last.time - first.time),
+      ...entryCandleFields,
     };
   } catch {
     return null;
@@ -807,7 +851,7 @@ export async function getMarketSnapshot(tokenMint, poolAddress = null, options =
     );
   }
   const [ohlcvR, poolR, onChainR, sentimentR, smartMoneyR, jupiterPriceR, meteoraPriceR] = await Promise.allSettled([
-    getOHLCV(tokenMint, poolAddress),
+    getOHLCV(tokenMint, poolAddress, { includeEntryCandles5m: options?.includeEntryCandles5m === true }),
     poolAddress ? getDLMMPoolData(poolAddress) : Promise.resolve(null),
     getOnChainSignals(tokenMint),
     getSentiment(tokenMint),

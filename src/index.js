@@ -482,7 +482,8 @@ bot.onText(/\/exit/, async (msg) => {
 
   try {
     stopLoop();
-    const summary = await closeAllActivePositionsByUser('MANUAL_COMMAND', 180_000);
+    // Legacy: closeAllActivePositionsByUser('MANUAL_COMMAND', 180_000).
+    const summary = await closeAllActivePositionsByUser('MANUAL_EXIT', 180_000);
     const balance = await getWalletBalance();
 
     if (summary.failed.length > 0 || summary.remaining > 0) {
@@ -610,6 +611,7 @@ bot.onText(/\/setconfig(?:\s+(\S+))?(?:\s+(.+))?/, async (msg, match) => {
       `atau:   <code>/setconfig [section].[key] [value]</code>\n\n` +
       `<b>💰 Finance:</b>\n${bySection('finance')}\n\n` +
       `<b>🔍 Discovery:</b>\n${bySection('discovery')}\n\n` +
+      `<b>🕯️ Entry:</b>\n${bySection('entry')}\n\n` +
       `<b>👀 Watch:</b>\n${bySection('watch')}\n\n` +
       `<b>📉 OOR:</b>\n${bySection('oor')}\n\n` +
       `<b>🛡️ Pool Impact Guard:</b>\n${bySection('poolImpactGuard')}\n\n` +

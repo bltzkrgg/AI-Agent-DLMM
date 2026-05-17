@@ -478,6 +478,8 @@ function normalizePool(p, discoverySource = 'MERIDIAN') {
     tokenXSymbol:      p.token_x?.symbol  || p.base?.symbol || '',
     tokenYMint:        p.token_y?.address || p.quote?.mint  || '',
     tokenYSymbol:      p.token_y?.symbol  || p.quote?.symbol || '',
+    quoteMint:         p.token_y?.address || p.quote?.mint || p.quoteMint || '',
+    quoteSymbol:       p.token_y?.symbol || p.quote?.symbol || p.quoteSymbol || '',
     binStep,
     feePct:            Number(p.fee_pct || 0),
     feeActiveTvlRatio: parseFloat(feeTvl.toFixed(6)),

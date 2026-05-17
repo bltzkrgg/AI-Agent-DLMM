@@ -6,6 +6,7 @@ import { checkSupertrendVeto, isSupportedQuoteToken, getQuoteTokenLabel } from '
 import { getPoolMemorySignal, recordPoolDeploy } from '../market/poolMemory.js';
 import { getRuntimeState } from '../runtime/state.js';
 import { reserveDeploySlot, releaseDeploySlot } from './deploySlotGuard.js';
+import { evaluateEntryCandleSanity } from './entryCandleSanity.js';
 
 /**
  * src/utils/pendingDeployQueue.js
@@ -56,8 +57,9 @@ async function safeSend(msg) {
   }
 }
 
-function getSnapshotCacheKey(mint = '', poolAddress = '') {
-  return `${mint || 'unknown'}:${poolAddress || 'nopool'}`;
+function getSnapshotCacheKey(mint = '', poolAddress = '', options = {}) {
+  const entry5mSuffix = options?.includeEntryCandles5m === true ? ':entry5m' : '';
+  return `${mint || 'unknown'}:${poolAddress || 'nopool'}${entry5mSuffix}`;
 }
 
 export function getLiveSnapshotReliability(snapshot = null) {
@@ -131,9 +133,10 @@ function logUnreliableLiveSnapshot({
   }));
 }
 
-async function getCachedMarketSnapshot(mint, poolAddress = null, symbol = '') {
+async function getCachedMarketSnapshot(mint, poolAddress = null, symbol = '', options = {}) {
   if (!mint) return null;
-  const key = getSnapshotCacheKey(mint, poolAddress || '');
+  const includeEntryCandles5m = options?.includeEntryCandles5m === true;
+  const key = getSnapshotCacheKey(mint, poolAddress || '', { includeEntryCandles5m });
   const now = Date.now();
   const cached = _snapshotCache.get(key);
   if (cached && (now - cached.at) <= SNAPSHOT_CACHE_TTL_MS) {
@@ -141,6 +144,7 @@ async function getCachedMarketSnapshot(mint, poolAddress = null, symbol = '') {
     console.log(
       `[QUEUE] 🧠 Snapshot cache hit ${symbol || mint.slice(0, 8)} ` +
       `pool=${(poolAddress || '').slice(0, 8) || 'none'} ` +
+      `entry5m=${includeEntryCandles5m ? 'yes' : 'no'} ` +
       `hits=${_snapshotCacheHits} misses=${_snapshotCacheMisses}`
     );
     return cached.snapshot;
@@ -151,6 +155,7 @@ async function getCachedMarketSnapshot(mint, poolAddress = null, symbol = '') {
     console.log(
       `[QUEUE] 🧠 Snapshot inflight reuse ${symbol || mint.slice(0, 8)} ` +
       `pool=${(poolAddress || '').slice(0, 8) || 'none'} ` +
+      `entry5m=${includeEntryCandles5m ? 'yes' : 'no'} ` +
       `hits=${_snapshotCacheHits} misses=${_snapshotCacheMisses}`
     );
     return _snapshotInflight.get(key);
@@ -160,9 +165,13 @@ async function getCachedMarketSnapshot(mint, poolAddress = null, symbol = '') {
   console.log(
     `[QUEUE] 🧠 Snapshot cache miss ${symbol || mint.slice(0, 8)} ` +
     `pool=${(poolAddress || '').slice(0, 8) || 'none'} poolAddressPassed=${poolAddress ? 'yes' : 'no'} ` +
+    `entry5m=${includeEntryCandles5m ? 'yes' : 'no'} ` +
     `hits=${_snapshotCacheHits} misses=${_snapshotCacheMisses}`
   );
-  const task = getMarketSnapshot(mint, poolAddress || null, { from: 'deploy_queue' })
+  const task = getMarketSnapshot(mint, poolAddress || null, {
+    from: includeEntryCandles5m ? 'entry_candle_sanity' : 'deploy_queue',
+    includeEntryCandles5m,
+  })
     .catch(() => null)
     .then((snapshot) => {
       _snapshotCache.set(key, { at: Date.now(), snapshot });
@@ -297,6 +306,70 @@ export async function ensureFinalSupertrendBullish(args = {}) {
     console.log(`[QUEUE] FINAL_ST_GATE_HOLD_ERROR ${label}/${mintShort} source=${decision.source} reason=${decision.reason}`);
   } else {
     console.log(`[QUEUE] FINAL_ST_GATE_HOLD_STALE ${label}/${mintShort} source=${decision.source} reason=${decision.reason}`);
+  }
+  return decision;
+}
+
+function getCachedEntrySanitySnapshot({ pool = {}, meta = {}, liveSnapshot = null } = {}) {
+  return liveSnapshot ||
+    pool?._marketSnapshot ||
+    meta?.marketSnapshot ||
+    pool?._entryMarketSnapshot ||
+    pool?._watchMarketSnapshot ||
+    null;
+}
+
+export async function getFinalEntryCandleSanityDecision({
+  mint = '',
+  symbol = '',
+  pool = {},
+  meta = {},
+  liveSnapshot = null,
+  now = Date.now(),
+  snapshotFn = getCachedMarketSnapshot,
+  cfg = getConfig(),
+} = {}) {
+  if (cfg.entryCandleSanityEnabled === false) {
+    return { ok: true, action: 'ALLOW', reason: 'entry candle sanity disabled', source: 'disabled' };
+  }
+
+  const label = symbol || mint?.slice?.(0, 8) || 'UNKNOWN';
+  const poolAddress = pool.address || pool.pool_address || pool.pool || pool.poolAddress || pool.pubkey || '';
+  const cachedSnapshot = getCachedEntrySanitySnapshot({ pool, meta, liveSnapshot });
+  let decision = evaluateEntryCandleSanity({ snapshot: cachedSnapshot, cfg, now });
+  if (decision.ok) {
+    return { ...decision, source: decision.source || 'cache' };
+  }
+
+  if (decision.code !== 'UNAVAILABLE' && decision.code !== 'STALE' && decision.code !== 'VOLUME_LOOKBACK_UNAVAILABLE') {
+    return decision;
+  }
+
+  if (!mint || typeof snapshotFn !== 'function') {
+    return decision;
+  }
+
+  const freshSnapshot = snapshotFn === getCachedMarketSnapshot
+    ? await getCachedMarketSnapshot(mint, poolAddress || null, label, { includeEntryCandles5m: true })
+    : await snapshotFn(mint, poolAddress || null, label);
+  if (freshSnapshot && pool && typeof pool === 'object') {
+    pool._marketSnapshot = freshSnapshot;
+  }
+  decision = evaluateEntryCandleSanity({ snapshot: freshSnapshot, cfg, now: Date.now() });
+  return {
+    ...decision,
+    source: decision.ok ? 'fresh_fetch' : (decision.source || 'fresh_fetch'),
+  };
+}
+
+export async function ensureFinalEntryCandleSanity(args = {}) {
+  const decision = await getFinalEntryCandleSanityDecision(args);
+  const label = args.symbol || args.mint?.slice?.(0, 8) || 'UNKNOWN';
+  const mintShort = args.mint?.slice?.(0, 8) || 'UNKNOWN';
+  if (decision.action === 'ALLOW') {
+    console.log(`[QUEUE] FINAL_CANDLE_GATE_PASS ${label}/${mintShort} source=${decision.source || 'cache'} reason=${decision.reason}`);
+  } else {
+    console.log(`[QUEUE] FINAL_CANDLE_GATE_HOLD ${label}/${mintShort} source=${decision.source || 'unknown'} reason=${decision.reason}`);
   }
   return decision;
 }
@@ -508,6 +581,7 @@ async function evaluateDeployConditions(entry) {
     }
 
     const liveSnapshot = await getCachedMarketSnapshot(mint, poolAddress || null, entry.symbol || '');
+    entry.lastLiveSnapshot = liveSnapshot || entry.lastLiveSnapshot || null;
     if (liveSnapshot) {
       const liveSignals = summarizeQueueDecision({ meta, liveSnapshot, cfg, lpMode });
       const liveReliable = isReliableLiveSnapshot(liveSnapshot);
@@ -578,6 +652,7 @@ async function evaluateDeployConditions(entry) {
   }
 
   const liveSnapshot = await getCachedMarketSnapshot(mint, poolAddress || null, entry.symbol || '');
+  entry.lastLiveSnapshot = liveSnapshot || entry.lastLiveSnapshot || null;
   if (liveSnapshot) {
     const liveSignals = summarizeQueueDecision({ meta, liveSnapshot, cfg, lpMode });
     if (!isReliableLiveSnapshot(liveSnapshot)) {
@@ -759,6 +834,26 @@ async function runWatcher() {
           entry.deferReason = finalSt.reason;
           console.log(`[QUEUE] ⏸️ ${symbol} HOLD sebelum deploy: ${finalSt.reason}`);
         }
+        continue;
+      }
+
+      const finalCandle = await ensureFinalEntryCandleSanity({
+        mint,
+        symbol,
+        pool,
+        meta,
+        liveSnapshot: entry.lastLiveSnapshot || null,
+      });
+      if (!finalCandle.ok) {
+        entry.nextEligibleAt = Date.now() + 15_000;
+        entry.deferReason = finalCandle.reason;
+        console.log(`[QUEUE] ⏸️ ${symbol} HOLD sebelum deploy: ${finalCandle.reason}`);
+        await safeSend(
+          `⏸️ <b>Deploy Queue Hold</b>\n` +
+          `<b>${symbol}</b>\n` +
+          `Candle: <code>${escapeHTML(finalCandle.source || 'unknown')}</code>\n` +
+          `<i>${escapeHTML(finalCandle.reason)}</i>`
+        );
         continue;
       }
 

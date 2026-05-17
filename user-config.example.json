@@ -64,6 +64,12 @@
   "entryFreshBreakoutMinAthDistancePct": 99.25,
   "entryFreshWatchWindowSec": 90,
   "entryFreshBreakoutMaxDriftPct": 2.5,
+  "entryCandleSanityEnabled": true,
+  "entryRequireGreenCandle": true,
+  "entryRequireVolumeConfirm": true,
+  "entryMinVolumeRatio": 1.5,
+  "entryVolumeLookbackCandles": 12,
+  "entryCandleMaxAgeSec": 420,
 
   "slippageBps": 150,
   "stopLossPct": 5,

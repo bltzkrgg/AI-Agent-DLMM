@@ -66,6 +66,22 @@ test('pool pattern learning builds fingerprint safely and evaluates disabled mod
   assert.equal(disabled.appliedDelta, 0);
 });
 
+test('pool pattern learning stores normalized exit reason categories', async () => {
+  process.env.BOT_POOL_PATTERN_LEARNING_PATH = join(mkdtempSync(join(tmpdir(), 'dlmm-pattern-normalized-')), 'pool-pattern-learning.jsonl');
+  const mod = await importFresh(join(repoRoot, 'src/learn/poolPatternLearning.js'));
+
+  const result = mod.recordPoolPatternOutcome({
+    positionPubkey: 'pos-normalized',
+    features: { tokenMint: 'Mint111', poolAddress: 'Pool111', symbol: 'NORM', binStep: 125 },
+    outcome: { feePnlPct: 0.2, totalPnlPct: -5, pnlSol: -0.01, exitReason: 'OUT_OF_RANGE_30M' },
+    cfg: { poolPatternLearningEnabled: true },
+  });
+
+  assert.equal(result.recorded, true);
+  assert.equal(result.event.exitReason, 'OUT_OF_RANGE');
+  assert.equal(result.event.wasOor, true);
+});
+
 test('pool pattern learning score wrapper keeps disabled shadow and active modes bounded', async () => {
   makeIsolatedEnv('dlmm-pattern-learning-wrapper-');
   const mod = await importFresh(join(repoRoot, 'src/learn/poolPatternLearning.js'));

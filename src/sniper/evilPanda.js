@@ -36,6 +36,7 @@ import { clearPositionRuntimeState } from '../app/positionRuntimeState.js';
 import { checkGasGuard } from '../safety/gasGuard.js';
 import { assertRangeDoesNotRequireBinArrayInit, inspectRangeBinArrayInitStatus } from '../solana/meteora.js';
 import { BIN_ARRAY_SIZE, selectRentFreeRange } from '../utils/binRangePolicy.js';
+import { normalizeExitReason } from '../utils/exitReasons.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const HARVEST_LOG = join(__dirname, '../../harvest.log');
@@ -374,6 +375,7 @@ export async function calculateFeeOnlyPnl({
   }
 
   const feePnlSol = Math.max(0, feeYUi + feeXSol);
+  if (feePnlSource === 'none' && feeYUi > 0) feePnlSource = 'position_fee_y';
   const feePnlPct = Number(deploySol) > 0 ? (feePnlSol / Number(deploySol)) * 100 : 0;
   return {
     feePnlSol,
@@ -381,6 +383,7 @@ export async function calculateFeeOnlyPnl({
     feeXUi: Math.max(0, safeNum(feeXRawStr, 0) / Math.pow(10, safeXDec)),
     feeYUi,
     feePnlSource,
+    feePnlAvailable: true,
   };
 }
 
@@ -573,6 +576,7 @@ function appendPositionLedger({
   txCostSol = 0,
   accountingStatus = 'final',
   manualCloseDetected = false,
+  normalizedReason = '',
 } = {}) {
   try {
     const capitalIn = safeNum(capitalInSol, 0);
@@ -590,6 +594,7 @@ function appendPositionLedger({
       openedAt,
       closedAt,
       reason,
+      normalizedReason: normalizedReason || normalizeExitReason(reason),
       accountingStatus,
       manualCloseDetected,
       cashflow: {
@@ -1425,6 +1430,7 @@ export async function monitorPnL(positionPubkey) {
   const reg = _activePositions.get(positionPubkey);
   if (!reg) {
     return { action: 'ERROR', currentValueSol: 0, pnlPct: 0, feePnlSol: 0, feePnlPct: 0, feePnlSource: 'none', inRange: false,
+             feePnlAvailable: false,
              error: `Position ${positionPubkey.slice(0,8)} not in registry` };
   }
 
@@ -1447,6 +1453,7 @@ export async function monitorPnL(positionPubkey) {
         feePnlSol: 0,
         feePnlPct: 0,
         feePnlSource: 'none',
+        feePnlAvailable: false,
         inRange: false,
         note: 'Position not found on-chain — assumed manually withdrawn',
       };
@@ -1558,7 +1565,7 @@ export async function monitorPnL(positionPubkey) {
 
   } catch (e) {
     console.warn(`[evilPanda] monitorPnL error: ${e.message}`);
-    return { action: 'ERROR', currentValueSol: 0, pnlPct: 0, feePnlSol: 0, feePnlPct: 0, feePnlSource: 'none', inRange: false, error: e.message };
+    return { action: 'ERROR', currentValueSol: 0, pnlPct: 0, feePnlSol: 0, feePnlPct: 0, feePnlSource: 'none', feePnlAvailable: false, inRange: false, error: e.message };
   }
 }
 
@@ -1679,6 +1686,7 @@ export async function exitPosition(positionPubkey, reason = 'MANUAL') {
       let estimatedFeeSol = 0;
       let estimatedFeePct = 0;
       let estimatedFeeSource = 'none';
+      let estimatedFeeAvailable = false;
       try {
         const pd = activePos.positionData;
         const [xMeta, yMeta] = await resolveTokens([reg.tokenXMint, reg.tokenYMint]);
@@ -1696,10 +1704,12 @@ export async function exitPosition(positionPubkey, reason = 'MANUAL') {
         estimatedFeeSol = feeOnly.feePnlSol;
         estimatedFeePct = feeOnly.feePnlPct;
         estimatedFeeSource = feeOnly.feePnlSource;
+        estimatedFeeAvailable = feeOnly.feePnlAvailable === true;
       } catch {
         estimatedFeeSol = 0;
         estimatedFeePct = 0;
         estimatedFeeSource = 'none';
+        estimatedFeeAvailable = false;
       }
 
       // 1. Remove all liquidity and request account close.
@@ -1794,6 +1804,7 @@ export async function exitPosition(positionPubkey, reason = 'MANUAL') {
       const finalPnlPct = reg.deploySol > 0
         ? (pnlTotalSol / reg.deploySol) * 100
         : 0;
+      const normalizedReason = normalizeExitReason(reason, { pnlPct: finalPnlPct, pnlSol: pnlTotalSol });
       appendHarvestLog({
         token:          tokenSymbol,
         positionPubkey,
@@ -1815,6 +1826,7 @@ export async function exitPosition(positionPubkey, reason = 'MANUAL') {
         feePnlSol,
         pricePnlSol,
         txCostSol: txFeeSol,
+        normalizedReason,
       });
       recordPoolOutcome({
         key: reg.poolAddress || reg.tokenXMint,
@@ -1823,7 +1835,8 @@ export async function exitPosition(positionPubkey, reason = 'MANUAL') {
         symbol: tokenSymbol,
         pnlPct: finalPnlPct,
         pnlSol: pnlTotalSol,
-        reason,
+        reason: normalizedReason,
+        snapshot: { rawReason: reason },
       });
       recordPoolPatternOutcome({
         positionPubkey,
@@ -1848,19 +1861,20 @@ export async function exitPosition(positionPubkey, reason = 'MANUAL') {
           feePnlSol: feePnlSol,
           totalPnlPct: finalPnlPct,
           pnlSol: pnlTotalSol,
-          exitReason: reason,
+          exitReason: normalizedReason,
+          rawExitReason: reason,
           holdDurationMs: Math.max(0, Date.now() - new Date(reg.deployedAt || nowIso()).getTime()),
         },
         cfg: getConfig(),
       });
 
       // Tambah ke blacklist jika kena SL / rugpull / rollback
-      const SL_REASONS = ['STOP_LOSS', 'PARTIAL_DEPLOY_ROLLBACK', 'MANUAL_STOP'];
-      if (SL_REASONS.includes(reason) || finalPnlPct <= -10) {
+      const SL_REASONS = ['STOP_LOSS', 'DEPLOY_FAILED', 'MANUAL_STOP'];
+      if (SL_REASONS.includes(normalizedReason) || finalPnlPct <= -10) {
         const isRug = finalPnlPct <= -15;
         addToBlacklist(reg.tokenXMint, {
           token:     tokenSymbol,
-          reason,
+          reason:    normalizedReason,
           note:      `PnL ${finalPnlPct.toFixed(2)}%`,
           permanent: isRug,
         });
@@ -1871,8 +1885,11 @@ export async function exitPosition(positionPubkey, reason = 'MANUAL') {
         feePnlSol,
         feePnlPct: estimatedFeePct,
         feePnlSource: estimatedFeeSource,
+        feePnlAvailable: estimatedFeeAvailable,
         pnlTotalSol,
         pnlTotalPct: finalPnlPct,
+        exitReason: normalizedReason,
+        rawExitReason: reason,
       };
 
     }, { maxRetries: 2, baseDelay: 3000 }));
@@ -1897,6 +1914,7 @@ export async function markPositionManuallyClosed(positionPubkey, reason = 'MANUA
   clearPositionRuntimeState(positionPubkey);
 
   const tokenSymbol = reg.tokenXMint?.slice(0, 8) || 'UNKNOWN';
+  const normalizedReason = normalizeExitReason(reason);
   appendHarvestLog({
     token: tokenSymbol,
     positionPubkey,
@@ -1911,6 +1929,7 @@ export async function markPositionManuallyClosed(positionPubkey, reason = 'MANUA
     openedAt: reg.deployedAt || null,
     closedAt: nowIso(),
     reason,
+    normalizedReason,
     capitalInSol: safeNum(reg.deploySol, 0),
     accountingStatus: 'manual_close_pnl_unknown',
     manualCloseDetected: true,
@@ -1922,7 +1941,8 @@ export async function markPositionManuallyClosed(positionPubkey, reason = 'MANUA
     symbol: tokenSymbol,
     pnlPct: 0,
     pnlSol: 0,
-    reason,
+    reason: normalizedReason,
+    snapshot: { rawReason: reason },
   });
 
   const symbol = reg.tokenXMint?.slice(0, 8) || 'UNKNOWN';

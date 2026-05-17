@@ -3,6 +3,7 @@
 import { appendFileSync, existsSync, mkdirSync, readFileSync } from 'fs';
 import { dirname, join } from 'path';
 import { fileURLToPath } from 'url';
+import { normalizeExitReason } from '../utils/exitReasons.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PATTERN_LOG_PATH = process.env.BOT_POOL_PATTERN_LEARNING_PATH || join(__dirname, '../../data/pool-pattern-learning.jsonl');
@@ -36,13 +37,14 @@ function normalizeTrend(value) {
 }
 
 function classifyExitReason(reason = '') {
-  const text = String(reason || '').toUpperCase();
+  const normalized = normalizeExitReason(reason);
+  const text = normalized.toUpperCase();
   return {
-    wasTakeProfit: /TAKE_PROFIT|TRAILING_PROFIT/.test(text),
-    wasStopLoss: /STOP_LOSS/.test(text),
-    wasOor: /OUT_OF_RANGE/.test(text),
-    wasPoolImpactExit: /POOL_IMPACT_GUARD/.test(text),
-    wasManual: /MANUAL/.test(text),
+    wasTakeProfit: text === 'TAKE_PROFIT',
+    wasStopLoss: text === 'STOP_LOSS',
+    wasOor: text === 'OUT_OF_RANGE',
+    wasPoolImpactExit: text === 'POOL_IMPACT_GUARD',
+    wasManual: text === 'MANUAL_EXIT' || text === 'MANUAL_STOP',
   };
 }
 
@@ -217,7 +219,8 @@ export function recordPoolPatternOutcome({
   if (cfg.poolPatternLearningEnabled !== true) return { recorded: false, reason: 'DISABLED' };
   ensureCacheLoaded();
   const { fingerprint, buckets } = buildPoolPatternFingerprint(features);
-  const reason = String(outcome.exitReason || outcome.reason || '');
+  const rawReason = String(outcome.rawExitReason || outcome.exitReason || outcome.reason || '');
+  const reason = normalizeExitReason(outcome.exitReason || outcome.reason || rawReason);
   const reasonFlags = classifyExitReason(reason);
   const event = {
     type: 'OUTCOME',
@@ -235,6 +238,7 @@ export function recordPoolPatternOutcome({
     pnlSol: safeNum(outcome.pnlSol ?? outcome.pnlTotalSol, 0) || 0,
     holdDurationMs: Math.max(0, safeNum(outcome.holdDurationMs, 0) || 0),
     exitReason: reason,
+    rawExitReason: rawReason,
     ...reasonFlags,
   };
   appendEvent(event);

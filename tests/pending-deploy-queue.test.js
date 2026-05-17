@@ -5,6 +5,7 @@ import { readFileSync } from 'node:fs';
 import { checkSupertrendVeto } from '../src/market/meridianVeto.js';
 import {
   buildUnreliableLiveSnapshotLog,
+  getFinalEntryCandleSanityDecision,
   getFinalSupertrendDeployDecision,
   getLiveSnapshotReliability,
   isFreshBullishSupertrend15m,
@@ -12,6 +13,38 @@ import {
   isReliableLiveSnapshot,
   summarizeQueueDecision,
 } from '../src/utils/pendingDeployQueue.js';
+
+function makeEntryCandles({
+  now = Date.now(),
+  lastOpen = 100,
+  lastClose = 104,
+  lastVolume = 200,
+  baseVolume = 100,
+  count = 13,
+  spacingSec = 300,
+} = {}) {
+  const startSec = Math.floor((now - ((count + 1) * spacingSec * 1000)) / 1000);
+  const candles = [];
+  for (let i = 0; i < count - 1; i++) {
+    candles.push({
+      time: startSec + (i * spacingSec),
+      open: 100,
+      high: 103,
+      low: 99,
+      close: 102,
+      volume: baseVolume,
+    });
+  }
+  candles.push({
+    time: Math.floor((now - 60_000) / 1000),
+    open: lastOpen,
+    high: Math.max(lastOpen, lastClose),
+    low: Math.min(lastOpen, lastClose),
+    close: lastClose,
+    volume: lastVolume,
+  });
+  return candles;
+}
 
 test('fresh deploy meta allows breakout-valid, high-readiness entries including LP live timing', () => {
   assert.equal(isFreshDeployMeta({
@@ -304,6 +337,114 @@ test('final Supertrend deploy gate refreshes stale cache and fails closed on err
   assert.match(fetchError.reason, /network unavailable/);
 });
 
+test('final entry candle sanity passes fresh green candle with volume confirmation', async () => {
+  const now = 1_700_000_000_000;
+  const decision = await getFinalEntryCandleSanityDecision({
+    mint: 'Mint111111111111111111111111111111111111111',
+    now,
+    cfg: {
+      entryCandleSanityEnabled: true,
+      entryRequireGreenCandle: true,
+      entryRequireVolumeConfirm: true,
+      entryMinVolumeRatio: 1.5,
+      entryVolumeLookbackCandles: 12,
+      entryCandleMaxAgeSec: 420,
+    },
+    pool: {
+      _marketSnapshot: {
+        ohlcv: {
+          source: 'test-cache',
+          entryCandles5m: makeEntryCandles({ now, lastOpen: 100, lastClose: 105, lastVolume: 180 }),
+        },
+      },
+    },
+    snapshotFn: async () => { throw new Error('should not fetch when cache is fresh'); },
+  });
+
+  assert.equal(decision.ok, true);
+  assert.equal(decision.action, 'ALLOW');
+});
+
+test('final entry candle sanity holds red, thin, stale, and missing candle data', async () => {
+  const now = 1_700_000_000_000;
+  const cfg = {
+    entryCandleSanityEnabled: true,
+    entryRequireGreenCandle: true,
+    entryRequireVolumeConfirm: true,
+    entryMinVolumeRatio: 1.5,
+    entryVolumeLookbackCandles: 12,
+    entryCandleMaxAgeSec: 420,
+  };
+
+  const red = await getFinalEntryCandleSanityDecision({
+    mint: 'Mint111111111111111111111111111111111111111',
+    now,
+    cfg,
+    pool: { _marketSnapshot: { ohlcv: { entryCandles5m: makeEntryCandles({ now, lastOpen: 105, lastClose: 100, lastVolume: 200 }) } } },
+  });
+  assert.equal(red.ok, false);
+  assert.equal(red.reason, 'HOLD: last closed 5m candle not green');
+
+  const thin = await getFinalEntryCandleSanityDecision({
+    mint: 'Mint111111111111111111111111111111111111111',
+    now,
+    cfg,
+    pool: { _marketSnapshot: { ohlcv: { entryCandles5m: makeEntryCandles({ now, lastOpen: 100, lastClose: 105, lastVolume: 120 }) } } },
+  });
+  assert.equal(thin.ok, false);
+  assert.equal(thin.reason, 'HOLD: entry candle volume below threshold');
+
+  let staleRefreshCalls = 0;
+  const stale = await getFinalEntryCandleSanityDecision({
+    mint: 'Mint111111111111111111111111111111111111111',
+    now,
+    cfg,
+    pool: { _marketSnapshot: { ohlcv: { entryCandles5m: makeEntryCandles({ now: now - 900_000, lastOpen: 100, lastClose: 105, lastVolume: 200 }) } } },
+    snapshotFn: async () => {
+      staleRefreshCalls += 1;
+      return null;
+    },
+  });
+  assert.equal(staleRefreshCalls, 1);
+  assert.equal(stale.ok, false);
+  assert.equal(stale.reason, 'HOLD: entry candle sanity unavailable/stale');
+
+  const missing = await getFinalEntryCandleSanityDecision({
+    mint: '',
+    now,
+    cfg,
+    pool: {},
+    snapshotFn: async () => { throw new Error('missing mint should not fetch'); },
+  });
+  assert.equal(missing.ok, false);
+  assert.equal(missing.reason, 'HOLD: entry candle sanity unavailable/stale');
+});
+
+test('final entry candle sanity fetches only after missing cache', async () => {
+  const now = 1_700_000_000_000;
+  let calls = 0;
+  const decision = await getFinalEntryCandleSanityDecision({
+    mint: 'Mint111111111111111111111111111111111111111',
+    now,
+    cfg: {
+      entryCandleSanityEnabled: true,
+      entryRequireGreenCandle: true,
+      entryRequireVolumeConfirm: true,
+      entryMinVolumeRatio: 1.5,
+      entryVolumeLookbackCandles: 12,
+      entryCandleMaxAgeSec: 420,
+    },
+    pool: {},
+    snapshotFn: async () => {
+      calls += 1;
+      return { ohlcv: { entryCandles5m: makeEntryCandles({ now: Date.now(), lastOpen: 100, lastClose: 105, lastVolume: 200 }) } };
+    },
+  });
+
+  assert.equal(calls, 1);
+  assert.equal(decision.ok, true);
+});
+
 test('manual CA final gate does not pass generic taTrend snapshot cache', () => {
   const hunterSrc = readFileSync(new URL('../src/agents/hunterAlpha.js', import.meta.url), 'utf8');
   const start = hunterSrc.indexOf('const manualStGate = await ensureFinalSupertrendBullish({');
@@ -427,5 +568,7 @@ test('reliable meridian fallback still holds when trend or m5 cannot be resolved
 
 test('queue snapshot path passes poolAddress to market snapshot resolver', () => {
   const src = readFileSync(new URL('../src/utils/pendingDeployQueue.js', import.meta.url), 'utf8');
-  assert.match(src, /getMarketSnapshot\(mint, poolAddress \|\| null, \{ from: 'deploy_queue' \}\)/);
+  assert.match(src, /getMarketSnapshot\(mint, poolAddress \|\| null, \{/);
+  assert.match(src, /from: includeEntryCandles5m \? 'entry_candle_sanity' : 'deploy_queue'/);
+  assert.match(src, /includeEntryCandles5m/);
 });

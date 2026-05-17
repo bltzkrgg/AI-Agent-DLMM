@@ -300,9 +300,10 @@ test('exit telegram messages display Meteora fee-only PnL', () => {
   assert.match(evilPandaSrc, /return \{ action: 'STOP_LOSS', currentValueSol, pnlPct, \.\.\.feeOnlyPnl, inRange/);
   assert.match(evilPandaSrc, /currentValueSol, pnlPct, \.\.\.feeOnlyPnl, inRange/);
 
-  assert.match(hunterSrc, /PnL Fee: <code>\$\{feeSign\}\$\{feePnlPct\.toFixed\(2\)\}%<\/code>/);
-  assert.match(hunterSrc, /Fee Value: <code>\$\{feePnlSol\.toFixed\(6\)\} SOL<\/code>/);
+  assert.match(hunterSrc, /Fee PnL: <code>\$\{feePnlSol\.toFixed\(6\)\} SOL \/ \$\{feeSign\}\$\{feePnlPct\.toFixed\(2\)\}%<\/code>/);
+  assert.match(hunterSrc, /Fee PnL: <code>unavailable<\/code>/);
   assert.match(hunterSrc, /Position Value: <code>\$\{currentValueSol\.toFixed\(4\)\} SOL<\/code>/);
-  assert.match(hunterSrc, /return \{ ok: true, solRecovered, feePnlSol, feePnlPct \}/);
+  assert.match(hunterSrc, /Total Exposure PnL: <code>/);
+  assert.match(hunterSrc, /return \{ ok: true, \.\.\.exitResult \}/);
   assert.doesNotMatch(hunterSrc, /`PnL: <code>\+?\$\{pnlPct\.toFixed\(2\)\}%<\/code>\\n`/);
 });

@@ -29,7 +29,7 @@ import { evaluatePoolImpactGuard } from '../risk/poolImpactGuard.js';
 import { escapeHTML, safeParseAI } from '../utils/safeJson.js';
 import reportManager              from '../utils/reportManager.js';
 import pendingStore               from '../utils/pendingStore.js';
-import { enqueueForDeploy, ensureFinalSupertrendBullish, isFreshDeployMeta, startDeployQueueWatcher, setDeployQueueNotifyFn, setDeployQueueMonitorFn } from '../utils/pendingDeployQueue.js';
+import { enqueueForDeploy, ensureFinalEntryCandleSanity, ensureFinalSupertrendBullish, isFreshDeployMeta, startDeployQueueWatcher, setDeployQueueNotifyFn, setDeployQueueMonitorFn } from '../utils/pendingDeployQueue.js';
 import { getDeploySlotUsage, reserveDeploySlot, releaseDeploySlot } from '../utils/deploySlotGuard.js';
 // ── Pool selector: pilih pool terbaik per-token berdasarkan binStep priority ─────────────
 //
@@ -393,6 +393,11 @@ function addWatchPassTa(pool, reason = 'TA PASS', source = 'TA') {
 
   const mint = getPoolMint(pool);
   if (!mint || hasActiveMint(mint)) return { admitted: false, reason: 'Mint aktif / tidak valid', row: null, evicted: null };
+  if (!isSupportedQuoteToken(pool)) {
+    const quoteReason = `Unsupported quote token ${getQuoteTokenLabel(pool)}; expected SOL/WSOL`;
+    console.log(`[WATCH] ⛔ ${getPoolSymbol(pool)} ditolak: ${quoteReason}`);
+    return { admitted: false, reason: quoteReason, row: null, evicted: null };
+  }
 
   const now = Date.now();
   const existing = _taWatchQueue.get(mint);
@@ -570,6 +575,11 @@ export async function submitManualCaPool(poolAddress, { source = 'TELEGRAM_CA' }
   const poolInfo = resolved.poolInfo;
   const tokenMint = String(resolved.tokenMint || poolInfo.tokenX || poolInfo.tokenXMint || poolInfo.mint || '').trim();
   const symbol = resolved.symbol || poolInfo.tokenXSymbol || poolInfo.name?.split('-')[0] || tokenMint.slice(0, 8) || 'UNKNOWN';
+  if (!isSupportedQuoteToken(poolInfo)) {
+    const reason = `Unsupported quote token ${getQuoteTokenLabel(poolInfo)}; expected SOL/WSOL`;
+    console.warn(`[MANUAL] ❌ ${symbol}: ${reason}`);
+    return { ok: false, status: 'VETO', kind: resolved.kind, symbol, poolAddress: resolved.poolAddress || address, tokenMint, reason };
+  }
   if (!tokenMint) {
     const reason = 'Token mint tidak tersedia dari pool Meteora';
     console.warn(`[MANUAL] ❌ ${symbol}: ${reason}`);
@@ -604,6 +614,7 @@ export async function submitManualCaPool(poolAddress, { source = 'TELEGRAM_CA' }
     _watchSnapshotM5Change: entrySignals.priceChangeM5 ?? null,
     _watchSnapshotM15Change: entrySignals.priceChangeM15 ?? null,
     _watchTaTrend: entrySignals.taTrend ?? null,
+    _marketSnapshot: marketSnapshot,
     hasNonRefundableFees: Boolean(marketSnapshot?.pool?.hasNonRefundableFees),
   };
 
@@ -800,6 +811,25 @@ function isNaturalDeployError(error) {
   const msg = String(error?.message || error || '').toLowerCase();
   return ['partial', 'simulation failed', 'slippage', 'timeout', 'blockhash']
     .some((needle) => msg.includes(needle));
+}
+
+function hasFeePnlData(result = {}) {
+  return result?.feePnlAvailable === true || String(result?.feePnlSource || 'none') !== 'none';
+}
+
+function formatFeePnlLine(result = {}) {
+  if (!hasFeePnlData(result)) return 'Fee PnL: <code>unavailable</code>\n';
+  const feePnlSol = Math.max(0, Number(result?.feePnlSol || 0));
+  const feePnlPct = Math.max(0, Number(result?.feePnlPct || 0));
+  const sign = feePnlPct > 0 ? '+' : '';
+  return `Fee PnL: <code>${feePnlSol.toFixed(6)} SOL / ${sign}${feePnlPct.toFixed(2)}%</code>\n`;
+}
+
+function formatExposurePnlLine(result = {}) {
+  const totalPct = Number(result?.pnlTotalPct);
+  if (!Number.isFinite(totalPct)) return '';
+  const sign = totalPct >= 0 ? '+' : '';
+  return `Total Exposure PnL: <code>${sign}${totalPct.toFixed(2)}%</code>\n`;
 }
 
 function formatMaybePct(value, digits = 2) {
@@ -1627,6 +1657,13 @@ export async function scanAndDeploy({ emitFinalReport = true } = {}) {
       vol:  Number(pool.volume24h || pool.volume_24h || pool.trade_volume_24h || 0),
       mcap: Number(pool.mcap || 0),
     });
+    if (!isSupportedQuoteToken(pool)) {
+      const quoteReason = `Unsupported quote token ${getQuoteTokenLabel(pool)}; expected SOL/WSOL`;
+      reportManager.updateGate(tokenSymbol, 'STAGE_0_DISCOVERY', 'FAIL', quoteReason);
+      reportManager.setFinalVerdict(tokenSymbol, 'REJECT', quoteReason);
+      console.log(`[SCREEN] ❌ ${tokenSymbol || 'UNKNOWN'} quote veto: ${quoteReason}`);
+      return { ok: false, symbol: tokenSymbol || 'UNKNOWN', stage: 'STAGE_0_DISCOVERY', reason: quoteReason, summary: [] };
+    }
     reportManager.updateGate(tokenSymbol, 'STAGE_0_DISCOVERY', 'PASS');
 
     if (!tokenMint) {
@@ -2250,6 +2287,28 @@ Balas HANYA JSON valid tanpa Markdown.`;
         return false;
       }
 
+      const finalCandle = await ensureFinalEntryCandleSanity({
+        mint: tokenMint,
+        symbol,
+        pool: winner,
+        meta: {},
+      });
+      if (!finalCandle.ok) {
+        const reasonText = finalCandle.reason || 'HOLD: entry candle sanity unavailable/stale';
+        console.log(`[hunter] ⏸️ Final candle gate ${symbol}: ${reasonText}`);
+        if (winner._record) {
+          recordGate(winner._record, 'SCOUT_AGENT', 'DEFER', reasonText);
+        }
+        addPendingRetest(winner, reasonText);
+        await notify(
+          `⏸️ <b>Deploy Ditahan</b>\n` +
+          `<b>${escapeHTML(symbol)}</b> — <code>FINAL_CANDLE_GATE_HOLD</code>\n` +
+          `Candle: <code>${escapeHTML(finalCandle.source || 'unknown')}</code>\n` +
+          `<i>${escapeHTML(reasonText)}</i>`
+        );
+        return false;
+      }
+
       const slotReservation = reserveDeploySlot({
         owner: 'hunterAlpha.scanAndDeploy',
         mint: tokenMint,
@@ -2543,9 +2602,9 @@ async function monitorLoop(positionPubkey, symbol, poolAddress) {
         await notify(
           `🎉 <b>TAKE PROFIT!</b>\n` +
           `Token: <b>${symbol}</b>\n` +
-          `PnL Fee: <code>${feeSign}${feePnlPct.toFixed(2)}%</code>\n` +
-          `Fee Value: <code>${feePnlSol.toFixed(6)} SOL</code>\n` +
+          `Fee PnL: <code>${feePnlSol.toFixed(6)} SOL / ${feeSign}${feePnlPct.toFixed(2)}%</code>\n` +
           `Position Value: <code>${currentValueSol.toFixed(4)} SOL</code>\n` +
+          `Total Exposure PnL: <code>${pnlPct >= 0 ? '+' : ''}${pnlPct.toFixed(2)}%</code>\n` +
           (status.exitScenario ? `📊 Skenario <b>${status.exitScenario}</b>: <code>${status.exitReason || ''}</code>\n` : '') +
           `\n⏳ <i>Menutup posisi...</i>`
         );
@@ -2557,9 +2616,10 @@ async function monitorLoop(positionPubkey, symbol, poolAddress) {
         await notify(
           `🛑 <b>STOP LOSS!</b>\n` +
           `Token: <b>${symbol}</b>\n` +
-          `PnL Fee: <code>${feeSign}${feePnlPct.toFixed(2)}%</code>\n` +
-          `Fee Value: <code>${feePnlSol.toFixed(6)} SOL</code>\n` +
-          `Position Value: <code>${currentValueSol.toFixed(4)} SOL</code>\n\n` +
+          `Fee PnL: <code>${feePnlSol.toFixed(6)} SOL / ${feeSign}${feePnlPct.toFixed(2)}%</code>\n` +
+          `Position Value: <code>${currentValueSol.toFixed(4)} SOL</code>\n` +
+          `Total Exposure PnL: <code>${pnlPct >= 0 ? '+' : ''}${pnlPct.toFixed(2)}%</code>\n` +
+          `\n` +
           `⏳ <i>Menutup posisi...</i>`
         );
         await safeExit(positionPubkey, 'STOP_LOSS');
@@ -2660,19 +2720,20 @@ async function safeExit(positionPubkey, reason) {
       return { ok: true, dryRun: true, simulated: true };
     }
     const { solRecovered } = exitResult;
-    const feePnlSol = Math.max(0, Number(exitResult?.feePnlSol || 0));
-    const feePnlPct = Math.max(0, Number(exitResult?.feePnlPct || 0));
-    const feeSign = feePnlPct > 0 ? '+' : '';
+    const positionValueLine = Number.isFinite(Number(solRecovered))
+      ? `Position Value: <code>${Number(solRecovered).toFixed(6)} SOL</code>\n`
+      : '';
     const balance = await getWalletBalance();
     success = true;
     await notify(
       `✅ <b>Posisi ditutup (${reason})</b>\n` +
       `Position: <code>${positionPubkey.slice(0,8)}</code>\n` +
-      `PnL Fee: <code>${feeSign}${feePnlPct.toFixed(2)}%</code>\n` +
-      `Fee Value: <code>${feePnlSol.toFixed(6)} SOL</code>\n` +
+      formatFeePnlLine(exitResult) +
+      positionValueLine +
+      formatExposurePnlLine(exitResult) +
       `Balance: <code>${balance} SOL</code>`
     );
-    return { ok: true, solRecovered, feePnlSol, feePnlPct };
+    return { ok: true, ...exitResult };
   } catch (e) {
     console.error(`[hunter] exitPosition error: ${e.message}`);
     await notify(
@@ -3047,7 +3108,8 @@ export async function sendImmediateTopPoolsReport(chatId) {
       // Evaluasi Meridian veto untuk status TA
       let vetoPass = false;
       let vetoReason = '';
-      if (!isSupportedQuoteToken(pool)) {
+      const quoteSupported = isSupportedQuoteToken(pool);
+      if (!quoteSupported) {
         vetoReason = `Unsupported quote token ${getQuoteTokenLabel(pool)}; expected SOL/WSOL`;
       } else {
         try {
@@ -3062,11 +3124,11 @@ export async function sendImmediateTopPoolsReport(chatId) {
       // Simulasikan gate trace untuk laporan instan
       // STAGE_0..JUPITER = PASS (lolos discovery), MERIDIAN_VETO = hasil veto, sisanya = NOT_STARTED
       const gateStatuses = {
-        STAGE_0_DISCOVERY: 'PASS',
-        BLACKLIST_LOCAL:   'PASS',
-        STAGE_1_PUBLIC:    'PASS',
-        STAGE_2_GMGN:      'PASS',
-        STAGE_3_JUPITER:   'PASS',
+        STAGE_0_DISCOVERY: quoteSupported ? 'PASS' : 'FAIL',
+        BLACKLIST_LOCAL:   quoteSupported ? 'PASS' : 'SKIPPED',
+        STAGE_1_PUBLIC:    quoteSupported ? 'PASS' : 'SKIPPED',
+        STAGE_2_GMGN:      quoteSupported ? 'PASS' : 'SKIPPED',
+        STAGE_3_JUPITER:   quoteSupported ? 'PASS' : 'SKIPPED',
         MERIDIAN_VETO:     vetoPass ? 'PASS' : 'FAIL',
         PENDING_RETEST:    vetoPass ? 'PASS' : 'SKIPPED',
         FLAT_CONFIG_GATE:  vetoPass ? 'PASS' : 'SKIPPED',
