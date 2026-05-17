@@ -76,11 +76,6 @@
   "entryFreshBreakoutMinAthDistancePct": 99.25,
   "entryFreshWatchWindowSec": 90,
   "entryFreshBreakoutMaxDriftPct": 2.5,
-  "entryRequireVolumeConfirm": true,
-  "entryMinVolumeRatio": 1.1,
-  "entryVolumeLookbackCandles": 20,
-  "entryRequireHtfAlignment": true,
-  "entryHtfAllowNeutral": true,
 
   "slippageBps": 150,
   "stopLossPct": 5,
@@ -110,17 +105,6 @@
   "poolImpactLowerRangeBufferPct": 15,
   "poolImpactAlertCooldownMs": 60000,
 
-  "autoPauseOnManualReview": true,
-  "manualReviewThreshold": 1,
-  "minTaeSamplesForFullStage": 10,
-  "minTaeWinRateForFullStage": 45,
-  "signalReportMaxAgeHours": 24,
-
-  "oracleMaxPriceDivergencePct": 3.0,
-  "minPriceSourcesForEntry": 2,
-  "minTaConfidenceForAutoExit": 0.55,
-  "maxOhlcvStaleMinutes15m": 90,
-  "maxExitPriceImpactPct": 5.0,
   "deployChunkMaxBins": 69,
 
   "screeningModel": "nvidia/nemotron-3-super-120b-a12b:free",
