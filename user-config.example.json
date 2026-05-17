@@ -1,7 +1,5 @@
 {
   "dryRun": true,
-  "deploymentStage": "full",
-  "canaryMaxPositions": 1,
   "autonomyMode": "active",
   "autoScreeningEnabled": false,
 
@@ -83,7 +81,6 @@
   "deployRangeMaxBins": 68,
   "maxDailyPriorityFeeSol": 0.2,
   "activeStrategy": "Evil Panda",
-  "targetRangePct": 90,
   "smartExitRsi": 90,
   "depthPct": 90,
   "atrGuardEnabled": true,
@@ -104,8 +101,6 @@
   "poolPatternLearningMinSamples": 10,
   "poolPatternLearningMaxScoreDelta": 8,
   "poolPatternLearningLookbackDays": 14,
-
-  "deployChunkMaxBins": 69,
 
   "screeningModel": "nvidia/nemotron-3-super-120b-a12b:free",
   "managementModel": "deepseek/deepseek-v3.2",
