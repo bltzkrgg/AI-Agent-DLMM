@@ -149,6 +149,11 @@ const DEFAULTS = {
   poolImpactConsecutiveDropTicks: 3,
   poolImpactLowerRangeBufferPct: 15,
   poolImpactAlertCooldownMs: 60000,
+  poolPatternLearningEnabled: false,
+  poolPatternLearningShadowMode: true,
+  poolPatternLearningMinSamples: 10,
+  poolPatternLearningMaxScoreDelta: 8,
+  poolPatternLearningLookbackDays: 14,
   maxDailyPriorityFeeSol: 0.2,
   maxDailyDrawdownPct:    6,
   activeStrategy:         'Evil Panda',
@@ -252,6 +257,11 @@ const CONFIG_BOUNDS = {
   poolImpactConsecutiveDropTicks: { min: 1, max: 20 },
   poolImpactLowerRangeBufferPct: { min: 0, max: 100 },
   poolImpactAlertCooldownMs: { min: 1000, max: 3600000 },
+  poolPatternLearningEnabled: { type: 'boolean' },
+  poolPatternLearningShadowMode: { type: 'boolean' },
+  poolPatternLearningMinSamples: { min: 1, max: 200 },
+  poolPatternLearningMaxScoreDelta: { min: 0, max: 50 },
+  poolPatternLearningLookbackDays: { min: 1, max: 180 },
   maxDailyPriorityFeeSol: { min: 0.01,  max: 10 },
   // Discovery bounds
   discoveryTimeframe:     { type: 'string' },
@@ -545,6 +555,11 @@ export const SETCONFIG_WHITELIST = {
   poolImpactConsecutiveDropTicks: { section: 'strategy', type: 'number', desc: 'Jumlah tick active-bin turun untuk konfirmasi impact' },
   poolImpactLowerRangeBufferPct: { section: 'strategy', type: 'number', desc: 'Buffer risiko dekat lower range (%)' },
   poolImpactAlertCooldownMs: { section: 'strategy', type: 'number', desc: 'Cooldown alert Pool Impact Guard (ms)' },
+  poolPatternLearningEnabled: { section: 'strategy', type: 'boolean', desc: 'Aktifkan Pool Pattern Learning' },
+  poolPatternLearningShadowMode: { section: 'strategy', type: 'boolean', desc: 'Mode bayangan (hitung delta tanpa apply ke score)' },
+  poolPatternLearningMinSamples: { section: 'strategy', type: 'number', desc: 'Minimum sample pattern sebelum delta dipakai' },
+  poolPatternLearningMaxScoreDelta: { section: 'strategy', type: 'number', desc: 'Batas bonus/penalty score pattern learning' },
+  poolPatternLearningLookbackDays: { section: 'strategy', type: 'number', desc: 'Window hari untuk data pattern learning' },
 };
 
 // ── resolveNestedKey ─────────────────────────────────────────────────────────

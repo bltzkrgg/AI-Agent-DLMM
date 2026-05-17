@@ -104,6 +104,11 @@
   "poolImpactConsecutiveDropTicks": 3,
   "poolImpactLowerRangeBufferPct": 15,
   "poolImpactAlertCooldownMs": 60000,
+  "poolPatternLearningEnabled": false,
+  "poolPatternLearningShadowMode": true,
+  "poolPatternLearningMinSamples": 10,
+  "poolPatternLearningMaxScoreDelta": 8,
+  "poolPatternLearningLookbackDays": 14,
 
   "deployChunkMaxBins": 69,
 

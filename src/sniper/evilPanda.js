@@ -27,6 +27,7 @@ import { safeNum, withExponentialBackoff, fetchWithTimeout } from '../utils/safe
 import { resolveTokens, WSOL_MINT } from '../utils/tokenMeta.js';
 import { getRecommendedPriorityFee } from '../utils/helius.js';
 import { addToBlacklist } from '../learn/tokenBlacklist.js';
+import { recordPoolPatternOutcome } from '../learn/poolPatternLearning.js';
 import { getDynamicStopLoss } from '../market/atrGuard.js';
 import { getDLMMPoolData } from '../market/oracle.js';
 import { recordPoolDeploy, recordPoolOutcome, recordPoolRentFailure } from '../market/poolMemory.js';
@@ -1535,6 +1536,34 @@ export async function exitPosition(positionPubkey, reason = 'MANUAL') {
         pnlSol: pnlTotalSol,
         reason,
       });
+      recordPoolPatternOutcome({
+        positionPubkey,
+        features: reg.patternLearningEntry || {
+          tokenMint: reg.tokenXMint || '',
+          poolAddress: reg.poolAddress || '',
+          symbol: tokenSymbol,
+          binStep: null,
+          tvl: null,
+          volume24h: null,
+          volumeTvlRatio: null,
+          mcap: null,
+          holderCount: null,
+          supertrend15m: 'UNKNOWN',
+          feeActiveTvlRatio: null,
+          rangeWidthBins: reg.rangeMax && reg.rangeMin ? (Number(reg.rangeMax) - Number(reg.rangeMin) + 1) : null,
+          entryActiveBin: Number.isFinite(Number(reg.entryActiveBin)) ? Number(reg.entryActiveBin) : null,
+          entryReason: 'UNKNOWN',
+        },
+        outcome: {
+          feePnlPct: estimatedFeePct,
+          feePnlSol: feePnlSol,
+          totalPnlPct: finalPnlPct,
+          pnlSol: pnlTotalSol,
+          exitReason: reason,
+          holdDurationMs: Math.max(0, Date.now() - new Date(reg.deployedAt || nowIso()).getTime()),
+        },
+        cfg: getConfig(),
+      });
 
       // Tambah ke blacklist jika kena SL / rugpull / rollback
       const SL_REASONS = ['STOP_LOSS', 'PARTIAL_DEPLOY_ROLLBACK', 'MANUAL_STOP'];
@@ -1707,6 +1736,7 @@ export async function reconcileStartupPositions() {
         tokenYMint: row.tokenYMint || '',
         rangeMin: safeNum(row.rangeMin, 0),
         rangeMax: safeNum(row.rangeMax, 0),
+        patternLearningEntry: row.patternLearningEntry || null,
         entryActiveBin: Number.isFinite(Number(row.entryActiveBin)) ? Number(row.entryActiveBin) : null,
         entryPrice: Number.isFinite(Number(row.entryPrice)) ? Number(row.entryPrice) : null,
         hwmPct: safeNum(row.hwmPct, 0),

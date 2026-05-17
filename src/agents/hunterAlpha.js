@@ -21,6 +21,7 @@ import { deployPosition, monitorPnL, exitPosition, markPositionManuallyClosed, s
 import { createMessage }          from '../agent/provider.js';
 import { getWalletBalance }       from '../solana/wallet.js';
 import { appendDecisionLog }      from '../learn/decisionLog.js';
+import { extractPoolPatternFeatures, evaluatePoolPatternLearning, applyPoolPatternLearningDelta, recordPoolPatternEntry } from '../learn/poolPatternLearning.js';
 import { isBlacklisted }          from '../learn/tokenBlacklist.js';
 import { getRuntimeState }        from '../runtime/state.js';
 import { getPositionRuntimeState, updatePositionRuntimeState } from '../app/positionRuntimeState.js';
@@ -330,6 +331,17 @@ function getWatchConfig(cfg = getConfig()) {
 }
 
 function computeTaWatchPriorityScore({ pool = {}, entrySignals = {}, row = {}, now = Date.now() } = {}) {
+  const cfg = getConfig();
+  const patternFeatures = extractPoolPatternFeatures({
+    pool,
+    entrySignals,
+    cfg,
+    tokenMint: pool?.tokenXMint || pool?.tokenX || pool?.mint || '',
+    poolAddress: pool?.address || pool?.poolAddress || pool?.pool || '',
+    symbol: pool?.tokenXSymbol || pool?.name || '',
+    entryReason: row?.lastReason || '',
+  });
+  const patternLearning = evaluatePoolPatternLearning(patternFeatures, cfg);
   const readiness = String(entrySignals.entryReadiness || '').toUpperCase();
   const breakout = String(entrySignals.breakoutQuality || '').toUpperCase();
   const timing = String(entrySignals.entryTimingState || '').toUpperCase();
@@ -352,7 +364,16 @@ function computeTaWatchPriorityScore({ pool = {}, entrySignals = {}, row = {}, n
 
   if (pool?._watchSnapshotAt) score += 10;
   score += Number(row.memoryPriorityDelta || 0);
-  return score;
+  const finalScore = applyPoolPatternLearningDelta(score, patternLearning);
+  if (patternLearning.enabled) {
+    const tag = patternLearning.shadowMode ? 'PATTERN_LEARNING_SHADOW' : 'PATTERN_LEARNING_APPLIED';
+    console.log(
+      `[${tag}] ${patternFeatures.symbol || patternFeatures.tokenMint || 'UNKNOWN'} ` +
+      `fp=${patternLearning.reasons[0] || 'NO_FP'} samples=${patternLearning.sampleCount} ` +
+      `delta=${patternLearning.delta.toFixed(2)} applied=${patternLearning.appliedDelta.toFixed(2)} score=${finalScore.toFixed(2)}`
+    );
+  }
+  return finalScore;
 }
 
 function formatMemorySignal(signal = {}) {
@@ -2220,7 +2241,7 @@ Balas HANYA JSON valid tanpa Markdown.`;
         const deployResult = await withTimeout(
           deployPosition(poolAddress, {
             hasNonRefundableFees:
-              pool?.hasNonRefundableFees ??
+              winner?.hasNonRefundableFees ??
               marketSnapshot?.pool?.hasNonRefundableFees ??
               false,
           }),
@@ -2264,6 +2285,23 @@ Balas HANYA JSON valid tanpa Markdown.`;
           return false;
         }
         positionPubkey = deployResult;
+        const learningFeatures = extractPoolPatternFeatures({
+          pool: winner,
+          entrySignals: winner?._entrySignals || {},
+          cfg: currentCfg,
+          tokenMint,
+          poolAddress,
+          symbol,
+          entryReason: toGateCompact(winner._gateSummary || []),
+        });
+        recordPoolPatternEntry({
+          positionPubkey,
+          features: learningFeatures,
+          cfg: currentCfg,
+        });
+        await setPositionLifecycle(positionPubkey, 'open', {
+          patternLearningEntry: learningFeatures,
+        });
         _positionLabels.set(positionPubkey, { symbol });
         await notify(
           `✅ <b>Posisi terbuka!</b>\n` +

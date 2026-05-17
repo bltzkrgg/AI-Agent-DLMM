@@ -233,6 +233,42 @@ test('pool impact guard config keys are supported and persisted via user config'
   assert.equal(saved.poolImpactPriceDropForceExitPct, 8);
 });
 
+test('pool pattern learning config keys are supported and persisted via user config', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'dlmm-pattern-learning-config-'));
+  const configPath = join(root, 'user-config.json');
+
+  process.env.BOT_CONFIG_PATH = configPath;
+  const configModule = await importFresh(join(repoRoot, 'src/config.js'));
+
+  assert.equal(configModule.isConfigKeySupported('poolPatternLearningEnabled'), true);
+  assert.equal(configModule.isConfigKeySupported('poolPatternLearningShadowMode'), true);
+  assert.equal(configModule.isConfigKeySupported('poolPatternLearningMinSamples'), true);
+  assert.equal(configModule.isConfigKeySupported('poolPatternLearningMaxScoreDelta'), true);
+  assert.equal(configModule.isConfigKeySupported('poolPatternLearningLookbackDays'), true);
+
+  configModule.updateConfig({
+    poolPatternLearningEnabled: true,
+    poolPatternLearningShadowMode: false,
+    poolPatternLearningMinSamples: 12,
+    poolPatternLearningMaxScoreDelta: 6,
+    poolPatternLearningLookbackDays: 21,
+  });
+
+  const cfg = configModule.getConfig();
+  assert.equal(cfg.poolPatternLearningEnabled, true);
+  assert.equal(cfg.poolPatternLearningShadowMode, false);
+  assert.equal(cfg.poolPatternLearningMinSamples, 12);
+  assert.equal(cfg.poolPatternLearningMaxScoreDelta, 6);
+  assert.equal(cfg.poolPatternLearningLookbackDays, 21);
+
+  const saved = JSON.parse(readFileSync(configPath, 'utf-8'));
+  assert.equal(saved.poolPatternLearningEnabled, true);
+  assert.equal(saved.poolPatternLearningShadowMode, false);
+  assert.equal(saved.poolPatternLearningMinSamples, 12);
+  assert.equal(saved.poolPatternLearningMaxScoreDelta, 6);
+  assert.equal(saved.poolPatternLearningLookbackDays, 21);
+});
+
 test('entry capacity respects deployment stage and clamps overrides', async () => {
   const root = mkdtempSync(join(tmpdir(), 'dlmm-entry-capacity-'));
   const configPath = join(root, 'user-config.json');
