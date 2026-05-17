@@ -383,7 +383,7 @@ EVIL PANDA — SATU-SATUNYA CORE STRATEGY. DILARANG SEBUT STRATEGI LAIN.
 GUNAKAN PARAMETER INI SECARA PERSIS — JANGAN KARANG ANGKA SENDIRI:
 
 POOL FILTER (semua harus terpenuhi):
-  • Pool age       : <${cfg.maxPoolAgeDays * 24} jam (${cfg.maxPoolAgeDays} hari max) — freshness edge
+  • Pool age       : fleksibel (tanpa hard age cap, market-maker mode)
   • GMGN gate      : fail-closed (GMGN error/timeout = skip)
   • GMGN redflags  : Top10/Dev/Insider/Phishing/Bundling/LP burn/CTO/Vamped/Dev-rug-history
   • binStep        : ${(cfg.allowedBinSteps || [100, 125]).join(' atau ')} (meme/volatile SOL pairs)

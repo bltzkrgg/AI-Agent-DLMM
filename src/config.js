@@ -47,7 +47,6 @@ const DEFAULTS = {
   autonomyMode:         'active',
   autoScreeningEnabled: false,
   screeningTopPoolsLimit: 5,
-  requireConfirmation:  true, // true = minta konfirmasi Telegram sebelum deploy
   entryGateMode:        'lp_fee_flow',
   entrySupertrendBreakMinPct: 1.25,
   entryFreshBreakoutMinAthDistancePct: 99.25,
@@ -63,7 +62,6 @@ const DEFAULTS = {
   screeningIntervalMin:     15,
   positionUpdateIntervalMin: 5,
   realtimePnlIntervalSec:    15,
-  jupiterMaxChecksPerScan:   15,
   pendingRetestEnabled:      true,
   retestIntervalMin:         5,
   retestTtlMin:              60,
@@ -86,17 +84,16 @@ const DEFAULTS = {
   binStepPriority:        [200, 125, 100],
   allowedBinSteps:        [100, 125],
   minBinStep:             100,
-  maxBinStep:             200,
   minFeeActiveTvlRatio:   0.002,
   minDailyFeeYieldPct:    1.0,
   maxPoolAgeHours:        0,          // 0 = tidak ada batas umur pool (Market Maker mode)
-  // maxPoolAgeDays dihapus — bot sekarang bisa detect pool tua (SOL/USDC, dsb)
   // Parameter discovery (dibaca oleh coinfilter.normalizeConfig — tanpa radar.* layer)
   discoveryTimeframe:     '1h',
   discoveryCategory:      'trending',
   minTvl:                 10000,
   maxTvl:                 1000000,
   minHolders:             100,
+  maxMcap:                0,
 
   // ── Meridian API ──────────────────────────────────────────────────────────
   publicApiKey:        '',
@@ -109,7 +106,6 @@ const DEFAULTS = {
 
   // ── GMGN Screening ────────────────────────────────────────────────────────
   minMcap:                250000,
-  maxMcap:                0,
   minVolume:              100000,
   maxVolume:              0,
   minOrganic:             55,
@@ -155,7 +151,6 @@ const DEFAULTS = {
   poolPatternLearningMaxScoreDelta: 8,
   poolPatternLearningLookbackDays: 14,
   maxDailyPriorityFeeSol: 0.2,
-  maxDailyDrawdownPct:    6,
   activeStrategy:         'Evil Panda',
   smartExitRsi:           90,   // RSI(2) threshold untuk Meridian Smart Exit
   depthPct:               90,   // Depth jaring SOL ke bawah (%)
@@ -201,7 +196,6 @@ const CONFIG_BOUNDS = {
   positionUpdateIntervalMin: { min: 1,  max: 1440 },
   realtimePnlIntervalSec: { min: 5,     max: 3600 },
   entryGateMode:          { type: 'string' },
-  jupiterMaxChecksPerScan:{ min: 1,     max: 50 },
   pendingRetestEnabled:   { type: 'boolean' },
   retestIntervalMin:      { min: 1,     max: 1440 },
   retestTtlMin:           { min: 1,     max: 1440 },
@@ -212,11 +206,9 @@ const CONFIG_BOUNDS = {
   allowedBinSteps:        { type: 'array' },
   binStepPriority:        { type: 'array' },
   minBinStep:             { min: 1,     max: 400 },
-  maxBinStep:             { min: 1,     max: 400 },
   minFeeActiveTvlRatio:   { min: 0,     max: 1 },
   minDailyFeeYieldPct:    { min: 0,     max: 20 },
   maxPoolAgeHours:        { min: 0,     max: 87600 },
-  // maxPoolAgeDays dihapus dari bounds
   maxAthDistancePct:      { min: 1,     max: 50 },
   dominanceMinPct:        { min: 1,     max: 100 },
   minMcap:                { min: 0,     max: 100_000_000 },
@@ -283,7 +275,6 @@ const CONFIG_BOUNDS = {
   watchIntervalSec:       { min: 15, max: 3600 },
   entryBreakoutMinAthDistancePct: { min: 0, max: 100 },
   okxApiKey:              { type: 'string' },
-  maxDailyDrawdownPct:    { min: 0, max: 100 },
   signalWeights:          { type: 'object' },
   strategyOverrides:      { type: 'object' },
 };
@@ -343,8 +334,8 @@ const NESTED_SECTION_MAP = {
     minHolders:            'minHolders',
     minOrganic:            'minOrganic',
     minMcap:               'minMcap',
-    maxMcapUsd:            'maxMcapUsd',
-    // maxPoolAgeDays dihapus — tidak ada filter umur pool (Market Maker mode)
+    maxMcap:               'maxMcap',
+    maxMcapUsd:            'maxMcap',
   },
 
   // security_gmgn: prefix gmgn* di flat config
@@ -404,6 +395,11 @@ function flattenUserConfig(raw) {
       // Flat key langsung — kompatibel dengan format lama
       flat[key] = value;
     }
+  }
+
+  // Backward compatibility: legacy key maxMcapUsd tetap diterima, tapi canonical key adalah maxMcap.
+  if (flat.maxMcap === undefined && flat.maxMcapUsd !== undefined) {
+    flat.maxMcap = flat.maxMcapUsd;
   }
 
   // process.env selalu override llm config dari file
@@ -526,6 +522,7 @@ export const SETCONFIG_WHITELIST = {
   minHolders:             { section: 'discovery',          type: 'number',  desc: 'Holder minimum token' },
   minOrganic:             { section: 'discovery',          type: 'number',  desc: 'Organic score minimum (0–100)' },
   minMcap:                { section: 'discovery',          type: 'number',  desc: 'Market Cap minimum token (USD, 0 = tidak filter)' },
+  maxMcap:                { section: 'discovery',          type: 'number',  desc: 'Market Cap maksimum token (USD, 0 = tidak filter)' },
 
   // ── Watch / Queue ────────────────────────────────────────────────
   watchIntervalSec:       { section: 'watch',              type: 'number',  desc: 'Interval cek WATCH aktif (detik, 15–3600)' },
@@ -571,6 +568,9 @@ export function resolveNestedKey(input) {
   } else {
     // Dot notation: 'section.subKey'
     const [section, subKey] = parts;
+    if (section === 'discovery' && subKey === 'maxMcapUsd') {
+      return null;
+    }
     const sectionMap = NESTED_SECTION_MAP[section];
     if (!sectionMap) {
       // Section null = passthrough (e.g. finance, intervals)

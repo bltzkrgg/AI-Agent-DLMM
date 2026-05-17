@@ -114,10 +114,8 @@ test('safer defaults stay conservative for real-capital usage', async () => {
   assert.equal(cfg.deployAmountSol, 1.0);
   assert.equal(cfg.maxPositions, 3);
   assert.equal(cfg.gasReserve, 0.03);
-  assert.equal(cfg.requireConfirmation, true);
-  assert.equal(cfg.realtimePnlIntervalSec, 15);
-  assert.equal(cfg.maxDailyDrawdownPct, 6);
   assert.equal(cfg.maxPriceImpactPct, 1.5);
+  assert.equal(cfg.maxMcap, 0);
   assert.equal(cfg.poolImpactGuardEnabled, false);
   assert.equal(cfg.poolImpactCheckIntervalMs, 3000);
   assert.equal(cfg.poolImpactPriceDropForceExitPct, 6);
@@ -139,6 +137,7 @@ test('user-config.example includes pool pattern learning keys', () => {
   assert.equal(parsed.poolPatternLearningMinSamples, 10);
   assert.equal(parsed.poolPatternLearningMaxScoreDelta, 8);
   assert.equal(parsed.poolPatternLearningLookbackDays, 14);
+  assert.equal(parsed.maxMcap, 0);
 });
 
 test('realtime PnL terminal interval is configurable', async () => {
@@ -153,6 +152,18 @@ test('realtime PnL terminal interval is configurable', async () => {
 
   const cfg = configModule.getConfig();
   assert.equal(cfg.realtimePnlIntervalSec, 30);
+});
+
+test('removed legacy keys are no longer supported in config schema', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'dlmm-legacy-keys-'));
+  const configPath = join(root, 'user-config.json');
+  process.env.BOT_CONFIG_PATH = configPath;
+  const configModule = await importFresh(join(repoRoot, 'src/config.js'));
+
+  assert.equal(configModule.isConfigKeySupported('requireConfirmation'), false);
+  assert.equal(configModule.isConfigKeySupported('maxDailyDrawdownPct'), false);
+  assert.equal(configModule.isConfigKeySupported('jupiterMaxChecksPerScan'), false);
+  assert.equal(configModule.isConfigKeySupported('maxBinStep'), false);
 });
 
 test('watch layer config keys are supported and persist via updateConfig', async () => {
@@ -295,6 +306,7 @@ test('/setconfig whitelist is curated for operational keys only', async () => {
 
   assert.equal(keys.includes('deployAmountSol'), true);
   assert.equal(keys.includes('minTvl'), true);
+  assert.equal(keys.includes('maxMcap'), true);
   assert.equal(keys.includes('watchIntervalSec'), true);
   assert.equal(keys.includes('outOfRangeWaitMinutes'), true);
   assert.equal(keys.includes('poolImpactGuardEnabled'), true);
@@ -312,6 +324,32 @@ test('/setconfig whitelist is curated for operational keys only', async () => {
   assert.equal(keys.includes('poolImpactCheckIntervalMs'), false);
   assert.equal(keys.includes('poolImpactAlertCooldownMs'), false);
   assert.equal(keys.includes('poolPatternLearningLookbackDays'), false);
+});
+
+test('nested discovery maxMcap and legacy maxMcapUsd both map to canonical maxMcap', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'dlmm-mcap-alias-'));
+  const configPath = join(root, 'user-config.json');
+  process.env.BOT_CONFIG_PATH = configPath;
+  writeFileSync(configPath, JSON.stringify({
+    discovery: {
+      maxMcap: 1234567,
+    },
+  }, null, 2), 'utf-8');
+
+  const configModule = await importFresh(join(repoRoot, 'src/config.js'));
+  let cfg = configModule.getConfig();
+  assert.equal(cfg.maxMcap, 1234567);
+  assert.equal(configModule.resolveNestedKey('discovery.maxMcap')?.flatKey, 'maxMcap');
+  assert.equal(configModule.resolveNestedKey('discovery.maxMcapUsd'), null);
+
+  writeFileSync(configPath, JSON.stringify({
+    discovery: {
+      maxMcapUsd: 7654321,
+    },
+  }, null, 2), 'utf-8');
+  const configModuleLegacy = await importFresh(join(repoRoot, 'src/config.js'));
+  cfg = configModuleLegacy.getConfig();
+  assert.equal(cfg.maxMcap, 7654321);
 });
 
 test('entry capacity respects deployment stage and clamps overrides', async () => {

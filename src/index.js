@@ -546,7 +546,8 @@ bot.onText(/\/config/, (msg) => {
     `minVolume          = ${cfg.minVolume}`,
     `minHolders            = ${cfg.minHolders}`,
     `minOrganic            = ${cfg.minOrganic}`,
-    `maxPoolAgeDays        = ${cfg.maxPoolAgeDays}`,
+    `minMcap               = ${cfg.minMcap}`,
+    `maxMcap               = ${cfg.maxMcap}`,
   ].join('\n');
   const strategy = [
     `stopLossPct           = ${cfg.stopLossPct}`,

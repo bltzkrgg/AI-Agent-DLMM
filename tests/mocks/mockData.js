@@ -217,8 +217,6 @@ export const MOCK_CONFIG = {
 
   // Safety
   stopLossPct: 5,
-  maxDailyDrawdownPct: 10,
-  requireConfirmation: false,
 
   // Darwinian
   autonomousEvolutionEnabled: true,
