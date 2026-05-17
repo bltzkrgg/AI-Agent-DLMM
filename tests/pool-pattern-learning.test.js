@@ -44,6 +44,9 @@ test('pool pattern learning builds fingerprint safely and evaluates disabled mod
   makeIsolatedEnv();
   const mod = await importFresh(join(repoRoot, 'src/learn/poolPatternLearning.js'));
 
+  assert.equal(typeof mod.applyPoolPatternLearningToScore, 'function');
+  assert.equal(typeof mod.applyPoolPatternLearningToCandidates, 'function');
+
   const full = mod.buildPoolPatternFingerprint(baseFeatures());
   assert.match(full.fingerprint, /^BIN_100\|/);
   assert.equal(full.buckets.trendBucket, 'BULLISH');
