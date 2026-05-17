@@ -164,6 +164,161 @@ export function buildDlmmSdkStrategyFromDeployArgs(deployArgs = {}) {
   };
 }
 
+function isRentRequiredError(error) {
+  return String(error?.message || '').startsWith('BIN_ARRAY_RENT_REQUIRED');
+}
+
+function buildRentVetoResult({
+  poolAddress = '',
+  tokenXMint = '',
+  symbol = '',
+  detail = '',
+  rangeMin = 0,
+  rangeMax = 0,
+  rangeMaxBins = 0,
+  source = 'DEPLOY_RENT_GUARD_FINAL',
+} = {}) {
+  const rentMemory = recordPoolRentFailure({
+    pool: { tokenXMint, address: poolAddress },
+    tokenMint: tokenXMint,
+    poolAddress,
+    symbol: symbol || poolAddress.slice(0, 8),
+    detail,
+    rangeMin,
+    rangeMax,
+    snapshot: {
+      taTrend: 'UNKNOWN',
+      priceChangeM5: 0,
+      entryReadiness: 'HIGH',
+      breakoutQuality: 'VALID',
+      entryTimingState: 'LP_LIVE',
+    },
+    source,
+  });
+  const rentCooldownUntil = Number(rentMemory?.rentCooldownUntil || 0);
+  return {
+    blocked: true,
+    reason: 'VETO_NON_REFUNDABLE_RENT',
+    detail,
+    rangeMin,
+    rangeMax,
+    rangeMaxBins,
+    cooldownUntil: rentCooldownUntil,
+    cooldownMs: rentCooldownUntil > Date.now()
+      ? Math.max(0, rentCooldownUntil - Date.now())
+      : 0,
+  };
+}
+
+export async function ensureFinalRentCheckedDeployArgs({
+  hasNonRefundableFees = false,
+  connection,
+  poolPubkey,
+  poolAddress = '',
+  tokenXMint = '',
+  symbol = '',
+  activeBinId = 0,
+  rangeMaxBins = 0,
+  checkedRangeMin = null,
+  checkedRangeMax = null,
+  deployArgs = null,
+  assertRangeFn = assertRangeDoesNotRequireBinArrayInit,
+  findAdaptiveFn = findAdaptiveRentFreeRange,
+} = {}) {
+  if (!hasNonRefundableFees) {
+    return { ok: true, deployArgs, finalRangeChanged: false, guard: 'SKIP_NON_REFUNDABLE_FALSE' };
+  }
+
+  const safeMin = Number(deployArgs?.rangeMin);
+  const safeMax = Number(deployArgs?.rangeMax);
+  const hasCheckedRange =
+    Number.isFinite(Number(checkedRangeMin)) &&
+    Number.isFinite(Number(checkedRangeMax));
+  const finalRangeChanged =
+    hasCheckedRange &&
+    (safeMin !== Number(checkedRangeMin) || safeMax !== Number(checkedRangeMax));
+
+  console.log(
+    `[evilPanda] FINAL_RENT_GUARD pool=${poolAddress.slice(0,8)} ` +
+    `checked=[${checkedRangeMin},${checkedRangeMax}] preflight=[${safeMin},${safeMax}] changed=${finalRangeChanged}`
+  );
+
+  if (hasCheckedRange && !finalRangeChanged) {
+    console.log(`[evilPanda] FINAL_RENT_GUARD_PASS pool=${poolAddress.slice(0,8)} reason=unchanged_range`);
+    return { ok: true, deployArgs, finalRangeChanged, guard: 'UNCHANGED_RANGE_PASS' };
+  }
+
+  try {
+    await assertRangeFn(connection, poolPubkey, safeMin, safeMax);
+    console.log(`[evilPanda] FINAL_RENT_GUARD_PASS pool=${poolAddress.slice(0,8)} range=[${safeMin},${safeMax}]`);
+    return { ok: true, deployArgs, finalRangeChanged, guard: 'ASSERT_PASS' };
+  } catch (e) {
+    if (!isRentRequiredError(e)) throw e;
+    const detail = e.message;
+    console.warn(`[evilPanda] FINAL_RENT_GUARD_UNSAFE pool=${poolAddress.slice(0,8)} range=[${safeMin},${safeMax}] ${detail}`);
+
+    const adaptive = await findAdaptiveFn({
+      connection,
+      poolPubkey,
+      desiredMin: safeMin,
+      desiredMax: safeMax,
+      maxBins: rangeMaxBins,
+      initialStatus: null,
+    });
+    const adjusted = adaptive?.adjusted || null;
+    if (!adjusted) {
+      return {
+        ok: false,
+        ...buildRentVetoResult({
+          poolAddress,
+          tokenXMint,
+          symbol,
+          detail,
+          rangeMin: safeMin,
+          rangeMax: safeMax,
+          rangeMaxBins,
+          source: 'DEPLOY_RENT_GUARD_FINAL',
+        }),
+      };
+    }
+
+    console.warn(
+      `[evilPanda] FINAL_RENT_GUARD_ADJUST pool=${poolAddress.slice(0,8)} ` +
+      `unsafe=[${safeMin},${safeMax}] adjusted=[${adjusted.rangeMin},${adjusted.rangeMax}]`
+    );
+
+    const rebuilt = buildDlmmDeployStrategyArgs({
+      activeBinId: Number(activeBinId),
+      rangeMin: Number(adjusted.rangeMin),
+      rangeMax: Number(adjusted.rangeMax),
+      amountXBn: deployArgs.amountXBn,
+      amountYBn: deployArgs.amountYBn,
+      strategyType: deployArgs.strategyType,
+    });
+
+    try {
+      await assertRangeFn(connection, poolPubkey, Number(rebuilt.rangeMin), Number(rebuilt.rangeMax));
+    } catch (finalErr) {
+      if (!isRentRequiredError(finalErr)) throw finalErr;
+      return {
+        ok: false,
+        ...buildRentVetoResult({
+          poolAddress,
+          tokenXMint,
+          symbol,
+          detail: finalErr.message,
+          rangeMin: Number(rebuilt.rangeMin),
+          rangeMax: Number(rebuilt.rangeMax),
+          rangeMaxBins,
+          source: 'DEPLOY_RENT_GUARD_FINAL_RECHECK',
+        }),
+      };
+    }
+
+    return { ok: true, deployArgs: rebuilt, finalRangeChanged: true, guard: 'ADJUSTED_PASS' };
+  }
+}
+
 async function resolveNonRefundableFeeFlag(poolAddress, explicitFlag = null) {
   if (explicitFlag === true) return true;
   if (explicitFlag === false) return false;
@@ -740,6 +895,8 @@ export async function deployPosition(poolAddress, deployOptions = {}) {
     let rangeMax = activeBin.binId - offsetMinBins;
     let rangeMin = activeBin.binId - offsetMaxBins;
     const rangeMaxBins = getConfiguredDeployRangeMaxBins();
+    let rentCheckedRangeMin = null;
+    let rentCheckedRangeMax = null;
 
     if ((rangeMax - rangeMin + 1) > rangeMaxBins) {
       rangeMin = rangeMax - (rangeMaxBins - 1);
@@ -814,79 +971,43 @@ export async function deployPosition(poolAddress, deployOptions = {}) {
           `Lebar: <code>${adjustedWidth} bin</code> | Max: <code>${rangeMaxBins} bin</code>\n` +
           `<i>Range awal menyentuh bin array baru, jadi bot geser ke slice yang masih rent-free dan tetap lanjut deploy.</i>`
         );
+        rentCheckedRangeMin = rangeMin;
+        rentCheckedRangeMax = rangeMax;
       } else {
         const detail = `BIN_ARRAY_RENT_REQUIRED: ${rentGuardStatus.uninitializedCount || 0} uninitialized bin array(s) in range [${rangeMin}, ${rangeMax}] — estimated non-refundable rent: ~${rentGuardStatus.estimatedRentSol || 'unknown'} SOL`;
         console.warn(`[evilPanda] VETO_NON_REFUNDABLE_RENT ${poolAddress.slice(0,8)} range=[${rangeMin},${rangeMax}] ${detail}`);
-        const rentMemory = recordPoolRentFailure({
-          pool: { tokenXMint: xMint, address: poolAddress },
-          tokenMint: xMint,
+        return buildRentVetoResult({
           poolAddress,
+          tokenXMint: xMint,
           symbol: poolAddress.slice(0, 8),
           detail,
           rangeMin,
           rangeMax,
-          snapshot: {
-            taTrend: 'UNKNOWN',
-            priceChangeM5: 0,
-            entryReadiness: 'HIGH',
-            breakoutQuality: 'VALID',
-            entryTimingState: 'LP_LIVE',
-          },
+          rangeMaxBins,
           source: 'DEPLOY_RENT_GUARD',
         });
-        const rentCooldownUntil = Number(rentMemory?.rentCooldownUntil || 0);
-        return {
-          blocked: true,
-          reason: 'VETO_NON_REFUNDABLE_RENT',
-          detail,
-          rangeMin,
-          rangeMax,
-          rangeMaxBins,
-          cooldownUntil: rentCooldownUntil,
-          cooldownMs: rentCooldownUntil > Date.now()
-            ? Math.max(0, rentCooldownUntil - Date.now())
-            : 0,
-        };
       }
     }
 
     if (hasNonRefundableFees && !rentGuardStatus?.unchecked) {
       try {
         await assertRangeDoesNotRequireBinArrayInit(connection, poolPubkey, rangeMin, rangeMax);
+        rentCheckedRangeMin = rangeMin;
+        rentCheckedRangeMax = rangeMax;
       } catch (e) {
         if (String(e?.message || '').startsWith('BIN_ARRAY_RENT_REQUIRED')) {
           const detail = e.message;
           console.warn(`[evilPanda] VETO_NON_REFUNDABLE_RENT ${poolAddress.slice(0,8)} range=[${rangeMin},${rangeMax}] ${detail}`);
-          const rentMemory = recordPoolRentFailure({
-            pool: { tokenXMint: xMint, address: poolAddress },
-            tokenMint: xMint,
+          return buildRentVetoResult({
             poolAddress,
+            tokenXMint: xMint,
             symbol: poolAddress.slice(0, 8),
             detail,
             rangeMin,
             rangeMax,
-            snapshot: {
-              taTrend: 'UNKNOWN',
-              priceChangeM5: 0,
-              entryReadiness: 'HIGH',
-              breakoutQuality: 'VALID',
-            entryTimingState: 'LP_LIVE',
-          },
-          source: 'DEPLOY_RENT_GUARD_ASSERT',
-          });
-          const rentCooldownUntil = Number(rentMemory?.rentCooldownUntil || 0);
-          return {
-            blocked: true,
-            reason: 'VETO_NON_REFUNDABLE_RENT',
-            detail,
-            rangeMin,
-            rangeMax,
             rangeMaxBins,
-            cooldownUntil: rentCooldownUntil,
-            cooldownMs: rentCooldownUntil > Date.now()
-              ? Math.max(0, rentCooldownUntil - Date.now())
-              : 0,
-          };
+            source: 'DEPLOY_RENT_GUARD_ASSERT',
+          });
         }
         throw e;
       }
@@ -1021,6 +1142,28 @@ export async function deployPosition(poolAddress, deployOptions = {}) {
       );
       throw preflightErr;
     }
+
+    const finalRentGuard = await ensureFinalRentCheckedDeployArgs({
+      hasNonRefundableFees,
+      connection,
+      poolPubkey,
+      poolAddress,
+      tokenXMint: xMint,
+      symbol: poolAddress.slice(0, 8),
+      activeBinId: Number(activeBin?.binId),
+      rangeMaxBins,
+      checkedRangeMin: rentCheckedRangeMin,
+      checkedRangeMax: rentCheckedRangeMax,
+      deployArgs,
+    });
+    if (!finalRentGuard.ok) {
+      console.warn(
+        `[evilPanda] FINAL_RENT_GUARD_VETO pool=${poolAddress.slice(0,8)} ` +
+        `reason=${finalRentGuard.reason} range=[${finalRentGuard.rangeMin},${finalRentGuard.rangeMax}]`
+      );
+      return finalRentGuard;
+    }
+    deployArgs = finalRentGuard.deployArgs;
 
     const safeRangeMin = Number(deployArgs.rangeMin);
     const safeRangeMax = Number(deployArgs.rangeMax);
