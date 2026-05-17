@@ -13,7 +13,7 @@
 
 'use strict';
 
-import DLMM from '@meteora-ag/dlmm';
+import DLMM, { StrategyType } from '@meteora-ag/dlmm';
 import { PublicKey, ComputeBudgetProgram, VersionedTransaction, TransactionMessage } from '@solana/web3.js';
 import BN from 'bn.js';
 import { appendFileSync, mkdirSync } from 'fs';
@@ -66,6 +66,93 @@ let _notifyFn = null;
 // Bounded search radius for rent-free fallback slices on the same pool.
 // This only affects pools that already tripped the rent guard.
 const RENT_FREE_SEARCH_SLACK_ARRAYS = 100;
+// SDK enum fallback to numeric Spot strategy for backward compatibility.
+const SPOT_STRATEGY_TYPE = StrategyType?.Spot ?? 0;
+
+function isFiniteInteger(value) {
+  return Number.isFinite(value) && Number.isInteger(value);
+}
+
+function buildInvalidDlmmArgsError(message) {
+  const err = new Error(`Invalid DLMM deploy args: ${message}`);
+  err.code = 'INVALID_DLMM_DEPLOY_ARGS';
+  err.isPermanent = true;
+  return err;
+}
+
+async function withPermanentAwareBackoff(fn, { maxRetries = 3, baseDelay = 1000, maxDelay = 10000 } = {}) {
+  let lastError;
+  for (let i = 0; i < maxRetries; i++) {
+    try {
+      return await fn();
+    } catch (e) {
+      if (e?.isPermanent || e?.code === 'INVALID_DLMM_DEPLOY_ARGS') {
+        throw e;
+      }
+      lastError = e;
+      if (i < maxRetries - 1) {
+        const delay = Math.min(baseDelay * Math.pow(2, i), maxDelay);
+        const jitter = Math.random() * 200;
+        await new Promise((r) => setTimeout(r, delay + jitter));
+      }
+    }
+  }
+  throw lastError;
+}
+
+export function buildDlmmDeployStrategyArgs({
+  activeBinId,
+  rangeMin,
+  rangeMax,
+  amountXBn,
+  amountYBn,
+  strategyType = SPOT_STRATEGY_TYPE,
+} = {}) {
+  if (!isFiniteInteger(activeBinId)) {
+    throw buildInvalidDlmmArgsError(`activeBin.binId must be finite integer (got ${String(activeBinId)})`);
+  }
+  if (!isFiniteInteger(rangeMin) || !isFiniteInteger(rangeMax)) {
+    throw buildInvalidDlmmArgsError(`rangeMin/rangeMax must be finite integers (got ${String(rangeMin)}/${String(rangeMax)})`);
+  }
+  if (rangeMin > rangeMax) {
+    throw buildInvalidDlmmArgsError(`rangeMin must be <= rangeMax (got ${rangeMin} > ${rangeMax})`);
+  }
+
+  const amountX = BN.isBN(amountXBn) ? amountXBn : new BN(String(amountXBn || '0'));
+  const amountY = BN.isBN(amountYBn) ? amountYBn : new BN(String(amountYBn || '0'));
+  if (amountX.isNeg() || amountY.isNeg()) {
+    throw buildInvalidDlmmArgsError('amountX/amountY must be >= 0');
+  }
+  if (amountX.add(amountY).isZero()) {
+    throw buildInvalidDlmmArgsError('amountX + amountY must be > 0');
+  }
+
+  let safeMin = rangeMin;
+  let safeMax = rangeMax;
+  const includesActive = safeMin <= activeBinId && safeMax >= activeBinId;
+  const singleSideQuote = amountX.isZero() && amountY.gt(new BN('0'));
+  if (includesActive && singleSideQuote) {
+    const width = safeMax - safeMin + 1;
+    safeMax = activeBinId - 1;
+    safeMin = safeMax - (width - 1);
+    if (!isFiniteInteger(safeMin) || !isFiniteInteger(safeMax) || safeMin > safeMax) {
+      throw buildInvalidDlmmArgsError('single-side quote cannot include active bin with amountX=0');
+    }
+    if (safeMax >= activeBinId) {
+      throw buildInvalidDlmmArgsError('single-side quote range adjustment failed to move below active bin');
+    }
+  }
+
+  return {
+    activeBinId,
+    rangeMin: safeMin,
+    rangeMax: safeMax,
+    amountXBn: amountX,
+    amountYBn: amountY,
+    strategyType: Number.isFinite(Number(strategyType)) ? Number(strategyType) : SPOT_STRATEGY_TYPE,
+    adjustedBelowActive: includesActive && singleSideQuote,
+  };
+}
 
 async function resolveNonRefundableFeeFlag(poolAddress, explicitFlag = null) {
   if (explicitFlag === true) return true;
@@ -607,7 +694,7 @@ export async function deployPosition(poolAddress, deployOptions = {}) {
 
   console.log(`[evilPanda] ▶ deployPosition pool=${poolAddress.slice(0,8)} sol=${deploySol}`);
 
-  return withExponentialBackoff(async () => {
+  return withPermanentAwareBackoff(async () => {
     await reconcileZombiePositions().catch((e) => {
       console.warn(`[evilPanda] Zombie reconcile non-fatal: ${e.message}`);
     });
@@ -905,18 +992,54 @@ export async function deployPosition(poolAddress, deployOptions = {}) {
       );
     }
 
-    console.log(`[evilPanda] bins=${totalBins} range=[${rangeMin},${rangeMax}] pf=${microLamports} slip=${slippagePct}%`);
+    let deployArgs;
+    try {
+      deployArgs = buildDlmmDeployStrategyArgs({
+        activeBinId: Number(activeBin?.binId),
+        rangeMin: Number(rangeMin),
+        rangeMax: Number(rangeMax),
+        amountXBn,
+        amountYBn,
+        strategyType: SPOT_STRATEGY_TYPE,
+      });
+    } catch (preflightErr) {
+      console.error(
+        `[evilPanda] DLMM_PRECHECK_FAIL pool=${poolAddress} active=${String(activeBin?.binId)} ` +
+        `range=[${rangeMin},${rangeMax}] amountX=${amountXBn.toString()} amountY=${amountYBn.toString()} ` +
+        `shouldSeedTokenX=${shouldSeedTokenX} seedSwapSucceeded=${amountXBn.gt(new BN('0'))} ` +
+        `strategyType=${SPOT_STRATEGY_TYPE} slippage=${slippagePct}% reason=${preflightErr.message}`
+      );
+      throw preflightErr;
+    }
+
+    if (deployArgs.adjustedBelowActive) {
+      console.warn(
+        `[evilPanda] DLMM_RANGE_ADJUST_SINGLE_SIDE pool=${poolAddress.slice(0,8)} ` +
+        `active=${deployArgs.activeBinId} original=[${rangeMin},${rangeMax}] adjusted=[${deployArgs.rangeMin},${deployArgs.rangeMax}]`
+      );
+    }
+    rangeMin = deployArgs.rangeMin;
+    rangeMax = deployArgs.rangeMax;
+    const finalTotalBins = rangeMax - rangeMin + 1;
+
+    console.log(
+      `[evilPanda] DLMM_PRECHECK_OK pool=${poolAddress} active=${deployArgs.activeBinId} ` +
+      `range=[${rangeMin},${rangeMax}] amountX=${deployArgs.amountXBn.toString()} amountY=${deployArgs.amountYBn.toString()} ` +
+      `shouldSeedTokenX=${shouldSeedTokenX} seedSwapSucceeded=${deployArgs.amountXBn.gt(new BN('0'))} ` +
+      `strategyType=${deployArgs.strategyType} slippage=${slippagePct}%`
+    );
+    console.log(`[evilPanda] bins=${finalTotalBins} range=[${rangeMin},${rangeMax}] pf=${microLamports} slip=${slippagePct}%`);
 
     try {
       const txOrTxs = await dlmmPool.initializePositionAndAddLiquidityByStrategy({
         positionPubKey: posKp.publicKey,
         user:           wallet.publicKey,
-        totalXAmount:   amountXBn,
-        totalYAmount:   amountYBn,
+        totalXAmount:   deployArgs.amountXBn,
+        totalYAmount:   deployArgs.amountYBn,
         strategy: {
           maxBinId:     rangeMax,
           minBinId:     rangeMin,
-          strategyType: 0,
+          strategyType: deployArgs.strategyType,
         },
         slippage: slippagePct,
       });
@@ -968,6 +1091,12 @@ export async function deployPosition(poolAddress, deployOptions = {}) {
         console.log(`[evilPanda] ✅ Monolith position deployed on-chain: ${sig.slice(0,8)}`);
       }
     } catch (deployErr) {
+      if (deployErr?.isPermanent || deployErr?.code === 'INVALID_DLMM_DEPLOY_ARGS') {
+        throw deployErr;
+      }
+      if (/invalid arguments/i.test(String(deployErr?.message || ''))) {
+        throw buildInvalidDlmmArgsError('SDK rejected initializePositionAndAddLiquidityByStrategy with invalid arguments');
+      }
       console.error(`[evilPanda] ❌ Monolith deploy gagal: ${deployErr.message}`);
       throw deployErr;
     }
@@ -994,7 +1123,7 @@ export async function deployPosition(poolAddress, deployOptions = {}) {
     console.log(`[evilPanda] ✅ Position open: ${positionPubkey.slice(0,8)}`);
     return positionPubkey;
 
-  }, { maxRetries: 3, baseDelay: 3000 });
+  }, { maxRetries: 3, baseDelay: 3000, maxDelay: 12_000 });
 }
 
 // ── Meridian Exit Signal Fetcher ──────────────────────────────────

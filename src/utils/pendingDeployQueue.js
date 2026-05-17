@@ -230,20 +230,39 @@ export function summarizeQueueDecision({ meta = {}, liveSnapshot = null, cfg = g
   const signals = resolveQueueSignalSources({ meta, liveSnapshot });
   const timingState = String(meta.entryTimingState || '').toUpperCase();
   const trustedLpWatch = isTrustedLpWatchMeta(meta);
+  const hasFreshBullishFinalStCache = isFreshBullishSupertrend15m(meta, {}, Date.now(), FINAL_ST_CACHE_TTL_MS);
+  const trendUnknown = signals.trend === 'UNKNOWN';
+  const trendBearish = signals.trend === 'BEARISH';
+  const trendFresh = signals.trendSource === 'live';
+  const m5Finite = Number.isFinite(signals.m5);
+  const m5Unknown = !m5Finite || signals.m5Source === 'unknown' || (signals.m5 === 0 && signals.m5Source === 'unknown');
+  const m5FreshPositive = signals.m5Source === 'live' && m5Finite && signals.m5 > 0;
+  const bothUnknown = signals.trendSource === 'unknown' && signals.m5Source === 'unknown';
 
   let decision = 'DEPLOY';
   let reason = '';
 
   if (lpMode) {
-    if (signals.trend === 'BEARISH') {
+    if (trendBearish) {
       decision = 'DROP';
       reason = `Supertrend 15m bearish (${signals.trendSource})`;
-    } else if (trustedLpWatch) {
-      decision = 'DEPLOY';
-      reason = `Trusted WATCH ready (${signals.trendSource}/${signals.m5Source})`;
-    } else if (signals.trend !== 'BULLISH' || signals.m5 <= 0) {
+    } else if (bothUnknown) {
+      decision = 'HOLD';
+      reason = 'HOLD: realtime trend/M5 unknown; waiting for fresh deploy signal';
+    } else if (m5Unknown || !m5FreshPositive) {
+      decision = 'HOLD';
+      reason = `HOLD: realtime M5 unknown/stale (${signals.m5Source}); waiting fresh signal`;
+    } else if (trendUnknown && !hasFreshBullishFinalStCache) {
+      decision = 'HOLD';
+      reason = 'HOLD: realtime trend unknown; waiting fresh trend or final ST 15m bullish cache';
+    } else if (!trendFresh && !(trendUnknown && hasFreshBullishFinalStCache)) {
+      decision = 'HOLD';
+      reason = `HOLD: realtime trend stale (${signals.trendSource}); waiting fresh live trend`;
+    } else if (signals.trend !== 'BULLISH' && !(trendUnknown && hasFreshBullishFinalStCache)) {
       decision = 'HOLD';
       reason = `Freshness hilang: trend=${signals.trend || 'UNKNOWN'} (${signals.trendSource}) m5=${formatPct(signals.m5)} (${signals.m5Source})`;
+    } else if (trustedLpWatch) {
+      reason = `Trusted WATCH prepared (${signals.trendSource}/${signals.m5Source})`;
     }
   } else if (timingState !== 'BREAKOUT' && timingState !== 'ATH_BREAK') {
     decision = 'HOLD';
@@ -413,20 +432,6 @@ async function evaluateDeployConditions(entry) {
       };
     }
 
-    if (freshnessDecision !== 'DEPLOY') {
-      return {
-        ok: false,
-        decision: freshnessDecision,
-        reason: freshnessDecision === 'DROP'
-          ? queueSignals.reason
-          : `Freshness hilang: trend=${liveTrend || 'UNKNOWN'} (${trendSource}) m5=${formatPct(liveM5)} (${m5Source})`,
-        trendSource,
-        m5Source,
-        liveTrend,
-        liveM5,
-      };
-    }
-
     const liveSnapshot = await getCachedMarketSnapshot(mint, poolAddress || null);
     if (liveSnapshot) {
       const liveSignals = summarizeQueueDecision({ meta, liveSnapshot, cfg, lpMode });
@@ -440,19 +445,29 @@ async function evaluateDeployConditions(entry) {
       activeSignals = liveReliable ? liveSignals : queueSignals;
       ({ trend: liveTrend, trendSource, m5: liveM5, m5Source, decision: freshnessDecision } = activeSignals);
 
-      if (liveReliable && freshnessDecision !== 'DEPLOY') {
+      if (freshnessDecision !== 'DEPLOY') {
         return {
           ok: false,
           decision: freshnessDecision,
-          reason: freshnessDecision === 'DROP'
-            ? liveSignals.reason
-            : `Freshness hilang: trend=${liveTrend || 'UNKNOWN'} (${trendSource}) m5=${formatPct(liveM5)} (${m5Source})`,
+          reason: activeSignals.reason || `Freshness hilang: trend=${liveTrend || 'UNKNOWN'} (${trendSource}) m5=${formatPct(liveM5)} (${m5Source})`,
           trendSource,
           m5Source,
           liveTrend,
           liveM5,
         };
       }
+    }
+
+    if (freshnessDecision !== 'DEPLOY') {
+      return {
+        ok: false,
+        decision: freshnessDecision,
+        reason: activeSignals.reason || `Freshness hilang: trend=${liveTrend || 'UNKNOWN'} (${trendSource}) m5=${formatPct(liveM5)} (${m5Source})`,
+        trendSource,
+        m5Source,
+        liveTrend,
+        liveM5,
+      };
     }
 
     return {

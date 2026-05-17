@@ -105,7 +105,7 @@ test('queue freshness resolves live vs queued signals for LP-style chart scenari
     liveSnapshot: null,
     lpMode: true,
   });
-  assert.equal(fallbackFromMeta.decision, 'DEPLOY');
+  assert.equal(fallbackFromMeta.decision, 'HOLD');
   assert.equal(fallbackFromMeta.trendSource, 'queue');
   assert.equal(fallbackFromMeta.m5Source, 'queue');
   assert.equal(fallbackFromMeta.trend, 'BULLISH');
@@ -150,8 +150,8 @@ test('trusted WATCH-ready LP entries can prepare queue but still need final ST g
     liveSnapshot: null,
     lpMode: true,
   });
-  assert.equal(fromQueue.decision, 'DEPLOY');
-  assert.equal(fromQueue.reason.includes('Trusted WATCH ready'), true);
+  assert.equal(fromQueue.decision, 'HOLD');
+  assert.equal(fromQueue.reason.includes('realtime M5 unknown/stale'), true);
 
   const liveNeutral = summarizeQueueDecision({
     meta: trustedWatchMeta,
@@ -161,7 +161,7 @@ test('trusted WATCH-ready LP entries can prepare queue but still need final ST g
     },
     lpMode: true,
   });
-  assert.equal(liveNeutral.decision, 'DEPLOY');
+  assert.equal(liveNeutral.decision, 'HOLD');
   assert.equal(liveNeutral.trendSource, 'live');
 
   const liveBearish = summarizeQueueDecision({
@@ -180,6 +180,49 @@ test('trusted WATCH-ready LP entries can prepare queue but still need final ST g
     checkFn: async () => ({ veto: true, direction: 'UNKNOWN', reason: 'Supertrend 15m unavailable' }),
   });
   assert.equal(finalGate.action, 'HOLD');
+});
+
+test('queue blocks LP deploy when trend and M5 sources are unknown', () => {
+  const decision = summarizeQueueDecision({
+    meta: {
+      entryTimingState: 'LP_LIVE',
+      entryReadiness: 'HIGH',
+      breakoutQuality: 'VALID',
+      queueTrustedWatch: true,
+    },
+    liveSnapshot: null,
+    lpMode: true,
+  });
+
+  assert.equal(decision.trend, 'UNKNOWN');
+  assert.equal(decision.trendSource, 'unknown');
+  assert.equal(decision.m5Source, 'unknown');
+  assert.equal(decision.decision, 'HOLD');
+  assert.match(decision.reason, /realtime trend\/M5 unknown/i);
+});
+
+test('queue allows LP deploy only on fresh bullish trend + fresh positive M5', () => {
+  const decision = summarizeQueueDecision({
+    meta: {
+      entryTimingState: 'LP_LIVE',
+      entryReadiness: 'HIGH',
+      breakoutQuality: 'VALID',
+      queueTrustedWatch: true,
+      taTrend: 'UNKNOWN',
+      priceChangeM5: 0,
+    },
+    liveSnapshot: {
+      quality: { taTrend: 'BULLISH' },
+      ohlcv: { priceChangeM5: 1.34, historySuccess: true },
+      dataSource: 'dexscreener-ohlcv',
+    },
+    lpMode: true,
+  });
+
+  assert.equal(decision.trend, 'BULLISH');
+  assert.equal(decision.trendSource, 'live');
+  assert.equal(decision.m5Source, 'live');
+  assert.equal(decision.decision, 'DEPLOY');
 });
 
 test('final Supertrend deploy gate allows only fresh bullish cache', async () => {

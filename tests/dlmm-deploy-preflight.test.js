@@ -1,0 +1,73 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import BN from 'bn.js';
+
+import { buildDlmmDeployStrategyArgs } from '../src/sniper/evilPanda.js';
+import { StrategyType } from '@meteora-ag/dlmm';
+
+test('single-side quote including active bin is adjusted below active bin', () => {
+  const out = buildDlmmDeployStrategyArgs({
+    activeBinId: 1000,
+    rangeMin: 990,
+    rangeMax: 1000,
+    amountXBn: new BN('0'),
+    amountYBn: new BN('500000000'),
+  });
+
+  assert.equal(out.adjustedBelowActive, true);
+  assert.equal(out.rangeMax, 999);
+  assert.equal(out.rangeMin, 989);
+});
+
+test('valid range and positive amount passes preflight', () => {
+  const out = buildDlmmDeployStrategyArgs({
+    activeBinId: 1000,
+    rangeMin: 980,
+    rangeMax: 999,
+    amountXBn: new BN('0'),
+    amountYBn: new BN('500000000'),
+  });
+
+  assert.equal(out.rangeMin, 980);
+  assert.equal(out.rangeMax, 999);
+  assert.equal(out.amountYBn.toString(), '500000000');
+});
+
+test('inverted range fails before SDK call', () => {
+  assert.throws(
+    () => buildDlmmDeployStrategyArgs({
+      activeBinId: 1000,
+      rangeMin: 1002,
+      rangeMax: 1001,
+      amountXBn: new BN('1'),
+      amountYBn: new BN('1'),
+    }),
+    /Invalid DLMM deploy args: rangeMin must be <= rangeMax/
+  );
+});
+
+test('zero total amount fails before SDK call', () => {
+  assert.throws(
+    () => buildDlmmDeployStrategyArgs({
+      activeBinId: 1000,
+      rangeMin: 980,
+      rangeMax: 999,
+      amountXBn: new BN('0'),
+      amountYBn: new BN('0'),
+    }),
+    /Invalid DLMM deploy args: amountX \+ amountY must be > 0/
+  );
+});
+
+test('strategy type defaults to SDK Spot enum when available', () => {
+  const out = buildDlmmDeployStrategyArgs({
+    activeBinId: 1000,
+    rangeMin: 980,
+    rangeMax: 999,
+    amountXBn: new BN('1'),
+    amountYBn: new BN('1'),
+  });
+
+  const expectedSpot = Number(StrategyType?.Spot ?? 0);
+  assert.equal(out.strategyType, expectedSpot);
+});
