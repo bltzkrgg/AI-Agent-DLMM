@@ -8,6 +8,7 @@ import { getPoolSmartMoney } from '../market/lpAgent.js';
 import { getGmgnTokenInfo } from '../utils/gmgn.js';
 
 const METEORA_DATAPI = 'https://dlmm-api.meteora.ag';
+const METEORA_DLMM_DATAPI = 'https://dlmm.datapi.meteora.ag';
 const BIRDEYE_BASE = 'https://public-api.birdeye.so';
 
 // ─── 1. OHLCV — Price Snapshot (DexScreener primary, Birdeye fallback, Momentum-Proxy last) ───
@@ -18,9 +19,238 @@ const BIRDEYE_BASE = 'https://public-api.birdeye.so';
 let birdeyeCooldownUntil = 0;
 const MERIDIAN_FALLBACK_TTL_MS = 45_000;
 const _meridianFallbackCache = new Map(); // key -> { at, value }
+const METEORA_OHLCV_CACHE_TTL_MS = 45_000;
+const METEORA_OHLCV_FAILURE_MIN_COOLDOWN_MS = 120_000;
+const METEORA_OHLCV_FAILURE_MAX_COOLDOWN_MS = 300_000;
+const _meteoraOhlcvCache = new Map(); // key -> { at, candles, timeframe }
+const _meteoraOhlcvFailureState = new Map(); // key -> { failCount, cooldownUntil, reason }
 
 function getOracleFallbackCacheKey(tokenMint = '', poolAddress = '') {
   return `${tokenMint || 'unknown'}:${poolAddress || 'nopool'}`;
+}
+
+function getMeteoraOhlcvCacheKey(poolAddress = '', timeframe = '5m') {
+  return `${String(poolAddress || '').trim()}:${String(timeframe || '5m').trim().toLowerCase()}`;
+}
+
+function normalizeMeteoraOhlcvCandle(row = null) {
+  if (!row) return null;
+  const raw = Array.isArray(row)
+    ? {
+      timestamp: row[0],
+      open: row[1],
+      high: row[2],
+      low: row[3],
+      close: row[4],
+      volume: row[5],
+    }
+    : row;
+
+  const tsRaw = safeNum(raw.timestamp ?? raw.time ?? raw.unixTime ?? raw.t, NaN);
+  const time = tsRaw > 1e12 ? Math.floor(tsRaw / 1000) : Math.floor(tsRaw);
+  const open = safeNum(raw.open ?? raw.o, NaN);
+  const high = safeNum(raw.high ?? raw.h, NaN);
+  const low = safeNum(raw.low ?? raw.l, NaN);
+  const close = safeNum(raw.close ?? raw.c, NaN);
+  const volume = safeNum(raw.volume ?? raw.v ?? 0, NaN);
+  if (!Number.isFinite(time) || time <= 0) return null;
+  if (!Number.isFinite(open) || !Number.isFinite(high) || !Number.isFinite(low) || !Number.isFinite(close)) return null;
+  if (close <= 0 || !Number.isFinite(volume)) return null;
+  return { time, open, high, low, close, volume };
+}
+
+function aggregate5mTo15m(candles5m = []) {
+  if (!Array.isArray(candles5m) || candles5m.length < 9) return [];
+  const buckets = new Map();
+  for (const candle of candles5m) {
+    const bucketTs = Math.floor(Number(candle.time) / 900) * 900;
+    if (!buckets.has(bucketTs)) buckets.set(bucketTs, []);
+    buckets.get(bucketTs).push(candle);
+  }
+  const out = [];
+  for (const [bucketTs, group] of Array.from(buckets.entries()).sort((a, b) => a[0] - b[0])) {
+    const sorted = group
+      .slice()
+      .sort((a, b) => Number(a.time) - Number(b.time))
+      .filter((c) => Number.isFinite(Number(c.close)) && Number(c.close) > 0);
+    if (sorted.length < 3) continue;
+    const use = sorted.slice(0, 3);
+    out.push({
+      time: bucketTs + 900,
+      open: use[0].open,
+      high: Math.max(...use.map((c) => c.high)),
+      low: Math.min(...use.map((c) => c.low)),
+      close: use[use.length - 1].close,
+      volume: use.reduce((sum, c) => sum + safeNum(c.volume, 0), 0),
+    });
+  }
+  return out;
+}
+
+function getMeteoraFailureCooldownMs(failCount = 1) {
+  const step = Math.max(1, Number(failCount) || 1);
+  return Math.min(METEORA_OHLCV_FAILURE_MAX_COOLDOWN_MS, METEORA_OHLCV_FAILURE_MIN_COOLDOWN_MS * step);
+}
+
+async function fetchMeteoraDlmmOhlcv5m(poolAddress = '') {
+  const timeframe = '5m';
+  const key = getMeteoraOhlcvCacheKey(poolAddress, timeframe);
+  const now = Date.now();
+  const cached = _meteoraOhlcvCache.get(key);
+  if (cached && (now - cached.at) <= METEORA_OHLCV_CACHE_TTL_MS) {
+    return { candles: cached.candles, timeframe, trace: 'cache_hit', cacheHit: true };
+  }
+
+  const failureState = _meteoraOhlcvFailureState.get(key);
+  if (failureState && Number(failureState.cooldownUntil || 0) > now) {
+    return {
+      candles: null,
+      timeframe,
+      trace: `cooldown:${failureState.reason || 'failed'}`,
+      cooldownUntil: failureState.cooldownUntil,
+      blockedByCooldown: true,
+    };
+  }
+
+  const url = `${METEORA_DLMM_DATAPI}/pools/${poolAddress}/ohlcv?timeframe=5m`;
+  try {
+    const res = await fetchWithTimeout(url, { headers: { Accept: 'application/json' } }, 4500);
+    if (!res.ok) {
+      const nextFailCount = Math.max(1, Number(failureState?.failCount || 0) + 1);
+      const cooldownMs = getMeteoraFailureCooldownMs(nextFailCount);
+      _meteoraOhlcvFailureState.set(key, {
+        failCount: nextFailCount,
+        cooldownUntil: Date.now() + cooldownMs,
+        reason: `status_${res.status}`,
+      });
+      return { candles: null, timeframe, trace: `status_${res.status}`, status: res.status };
+    }
+
+    const json = await res.json().catch(() => null);
+    const rawRows = Array.isArray(json?.data)
+      ? json.data
+      : Array.isArray(json?.ohlcv)
+        ? json.ohlcv
+        : Array.isArray(json?.candles)
+          ? json.candles
+          : [];
+    const candles = rawRows
+      .map(normalizeMeteoraOhlcvCandle)
+      .filter(Boolean)
+      .sort((a, b) => a.time - b.time);
+    if (candles.length === 0) {
+      const nextFailCount = Math.max(1, Number(failureState?.failCount || 0) + 1);
+      const cooldownMs = getMeteoraFailureCooldownMs(nextFailCount);
+      _meteoraOhlcvFailureState.set(key, {
+        failCount: nextFailCount,
+        cooldownUntil: Date.now() + cooldownMs,
+        reason: 'empty',
+      });
+      return { candles: null, timeframe, trace: 'empty' };
+    }
+
+    _meteoraOhlcvCache.set(key, { at: Date.now(), candles, timeframe });
+    _meteoraOhlcvFailureState.delete(key);
+    return { candles, timeframe: String(json?.timeframe || timeframe).toLowerCase(), trace: 'success' };
+  } catch {
+    const nextFailCount = Math.max(1, Number(failureState?.failCount || 0) + 1);
+    const cooldownMs = getMeteoraFailureCooldownMs(nextFailCount);
+    _meteoraOhlcvFailureState.set(key, {
+      failCount: nextFailCount,
+      cooldownUntil: Date.now() + cooldownMs,
+      reason: 'network_error',
+    });
+    return { candles: null, timeframe, trace: 'network_error' };
+  }
+}
+
+async function buildOHLCVFromMeteoraDlmm(tokenMint, poolAddress = '', options = {}) {
+  if (!poolAddress) return null;
+  const fetched = await fetchMeteoraDlmmOhlcv5m(poolAddress);
+  if (!Array.isArray(fetched?.candles) || fetched.candles.length === 0) {
+    return fetched?.blockedByCooldown
+      ? { source: 'unknown', historySuccess: false, trace: fetched.trace }
+      : null;
+  }
+
+  const closed5m = fetched.candles.slice();
+  const last5m = closed5m[closed5m.length - 1] || null;
+  if (!last5m) return null;
+
+  const enough5m = closed5m.length >= 12;
+  const changeBase = closed5m.length >= 2 ? closed5m[closed5m.length - 2].close : null;
+  const priceChangeM5 = Number.isFinite(changeBase) && changeBase > 0
+    ? Number((((last5m.close - changeBase) / changeBase) * 100).toFixed(4))
+    : 0;
+  const h1Base = closed5m.length >= 13 ? closed5m[closed5m.length - 13].close : null;
+  const priceChangeH1 = Number.isFinite(h1Base) && h1Base > 0
+    ? Number((((last5m.close - h1Base) / h1Base) * 100).toFixed(4))
+    : 0;
+  const agg15m = aggregate5mTo15m(closed5m);
+  const st = agg15m.length >= 10 ? ta.calculateSupertrend(agg15m, 10, 3) : null;
+  const trend = st?.trend || 'NEUTRAL';
+  const maxHigh = Math.max(...closed5m.map((c) => c.high));
+  const minLow = Math.min(...closed5m.map((c) => c.low));
+  const range24hPct = last5m.close > 0 ? Math.abs(((maxHigh - minLow) / last5m.close) * 100) : 0;
+  const historyAgeMinutes = Number(((Date.now() / 1000 - last5m.time) / 60).toFixed(2));
+  const includeEntryCandles5m = options?.includeEntryCandles5m === true;
+  const entryCandles5m = includeEntryCandles5m ? closed5m.slice(-30) : [];
+
+  return {
+    tokenMint,
+    poolAddress,
+    timeframe: '5m',
+    source: 'meteora-dlmm-ohlcv',
+    currentPrice: safeNum(last5m.close),
+    atrPct: Number.isFinite(st?.atr) && last5m.close > 0 ? Number(((st.atr / last5m.close) * 100).toFixed(3)) : null,
+    priceChangeM5,
+    priceChangeH1,
+    high24h: safeNum(maxHigh),
+    low24h: safeNum(minLow),
+    range24hPct: parseFloat(range24hPct.toFixed(2)),
+    buyVolume: 0,
+    sellVolume: 0,
+    trend: (priceChangeM5 > 1.5 && priceChangeH1 > 0) ? 'UPTREND'
+      : (priceChangeM5 < -1.5 && priceChangeH1 < 0) ? 'DOWNTREND'
+        : 'SIDEWAYS',
+    volatilityCategory: range24hPct > 20 ? 'HIGH' : range24hPct > 7 ? 'MEDIUM' : 'LOW',
+    entryCandleTimeframe: '5m',
+    entryCandles5m,
+    entryCandle5m: entryCandles5m[entryCandles5m.length - 1] || null,
+    ta: {
+      supertrend: {
+        trend,
+        value: Number.isFinite(st?.value) ? st.value : last5m.close,
+        atr: Number.isFinite(st?.atr) ? st.atr : null,
+        changed: Boolean(st?.changed),
+        source: agg15m.length >= 10 ? 'Meteora-DLMM-5m->15m' : 'Meteora-DLMM-5m',
+      },
+      candleCount: agg15m.length,
+      historySuccess: enough5m,
+      "Evil Panda": {
+        entry: {
+          triggered: trend === 'BULLISH',
+          reason: trend === 'BULLISH'
+            ? `EVIL PANDA TREND: Supertrend 15m bullish (${agg15m.length} candles, Meteora 5m aggregate).`
+            : null,
+        },
+        exit: {
+          triggered: trend === 'BEARISH',
+          reason: trend === 'BEARISH'
+            ? 'TREND EXIT: Supertrend 15m bearish (Meteora 5m aggregate).'
+            : null,
+        },
+      },
+    },
+    historySuccess: enough5m,
+    historyAgeMinutes,
+    historyWindowSec: closed5m.length >= 2 ? safeNum(closed5m[closed5m.length - 1].time - closed5m[0].time) : 0,
+    providerTrace: {
+      meteoraDlmm: fetched.trace || 'success',
+      dexCandles: 'skipped',
+      birdeye: 'skipped',
+    },
+  };
 }
 
 function normalizeMeridianTrend(direction = '') {
@@ -61,6 +291,17 @@ function buildMergedMeridianFallback({
 
 export async function getOHLCV(tokenMint, poolAddress = null, options = {}) {
   const includeEntryCandles5m = options?.includeEntryCandles5m === true;
+  const cfg = getConfig();
+  if (poolAddress) {
+    const meteoraDlmm = await buildOHLCVFromMeteoraDlmm(tokenMint, poolAddress, { includeEntryCandles5m });
+    if (meteoraDlmm?.source === 'meteora-dlmm-ohlcv') {
+      return meteoraDlmm;
+    }
+    if (meteoraDlmm?.source === 'unknown' && meteoraDlmm?.historySuccess === false) {
+      console.log(`[oracle] MeteoraDLMM OHLCV unavailable pool=${String(poolAddress).slice(0, 8)} trace=${meteoraDlmm.trace || 'unknown'}`);
+    }
+  }
+
   const dexPair = await resolveDexScreenerPairContext(tokenMint, poolAddress || null);
   const dex = await buildOHLCVFromDexScreener(tokenMint, dexPair, { includeEntryCandles5m });
   if (dex?.historySuccess) return dex;
@@ -73,15 +314,17 @@ export async function getOHLCV(tokenMint, poolAddress = null, options = {}) {
   } : null;
 
   if (Date.now() < birdeyeCooldownUntil) {
-    console.warn(`[oracle] Birdeye throttled, using DexScreener/Jupiter fallback...`);
-    const meridian = await buildPoolSpecificMeridianFallback(tokenMint, poolAddress || null);
-    const mergedFallback = buildMergedMeridianFallback({
-      meridian,
-      dexPair,
-      dexFallbackMeta,
-      poolAddress,
-    });
-    if (mergedFallback) return mergedFallback;
+    console.warn('[oracle] Birdeye throttled, fallback path active');
+    if (cfg.allowLegacyMeridianOhlcvFallback === true) {
+      const meridian = await buildPoolSpecificMeridianFallback(tokenMint, poolAddress || null);
+      const mergedFallback = buildMergedMeridianFallback({
+        meridian,
+        dexPair,
+        dexFallbackMeta,
+        poolAddress,
+      });
+      if (mergedFallback) return mergedFallback;
+    }
     return buildMomentumProxyOHLCV(tokenMint);
   }
 
@@ -104,7 +347,23 @@ export async function getOHLCV(tokenMint, poolAddress = null, options = {}) {
     const retryAfterSec = Number(birdeye?.retryAfterSec ?? 0);
     const cooldownMs = retryAfterSec > 0 ? retryAfterSec * 1000 : 2 * 60 * 1000;
     birdeyeCooldownUntil = Date.now() + cooldownMs;
-    console.warn(`[oracle] Birdeye throttled (${cooldownMs}ms cooldown), using DexScreener/Jupiter fallback...`);
+    console.warn(`[oracle] Birdeye throttled (${cooldownMs}ms cooldown), fallback path active`);
+    if (cfg.allowLegacyMeridianOhlcvFallback === true) {
+      const meridian = await buildPoolSpecificMeridianFallback(tokenMint, poolAddress || null);
+      const mergedFallback = buildMergedMeridianFallback({
+        meridian,
+        dexPair,
+        dexFallbackMeta,
+        poolAddress,
+      });
+      if (mergedFallback) return mergedFallback;
+    }
+    return buildMomentumProxyOHLCV(tokenMint);
+  }
+
+  if (birdeye?.historySuccess) return birdeye;
+
+  if (cfg.allowLegacyMeridianOhlcvFallback === true) {
     const meridian = await buildPoolSpecificMeridianFallback(tokenMint, poolAddress || null);
     const mergedFallback = buildMergedMeridianFallback({
       meridian,
@@ -113,19 +372,7 @@ export async function getOHLCV(tokenMint, poolAddress = null, options = {}) {
       poolAddress,
     });
     if (mergedFallback) return mergedFallback;
-    return buildMomentumProxyOHLCV(tokenMint);
   }
-
-  if (birdeye?.historySuccess) return birdeye;
-
-  const meridian = await buildPoolSpecificMeridianFallback(tokenMint, poolAddress || null);
-  const mergedFallback = buildMergedMeridianFallback({
-    meridian,
-    dexPair,
-    dexFallbackMeta,
-    poolAddress,
-  });
-  if (mergedFallback) return mergedFallback;
 
   return buildMomentumProxyOHLCV(tokenMint);
 }
@@ -537,6 +784,7 @@ export function computeSnapshotQuality({
   const taSource = ohlcv?.ta?.supertrend?.source || 'unknown';
 
   if (taSource === 'Birdeye-15m') taConfidence += 0.24;
+  else if (String(taSource).includes('Meteora-DLMM')) taConfidence += 0.24;
   else if (taSource === 'Momentum-Proxy') taConfidence += 0.12;
   if (ohlcv?.historySuccess) taConfidence += 0.10;
   if (sentiment && Number.isFinite(sentiment.buyPressurePct)) taConfidence += 0.08;

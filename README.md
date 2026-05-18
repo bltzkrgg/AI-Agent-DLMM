@@ -88,8 +88,10 @@ Safety behavior:
 
 OHLCV behavior:
 
+- For DLMM pools with `poolAddress`, oracle uses Meteora DLMM OHLCV first: `/pools/{poolAddress}/ohlcv?timeframe=5m`.
 - The queue uses cached/prefetched market snapshots first.
-- Meridian fallback can be used only when marked reliable by the oracle path.
+- The oracle does not use deprecated `interval=5m` or unsupported `timeframe=15m` for DLMM OHLCV.
+- Legacy Meridian OHLCV fallback routes are disabled by default.
 - Momentum-proxy-only data is not trusted as live deploy confirmation.
 - If final candle sanity data is missing, stale, or invalid, deploy is held.
 
