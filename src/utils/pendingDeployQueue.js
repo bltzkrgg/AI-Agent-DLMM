@@ -376,7 +376,19 @@ export async function ensureFinalEntryCandleSanity(args = {}) {
   if (decision.action === 'ALLOW') {
     console.log(`[QUEUE] FINAL_CANDLE_GATE_PASS ${label}/${mintShort} source=${decision.source || 'cache'} reason=${decision.reason}`);
   } else {
-    console.log(`[QUEUE] FINAL_CANDLE_GATE_HOLD ${label}/${mintShort} source=${decision.source || 'unknown'} reason=${decision.reason}`);
+    const cfg = args.cfg && typeof args.cfg === 'object' ? args.cfg : getConfig();
+    const ageSec = Number.isFinite(decision.ageSec) ? Number(decision.ageSec).toFixed(1) : 'na';
+    const lastVolume = Number.isFinite(decision.volume) ? Number(decision.volume).toFixed(4) : 'na';
+    const avgVolume = Number.isFinite(decision.avgVolume) ? Number(decision.avgVolume).toFixed(4) : 'na';
+    const volumeRatio = (Number.isFinite(decision.volume) && Number.isFinite(decision.avgVolume) && decision.avgVolume > 0)
+      ? (Number(decision.volume) / Number(decision.avgVolume)).toFixed(3)
+      : 'na';
+    console.log(
+      `[QUEUE] FINAL_CANDLE_GATE_HOLD ${label}/${mintShort} ` +
+      `source=${decision.source || 'unknown'} reason=${decision.reason} ` +
+      `cfg[maxAgeSec=${Number(cfg.entryCandleMaxAgeSec ?? 420)},minRatio=${Number(cfg.entryMinVolumeRatio ?? 1.5)},lookback=${Number(cfg.entryVolumeLookbackCandles ?? 12)},green=${cfg.entryRequireGreenCandle !== false},volConfirm=${cfg.entryRequireVolumeConfirm !== false}] ` +
+      `obs[ageSec=${ageSec},lastVol=${lastVolume},avgVol=${avgVolume},volRatio=${volumeRatio}]`
+    );
   }
   return decision;
 }

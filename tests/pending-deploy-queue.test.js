@@ -6,6 +6,7 @@ import { checkSupertrendVeto } from '../src/market/meridianVeto.js';
 import {
   buildUnreliableLiveSnapshotLog,
   getFinalEntryCandleSanityDecision,
+  ensureFinalEntryCandleSanity,
   getFinalSupertrendDeployDecision,
   getLiveSnapshotReliability,
   isFreshBullishSupertrend15m,
@@ -473,6 +474,144 @@ test('final entry candle sanity fetches only after missing cache', async () => {
 
   assert.equal(calls, 1);
   assert.equal(decision.ok, true);
+});
+
+test('final entry candle sanity uses cfg entryCandleMaxAgeSec for stale hold', async () => {
+  const now = 1_700_000_000_000;
+  const snapshot = {
+    ohlcv: {
+      source: 'test-cache',
+      entryCandles5m: makeEntryCandles({ now: now - 800_000, lastOpen: 100, lastClose: 104, lastVolume: 220 }),
+    },
+  };
+
+  const strict = await getFinalEntryCandleSanityDecision({
+    mint: '',
+    now,
+    cfg: { entryCandleSanityEnabled: true, entryCandleMaxAgeSec: 60 },
+    pool: { _marketSnapshot: snapshot },
+  });
+  assert.equal(strict.ok, false);
+  assert.equal(strict.code, 'STALE');
+
+  const lenient = await getFinalEntryCandleSanityDecision({
+    mint: '',
+    now,
+    cfg: { entryCandleSanityEnabled: true, entryCandleMaxAgeSec: 3600, entryRequireVolumeConfirm: false },
+    pool: { _marketSnapshot: snapshot },
+  });
+  assert.equal(lenient.ok, true);
+});
+
+test('final entry candle sanity uses cfg entryMinVolumeRatio and can skip volume confirm', async () => {
+  const now = 1_700_000_000_000;
+  const pool = {
+    _marketSnapshot: {
+      ohlcv: {
+        source: 'test-cache',
+        entryCandles5m: makeEntryCandles({ now, lastOpen: 100, lastClose: 105, lastVolume: 120, baseVolume: 100 }),
+      },
+    },
+  };
+
+  const strictRatio = await getFinalEntryCandleSanityDecision({
+    mint: '',
+    now,
+    cfg: {
+      entryCandleSanityEnabled: true,
+      entryRequireGreenCandle: true,
+      entryRequireVolumeConfirm: true,
+      entryMinVolumeRatio: 1.5,
+      entryVolumeLookbackCandles: 12,
+      entryCandleMaxAgeSec: 420,
+    },
+    pool,
+  });
+  assert.equal(strictRatio.ok, false);
+  assert.equal(strictRatio.code, 'THIN_VOLUME');
+
+  const relaxedRatio = await getFinalEntryCandleSanityDecision({
+    mint: '',
+    now,
+    cfg: {
+      entryCandleSanityEnabled: true,
+      entryRequireGreenCandle: true,
+      entryRequireVolumeConfirm: true,
+      entryMinVolumeRatio: 1.1,
+      entryVolumeLookbackCandles: 12,
+      entryCandleMaxAgeSec: 420,
+    },
+    pool,
+  });
+  assert.equal(relaxedRatio.ok, true);
+
+  const skipVolume = await getFinalEntryCandleSanityDecision({
+    mint: '',
+    now,
+    cfg: {
+      entryCandleSanityEnabled: true,
+      entryRequireGreenCandle: true,
+      entryRequireVolumeConfirm: false,
+      entryMinVolumeRatio: 5,
+      entryVolumeLookbackCandles: 12,
+      entryCandleMaxAgeSec: 420,
+    },
+    pool,
+  });
+  assert.equal(skipVolume.ok, true);
+});
+
+test('final entry candle sanity can be bypassed when entryCandleSanityEnabled=false', async () => {
+  const now = 1_700_000_000_000;
+  const decision = await getFinalEntryCandleSanityDecision({
+    mint: '',
+    now,
+    cfg: { entryCandleSanityEnabled: false },
+    pool: {},
+  });
+  assert.equal(decision.ok, true);
+  assert.equal(decision.source, 'disabled');
+});
+
+test('final entry candle hold log prints runtime cfg knobs', async () => {
+  const now = 1_700_000_000_000;
+  const logs = [];
+  const originalLog = console.log;
+  console.log = (...args) => logs.push(args.join(' '));
+  try {
+    const decision = await ensureFinalEntryCandleSanity({
+      mint: 'Mint111111111111111111111111111111111111111',
+      symbol: 'TEST',
+      now,
+      cfg: {
+        entryCandleSanityEnabled: true,
+        entryRequireGreenCandle: true,
+        entryRequireVolumeConfirm: true,
+        entryMinVolumeRatio: 1.7,
+        entryVolumeLookbackCandles: 15,
+        entryCandleMaxAgeSec: 777,
+      },
+      pool: {
+        _marketSnapshot: {
+          ohlcv: {
+            source: 'test-cache',
+            entryCandles5m: makeEntryCandles({ now, lastOpen: 100, lastClose: 105, lastVolume: 120 }),
+          },
+        },
+      },
+      snapshotFn: async () => null,
+    });
+    assert.equal(decision.ok, false);
+  } finally {
+    console.log = originalLog;
+  }
+
+  const holdLine = logs.find((line) => line.includes('FINAL_CANDLE_GATE_HOLD')) || '';
+  assert.match(holdLine, /maxAgeSec=777/);
+  assert.match(holdLine, /minRatio=1.7/);
+  assert.match(holdLine, /lookback=15/);
+  assert.match(holdLine, /green=true/);
+  assert.match(holdLine, /volConfirm=true/);
 });
 
 test('manual CA final gate does not pass generic taTrend snapshot cache', () => {

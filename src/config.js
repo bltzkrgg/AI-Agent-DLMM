@@ -334,6 +334,15 @@ const NESTED_SECTION_MAP = {
     watchIntervalSec: 'watchIntervalSec',
   },
 
+  entry: {
+    candleSanityEnabled:   'entryCandleSanityEnabled',
+    requireGreenCandle:    'entryRequireGreenCandle',
+    requireVolumeConfirm:  'entryRequireVolumeConfirm',
+    minVolumeRatio:        'entryMinVolumeRatio',
+    volumeLookbackCandles: 'entryVolumeLookbackCandles',
+    candleMaxAgeSec:       'entryCandleMaxAgeSec',
+  },
+
   // discovery: parameter pencarian pool Meteora
   discovery: {
     meteoraDiscoveryLimit: 'meteoraDiscoveryLimit',
@@ -539,6 +548,8 @@ export const SETCONFIG_WHITELIST = {
   // ── Entry Final Sanity ─────────────────────────────────────────
   entryCandleSanityEnabled:{ section: 'entry',              type: 'boolean', desc: 'Aktifkan final candle sanity gate' },
   entryMinVolumeRatio:    { section: 'entry',              type: 'number',  desc: 'Rasio volume candle entry vs rata-rata' },
+  entryCandleMaxAgeSec:   { section: 'entry',              type: 'number',  desc: 'Batas usia candle entry (detik)' },
+  entryRequireVolumeConfirm:{ section: 'entry',            type: 'boolean', desc: 'Wajib konfirmasi volume candle entry' },
 
   // ── Watch / Queue ────────────────────────────────────────────────
   watchIntervalSec:       { section: 'watch',              type: 'number',  desc: 'Interval cek WATCH aktif (detik, 15–3600)' },

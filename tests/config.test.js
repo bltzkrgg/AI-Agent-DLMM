@@ -152,6 +152,58 @@ test('user-config.example includes pool pattern learning keys', () => {
   assert.equal(parsed.maxMcap, 0);
 });
 
+test('entry candle sanity keys can be overridden from user-config.json', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'dlmm-entry-candle-config-'));
+  const configPath = join(root, 'user-config.json');
+  writeFileSync(configPath, JSON.stringify({
+    entryCandleSanityEnabled: false,
+    entryRequireGreenCandle: false,
+    entryRequireVolumeConfirm: false,
+    entryMinVolumeRatio: 1.2,
+    entryVolumeLookbackCandles: 9,
+    entryCandleMaxAgeSec: 600,
+  }, null, 2), 'utf-8');
+
+  process.env.BOT_CONFIG_PATH = configPath;
+  const configModule = await importFresh(join(repoRoot, 'src/config.js'));
+  const cfg = configModule.getConfig();
+
+  assert.equal(cfg.entryCandleSanityEnabled, false);
+  assert.equal(cfg.entryRequireGreenCandle, false);
+  assert.equal(cfg.entryRequireVolumeConfirm, false);
+  assert.equal(cfg.entryMinVolumeRatio, 1.2);
+  assert.equal(cfg.entryVolumeLookbackCandles, 9);
+  assert.equal(cfg.entryCandleMaxAgeSec, 600);
+});
+
+test('nested entry config keys flatten into runtime config', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'dlmm-entry-nested-config-'));
+  const configPath = join(root, 'user-config.json');
+  writeFileSync(configPath, JSON.stringify({
+    entry: {
+      candleSanityEnabled: false,
+      requireGreenCandle: false,
+      requireVolumeConfirm: false,
+      minVolumeRatio: 1.8,
+      volumeLookbackCandles: 10,
+      candleMaxAgeSec: 900,
+    },
+  }, null, 2), 'utf-8');
+
+  process.env.BOT_CONFIG_PATH = configPath;
+  const configModule = await importFresh(join(repoRoot, 'src/config.js'));
+  const cfg = configModule.getConfig();
+
+  assert.equal(cfg.entryCandleSanityEnabled, false);
+  assert.equal(cfg.entryRequireGreenCandle, false);
+  assert.equal(cfg.entryRequireVolumeConfirm, false);
+  assert.equal(cfg.entryMinVolumeRatio, 1.8);
+  assert.equal(cfg.entryVolumeLookbackCandles, 10);
+  assert.equal(cfg.entryCandleMaxAgeSec, 900);
+  assert.equal(configModule.resolveNestedKey('entry.minVolumeRatio')?.flatKey, 'entryMinVolumeRatio');
+  assert.equal(configModule.resolveNestedKey('entry.candleMaxAgeSec')?.flatKey, 'entryCandleMaxAgeSec');
+});
+
 test('realtime PnL terminal interval is configurable', async () => {
   const root = mkdtempSync(join(tmpdir(), 'dlmm-realtime-pnl-config-'));
   const configPath = join(root, 'user-config.json');
@@ -325,6 +377,10 @@ test('/setconfig whitelist is curated for operational keys only', async () => {
   assert.equal(keys.includes('poolPatternLearningEnabled'), true);
   assert.equal(keys.includes('entryCandleSanityEnabled'), true);
   assert.equal(keys.includes('entryMinVolumeRatio'), true);
+  assert.equal(keys.includes('entryCandleMaxAgeSec'), true);
+  assert.equal(keys.includes('entryRequireVolumeConfirm'), true);
+  assert.equal(keys.includes('entryRequireGreenCandle'), false);
+  assert.equal(keys.includes('entryVolumeLookbackCandles'), false);
 
   assert.equal(keys.includes('maxPoolAgeDays'), false);
   assert.equal(keys.includes('maxMcapUsd'), false);
@@ -338,10 +394,6 @@ test('/setconfig whitelist is curated for operational keys only', async () => {
   assert.equal(keys.includes('poolImpactCheckIntervalMs'), false);
   assert.equal(keys.includes('poolImpactAlertCooldownMs'), false);
   assert.equal(keys.includes('poolPatternLearningLookbackDays'), false);
-  assert.equal(keys.includes('entryRequireGreenCandle'), false);
-  assert.equal(keys.includes('entryRequireVolumeConfirm'), false);
-  assert.equal(keys.includes('entryVolumeLookbackCandles'), false);
-  assert.equal(keys.includes('entryCandleMaxAgeSec'), false);
 });
 
 test('nested discovery maxMcap and legacy maxMcapUsd both map to canonical maxMcap', async () => {
