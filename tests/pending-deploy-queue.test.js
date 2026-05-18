@@ -260,6 +260,36 @@ test('queue allows LP deploy only on fresh bullish trend + fresh positive M5', (
   assert.equal(decision.decision, 'DEPLOY');
 });
 
+test('queue treats finite Meteora M5 as live source and holds when non-positive', () => {
+  const decision = summarizeQueueDecision({
+    meta: {
+      entryTimingState: 'LP_LIVE',
+      entryReadiness: 'HIGH',
+      breakoutQuality: 'VALID',
+      queueTrustedWatch: true,
+      taTrend: 'UNKNOWN',
+      priceChangeM5: 0,
+    },
+    liveSnapshot: {
+      dataSource: 'meteora-dlmm-ohlcv',
+      ohlcv: {
+        source: 'meteora-dlmm-ohlcv',
+        historySuccess: true,
+        entry5mHistorySuccess: true,
+        priceChangeM5: 0,
+      },
+      quality: { taTrend: 'BULLISH' },
+      ta: { supertrend: { trend: 'BULLISH' } },
+    },
+    lpMode: true,
+  });
+
+  assert.equal(decision.m5Source, 'live');
+  assert.equal(decision.m5, 0);
+  assert.equal(decision.decision, 'HOLD');
+  assert.match(decision.reason, /non-positive/i);
+});
+
 test('final Supertrend deploy gate allows only fresh bullish cache', async () => {
   const now = 1_700_000_000_000;
 
@@ -571,4 +601,5 @@ test('queue snapshot path passes poolAddress to market snapshot resolver', () =>
   assert.match(src, /getMarketSnapshot\(mint, poolAddress \|\| null, \{/);
   assert.match(src, /from: includeEntryCandles5m \? 'entry_candle_sanity' : 'deploy_queue'/);
   assert.match(src, /includeEntryCandles5m/);
+  assert.match(src, /getCachedMarketSnapshot\(mint, poolAddress \|\| null, entry\.symbol \|\| '', \{ includeEntryCandles5m: true \}\)/);
 });

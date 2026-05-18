@@ -199,8 +199,15 @@ function resolveQueueSignalSources({ meta = {}, liveSnapshot = null } = {}) {
     'UNKNOWN'
   ).toUpperCase();
   const liveM5Raw = Number(liveSnapshot?.ohlcv?.priceChangeM5 ?? 0);
+  const liveSource = String(liveSnapshot?.ohlcv?.source || liveSnapshot?.dataSource || '').toLowerCase();
+  const liveEntry5mHistory = liveSnapshot?.ohlcv?.entry5mHistorySuccess === true;
+  const liveHistorySuccess = liveSnapshot?.ohlcv?.historySuccess === true;
   const liveTrendKnown = ['BULLISH', 'BEARISH', 'NEUTRAL'].includes(liveTrendRaw);
-  const liveM5Known = Number.isFinite(liveM5Raw) && liveM5Raw !== 0;
+  const liveM5Known = Number.isFinite(liveM5Raw) && (
+    liveEntry5mHistory ||
+    liveHistorySuccess ||
+    liveSource.includes('meteora-dlmm-ohlcv')
+  );
 
   return {
     trend: liveTrendKnown ? liveTrendRaw : (metaTrendRaw || 'UNKNOWN'),
@@ -383,7 +390,7 @@ export function summarizeQueueDecision({ meta = {}, liveSnapshot = null, cfg = g
   const trendBearish = signals.trend === 'BEARISH';
   const trendFresh = signals.trendSource === 'live';
   const m5Finite = Number.isFinite(signals.m5);
-  const m5Unknown = !m5Finite || signals.m5Source === 'unknown' || (signals.m5 === 0 && signals.m5Source === 'unknown');
+  const m5Unknown = !m5Finite || signals.m5Source === 'unknown';
   const m5FreshPositive = signals.m5Source === 'live' && m5Finite && signals.m5 > 0;
   const bothUnknown = signals.trendSource === 'unknown' && signals.m5Source === 'unknown';
 
@@ -397,9 +404,12 @@ export function summarizeQueueDecision({ meta = {}, liveSnapshot = null, cfg = g
     } else if (bothUnknown) {
       decision = 'HOLD';
       reason = 'HOLD: realtime trend/M5 unknown; waiting for fresh deploy signal';
-    } else if (m5Unknown || !m5FreshPositive) {
+    } else if (m5Unknown) {
       decision = 'HOLD';
       reason = `HOLD: realtime M5 unknown/stale (${signals.m5Source}); waiting fresh signal`;
+    } else if (!m5FreshPositive) {
+      decision = 'HOLD';
+      reason = `HOLD: realtime M5 non-positive (${formatPct(signals.m5)}); waiting positive momentum`;
     } else if (trendUnknown && !hasFreshBullishFinalStCache) {
       decision = 'HOLD';
       reason = 'HOLD: realtime trend unknown; waiting fresh trend or final ST 15m bullish cache';
@@ -580,7 +590,7 @@ async function evaluateDeployConditions(entry) {
       };
     }
 
-    const liveSnapshot = await getCachedMarketSnapshot(mint, poolAddress || null, entry.symbol || '');
+    const liveSnapshot = await getCachedMarketSnapshot(mint, poolAddress || null, entry.symbol || '', { includeEntryCandles5m: true });
     entry.lastLiveSnapshot = liveSnapshot || entry.lastLiveSnapshot || null;
     if (liveSnapshot) {
       const liveSignals = summarizeQueueDecision({ meta, liveSnapshot, cfg, lpMode });
@@ -651,7 +661,7 @@ async function evaluateDeployConditions(entry) {
     };
   }
 
-  const liveSnapshot = await getCachedMarketSnapshot(mint, poolAddress || null, entry.symbol || '');
+  const liveSnapshot = await getCachedMarketSnapshot(mint, poolAddress || null, entry.symbol || '', { includeEntryCandles5m: true });
   entry.lastLiveSnapshot = liveSnapshot || entry.lastLiveSnapshot || null;
   if (liveSnapshot) {
     const liveSignals = summarizeQueueDecision({ meta, liveSnapshot, cfg, lpMode });
