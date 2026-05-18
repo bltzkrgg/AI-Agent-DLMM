@@ -22,6 +22,11 @@ const _meridianFallbackCache = new Map(); // key -> { at, value }
 const METEORA_OHLCV_CACHE_TTL_MS = 45_000;
 const METEORA_OHLCV_FAILURE_MIN_COOLDOWN_MS = 120_000;
 const METEORA_OHLCV_FAILURE_MAX_COOLDOWN_MS = 300_000;
+const METEORA_OHLCV_WINDOW_SEC = 6 * 60 * 60;
+const METEORA_OHLCV_CANDLE_SEC = 300;
+const METEORA_OHLCV_CLOSE_BUFFER_SEC = 15;
+const METEORA_MIN_ENTRY_5M_CANDLES = 13;
+const METEORA_MIN_AGG_15M_CANDLES = 10;
 const _meteoraOhlcvCache = new Map(); // key -> { at, candles, timeframe }
 const _meteoraOhlcvFailureState = new Map(); // key -> { failCount, cooldownUntil, reason }
 
@@ -98,7 +103,7 @@ async function fetchMeteoraDlmmOhlcv5m(poolAddress = '') {
   const now = Date.now();
   const cached = _meteoraOhlcvCache.get(key);
   if (cached && (now - cached.at) <= METEORA_OHLCV_CACHE_TTL_MS) {
-    return { candles: cached.candles, timeframe, trace: 'cache_hit', cacheHit: true };
+    return { candles: cached.candles, timeframe, trace: 'cache_hit', cacheHit: true, request: cached.request || null };
   }
 
   const failureState = _meteoraOhlcvFailureState.get(key);
@@ -112,7 +117,10 @@ async function fetchMeteoraDlmmOhlcv5m(poolAddress = '') {
     };
   }
 
-  const url = `${METEORA_DLMM_DATAPI}/pools/${poolAddress}/ohlcv?timeframe=5m`;
+  const endTime = Math.floor(Date.now() / 1000);
+  const startTime = endTime - METEORA_OHLCV_WINDOW_SEC;
+  const url = `${METEORA_DLMM_DATAPI}/pools/${poolAddress}/ohlcv?timeframe=5m&start_time=${startTime}&end_time=${endTime}`;
+  const requestMeta = { timeframe, startTime, endTime };
   try {
     const res = await fetchWithTimeout(url, { headers: { Accept: 'application/json' } }, 4500);
     if (!res.ok) {
@@ -123,7 +131,7 @@ async function fetchMeteoraDlmmOhlcv5m(poolAddress = '') {
         cooldownUntil: Date.now() + cooldownMs,
         reason: `status_${res.status}`,
       });
-      return { candles: null, timeframe, trace: `status_${res.status}`, status: res.status };
+      return { candles: null, timeframe, trace: `status_${res.status}`, status: res.status, request: requestMeta };
     }
 
     const json = await res.json().catch(() => null);
@@ -146,12 +154,12 @@ async function fetchMeteoraDlmmOhlcv5m(poolAddress = '') {
         cooldownUntil: Date.now() + cooldownMs,
         reason: 'empty',
       });
-      return { candles: null, timeframe, trace: 'empty' };
+      return { candles: null, timeframe, trace: 'empty', request: requestMeta };
     }
 
-    _meteoraOhlcvCache.set(key, { at: Date.now(), candles, timeframe });
+    _meteoraOhlcvCache.set(key, { at: Date.now(), candles, timeframe, request: requestMeta });
     _meteoraOhlcvFailureState.delete(key);
-    return { candles, timeframe: String(json?.timeframe || timeframe).toLowerCase(), trace: 'success' };
+    return { candles, timeframe: String(json?.timeframe || timeframe).toLowerCase(), trace: 'success', request: requestMeta };
   } catch {
     const nextFailCount = Math.max(1, Number(failureState?.failCount || 0) + 1);
     const cooldownMs = getMeteoraFailureCooldownMs(nextFailCount);
@@ -160,24 +168,58 @@ async function fetchMeteoraDlmmOhlcv5m(poolAddress = '') {
       cooldownUntil: Date.now() + cooldownMs,
       reason: 'network_error',
     });
-    return { candles: null, timeframe, trace: 'network_error' };
+    return { candles: null, timeframe, trace: 'network_error', request: requestMeta };
   }
 }
 
 async function buildOHLCVFromMeteoraDlmm(tokenMint, poolAddress = '', options = {}) {
   if (!poolAddress) return null;
   const fetched = await fetchMeteoraDlmmOhlcv5m(poolAddress);
-  if (!Array.isArray(fetched?.candles) || fetched.candles.length === 0) {
+  if (!Array.isArray(fetched?.candles)) {
     return fetched?.blockedByCooldown
-      ? { source: 'unknown', historySuccess: false, trace: fetched.trace }
+      ? { source: 'unknown', historySuccess: false, trace: fetched.trace, providerTrace: { meteoraDlmm: fetched.trace || 'cooldown' } }
       : null;
   }
 
-  const closed5m = fetched.candles.slice();
+  const nowSec = Math.floor(Date.now() / 1000);
+  const rawCandles = fetched.candles.slice().sort((a, b) => a.time - b.time);
+  const closed5m = rawCandles.filter((c) => (Number(c.time) + METEORA_OHLCV_CANDLE_SEC) <= (nowSec - METEORA_OHLCV_CLOSE_BUFFER_SEC));
+  const droppedOpenCandle = rawCandles.length > closed5m.length;
   const last5m = closed5m[closed5m.length - 1] || null;
-  if (!last5m) return null;
+  if (!last5m) {
+    return {
+      tokenMint,
+      poolAddress,
+      timeframe: '5m',
+      source: 'meteora-dlmm-ohlcv',
+      currentPrice: 0,
+      priceChangeM5: 0,
+      priceChangeH1: 0,
+      trend: 'SIDEWAYS',
+      historySuccess: false,
+      ta: {
+        supertrend: { trend: 'UNKNOWN', value: null, atr: null, changed: false, source: 'Meteora-DLMM-5m' },
+        candleCount: 0,
+        historySuccess: false,
+      },
+      providerTrace: {
+        meteoraDlmm: 'METEORA_OHLCV_NO_CLOSED_CANDLE',
+        timeframe: fetched?.request?.timeframe || '5m',
+        startTime: fetched?.request?.startTime || null,
+        endTime: fetched?.request?.endTime || null,
+        rawCandleCount: rawCandles.length,
+        closedCandleCount: 0,
+        droppedOpenCandle,
+        enough5m: false,
+        aggregated15mCount: 0,
+        enough15m: false,
+        finalHistorySuccess: false,
+        reason: 'METEORA_OHLCV_NO_CLOSED_CANDLE',
+      },
+    };
+  }
 
-  const enough5m = closed5m.length >= 12;
+  const enough5m = closed5m.length >= METEORA_MIN_ENTRY_5M_CANDLES;
   const changeBase = closed5m.length >= 2 ? closed5m[closed5m.length - 2].close : null;
   const priceChangeM5 = Number.isFinite(changeBase) && changeBase > 0
     ? Number((((last5m.close - changeBase) / changeBase) * 100).toFixed(4))
@@ -187,14 +229,22 @@ async function buildOHLCVFromMeteoraDlmm(tokenMint, poolAddress = '', options = 
     ? Number((((last5m.close - h1Base) / h1Base) * 100).toFixed(4))
     : 0;
   const agg15m = aggregate5mTo15m(closed5m);
-  const st = agg15m.length >= 10 ? ta.calculateSupertrend(agg15m, 10, 3) : null;
-  const trend = st?.trend || 'NEUTRAL';
+  const enough15m = agg15m.length >= METEORA_MIN_AGG_15M_CANDLES;
+  const st = enough15m ? ta.calculateSupertrend(agg15m, 10, 3) : null;
+  const trend = enough15m ? (st?.trend || 'UNKNOWN') : 'UNKNOWN';
   const maxHigh = Math.max(...closed5m.map((c) => c.high));
   const minLow = Math.min(...closed5m.map((c) => c.low));
   const range24hPct = last5m.close > 0 ? Math.abs(((maxHigh - minLow) / last5m.close) * 100) : 0;
   const historyAgeMinutes = Number(((Date.now() / 1000 - last5m.time) / 60).toFixed(2));
+  const stale5m = historyAgeMinutes > 20;
+  const entry5mHistorySuccess = enough5m && !stale5m;
+  const aggregated15mHistorySuccess = enough15m && !stale5m;
+  const historySuccess = entry5mHistorySuccess;
   const includeEntryCandles5m = options?.includeEntryCandles5m === true;
   const entryCandles5m = includeEntryCandles5m ? closed5m.slice(-30) : [];
+  const insufficientReason = !entry5mHistorySuccess
+    ? (stale5m ? 'METEORA_OHLCV_STALE' : 'METEORA_OHLCV_INSUFFICIENT_CANDLES')
+    : (!aggregated15mHistorySuccess ? 'METEORA_OHLCV_INSUFFICIENT_15M_AGG' : 'METEORA_OHLCV_OK');
 
   return {
     tokenMint,
@@ -210,9 +260,11 @@ async function buildOHLCVFromMeteoraDlmm(tokenMint, poolAddress = '', options = 
     range24hPct: parseFloat(range24hPct.toFixed(2)),
     buyVolume: 0,
     sellVolume: 0,
-    trend: (priceChangeM5 > 1.5 && priceChangeH1 > 0) ? 'UPTREND'
-      : (priceChangeM5 < -1.5 && priceChangeH1 < 0) ? 'DOWNTREND'
-        : 'SIDEWAYS',
+    trend: historySuccess
+      ? ((priceChangeM5 > 1.5 && priceChangeH1 > 0) ? 'UPTREND'
+        : (priceChangeM5 < -1.5 && priceChangeH1 < 0) ? 'DOWNTREND'
+          : 'SIDEWAYS')
+      : 'SIDEWAYS',
     volatilityCategory: range24hPct > 20 ? 'HIGH' : range24hPct > 7 ? 'MEDIUM' : 'LOW',
     entryCandleTimeframe: '5m',
     entryCandles5m,
@@ -226,27 +278,45 @@ async function buildOHLCVFromMeteoraDlmm(tokenMint, poolAddress = '', options = 
         source: agg15m.length >= 10 ? 'Meteora-DLMM-5m->15m' : 'Meteora-DLMM-5m',
       },
       candleCount: agg15m.length,
-      historySuccess: enough5m,
+      historySuccess,
+      entry5mHistorySuccess,
+      aggregated15mHistorySuccess,
+      fullTrendHistorySuccess: entry5mHistorySuccess && aggregated15mHistorySuccess,
       "Evil Panda": {
         entry: {
-          triggered: trend === 'BULLISH',
+          triggered: historySuccess && trend === 'BULLISH',
           reason: trend === 'BULLISH'
             ? `EVIL PANDA TREND: Supertrend 15m bullish (${agg15m.length} candles, Meteora 5m aggregate).`
             : null,
         },
         exit: {
-          triggered: trend === 'BEARISH',
+          triggered: historySuccess && trend === 'BEARISH',
           reason: trend === 'BEARISH'
             ? 'TREND EXIT: Supertrend 15m bearish (Meteora 5m aggregate).'
             : null,
         },
       },
     },
-    historySuccess: enough5m,
+    entry5mHistorySuccess,
+    aggregated15mHistorySuccess,
+    historySuccess,
+    fallbackReliable: historySuccess,
     historyAgeMinutes,
     historyWindowSec: closed5m.length >= 2 ? safeNum(closed5m[closed5m.length - 1].time - closed5m[0].time) : 0,
     providerTrace: {
-      meteoraDlmm: fetched.trace || 'success',
+      meteoraDlmm: insufficientReason === 'METEORA_OHLCV_OK' ? (fetched.trace || 'success') : insufficientReason,
+      timeframe: fetched?.request?.timeframe || '5m',
+      startTime: fetched?.request?.startTime || null,
+      endTime: fetched?.request?.endTime || null,
+      rawCandleCount: rawCandles.length,
+      closedCandleCount: closed5m.length,
+      droppedOpenCandle,
+      enough5m: entry5mHistorySuccess,
+      aggregated15mCount: agg15m.length,
+      enough15m: aggregated15mHistorySuccess,
+      finalHistorySuccess: historySuccess,
+      fullTrendHistorySuccess: entry5mHistorySuccess && aggregated15mHistorySuccess,
+      reason: insufficientReason,
       dexCandles: 'skipped',
       birdeye: 'skipped',
     },
