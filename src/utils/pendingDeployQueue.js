@@ -488,16 +488,19 @@ export async function ensureFinalEntryCandleSanity(args = {}) {
     console.log(`[QUEUE] FINAL_CANDLE_GATE_PASS ${label}/${mintShort} source=${decision.source || 'cache'} reason=${decision.reason}`);
   } else {
     if (mode === 'lp_simple_m15') {
+      const m15Open = Number.isFinite(decision?.candle?.open) ? Number(decision.candle.open).toFixed(8) : 'na';
+      const m15Close = Number.isFinite(decision?.candle?.close) ? Number(decision.candle.close).toFixed(8) : 'na';
       const m15AgeSec = Number.isFinite(decision.m15AgeSec) ? Number(decision.m15AgeSec).toFixed(1) : 'na';
       const m15Volume = Number.isFinite(decision.m15Volume) ? Number(decision.m15Volume).toFixed(4) : 'na';
       const m15AvgVolume = Number.isFinite(decision.m15AvgVolume) ? Number(decision.m15AvgVolume).toFixed(4) : 'na';
       const m15VolumeRatio = Number.isFinite(decision.m15VolumeRatio) ? Number(decision.m15VolumeRatio).toFixed(3) : 'na';
+      const m15MinVolumeRatio = Number.isFinite(decision.m15MinVolumeRatio) ? Number(decision.m15MinVolumeRatio).toFixed(3) : 'na';
       const m15Pct = Number.isFinite(decision.m15Pct) ? `${Number(decision.m15Pct).toFixed(2)}%` : 'na';
       console.log(
         `[QUEUE] FINAL_CANDLE_GATE_HOLD ${label}/${mintShort} ` +
         `entryDecisionMode=${mode} source=${decision.source || 'unknown'} reason=${decision.reason} ` +
         `cfg[m15MaxAgeSec=${Number(cfg.entryM15MaxAgeSec ?? 1800)},m15MinRatio=${Number(cfg.entryM15MinVolumeRatio ?? 0.7)},m15Lookback=${Number(cfg.entryM15VolumeLookbackCandles ?? 8)},m15Green=${cfg.entryM15RequireGreenCandle !== false},m15VolConfirm=${cfg.entryM15RequireVolumeConfirm !== false}] ` +
-        `obs[m15AgeSec=${m15AgeSec},m15Pct=${m15Pct},m15Vol=${m15Volume},m15AvgVol=${m15AvgVolume},m15VolRatio=${m15VolumeRatio}]`
+        `obs[m15AgeSec=${m15AgeSec},m15Open=${m15Open},m15Close=${m15Close},m15Pct=${m15Pct},m15Vol=${m15Volume},m15AvgVol=${m15AvgVolume},m15VolRatio=${m15VolumeRatio},m15MinVolumeRatio=${m15MinVolumeRatio}]`
       );
     } else {
       const ageSec = Number.isFinite(decision.ageSec) ? Number(decision.ageSec).toFixed(1) : 'na';

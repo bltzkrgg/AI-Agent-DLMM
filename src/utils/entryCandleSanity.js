@@ -58,6 +58,15 @@ function getEntryCandles5m(ohlcv = {}) {
   return [];
 }
 
+const FIVE_MIN_MS = 5 * 60 * 1000;
+const CLOSED_5M_BUFFER_MS = 15 * 1000;
+
+function filterClosed5mCandles(candles = [], now = Date.now()) {
+  const nowMs = Number(now);
+  if (!Number.isFinite(nowMs)) return candles;
+  return candles.filter((candle) => Number(candle?.timeMs) + FIVE_MIN_MS <= (nowMs - CLOSED_5M_BUFFER_MS));
+}
+
 export function aggregateClosed5mCandlesToClosedM15(candles5m = []) {
   if (!Array.isArray(candles5m) || candles5m.length < 3) return [];
   const buckets = new Map();
@@ -98,7 +107,8 @@ function evaluateLpSimpleM15Sanity({
   cfg = {},
   now = Date.now(),
 } = {}) {
-  const candlesM15 = aggregateClosed5mCandlesToClosedM15(candles5m);
+  const closed5m = filterClosed5mCandles(candles5m, now);
+  const candlesM15 = aggregateClosed5mCandlesToClosedM15(closed5m);
   const last = candlesM15[candlesM15.length - 1] || null;
   const maxAgeSec = Math.max(1, Number(cfg.entryM15MaxAgeSec ?? 1800) || 1800);
 

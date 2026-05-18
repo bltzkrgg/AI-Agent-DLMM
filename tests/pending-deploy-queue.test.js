@@ -82,6 +82,41 @@ function makeAligned5mCandles({
   return candles;
 }
 
+function makeDerivedM15Backed5m({
+  nowSec = Math.floor(Date.now() / 1000),
+  m15Series = [],
+} = {}) {
+  const endBucketSec = Math.floor(nowSec / 900) * 900;
+  const startBucketSec = endBucketSec - (m15Series.length * 900);
+  const candles = [];
+  for (let i = 0; i < m15Series.length; i++) {
+    const item = m15Series[i] || {};
+    const bucketSec = startBucketSec + (i * 900);
+    const open = Number(item.open ?? 100);
+    const close = Number(item.close ?? open);
+    const volume = Math.max(0, Number(item.volume ?? 100));
+    const step = (close - open) / 3;
+    const close1 = open + step;
+    const close2 = close1 + step;
+    const c1 = { open, close: close1, volume: volume / 3 };
+    const c2 = { open: close1, close: close2, volume: volume / 3 };
+    const c3 = { open: close2, close, volume: volume / 3 };
+    const parts = [c1, c2, c3];
+    for (let p = 0; p < parts.length; p++) {
+      const part = parts[p];
+      candles.push({
+        time: bucketSec + (p * 300),
+        open: part.open,
+        high: Math.max(part.open, part.close) + 0.5,
+        low: Math.min(part.open, part.close) - 0.5,
+        close: part.close,
+        volume: part.volume,
+      });
+    }
+  }
+  return candles;
+}
+
 test('fresh deploy meta allows breakout-valid, high-readiness entries including LP live timing', () => {
   assert.equal(isFreshDeployMeta({
     entryTimingState: 'BREAKOUT',
@@ -382,6 +417,29 @@ test('lp_simple_m15 keeps M5 hold when hard gate enabled', () => {
   assert.match(decision.reason, /M5 non-positive/i);
 });
 
+test('lp_simple_m15 still blocks bearish trend', () => {
+  const decision = summarizeQueueDecision({
+    meta: {
+      entryTimingState: 'LP_LIVE',
+      entryReadiness: 'HIGH',
+      breakoutQuality: 'VALID',
+      queueTrustedWatch: true,
+    },
+    liveSnapshot: {
+      dataSource: 'meteora-dlmm-ohlcv',
+      quality: { taTrend: 'BEARISH' },
+      ohlcv: { source: 'meteora-dlmm-ohlcv', priceChangeM5: 0.3, historySuccess: true },
+      ta: { supertrend: { trend: 'BEARISH' } },
+    },
+    cfg: {
+      entryDecisionMode: 'lp_simple_m15',
+      entryM5HardGateEnabled: false,
+    },
+    lpMode: true,
+  });
+  assert.equal(decision.decision, 'DROP');
+});
+
 test('final Supertrend deploy gate allows only fresh bullish cache', async () => {
   const now = 1_700_000_000_000;
 
@@ -670,6 +728,46 @@ test('aggregates closed 5m candles into closed M15 candles with complete buckets
   assert.equal(m15[0].volume, 60);
 });
 
+test('lp_simple_m15 ignores running/open 5m candle for derived M15 gate', () => {
+  const now = 1_700_002_100_000;
+  const nowSec = Math.floor(now / 1000);
+  const candles5m = makeDerivedM15Backed5m({
+    nowSec,
+    m15Series: [
+      { open: 100, close: 102, volume: 110 },
+      { open: 102, close: 104, volume: 120 },
+      { open: 104, close: 106, volume: 140 },
+    ],
+  });
+
+  // Running candle: should be ignored by lp_simple_m15 closed-5m filter.
+  candles5m.push({
+    time: Math.floor(nowSec / 300) * 300,
+    open: 200,
+    high: 205,
+    low: 180,
+    close: 180,
+    volume: 9999,
+  });
+
+  const decision = evaluateEntryCandleSanity({
+    snapshot: { ohlcv: { source: 'meteora-dlmm-ohlcv', entryCandles5m: candles5m } },
+    cfg: {
+      entryCandleSanityEnabled: true,
+      entryDecisionMode: 'lp_simple_m15',
+      entryM15RequireGreenCandle: true,
+      entryM15RequireVolumeConfirm: true,
+      entryM15MinVolumeRatio: 0.7,
+      entryM15VolumeLookbackCandles: 2,
+      entryM15MaxAgeSec: 1800,
+    },
+    now,
+  });
+
+  assert.equal(decision.ok, true);
+  assert.equal(decision.reason, 'entry M15 sanity pass');
+});
+
 test('lp_simple_m15 entry sanity uses derived M15 candle and does not require M5 gate', () => {
   const now = 1_700_001_800_000;
   const nowSec = Math.floor(now / 1000);
@@ -706,6 +804,62 @@ test('lp_simple_m15 entry sanity uses derived M15 candle and does not require M5
   assert.equal(Number.isFinite(decision.m15VolumeRatio), true);
 });
 
+test('lp_simple_m15 entry sanity holds red last M15 candle with M15 wording', () => {
+  const now = 1_700_001_800_000;
+  const nowSec = Math.floor(now / 1000);
+  const candles5m = makeDerivedM15Backed5m({
+    nowSec,
+    m15Series: [
+      { open: 100, close: 102, volume: 100 },
+      { open: 102, close: 104, volume: 100 },
+      { open: 104, close: 101, volume: 120 },
+    ],
+  });
+
+  const decision = evaluateEntryCandleSanity({
+    snapshot: { ohlcv: { source: 'meteora-dlmm-ohlcv', entryCandles5m: candles5m } },
+    cfg: {
+      entryCandleSanityEnabled: true,
+      entryDecisionMode: 'lp_simple_m15',
+      entryM15RequireGreenCandle: true,
+      entryM15RequireVolumeConfirm: false,
+      entryM15MaxAgeSec: 1800,
+    },
+    now,
+  });
+  assert.equal(decision.ok, false);
+  assert.equal(decision.reason, 'HOLD: last closed M15 candle not green');
+});
+
+test('lp_simple_m15 entry sanity holds thin M15 volume with M15 wording', () => {
+  const now = 1_700_001_800_000;
+  const nowSec = Math.floor(now / 1000);
+  const candles5m = makeDerivedM15Backed5m({
+    nowSec,
+    m15Series: [
+      { open: 100, close: 102, volume: 100 },
+      { open: 102, close: 104, volume: 100 },
+      { open: 104, close: 106, volume: 40 },
+    ],
+  });
+
+  const decision = evaluateEntryCandleSanity({
+    snapshot: { ohlcv: { source: 'meteora-dlmm-ohlcv', entryCandles5m: candles5m } },
+    cfg: {
+      entryCandleSanityEnabled: true,
+      entryDecisionMode: 'lp_simple_m15',
+      entryM15RequireGreenCandle: true,
+      entryM15RequireVolumeConfirm: true,
+      entryM15MinVolumeRatio: 0.7,
+      entryM15VolumeLookbackCandles: 2,
+      entryM15MaxAgeSec: 1800,
+    },
+    now,
+  });
+  assert.equal(decision.ok, false);
+  assert.equal(decision.reason, 'HOLD: M15 candle volume below threshold');
+});
+
 test('lp_simple_m15 entry sanity holds when M15 lookback is unavailable', () => {
   const now = 1_700_001_800_000;
   const nowSec = Math.floor(now / 1000);
@@ -738,6 +892,46 @@ test('lp_simple_m15 entry sanity holds when M15 lookback is unavailable', () => 
 
   assert.equal(decision.ok, false);
   assert.equal(decision.code, 'M15_VOLUME_LOOKBACK_UNAVAILABLE');
+});
+
+test('lp_simple_m15 entry sanity holds stale or missing derived M15', () => {
+  const now = 1_700_001_800_000;
+  const staleNowSec = Math.floor((now - (4 * 60 * 60 * 1000)) / 1000);
+  const staleCandles = makeDerivedM15Backed5m({
+    nowSec: staleNowSec,
+    m15Series: [
+      { open: 100, close: 101, volume: 100 },
+      { open: 101, close: 102, volume: 100 },
+      { open: 102, close: 103, volume: 100 },
+    ],
+  });
+  const stale = evaluateEntryCandleSanity({
+    snapshot: { ohlcv: { source: 'meteora-dlmm-ohlcv', entryCandles5m: staleCandles } },
+    cfg: {
+      entryCandleSanityEnabled: true,
+      entryDecisionMode: 'lp_simple_m15',
+      entryM15RequireGreenCandle: true,
+      entryM15RequireVolumeConfirm: false,
+      entryM15MaxAgeSec: 1800,
+    },
+    now,
+  });
+  assert.equal(stale.ok, false);
+  assert.equal(stale.reason, 'HOLD: M15 candle sanity unavailable/stale');
+
+  const missing = evaluateEntryCandleSanity({
+    snapshot: { ohlcv: { source: 'meteora-dlmm-ohlcv', entryCandles5m: [{ time: Math.floor(now / 1000) - 60, open: 1, high: 1, low: 1, close: 1, volume: 1 }] } },
+    cfg: {
+      entryCandleSanityEnabled: true,
+      entryDecisionMode: 'lp_simple_m15',
+      entryM15RequireGreenCandle: true,
+      entryM15RequireVolumeConfirm: false,
+      entryM15MaxAgeSec: 1800,
+    },
+    now,
+  });
+  assert.equal(missing.ok, false);
+  assert.equal(missing.reason, 'HOLD: M15 candle sanity unavailable/stale');
 });
 
 test('final entry candle sanity can be bypassed when entryCandleSanityEnabled=false', async () => {
@@ -793,6 +987,53 @@ test('final entry candle hold log prints runtime cfg knobs', async () => {
   assert.match(holdLine, /volConfirm=true/);
 });
 
+test('lp_simple_m15 final gate hold log and reason use M15 wording', async () => {
+  const now = 1_700_001_800_000;
+  const logs = [];
+  const originalLog = console.log;
+  console.log = (...args) => logs.push(args.join(' '));
+  try {
+    const decision = await ensureFinalEntryCandleSanity({
+      mint: 'Mint111111111111111111111111111111111111111',
+      symbol: 'TESTM15',
+      now,
+      cfg: {
+        entryCandleSanityEnabled: true,
+        entryDecisionMode: 'lp_simple_m15',
+        entryM15RequireGreenCandle: true,
+        entryM15RequireVolumeConfirm: false,
+        entryM15MaxAgeSec: 1800,
+      },
+      pool: {
+        _marketSnapshot: {
+          ohlcv: {
+            source: 'meteora-dlmm-ohlcv',
+            entryCandles5m: makeDerivedM15Backed5m({
+              nowSec: Math.floor(now / 1000),
+              m15Series: [
+                { open: 100, close: 102, volume: 100 },
+                { open: 102, close: 104, volume: 100 },
+                { open: 104, close: 103, volume: 100 },
+              ],
+            }),
+          },
+        },
+      },
+      snapshotFn: async () => null,
+    });
+    assert.equal(decision.ok, false);
+    assert.equal(decision.reason, 'HOLD: last closed M15 candle not green');
+  } finally {
+    console.log = originalLog;
+  }
+
+  const holdLine = logs.find((line) => line.includes('FINAL_CANDLE_GATE_HOLD')) || '';
+  assert.match(holdLine, /entryDecisionMode=lp_simple_m15/);
+  assert.match(holdLine, /reason=HOLD: last closed M15 candle not green/);
+  assert.match(holdLine, /m15Open=/);
+  assert.match(holdLine, /m15Close=/);
+});
+
 test('manual CA final gate does not pass generic taTrend snapshot cache', () => {
   const hunterSrc = readFileSync(new URL('../src/agents/hunterAlpha.js', import.meta.url), 'utf8');
   const start = hunterSrc.indexOf('const manualStGate = await ensureFinalSupertrendBullish({');
@@ -810,6 +1051,7 @@ test('hunter scout logic keeps strict gates and supports lp_simple_m15 mode over
   assert.match(hunterSrc, /\(m5HardGateEnabled \|\| !lpSimpleM15Mode\) && priceChangeM5 <= 0/);
   assert.match(hunterSrc, /deferOnM15PreviousUnknown && !Number\.isFinite\(priceChangeM15Prev\)/);
   assert.match(hunterSrc, /Mode lp_simple_m15 aktif: M15 jadi konfirmasi utama/);
+  assert.match(hunterSrc, /Jika TA M15 Previous = UNKNOWN, JANGAN auto-DEFER/);
 });
 
 test('checkSupertrendVeto only passes exact bullish direction', async () => {
