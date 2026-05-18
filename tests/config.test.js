@@ -132,6 +132,14 @@ test('safer defaults stay conservative for real-capital usage', async () => {
   assert.equal(cfg.entryMinVolumeRatio, 1.5);
   assert.equal(cfg.entryVolumeLookbackCandles, 12);
   assert.equal(cfg.entryCandleMaxAgeSec, 420);
+  assert.equal(cfg.entryDecisionMode, 'strict');
+  assert.equal(cfg.entryM15RequireGreenCandle, true);
+  assert.equal(cfg.entryM15RequireVolumeConfirm, true);
+  assert.equal(cfg.entryM15MinVolumeRatio, 0.7);
+  assert.equal(cfg.entryM15VolumeLookbackCandles, 8);
+  assert.equal(cfg.entryM15MaxAgeSec, 1800);
+  assert.equal(cfg.entryM5HardGateEnabled, true);
+  assert.equal(cfg.entryDeferOnM15PreviousUnknown, true);
   assert.equal(cfg.deployQueueHoldNotifyCooldownSec, 180);
   assert.deepEqual(cfg.allowedBinSteps, [100, 125]);
 });
@@ -150,6 +158,14 @@ test('user-config.example includes pool pattern learning keys', () => {
   assert.equal(parsed.entryMinVolumeRatio, 1.5);
   assert.equal(parsed.entryVolumeLookbackCandles, 12);
   assert.equal(parsed.entryCandleMaxAgeSec, 420);
+  assert.equal(parsed.entryDecisionMode, 'strict');
+  assert.equal(parsed.entryM15RequireGreenCandle, true);
+  assert.equal(parsed.entryM15RequireVolumeConfirm, true);
+  assert.equal(parsed.entryM15MinVolumeRatio, 0.7);
+  assert.equal(parsed.entryM15VolumeLookbackCandles, 8);
+  assert.equal(parsed.entryM15MaxAgeSec, 1800);
+  assert.equal(parsed.entryM5HardGateEnabled, true);
+  assert.equal(parsed.entryDeferOnM15PreviousUnknown, true);
   assert.equal(parsed.deployQueueHoldNotifyCooldownSec, 180);
   assert.equal(parsed.maxMcap, 0);
 });
@@ -224,6 +240,80 @@ test('nested entry config keys flatten into runtime config', async () => {
   assert.equal(cfg.entryCandleMaxAgeSec, 900);
   assert.equal(configModule.resolveNestedKey('entry.minVolumeRatio')?.flatKey, 'entryMinVolumeRatio');
   assert.equal(configModule.resolveNestedKey('entry.candleMaxAgeSec')?.flatKey, 'entryCandleMaxAgeSec');
+  assert.equal(configModule.resolveNestedKey('entry.decisionMode')?.flatKey, 'entryDecisionMode');
+  assert.equal(configModule.resolveNestedKey('entry.m15MinVolumeRatio')?.flatKey, 'entryM15MinVolumeRatio');
+  assert.equal(configModule.resolveNestedKey('entry.m15MaxAgeSec')?.flatKey, 'entryM15MaxAgeSec');
+  assert.equal(configModule.resolveNestedKey('entry.m5HardGateEnabled')?.flatKey, 'entryM5HardGateEnabled');
+  assert.equal(configModule.resolveNestedKey('entry.deferOnM15PreviousUnknown')?.flatKey, 'entryDeferOnM15PreviousUnknown');
+});
+
+test('lp_simple_m15 mode defaults m5 hard gate and previous unknown defer to false unless explicitly set', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'dlmm-lp-simple-m15-defaults-'));
+  const configPath = join(root, 'user-config.json');
+  writeFileSync(configPath, JSON.stringify({
+    entryDecisionMode: 'lp_simple_m15',
+  }, null, 2), 'utf-8');
+  process.env.BOT_CONFIG_PATH = configPath;
+  let configModule = await importFresh(join(repoRoot, 'src/config.js'));
+  let cfg = configModule.getConfig();
+  assert.equal(cfg.entryDecisionMode, 'lp_simple_m15');
+  assert.equal(cfg.entryM5HardGateEnabled, false);
+  assert.equal(cfg.entryDeferOnM15PreviousUnknown, false);
+
+  writeFileSync(configPath, JSON.stringify({
+    entryDecisionMode: 'lp_simple_m15',
+    entryM5HardGateEnabled: true,
+    entryDeferOnM15PreviousUnknown: true,
+  }, null, 2), 'utf-8');
+  configModule = await importFresh(join(repoRoot, 'src/config.js'));
+  cfg = configModule.getConfig();
+  assert.equal(cfg.entryM5HardGateEnabled, true);
+  assert.equal(cfg.entryDeferOnM15PreviousUnknown, true);
+});
+
+test('nested lp_simple_m15 entry config maps correctly to flat runtime keys', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'dlmm-entry-lp-simple-nested-'));
+  const configPath = join(root, 'user-config.json');
+  writeFileSync(configPath, JSON.stringify({
+    entry: {
+      decisionMode: 'lp_simple_m15',
+      m15RequireGreenCandle: true,
+      m15RequireVolumeConfirm: false,
+      m15MinVolumeRatio: 0.9,
+      m15VolumeLookbackCandles: 9,
+      m15MaxAgeSec: 1500,
+      m5HardGateEnabled: true,
+      deferOnM15PreviousUnknown: true,
+    },
+  }, null, 2), 'utf-8');
+
+  process.env.BOT_CONFIG_PATH = configPath;
+  const configModule = await importFresh(join(repoRoot, 'src/config.js'));
+  const cfg = configModule.getConfig();
+
+  assert.equal(cfg.entryDecisionMode, 'lp_simple_m15');
+  assert.equal(cfg.entryM15RequireGreenCandle, true);
+  assert.equal(cfg.entryM15RequireVolumeConfirm, false);
+  assert.equal(cfg.entryM15MinVolumeRatio, 0.9);
+  assert.equal(cfg.entryM15VolumeLookbackCandles, 9);
+  assert.equal(cfg.entryM15MaxAgeSec, 1500);
+  assert.equal(cfg.entryM5HardGateEnabled, true);
+  assert.equal(cfg.entryDeferOnM15PreviousUnknown, true);
+});
+
+test('entryDecisionMode updateConfig validates strict/lp_simple_m15 enum', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'dlmm-entry-decision-mode-enum-'));
+  const configPath = join(root, 'user-config.json');
+  process.env.BOT_CONFIG_PATH = configPath;
+  const configModule = await importFresh(join(repoRoot, 'src/config.js'));
+
+  configModule.updateConfig({ entryDecisionMode: 'invalid_mode' });
+  let cfg = configModule.getConfig();
+  assert.equal(cfg.entryDecisionMode, 'strict');
+
+  configModule.updateConfig({ entryDecisionMode: 'lp_simple_m15' });
+  cfg = configModule.getConfig();
+  assert.equal(cfg.entryDecisionMode, 'lp_simple_m15');
 });
 
 test('realtime PnL terminal interval is configurable', async () => {
@@ -398,9 +488,14 @@ test('/setconfig whitelist is curated for operational keys only', async () => {
   assert.equal(keys.includes('poolImpactGuardEnabled'), true);
   assert.equal(keys.includes('poolPatternLearningEnabled'), true);
   assert.equal(keys.includes('entryCandleSanityEnabled'), true);
+  assert.equal(keys.includes('entryDecisionMode'), true);
   assert.equal(keys.includes('entryMinVolumeRatio'), true);
   assert.equal(keys.includes('entryCandleMaxAgeSec'), true);
   assert.equal(keys.includes('entryRequireVolumeConfirm'), true);
+  assert.equal(keys.includes('entryM15MinVolumeRatio'), true);
+  assert.equal(keys.includes('entryM15MaxAgeSec'), true);
+  assert.equal(keys.includes('entryM5HardGateEnabled'), true);
+  assert.equal(keys.includes('entryDeferOnM15PreviousUnknown'), true);
   assert.equal(keys.includes('deployQueueHoldNotifyCooldownSec'), true);
   assert.equal(keys.includes('entryRequireGreenCandle'), false);
   assert.equal(keys.includes('entryVolumeLookbackCandles'), false);

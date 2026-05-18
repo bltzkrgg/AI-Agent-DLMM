@@ -58,6 +58,14 @@ const DEFAULTS = {
   entryMinVolumeRatio: 1.5,
   entryVolumeLookbackCandles: 12,
   entryCandleMaxAgeSec: 420,
+  entryDecisionMode: 'strict',
+  entryM15RequireGreenCandle: true,
+  entryM15RequireVolumeConfirm: true,
+  entryM15MinVolumeRatio: 0.7,
+  entryM15VolumeLookbackCandles: 8,
+  entryM15MaxAgeSec: 1800,
+  entryM5HardGateEnabled: true,
+  entryDeferOnM15PreviousUnknown: true,
   taWatchEnabled:       true,
   taWatchMaxPools:      10,
   taWatchExpiryMin:     60,
@@ -283,6 +291,14 @@ const CONFIG_BOUNDS = {
   entryMinVolumeRatio: { min: 0, max: 20 },
   entryVolumeLookbackCandles: { min: 1, max: 100 },
   entryCandleMaxAgeSec: { min: 60, max: 1800 },
+  entryDecisionMode: { type: 'string' },
+  entryM15RequireGreenCandle: { type: 'boolean' },
+  entryM15RequireVolumeConfirm: { type: 'boolean' },
+  entryM15MinVolumeRatio: { min: 0, max: 5 },
+  entryM15VolumeLookbackCandles: { min: 3, max: 50 },
+  entryM15MaxAgeSec: { min: 300, max: 3600 },
+  entryM5HardGateEnabled: { type: 'boolean' },
+  entryDeferOnM15PreviousUnknown: { type: 'boolean' },
   taWatchEnabled:         { type: 'boolean' },
   taWatchMaxPools:        { min: 1, max: 50 },
   taWatchExpiryMin:       { min: 5, max: 720 },
@@ -337,12 +353,20 @@ const NESTED_SECTION_MAP = {
   },
 
   entry: {
+    decisionMode:         'entryDecisionMode',
     candleSanityEnabled:   'entryCandleSanityEnabled',
     requireGreenCandle:    'entryRequireGreenCandle',
     requireVolumeConfirm:  'entryRequireVolumeConfirm',
     minVolumeRatio:        'entryMinVolumeRatio',
     volumeLookbackCandles: 'entryVolumeLookbackCandles',
     candleMaxAgeSec:       'entryCandleMaxAgeSec',
+    m15RequireGreenCandle: 'entryM15RequireGreenCandle',
+    m15RequireVolumeConfirm: 'entryM15RequireVolumeConfirm',
+    m15MinVolumeRatio: 'entryM15MinVolumeRatio',
+    m15VolumeLookbackCandles: 'entryM15VolumeLookbackCandles',
+    m15MaxAgeSec: 'entryM15MaxAgeSec',
+    m5HardGateEnabled: 'entryM5HardGateEnabled',
+    deferOnM15PreviousUnknown: 'entryDeferOnM15PreviousUnknown',
   },
 
   // discovery: parameter pencarian pool Meteora
@@ -515,6 +539,17 @@ export function getConfig() {
   // Failsafe: maxPoolAgeHours tidak boleh 0 atau NaN
   merged.maxPoolAgeHours = (Number(merged.maxPoolAgeHours) > 0) ? Number(merged.maxPoolAgeHours) : 2160;
 
+  // LP Simple M15 mode: default non-M5-hard-gate and no auto-defer on prev unknown,
+  // unless operator explicitly sets the key in user config.
+  if (String(merged.entryDecisionMode || 'strict').toLowerCase() === 'lp_simple_m15') {
+    if (!Object.prototype.hasOwnProperty.call(user, 'entryM5HardGateEnabled')) {
+      merged.entryM5HardGateEnabled = false;
+    }
+    if (!Object.prototype.hasOwnProperty.call(user, 'entryDeferOnM15PreviousUnknown')) {
+      merged.entryDeferOnM15PreviousUnknown = false;
+    }
+  }
+
   return merged;
 }
 
@@ -548,10 +583,15 @@ export const SETCONFIG_WHITELIST = {
   maxMcap:                { section: 'discovery',          type: 'number',  desc: 'Market Cap maksimum token (USD, 0 = tidak filter)' },
 
   // ── Entry Final Sanity ─────────────────────────────────────────
+  entryDecisionMode:      { section: 'entry',              type: 'string',  desc: 'Mode keputusan entry: strict/lp_simple_m15' },
   entryCandleSanityEnabled:{ section: 'entry',              type: 'boolean', desc: 'Aktifkan final candle sanity gate' },
   entryMinVolumeRatio:    { section: 'entry',              type: 'number',  desc: 'Rasio volume candle entry vs rata-rata' },
   entryCandleMaxAgeSec:   { section: 'entry',              type: 'number',  desc: 'Batas usia candle entry (detik)' },
   entryRequireVolumeConfirm:{ section: 'entry',            type: 'boolean', desc: 'Wajib konfirmasi volume candle entry' },
+  entryM15MinVolumeRatio: { section: 'entry',              type: 'number',  desc: 'Rasio minimum volume candle M15' },
+  entryM15MaxAgeSec:      { section: 'entry',              type: 'number',  desc: 'Batas usia candle M15 (detik)' },
+  entryM5HardGateEnabled: { section: 'entry',              type: 'boolean', desc: 'Aktifkan hard gate M5 untuk mode entry' },
+  entryDeferOnM15PreviousUnknown: { section: 'entry',      type: 'boolean', desc: 'Defer saat M15 previous unknown' },
 
   // ── Watch / Queue ────────────────────────────────────────────────
   watchIntervalSec:       { section: 'watch',              type: 'number',  desc: 'Interval cek WATCH aktif (detik, 15–3600)' },
@@ -678,6 +718,13 @@ export function updateConfig(updates) {
     if (key === 'autonomyMode') {
       const mode    = String(value || '').toLowerCase();
       const allowed = ['active', 'paused'];
+      if (!allowed.includes(mode)) { rejected.push(`${key}: must be one of ${allowed.join(', ')}`); continue; }
+      validated[key] = mode;
+      continue;
+    }
+    if (key === 'entryDecisionMode') {
+      const mode = String(value || '').toLowerCase();
+      const allowed = ['strict', 'lp_simple_m15'];
       if (!allowed.includes(mode)) { rejected.push(`${key}: must be one of ${allowed.join(', ')}`); continue; }
       validated[key] = mode;
       continue;

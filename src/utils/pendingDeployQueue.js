@@ -450,7 +450,14 @@ export async function getFinalEntryCandleSanityDecision({
     return { ...decision, source: decision.source || 'cache' };
   }
 
-  if (decision.code !== 'UNAVAILABLE' && decision.code !== 'STALE' && decision.code !== 'VOLUME_LOOKBACK_UNAVAILABLE') {
+  if (
+    decision.code !== 'UNAVAILABLE' &&
+    decision.code !== 'STALE' &&
+    decision.code !== 'VOLUME_LOOKBACK_UNAVAILABLE' &&
+    decision.code !== 'M15_UNAVAILABLE' &&
+    decision.code !== 'M15_STALE' &&
+    decision.code !== 'M15_VOLUME_LOOKBACK_UNAVAILABLE'
+  ) {
     return decision;
   }
 
@@ -475,28 +482,46 @@ export async function ensureFinalEntryCandleSanity(args = {}) {
   const decision = await getFinalEntryCandleSanityDecision(args);
   const label = args.symbol || args.mint?.slice?.(0, 8) || 'UNKNOWN';
   const mintShort = args.mint?.slice?.(0, 8) || 'UNKNOWN';
+  const cfg = args.cfg && typeof args.cfg === 'object' ? args.cfg : getConfig();
+  const mode = String(cfg.entryDecisionMode || 'strict').toLowerCase();
   if (decision.action === 'ALLOW') {
     console.log(`[QUEUE] FINAL_CANDLE_GATE_PASS ${label}/${mintShort} source=${decision.source || 'cache'} reason=${decision.reason}`);
   } else {
-    const cfg = args.cfg && typeof args.cfg === 'object' ? args.cfg : getConfig();
-    const ageSec = Number.isFinite(decision.ageSec) ? Number(decision.ageSec).toFixed(1) : 'na';
-    const lastVolume = Number.isFinite(decision.volume) ? Number(decision.volume).toFixed(4) : 'na';
-    const avgVolume = Number.isFinite(decision.avgVolume) ? Number(decision.avgVolume).toFixed(4) : 'na';
-    const volumeRatio = (Number.isFinite(decision.volume) && Number.isFinite(decision.avgVolume) && decision.avgVolume > 0)
-      ? (Number(decision.volume) / Number(decision.avgVolume)).toFixed(3)
-      : 'na';
-    console.log(
-      `[QUEUE] FINAL_CANDLE_GATE_HOLD ${label}/${mintShort} ` +
-      `source=${decision.source || 'unknown'} reason=${decision.reason} ` +
-      `cfg[maxAgeSec=${Number(cfg.entryCandleMaxAgeSec ?? 420)},minRatio=${Number(cfg.entryMinVolumeRatio ?? 1.5)},lookback=${Number(cfg.entryVolumeLookbackCandles ?? 12)},green=${cfg.entryRequireGreenCandle !== false},volConfirm=${cfg.entryRequireVolumeConfirm !== false}] ` +
-      `obs[ageSec=${ageSec},lastVol=${lastVolume},avgVol=${avgVolume},volRatio=${volumeRatio}]`
-    );
+    if (mode === 'lp_simple_m15') {
+      const m15AgeSec = Number.isFinite(decision.m15AgeSec) ? Number(decision.m15AgeSec).toFixed(1) : 'na';
+      const m15Volume = Number.isFinite(decision.m15Volume) ? Number(decision.m15Volume).toFixed(4) : 'na';
+      const m15AvgVolume = Number.isFinite(decision.m15AvgVolume) ? Number(decision.m15AvgVolume).toFixed(4) : 'na';
+      const m15VolumeRatio = Number.isFinite(decision.m15VolumeRatio) ? Number(decision.m15VolumeRatio).toFixed(3) : 'na';
+      const m15Pct = Number.isFinite(decision.m15Pct) ? `${Number(decision.m15Pct).toFixed(2)}%` : 'na';
+      console.log(
+        `[QUEUE] FINAL_CANDLE_GATE_HOLD ${label}/${mintShort} ` +
+        `entryDecisionMode=${mode} source=${decision.source || 'unknown'} reason=${decision.reason} ` +
+        `cfg[m15MaxAgeSec=${Number(cfg.entryM15MaxAgeSec ?? 1800)},m15MinRatio=${Number(cfg.entryM15MinVolumeRatio ?? 0.7)},m15Lookback=${Number(cfg.entryM15VolumeLookbackCandles ?? 8)},m15Green=${cfg.entryM15RequireGreenCandle !== false},m15VolConfirm=${cfg.entryM15RequireVolumeConfirm !== false}] ` +
+        `obs[m15AgeSec=${m15AgeSec},m15Pct=${m15Pct},m15Vol=${m15Volume},m15AvgVol=${m15AvgVolume},m15VolRatio=${m15VolumeRatio}]`
+      );
+    } else {
+      const ageSec = Number.isFinite(decision.ageSec) ? Number(decision.ageSec).toFixed(1) : 'na';
+      const lastVolume = Number.isFinite(decision.volume) ? Number(decision.volume).toFixed(4) : 'na';
+      const avgVolume = Number.isFinite(decision.avgVolume) ? Number(decision.avgVolume).toFixed(4) : 'na';
+      const volumeRatio = (Number.isFinite(decision.volume) && Number.isFinite(decision.avgVolume) && decision.avgVolume > 0)
+        ? (Number(decision.volume) / Number(decision.avgVolume)).toFixed(3)
+        : 'na';
+      console.log(
+        `[QUEUE] FINAL_CANDLE_GATE_HOLD ${label}/${mintShort} ` +
+        `source=${decision.source || 'unknown'} reason=${decision.reason} ` +
+        `cfg[maxAgeSec=${Number(cfg.entryCandleMaxAgeSec ?? 420)},minRatio=${Number(cfg.entryMinVolumeRatio ?? 1.5)},lookback=${Number(cfg.entryVolumeLookbackCandles ?? 12)},green=${cfg.entryRequireGreenCandle !== false},volConfirm=${cfg.entryRequireVolumeConfirm !== false}] ` +
+        `obs[ageSec=${ageSec},lastVol=${lastVolume},avgVol=${avgVolume},volRatio=${volumeRatio}]`
+      );
+    }
   }
   return decision;
 }
 
 export function summarizeQueueDecision({ meta = {}, liveSnapshot = null, cfg = getConfig(), lpMode = false } = {}) {
   const signals = resolveQueueSignalSources({ meta, liveSnapshot });
+  const decisionMode = String(cfg?.entryDecisionMode || 'strict').trim().toLowerCase();
+  const lpSimpleM15Mode = decisionMode === 'lp_simple_m15';
+  const m5HardGateEnabled = cfg?.entryM5HardGateEnabled !== false;
   const timingState = String(meta.entryTimingState || '').toUpperCase();
   const trustedLpWatch = isTrustedLpWatchMeta(meta);
   const hasFreshBullishFinalStCache = isFreshBullishSupertrend15m(meta, {}, Date.now(), FINAL_ST_CACHE_TTL_MS);
@@ -518,10 +543,10 @@ export function summarizeQueueDecision({ meta = {}, liveSnapshot = null, cfg = g
     } else if (bothUnknown) {
       decision = 'HOLD';
       reason = 'HOLD: realtime trend/M5 unknown; waiting for fresh deploy signal';
-    } else if (m5Unknown) {
+    } else if (!lpSimpleM15Mode && m5Unknown) {
       decision = 'HOLD';
       reason = `HOLD: realtime M5 unknown/stale (${signals.m5Source}); waiting fresh signal`;
-    } else if (!m5FreshPositive) {
+    } else if ((!lpSimpleM15Mode || m5HardGateEnabled) && !m5FreshPositive) {
       decision = 'HOLD';
       reason = `HOLD: realtime M5 non-positive (${formatPct(signals.m5)}); waiting positive momentum`;
     } else if (trendUnknown && !hasFreshBullishFinalStCache) {
@@ -544,6 +569,8 @@ export function summarizeQueueDecision({ meta = {}, liveSnapshot = null, cfg = g
   return {
     ...signals,
     lpMode,
+    entryDecisionMode: decisionMode,
+    m5HardGateEnabled,
     timingState,
     decision,
     reason,

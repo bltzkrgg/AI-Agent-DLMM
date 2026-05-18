@@ -20,6 +20,10 @@ import {
   stopDeployQueueWatcher,
   summarizeQueueDecision,
 } from '../src/utils/pendingDeployQueue.js';
+import {
+  aggregateClosed5mCandlesToClosedM15,
+  evaluateEntryCandleSanity,
+} from '../src/utils/entryCandleSanity.js';
 
 function makeEntryCandles({
   now = Date.now(),
@@ -50,6 +54,31 @@ function makeEntryCandles({
     close: lastClose,
     volume: lastVolume,
   });
+  return candles;
+}
+
+function makeAligned5mCandles({
+  nowSec = Math.floor(Date.now() / 1000),
+  count = 12,
+  startPrice = 100,
+  step = 1,
+  volume = 100,
+} = {}) {
+  const endSec = Math.floor(nowSec / 300) * 300;
+  const startSec = endSec - (count * 300);
+  const candles = [];
+  for (let i = 0; i < count; i++) {
+    const open = startPrice + (i * step);
+    const close = open + step;
+    candles.push({
+      time: startSec + (i * 300),
+      open,
+      high: Math.max(open, close) + 1,
+      low: Math.min(open, close) - 1,
+      close,
+      volume,
+    });
+  }
   return candles;
 }
 
@@ -295,6 +324,62 @@ test('queue treats finite Meteora M5 as live source and holds when non-positive'
   assert.equal(decision.m5, 0);
   assert.equal(decision.decision, 'HOLD');
   assert.match(decision.reason, /non-positive/i);
+});
+
+test('lp_simple_m15 bypasses M5 non-positive hold when hard gate disabled', () => {
+  const decision = summarizeQueueDecision({
+    meta: {
+      entryTimingState: 'LP_LIVE',
+      entryReadiness: 'HIGH',
+      breakoutQuality: 'VALID',
+      queueTrustedWatch: true,
+      taTrend: 'UNKNOWN',
+    },
+    liveSnapshot: {
+      dataSource: 'meteora-dlmm-ohlcv',
+      quality: { taTrend: 'BULLISH' },
+      ohlcv: { source: 'meteora-dlmm-ohlcv' },
+    },
+    cfg: {
+      entryDecisionMode: 'lp_simple_m15',
+      entryM5HardGateEnabled: false,
+      deployQueueExpiryMin: 60,
+    },
+    lpMode: true,
+  });
+
+  assert.equal(decision.entryDecisionMode, 'lp_simple_m15');
+  assert.equal(decision.m5Source, 'live');
+  assert.equal(decision.m5, 0);
+  assert.equal(decision.decision, 'DEPLOY');
+});
+
+test('lp_simple_m15 keeps M5 hold when hard gate enabled', () => {
+  const decision = summarizeQueueDecision({
+    meta: {
+      entryTimingState: 'LP_LIVE',
+      entryReadiness: 'HIGH',
+      breakoutQuality: 'VALID',
+      queueTrustedWatch: true,
+      taTrend: 'UNKNOWN',
+    },
+    liveSnapshot: {
+      dataSource: 'meteora-dlmm-ohlcv',
+      quality: { taTrend: 'BULLISH' },
+      ohlcv: { source: 'meteora-dlmm-ohlcv' },
+    },
+    cfg: {
+      entryDecisionMode: 'lp_simple_m15',
+      entryM5HardGateEnabled: true,
+      deployQueueExpiryMin: 60,
+    },
+    lpMode: true,
+  });
+
+  assert.equal(decision.m5Source, 'live');
+  assert.equal(decision.m5, 0);
+  assert.equal(decision.decision, 'HOLD');
+  assert.match(decision.reason, /M5 non-positive/i);
 });
 
 test('final Supertrend deploy gate allows only fresh bullish cache', async () => {
@@ -567,6 +652,94 @@ test('final entry candle sanity uses cfg entryMinVolumeRatio and can skip volume
   assert.equal(skipVolume.ok, true);
 });
 
+test('aggregates closed 5m candles into closed M15 candles with complete buckets only', () => {
+  const bucketStart = 1_700_000_100 - (1_700_000_100 % 900);
+  const candles = [
+    { time: bucketStart + 0, open: 100, high: 103, low: 99, close: 101, volume: 10 },
+    { time: bucketStart + 300, open: 101, high: 105, low: 100, close: 104, volume: 20 },
+    { time: bucketStart + 600, open: 104, high: 106, low: 103, close: 105, volume: 30 },
+    { time: bucketStart + 900, open: 105, high: 106, low: 104, close: 104.5, volume: 5 },
+  ];
+
+  const m15 = aggregateClosed5mCandlesToClosedM15(candles);
+  assert.equal(m15.length, 1);
+  assert.equal(m15[0].open, 100);
+  assert.equal(m15[0].close, 105);
+  assert.equal(m15[0].high, 106);
+  assert.equal(m15[0].low, 99);
+  assert.equal(m15[0].volume, 60);
+});
+
+test('lp_simple_m15 entry sanity uses derived M15 candle and does not require M5 gate', () => {
+  const now = 1_700_001_800_000;
+  const nowSec = Math.floor(now / 1000);
+  const candles5m = makeAligned5mCandles({
+    nowSec,
+    count: 12,
+    startPrice: 100,
+    step: 0.5,
+    volume: 100,
+  });
+  candles5m[candles5m.length - 1].volume = 140;
+
+  const decision = evaluateEntryCandleSanity({
+    snapshot: {
+      ohlcv: {
+        source: 'meteora-dlmm-ohlcv',
+        entryCandles5m: candles5m,
+      },
+    },
+    cfg: {
+      entryCandleSanityEnabled: true,
+      entryDecisionMode: 'lp_simple_m15',
+      entryM15RequireGreenCandle: true,
+      entryM15RequireVolumeConfirm: true,
+      entryM15MinVolumeRatio: 0.7,
+      entryM15VolumeLookbackCandles: 2,
+      entryM15MaxAgeSec: 1800,
+    },
+    now,
+  });
+
+  assert.equal(decision.ok, true);
+  assert.equal(decision.action, 'ALLOW');
+  assert.equal(Number.isFinite(decision.m15VolumeRatio), true);
+});
+
+test('lp_simple_m15 entry sanity holds when M15 lookback is unavailable', () => {
+  const now = 1_700_001_800_000;
+  const nowSec = Math.floor(now / 1000);
+  const candles5m = makeAligned5mCandles({
+    nowSec,
+    count: 6,
+    startPrice: 100,
+    step: 0.5,
+    volume: 100,
+  });
+
+  const decision = evaluateEntryCandleSanity({
+    snapshot: {
+      ohlcv: {
+        source: 'meteora-dlmm-ohlcv',
+        entryCandles5m: candles5m,
+      },
+    },
+    cfg: {
+      entryCandleSanityEnabled: true,
+      entryDecisionMode: 'lp_simple_m15',
+      entryM15RequireGreenCandle: true,
+      entryM15RequireVolumeConfirm: true,
+      entryM15MinVolumeRatio: 0.7,
+      entryM15VolumeLookbackCandles: 8,
+      entryM15MaxAgeSec: 1800,
+    },
+    now,
+  });
+
+  assert.equal(decision.ok, false);
+  assert.equal(decision.code, 'M15_VOLUME_LOOKBACK_UNAVAILABLE');
+});
+
 test('final entry candle sanity can be bypassed when entryCandleSanityEnabled=false', async () => {
   const now = 1_700_000_000_000;
   const decision = await getFinalEntryCandleSanityDecision({
@@ -629,6 +802,14 @@ test('manual CA final gate does not pass generic taTrend snapshot cache', () => 
   assert.match(manualGateBlock, /meta: \{\}/);
   assert.doesNotMatch(manualGateBlock, /taTrend: entrySignals\.taTrend/);
   assert.doesNotMatch(manualGateBlock, /snapshotAt: now/);
+});
+
+test('hunter scout logic keeps strict gates and supports lp_simple_m15 mode overrides', () => {
+  const hunterSrc = readFileSync(new URL('../src/agents/hunterAlpha.js', import.meta.url), 'utf8');
+  assert.match(hunterSrc, /const lpSimpleM15Mode = entryDecisionMode === 'lp_simple_m15';/);
+  assert.match(hunterSrc, /\(m5HardGateEnabled \|\| !lpSimpleM15Mode\) && priceChangeM5 <= 0/);
+  assert.match(hunterSrc, /deferOnM15PreviousUnknown && !Number\.isFinite\(priceChangeM15Prev\)/);
+  assert.match(hunterSrc, /Mode lp_simple_m15 aktif: M15 jadi konfirmasi utama/);
 });
 
 test('checkSupertrendVeto only passes exact bullish direction', async () => {
