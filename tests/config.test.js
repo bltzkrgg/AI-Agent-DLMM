@@ -132,6 +132,7 @@ test('safer defaults stay conservative for real-capital usage', async () => {
   assert.equal(cfg.entryMinVolumeRatio, 1.5);
   assert.equal(cfg.entryVolumeLookbackCandles, 12);
   assert.equal(cfg.entryCandleMaxAgeSec, 420);
+  assert.equal(cfg.deployQueueHoldNotifyCooldownSec, 180);
   assert.deepEqual(cfg.allowedBinSteps, [100, 125]);
 });
 
@@ -149,6 +150,7 @@ test('user-config.example includes pool pattern learning keys', () => {
   assert.equal(parsed.entryMinVolumeRatio, 1.5);
   assert.equal(parsed.entryVolumeLookbackCandles, 12);
   assert.equal(parsed.entryCandleMaxAgeSec, 420);
+  assert.equal(parsed.deployQueueHoldNotifyCooldownSec, 180);
   assert.equal(parsed.maxMcap, 0);
 });
 
@@ -174,6 +176,26 @@ test('entry candle sanity keys can be overridden from user-config.json', async (
   assert.equal(cfg.entryMinVolumeRatio, 1.2);
   assert.equal(cfg.entryVolumeLookbackCandles, 9);
   assert.equal(cfg.entryCandleMaxAgeSec, 600);
+});
+
+test('deployQueueHoldNotifyCooldownSec supports override and bounds validation', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'dlmm-hold-notify-cooldown-'));
+  const configPath = join(root, 'user-config.json');
+
+  process.env.BOT_CONFIG_PATH = configPath;
+  const configModule = await importFresh(join(repoRoot, 'src/config.js'));
+
+  configModule.updateConfig({ deployQueueHoldNotifyCooldownSec: 300 });
+  let cfg = configModule.getConfig();
+  assert.equal(cfg.deployQueueHoldNotifyCooldownSec, 300);
+
+  configModule.updateConfig({ deployQueueHoldNotifyCooldownSec: 10 });
+  cfg = configModule.getConfig();
+  assert.equal(cfg.deployQueueHoldNotifyCooldownSec, 300);
+
+  configModule.updateConfig({ deployQueueHoldNotifyCooldownSec: 2000 });
+  cfg = configModule.getConfig();
+  assert.equal(cfg.deployQueueHoldNotifyCooldownSec, 300);
 });
 
 test('nested entry config keys flatten into runtime config', async () => {
@@ -379,6 +401,7 @@ test('/setconfig whitelist is curated for operational keys only', async () => {
   assert.equal(keys.includes('entryMinVolumeRatio'), true);
   assert.equal(keys.includes('entryCandleMaxAgeSec'), true);
   assert.equal(keys.includes('entryRequireVolumeConfirm'), true);
+  assert.equal(keys.includes('deployQueueHoldNotifyCooldownSec'), true);
   assert.equal(keys.includes('entryRequireGreenCandle'), false);
   assert.equal(keys.includes('entryVolumeLookbackCandles'), false);
 

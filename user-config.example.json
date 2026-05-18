@@ -21,6 +21,7 @@
   "retestTtlMin": 60,
   "retestMaxAttempts": 8,
   "retestMaxReadyPerScan": 3,
+  "deployQueueHoldNotifyCooldownSec": 180,
   "taWatchEnabled": true,
   "taWatchMaxPools": 10,
   "taWatchExpiryMin": 60,

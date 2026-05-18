@@ -22,6 +22,8 @@ let _watcherTimer = null;
 const _queue   = new Map(); // mint -> entry
 const _snapshotCache = new Map(); // key -> { at, snapshot }
 const _snapshotInflight = new Map(); // key -> Promise
+const _holdNotifyDedup = new Map(); // key(candidate|reason) -> lastSentAtMs
+const _holdNotifyKeysByCandidate = new Map(); // candidate -> Set(keys)
 const SNAPSHOT_CACHE_TTL_MS = 12_000;
 const FINAL_ST_CACHE_TTL_MS = 15_000;
 const OPERATOR_DISCOVERY_PAUSED_KEY = 'operatorDiscoveryPaused';
@@ -60,6 +62,106 @@ async function safeSend(msg) {
 function getSnapshotCacheKey(mint = '', poolAddress = '', options = {}) {
   const entry5mSuffix = options?.includeEntryCandles5m === true ? ':entry5m' : '';
   return `${mint || 'unknown'}:${poolAddress || 'nopool'}${entry5mSuffix}`;
+}
+
+function normalizeHoldReason(reason = '') {
+  const clean = String(reason || '')
+    .replace(/\(attempt\s+\d+\/\d+\)/ig, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+  return clean || 'HOLD_UNKNOWN';
+}
+
+function getHoldNotifyCandidateKey({ poolAddress = '', mint = '' } = {}) {
+  const pool = String(poolAddress || '').trim();
+  const tokenMint = String(mint || '').trim();
+  return pool || tokenMint || 'unknown';
+}
+
+function deleteHoldNotifyKey(key = '') {
+  if (!key) return;
+  _holdNotifyDedup.delete(key);
+  const delimiter = key.indexOf('|');
+  if (delimiter <= 0) return;
+  const candidate = key.slice(0, delimiter);
+  const known = _holdNotifyKeysByCandidate.get(candidate);
+  if (!known) return;
+  known.delete(key);
+  if (known.size === 0) {
+    _holdNotifyKeysByCandidate.delete(candidate);
+  }
+}
+
+function pruneHoldNotifyState({
+  now = Date.now(),
+  staleAfterMs = 1_800_000,
+} = {}) {
+  for (const [key, lastAt] of _holdNotifyDedup.entries()) {
+    if (!Number.isFinite(lastAt) || (now - lastAt) > staleAfterMs) {
+      deleteHoldNotifyKey(key);
+    }
+  }
+}
+
+function clearDeployQueueHoldNotifyState({
+  poolAddress = '',
+  mint = '',
+} = {}) {
+  const candidates = [String(poolAddress || '').trim(), String(mint || '').trim()].filter(Boolean);
+  for (const candidate of new Set(candidates)) {
+    const keys = _holdNotifyKeysByCandidate.get(candidate);
+    if (!keys) continue;
+    for (const key of keys) {
+      _holdNotifyDedup.delete(key);
+    }
+    _holdNotifyKeysByCandidate.delete(candidate);
+  }
+}
+
+function getPoolAddress(pool = {}) {
+  return pool.address || pool.pool_address || pool.pool || pool.poolAddress || pool.pubkey || '';
+}
+
+function removeQueueCandidate(mint = '', entry = null) {
+  _queue.delete(mint);
+  clearDeployQueueHoldNotifyState({
+    poolAddress: getPoolAddress(entry?.pool || {}),
+    mint,
+  });
+}
+
+export function shouldSendDeployQueueHoldNotification({
+  poolAddress = '',
+  mint = '',
+  reason = '',
+  now = Date.now(),
+  cooldownMs = 180_000,
+} = {}) {
+  const candidateKey = getHoldNotifyCandidateKey({ poolAddress, mint });
+  const normalizedReason = normalizeHoldReason(reason);
+  const reasonKey = normalizedReason.toLowerCase();
+  const key = `${candidateKey}|${reasonKey}`;
+  const effectiveCooldownMs = Math.max(0, Number(cooldownMs) || 0);
+  pruneHoldNotifyState({
+    now,
+    staleAfterMs: Math.max(300_000, effectiveCooldownMs * 4, 1_800_000),
+  });
+
+  const lastSentAt = _holdNotifyDedup.get(key);
+  if (Number.isFinite(lastSentAt) && effectiveCooldownMs > 0 && (now - lastSentAt) < effectiveCooldownMs) {
+    return { shouldSend: false, key, candidateKey, normalizedReason };
+  }
+
+  _holdNotifyDedup.set(key, now);
+  const knownKeys = _holdNotifyKeysByCandidate.get(candidateKey) || new Set();
+  knownKeys.add(key);
+  _holdNotifyKeysByCandidate.set(candidateKey, knownKeys);
+  return { shouldSend: true, key, candidateKey, normalizedReason };
+}
+
+export function __resetDeployQueueHoldNotifyState() {
+  _holdNotifyDedup.clear();
+  _holdNotifyKeysByCandidate.clear();
 }
 
 export function getLiveSnapshotReliability(snapshot = null) {
@@ -536,7 +638,8 @@ export function enqueueForDeploy(pool, symbol, meta = {}) {
 
 /** Hapus token dari queue */
 export function dequeueToken(mint) {
-  _queue.delete(mint);
+  const entry = _queue.get(mint);
+  removeQueueCandidate(mint, entry);
 }
 
 /**
@@ -558,7 +661,7 @@ async function evaluateDeployConditions(entry) {
   }
   const lpMode = String(meta.entryGateMode || cfg.entryGateMode || '').toLowerCase().includes('lp');
   const mint = pool.tokenXMint || pool.mint || '';
-  const poolAddress = pool.address || pool.pool_address || pool.pool || pool.poolAddress || pool.pubkey || '';
+  const poolAddress = getPoolAddress(pool);
   const queueSignals = summarizeQueueDecision({ meta, liveSnapshot: null, cfg, lpMode });
   let activeSignals = queueSignals;
   let { trend: liveTrend, trendSource, m5: liveM5, m5Source, decision: freshnessDecision } = activeSignals;
@@ -773,7 +876,7 @@ async function runWatcher() {
 
       if (entry.attempts >= 3) {
         console.log(`[QUEUE] 🗑️ ${symbol} dihapus dari antrian (max attempts)`);
-        _queue.delete(mint);
+        removeQueueCandidate(mint, entry);
         await safeSend(
           `⏱️ <b>Deploy Queue Expired</b>\n` +
           `<b>${symbol}</b> dihapus setelah 3x gagal evaluate.`
@@ -798,7 +901,7 @@ async function runWatcher() {
           entry.enqueuedAt = Date.now();
         }
         if (decision === 'DROP' || check.reason.includes('expired')) {
-          _queue.delete(mint);
+          removeQueueCandidate(mint, entry);
           await safeSend(
             `❌ <b>Deploy Queue ${decision === 'DROP' ? 'Drop' : 'Expired'}</b>\n` +
             `<b>${symbol}</b>\n` +
@@ -811,10 +914,10 @@ async function runWatcher() {
       }
 
       // Resolusi pool address — cek semua field yang mungkin dipakai Meteora API
-      const poolAddress = pool.address || pool.pool_address || pool.pool || pool.poolAddress || pool.pubkey || '';
+      const poolAddress = getPoolAddress(pool);
       if (!poolAddress) {
         console.warn(`[QUEUE] ⚠️ Pool address tidak ditemukan untuk ${symbol} — fields: ${JSON.stringify(Object.keys(pool))}`);
-        _queue.delete(mint);
+        removeQueueCandidate(mint, entry);
         await safeSend(
           `⚠️ <b>Deploy Gagal (Queue)</b>\n` +
           `<b>${symbol}</b> — Pool address tidak valid.\n` +
@@ -826,7 +929,7 @@ async function runWatcher() {
       // Validate poolAddress adalah Solana pubkey (base58, 32–44 chars)
       if (typeof poolAddress !== 'string' || poolAddress.length < 32 || poolAddress.length > 44) {
         console.error(`[QUEUE] ❌ Pool address tidak valid untuk ${symbol}: "${poolAddress}"`);
-        _queue.delete(mint);
+        removeQueueCandidate(mint, entry);
         await safeSend(
           `❌ <b>Deploy Gagal (Queue)</b>\n` +
           `<b>${symbol}</b> — Pool address bukan Solana pubkey yang valid.`
@@ -844,7 +947,7 @@ async function runWatcher() {
       const finalSt = await ensureFinalSupertrendBullish({ mint, symbol, pool, meta, currentPrice });
       if (!finalSt.ok) {
         if (finalSt.action === 'VETO') {
-          _queue.delete(mint);
+          removeQueueCandidate(mint, entry);
           await safeSend(
             `❌ <b>Deploy Queue Drop</b>\n` +
             `<b>${symbol}</b>\n` +
@@ -870,12 +973,28 @@ async function runWatcher() {
         entry.nextEligibleAt = Date.now() + 15_000;
         entry.deferReason = finalCandle.reason;
         console.log(`[QUEUE] ⏸️ ${symbol} HOLD sebelum deploy: ${finalCandle.reason}`);
-        await safeSend(
-          `⏸️ <b>Deploy Queue Hold</b>\n` +
-          `<b>${symbol}</b>\n` +
-          `Candle: <code>${escapeHTML(finalCandle.source || 'unknown')}</code>\n` +
-          `<i>${escapeHTML(finalCandle.reason)}</i>`
-        );
+        const cfg = getConfig();
+        const cooldownSec = Math.max(30, Number(cfg.deployQueueHoldNotifyCooldownSec ?? 180) || 180);
+        const notifyDecision = shouldSendDeployQueueHoldNotification({
+          poolAddress,
+          mint,
+          reason: finalCandle.reason,
+          now: Date.now(),
+          cooldownMs: cooldownSec * 1000,
+        });
+        if (!notifyDecision.shouldSend) {
+          console.log(
+            `[QUEUE] 🔕 Suppressed duplicate HOLD Telegram for ${symbol || mint.slice(0, 8)} ` +
+            `reason="${notifyDecision.normalizedReason}" cooldown=${cooldownSec}s`
+          );
+        } else {
+          await safeSend(
+            `⏸️ <b>Deploy Queue Hold</b>\n` +
+            `<b>${symbol}</b>\n` +
+            `Candle: <code>${escapeHTML(finalCandle.source || 'unknown')}</code>\n` +
+            `<i>${escapeHTML(finalCandle.reason)}</i>`
+          );
+        }
         continue;
       }
 
@@ -912,7 +1031,7 @@ async function runWatcher() {
       }
       entry.attempts++;
       const reservationId = slotReservation.id;
-      _queue.delete(mint); // Hapus sebelum deploy (idempoten)
+      removeQueueCandidate(mint, entry); // Hapus sebelum deploy (idempoten)
 
       try {
         await safeSend(
@@ -986,7 +1105,7 @@ async function runWatcher() {
       // Token-level error: log dan lanjut ke token berikutnya, jangan crash loop
       const sym = entry?.symbol || mint?.slice(0, 8) || 'UNKNOWN';
       console.error(`[QUEUE] ⛔ Error saat proses ${sym}: ${tokenErr.message}`);
-      _queue.delete(mint); // Buang dari queue agar tidak retry tanpa batas
+      removeQueueCandidate(mint, entry); // Buang dari queue agar tidak retry tanpa batas
       await safeSend(
         `❌ <b>Deploy Gagal (Queue)</b>\n` +
         `<b>${sym}</b>\n` +
@@ -1014,6 +1133,7 @@ export function stopDeployQueueWatcher() {
     _watcherTimer = null;
   }
   _queue.clear();
+  __resetDeployQueueHoldNotifyState();
   console.log('[QUEUE] 🛑 Watcher dihentikan');
 }
 

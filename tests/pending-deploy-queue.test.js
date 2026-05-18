@@ -4,14 +4,20 @@ import { readFileSync } from 'node:fs';
 
 import { checkSupertrendVeto } from '../src/market/meridianVeto.js';
 import {
+  __resetDeployQueueHoldNotifyState,
   buildUnreliableLiveSnapshotLog,
+  dequeueToken,
+  enqueueForDeploy,
   getFinalEntryCandleSanityDecision,
   ensureFinalEntryCandleSanity,
   getFinalSupertrendDeployDecision,
+  getQueueSize,
   getLiveSnapshotReliability,
   isFreshBullishSupertrend15m,
   isFreshDeployMeta,
   isReliableLiveSnapshot,
+  shouldSendDeployQueueHoldNotification,
+  stopDeployQueueWatcher,
   summarizeQueueDecision,
 } from '../src/utils/pendingDeployQueue.js';
 
@@ -741,4 +747,157 @@ test('queue snapshot path passes poolAddress to market snapshot resolver', () =>
   assert.match(src, /from: includeEntryCandles5m \? 'entry_candle_sanity' : 'deploy_queue'/);
   assert.match(src, /includeEntryCandles5m/);
   assert.match(src, /getCachedMarketSnapshot\(mint, poolAddress \|\| null, entry\.symbol \|\| '', \{ includeEntryCandles5m: true \}\)/);
+});
+
+test('deploy queue hold notification dedupe suppresses same candidate + same reason within cooldown', () => {
+  __resetDeployQueueHoldNotifyState();
+  const now = 1_700_000_000_000;
+
+  const first = shouldSendDeployQueueHoldNotification({
+    poolAddress: 'Pool11111111111111111111111111111111111111',
+    mint: 'Mint111111111111111111111111111111111111111',
+    reason: 'HOLD: entry candle volume below threshold',
+    now,
+    cooldownMs: 180_000,
+  });
+  const second = shouldSendDeployQueueHoldNotification({
+    poolAddress: 'Pool11111111111111111111111111111111111111',
+    mint: 'Mint111111111111111111111111111111111111111',
+    reason: 'HOLD: entry candle volume below threshold',
+    now: now + 60_000,
+    cooldownMs: 180_000,
+  });
+
+  assert.equal(first.shouldSend, true);
+  assert.equal(second.shouldSend, false);
+});
+
+test('deploy queue hold notification dedupe allows same candidate + same reason after cooldown', () => {
+  __resetDeployQueueHoldNotifyState();
+  const now = 1_700_000_000_000;
+
+  shouldSendDeployQueueHoldNotification({
+    poolAddress: 'Pool11111111111111111111111111111111111111',
+    reason: 'HOLD: entry candle volume below threshold',
+    now,
+    cooldownMs: 120_000,
+  });
+  const afterCooldown = shouldSendDeployQueueHoldNotification({
+    poolAddress: 'Pool11111111111111111111111111111111111111',
+    reason: 'HOLD: entry candle volume below threshold',
+    now: now + 180_000,
+    cooldownMs: 120_000,
+  });
+
+  assert.equal(afterCooldown.shouldSend, true);
+});
+
+test('deploy queue hold notification dedupe sends immediately when reason changes', () => {
+  __resetDeployQueueHoldNotifyState();
+  const now = 1_700_000_000_000;
+
+  shouldSendDeployQueueHoldNotification({
+    mint: 'Mint111111111111111111111111111111111111111',
+    reason: 'HOLD: entry candle volume below threshold',
+    now,
+    cooldownMs: 300_000,
+  });
+  const changedReason = shouldSendDeployQueueHoldNotification({
+    mint: 'Mint111111111111111111111111111111111111111',
+    reason: 'HOLD: entry candle sanity unavailable/stale',
+    now: now + 10_000,
+    cooldownMs: 300_000,
+  });
+
+  assert.equal(changedReason.shouldSend, true);
+});
+
+test('deploy queue hold notification dedupe sends separately for different candidates', () => {
+  __resetDeployQueueHoldNotifyState();
+  const now = 1_700_000_000_000;
+
+  shouldSendDeployQueueHoldNotification({
+    mint: 'Mint111111111111111111111111111111111111111',
+    reason: 'HOLD: entry candle volume below threshold',
+    now,
+    cooldownMs: 180_000,
+  });
+  const differentCandidate = shouldSendDeployQueueHoldNotification({
+    mint: 'Mint222222222222222222222222222222222222222',
+    reason: 'HOLD: entry candle volume below threshold',
+    now: now + 5_000,
+    cooldownMs: 180_000,
+  });
+
+  assert.equal(differentCandidate.shouldSend, true);
+});
+
+test('deploy queue hold notification dedupe normalizes volatile attempt suffix', () => {
+  __resetDeployQueueHoldNotifyState();
+  const now = 1_700_000_000_000;
+
+  shouldSendDeployQueueHoldNotification({
+    mint: 'Mint111111111111111111111111111111111111111',
+    reason: 'HOLD: entry candle volume below threshold (attempt 1/3)',
+    now,
+    cooldownMs: 180_000,
+  });
+  const dedupedByNormalizedReason = shouldSendDeployQueueHoldNotification({
+    mint: 'Mint111111111111111111111111111111111111111',
+    reason: 'HOLD: entry candle volume below threshold (attempt 2/3)',
+    now: now + 30_000,
+    cooldownMs: 180_000,
+  });
+
+  assert.equal(dedupedByNormalizedReason.shouldSend, false);
+});
+
+test('deploy queue hold dedupe state is cleaned when candidate is removed', () => {
+  __resetDeployQueueHoldNotifyState();
+  try {
+    const mint = 'Mint111111111111111111111111111111111111111';
+    const poolAddress = 'Pool11111111111111111111111111111111111111';
+    enqueueForDeploy({
+      tokenXMint: mint,
+      address: poolAddress,
+      tokenYMint: 'So11111111111111111111111111111111111111112',
+    }, 'TEST', {
+      entryTimingState: 'LP_LIVE',
+      entryReadiness: 'HIGH',
+      breakoutQuality: 'VALID',
+      taTrend: 'BULLISH',
+      queueTrustedWatch: true,
+    });
+    assert.equal(getQueueSize() >= 1, true);
+
+    shouldSendDeployQueueHoldNotification({
+      poolAddress,
+      mint,
+      reason: 'HOLD: entry candle volume below threshold',
+      now: 1_700_000_000_000,
+      cooldownMs: 180_000,
+    });
+    dequeueToken(mint);
+
+    const afterCleanup = shouldSendDeployQueueHoldNotification({
+      poolAddress,
+      mint,
+      reason: 'HOLD: entry candle volume below threshold',
+      now: 1_700_000_010_000,
+      cooldownMs: 180_000,
+    });
+    assert.equal(afterCleanup.shouldSend, true);
+  } finally {
+    stopDeployQueueWatcher();
+  }
+});
+
+test('deploy/drop notifications are not gated by hold dedupe helper', () => {
+  const src = readFileSync(new URL('../src/utils/pendingDeployQueue.js', import.meta.url), 'utf8');
+  const holdSectionStart = src.indexOf('if (!finalCandle.ok) {');
+  const holdSectionEnd = src.indexOf('continue;', holdSectionStart);
+  const holdSection = src.slice(holdSectionStart, holdSectionEnd);
+  assert.match(holdSection, /shouldSendDeployQueueHoldNotification\(/);
+  assert.match(src, /Deploy Queue Drop/);
+  assert.match(src, /Real-time Deploy Triggered!/);
 });

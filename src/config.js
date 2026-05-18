@@ -74,6 +74,7 @@ const DEFAULTS = {
   retestMaxAttempts:         8,
   retestMaxReadyPerScan:     3,
   deployQueueExpiryMin:      5,
+  deployQueueHoldNotifyCooldownSec: 180,
 
   // ── LLM Models ───────────────────────────────────────────────────────────
   // Priority: process.env > user-config.json[llm.*] > DEFAULTS
@@ -208,6 +209,7 @@ const CONFIG_BOUNDS = {
   retestMaxAttempts:      { min: 1,     max: 100 },
   retestMaxReadyPerScan:  { min: 1,     max: 20 },
   deployQueueExpiryMin:   { min: 1,     max: 60 },
+  deployQueueHoldNotifyCooldownSec: { min: 30, max: 1800 },
   meteoraDiscoveryLimit:  { min: 50,    max: 500 },
   allowedBinSteps:        { type: 'array' },
   binStepPriority:        { type: 'array' },
@@ -554,6 +556,7 @@ export const SETCONFIG_WHITELIST = {
   // ── Watch / Queue ────────────────────────────────────────────────
   watchIntervalSec:       { section: 'watch',              type: 'number',  desc: 'Interval cek WATCH aktif (detik, 15–3600)' },
   deployQueueExpiryMin:   { section: 'watch',              type: 'number',  desc: 'Batas umur antrean deploy (menit)' },
+  deployQueueHoldNotifyCooldownSec: { section: 'watch',    type: 'number',  desc: 'Cooldown notif HOLD queue yang sama (detik)' },
   taWatchEnabled:         { section: 'watch',              type: 'boolean', desc: 'Aktifkan sticky TA watch layer' },
   taWatchMaxPools:        { section: 'watch',              type: 'number',  desc: 'Maks kandidat yang bisa tinggal di WATCH (1–50)' },
   taWatchExpiryMin:       { section: 'watch',              type: 'number',  desc: 'Batas umur kandidat di WATCH (menit)' },
