@@ -4,9 +4,11 @@ import BN from 'bn.js';
 import { Keypair, PublicKey } from '@solana/web3.js';
 
 import {
+  assertNoCombinedWeightForQuoteOnly,
   buildDlmmDeployStrategyArgs,
   assertDlmmFinalSdkArgs,
   buildDlmmFinalArgsContext,
+  buildQuoteOnlyDryRunPlan,
   buildDlmmSdkStrategyFromDeployArgs,
   buildQuoteOnlyWeightDistribution,
   executeQuoteOnlyPositionFirstFlow,
@@ -262,6 +264,68 @@ test('quote-only weight distribution is y-only, contiguous, and totals 10000 bps
   assert.equal(dist.some((row) => row.yAmountBpsOfTotal.gt(new BN('0'))), true);
 });
 
+test('guard blocks combined weight helper usage for pure quote-only', () => {
+  const deployArgs = buildDlmmDeployStrategyArgs({
+    activeBinId: 1000,
+    rangeMin: 980,
+    rangeMax: 999,
+    amountXBn: new BN('0'),
+    amountYBn: new BN('100'),
+  });
+  assert.throws(
+    () => assertNoCombinedWeightForQuoteOnly({
+      deployArgs,
+      sdkPath: 'weight_quote_only',
+      sdkMethod: 'initializePositionAndAddLiquidityByWeight',
+    }),
+    /must not call initializePositionAndAddLiquidityByWeight/
+  );
+});
+
+test('guard allows non-quote-only strategy path', () => {
+  const deployArgs = buildDlmmDeployStrategyArgs({
+    activeBinId: 1000,
+    rangeMin: 1001,
+    rangeMax: 1010,
+    amountXBn: new BN('100'),
+    amountYBn: new BN('0'),
+  });
+  assert.doesNotThrow(
+    () => assertNoCombinedWeightForQuoteOnly({
+      deployArgs,
+      sdkPath: 'strategy',
+      sdkMethod: 'initializePositionAndAddLiquidityByStrategy',
+    })
+  );
+});
+
+test('quote-only dry-run plan does not call combined helper and carries plan context', () => {
+  const deployArgs = buildDlmmDeployStrategyArgs({
+    activeBinId: 1000,
+    rangeMin: 980,
+    rangeMax: 999,
+    amountXBn: new BN('0'),
+    amountYBn: new BN('100000000'),
+  });
+  const distribution = buildQuoteOnlyWeightDistribution({
+    rangeMin: deployArgs.rangeMin,
+    rangeMax: deployArgs.rangeMax,
+  });
+  const plan = buildQuoteOnlyDryRunPlan({
+    poolAddress: 'Pool11111111111111111111111111111111111111',
+    deployArgs,
+    xYAmountDistribution: distribution,
+    finalArgsContext: { sdkPath: 'weight_quote_only' },
+  });
+  assert.equal(plan.quoteOnlyDryRunPlan, true);
+  assert.equal(plan.sdkPath, 'weight_quote_only');
+  assert.equal(plan.sdkFlow, 'quote_only_dry_run_plan');
+  assert.equal(plan.sdkMethod, 'dryRunPlan');
+  assert.equal(plan.bins, distribution.length);
+  assert.equal(plan.rangeMin, 980);
+  assert.equal(plan.rangeMax, 999);
+});
+
 test('quote-only position-first flow initializes position before add liquidity and does not call combined init+weight helper', async () => {
   const calls = [];
   const positionKeypair = Keypair.generate();
@@ -329,6 +393,52 @@ test('quote-only position-first flow initializes position before add liquidity a
   assert.equal(calls.includes('initializePositionAndAddLiquidityByWeight'), false);
   assert.equal(calls.includes('range-[980,999]'), true);
   assert.equal(calls.includes('dist-[980,999]'), true);
+});
+
+test('quote-only position-first flow fails when post-init owner remains system-owned before add', async () => {
+  const calls = [];
+  const positionKeypair = Keypair.generate();
+  const expectedProgramId = new PublicKey('LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo');
+  const connection = {
+    getAccountInfo: async () => {
+      if (!calls.includes('createEmptyPosition')) return null;
+      return { owner: new PublicKey('11111111111111111111111111111111') };
+    },
+  };
+  const dlmmPool = {
+    program: { programId: expectedProgramId },
+    createEmptyPosition: async () => {
+      calls.push('createEmptyPosition');
+      return { instructions: [] };
+    },
+    addLiquidityByWeight: async () => {
+      calls.push('addLiquidityByWeight');
+      return [{ ok: true }];
+    },
+  };
+  await assert.rejects(
+    executeQuoteOnlyPositionFirstFlow({
+      dlmmPool,
+      connection,
+      walletPublicKey: Keypair.generate().publicKey,
+      positionKeypair,
+      deployArgs: {
+        rangeMin: 980,
+        rangeMax: 999,
+        amountXBn: new BN('0'),
+        amountYBn: new BN('100'),
+      },
+      xYAmountDistribution: buildQuoteOnlyWeightDistribution({ rangeMin: 980, rangeMax: 999 }),
+      sendTxFn: async () => 'sig-init',
+      pollTxConfirmFn: async () => {},
+    }),
+    (err) => {
+      assert.equal(err?.code, 'INVALID_DLMM_DEPLOY_ARGS');
+      assert.match(String(err?.message || ''), /not owned by DLMM program/);
+      return true;
+    }
+  );
+  assert.equal(calls.includes('addLiquidityByWeight'), false);
 });
 
 test('quote-only position-first flow fails early when existing position owner mismatches', async () => {
@@ -746,6 +856,25 @@ test('wrapper uses weight method name for quote-only sdkPath', () => {
   });
   assert.equal(wrapped?.code, 'INVALID_DLMM_DEPLOY_ARGS');
   assert.match(String(wrapped?.message || ''), /initializePositionAndAddLiquidityByWeight/);
+});
+
+test('quote-only wrapped errors prefer sdkMethod from context extra (position-first)', () => {
+  const err = new Error('custom program error: 0xbbf');
+  err.dlmmContextExtra = {
+    sdkMethod: 'addLiquidityByWeight',
+    sdkFlow: 'quote_only_position_first',
+    positionPubkey: 'Pos111111111111111111111111111111111111111',
+  };
+  const wrapped = wrapDlmmSdkInvalidArgumentsError({
+    error: err,
+    finalArgsContext: {
+      sdkPath: 'weight_quote_only',
+    },
+  });
+  assert.equal(wrapped?.code, 'INVALID_DLMM_DEPLOY_ARGS');
+  const msg = String(wrapped?.message || '');
+  assert.match(msg, /addLiquidityByWeight/);
+  assert.match(msg, /quote_only_position_first/);
 });
 
 test('dlmm sdk error meta detects anchor 3007 / 0xbbf variants', () => {

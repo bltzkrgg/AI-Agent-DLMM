@@ -229,9 +229,13 @@ export function wrapDlmmSdkInvalidArgumentsError({
     ? error.dlmmContextExtra
     : {};
   const sdkPath = String(finalArgsContext?.sdkPath || DLMM_SDK_PATH_STRATEGY);
-  const sdkMethod = sdkPath === DLMM_SDK_PATH_WEIGHT_QUOTE_ONLY
-    ? 'initializePositionAndAddLiquidityByWeight'
-    : 'initializePositionAndAddLiquidityByStrategy';
+  const sdkMethod = String(
+    finalArgsContext?.sdkMethod
+    || extraContext?.sdkMethod
+    || (sdkPath === DLMM_SDK_PATH_WEIGHT_QUOTE_ONLY
+      ? 'initializePositionAndAddLiquidityByWeight'
+      : 'initializePositionAndAddLiquidityByStrategy')
+  );
   const context = {
     ...finalArgsContext,
     ...extraContext,
@@ -783,6 +787,54 @@ export function buildQuoteOnlyWeightDistribution({
   return distribution;
 }
 
+export function assertNoCombinedWeightForQuoteOnly({
+  deployArgs = {},
+  sdkPath = '',
+  sdkMethod = '',
+} = {}) {
+  const path = String(sdkPath || '');
+  const method = String(sdkMethod || '');
+  const side = classifyDlmmLiquiditySide(
+    toBnAmountSafe(deployArgs?.amountXBn),
+    toBnAmountSafe(deployArgs?.amountYBn),
+  );
+  if (path === DLMM_SDK_PATH_WEIGHT_QUOTE_ONLY && side === 'QUOTE_ONLY' && method === 'initializePositionAndAddLiquidityByWeight') {
+    throw buildInvalidDlmmArgsError('quote-only path must not call initializePositionAndAddLiquidityByWeight; use position-first flow');
+  }
+}
+
+export function buildQuoteOnlyDryRunPlan({
+  poolAddress = '',
+  deployArgs = {},
+  xYAmountDistribution = [],
+  finalArgsContext = {},
+} = {}) {
+  const rangeMin = Number(deployArgs?.rangeMin);
+  const rangeMax = Number(deployArgs?.rangeMax);
+  const amountY = toBnAmountSafe(deployArgs?.amountYBn).toString();
+  const bins = Array.isArray(xYAmountDistribution) ? xYAmountDistribution.length : 0;
+  console.log(
+    `[evilPanda] DLMM_QUOTE_ONLY_DRY_RUN_PLAN pool=${String(poolAddress || '').slice(0,8)} ` +
+    `range=[${rangeMin},${rangeMax}] amountY=${amountY} bins=${bins}`
+  );
+  return {
+    quoteOnlyDryRunPlan: true,
+    sdkPath: DLMM_SDK_PATH_WEIGHT_QUOTE_ONLY,
+    sdkFlow: 'quote_only_dry_run_plan',
+    sdkMethod: 'dryRunPlan',
+    rangeMin: Number.isFinite(rangeMin) ? rangeMin : null,
+    rangeMax: Number.isFinite(rangeMax) ? rangeMax : null,
+    amountY,
+    bins,
+    context: {
+      ...finalArgsContext,
+      sdkPath: DLMM_SDK_PATH_WEIGHT_QUOTE_ONLY,
+      sdkFlow: 'quote_only_dry_run_plan',
+      sdkMethod: 'dryRunPlan',
+    },
+  };
+}
+
 async function ensurePositionOwnerPrecheck({
   connection,
   positionPubKey,
@@ -838,18 +890,34 @@ export async function executeQuoteOnlyPositionFirstFlow({
       positionOwner: existingOwner || null,
       expectedPositionOwner: expectedPositionOwner || null,
       sdkFlow: 'quote_only_position_first',
+      sdkMethod: 'positionOwnerCheck',
     };
     throw err;
   }
 
   let initSig = null;
   if (!existingAccInfo) {
-    const initTx = await dlmmPool.createEmptyPosition({
-      positionPubKey,
-      minBinId: Number(deployArgs.rangeMin),
-      maxBinId: Number(deployArgs.rangeMax),
-      user: walletPublicKey,
-    });
+    let initTx;
+    try {
+      initTx = await dlmmPool.createEmptyPosition({
+        positionPubKey,
+        minBinId: Number(deployArgs.rangeMin),
+        maxBinId: Number(deployArgs.rangeMax),
+        user: walletPublicKey,
+      });
+    } catch (initErr) {
+      if (initErr && typeof initErr === 'object') {
+        initErr.dlmmContextExtra = {
+          ...(initErr.dlmmContextExtra || {}),
+          ...finalArgsContext,
+          positionPubkey,
+          expectedPositionOwner: expectedPositionOwner || null,
+          sdkFlow: 'quote_only_position_first',
+          sdkMethod: 'createEmptyPosition',
+        };
+      }
+      throw initErr;
+    }
     injectPriorityFee(initTx, { units: EP_CONFIG.COMPUTE_UNITS, microLamports });
     const sendTx = typeof sendTxFn === 'function'
       ? sendTxFn
@@ -872,18 +940,35 @@ export async function executeQuoteOnlyPositionFirstFlow({
       positionOwner: postInitOwner || null,
       expectedPositionOwner: expectedPositionOwner || null,
       sdkFlow: 'quote_only_position_first',
+      sdkMethod: 'positionOwnerCheck',
     };
     throw err;
   }
 
-  const addTxOrTxs = await dlmmPool.addLiquidityByWeight({
-    positionPubKey,
-    user: walletPublicKey,
-    totalXAmount: deployArgs.amountXBn,
-    totalYAmount: deployArgs.amountYBn,
-    xYAmountDistribution,
-    slippage: slippagePct,
-  });
+  let addTxOrTxs;
+  try {
+    addTxOrTxs = await dlmmPool.addLiquidityByWeight({
+      positionPubKey,
+      user: walletPublicKey,
+      totalXAmount: deployArgs.amountXBn,
+      totalYAmount: deployArgs.amountYBn,
+      xYAmountDistribution,
+      slippage: slippagePct,
+    });
+  } catch (addErr) {
+    if (addErr && typeof addErr === 'object') {
+      addErr.dlmmContextExtra = {
+        ...(addErr.dlmmContextExtra || {}),
+        ...finalArgsContext,
+        positionPubkey,
+        positionOwner: postInitOwner || null,
+        expectedPositionOwner: expectedPositionOwner || null,
+        sdkFlow: 'quote_only_position_first',
+        sdkMethod: 'addLiquidityByWeight',
+      };
+    }
+    throw addErr;
+  }
 
   return {
     quoteOnlyPositionFirst: true,
@@ -2022,20 +2107,27 @@ export async function deployPosition(poolAddress, deployOptions = {}) {
               sdkMethod: 'addLiquidityByWeight',
               sdkFlow: 'quote_only_position_first',
             };
+            assertNoCombinedWeightForQuoteOnly({
+              deployArgs: args,
+              sdkPath,
+              sdkMethod: 'initializePositionAndAddLiquidityByWeight',
+            });
             console.log(
               `[evilPanda] DLMM_WEIGHT_DIST pool=${poolAddress.slice(0,8)} bins=${distribution.length} totalYBps=${totalYBps.toString()} ` +
               `attempt=${Number(state?.attempt || 0)}`
             );
             if (isDryRun()) {
-              state.finalArgsContext.sdkMethod = 'initializePositionAndAddLiquidityByWeight';
-              return dlmmPool.initializePositionAndAddLiquidityByWeight({
-                positionPubKey: statePositionKeypair.publicKey,
-                user: wallet.publicKey,
-                totalXAmount: args.amountXBn,
-                totalYAmount: args.amountYBn,
+              const dryRunPlan = buildQuoteOnlyDryRunPlan({
+                poolAddress,
+                deployArgs: args,
                 xYAmountDistribution: distribution,
-                slippage: slippagePct,
+                finalArgsContext: state?.finalArgsContext || {},
               });
+              state.finalArgsContext = {
+                ...(state?.finalArgsContext || {}),
+                ...(dryRunPlan?.context || {}),
+              };
+              return dryRunPlan;
             }
             await ensurePositionOwnerPrecheck({
               connection,
@@ -2114,6 +2206,18 @@ export async function deployPosition(poolAddress, deployOptions = {}) {
     }
 
     deployArgs = finalDeployState.deployArgs;
+    if (txOrTxs && typeof txOrTxs === 'object' && txOrTxs.quoteOnlyDryRunPlan) {
+      return {
+        dryRun: true,
+        simulated: false,
+        positionPubkey,
+        poolAddress,
+        rangeMin: Number(deployArgs.rangeMin),
+        rangeMax: Number(deployArgs.rangeMax),
+        quoteOnlyPlan: txOrTxs,
+        txCount: 0,
+      };
+    }
     const safeRangeMin = Number(deployArgs.rangeMin);
     const safeRangeMax = Number(deployArgs.rangeMax);
     const txList = Array.isArray(txOrTxs) ? txOrTxs : [txOrTxs];
