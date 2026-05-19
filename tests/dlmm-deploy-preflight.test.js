@@ -7,10 +7,12 @@ import {
   assertDlmmFinalSdkArgs,
   buildDlmmFinalArgsContext,
   buildDlmmSdkStrategyFromDeployArgs,
+  buildQuoteOnlyWeightDistribution,
   rebuildDeployArgsWithRefreshedActiveBin,
   prepareFinalDlmmDeployAttemptState,
   executeDlmmInitializePositionWithRetry,
   isDlmmSdkInvalidArgumentsError,
+  selectDlmmSdkPathForDeployArgs,
   wrapDlmmSdkInvalidArgumentsError,
   ensureFinalRentCheckedDeployArgs,
 } from '../src/sniper/evilPanda.js';
@@ -210,6 +212,40 @@ test('strategy type defaults to SDK Spot enum when available', () => {
 
   const expectedSpot = Number(StrategyType?.Spot ?? 0);
   assert.equal(out.strategyType, expectedSpot);
+});
+
+test('pure quote-only final deploy selects one-side weight SDK path', () => {
+  const quoteOnly = buildDlmmDeployStrategyArgs({
+    activeBinId: 1000,
+    rangeMin: 980,
+    rangeMax: 999,
+    amountXBn: new BN('0'),
+    amountYBn: new BN('100'),
+  });
+  const mixed = buildDlmmDeployStrategyArgs({
+    activeBinId: 1000,
+    rangeMin: 980,
+    rangeMax: 999,
+    amountXBn: new BN('1'),
+    amountYBn: new BN('100'),
+  });
+
+  assert.equal(selectDlmmSdkPathForDeployArgs(quoteOnly), 'weight_quote_only');
+  assert.equal(selectDlmmSdkPathForDeployArgs(mixed), 'strategy');
+});
+
+test('quote-only weight distribution is y-only, contiguous, and totals 10000 bps', () => {
+  const dist = buildQuoteOnlyWeightDistribution({ rangeMin: -467, rangeMax: -400 });
+  assert.equal(dist.length, 68);
+  assert.equal(dist[0].binId, -467);
+  assert.equal(dist[dist.length - 1].binId, -400);
+
+  const totalYBps = dist.reduce((acc, row) => acc.add(row.yAmountBpsOfTotal), new BN('0'));
+  const totalXBps = dist.reduce((acc, row) => acc.add(row.xAmountBpsOfTotal), new BN('0'));
+  assert.equal(totalYBps.toString(), '10000');
+  assert.equal(totalXBps.toString(), '0');
+  assert.equal(dist.every((row) => row.xAmountBpsOfTotal.isZero()), true);
+  assert.equal(dist.some((row) => row.yAmountBpsOfTotal.gt(new BN('0'))), true);
 });
 
 test('final SDK strategy is built from adjusted deployArgs range, not original unsafe range', () => {
@@ -461,6 +497,71 @@ test('retry success continues deploy flow', async () => {
   assert.deepEqual(result.txOrTxs, ['tx2']);
 });
 
+test('quote-only retry uses refreshed range for rebuilt one-side distribution', async () => {
+  const calls = [];
+  const initial = buildDlmmDeployStrategyArgs({
+    activeBinId: 1000,
+    rangeMin: 995,
+    rangeMax: 1000,
+    amountXBn: new BN('0'),
+    amountYBn: new BN('1000'),
+  });
+  const refreshedBins = [1002, 998];
+  const prepare = async (attempt, baseDeployArgs, currentRentGuard) => prepareFinalDlmmDeployAttemptState({
+    dlmmPool: {},
+    connection: {},
+    poolPubkey: {},
+    poolAddress: 'Pool11111111111111111111111111111111111111',
+    xMint: 'Mint111111111111111111111111111111111111111',
+    yMint: 'So11111111111111111111111111111111111111112',
+    deployArgs: baseDeployArgs,
+    currentRentGuard,
+    hasNonRefundableFees: true,
+    rangeMaxBins: 100,
+    checkedRangeMin: initial.rangeMin,
+    checkedRangeMax: initial.rangeMax,
+    initialActiveBinId: 1000,
+    attempt,
+    refetchStatesFn: async () => calls.push(`refetch-${attempt}`),
+    getActiveBinFn: async () => ({ binId: refreshedBins.shift() }),
+    ensureFinalRentCheckedDeployArgsFn: async (args) => {
+      calls.push(`rent-${attempt}-[${args.deployArgs.rangeMin},${args.deployArgs.rangeMax}]`);
+      return { ok: true, deployArgs: args.deployArgs, guard: 'ASSERT_PASS', finalRangeChanged: true };
+    },
+  });
+
+  const first = await prepare(1, initial, { ok: true, deployArgs: initial, guard: 'ASSERT_PASS' });
+  let sdkCalls = 0;
+  const out = await executeDlmmInitializePositionWithRetry({
+    initialState: first,
+    buildRetryStateFn: async ({ previousState }) => prepare(2, previousState.deployArgs, previousState.finalRentGuard),
+    sdkCallFn: async (state) => {
+      sdkCalls += 1;
+      const sdkPath = selectDlmmSdkPathForDeployArgs(state.deployArgs);
+      assert.equal(sdkPath, 'weight_quote_only');
+      const dist = buildQuoteOnlyWeightDistribution({
+        rangeMin: Number(state.deployArgs.rangeMin),
+        rangeMax: Number(state.deployArgs.rangeMax),
+      });
+      const firstBin = dist[0].binId;
+      const lastBin = dist[dist.length - 1].binId;
+      calls.push(`sdk-${sdkCalls}-range=[${state.deployArgs.rangeMin},${state.deployArgs.rangeMax}] dist=[${firstBin},${lastBin}]`);
+      if (sdkCalls === 1) throw new Error('invalid arguments from sdk');
+      return ['ok'];
+    },
+  });
+
+  assert.equal(out.attempt, 2);
+  assert.equal(sdkCalls, 2);
+  assert.equal(calls.some((line) => line.startsWith('refetch-2')), true);
+  assert.equal(calls.some((line) => line.startsWith('rent-2-')), true);
+  const firstSdk = calls.find((line) => line.startsWith('sdk-1-'));
+  const secondSdk = calls.find((line) => line.startsWith('sdk-2-'));
+  assert.equal(Boolean(firstSdk), true);
+  assert.equal(Boolean(secondSdk), true);
+  assert.notEqual(firstSdk, secondSdk);
+});
+
 test('retry still invalid args throws wrapped error with final context and no blacklist side-effect marker', async () => {
   const initial = {
     deployArgs: buildDlmmDeployStrategyArgs({
@@ -483,6 +584,7 @@ test('retry still invalid args throws wrapped error with final context and no bl
       amountXIsZero: true,
       amountYIsZero: false,
       strategyType: 0,
+      sdkPath: 'weight_quote_only',
     },
   };
 
@@ -504,10 +606,24 @@ test('retry still invalid args throws wrapped error with final context and no bl
       assert.match(msg, /pool/);
       assert.match(msg, /activeBinId/);
       assert.match(msg, /retryAttempt/);
+      assert.match(msg, /weight_quote_only/);
+      assert.match(msg, /attempt\":2/);
       assert.equal(msg.includes('blacklist'), false);
       return true;
     }
   );
+});
+
+test('wrapper uses weight method name for quote-only sdkPath', () => {
+  const wrapped = wrapDlmmSdkInvalidArgumentsError({
+    error: new Error('invalid arguments'),
+    finalArgsContext: {
+      pool: 'Pool111',
+      sdkPath: 'weight_quote_only',
+    },
+  });
+  assert.equal(wrapped?.code, 'INVALID_DLMM_DEPLOY_ARGS');
+  assert.match(String(wrapped?.message || ''), /initializePositionAndAddLiquidityByWeight/);
 });
 
 test('non-invalid-arguments error is not retried', async () => {

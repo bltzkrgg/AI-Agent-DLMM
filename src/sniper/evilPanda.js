@@ -69,6 +69,8 @@ let _notifyFn = null;
 const RENT_FREE_SEARCH_SLACK_ARRAYS = 100;
 // SDK enum fallback to numeric Spot strategy for backward compatibility.
 const SPOT_STRATEGY_TYPE = StrategyType?.Spot ?? 0;
+const DLMM_SDK_PATH_STRATEGY = 'strategy';
+const DLMM_SDK_PATH_WEIGHT_QUOTE_ONLY = 'weight_quote_only';
 
 function isFiniteInteger(value) {
   return Number.isFinite(value) && Number.isSafeInteger(value);
@@ -221,8 +223,12 @@ export function wrapDlmmSdkInvalidArgumentsError({
   if (!/invalid arguments/i.test(String(error?.message || ''))) {
     return null;
   }
+  const sdkPath = String(finalArgsContext?.sdkPath || DLMM_SDK_PATH_STRATEGY);
+  const sdkMethod = sdkPath === DLMM_SDK_PATH_WEIGHT_QUOTE_ONLY
+    ? 'initializePositionAndAddLiquidityByWeight'
+    : 'initializePositionAndAddLiquidityByStrategy';
   return buildInvalidDlmmArgsError(
-    `SDK rejected initializePositionAndAddLiquidityByStrategy with invalid arguments ` +
+    `SDK rejected ${sdkMethod} with invalid arguments ` +
     `context=${JSON.stringify(finalArgsContext)}`
   );
 }
@@ -614,6 +620,61 @@ export function buildDlmmSdkStrategyFromDeployArgs(deployArgs = {}) {
       ? Number(deployArgs.strategyType)
       : SPOT_STRATEGY_TYPE,
   };
+}
+
+export function selectDlmmSdkPathForDeployArgs(deployArgs = {}) {
+  const amountX = toBnAmountSafe(deployArgs?.amountXBn);
+  const amountY = toBnAmountSafe(deployArgs?.amountYBn);
+  const activeBinId = Number(deployArgs?.activeBinId);
+  const rangeMax = Number(deployArgs?.rangeMax);
+  const side = classifyDlmmLiquiditySide(amountX, amountY);
+  const isStrictQuoteOnly =
+    side === 'QUOTE_ONLY' &&
+    isFiniteInteger(activeBinId) &&
+    isFiniteInteger(rangeMax) &&
+    rangeMax < activeBinId;
+  return isStrictQuoteOnly
+    ? DLMM_SDK_PATH_WEIGHT_QUOTE_ONLY
+    : DLMM_SDK_PATH_STRATEGY;
+}
+
+export function buildQuoteOnlyWeightDistribution({
+  rangeMin,
+  rangeMax,
+} = {}) {
+  if (!isFiniteInteger(rangeMin) || !isFiniteInteger(rangeMax)) {
+    throw buildInvalidDlmmArgsError(`quote-only weight range must be finite integers (got ${String(rangeMin)}/${String(rangeMax)})`);
+  }
+  if (rangeMin > rangeMax) {
+    throw buildInvalidDlmmArgsError(`quote-only weight range invalid (min ${rangeMin} > max ${rangeMax})`);
+  }
+  const totalBins = rangeMax - rangeMin + 1;
+  if (!isFiniteInteger(totalBins) || totalBins <= 0) {
+    throw buildInvalidDlmmArgsError(`quote-only weight total bins invalid (${String(totalBins)})`);
+  }
+
+  const TOTAL_BPS = 10_000;
+  const baseYBps = Math.floor(TOTAL_BPS / totalBins);
+  const remainder = TOTAL_BPS - (baseYBps * totalBins);
+  const distribution = [];
+
+  for (let i = 0; i < totalBins; i++) {
+    const binId = rangeMin + i;
+    const yBps = i === (totalBins - 1)
+      ? (baseYBps + remainder)
+      : baseYBps;
+    distribution.push({
+      binId,
+      xAmountBpsOfTotal: new BN('0'),
+      yAmountBpsOfTotal: new BN(String(yBps)),
+    });
+  }
+
+  const totalYBps = distribution.reduce((acc, item) => acc.add(item.yAmountBpsOfTotal), new BN('0'));
+  if (totalYBps.lte(new BN('0'))) {
+    throw buildInvalidDlmmArgsError('quote-only weight distribution must have positive Y allocation');
+  }
+  return distribution;
 }
 
 function isRentRequiredError(error) {
@@ -1698,6 +1759,39 @@ export async function deployPosition(poolAddress, deployOptions = {}) {
         sdkCallFn: async (state = {}) => {
           const args = state?.deployArgs || {};
           const strategy = state?.sdkStrategy || buildDlmmSdkStrategyFromDeployArgs(args);
+          const sdkPath = selectDlmmSdkPathForDeployArgs(args);
+          state.finalArgsContext = {
+            ...(state?.finalArgsContext || {}),
+            sdkPath,
+          };
+          console.log(
+            `[evilPanda] DLMM_SDK_PATH pool=${poolAddress.slice(0,8)} path=${sdkPath} ` +
+            `attempt=${Number(state?.attempt || 0)} range=[${Number(args.rangeMin)},${Number(args.rangeMax)}]`
+          );
+
+          if (sdkPath === DLMM_SDK_PATH_WEIGHT_QUOTE_ONLY) {
+            const distribution = buildQuoteOnlyWeightDistribution({
+              rangeMin: Number(args.rangeMin),
+              rangeMax: Number(args.rangeMax),
+            });
+            const totalYBps = distribution.reduce(
+              (acc, item) => acc.add(item.yAmountBpsOfTotal),
+              new BN('0')
+            );
+            console.log(
+              `[evilPanda] DLMM_WEIGHT_DIST pool=${poolAddress.slice(0,8)} bins=${distribution.length} totalYBps=${totalYBps.toString()} ` +
+              `attempt=${Number(state?.attempt || 0)}`
+            );
+            return dlmmPool.initializePositionAndAddLiquidityByWeight({
+              positionPubKey: posKp.publicKey,
+              user: wallet.publicKey,
+              totalXAmount: args.amountXBn,
+              totalYAmount: args.amountYBn,
+              xYAmountDistribution: distribution,
+              slippage: slippagePct,
+            });
+          }
+
           return dlmmPool.initializePositionAndAddLiquidityByStrategy({
             positionPubKey: posKp.publicKey,
             user: wallet.publicKey,
