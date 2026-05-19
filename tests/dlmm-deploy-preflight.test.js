@@ -8,6 +8,9 @@ import {
   buildDlmmFinalArgsContext,
   buildDlmmSdkStrategyFromDeployArgs,
   rebuildDeployArgsWithRefreshedActiveBin,
+  prepareFinalDlmmDeployAttemptState,
+  executeDlmmInitializePositionWithRetry,
+  isDlmmSdkInvalidArgumentsError,
   wrapDlmmSdkInvalidArgumentsError,
   ensureFinalRentCheckedDeployArgs,
 } from '../src/sniper/evilPanda.js';
@@ -310,6 +313,233 @@ test('SDK invalid arguments wrapper includes final args context', () => {
   assert.equal(wrapped?.code, 'INVALID_DLMM_DEPLOY_ARGS');
   assert.match(String(wrapped?.message || ''), /context=\{/);
   assert.match(String(wrapped?.message || ''), /activeBinId/);
+});
+
+test('first SDK invalid args triggers activeBin refetch and deployArgs rebuild', async () => {
+  let refetchCalls = 0;
+  const initial = buildDlmmDeployStrategyArgs({
+    activeBinId: 1000,
+    rangeMin: 995,
+    rangeMax: 1005,
+    amountXBn: new BN('1'),
+    amountYBn: new BN('0'),
+  });
+
+  const out = await prepareFinalDlmmDeployAttemptState({
+    dlmmPool: {},
+    poolAddress: 'Pool11111111111111111111111111111111111111',
+    xMint: 'Mint111111111111111111111111111111111111111',
+    yMint: 'So11111111111111111111111111111111111111112',
+    deployArgs: initial,
+    currentRentGuard: { ok: true, deployArgs: initial, guard: 'UNCHANGED_RANGE_PASS' },
+    hasNonRefundableFees: false,
+    checkedRangeMin: initial.rangeMin,
+    checkedRangeMax: initial.rangeMax,
+    initialActiveBinId: 1000,
+    refetchStatesFn: async () => { refetchCalls += 1; },
+    getActiveBinFn: async () => ({ binId: 1003 }),
+  });
+
+  assert.equal(out.ok, true);
+  assert.equal(refetchCalls, 1);
+  assert.equal(out.deployArgs.activeBinId, 1003);
+  assert.equal(out.deployArgs.rangeMin, 1004);
+  assert.equal(out.deployArgs.rangeMax, 1014);
+});
+
+test('retry SDK call uses refreshed deployArgs and re-runs preflight/rent guard', async () => {
+  const calls = [];
+  let ensureCalls = 0;
+  let assertCalls = 0;
+  const initial = buildDlmmDeployStrategyArgs({
+    activeBinId: 1000,
+    rangeMin: 995,
+    rangeMax: 1005,
+    amountXBn: new BN('1'),
+    amountYBn: new BN('0'),
+  });
+  let activeBinCursor = 1003;
+
+  const prepareState = async (attempt, baseDeployArgs, currentRentGuard) => prepareFinalDlmmDeployAttemptState({
+    dlmmPool: {},
+    connection: {},
+    poolPubkey: {},
+    poolAddress: 'Pool11111111111111111111111111111111111111',
+    xMint: 'Mint111111111111111111111111111111111111111',
+    yMint: 'So11111111111111111111111111111111111111112',
+    deployArgs: baseDeployArgs,
+    currentRentGuard,
+    hasNonRefundableFees: true,
+    rangeMaxBins: 100,
+    checkedRangeMin: initial.rangeMin,
+    checkedRangeMax: initial.rangeMax,
+    initialActiveBinId: 1000,
+    attempt,
+    refetchStatesFn: async () => calls.push(`refetch-${attempt}`),
+    getActiveBinFn: async () => ({ binId: activeBinCursor++ }),
+    ensureFinalRentCheckedDeployArgsFn: async (args) => {
+      ensureCalls += 1;
+      calls.push(`rent-${attempt}-[${args.deployArgs.rangeMin},${args.deployArgs.rangeMax}]`);
+      return { ok: true, deployArgs: args.deployArgs, guard: 'ASSERT_PASS', finalRangeChanged: true };
+    },
+    assertDlmmFinalSdkArgsFn: (args) => {
+      assertCalls += 1;
+      calls.push(`preflight-${attempt}-[${args.deployArgs.rangeMin},${args.deployArgs.rangeMax}]`);
+      return {
+        pool: args.poolAddress,
+        tokenXMint: args.xMint,
+        tokenYMint: args.yMint,
+        activeBinId: args.deployArgs.activeBinId,
+        refreshedActiveBinId: args.refreshedActiveBinId,
+        rangeMin: args.deployArgs.rangeMin,
+        rangeMax: args.deployArgs.rangeMax,
+        rangeWidth: Number(args.deployArgs.rangeMax) - Number(args.deployArgs.rangeMin) + 1,
+        amountXIsZero: args.deployArgs.amountXBn.isZero(),
+        amountYIsZero: args.deployArgs.amountYBn.isZero(),
+        strategyType: args.deployArgs.strategyType,
+      };
+    },
+  });
+
+  const first = await prepareState(1, initial, { ok: true, deployArgs: initial, guard: 'ASSERT_PASS' });
+  assert.equal(first.ok, true);
+
+  let sdkCalls = 0;
+  const result = await executeDlmmInitializePositionWithRetry({
+    initialState: first,
+    buildRetryStateFn: async ({ previousState }) => prepareState(2, previousState.deployArgs, previousState.finalRentGuard),
+    sdkCallFn: async (state) => {
+      sdkCalls += 1;
+      calls.push(`sdk-${sdkCalls}-[${state.deployArgs.rangeMin},${state.deployArgs.rangeMax}]`);
+      if (sdkCalls === 1) {
+        throw new Error('invalid arguments from sdk');
+      }
+      return [{ ok: true }];
+    },
+  });
+
+  assert.equal(result.attempt, 2);
+  assert.equal(sdkCalls, 2);
+  assert.equal(assertCalls >= 2, true);
+  assert.equal(ensureCalls >= 2, true);
+  assert.equal(calls.some((line) => line.startsWith('preflight-2-')), true);
+  assert.equal(calls.some((line) => line.startsWith('rent-2-')), true);
+  assert.equal(calls.some((line) => line.startsWith('sdk-2-')), true);
+});
+
+test('retry success continues deploy flow', async () => {
+  const initial = {
+    deployArgs: buildDlmmDeployStrategyArgs({
+      activeBinId: 1000,
+      rangeMin: 980,
+      rangeMax: 999,
+      amountXBn: new BN('0'),
+      amountYBn: new BN('100'),
+    }),
+    sdkStrategy: { minBinId: 980, maxBinId: 999, strategyType: 0 },
+    finalArgsContext: { pool: 'Pool111' },
+  };
+  let sdkCalls = 0;
+  const result = await executeDlmmInitializePositionWithRetry({
+    initialState: initial,
+    buildRetryStateFn: async ({ previousState }) => ({
+      ...previousState,
+      deployArgs: {
+        ...previousState.deployArgs,
+        activeBinId: 1001,
+      },
+      finalArgsContext: { ...previousState.finalArgsContext, activeBinId: 1001 },
+    }),
+    sdkCallFn: async () => {
+      sdkCalls += 1;
+      if (sdkCalls === 1) throw new Error('invalid arguments from sdk');
+      return ['tx2'];
+    },
+  });
+
+  assert.equal(result.attempt, 2);
+  assert.deepEqual(result.txOrTxs, ['tx2']);
+});
+
+test('retry still invalid args throws wrapped error with final context and no blacklist side-effect marker', async () => {
+  const initial = {
+    deployArgs: buildDlmmDeployStrategyArgs({
+      activeBinId: 1000,
+      rangeMin: 980,
+      rangeMax: 999,
+      amountXBn: new BN('0'),
+      amountYBn: new BN('100'),
+    }),
+    sdkStrategy: { minBinId: 980, maxBinId: 999, strategyType: 0 },
+    finalArgsContext: {
+      pool: 'Pool111',
+      tokenXMint: 'Mint111',
+      tokenYMint: 'So111',
+      activeBinId: 1000,
+      refreshedActiveBinId: 1001,
+      rangeMin: 980,
+      rangeMax: 999,
+      rangeWidth: 20,
+      amountXIsZero: true,
+      amountYIsZero: false,
+      strategyType: 0,
+    },
+  };
+
+  await assert.rejects(
+    executeDlmmInitializePositionWithRetry({
+      initialState: initial,
+      buildRetryStateFn: async ({ previousState }) => ({
+        ...previousState,
+        finalArgsContext: { ...previousState.finalArgsContext, refreshedActiveBinId: 1002 },
+      }),
+      sdkCallFn: async () => {
+        throw new Error('invalid arguments from sdk');
+      },
+    }),
+    (err) => {
+      assert.equal(err?.code, 'INVALID_DLMM_DEPLOY_ARGS');
+      const msg = String(err?.message || '');
+      assert.match(msg, /context=\{/);
+      assert.match(msg, /pool/);
+      assert.match(msg, /activeBinId/);
+      assert.match(msg, /retryAttempt/);
+      assert.equal(msg.includes('blacklist'), false);
+      return true;
+    }
+  );
+});
+
+test('non-invalid-arguments error is not retried', async () => {
+  let sdkCalls = 0;
+  await assert.rejects(
+    executeDlmmInitializePositionWithRetry({
+      initialState: {
+        deployArgs: buildDlmmDeployStrategyArgs({
+          activeBinId: 1000,
+          rangeMin: 980,
+          rangeMax: 999,
+          amountXBn: new BN('0'),
+          amountYBn: new BN('100'),
+        }),
+      },
+      buildRetryStateFn: async () => {
+        throw new Error('should-not-be-called');
+      },
+      sdkCallFn: async () => {
+        sdkCalls += 1;
+        throw new Error('rpc timeout');
+      },
+    }),
+    /rpc timeout/
+  );
+  assert.equal(sdkCalls, 1);
+});
+
+test('invalid arguments detector marks SDK invalid arguments only', () => {
+  assert.equal(isDlmmSdkInvalidArgumentsError(new Error('invalid arguments from sdk')), true);
+  assert.equal(isDlmmSdkInvalidArgumentsError({ code: 'INVALID_DLMM_DEPLOY_ARGS', message: 'x' }), true);
+  assert.equal(isDlmmSdkInvalidArgumentsError(new Error('rpc timeout')), false);
 });
 
 test('final rent guard is skipped for normal pools (hasNonRefundableFees=false)', async () => {

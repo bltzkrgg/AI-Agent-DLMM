@@ -227,6 +227,12 @@ export function wrapDlmmSdkInvalidArgumentsError({
   );
 }
 
+export function isDlmmSdkInvalidArgumentsError(error) {
+  if (!error) return false;
+  if (error?.code === 'INVALID_DLMM_DEPLOY_ARGS') return true;
+  return /invalid arguments/i.test(String(error?.message || ''));
+}
+
 export function buildDlmmFinalArgsContext({
   poolAddress = '',
   xMint = '',
@@ -269,6 +275,185 @@ export function buildDlmmFinalArgsContext({
     sdkMinBinId: Number.isFinite(Number(sdkStrategy?.minBinId)) ? Number(sdkStrategy.minBinId) : null,
     sdkMaxBinId: Number.isFinite(Number(sdkStrategy?.maxBinId)) ? Number(sdkStrategy.maxBinId) : null,
   };
+}
+
+export async function prepareFinalDlmmDeployAttemptState({
+  dlmmPool = null,
+  connection = null,
+  poolPubkey = null,
+  poolAddress = '',
+  xMint = '',
+  yMint = '',
+  deployArgs = {},
+  currentRentGuard = null,
+  hasNonRefundableFees = false,
+  rangeMaxBins = 0,
+  checkedRangeMin = null,
+  checkedRangeMax = null,
+  initialActiveBinId = null,
+  attempt = 1,
+  refetchStatesFn = null,
+  getActiveBinFn = null,
+  ensureFinalRentCheckedDeployArgsFn = ensureFinalRentCheckedDeployArgs,
+  assertDlmmFinalSdkArgsFn = assertDlmmFinalSdkArgs,
+  buildDlmmSdkStrategyFromDeployArgsFn = buildDlmmSdkStrategyFromDeployArgs,
+} = {}) {
+  let refreshedActiveBinId = Number(deployArgs?.activeBinId);
+  let activeRefreshReason = null;
+
+  try {
+    if (typeof refetchStatesFn === 'function') {
+      await refetchStatesFn();
+    } else if (dlmmPool?.refetchStates) {
+      await dlmmPool.refetchStates();
+    }
+    const refreshedActiveBin = typeof getActiveBinFn === 'function'
+      ? await getActiveBinFn()
+      : (dlmmPool?.getActiveBin ? await dlmmPool.getActiveBin() : null);
+    if (isFiniteInteger(Number(refreshedActiveBin?.binId))) {
+      refreshedActiveBinId = Number(refreshedActiveBin.binId);
+      if (refreshedActiveBinId !== Number(initialActiveBinId)) {
+        activeRefreshReason = 'active_bin_moved_before_final_args';
+        console.log(
+          `[evilPanda] ACTIVE_BIN_REFRESH pool=${poolAddress.slice(0,8)} ` +
+          `initial=${Number(initialActiveBinId)} refreshed=${refreshedActiveBinId} attempt=${attempt}`
+        );
+      }
+    }
+  } catch (refreshErr) {
+    console.warn(`[evilPanda] ACTIVE_BIN_REFRESH_FAIL pool=${poolAddress.slice(0,8)} reason=${refreshErr?.message || 'unknown'} attempt=${attempt}`);
+  }
+
+  const beforeRefreshRangeMin = Number(deployArgs.rangeMin);
+  const beforeRefreshRangeMax = Number(deployArgs.rangeMax);
+  let finalDeployArgs = rebuildDeployArgsWithRefreshedActiveBin({
+    deployArgs,
+    refreshedActiveBinId,
+  });
+  const refreshedRangeChanged =
+    Number(finalDeployArgs.rangeMin) !== beforeRefreshRangeMin ||
+    Number(finalDeployArgs.rangeMax) !== beforeRefreshRangeMax;
+  if (refreshedRangeChanged && !finalDeployArgs.adjustmentReason) {
+    finalDeployArgs.adjustmentReason = activeRefreshReason || 'active_bin_refresh_rebuild';
+  } else if (!finalDeployArgs.adjustmentReason && activeRefreshReason) {
+    finalDeployArgs.adjustmentReason = activeRefreshReason;
+  }
+
+  let finalRentGuard = currentRentGuard || { ok: true, deployArgs: finalDeployArgs, finalRangeChanged: false, guard: 'SKIP_PRECHECK' };
+  if (hasNonRefundableFees && refreshedRangeChanged) {
+    finalRentGuard = await ensureFinalRentCheckedDeployArgsFn({
+      hasNonRefundableFees,
+      connection,
+      poolPubkey,
+      poolAddress,
+      tokenXMint: xMint,
+      symbol: poolAddress.slice(0, 8),
+      activeBinId: refreshedActiveBinId,
+      rangeMaxBins,
+      checkedRangeMin,
+      checkedRangeMax,
+      deployArgs: finalDeployArgs,
+    });
+    if (!finalRentGuard.ok) {
+      return {
+        ...finalRentGuard,
+        attempt,
+        refreshedActiveBinId,
+        initialActiveBinId,
+        deployArgs: finalDeployArgs,
+        currentRentGuard,
+      };
+    }
+    finalDeployArgs = finalRentGuard.deployArgs;
+  }
+
+  const safeRangeMin = Number(finalDeployArgs.rangeMin);
+  const safeRangeMax = Number(finalDeployArgs.rangeMax);
+  const finalTotalBins = safeRangeMax - safeRangeMin + 1;
+  const sdkStrategy = buildDlmmSdkStrategyFromDeployArgsFn(finalDeployArgs);
+  const finalArgsContext = assertDlmmFinalSdkArgsFn({
+    deployArgs: finalDeployArgs,
+    sdkStrategy,
+    xMint,
+    yMint,
+    poolAddress,
+    initialActiveBinId: Number(initialActiveBinId),
+    refreshedActiveBinId,
+  });
+
+  if (finalDeployArgs.adjustedBelowActive || finalDeployArgs.adjustedAboveActive) {
+    console.warn(
+      `[evilPanda] DLMM_RANGE_ADJUST_SINGLE_SIDE pool=${poolAddress.slice(0,8)} ` +
+      `active=${finalDeployArgs.activeBinId} original=[${beforeRefreshRangeMin},${beforeRefreshRangeMax}] adjusted=[${safeRangeMin},${safeRangeMax}] reason=${finalDeployArgs.adjustmentReason || 'none'} attempt=${attempt}`
+    );
+  }
+
+  console.log(
+    `[evilPanda] DLMM_PRECHECK_OK pool=${poolAddress} active=${finalDeployArgs.activeBinId} ` +
+    `range=[${safeRangeMin},${safeRangeMax}] amountX=${finalDeployArgs.amountXBn.toString()} amountY=${finalDeployArgs.amountYBn.toString()} ` +
+    `strategyType=${finalDeployArgs.strategyType} attempt=${attempt}`
+  );
+  console.log(
+    `[evilPanda] FINAL_SDK_RANGE pool=${poolAddress.slice(0,8)} ` +
+    `rentGuard=${finalRentGuard.guard || 'UNKNOWN'} checked=[${checkedRangeMin},${checkedRangeMax}] ` +
+    `strategy=[${sdkStrategy.minBinId},${sdkStrategy.maxBinId}] attempt=${attempt}`
+  );
+  console.log(
+    `[evilPanda] bins=${finalTotalBins} range=[${safeRangeMin},${safeRangeMax}] attempt=${attempt}`
+  );
+
+  return {
+    ok: true,
+    attempt,
+    deployArgs: finalDeployArgs,
+    sdkStrategy,
+    finalArgsContext,
+    finalRentGuard,
+    refreshedActiveBinId,
+    initialActiveBinId: Number(initialActiveBinId),
+    finalTotalBins,
+    currentRentGuard: finalRentGuard,
+  };
+}
+
+export async function executeDlmmInitializePositionWithRetry({
+  initialState = null,
+  buildRetryStateFn = async ({ previousState }) => previousState,
+  sdkCallFn = async () => { throw new Error('sdkCallFn not provided'); },
+  wrapInvalidArgsFn = wrapDlmmSdkInvalidArgumentsError,
+} = {}) {
+  const firstState = initialState || {};
+  try {
+    const txOrTxs = await sdkCallFn(firstState);
+    return { txOrTxs, state: firstState, attempt: 1 };
+  } catch (firstErr) {
+    if (!isDlmmSdkInvalidArgumentsError(firstErr)) {
+      throw firstErr;
+    }
+
+    const retryState = await buildRetryStateFn({
+      previousState: firstState,
+      firstError: firstErr,
+      attempt: 2,
+    });
+
+    try {
+      const txOrTxs = await sdkCallFn(retryState);
+      return { txOrTxs, state: retryState, attempt: 2 };
+    } catch (retryErr) {
+      if (!isDlmmSdkInvalidArgumentsError(retryErr)) {
+        throw retryErr;
+      }
+      throw wrapInvalidArgsFn({
+        error: retryErr,
+        finalArgsContext: {
+          ...(retryState?.finalArgsContext || {}),
+          attempt: 2,
+          retryAttempt: 1,
+        },
+      });
+    }
+  }
 }
 
 export function assertDlmmFinalSdkArgs({
@@ -1441,111 +1626,121 @@ export async function deployPosition(poolAddress, deployOptions = {}) {
     }
     deployArgs = preRefreshRentGuard.deployArgs;
 
-    let refreshedActiveBinId = Number(activeBin?.binId);
-    let activeRefreshReason = null;
-    try {
-      await dlmmPool.refetchStates();
-      const refreshedActiveBin = await dlmmPool.getActiveBin();
-      if (isFiniteInteger(Number(refreshedActiveBin?.binId))) {
-        refreshedActiveBinId = Number(refreshedActiveBin.binId);
-        activeBin = refreshedActiveBin;
-        if (refreshedActiveBinId !== Number(initialActiveBin?.binId)) {
-          activeRefreshReason = 'active_bin_moved_before_final_args';
-          console.log(
-            `[evilPanda] ACTIVE_BIN_REFRESH pool=${poolAddress.slice(0,8)} ` +
-            `initial=${Number(initialActiveBin?.binId)} refreshed=${refreshedActiveBinId}`
-          );
-        }
-      }
-    } catch (refreshErr) {
-      console.warn(`[evilPanda] ACTIVE_BIN_REFRESH_FAIL pool=${poolAddress.slice(0,8)} reason=${refreshErr?.message || 'unknown'}`);
-    }
-
-    const beforeRefreshRangeMin = Number(deployArgs.rangeMin);
-    const beforeRefreshRangeMax = Number(deployArgs.rangeMax);
-    deployArgs = rebuildDeployArgsWithRefreshedActiveBin({
-      deployArgs,
-      refreshedActiveBinId,
-    });
-    const refreshedRangeChanged =
-      Number(deployArgs.rangeMin) !== beforeRefreshRangeMin ||
-      Number(deployArgs.rangeMax) !== beforeRefreshRangeMax;
-    if (refreshedRangeChanged && !deployArgs.adjustmentReason) {
-      deployArgs.adjustmentReason = activeRefreshReason || 'active_bin_refresh_rebuild';
-    } else if (!deployArgs.adjustmentReason && activeRefreshReason) {
-      deployArgs.adjustmentReason = activeRefreshReason;
-    }
-
-    let finalRentGuard = preRefreshRentGuard;
-    if (hasNonRefundableFees && refreshedRangeChanged) {
-      finalRentGuard = await ensureFinalRentCheckedDeployArgs({
-        hasNonRefundableFees,
+    const buildPreparedAttemptState = async ({
+      baseDeployArgs = {},
+      currentRentGuard = null,
+      attempt = 1,
+    } = {}) => {
+      return prepareFinalDlmmDeployAttemptState({
+        dlmmPool,
         connection,
         poolPubkey,
         poolAddress,
-        tokenXMint: xMint,
-        symbol: poolAddress.slice(0, 8),
-        activeBinId: refreshedActiveBinId,
+        xMint,
+        yMint,
+        deployArgs: baseDeployArgs,
+        currentRentGuard,
+        hasNonRefundableFees,
         rangeMaxBins,
         checkedRangeMin: rentCheckedRangeMin,
         checkedRangeMax: rentCheckedRangeMax,
-        deployArgs,
+        initialActiveBinId: Number(initialActiveBin?.binId),
+        attempt,
+        refetchStatesFn: async () => {
+          if (dlmmPool?.refetchStates) await dlmmPool.refetchStates();
+        },
+        getActiveBinFn: async () => {
+          const refreshed = dlmmPool?.getActiveBin ? await dlmmPool.getActiveBin() : null;
+          if (refreshed && isFiniteInteger(Number(refreshed?.binId))) {
+            activeBin = refreshed;
+          }
+          return refreshed;
+        },
       });
-      if (!finalRentGuard.ok) {
+    };
+
+    const preparedAttempt1 = await buildPreparedAttemptState({
+      baseDeployArgs: deployArgs,
+      currentRentGuard: preRefreshRentGuard,
+      attempt: 1,
+    });
+    if (!preparedAttempt1.ok) {
+      console.warn(
+        `[evilPanda] FINAL_RENT_GUARD_VETO pool=${poolAddress.slice(0,8)} ` +
+        `reason=${preparedAttempt1.reason} range=[${preparedAttempt1.rangeMin},${preparedAttempt1.rangeMax}] afterActiveRefresh=true attempt=1`
+      );
+      return preparedAttempt1;
+    }
+
+    let finalDeployState = preparedAttempt1;
+    let txOrTxs;
+    try {
+      const executeResult = await executeDlmmInitializePositionWithRetry({
+        initialState: preparedAttempt1,
+        buildRetryStateFn: async ({ previousState }) => {
+          console.warn(
+            `[evilPanda] DLMM_INVALID_ARGS_RETRY pool=${poolAddress.slice(0,8)} ` +
+            `range=[${Number(previousState?.deployArgs?.rangeMin)},${Number(previousState?.deployArgs?.rangeMax)}] active=${Number(previousState?.deployArgs?.activeBinId)}`
+          );
+          const retryPrepared = await buildPreparedAttemptState({
+            baseDeployArgs: previousState?.deployArgs || deployArgs,
+            currentRentGuard: previousState?.finalRentGuard || preRefreshRentGuard,
+            attempt: 2,
+          });
+          if (!retryPrepared.ok) {
+            const vetoErr = new Error(`VETO_NON_REFUNDABLE_RENT_RETRY: ${retryPrepared?.reason || retryPrepared?.detail || 'unsafe retry range'}`);
+            vetoErr.code = 'VETO_NON_REFUNDABLE_RENT';
+            vetoErr.vetoResult = retryPrepared;
+            throw vetoErr;
+          }
+          return retryPrepared;
+        },
+        sdkCallFn: async (state = {}) => {
+          const args = state?.deployArgs || {};
+          const strategy = state?.sdkStrategy || buildDlmmSdkStrategyFromDeployArgs(args);
+          return dlmmPool.initializePositionAndAddLiquidityByStrategy({
+            positionPubKey: posKp.publicKey,
+            user: wallet.publicKey,
+            totalXAmount: args.amountXBn,
+            totalYAmount: args.amountYBn,
+            strategy,
+            slippage: slippagePct,
+          });
+        },
+        wrapInvalidArgsFn: wrapDlmmSdkInvalidArgumentsError,
+      });
+      txOrTxs = executeResult.txOrTxs;
+      finalDeployState = executeResult.state || preparedAttempt1;
+    } catch (deployErr) {
+      if (deployErr?.code === 'VETO_NON_REFUNDABLE_RENT' && deployErr?.vetoResult) {
         console.warn(
           `[evilPanda] FINAL_RENT_GUARD_VETO pool=${poolAddress.slice(0,8)} ` +
-          `reason=${finalRentGuard.reason} range=[${finalRentGuard.rangeMin},${finalRentGuard.rangeMax}] afterActiveRefresh=true`
+          `reason=${deployErr.vetoResult.reason} range=[${deployErr.vetoResult.rangeMin},${deployErr.vetoResult.rangeMax}] afterActiveRefresh=true attempt=2`
         );
-        return finalRentGuard;
+        return deployErr.vetoResult;
       }
-      deployArgs = finalRentGuard.deployArgs;
+      if (deployErr?.isPermanent || deployErr?.code === 'INVALID_DLMM_DEPLOY_ARGS') {
+        throw deployErr;
+      }
+      const wrappedInvalidArgs = wrapDlmmSdkInvalidArgumentsError({
+        error: deployErr,
+        finalArgsContext: {
+          ...(finalDeployState?.finalArgsContext || {}),
+          attempt: 1,
+          retryAttempt: 0,
+        },
+      });
+      if (wrappedInvalidArgs) {
+        throw wrappedInvalidArgs;
+      }
+      console.error(`[evilPanda] ❌ Monolith deploy gagal: ${deployErr.message}`);
+      throw deployErr;
     }
 
+    deployArgs = finalDeployState.deployArgs;
     const safeRangeMin = Number(deployArgs.rangeMin);
     const safeRangeMax = Number(deployArgs.rangeMax);
-    const finalTotalBins = safeRangeMax - safeRangeMin + 1;
-    const sdkStrategy = buildDlmmSdkStrategyFromDeployArgs(deployArgs);
-    const finalArgsContext = assertDlmmFinalSdkArgs({
-      deployArgs,
-      sdkStrategy,
-      xMint,
-      yMint,
-      poolAddress,
-      initialActiveBinId: Number(initialActiveBin?.binId),
-      refreshedActiveBinId,
-    });
-
-    if (deployArgs.adjustedBelowActive || deployArgs.adjustedAboveActive) {
-      console.warn(
-        `[evilPanda] DLMM_RANGE_ADJUST_SINGLE_SIDE pool=${poolAddress.slice(0,8)} ` +
-        `active=${deployArgs.activeBinId} original=[${rangeMin},${rangeMax}] adjusted=[${safeRangeMin},${safeRangeMax}] reason=${deployArgs.adjustmentReason || 'none'}`
-      );
-    }
-
-    console.log(
-      `[evilPanda] DLMM_PRECHECK_OK pool=${poolAddress} active=${deployArgs.activeBinId} ` +
-      `range=[${safeRangeMin},${safeRangeMax}] amountX=${deployArgs.amountXBn.toString()} amountY=${deployArgs.amountYBn.toString()} ` +
-      `shouldSeedTokenX=${shouldSeedTokenX} seedSwapSucceeded=${deployArgs.amountXBn.gt(new BN('0'))} ` +
-      `strategyType=${deployArgs.strategyType} slippage=${slippagePct}%`
-    );
-    console.log(
-      `[evilPanda] FINAL_SDK_RANGE pool=${poolAddress.slice(0,8)} ` +
-      `rentGuard=${finalRentGuard.guard || 'UNKNOWN'} checked=[${rentCheckedRangeMin},${rentCheckedRangeMax}] ` +
-      `strategy=[${sdkStrategy.minBinId},${sdkStrategy.maxBinId}]`
-    );
-    console.log(`[evilPanda] bins=${finalTotalBins} range=[${safeRangeMin},${safeRangeMax}] pf=${microLamports} slip=${slippagePct}%`);
-
-    try {
-      const txOrTxs = await dlmmPool.initializePositionAndAddLiquidityByStrategy({
-        positionPubKey: posKp.publicKey,
-        user:           wallet.publicKey,
-        totalXAmount:   deployArgs.amountXBn,
-        totalYAmount:   deployArgs.amountYBn,
-        strategy: sdkStrategy,
-        slippage: slippagePct,
-      });
-
-      const txList = Array.isArray(txOrTxs) ? txOrTxs : [txOrTxs];
+    const txList = Array.isArray(txOrTxs) ? txOrTxs : [txOrTxs];
 
       if (isDryRun()) {
         for (const tx of txList) {
@@ -1591,20 +1786,6 @@ export async function deployPosition(poolAddress, deployOptions = {}) {
         await pollTxConfirm(connection, sig);
         console.log(`[evilPanda] ✅ Monolith position deployed on-chain: ${sig.slice(0,8)}`);
       }
-    } catch (deployErr) {
-      if (deployErr?.isPermanent || deployErr?.code === 'INVALID_DLMM_DEPLOY_ARGS') {
-        throw deployErr;
-      }
-      const wrappedInvalidArgs = wrapDlmmSdkInvalidArgumentsError({
-        error: deployErr,
-        finalArgsContext,
-      });
-      if (wrappedInvalidArgs) {
-        throw wrappedInvalidArgs;
-      }
-      console.error(`[evilPanda] ❌ Monolith deploy gagal: ${deployErr.message}`);
-      throw deployErr;
-    }
 
     await setPositionLifecycle(positionPubkey, 'open', {
       poolAddress,
