@@ -71,7 +71,7 @@ const RENT_FREE_SEARCH_SLACK_ARRAYS = 100;
 const SPOT_STRATEGY_TYPE = StrategyType?.Spot ?? 0;
 
 function isFiniteInteger(value) {
-  return Number.isFinite(value) && Number.isInteger(value);
+  return Number.isFinite(value) && Number.isSafeInteger(value);
 }
 
 function buildInvalidDlmmArgsError(message) {
@@ -129,12 +129,113 @@ function toBnAmountStrict(value, fieldName = 'amount') {
   }
 }
 
+function classifyDlmmLiquiditySide(amountX, amountY) {
+  const amountXPos = amountX.gt(new BN('0'));
+  const amountYPos = amountY.gt(new BN('0'));
+  if (!amountXPos && amountYPos) return 'QUOTE_ONLY';
+  if (amountXPos && !amountYPos) return 'BASE_ONLY';
+  if (amountXPos && amountYPos) return 'MIXED';
+  return 'INVALID';
+}
+
+function enforceDlmmSideRangeInvariants({
+  activeBinId,
+  rangeMin,
+  rangeMax,
+  amountX,
+  amountY,
+} = {}) {
+  let safeMin = rangeMin;
+  let safeMax = rangeMax;
+  const rangeWidth = safeMax - safeMin + 1;
+  const side = classifyDlmmLiquiditySide(amountX, amountY);
+  const includesActive = safeMin <= activeBinId && safeMax >= activeBinId;
+  let adjustmentReason = null;
+  let adjustedBelowActive = false;
+  let adjustedAboveActive = false;
+
+  if (!isFiniteInteger(activeBinId)) {
+    throw buildInvalidDlmmArgsError(`activeBinId must be finite integer (got ${String(activeBinId)})`);
+  }
+  if (!isFiniteInteger(safeMin) || !isFiniteInteger(safeMax)) {
+    throw buildInvalidDlmmArgsError(`rangeMin/rangeMax must be finite integers (got ${String(safeMin)}/${String(safeMax)})`);
+  }
+  if (safeMin > safeMax) {
+    throw buildInvalidDlmmArgsError(`rangeMin must be <= rangeMax (got ${safeMin} > ${safeMax})`);
+  }
+  if (!isFiniteInteger(rangeWidth) || rangeWidth <= 0) {
+    throw buildInvalidDlmmArgsError(`range width invalid (${String(rangeWidth)})`);
+  }
+
+  if (side === 'QUOTE_ONLY' && safeMax >= activeBinId) {
+    safeMax = activeBinId - 1;
+    safeMin = safeMax - (rangeWidth - 1);
+    adjustmentReason = 'shift_below_active_quote_only';
+    adjustedBelowActive = true;
+  } else if (side === 'BASE_ONLY' && safeMin <= activeBinId) {
+    safeMin = activeBinId + 1;
+    safeMax = safeMin + (rangeWidth - 1);
+    adjustmentReason = 'shift_above_active_base_only';
+    adjustedAboveActive = true;
+  }
+
+  if (!isFiniteInteger(safeMin) || !isFiniteInteger(safeMax) || safeMin > safeMax) {
+    throw buildInvalidDlmmArgsError(`single-side range adjustment invalid [${String(safeMin)},${String(safeMax)}]`);
+  }
+  if (side === 'QUOTE_ONLY' && safeMax >= activeBinId) {
+    throw buildInvalidDlmmArgsError('single-side quote final range must be below active bin');
+  }
+  if (side === 'BASE_ONLY' && safeMin <= activeBinId) {
+    throw buildInvalidDlmmArgsError('single-side tokenX final range must be above active bin');
+  }
+
+  return {
+    rangeMin: safeMin,
+    rangeMax: safeMax,
+    side,
+    includesActive,
+    adjustmentReason,
+    adjustedBelowActive,
+    adjustedAboveActive,
+  };
+}
+
+export function rebuildDeployArgsWithRefreshedActiveBin({
+  deployArgs = {},
+  refreshedActiveBinId,
+} = {}) {
+  return buildDlmmDeployStrategyArgs({
+    activeBinId: Number(refreshedActiveBinId),
+    rangeMin: Number(deployArgs?.rangeMin),
+    rangeMax: Number(deployArgs?.rangeMax),
+    amountXBn: deployArgs?.amountXBn,
+    amountYBn: deployArgs?.amountYBn,
+    strategyType: deployArgs?.strategyType,
+  });
+}
+
+export function wrapDlmmSdkInvalidArgumentsError({
+  error,
+  finalArgsContext = {},
+} = {}) {
+  if (!/invalid arguments/i.test(String(error?.message || ''))) {
+    return null;
+  }
+  return buildInvalidDlmmArgsError(
+    `SDK rejected initializePositionAndAddLiquidityByStrategy with invalid arguments ` +
+    `context=${JSON.stringify(finalArgsContext)}`
+  );
+}
+
 export function buildDlmmFinalArgsContext({
   poolAddress = '',
   xMint = '',
   yMint = '',
   deployArgs = {},
   sdkStrategy = null,
+  initialActiveBinId = null,
+  refreshedActiveBinId = null,
+  adjustmentReason = null,
 } = {}) {
   const activeBinId = Number(deployArgs?.activeBinId);
   const rangeMin = Number(deployArgs?.rangeMin);
@@ -142,6 +243,7 @@ export function buildDlmmFinalArgsContext({
   const amountX = toBnAmountSafe(deployArgs?.amountXBn);
   const amountY = toBnAmountSafe(deployArgs?.amountYBn);
   const strategyType = Number(sdkStrategy?.strategyType ?? deployArgs?.strategyType);
+  const side = classifyDlmmLiquiditySide(amountX, amountY);
   const activeInsideRange = Number.isFinite(activeBinId) && Number.isFinite(rangeMin) && Number.isFinite(rangeMax)
     ? (rangeMin <= activeBinId && rangeMax >= activeBinId)
     : false;
@@ -152,11 +254,18 @@ export function buildDlmmFinalArgsContext({
     activeBinId: Number.isFinite(activeBinId) ? activeBinId : null,
     rangeMin: Number.isFinite(rangeMin) ? rangeMin : null,
     rangeMax: Number.isFinite(rangeMax) ? rangeMax : null,
+    rangeWidth: (Number.isFinite(rangeMin) && Number.isFinite(rangeMax)) ? (rangeMax - rangeMin + 1) : null,
+    initialActiveBinId: isFiniteInteger(Number(initialActiveBinId)) ? Number(initialActiveBinId) : null,
+    refreshedActiveBinId: isFiniteInteger(Number(refreshedActiveBinId)) ? Number(refreshedActiveBinId) : null,
     amountX: amountX.toString(),
     amountY: amountY.toString(),
-    singleSide: amountX.isZero() && amountY.gt(new BN('0')) ? 'QUOTE_ONLY' : (amountY.isZero() && amountX.gt(new BN('0')) ? 'BASE_ONLY' : 'MIXED'),
+    amountXIsZero: amountX.isZero(),
+    amountYIsZero: amountY.isZero(),
+    singleSide: side,
     activeInsideRange,
     strategyType: Number.isFinite(strategyType) ? strategyType : null,
+    quoteSide: String(yMint || '') === WSOL_MINT ? 'SOL' : 'QUOTE',
+    adjustedReason: adjustmentReason || deployArgs?.adjustmentReason || null,
     sdkMinBinId: Number.isFinite(Number(sdkStrategy?.minBinId)) ? Number(sdkStrategy.minBinId) : null,
     sdkMaxBinId: Number.isFinite(Number(sdkStrategy?.maxBinId)) ? Number(sdkStrategy.maxBinId) : null,
   };
@@ -168,6 +277,8 @@ export function assertDlmmFinalSdkArgs({
   xMint = '',
   yMint = '',
   poolAddress = '',
+  initialActiveBinId = null,
+  refreshedActiveBinId = null,
 } = {}) {
   const activeBinId = Number(deployArgs?.activeBinId);
   const rangeMin = Number(deployArgs?.rangeMin);
@@ -206,9 +317,17 @@ export function assertDlmmFinalSdkArgs({
     throw buildInvalidDlmmArgsError('tokenX/tokenY mint is missing');
   }
 
-  const singleSideQuote = amountX.isZero() && amountY.gt(new BN('0'));
-  if (singleSideQuote && rangeMax >= activeBinId) {
-    throw buildInvalidDlmmArgsError('single-side quote final range must be below active bin');
+  const sideInvariant = enforceDlmmSideRangeInvariants({
+    activeBinId,
+    rangeMin,
+    rangeMax,
+    amountX,
+    amountY,
+  });
+  if (sideInvariant.rangeMin !== rangeMin || sideInvariant.rangeMax !== rangeMax) {
+    throw buildInvalidDlmmArgsError(
+      `range violates final side invariant and needs adjustment [${rangeMin},${rangeMax}] -> [${sideInvariant.rangeMin},${sideInvariant.rangeMax}]`
+    );
   }
 
   const debug = buildDlmmFinalArgsContext({
@@ -217,11 +336,16 @@ export function assertDlmmFinalSdkArgs({
     yMint,
     deployArgs: { ...deployArgs, amountXBn: amountX, amountYBn: amountY },
     sdkStrategy,
+    initialActiveBinId,
+    refreshedActiveBinId,
   });
   console.log(
-    `[DLMM_FINAL_ARGS] token=${(xMint || '').slice(0, 8)} pool=${(poolAddress || '').slice(0, 8)} ` +
-    `activeBin=${debug.activeBinId} range=[${debug.rangeMin},${debug.rangeMax}] amountX=${debug.amountX} amountY=${debug.amountY} ` +
-    `strategyType=${debug.strategyType} singleSide=${debug.singleSide} activeInside=${debug.activeInsideRange}`
+    `[DLMM_FINAL_ARGS] pool=${debug.pool} tokenXMint=${debug.tokenXMint} tokenYMint=${debug.tokenYMint} ` +
+    `activeBinId=${debug.activeBinId} initialActiveBinId=${debug.initialActiveBinId ?? 'na'} refreshedActiveBinId=${debug.refreshedActiveBinId ?? 'na'} ` +
+    `range=[${debug.rangeMin},${debug.rangeMax}] width=${debug.rangeWidth} ` +
+    `amountX=${debug.amountX} amountY=${debug.amountY} amountXIsZero=${debug.amountXIsZero} amountYIsZero=${debug.amountYIsZero} ` +
+    `strategyType=${debug.strategyType} side=${debug.singleSide} quoteSide=${debug.quoteSide} activeInside=${debug.activeInsideRange} ` +
+    `reason=${debug.adjustedReason || 'none'}`
   );
   return debug;
 }
@@ -273,21 +397,15 @@ export function buildDlmmDeployStrategyArgs({
     throw buildInvalidDlmmArgsError('amountX + amountY must be > 0');
   }
 
-  let safeMin = rangeMin;
-  let safeMax = rangeMax;
-  const includesActive = safeMin <= activeBinId && safeMax >= activeBinId;
-  const singleSideQuote = amountX.isZero() && amountY.gt(new BN('0'));
-  if (includesActive && singleSideQuote) {
-    const width = safeMax - safeMin + 1;
-    safeMax = activeBinId - 1;
-    safeMin = safeMax - (width - 1);
-    if (!isFiniteInteger(safeMin) || !isFiniteInteger(safeMax) || safeMin > safeMax) {
-      throw buildInvalidDlmmArgsError('single-side quote cannot include active bin with amountX=0');
-    }
-    if (safeMax >= activeBinId) {
-      throw buildInvalidDlmmArgsError('single-side quote range adjustment failed to move below active bin');
-    }
-  }
+  const sideInvariant = enforceDlmmSideRangeInvariants({
+    activeBinId,
+    rangeMin,
+    rangeMax,
+    amountX,
+    amountY,
+  });
+  const safeMin = sideInvariant.rangeMin;
+  const safeMax = sideInvariant.rangeMax;
 
   return {
     activeBinId,
@@ -295,8 +413,11 @@ export function buildDlmmDeployStrategyArgs({
     rangeMax: safeMax,
     amountXBn: amountX,
     amountYBn: amountY,
-    strategyType: Number.isFinite(Number(strategyType)) ? Number(strategyType) : SPOT_STRATEGY_TYPE,
-    adjustedBelowActive: includesActive && singleSideQuote,
+    strategyType: (Number.isFinite(Number(strategyType)) && Number(strategyType) >= 0) ? Number(strategyType) : SPOT_STRATEGY_TYPE,
+    adjustedBelowActive: sideInvariant.adjustedBelowActive,
+    adjustedAboveActive: sideInvariant.adjustedAboveActive,
+    adjustmentReason: sideInvariant.adjustmentReason,
+    singleSide: sideInvariant.side,
   };
 }
 
@@ -1024,7 +1145,8 @@ export async function deployPosition(poolAddress, deployOptions = {}) {
 
     const dlmmPool  = await DLMM.create(connection, poolPubkey);
     await dlmmPool.refetchStates();
-    const activeBin = await dlmmPool.getActiveBin();
+    const initialActiveBin = await dlmmPool.getActiveBin();
+    let activeBin = initialActiveBin;
     const binStep   = dlmmPool.lbPair.binStep;
 
     const xMint = dlmmPool.tokenX.publicKey.toString();
@@ -1297,7 +1419,7 @@ export async function deployPosition(poolAddress, deployOptions = {}) {
       throw preflightErr;
     }
 
-    const finalRentGuard = await ensureFinalRentCheckedDeployArgs({
+    const preRefreshRentGuard = await ensureFinalRentCheckedDeployArgs({
       hasNonRefundableFees,
       connection,
       poolPubkey,
@@ -1310,14 +1432,74 @@ export async function deployPosition(poolAddress, deployOptions = {}) {
       checkedRangeMax: rentCheckedRangeMax,
       deployArgs,
     });
-    if (!finalRentGuard.ok) {
+    if (!preRefreshRentGuard.ok) {
       console.warn(
         `[evilPanda] FINAL_RENT_GUARD_VETO pool=${poolAddress.slice(0,8)} ` +
-        `reason=${finalRentGuard.reason} range=[${finalRentGuard.rangeMin},${finalRentGuard.rangeMax}]`
+        `reason=${preRefreshRentGuard.reason} range=[${preRefreshRentGuard.rangeMin},${preRefreshRentGuard.rangeMax}]`
       );
-      return finalRentGuard;
+      return preRefreshRentGuard;
     }
-    deployArgs = finalRentGuard.deployArgs;
+    deployArgs = preRefreshRentGuard.deployArgs;
+
+    let refreshedActiveBinId = Number(activeBin?.binId);
+    let activeRefreshReason = null;
+    try {
+      await dlmmPool.refetchStates();
+      const refreshedActiveBin = await dlmmPool.getActiveBin();
+      if (isFiniteInteger(Number(refreshedActiveBin?.binId))) {
+        refreshedActiveBinId = Number(refreshedActiveBin.binId);
+        activeBin = refreshedActiveBin;
+        if (refreshedActiveBinId !== Number(initialActiveBin?.binId)) {
+          activeRefreshReason = 'active_bin_moved_before_final_args';
+          console.log(
+            `[evilPanda] ACTIVE_BIN_REFRESH pool=${poolAddress.slice(0,8)} ` +
+            `initial=${Number(initialActiveBin?.binId)} refreshed=${refreshedActiveBinId}`
+          );
+        }
+      }
+    } catch (refreshErr) {
+      console.warn(`[evilPanda] ACTIVE_BIN_REFRESH_FAIL pool=${poolAddress.slice(0,8)} reason=${refreshErr?.message || 'unknown'}`);
+    }
+
+    const beforeRefreshRangeMin = Number(deployArgs.rangeMin);
+    const beforeRefreshRangeMax = Number(deployArgs.rangeMax);
+    deployArgs = rebuildDeployArgsWithRefreshedActiveBin({
+      deployArgs,
+      refreshedActiveBinId,
+    });
+    const refreshedRangeChanged =
+      Number(deployArgs.rangeMin) !== beforeRefreshRangeMin ||
+      Number(deployArgs.rangeMax) !== beforeRefreshRangeMax;
+    if (refreshedRangeChanged && !deployArgs.adjustmentReason) {
+      deployArgs.adjustmentReason = activeRefreshReason || 'active_bin_refresh_rebuild';
+    } else if (!deployArgs.adjustmentReason && activeRefreshReason) {
+      deployArgs.adjustmentReason = activeRefreshReason;
+    }
+
+    let finalRentGuard = preRefreshRentGuard;
+    if (hasNonRefundableFees && refreshedRangeChanged) {
+      finalRentGuard = await ensureFinalRentCheckedDeployArgs({
+        hasNonRefundableFees,
+        connection,
+        poolPubkey,
+        poolAddress,
+        tokenXMint: xMint,
+        symbol: poolAddress.slice(0, 8),
+        activeBinId: refreshedActiveBinId,
+        rangeMaxBins,
+        checkedRangeMin: rentCheckedRangeMin,
+        checkedRangeMax: rentCheckedRangeMax,
+        deployArgs,
+      });
+      if (!finalRentGuard.ok) {
+        console.warn(
+          `[evilPanda] FINAL_RENT_GUARD_VETO pool=${poolAddress.slice(0,8)} ` +
+          `reason=${finalRentGuard.reason} range=[${finalRentGuard.rangeMin},${finalRentGuard.rangeMax}] afterActiveRefresh=true`
+        );
+        return finalRentGuard;
+      }
+      deployArgs = finalRentGuard.deployArgs;
+    }
 
     const safeRangeMin = Number(deployArgs.rangeMin);
     const safeRangeMax = Number(deployArgs.rangeMax);
@@ -1329,12 +1511,14 @@ export async function deployPosition(poolAddress, deployOptions = {}) {
       xMint,
       yMint,
       poolAddress,
+      initialActiveBinId: Number(initialActiveBin?.binId),
+      refreshedActiveBinId,
     });
 
-    if (deployArgs.adjustedBelowActive) {
+    if (deployArgs.adjustedBelowActive || deployArgs.adjustedAboveActive) {
       console.warn(
         `[evilPanda] DLMM_RANGE_ADJUST_SINGLE_SIDE pool=${poolAddress.slice(0,8)} ` +
-        `active=${deployArgs.activeBinId} original=[${rangeMin},${rangeMax}] adjusted=[${safeRangeMin},${safeRangeMax}]`
+        `active=${deployArgs.activeBinId} original=[${rangeMin},${rangeMax}] adjusted=[${safeRangeMin},${safeRangeMax}] reason=${deployArgs.adjustmentReason || 'none'}`
       );
     }
 
@@ -1411,11 +1595,12 @@ export async function deployPosition(poolAddress, deployOptions = {}) {
       if (deployErr?.isPermanent || deployErr?.code === 'INVALID_DLMM_DEPLOY_ARGS') {
         throw deployErr;
       }
-      if (/invalid arguments/i.test(String(deployErr?.message || ''))) {
-        throw buildInvalidDlmmArgsError(
-          `SDK rejected initializePositionAndAddLiquidityByStrategy with invalid arguments ` +
-          `context=${JSON.stringify(finalArgsContext)}`
-        );
+      const wrappedInvalidArgs = wrapDlmmSdkInvalidArgumentsError({
+        error: deployErr,
+        finalArgsContext,
+      });
+      if (wrappedInvalidArgs) {
+        throw wrappedInvalidArgs;
       }
       console.error(`[evilPanda] ❌ Monolith deploy gagal: ${deployErr.message}`);
       throw deployErr;
