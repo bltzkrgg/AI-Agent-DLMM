@@ -324,6 +324,13 @@ test('quote-only dry-run plan does not call combined helper and carries plan con
   assert.equal(plan.bins, distribution.length);
   assert.equal(plan.rangeMin, 980);
   assert.equal(plan.rangeMax, 999);
+  assert.doesNotThrow(
+    () => assertNoCombinedWeightForQuoteOnly({
+      deployArgs,
+      sdkPath: 'weight_quote_only',
+      sdkMethod: plan.sdkMethod,
+    })
+  );
 });
 
 test('quote-only position-first flow initializes position before add liquidity and does not call combined init+weight helper', async () => {
@@ -393,6 +400,13 @@ test('quote-only position-first flow initializes position before add liquidity a
   assert.equal(calls.includes('initializePositionAndAddLiquidityByWeight'), false);
   assert.equal(calls.includes('range-[980,999]'), true);
   assert.equal(calls.includes('dist-[980,999]'), true);
+  assert.doesNotThrow(
+    () => assertNoCombinedWeightForQuoteOnly({
+      deployArgs,
+      sdkPath: 'weight_quote_only',
+      sdkMethod: 'addLiquidityByWeight',
+    })
+  );
 });
 
 test('quote-only position-first flow fails when post-init owner remains system-owned before add', async () => {

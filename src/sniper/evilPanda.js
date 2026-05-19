@@ -2110,7 +2110,7 @@ export async function deployPosition(poolAddress, deployOptions = {}) {
             assertNoCombinedWeightForQuoteOnly({
               deployArgs: args,
               sdkPath,
-              sdkMethod: 'initializePositionAndAddLiquidityByWeight',
+              sdkMethod: isDryRun() ? 'dryRunPlan' : 'addLiquidityByWeight',
             });
             console.log(
               `[evilPanda] DLMM_WEIGHT_DIST pool=${poolAddress.slice(0,8)} bins=${distribution.length} totalYBps=${totalYBps.toString()} ` +
