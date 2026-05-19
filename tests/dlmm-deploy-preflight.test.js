@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import BN from 'bn.js';
+import { Keypair, PublicKey } from '@solana/web3.js';
 
 import {
   buildDlmmDeployStrategyArgs,
@@ -8,6 +9,7 @@ import {
   buildDlmmFinalArgsContext,
   buildDlmmSdkStrategyFromDeployArgs,
   buildQuoteOnlyWeightDistribution,
+  executeQuoteOnlyPositionFirstFlow,
   rebuildDeployArgsWithRefreshedActiveBin,
   prepareFinalDlmmDeployAttemptState,
   executeDlmmInitializePositionWithRetry,
@@ -235,6 +237,17 @@ test('pure quote-only final deploy selects one-side weight SDK path', () => {
   assert.equal(selectDlmmSdkPathForDeployArgs(mixed), 'strategy');
 });
 
+test('non-quote-only final deploy keeps strategy SDK path', () => {
+  const baseOnly = buildDlmmDeployStrategyArgs({
+    activeBinId: 1000,
+    rangeMin: 1001,
+    rangeMax: 1010,
+    amountXBn: new BN('100'),
+    amountYBn: new BN('0'),
+  });
+  assert.equal(selectDlmmSdkPathForDeployArgs(baseOnly), 'strategy');
+});
+
 test('quote-only weight distribution is y-only, contiguous, and totals 10000 bps', () => {
   const dist = buildQuoteOnlyWeightDistribution({ rangeMin: -467, rangeMax: -400 });
   assert.equal(dist.length, 68);
@@ -247,6 +260,114 @@ test('quote-only weight distribution is y-only, contiguous, and totals 10000 bps
   assert.equal(totalXBps.toString(), '0');
   assert.equal(dist.every((row) => row.xAmountBpsOfTotal.isZero()), true);
   assert.equal(dist.some((row) => row.yAmountBpsOfTotal.gt(new BN('0'))), true);
+});
+
+test('quote-only position-first flow initializes position before add liquidity and does not call combined init+weight helper', async () => {
+  const calls = [];
+  const positionKeypair = Keypair.generate();
+  const deployArgs = buildDlmmDeployStrategyArgs({
+    activeBinId: 1000,
+    rangeMin: 980,
+    rangeMax: 999,
+    amountXBn: new BN('0'),
+    amountYBn: new BN('100000000'),
+  });
+  const dist = buildQuoteOnlyWeightDistribution({
+    rangeMin: deployArgs.rangeMin,
+    rangeMax: deployArgs.rangeMax,
+  });
+  const expectedProgramId = new PublicKey('LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo');
+  const connection = {
+    getAccountInfo: async (_pubkey) => {
+      const initDone = calls.includes('createEmptyPosition');
+      if (!initDone) return null;
+      return { owner: expectedProgramId };
+    },
+  };
+  const dlmmPool = {
+    program: { programId: expectedProgramId },
+    createEmptyPosition: async ({ minBinId, maxBinId }) => {
+      calls.push('createEmptyPosition');
+      calls.push(`range-[${minBinId},${maxBinId}]`);
+      return { instructions: [] };
+    },
+    addLiquidityByWeight: async ({ xYAmountDistribution }) => {
+      calls.push('addLiquidityByWeight');
+      calls.push(`dist-[${xYAmountDistribution[0].binId},${xYAmountDistribution[xYAmountDistribution.length - 1].binId}]`);
+      return [{ ok: true }];
+    },
+    initializePositionAndAddLiquidityByWeight: async () => {
+      calls.push('initializePositionAndAddLiquidityByWeight');
+      return [{ bad: true }];
+    },
+  };
+
+  const out = await executeQuoteOnlyPositionFirstFlow({
+    dlmmPool,
+    connection,
+    walletPublicKey: Keypair.generate().publicKey,
+    positionKeypair,
+    deployArgs,
+    xYAmountDistribution: dist,
+    slippagePct: 2.5,
+    finalArgsContext: {
+      sdkPath: 'weight_quote_only',
+      rangeMin: deployArgs.rangeMin,
+      rangeMax: deployArgs.rangeMax,
+    },
+    sendTxFn: async () => {
+      calls.push('sendInitTx');
+      return 'sig-init';
+    },
+    pollTxConfirmFn: async () => {
+      calls.push('confirmInitTx');
+    },
+  });
+
+  assert.equal(out.quoteOnlyPositionFirst, true);
+  assert.equal(calls.indexOf('createEmptyPosition') < calls.indexOf('addLiquidityByWeight'), true);
+  assert.equal(calls.includes('initializePositionAndAddLiquidityByWeight'), false);
+  assert.equal(calls.includes('range-[980,999]'), true);
+  assert.equal(calls.includes('dist-[980,999]'), true);
+});
+
+test('quote-only position-first flow fails early when existing position owner mismatches', async () => {
+  const positionKeypair = Keypair.generate();
+  const wrongOwner = new PublicKey('11111111111111111111111111111111');
+  const expectedProgramId = new PublicKey('LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo');
+  let addCalls = 0;
+  const dlmmPool = {
+    program: { programId: expectedProgramId },
+    createEmptyPosition: async () => ({ instructions: [] }),
+    addLiquidityByWeight: async () => {
+      addCalls += 1;
+      return [{ ok: true }];
+    },
+  };
+  await assert.rejects(
+    executeQuoteOnlyPositionFirstFlow({
+      dlmmPool,
+      connection: {
+        getAccountInfo: async () => ({ owner: wrongOwner }),
+      },
+      walletPublicKey: Keypair.generate().publicKey,
+      positionKeypair,
+      deployArgs: {
+        rangeMin: 980,
+        rangeMax: 999,
+        amountXBn: new BN('0'),
+        amountYBn: new BN('1'),
+      },
+      xYAmountDistribution: buildQuoteOnlyWeightDistribution({ rangeMin: 980, rangeMax: 999 }),
+    }),
+    (err) => {
+      assert.equal(err?.code, 'INVALID_DLMM_DEPLOY_ARGS');
+      const msg = String(err?.message || '');
+      assert.match(msg, /position account owner mismatch/);
+      return true;
+    }
+  );
+  assert.equal(addCalls, 0);
 });
 
 test('final SDK strategy is built from adjusted deployArgs range, not original unsafe range', () => {
@@ -723,6 +844,54 @@ test('retry still anchor 3007 throws wrapped queue-safe message (not bare invali
       return true;
     }
   );
+});
+
+test('retry on account-owned-wrong-program can switch to fresh position keypair and wraps retry context', async () => {
+  const kp1 = Keypair.generate();
+  const kp2 = Keypair.generate();
+  const seen = [];
+  await assert.rejects(
+    executeDlmmInitializePositionWithRetry({
+      initialState: {
+        positionKeypair: kp1,
+        finalArgsContext: {
+          sdkPath: 'weight_quote_only',
+          sdkFlow: 'quote_only_position_first',
+          positionPubkey: kp1.publicKey.toString(),
+        },
+      },
+      buildRetryStateFn: async () => ({
+        positionKeypair: kp2,
+        finalArgsContext: {
+          sdkPath: 'weight_quote_only',
+          sdkFlow: 'quote_only_position_first',
+          positionPubkey: kp2.publicKey.toString(),
+        },
+      }),
+      sdkCallFn: async (state) => {
+        seen.push(state?.positionKeypair?.publicKey?.toString());
+        const err = new Error('Instruction: AddLiquidityOneSide AccountOwnedByWrongProgram {"InstructionError":[1,{"Custom":3007}]} custom program error: 0xbbf');
+        err.dlmmContextExtra = {
+          positionPubkey: state?.positionKeypair?.publicKey?.toString(),
+          positionOwner: '11111111111111111111111111111111',
+          expectedPositionOwner: 'LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo',
+          sdkFlow: 'quote_only_position_first',
+        };
+        throw err;
+      },
+    }),
+    (err) => {
+      assert.equal(err?.code, 'INVALID_DLMM_DEPLOY_ARGS');
+      const msg = String(err?.message || '');
+      assert.match(msg, /AccountOwnedByWrongProgram/);
+      assert.match(msg, /quote_only_position_first/);
+      assert.match(msg, new RegExp(kp2.publicKey.toString()));
+      assert.equal(msg.includes('Invalid arguments'), false);
+      return true;
+    }
+  );
+  assert.equal(seen.length, 2);
+  assert.notEqual(seen[0], seen[1]);
 });
 
 test('non-invalid-arguments error is not retried', async () => {

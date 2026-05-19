@@ -221,15 +221,20 @@ export function wrapDlmmSdkInvalidArgumentsError({
   finalArgsContext = {},
 } = {}) {
   const sdkErrorMeta = extractDlmmSdkDeployErrorMeta(error);
-  if (!sdkErrorMeta?.isDlmmSdkDeployError) {
+  const hasInvalidCode = error?.code === 'INVALID_DLMM_DEPLOY_ARGS';
+  if (!sdkErrorMeta?.isDlmmSdkDeployError && !hasInvalidCode) {
     return null;
   }
+  const extraContext = (error && typeof error === 'object' && error.dlmmContextExtra && typeof error.dlmmContextExtra === 'object')
+    ? error.dlmmContextExtra
+    : {};
   const sdkPath = String(finalArgsContext?.sdkPath || DLMM_SDK_PATH_STRATEGY);
   const sdkMethod = sdkPath === DLMM_SDK_PATH_WEIGHT_QUOTE_ONLY
     ? 'initializePositionAndAddLiquidityByWeight'
     : 'initializePositionAndAddLiquidityByStrategy';
   const context = {
     ...finalArgsContext,
+    ...extraContext,
     sdkPath,
     sdkMethod,
     anchorErrorCode: Number.isFinite(Number(sdkErrorMeta?.anchorErrorCode))
@@ -241,7 +246,7 @@ export function wrapDlmmSdkInvalidArgumentsError({
       ? Number(sdkErrorMeta.instructionIndex)
       : null,
   };
-  const reasonLabel = sdkErrorMeta?.isInvalidArguments
+  const reasonLabel = (sdkErrorMeta?.isInvalidArguments || hasInvalidCode)
     ? 'invalid arguments'
     : 'deploy simulation/account error';
   return buildInvalidDlmmArgsError(
@@ -331,7 +336,7 @@ export function extractDlmmSdkDeployErrorMeta(error) {
     (hasInstructionError && (anchorErrorCode !== null || /custom program error/i.test(lower)));
 
   return {
-    isDlmmSdkDeployError: invalidArguments || isSimulationAccountError,
+    isDlmmSdkDeployError: Boolean(error?.code === 'INVALID_DLMM_DEPLOY_ARGS') || invalidArguments || isSimulationAccountError,
     isInvalidArguments: invalidArguments,
     anchorErrorCode,
     anchorErrorHex,
@@ -776,6 +781,119 @@ export function buildQuoteOnlyWeightDistribution({
     throw buildInvalidDlmmArgsError('quote-only weight distribution must have positive Y allocation');
   }
   return distribution;
+}
+
+async function ensurePositionOwnerPrecheck({
+  connection,
+  positionPubKey,
+  expectedProgramId,
+  context = {},
+} = {}) {
+  if (!connection || !positionPubKey || !expectedProgramId) return;
+  const accountInfo = await connection.getAccountInfo(positionPubKey).catch(() => null);
+  if (!accountInfo) return;
+  const owner = String(accountInfo?.owner?.toString?.() || '');
+  const expected = String(expectedProgramId?.toString?.() || '');
+  if (!owner || !expected || owner === expected) return;
+  const err = buildInvalidDlmmArgsError(
+    `position account owner mismatch before quote-only add liquidity: owner=${owner} expected=${expected}`
+  );
+  err.dlmmContextExtra = {
+    ...context,
+    positionOwner: owner,
+    expectedPositionOwner: expected,
+  };
+  throw err;
+}
+
+export async function executeQuoteOnlyPositionFirstFlow({
+  dlmmPool,
+  connection,
+  walletPublicKey,
+  positionKeypair,
+  deployArgs = {},
+  xYAmountDistribution = [],
+  slippagePct = 0,
+  microLamports = EP_CONFIG.MICRO_LAMPORTS,
+  finalArgsContext = {},
+  sendTxFn = null,
+  pollTxConfirmFn = pollTxConfirm,
+} = {}) {
+  if (!dlmmPool || !connection || !walletPublicKey || !positionKeypair) {
+    throw buildInvalidDlmmArgsError('quote-only position-first flow missing required dependencies');
+  }
+  const positionPubKey = positionKeypair.publicKey;
+  const positionPubkey = positionPubKey.toString();
+  const expectedPositionOwner = String(dlmmPool?.program?.programId?.toString?.() || '');
+
+  const existingAccInfo = await connection.getAccountInfo(positionPubKey).catch(() => null);
+  const existingOwner = String(existingAccInfo?.owner?.toString?.() || '');
+  if (existingAccInfo && expectedPositionOwner && existingOwner !== expectedPositionOwner) {
+    const err = buildInvalidDlmmArgsError(
+      `position account owner mismatch before quote-only deploy: owner=${existingOwner} expected=${expectedPositionOwner}`
+    );
+    err.dlmmContextExtra = {
+      ...finalArgsContext,
+      positionPubkey,
+      positionOwner: existingOwner || null,
+      expectedPositionOwner: expectedPositionOwner || null,
+      sdkFlow: 'quote_only_position_first',
+    };
+    throw err;
+  }
+
+  let initSig = null;
+  if (!existingAccInfo) {
+    const initTx = await dlmmPool.createEmptyPosition({
+      positionPubKey,
+      minBinId: Number(deployArgs.rangeMin),
+      maxBinId: Number(deployArgs.rangeMax),
+      user: walletPublicKey,
+    });
+    injectPriorityFee(initTx, { units: EP_CONFIG.COMPUTE_UNITS, microLamports });
+    const sendTx = typeof sendTxFn === 'function'
+      ? sendTxFn
+      : async (tx) => connection.sendTransaction(tx, [getWallet(), positionKeypair], { skipPreflight: false, maxRetries: 3 });
+    initSig = await sendTx(initTx, [positionKeypair]);
+    if (typeof pollTxConfirmFn === 'function') {
+      await pollTxConfirmFn(connection, initSig);
+    }
+  }
+
+  const postInitAccInfo = await connection.getAccountInfo(positionPubKey).catch(() => null);
+  const postInitOwner = String(postInitAccInfo?.owner?.toString?.() || '');
+  if (!postInitAccInfo || (expectedPositionOwner && postInitOwner !== expectedPositionOwner)) {
+    const err = buildInvalidDlmmArgsError(
+      `position account not owned by DLMM program before one-side add: owner=${postInitOwner || 'unknown'} expected=${expectedPositionOwner || 'unknown'}`
+    );
+    err.dlmmContextExtra = {
+      ...finalArgsContext,
+      positionPubkey,
+      positionOwner: postInitOwner || null,
+      expectedPositionOwner: expectedPositionOwner || null,
+      sdkFlow: 'quote_only_position_first',
+    };
+    throw err;
+  }
+
+  const addTxOrTxs = await dlmmPool.addLiquidityByWeight({
+    positionPubKey,
+    user: walletPublicKey,
+    totalXAmount: deployArgs.amountXBn,
+    totalYAmount: deployArgs.amountYBn,
+    xYAmountDistribution,
+    slippage: slippagePct,
+  });
+
+  return {
+    quoteOnlyPositionFirst: true,
+    sdkFlow: 'quote_only_position_first',
+    initSig,
+    addTxOrTxs,
+    positionPubkey,
+    positionOwner: postInitOwner || null,
+    expectedPositionOwner: expectedPositionOwner || null,
+  };
 }
 
 function isRentRequiredError(error) {
@@ -1529,8 +1647,8 @@ export async function deployPosition(poolAddress, deployOptions = {}) {
     const totalBins = rangeMax - rangeMin + 1;
     const microLamports = await getPriorityFee();
     const { Keypair } = await import('@solana/web3.js');
-    const posKp = Keypair.generate();
-    const positionPubkey = posKp.publicKey.toString();
+    let posKp = Keypair.generate();
+    let positionPubkey = posKp.publicKey.toString();
 
     const cfg2          = getConfig();
     const slippageBps   = Number(cfg2.slippageBps) || 250;
@@ -1826,6 +1944,12 @@ export async function deployPosition(poolAddress, deployOptions = {}) {
       currentRentGuard: preRefreshRentGuard,
       attempt: 1,
     });
+    preparedAttempt1.positionKeypair = posKp;
+    preparedAttempt1.finalArgsContext = {
+      ...(preparedAttempt1.finalArgsContext || {}),
+      positionPubkey,
+      expectedPositionOwner: String(dlmmPool?.program?.programId?.toString?.() || ''),
+    };
     if (!preparedAttempt1.ok) {
       console.warn(
         `[evilPanda] FINAL_RENT_GUARD_VETO pool=${poolAddress.slice(0,8)} ` +
@@ -1849,6 +1973,17 @@ export async function deployPosition(poolAddress, deployOptions = {}) {
             currentRentGuard: previousState?.finalRentGuard || preRefreshRentGuard,
             attempt: 2,
           });
+          const retryQuoteOnly = selectDlmmSdkPathForDeployArgs(retryPrepared?.deployArgs || {}) === DLMM_SDK_PATH_WEIGHT_QUOTE_ONLY;
+          if (retryQuoteOnly) {
+            posKp = Keypair.generate();
+            positionPubkey = posKp.publicKey.toString();
+          }
+          retryPrepared.positionKeypair = posKp;
+          retryPrepared.finalArgsContext = {
+            ...(retryPrepared.finalArgsContext || {}),
+            positionPubkey,
+            expectedPositionOwner: String(dlmmPool?.program?.programId?.toString?.() || ''),
+          };
           if (!retryPrepared.ok) {
             const vetoErr = new Error(`VETO_NON_REFUNDABLE_RENT_RETRY: ${retryPrepared?.reason || retryPrepared?.detail || 'unsafe retry range'}`);
             vetoErr.code = 'VETO_NON_REFUNDABLE_RENT';
@@ -1861,9 +1996,12 @@ export async function deployPosition(poolAddress, deployOptions = {}) {
           const args = state?.deployArgs || {};
           const strategy = state?.sdkStrategy || buildDlmmSdkStrategyFromDeployArgs(args);
           const sdkPath = selectDlmmSdkPathForDeployArgs(args);
+          const statePositionKeypair = state?.positionKeypair || posKp;
+          const statePositionPubkey = statePositionKeypair.publicKey.toString();
           state.finalArgsContext = {
             ...(state?.finalArgsContext || {}),
             sdkPath,
+            positionPubkey: statePositionPubkey,
           };
           console.log(
             `[evilPanda] DLMM_SDK_PATH pool=${poolAddress.slice(0,8)} path=${sdkPath} ` +
@@ -1879,22 +2017,65 @@ export async function deployPosition(poolAddress, deployOptions = {}) {
               (acc, item) => acc.add(item.yAmountBpsOfTotal),
               new BN('0')
             );
+            state.finalArgsContext = {
+              ...(state?.finalArgsContext || {}),
+              sdkMethod: 'addLiquidityByWeight',
+              sdkFlow: 'quote_only_position_first',
+            };
             console.log(
               `[evilPanda] DLMM_WEIGHT_DIST pool=${poolAddress.slice(0,8)} bins=${distribution.length} totalYBps=${totalYBps.toString()} ` +
               `attempt=${Number(state?.attempt || 0)}`
             );
-            return dlmmPool.initializePositionAndAddLiquidityByWeight({
-              positionPubKey: posKp.publicKey,
-              user: wallet.publicKey,
-              totalXAmount: args.amountXBn,
-              totalYAmount: args.amountYBn,
-              xYAmountDistribution: distribution,
-              slippage: slippagePct,
+            if (isDryRun()) {
+              state.finalArgsContext.sdkMethod = 'initializePositionAndAddLiquidityByWeight';
+              return dlmmPool.initializePositionAndAddLiquidityByWeight({
+                positionPubKey: statePositionKeypair.publicKey,
+                user: wallet.publicKey,
+                totalXAmount: args.amountXBn,
+                totalYAmount: args.amountYBn,
+                xYAmountDistribution: distribution,
+                slippage: slippagePct,
+              });
+            }
+            await ensurePositionOwnerPrecheck({
+              connection,
+              positionPubKey: statePositionKeypair.publicKey,
+              expectedProgramId: dlmmPool?.program?.programId || null,
+              context: {
+                ...(state?.finalArgsContext || {}),
+              },
             });
+            const quoteOnlyFlowResult = await executeQuoteOnlyPositionFirstFlow({
+              dlmmPool,
+              connection,
+              walletPublicKey: wallet.publicKey,
+              positionKeypair: statePositionKeypair,
+              deployArgs: args,
+              xYAmountDistribution: distribution,
+              slippagePct,
+              microLamports,
+              finalArgsContext: state?.finalArgsContext || {},
+              sendTxFn: async (tx) => {
+                injectPriorityFee(tx, { units: EP_CONFIG.COMPUTE_UNITS, microLamports });
+                const sig = await connection.sendTransaction(tx, [wallet, statePositionKeypair], { skipPreflight: false, maxRetries: 3 });
+                console.log(`[evilPanda] ✅ DLMM quote-only position init confirmed: ${sig.slice(0,8)} pos=${statePositionPubkey.slice(0,8)}`);
+                return sig;
+              },
+            });
+            state.finalArgsContext = {
+              ...(state?.finalArgsContext || {}),
+              positionOwner: quoteOnlyFlowResult?.positionOwner || null,
+              expectedPositionOwner: quoteOnlyFlowResult?.expectedPositionOwner || null,
+            };
+            return quoteOnlyFlowResult?.addTxOrTxs;
           }
 
+          state.finalArgsContext = {
+            ...(state?.finalArgsContext || {}),
+            sdkMethod: 'initializePositionAndAddLiquidityByStrategy',
+          };
           return dlmmPool.initializePositionAndAddLiquidityByStrategy({
-            positionPubKey: posKp.publicKey,
+            positionPubKey: statePositionKeypair.publicKey,
             user: wallet.publicKey,
             totalXAmount: args.amountXBn,
             totalYAmount: args.amountYBn,
