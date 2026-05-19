@@ -11,6 +11,7 @@ import {
   rebuildDeployArgsWithRefreshedActiveBin,
   prepareFinalDlmmDeployAttemptState,
   executeDlmmInitializePositionWithRetry,
+  extractDlmmSdkDeployErrorMeta,
   isDlmmSdkInvalidArgumentsError,
   selectDlmmSdkPathForDeployArgs,
   wrapDlmmSdkInvalidArgumentsError,
@@ -626,6 +627,104 @@ test('wrapper uses weight method name for quote-only sdkPath', () => {
   assert.match(String(wrapped?.message || ''), /initializePositionAndAddLiquidityByWeight/);
 });
 
+test('dlmm sdk error meta detects anchor 3007 / 0xbbf variants', () => {
+  const errHex = new Error('Program failed: custom program error: 0xbbf');
+  const metaHex = extractDlmmSdkDeployErrorMeta(errHex);
+  assert.equal(metaHex.isDlmmSdkDeployError, true);
+  assert.equal(metaHex.anchorErrorHex, '0xbbf');
+  assert.equal(metaHex.anchorErrorCode, 3007);
+  assert.equal(metaHex.anchorErrorName, 'AccountOwnedByWrongProgram');
+
+  const errInstruction = new Error('{"InstructionError":[1,{"Custom":3007}]}');
+  const metaInstruction = extractDlmmSdkDeployErrorMeta(errInstruction);
+  assert.equal(metaInstruction.isDlmmSdkDeployError, true);
+  assert.equal(metaInstruction.anchorErrorCode, 3007);
+  assert.equal(metaInstruction.instructionIndex, 1);
+  assert.equal(metaInstruction.anchorErrorHex, '0xbbf');
+
+  const errName = new Error('AnchorError: AccountOwnedByWrongProgram');
+  const metaName = extractDlmmSdkDeployErrorMeta(errName);
+  assert.equal(metaName.isDlmmSdkDeployError, true);
+  assert.equal(metaName.anchorErrorName, 'AccountOwnedByWrongProgram');
+});
+
+test('quote-only weight path anchor 3007 wraps with full sdk and anchor context', () => {
+  const wrapped = wrapDlmmSdkInvalidArgumentsError({
+    error: new Error('{"InstructionError":[1,{"Custom":3007}]} Program failed: custom program error: 0xbbf'),
+    finalArgsContext: {
+      pool: 'Pool111',
+      tokenXMint: 'Mint111',
+      tokenYMint: 'So111',
+      activeBinId: -399,
+      initialActiveBinId: -380,
+      refreshedActiveBinId: -399,
+      rangeMin: -467,
+      rangeMax: -400,
+      rangeWidth: 68,
+      amountX: '0',
+      amountY: '100000000',
+      amountXIsZero: true,
+      amountYIsZero: false,
+      singleSide: 'QUOTE_ONLY',
+      quoteSide: 'SOL',
+      activeInsideRange: false,
+      strategyType: 0,
+      sdkPath: 'weight_quote_only',
+      attempt: 2,
+    },
+  });
+
+  assert.equal(wrapped?.code, 'INVALID_DLMM_DEPLOY_ARGS');
+  const msg = String(wrapped?.message || '');
+  assert.match(msg, /initializePositionAndAddLiquidityByWeight/);
+  assert.match(msg, /weight_quote_only/);
+  assert.match(msg, /"anchorErrorCode":3007/);
+  assert.match(msg, /"anchorErrorHex":"0xbbf"/);
+  assert.match(msg, /"anchorErrorName":"AccountOwnedByWrongProgram"/);
+  assert.match(msg, /"instructionIndex":1/);
+  assert.match(msg, /"rangeMin":-467/);
+  assert.match(msg, /"rangeMax":-400/);
+  assert.match(msg, /"amountX":"0"/);
+  assert.match(msg, /"amountY":"100000000"/);
+  assert.equal(msg.includes('Invalid arguments'), false);
+});
+
+test('retry still anchor 3007 throws wrapped queue-safe message (not bare invalid arguments)', async () => {
+  const initial = {
+    finalArgsContext: {
+      pool: 'Pool111',
+      tokenXMint: 'Mint111',
+      tokenYMint: 'So111',
+      rangeMin: -467,
+      rangeMax: -400,
+      sdkPath: 'weight_quote_only',
+    },
+  };
+
+  await assert.rejects(
+    executeDlmmInitializePositionWithRetry({
+      initialState: initial,
+      buildRetryStateFn: async ({ previousState }) => ({
+        ...previousState,
+        finalArgsContext: { ...previousState.finalArgsContext, attempt: 2 },
+      }),
+      sdkCallFn: async () => {
+        throw new Error('Program failed: custom program error: 0xbbf {"InstructionError":[1,{"Custom":3007}]}');
+      },
+    }),
+    (err) => {
+      assert.equal(err?.code, 'INVALID_DLMM_DEPLOY_ARGS');
+      const msg = String(err?.message || '');
+      assert.match(msg, /initializePositionAndAddLiquidityByWeight/);
+      assert.match(msg, /"anchorErrorCode":3007/);
+      assert.match(msg, /"anchorErrorHex":"0xbbf"/);
+      assert.match(msg, /"retryAttempt":1/);
+      assert.equal(msg.includes('context={'), true);
+      return true;
+    }
+  );
+});
+
 test('non-invalid-arguments error is not retried', async () => {
   let sdkCalls = 0;
   await assert.rejects(
@@ -655,7 +754,12 @@ test('non-invalid-arguments error is not retried', async () => {
 test('invalid arguments detector marks SDK invalid arguments only', () => {
   assert.equal(isDlmmSdkInvalidArgumentsError(new Error('invalid arguments from sdk')), true);
   assert.equal(isDlmmSdkInvalidArgumentsError({ code: 'INVALID_DLMM_DEPLOY_ARGS', message: 'x' }), true);
+  assert.equal(isDlmmSdkInvalidArgumentsError(new Error('Program failed: custom program error: 0xbbf')), true);
+  assert.equal(isDlmmSdkInvalidArgumentsError(new Error('{"InstructionError":[1,{"Custom":3007}]}')), true);
+  assert.equal(isDlmmSdkInvalidArgumentsError(new Error('AccountOwnedByWrongProgram')), true);
   assert.equal(isDlmmSdkInvalidArgumentsError(new Error('rpc timeout')), false);
+  assert.equal(isDlmmSdkInvalidArgumentsError(new Error('429 rate limit exceeded')), false);
+  assert.equal(isDlmmSdkInvalidArgumentsError(new Error('LLM timeout')), false);
 });
 
 test('final rent guard is skipped for normal pools (hasNonRefundableFees=false)', async () => {

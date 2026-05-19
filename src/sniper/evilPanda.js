@@ -220,23 +220,124 @@ export function wrapDlmmSdkInvalidArgumentsError({
   error,
   finalArgsContext = {},
 } = {}) {
-  if (!/invalid arguments/i.test(String(error?.message || ''))) {
+  const sdkErrorMeta = extractDlmmSdkDeployErrorMeta(error);
+  if (!sdkErrorMeta?.isDlmmSdkDeployError) {
     return null;
   }
   const sdkPath = String(finalArgsContext?.sdkPath || DLMM_SDK_PATH_STRATEGY);
   const sdkMethod = sdkPath === DLMM_SDK_PATH_WEIGHT_QUOTE_ONLY
     ? 'initializePositionAndAddLiquidityByWeight'
     : 'initializePositionAndAddLiquidityByStrategy';
+  const context = {
+    ...finalArgsContext,
+    sdkPath,
+    sdkMethod,
+    anchorErrorCode: Number.isFinite(Number(sdkErrorMeta?.anchorErrorCode))
+      ? Number(sdkErrorMeta.anchorErrorCode)
+      : null,
+    anchorErrorHex: sdkErrorMeta?.anchorErrorHex || null,
+    anchorErrorName: sdkErrorMeta?.anchorErrorName || null,
+    instructionIndex: Number.isFinite(Number(sdkErrorMeta?.instructionIndex))
+      ? Number(sdkErrorMeta.instructionIndex)
+      : null,
+  };
+  const reasonLabel = sdkErrorMeta?.isInvalidArguments
+    ? 'invalid arguments'
+    : 'deploy simulation/account error';
   return buildInvalidDlmmArgsError(
-    `SDK rejected ${sdkMethod} with invalid arguments ` +
-    `context=${JSON.stringify(finalArgsContext)}`
+    `SDK rejected ${sdkMethod} with ${reasonLabel} ` +
+    `context=${JSON.stringify(context)}`
   );
 }
 
 export function isDlmmSdkInvalidArgumentsError(error) {
   if (!error) return false;
   if (error?.code === 'INVALID_DLMM_DEPLOY_ARGS') return true;
-  return /invalid arguments/i.test(String(error?.message || ''));
+  return extractDlmmSdkDeployErrorMeta(error).isDlmmSdkDeployError;
+}
+
+function safeStringifyErrorObject(value) {
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return '';
+  }
+}
+
+export function extractDlmmSdkDeployErrorMeta(error) {
+  if (!error) {
+    return {
+      isDlmmSdkDeployError: false,
+      isInvalidArguments: false,
+      anchorErrorCode: null,
+      anchorErrorHex: null,
+      anchorErrorName: null,
+      instructionIndex: null,
+    };
+  }
+
+  const logs = getErrorLogs(error);
+  const blobs = [
+    String(error?.message || ''),
+    String(error?.stack || ''),
+    logs.join('\n'),
+    safeStringifyErrorObject(error),
+    safeStringifyErrorObject(error?.cause),
+    safeStringifyErrorObject(error?.err),
+    safeStringifyErrorObject(error?.error),
+    safeStringifyErrorObject(error?.data),
+    safeStringifyErrorObject(error?.simulationResponse),
+    safeStringifyErrorObject(error?.value),
+  ].filter(Boolean);
+  const text = blobs.join('\n');
+  const lower = text.toLowerCase();
+
+  const invalidArguments = /invalid arguments/i.test(text);
+  const instructionIndexMatch =
+    text.match(/instructionerror"\s*:\s*\[\s*(-?\d+)/i)
+    || text.match(/instructionerror\s*:\s*\[\s*(-?\d+)/i);
+  const instructionIndex = instructionIndexMatch
+    ? Number.parseInt(instructionIndexMatch[1], 10)
+    : null;
+
+  const customCodeMatch =
+    text.match(/"custom"\s*:\s*(-?\d+)/i)
+    || text.match(/custom"\s*:\s*(-?\d+)/i);
+  const customCode = customCodeMatch
+    ? Number.parseInt(customCodeMatch[1], 10)
+    : null;
+
+  const hexMatch = text.match(/custom program error:\s*(0x[0-9a-f]+)/i);
+  let anchorErrorHex = hexMatch ? String(hexMatch[1]).toLowerCase() : null;
+
+  const hasInstructionError = lower.includes('instructionerror');
+  const hasCode3007 = customCode === 3007 || /"custom"\s*:\s*3007/i.test(text);
+  const hasHex0bbf = anchorErrorHex === '0xbbf' || /custom program error:\s*0xbbf/i.test(text);
+  const hasOwnedByWrongProgram = /accountownedbywrongprogram/i.test(text);
+
+  let anchorErrorCode = Number.isFinite(customCode) ? customCode : null;
+  if (anchorErrorCode === null && hasCode3007) anchorErrorCode = 3007;
+  if (anchorErrorCode === null && anchorErrorHex === '0xbbf') anchorErrorCode = 3007;
+  if (!anchorErrorHex && anchorErrorCode === 3007) anchorErrorHex = '0xbbf';
+
+  const anchorErrorName = (hasOwnedByWrongProgram || anchorErrorCode === 3007 || anchorErrorHex === '0xbbf')
+    ? 'AccountOwnedByWrongProgram'
+    : null;
+
+  const isSimulationAccountError =
+    hasHex0bbf ||
+    hasCode3007 ||
+    hasOwnedByWrongProgram ||
+    (hasInstructionError && (anchorErrorCode !== null || /custom program error/i.test(lower)));
+
+  return {
+    isDlmmSdkDeployError: invalidArguments || isSimulationAccountError,
+    isInvalidArguments: invalidArguments,
+    anchorErrorCode,
+    anchorErrorHex,
+    anchorErrorName,
+    instructionIndex: Number.isFinite(Number(instructionIndex)) ? Number(instructionIndex) : null,
+  };
 }
 
 export function buildDlmmFinalArgsContext({
