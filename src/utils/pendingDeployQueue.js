@@ -44,6 +44,52 @@ function escapeHTML(text = '') {
     .replace(/'/g, '&#39;');
 }
 
+export function buildDeployTriggeredTelegramMessage({
+  symbol = '',
+  poolAddress = '',
+  check = {},
+  decision = 'DEPLOY',
+  entry = {},
+  solAmount = 0,
+  cfg = getConfig(),
+  finalCandle = null,
+} = {}) {
+  const lpSimpleM15Mode = String(cfg.entryDecisionMode || 'strict').trim().toLowerCase() === 'lp_simple_m15';
+  const finalCandleDiagnostics = finalCandle?.diagnostics || finalCandle || null;
+  const hasM15Signal =
+    finalCandleDiagnostics &&
+    Number.isFinite(finalCandleDiagnostics?.m15Open) &&
+    Number.isFinite(finalCandleDiagnostics?.m15Close);
+  let m15Signal = 'unavailable';
+  if (hasM15Signal) {
+    m15Signal = finalCandleDiagnostics?.m15Green === false ? 'RED' : 'GREEN';
+  }
+  const m15Line = lpSimpleM15Mode
+    ? `M15: <code>${m15Signal}</code> | ` +
+      `VolRatio: <code>${Number.isFinite(finalCandleDiagnostics?.m15VolumeRatio) ? `${Number(finalCandleDiagnostics.m15VolumeRatio).toFixed(2)}x` : 'na'}</code> | ` +
+      `Age: <code>${Number.isFinite(finalCandleDiagnostics?.m15AgeSec) ? `${Math.round(finalCandleDiagnostics.m15AgeSec)}s` : 'na'}</code> | ` +
+      `Source: <code>${escapeHTML(finalCandleDiagnostics?.source || finalCandle?.source || 'unknown')}</code>\n`
+    : '';
+  const m5Line = lpSimpleM15Mode
+    ? `M5: <code>${formatPct(check.liveM5)}</code> (<code>${check.m5Source || 'unknown'}</code>) <i>diagnostic/live</i>\n`
+    : `M5: <code>${formatPct(check.liveM5)}</code> (<code>${check.m5Source || 'unknown'}</code>)\n`;
+
+  return (
+    `🚀 <b>Real-time Deploy Triggered!</b>\n` +
+    `Token: <b>${symbol}</b>\n` +
+    `Pool: <code>${poolAddress.slice(0, 8)}</code>\n` +
+    `Trend: <code>${check.liveTrend || 'UNKNOWN'}</code> (<code>${check.trendSource || 'unknown'}</code>)\n` +
+    m15Line +
+    m5Line +
+    `Decision: <code>${decision}</code>\n` +
+    `BinStep: <code>${entry?.pool?.binStep || entry?.binStep || '?'}</code>\n` +
+    `Entry: <code>${entry?.meta?.entryReadiness || 'N/A'}</code> | ` +
+    `Breakout: <code>${entry?.meta?.breakoutQuality || 'N/A'}</code> | ` +
+    `Timing: <code>${entry?.meta?.entryTimingState || 'N/A'}</code>\n` +
+    `⏳ <i>Membuka posisi ${solAmount} SOL...</i>`
+  );
+}
+
 export function setDeployQueueNotifyFn(fn) { _notifyFn  = fn; }
 export function setDeployQueueDeployFn(fn) { _deployFn  = fn; }
 export function setDeployQueueMonitorFn(fn) { _monitorFn = fn; }
@@ -488,19 +534,22 @@ export async function ensureFinalEntryCandleSanity(args = {}) {
     console.log(`[QUEUE] FINAL_CANDLE_GATE_PASS ${label}/${mintShort} source=${decision.source || 'cache'} reason=${decision.reason}`);
   } else {
     if (mode === 'lp_simple_m15') {
-      const m15Open = Number.isFinite(decision?.candle?.open) ? Number(decision.candle.open).toFixed(8) : 'na';
-      const m15Close = Number.isFinite(decision?.candle?.close) ? Number(decision.candle.close).toFixed(8) : 'na';
-      const m15AgeSec = Number.isFinite(decision.m15AgeSec) ? Number(decision.m15AgeSec).toFixed(1) : 'na';
-      const m15Volume = Number.isFinite(decision.m15Volume) ? Number(decision.m15Volume).toFixed(4) : 'na';
-      const m15AvgVolume = Number.isFinite(decision.m15AvgVolume) ? Number(decision.m15AvgVolume).toFixed(4) : 'na';
-      const m15VolumeRatio = Number.isFinite(decision.m15VolumeRatio) ? Number(decision.m15VolumeRatio).toFixed(3) : 'na';
-      const m15MinVolumeRatio = Number.isFinite(decision.m15MinVolumeRatio) ? Number(decision.m15MinVolumeRatio).toFixed(3) : 'na';
-      const m15Pct = Number.isFinite(decision.m15Pct) ? `${Number(decision.m15Pct).toFixed(2)}%` : 'na';
+      const diag = decision.diagnostics || {};
       console.log(
         `[QUEUE] FINAL_CANDLE_GATE_HOLD ${label}/${mintShort} ` +
-        `entryDecisionMode=${mode} source=${decision.source || 'unknown'} reason=${decision.reason} ` +
-        `cfg[m15MaxAgeSec=${Number(cfg.entryM15MaxAgeSec ?? 1800)},m15MinRatio=${Number(cfg.entryM15MinVolumeRatio ?? 0.7)},m15Lookback=${Number(cfg.entryM15VolumeLookbackCandles ?? 8)},m15Green=${cfg.entryM15RequireGreenCandle !== false},m15VolConfirm=${cfg.entryM15RequireVolumeConfirm !== false}] ` +
-        `obs[m15AgeSec=${m15AgeSec},m15Open=${m15Open},m15Close=${m15Close},m15Pct=${m15Pct},m15Vol=${m15Volume},m15AvgVol=${m15AvgVolume},m15VolRatio=${m15VolumeRatio},m15MinVolumeRatio=${m15MinVolumeRatio}]`
+        `mode=${mode} source=${decision.source || diag.source || 'unknown'} reason="${decision.reason}" ` +
+        `raw5m=${Number(diag.raw5mCount ?? 0)} closed5m=${Number(diag.closed5mCount ?? 0)} m15=${Number(diag.derivedM15Count ?? 0)} ` +
+        `lastM15Ts=${Number.isFinite(diag.lastM15Timestamp) ? Number(diag.lastM15Timestamp) : 'null'} ` +
+        `ageSec=${Number.isFinite(diag.m15AgeSec) ? Number(diag.m15AgeSec).toFixed(1) : 'na'} ` +
+        `maxAgeSec=${Number(diag.entryM15MaxAgeSec ?? cfg.entryM15MaxAgeSec ?? 1800)} ` +
+        `droppedOpen=${Number(diag.droppedOpenCandleCount ?? 0)} ` +
+        `m15Open=${Number.isFinite(diag.m15Open) ? Number(diag.m15Open).toFixed(8) : 'na'} ` +
+        `m15Close=${Number.isFinite(diag.m15Close) ? Number(diag.m15Close).toFixed(8) : 'na'} ` +
+        `m15Pct=${Number.isFinite(diag.m15Pct) ? `${Number(diag.m15Pct).toFixed(2)}%` : 'na'} ` +
+        `m15Vol=${Number.isFinite(diag.m15Volume) ? Number(diag.m15Volume).toFixed(4) : 'na'} ` +
+        `m15AvgVol=${Number.isFinite(diag.m15AvgVolume) ? Number(diag.m15AvgVolume).toFixed(4) : 'na'} ` +
+        `m15VolRatio=${Number.isFinite(diag.m15VolumeRatio) ? Number(diag.m15VolumeRatio).toFixed(3) : 'na'} ` +
+        `m15MinRatio=${Number(diag.entryM15MinVolumeRatio ?? cfg.entryM15MinVolumeRatio ?? 0.7).toFixed(3)}`
       );
     } else {
       const ageSec = Number.isFinite(decision.ageSec) ? Number(decision.ageSec).toFixed(1) : 'na';
@@ -1064,19 +1113,19 @@ async function runWatcher() {
       removeQueueCandidate(mint, entry); // Hapus sebelum deploy (idempoten)
 
       try {
-        await safeSend(
-          `🚀 <b>Real-time Deploy Triggered!</b>\n` +
-          `Token: <b>${symbol}</b>\n` +
-          `Pool: <code>${poolAddress.slice(0, 8)}</code>\n` +
-          `Trend: <code>${check.liveTrend || 'UNKNOWN'}</code> (<code>${check.trendSource || 'unknown'}</code>)\n` +
-          `M5: <code>${formatPct(check.liveM5)}</code> (<code>${check.m5Source || 'unknown'}</code>)\n` +
-          `Decision: <code>${decision}</code>\n` +
-          `BinStep: <code>${pool.binStep || '?'}</code>\n` +
-          `Entry: <code>${entry.meta.entryReadiness || 'N/A'}</code> | ` +
-          `Breakout: <code>${entry.meta.breakoutQuality || 'N/A'}</code> | ` +
-          `Timing: <code>${entry.meta.entryTimingState || 'N/A'}</code>\n` +
-          `⏳ <i>Membuka posisi ${solAmount} SOL...</i>`
-        );
+        await safeSend(buildDeployTriggeredTelegramMessage({
+          symbol,
+          poolAddress,
+          check,
+          decision,
+          entry: {
+            pool,
+            meta: entry.meta,
+          },
+          solAmount,
+          cfg,
+          finalCandle,
+        }));
 
         if (!_deployFn) {
           throw new Error('deployFn belum di-set ke DeployQueue — panggil setDeployQueueDeployFn() dulu.');

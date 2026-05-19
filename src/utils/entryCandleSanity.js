@@ -67,6 +67,42 @@ function filterClosed5mCandles(candles = [], now = Date.now()) {
   return candles.filter((candle) => Number(candle?.timeMs) + FIVE_MIN_MS <= (nowMs - CLOSED_5M_BUFFER_MS));
 }
 
+function buildEntryCandleDiagnostics({
+  mode = 'strict',
+  source = 'unknown',
+  rawCandles = [],
+  closedCandles = [],
+  m15Candles = [],
+  last = null,
+  decision = null,
+  cfg = {},
+} = {}) {
+  const m15 = last || null;
+  return {
+    mode,
+    source,
+    raw5mCount: Array.isArray(rawCandles) ? rawCandles.length : 0,
+    closed5mCount: Array.isArray(closedCandles) ? closedCandles.length : 0,
+    derivedM15Count: Array.isArray(m15Candles) ? m15Candles.length : 0,
+    droppedOpenCandleCount: Math.max(0, (Array.isArray(rawCandles) ? rawCandles.length : 0) - (Array.isArray(closedCandles) ? closedCandles.length : 0)),
+    lastM15Timestamp: m15?.timeMs || null,
+    m15AgeSec: decision?.m15AgeSec ?? decision?.ageSec ?? null,
+    entryM15MaxAgeSec: Number(cfg.entryM15MaxAgeSec ?? 1800) || 1800,
+    m15Open: m15 ? Number(m15.open) : null,
+    m15Close: m15 ? Number(m15.close) : null,
+    m15Pct: decision?.m15Pct ?? null,
+    m15Volume: decision?.m15Volume ?? (m15 ? Number(m15.volume) : null),
+    m15AvgVolume: decision?.m15AvgVolume ?? null,
+    m15VolumeRatio: decision?.m15VolumeRatio ?? null,
+    entryM15MinVolumeRatio: Number(cfg.entryM15MinVolumeRatio ?? 0.7) || 0.7,
+    m15Green: m15 ? Boolean(m15.close > m15.open) : null,
+    m15Source: source,
+    reason: decision?.reason || null,
+    enough5m: Boolean(decision?.code ? !['M15_UNAVAILABLE', 'M15_STALE', 'M15_VOLUME_LOOKBACK_UNAVAILABLE'].includes(decision.code) : true),
+    enough15m: Array.isArray(m15Candles) ? m15Candles.length >= 1 : false,
+  };
+}
+
 export function aggregateClosed5mCandlesToClosedM15(candles5m = []) {
   if (!Array.isArray(candles5m) || candles5m.length < 3) return [];
   const buckets = new Map();
@@ -111,45 +147,86 @@ function evaluateLpSimpleM15Sanity({
   const candlesM15 = aggregateClosed5mCandlesToClosedM15(closed5m);
   const last = candlesM15[candlesM15.length - 1] || null;
   const maxAgeSec = Math.max(1, Number(cfg.entryM15MaxAgeSec ?? 1800) || 1800);
+  const mode = String(cfg.entryDecisionMode || 'strict').trim().toLowerCase();
+  const source = ohlcv?.source || 'unknown';
 
   if (!last) {
-    return {
+    const decision = {
       ok: false,
       action: 'HOLD',
       reason: 'HOLD: M15 candle sanity unavailable/stale',
       code: 'M15_UNAVAILABLE',
       retryable: true,
-      source: ohlcv?.source || 'unknown',
+      source,
       m15CandleCount: 0,
+    };
+    return {
+      ...decision,
+      diagnostics: buildEntryCandleDiagnostics({
+        mode,
+        source,
+        rawCandles: candles5m,
+        closedCandles: closed5m,
+        m15Candles: candlesM15,
+        last,
+        decision,
+        cfg,
+      }),
     };
   }
 
   const ageSec = Math.max(0, (Number(now) - Number(last.timeMs)) / 1000);
   if (!Number.isFinite(ageSec) || ageSec > maxAgeSec) {
-    return {
+    const decision = {
       ok: false,
       action: 'HOLD',
       reason: 'HOLD: M15 candle sanity unavailable/stale',
       code: 'M15_STALE',
       retryable: true,
-      source: ohlcv?.source || 'unknown',
+      source,
       m15AgeSec: ageSec,
       m15MaxAgeSec: maxAgeSec,
       m15CandleCount: candlesM15.length,
     };
+    return {
+      ...decision,
+      diagnostics: buildEntryCandleDiagnostics({
+        mode,
+        source,
+        rawCandles: candles5m,
+        closedCandles: closed5m,
+        m15Candles: candlesM15,
+        last,
+        decision,
+        cfg,
+      }),
+    };
   }
 
   if (cfg.entryM15RequireGreenCandle !== false && !(last.close > last.open)) {
-    return {
+    const decision = {
       ok: false,
       action: 'HOLD',
       reason: 'HOLD: last closed M15 candle not green',
       code: 'M15_RED_CANDLE',
       retryable: false,
-      source: ohlcv?.source || 'unknown',
+      source,
       m15AgeSec: ageSec,
       candle: last,
       m15CandleCount: candlesM15.length,
+    };
+    return {
+      ...decision,
+      diagnostics: buildEntryCandleDiagnostics({
+        mode,
+        source,
+        rawCandles: candles5m,
+        closedCandles: closed5m,
+        m15Candles: candlesM15,
+        last,
+        decision,
+        cfg,
+      }),
     };
   }
 
@@ -160,28 +237,41 @@ function evaluateLpSimpleM15Sanity({
     const lookback = Math.max(1, Math.floor(Number(cfg.entryM15VolumeLookbackCandles ?? 8) || 8));
     const previous = candlesM15.slice(0, -1).slice(-lookback);
     if (previous.length < lookback) {
-      return {
+      const decision = {
         ok: false,
         action: 'HOLD',
         reason: 'HOLD: M15 volume lookback unavailable',
         code: 'M15_VOLUME_LOOKBACK_UNAVAILABLE',
         retryable: true,
-        source: ohlcv?.source || 'unknown',
+        source,
         m15AgeSec: ageSec,
         m15CandleCount: candlesM15.length,
+      };
+      return {
+        ...decision,
+        diagnostics: buildEntryCandleDiagnostics({
+          mode,
+          source,
+          rawCandles: candles5m,
+          closedCandles: closed5m,
+          m15Candles: candlesM15,
+          last,
+          decision,
+          cfg,
+        }),
       };
     }
     avgVolume = previous.reduce((sum, c) => sum + Math.max(0, Number(c.volume) || 0), 0) / previous.length;
     volumeRatio = avgVolume > 0 ? (Number(last.volume) / avgVolume) : null;
     const threshold = avgVolume * minRatio;
     if (!(avgVolume > 0) || last.volume < threshold) {
-      return {
+      const decision = {
         ok: false,
         action: 'HOLD',
         reason: 'HOLD: M15 candle volume below threshold',
         code: 'M15_THIN_VOLUME',
         retryable: false,
-        source: ohlcv?.source || 'unknown',
+        source,
         m15AgeSec: ageSec,
         m15Volume: last.volume,
         m15AvgVolume: avgVolume,
@@ -189,14 +279,27 @@ function evaluateLpSimpleM15Sanity({
         m15MinVolumeRatio: minRatio,
         m15CandleCount: candlesM15.length,
       };
+      return {
+        ...decision,
+        diagnostics: buildEntryCandleDiagnostics({
+          mode,
+          source,
+          rawCandles: candles5m,
+          closedCandles: closed5m,
+          m15Candles: candlesM15,
+          last,
+          decision,
+          cfg,
+        }),
+      };
     }
   }
 
-  return {
+  const decision = {
     ok: true,
     action: 'ALLOW',
     reason: 'entry M15 sanity pass',
-    source: ohlcv?.source || 'cache',
+    source,
     m15AgeSec: ageSec,
     m15Volume: Number(last.volume),
     m15AvgVolume: avgVolume,
@@ -206,6 +309,19 @@ function evaluateLpSimpleM15Sanity({
     m15Pct: last.open > 0 ? Number((((last.close - last.open) / last.open) * 100).toFixed(4)) : null,
     candle: last,
     candlesM15,
+  };
+  return {
+    ...decision,
+    diagnostics: buildEntryCandleDiagnostics({
+      mode,
+      source,
+      rawCandles: candles5m,
+      closedCandles: closed5m,
+      m15Candles: candlesM15,
+      last,
+      decision,
+      cfg,
+    }),
   };
 }
 

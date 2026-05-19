@@ -5,6 +5,7 @@ import { readFileSync } from 'node:fs';
 import { checkSupertrendVeto } from '../src/market/meridianVeto.js';
 import {
   __resetDeployQueueHoldNotifyState,
+  buildDeployTriggeredTelegramMessage,
   buildUnreliableLiveSnapshotLog,
   dequeueToken,
   enqueueForDeploy,
@@ -1028,10 +1029,117 @@ test('lp_simple_m15 final gate hold log and reason use M15 wording', async () =>
   }
 
   const holdLine = logs.find((line) => line.includes('FINAL_CANDLE_GATE_HOLD')) || '';
-  assert.match(holdLine, /entryDecisionMode=lp_simple_m15/);
-  assert.match(holdLine, /reason=HOLD: last closed M15 candle not green/);
+  assert.match(holdLine, /mode=lp_simple_m15/);
+  assert.match(holdLine, /reason="HOLD: last closed M15 candle not green"/);
   assert.match(holdLine, /m15Open=/);
   assert.match(holdLine, /m15Close=/);
+});
+
+test('lp_simple_m15 final gate diagnostics include closed counts, age and volume ratio', async () => {
+  const now = 1_700_001_800_000;
+  const logs = [];
+  const originalLog = console.log;
+  console.log = (...args) => logs.push(args.join(' '));
+  try {
+    await ensureFinalEntryCandleSanity({
+      mint: 'Mint111111111111111111111111111111111111111',
+      symbol: 'TESTM15',
+      now,
+      cfg: {
+        entryCandleSanityEnabled: true,
+        entryDecisionMode: 'lp_simple_m15',
+        entryM15RequireGreenCandle: true,
+        entryM15RequireVolumeConfirm: true,
+        entryM15MinVolumeRatio: 0.7,
+        entryM15VolumeLookbackCandles: 2,
+        entryM15MaxAgeSec: 1800,
+      },
+      pool: {
+        _marketSnapshot: {
+          ohlcv: {
+            source: 'meteora-dlmm-ohlcv',
+            entryCandles5m: makeDerivedM15Backed5m({
+              nowSec: Math.floor(now / 1000),
+              m15Series: [
+                { open: 100, close: 102, volume: 100 },
+                { open: 102, close: 104, volume: 100 },
+                { open: 104, close: 103, volume: 70 },
+              ],
+            }),
+          },
+        },
+      },
+      snapshotFn: async () => null,
+    });
+  } finally {
+    console.log = originalLog;
+  }
+
+  const holdLine = logs.find((line) => line.includes('FINAL_CANDLE_GATE_HOLD')) || '';
+  assert.match(holdLine, /mode=lp_simple_m15/);
+  assert.match(holdLine, /raw5m=/);
+  assert.match(holdLine, /closed5m=/);
+  assert.match(holdLine, /m15=/);
+  assert.match(holdLine, /lastM15Ts=/);
+  assert.match(holdLine, /ageSec=/);
+  assert.match(holdLine, /maxAgeSec=/);
+  assert.match(holdLine, /m15VolRatio=/);
+  assert.match(holdLine, /m15MinRatio=/);
+});
+
+test('deploy report uses M15 primary in lp_simple_m15 and keeps strict unchanged', () => {
+  const lpMsg = buildDeployTriggeredTelegramMessage({
+    symbol: 'BULL',
+    poolAddress: 'Pool11111111111111111111111111111111111111',
+    check: {
+      liveTrend: 'BULLISH',
+      trendSource: 'live',
+      liveM5: 0,
+      m5Source: 'live',
+    },
+    decision: 'DEPLOY',
+    entry: {
+      pool: { binStep: 100 },
+      meta: { entryReadiness: 'HIGH', breakoutQuality: 'VALID', entryTimingState: 'LP_LIVE' },
+    },
+    solAmount: 0.1,
+    cfg: { entryDecisionMode: 'lp_simple_m15' },
+    finalCandle: {
+      diagnostics: {
+        source: 'meteora-dlmm-ohlcv',
+        m15Green: true,
+        m15Open: 100,
+        m15Close: 101,
+        m15VolumeRatio: 0.82,
+        m15AgeSec: 600,
+      },
+    },
+  });
+  assert.match(lpMsg, /M15:/);
+  assert.match(lpMsg, /VolRatio:/);
+  assert.match(lpMsg, /M5:/);
+  assert.match(lpMsg, /diagnostic\/live/);
+
+  const strictMsg = buildDeployTriggeredTelegramMessage({
+    symbol: 'BULL',
+    poolAddress: 'Pool11111111111111111111111111111111111111',
+    check: {
+      liveTrend: 'BULLISH',
+      trendSource: 'live',
+      liveM5: 0,
+      m5Source: 'live',
+    },
+    decision: 'DEPLOY',
+    entry: {
+      pool: { binStep: 100 },
+      meta: { entryReadiness: 'HIGH', breakoutQuality: 'VALID', entryTimingState: 'LP_LIVE' },
+    },
+    solAmount: 0.1,
+    cfg: { entryDecisionMode: 'strict' },
+    finalCandle: null,
+  });
+  assert.doesNotMatch(strictMsg, /M15:/);
+  assert.doesNotMatch(strictMsg, /diagnostic\/live/);
 });
 
 test('manual CA final gate does not pass generic taTrend snapshot cache', () => {
@@ -1052,6 +1160,34 @@ test('hunter scout logic keeps strict gates and supports lp_simple_m15 mode over
   assert.match(hunterSrc, /deferOnM15PreviousUnknown && !Number\.isFinite\(priceChangeM15Prev\)/);
   assert.match(hunterSrc, /Mode lp_simple_m15 aktif: M15 jadi konfirmasi utama/);
   assert.match(hunterSrc, /Jika TA M15 Previous = UNKNOWN, JANGAN auto-DEFER/);
+});
+
+test('lp_simple_m15 deploy report labels M15 as primary and M5 as diagnostic', () => {
+  const message = buildDeployTriggeredTelegramMessage({
+    symbol: 'BULL',
+    poolAddress: 'Pool11111111111111111111111111111111111111',
+    check: { liveTrend: 'BULLISH', trendSource: 'live', liveM5: 0, m5Source: 'live' },
+    decision: 'DEPLOY',
+    entry: {
+      pool: { binStep: 100 },
+      meta: { entryReadiness: 'HIGH', breakoutQuality: 'VALID', entryTimingState: 'LP_LIVE' },
+    },
+    solAmount: 0.1,
+    cfg: { entryDecisionMode: 'lp_simple_m15' },
+    finalCandle: {
+      diagnostics: {
+        source: 'meteora-dlmm-ohlcv',
+        m15Green: true,
+        m15Open: 100,
+        m15Close: 101,
+        m15VolumeRatio: 0.82,
+        m15AgeSec: 600,
+      },
+    },
+  });
+  assert.match(message, /M15:/);
+  assert.match(message, /M5:/);
+  assert.match(message, /diagnostic\/live/);
 });
 
 test('checkSupertrendVeto only passes exact bullish direction', async () => {

@@ -81,6 +81,151 @@ function buildInvalidDlmmArgsError(message) {
   return err;
 }
 
+function stringifyAmount(value) {
+  try {
+    if (BN.isBN(value)) return value.toString();
+    if (value === null || value === undefined) return '0';
+    return String(value);
+  } catch {
+    return '0';
+  }
+}
+
+function toBnAmountSafe(value) {
+  try {
+    if (BN.isBN(value)) return value;
+    if (typeof value === 'bigint') return new BN(value.toString());
+    if (value === null || value === undefined) return new BN('0');
+    if (typeof value === 'number') {
+      if (!Number.isFinite(value) || !Number.isInteger(value)) return new BN('0');
+      return new BN(String(value));
+    }
+    const normalized = stringifyAmount(value).trim();
+    if (!normalized || !/^-?\d+$/.test(normalized)) return new BN('0');
+    return new BN(normalized);
+  } catch {
+    return new BN('0');
+  }
+}
+
+function toBnAmountStrict(value, fieldName = 'amount') {
+  if (BN.isBN(value)) return value;
+  if (typeof value === 'bigint') return new BN(value.toString());
+  if (value === null || value === undefined) return new BN('0');
+  if (typeof value === 'number') {
+    if (!Number.isFinite(value) || !Number.isInteger(value)) {
+      throw buildInvalidDlmmArgsError(`${fieldName} must be finite integer (got ${String(value)})`);
+    }
+    return new BN(String(value));
+  }
+  const normalized = stringifyAmount(value).trim();
+  if (!normalized || !/^-?\d+$/.test(normalized)) {
+    throw buildInvalidDlmmArgsError(`${fieldName} must be BN/number-like integer (got ${String(value)})`);
+  }
+  try {
+    return new BN(normalized);
+  } catch {
+    throw buildInvalidDlmmArgsError(`${fieldName} must be BN/number-like integer (got ${String(value)})`);
+  }
+}
+
+export function buildDlmmFinalArgsContext({
+  poolAddress = '',
+  xMint = '',
+  yMint = '',
+  deployArgs = {},
+  sdkStrategy = null,
+} = {}) {
+  const activeBinId = Number(deployArgs?.activeBinId);
+  const rangeMin = Number(deployArgs?.rangeMin);
+  const rangeMax = Number(deployArgs?.rangeMax);
+  const amountX = toBnAmountSafe(deployArgs?.amountXBn);
+  const amountY = toBnAmountSafe(deployArgs?.amountYBn);
+  const strategyType = Number(sdkStrategy?.strategyType ?? deployArgs?.strategyType);
+  const activeInsideRange = Number.isFinite(activeBinId) && Number.isFinite(rangeMin) && Number.isFinite(rangeMax)
+    ? (rangeMin <= activeBinId && rangeMax >= activeBinId)
+    : false;
+  return {
+    pool: String(poolAddress || ''),
+    tokenXMint: String(xMint || ''),
+    tokenYMint: String(yMint || ''),
+    activeBinId: Number.isFinite(activeBinId) ? activeBinId : null,
+    rangeMin: Number.isFinite(rangeMin) ? rangeMin : null,
+    rangeMax: Number.isFinite(rangeMax) ? rangeMax : null,
+    amountX: amountX.toString(),
+    amountY: amountY.toString(),
+    singleSide: amountX.isZero() && amountY.gt(new BN('0')) ? 'QUOTE_ONLY' : (amountY.isZero() && amountX.gt(new BN('0')) ? 'BASE_ONLY' : 'MIXED'),
+    activeInsideRange,
+    strategyType: Number.isFinite(strategyType) ? strategyType : null,
+    sdkMinBinId: Number.isFinite(Number(sdkStrategy?.minBinId)) ? Number(sdkStrategy.minBinId) : null,
+    sdkMaxBinId: Number.isFinite(Number(sdkStrategy?.maxBinId)) ? Number(sdkStrategy.maxBinId) : null,
+  };
+}
+
+export function assertDlmmFinalSdkArgs({
+  deployArgs = {},
+  sdkStrategy = null,
+  xMint = '',
+  yMint = '',
+  poolAddress = '',
+} = {}) {
+  const activeBinId = Number(deployArgs?.activeBinId);
+  const rangeMin = Number(deployArgs?.rangeMin);
+  const rangeMax = Number(deployArgs?.rangeMax);
+  const strategyMin = Number(sdkStrategy?.minBinId);
+  const strategyMax = Number(sdkStrategy?.maxBinId);
+  const strategyType = Number(sdkStrategy?.strategyType ?? deployArgs?.strategyType);
+  const amountX = toBnAmountStrict(deployArgs?.amountXBn, 'amountX');
+  const amountY = toBnAmountStrict(deployArgs?.amountYBn, 'amountY');
+
+  if (!isFiniteInteger(activeBinId)) {
+    throw buildInvalidDlmmArgsError(`activeBinId must be finite integer (got ${String(deployArgs?.activeBinId)})`);
+  }
+  if (!isFiniteInteger(rangeMin) || !isFiniteInteger(rangeMax)) {
+    throw buildInvalidDlmmArgsError(`rangeMin/rangeMax must be finite integers (got ${String(deployArgs?.rangeMin)}/${String(deployArgs?.rangeMax)})`);
+  }
+  if (rangeMin > rangeMax) {
+    throw buildInvalidDlmmArgsError(`rangeMin must be <= rangeMax (got ${rangeMin} > ${rangeMax})`);
+  }
+  if (amountX.isNeg() || amountY.isNeg()) {
+    throw buildInvalidDlmmArgsError('amountX/amountY must be >= 0');
+  }
+  if (amountX.add(amountY).isZero()) {
+    throw buildInvalidDlmmArgsError('amountX + amountY must be > 0');
+  }
+  if (!isFiniteInteger(strategyType) || strategyType < 0) {
+    throw buildInvalidDlmmArgsError(`strategyType invalid (got ${String(strategyType)})`);
+  }
+  if (!isFiniteInteger(strategyMin) || !isFiniteInteger(strategyMax)) {
+    throw buildInvalidDlmmArgsError(`strategy min/max bin invalid (got ${String(sdkStrategy?.minBinId)}/${String(sdkStrategy?.maxBinId)})`);
+  }
+  if (strategyMin !== rangeMin || strategyMax !== rangeMax) {
+    throw buildInvalidDlmmArgsError(`strategy range mismatch deployArgs [${rangeMin},${rangeMax}] vs sdk [${strategyMin},${strategyMax}]`);
+  }
+  if (!xMint || !yMint) {
+    throw buildInvalidDlmmArgsError('tokenX/tokenY mint is missing');
+  }
+
+  const singleSideQuote = amountX.isZero() && amountY.gt(new BN('0'));
+  if (singleSideQuote && rangeMax >= activeBinId) {
+    throw buildInvalidDlmmArgsError('single-side quote final range must be below active bin');
+  }
+
+  const debug = buildDlmmFinalArgsContext({
+    poolAddress,
+    xMint,
+    yMint,
+    deployArgs: { ...deployArgs, amountXBn: amountX, amountYBn: amountY },
+    sdkStrategy,
+  });
+  console.log(
+    `[DLMM_FINAL_ARGS] token=${(xMint || '').slice(0, 8)} pool=${(poolAddress || '').slice(0, 8)} ` +
+    `activeBin=${debug.activeBinId} range=[${debug.rangeMin},${debug.rangeMax}] amountX=${debug.amountX} amountY=${debug.amountY} ` +
+    `strategyType=${debug.strategyType} singleSide=${debug.singleSide} activeInside=${debug.activeInsideRange}`
+  );
+  return debug;
+}
+
 async function withPermanentAwareBackoff(fn, { maxRetries = 3, baseDelay = 1000, maxDelay = 10000 } = {}) {
   let lastError;
   for (let i = 0; i < maxRetries; i++) {
@@ -119,8 +264,8 @@ export function buildDlmmDeployStrategyArgs({
     throw buildInvalidDlmmArgsError(`rangeMin must be <= rangeMax (got ${rangeMin} > ${rangeMax})`);
   }
 
-  const amountX = BN.isBN(amountXBn) ? amountXBn : new BN(String(amountXBn || '0'));
-  const amountY = BN.isBN(amountYBn) ? amountYBn : new BN(String(amountYBn || '0'));
+  const amountX = toBnAmountStrict(amountXBn, 'amountX');
+  const amountY = toBnAmountStrict(amountYBn, 'amountY');
   if (amountX.isNeg() || amountY.isNeg()) {
     throw buildInvalidDlmmArgsError('amountX/amountY must be >= 0');
   }
@@ -1178,6 +1323,13 @@ export async function deployPosition(poolAddress, deployOptions = {}) {
     const safeRangeMax = Number(deployArgs.rangeMax);
     const finalTotalBins = safeRangeMax - safeRangeMin + 1;
     const sdkStrategy = buildDlmmSdkStrategyFromDeployArgs(deployArgs);
+    const finalArgsContext = assertDlmmFinalSdkArgs({
+      deployArgs,
+      sdkStrategy,
+      xMint,
+      yMint,
+      poolAddress,
+    });
 
     if (deployArgs.adjustedBelowActive) {
       console.warn(
@@ -1260,7 +1412,10 @@ export async function deployPosition(poolAddress, deployOptions = {}) {
         throw deployErr;
       }
       if (/invalid arguments/i.test(String(deployErr?.message || ''))) {
-        throw buildInvalidDlmmArgsError('SDK rejected initializePositionAndAddLiquidityByStrategy with invalid arguments');
+        throw buildInvalidDlmmArgsError(
+          `SDK rejected initializePositionAndAddLiquidityByStrategy with invalid arguments ` +
+          `context=${JSON.stringify(finalArgsContext)}`
+        );
       }
       console.error(`[evilPanda] ❌ Monolith deploy gagal: ${deployErr.message}`);
       throw deployErr;

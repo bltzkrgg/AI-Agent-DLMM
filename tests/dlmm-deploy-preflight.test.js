@@ -4,6 +4,8 @@ import BN from 'bn.js';
 
 import {
   buildDlmmDeployStrategyArgs,
+  assertDlmmFinalSdkArgs,
+  buildDlmmFinalArgsContext,
   buildDlmmSdkStrategyFromDeployArgs,
   ensureFinalRentCheckedDeployArgs,
 } from '../src/sniper/evilPanda.js';
@@ -61,6 +63,121 @@ test('zero total amount fails before SDK call', () => {
     }),
     /Invalid DLMM deploy args: amountX \+ amountY must be > 0/
   );
+});
+
+test('final args preflight rejects non-finite activeBin and inverted range before SDK', () => {
+  assert.throws(
+    () => assertDlmmFinalSdkArgs({
+      deployArgs: {
+        activeBinId: Number.NaN,
+        rangeMin: 980,
+        rangeMax: 999,
+        amountXBn: new BN('1'),
+        amountYBn: new BN('1'),
+      },
+      sdkStrategy: { minBinId: 980, maxBinId: 999, strategyType: 0 },
+      xMint: 'Mint111111111111111111111111111111111111111',
+      yMint: 'So11111111111111111111111111111111111111112',
+      poolAddress: 'Pool11111111111111111111111111111111111111',
+    }),
+    /activeBinId must be finite integer/
+  );
+
+  assert.throws(
+    () => assertDlmmFinalSdkArgs({
+      deployArgs: {
+        activeBinId: 1000,
+        rangeMin: 1001,
+        rangeMax: 1000,
+        amountXBn: new BN('1'),
+        amountYBn: new BN('1'),
+      },
+      sdkStrategy: { minBinId: 1001, maxBinId: 1000, strategyType: 0 },
+      xMint: 'Mint111111111111111111111111111111111111111',
+      yMint: 'So11111111111111111111111111111111111111112',
+      poolAddress: 'Pool11111111111111111111111111111111111111',
+    }),
+    /rangeMin must be <= rangeMax/
+  );
+});
+
+test('final args preflight rejects zero amount and invalid single-side active bin relation', () => {
+  assert.throws(
+    () => assertDlmmFinalSdkArgs({
+      deployArgs: {
+        activeBinId: 1000,
+        rangeMin: 980,
+        rangeMax: 999,
+        amountXBn: new BN('0'),
+        amountYBn: new BN('0'),
+      },
+      sdkStrategy: { minBinId: 980, maxBinId: 999, strategyType: 0 },
+      xMint: 'Mint111111111111111111111111111111111111111',
+      yMint: 'So11111111111111111111111111111111111111112',
+      poolAddress: 'Pool11111111111111111111111111111111111111',
+    }),
+    /amountX \+ amountY must be > 0/
+  );
+
+  assert.throws(
+    () => assertDlmmFinalSdkArgs({
+      deployArgs: {
+        activeBinId: 1000,
+        rangeMin: 995,
+        rangeMax: 1000,
+        amountXBn: new BN('0'),
+        amountYBn: new BN('1'),
+      },
+      sdkStrategy: { minBinId: 995, maxBinId: 1000, strategyType: 0 },
+      xMint: 'Mint111111111111111111111111111111111111111',
+      yMint: 'So11111111111111111111111111111111111111112',
+      poolAddress: 'Pool11111111111111111111111111111111111111',
+    }),
+    /single-side quote final range must be below active bin/
+  );
+});
+
+test('final args preflight rejects non BN/number-like amount input before SDK', () => {
+  assert.throws(
+    () => assertDlmmFinalSdkArgs({
+      deployArgs: {
+        activeBinId: 1000,
+        rangeMin: 980,
+        rangeMax: 999,
+        amountXBn: 'foo',
+        amountYBn: new BN('1'),
+      },
+      sdkStrategy: { minBinId: 980, maxBinId: 999, strategyType: 0 },
+      xMint: 'Mint111111111111111111111111111111111111111',
+      yMint: 'So11111111111111111111111111111111111111112',
+      poolAddress: 'Pool11111111111111111111111111111111111111',
+    }),
+    /amountX must be BN\/number-like integer/
+  );
+});
+
+test('final args context sanitizes range, amounts and active bin for SDK rejection logs', () => {
+  const ctx = buildDlmmFinalArgsContext({
+    poolAddress: 'Pool11111111111111111111111111111111111111',
+    xMint: 'Mint111111111111111111111111111111111111111',
+    yMint: 'So11111111111111111111111111111111111111112',
+    deployArgs: {
+      activeBinId: 1000,
+      rangeMin: 980,
+      rangeMax: 999,
+      amountXBn: new BN('10'),
+      amountYBn: new BN('20'),
+    },
+    sdkStrategy: { minBinId: 980, maxBinId: 999, strategyType: 0 },
+  });
+
+  assert.equal(ctx.pool.startsWith('Pool1111'), true);
+  assert.equal(ctx.activeBinId, 1000);
+  assert.equal(ctx.rangeMin, 980);
+  assert.equal(ctx.rangeMax, 999);
+  assert.equal(ctx.amountX, '10');
+  assert.equal(ctx.amountY, '20');
+  assert.equal(ctx.singleSide, 'MIXED');
 });
 
 test('strategy type defaults to SDK Spot enum when available', () => {
