@@ -18,7 +18,9 @@ import {
   __getQuoteOnlyDeployMarkerForTests,
   __handleQuoteOnlyPartialDeployFailureForTests,
   __isBotQuoteOnlyPartialMarkerForTests,
+  __markQuoteOnlyLiquidityConfirmedForTests,
   __setQuoteOnlyDeployMarkerForTests,
+  __verifyQuoteOnlyLiquidityOnChainForTests,
   getPositionMeta,
   getPositionOnChainStatus,
   setPositionLifecycle,
@@ -1254,7 +1256,7 @@ test('SDK strategy range equals final rent-checked deployArgs range', async () =
   assert.equal(sdkStrategy.maxBinId, out.deployArgs.rangeMax);
 });
 
-test('quote-only marker lifecycle updates on position-first flow and clears on success', async () => {
+test('quote-only position-first build keeps marker in ADD_LIQUIDITY_PENDING (not confirmed yet)', async () => {
   const positionKeypair = Keypair.generate();
   const deployArgs = buildDlmmDeployStrategyArgs({
     activeBinId: 1000,
@@ -1302,8 +1304,8 @@ test('quote-only marker lifecycle updates on position-first flow and clears on s
 
   assert.equal(out.quoteOnlyPositionFirst, true);
   const marker = __getQuoteOnlyDeployMarkerForTests(positionKeypair.publicKey.toString());
-  assert.equal(marker?.phase, 'ADD_LIQUIDITY_CONFIRMED');
-  assert.equal(marker?.liquidityConfirmed, true);
+  assert.equal(marker?.phase, 'ADD_LIQUIDITY_PENDING');
+  assert.equal(marker?.liquidityConfirmed, false);
 
   __setQuoteOnlyDeployMarkerForTests(positionKeypair.publicKey.toString(), null);
 });
@@ -1407,6 +1409,150 @@ test('partial quote-only cleanup unlocks local state for empty position and avoi
   const status = await getPositionOnChainStatus(positionPubkey);
   assert.equal(status.reason, 'BOT_DEPLOY_PARTIAL_EMPTY_POSITION');
   assert.equal(status.manualWithdrawn, false);
+
+  __setQuoteOnlyDeployMarkerForTests(positionPubkey, null);
+});
+
+test('quote-only send fail path keeps marker partial, cleanup unlocks lock, and avoids manual classification', async () => {
+  const positionKeypair = Keypair.generate();
+  const positionPubkey = positionKeypair.publicKey.toString();
+  const poolAddress = 'Pool11111111111111111111111111111111111111';
+  const deployArgs = buildDlmmDeployStrategyArgs({
+    activeBinId: 1000,
+    rangeMin: 980,
+    rangeMax: 999,
+    amountXBn: new BN('0'),
+    amountYBn: new BN('100000000'),
+  });
+  const dist = buildQuoteOnlyWeightDistribution({ rangeMin: 980, rangeMax: 999 });
+  const expectedProgramId = new PublicKey('LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo');
+  let initDone = false;
+
+  const built = await executeQuoteOnlyPositionFirstFlow({
+    dlmmPool: {
+      program: { programId: expectedProgramId },
+      createEmptyPosition: async () => {
+        initDone = true;
+        return { instructions: [] };
+      },
+      addLiquidityByWeight: async () => [{ mockTx: true }],
+    },
+    connection: {
+      getAccountInfo: async () => {
+        if (!initDone) return null;
+        return { owner: expectedProgramId };
+      },
+    },
+    walletPublicKey: Keypair.generate().publicKey,
+    positionKeypair,
+    deployArgs,
+    xYAmountDistribution: dist,
+    finalArgsContext: {
+      pool: poolAddress,
+      tokenXMint: 'Mint111111111111111111111111111111111111111',
+    },
+    sendTxFn: async () => 'sig-init',
+    pollTxConfirmFn: async () => {},
+  });
+  assert.equal(built.quoteOnlyPositionFirst, true);
+  const markerBefore = __getQuoteOnlyDeployMarkerForTests(positionPubkey);
+  assert.equal(markerBefore?.phase, 'ADD_LIQUIDITY_PENDING');
+  assert.equal(markerBefore?.liquidityConfirmed, false);
+
+  await setPositionLifecycle(positionPubkey, 'deploying', {
+    poolAddress,
+    deploySol: 0.1,
+    tokenXMint: 'Mint111111111111111111111111111111111111111',
+    tokenYMint: 'So11111111111111111111111111111111111111112',
+    rangeMin: 980,
+    rangeMax: 999,
+  }, { flush: true });
+
+  const cleanup = await __handleQuoteOnlyPartialDeployFailureForTests({
+    connection: {},
+    wallet: { publicKey: Keypair.generate().publicKey },
+    dlmmPool: {},
+    poolAddress,
+    positionPubkey,
+    error: new Error('send add-liquidity tx failed'),
+    getFreshPositionFn: async () => ({ activePos: null }),
+    verifyClosedFn: async () => true,
+  });
+
+  assert.equal(cleanup?.hasLiquidity, false);
+  assert.equal(getPositionMeta(positionPubkey), null);
+  const markerAfter = __getQuoteOnlyDeployMarkerForTests(positionPubkey);
+  assert.equal(markerAfter?.phase, 'ADD_LIQUIDITY_FAILED');
+  assert.equal(markerAfter?.liquidityConfirmed, false);
+  const status = await getPositionOnChainStatus(positionPubkey);
+  assert.equal(status.reason, 'BOT_DEPLOY_PARTIAL_EMPTY_POSITION');
+  assert.equal(status.manualWithdrawn, false);
+
+  __setQuoteOnlyDeployMarkerForTests(positionPubkey, null);
+});
+
+test('quote-only liquidity marker becomes confirmed only after explicit on-chain liquidity verification', async () => {
+  const positionPubkey = Keypair.generate().publicKey.toString();
+  const poolAddress = 'Pool11111111111111111111111111111111111111';
+  __setQuoteOnlyDeployMarkerForTests(positionPubkey, {
+    poolAddress,
+    tokenXMint: 'Mint111111111111111111111111111111111111111',
+    phase: 'ADD_LIQUIDITY_PENDING',
+    source: 'BOT_QUOTE_ONLY_POSITION_FIRST',
+    ttlMs: 120000,
+  });
+
+  const verifyEmpty = await __verifyQuoteOnlyLiquidityOnChainForTests({
+    connection: {},
+    wallet: { publicKey: Keypair.generate().publicKey },
+    poolAddress,
+    positionPubkey,
+    attempts: 1,
+    delayMs: 0,
+    getFreshPositionFn: async () => ({
+      activePos: {
+        positionData: {
+          totalXAmount: new BN('0'),
+          totalYAmount: new BN('0'),
+          feeX: new BN('0'),
+          feeY: new BN('0'),
+        },
+      },
+    }),
+  });
+  assert.equal(verifyEmpty.confirmed, false);
+  let marker = __getQuoteOnlyDeployMarkerForTests(positionPubkey);
+  assert.equal(marker?.phase, 'ADD_LIQUIDITY_PENDING');
+  assert.equal(marker?.liquidityConfirmed, false);
+
+  const verifyNonZero = await __verifyQuoteOnlyLiquidityOnChainForTests({
+    connection: {},
+    wallet: { publicKey: Keypair.generate().publicKey },
+    poolAddress,
+    positionPubkey,
+    attempts: 1,
+    delayMs: 0,
+    getFreshPositionFn: async () => ({
+      activePos: {
+        positionData: {
+          totalXAmount: new BN('0'),
+          totalYAmount: new BN('100'),
+          feeX: new BN('0'),
+          feeY: new BN('0'),
+        },
+      },
+    }),
+  });
+  assert.equal(verifyNonZero.confirmed, true);
+
+  __markQuoteOnlyLiquidityConfirmedForTests({
+    positionPubkey,
+    poolAddress,
+    tokenXMint: 'Mint111111111111111111111111111111111111111',
+  });
+  marker = __getQuoteOnlyDeployMarkerForTests(positionPubkey);
+  assert.equal(marker?.phase, 'ADD_LIQUIDITY_CONFIRMED');
+  assert.equal(marker?.liquidityConfirmed, true);
 
   __setQuoteOnlyDeployMarkerForTests(positionPubkey, null);
 });

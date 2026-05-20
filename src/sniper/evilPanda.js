@@ -998,15 +998,6 @@ export async function executeQuoteOnlyPositionFirstFlow({
       xYAmountDistribution,
       slippage: slippagePct,
     });
-    upsertQuoteOnlyDeployMarker({
-      positionPubkey,
-      poolAddress: finalArgsContext?.pool || '',
-      tokenXMint: finalArgsContext?.tokenXMint || '',
-      phase: PHASE_ADD_LIQUIDITY_CONFIRMED,
-      source: BOT_QUOTE_ONLY_DEPLOY_SOURCE,
-      ttlMs: QUOTE_ONLY_DEPLOY_MARKER_TTL_MS,
-      liquidityConfirmed: true,
-    });
   } catch (addErr) {
     upsertQuoteOnlyDeployMarker({
       positionPubkey,
@@ -1453,6 +1444,65 @@ function clearQuoteOnlyDeployMarker(positionPubkey = '') {
   if (_quoteOnlyDeployMarkers.delete(safePosition)) {
     persistQuoteOnlyDeployMarkersState();
   }
+}
+
+function hasPositivePositionLiquidity(positionData = null) {
+  const pd = positionData || {};
+  const totalX = Number(pd.totalXAmount?.toString() || '0');
+  const totalY = Number(pd.totalYAmount?.toString() || '0');
+  const feeX = Number(pd.feeX?.toString() || '0');
+  const feeY = Number(pd.feeY?.toString() || '0');
+  return (totalX + totalY + feeX + feeY) > 0;
+}
+
+async function verifyQuoteOnlyLiquidityOnChain({
+  connection,
+  wallet,
+  poolAddress = '',
+  positionPubkey = '',
+  attempts = 3,
+  delayMs = 800,
+  getFreshPositionFn = null,
+} = {}) {
+  const safePositionPubkey = String(positionPubkey || '');
+  if (!connection || !wallet || !poolAddress || !safePositionPubkey) {
+    return { confirmed: false, exists: false, hasLiquidity: false };
+  }
+
+  const fetchFn = typeof getFreshPositionFn === 'function' ? getFreshPositionFn : getFreshActivePosition;
+  let lastExists = false;
+  let lastHasLiquidity = false;
+  for (let i = 0; i < attempts; i++) {
+    try {
+      const fresh = await fetchFn(connection, wallet, poolAddress, safePositionPubkey);
+      const activePos = fresh?.activePos || null;
+      lastExists = Boolean(activePos);
+      lastHasLiquidity = activePos ? hasPositivePositionLiquidity(activePos?.positionData || {}) : false;
+      if (lastExists && lastHasLiquidity) {
+        return { confirmed: true, exists: true, hasLiquidity: true };
+      }
+    } catch {
+      // retry
+    }
+    if (i < attempts - 1) await sleep(delayMs);
+  }
+  return { confirmed: false, exists: lastExists, hasLiquidity: lastHasLiquidity };
+}
+
+function markQuoteOnlyLiquidityConfirmed({
+  positionPubkey = '',
+  poolAddress = '',
+  tokenXMint = '',
+} = {}) {
+  upsertQuoteOnlyDeployMarker({
+    positionPubkey,
+    poolAddress,
+    tokenXMint,
+    phase: PHASE_ADD_LIQUIDITY_CONFIRMED,
+    source: BOT_QUOTE_ONLY_DEPLOY_SOURCE,
+    ttlMs: QUOTE_ONLY_DEPLOY_MARKER_TTL_MS,
+    liquidityConfirmed: true,
+  });
 }
 
 async function unlockFailedEmptyDeployPosition(positionPubkey, {
@@ -2669,6 +2719,42 @@ export async function deployPosition(poolAddress, deployOptions = {}) {
         throw sendErr;
       }
 
+      if (finalSdkPath === DLMM_SDK_PATH_WEIGHT_QUOTE_ONLY) {
+        const liquidityCheck = await verifyQuoteOnlyLiquidityOnChain({
+          connection,
+          wallet,
+          poolAddress,
+          positionPubkey,
+        });
+        if (liquidityCheck.confirmed) {
+          markQuoteOnlyLiquidityConfirmed({
+            positionPubkey,
+            poolAddress,
+            tokenXMint: xMint,
+          });
+        } else {
+          const verifyErr = buildInvalidDlmmArgsError('quote-only add-liquidity tx confirmed but on-chain position liquidity is empty');
+          verifyErr.dlmmContextExtra = {
+            ...(finalDeployState?.finalArgsContext || {}),
+            sdkPath: DLMM_SDK_PATH_WEIGHT_QUOTE_ONLY,
+            sdkFlow: 'quote_only_position_first',
+            sdkMethod: 'addLiquidityByWeight',
+            positionPubkey,
+            liquidityVerificationFailed: true,
+          };
+          await handleQuoteOnlyPartialDeployFailure({
+            connection,
+            wallet,
+            dlmmPool,
+            poolAddress,
+            positionPubkey,
+            microLamports,
+            error: verifyErr,
+          });
+          throw verifyErr;
+        }
+      }
+
     await setPositionLifecycle(positionPubkey, 'open', {
       poolAddress,
       deploySol,
@@ -3570,6 +3656,22 @@ export function __isBotQuoteOnlyPartialMarkerForTests(marker) {
 
 export async function __handleQuoteOnlyPartialDeployFailureForTests(args = {}) {
   return handleQuoteOnlyPartialDeployFailure(args);
+}
+
+export function __markQuoteOnlyLiquidityConfirmedForTests({
+  positionPubkey = '',
+  poolAddress = '',
+  tokenXMint = '',
+} = {}) {
+  markQuoteOnlyLiquidityConfirmed({
+    positionPubkey,
+    poolAddress,
+    tokenXMint,
+  });
+}
+
+export async function __verifyQuoteOnlyLiquidityOnChainForTests(args = {}) {
+  return verifyQuoteOnlyLiquidityOnChain(args);
 }
 
 export { EP_CONFIG };
