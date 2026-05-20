@@ -15,6 +15,13 @@ import {
   rebuildDeployArgsWithRefreshedActiveBin,
   prepareFinalDlmmDeployAttemptState,
   executeDlmmInitializePositionWithRetry,
+  __getQuoteOnlyDeployMarkerForTests,
+  __handleQuoteOnlyPartialDeployFailureForTests,
+  __isBotQuoteOnlyPartialMarkerForTests,
+  __setQuoteOnlyDeployMarkerForTests,
+  getPositionMeta,
+  getPositionOnChainStatus,
+  setPositionLifecycle,
   extractDlmmSdkDeployErrorMeta,
   isDlmmSdkInvalidArgumentsError,
   selectDlmmSdkPathForDeployArgs,
@@ -1245,4 +1252,161 @@ test('SDK strategy range equals final rent-checked deployArgs range', async () =
   const sdkStrategy = buildDlmmSdkStrategyFromDeployArgs(out.deployArgs);
   assert.equal(sdkStrategy.minBinId, out.deployArgs.rangeMin);
   assert.equal(sdkStrategy.maxBinId, out.deployArgs.rangeMax);
+});
+
+test('quote-only marker lifecycle updates on position-first flow and clears on success', async () => {
+  const positionKeypair = Keypair.generate();
+  const deployArgs = buildDlmmDeployStrategyArgs({
+    activeBinId: 1000,
+    rangeMin: 980,
+    rangeMax: 999,
+    amountXBn: new BN('0'),
+    amountYBn: new BN('100000000'),
+  });
+  const dist = buildQuoteOnlyWeightDistribution({ rangeMin: 980, rangeMax: 999 });
+  const expectedProgramId = new PublicKey('LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo');
+  const calls = [];
+
+  const connection = {
+    getAccountInfo: async () => {
+      if (!calls.includes('createEmptyPosition')) return null;
+      return { owner: expectedProgramId };
+    },
+  };
+  const dlmmPool = {
+    program: { programId: expectedProgramId },
+    createEmptyPosition: async () => {
+      calls.push('createEmptyPosition');
+      return { instructions: [] };
+    },
+    addLiquidityByWeight: async () => {
+      calls.push('addLiquidityByWeight');
+      return [{ ok: true }];
+    },
+  };
+
+  const out = await executeQuoteOnlyPositionFirstFlow({
+    dlmmPool,
+    connection,
+    walletPublicKey: Keypair.generate().publicKey,
+    positionKeypair,
+    deployArgs,
+    xYAmountDistribution: dist,
+    finalArgsContext: {
+      pool: 'Pool11111111111111111111111111111111111111',
+      tokenXMint: 'Mint111111111111111111111111111111111111111',
+    },
+    sendTxFn: async () => 'sig-init',
+    pollTxConfirmFn: async () => {},
+  });
+
+  assert.equal(out.quoteOnlyPositionFirst, true);
+  const marker = __getQuoteOnlyDeployMarkerForTests(positionKeypair.publicKey.toString());
+  assert.equal(marker?.phase, 'ADD_LIQUIDITY_CONFIRMED');
+  assert.equal(marker?.liquidityConfirmed, true);
+
+  __setQuoteOnlyDeployMarkerForTests(positionKeypair.publicKey.toString(), null);
+});
+
+test('quote-only add-liquidity failure marks partial deploy marker phase', async () => {
+  const positionKeypair = Keypair.generate();
+  const deployArgs = buildDlmmDeployStrategyArgs({
+    activeBinId: 1000,
+    rangeMin: 980,
+    rangeMax: 999,
+    amountXBn: new BN('0'),
+    amountYBn: new BN('100000000'),
+  });
+  const dist = buildQuoteOnlyWeightDistribution({ rangeMin: 980, rangeMax: 999 });
+  const expectedProgramId = new PublicKey('LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo');
+  let initDone = false;
+
+  await assert.rejects(
+    executeQuoteOnlyPositionFirstFlow({
+      dlmmPool: {
+        program: { programId: expectedProgramId },
+        createEmptyPosition: async () => {
+          initDone = true;
+          return { instructions: [] };
+        },
+        addLiquidityByWeight: async () => {
+          throw new Error('add-liquidity failed');
+        },
+      },
+      connection: {
+        getAccountInfo: async () => {
+          if (!initDone) return null;
+          return { owner: expectedProgramId };
+        },
+      },
+      walletPublicKey: Keypair.generate().publicKey,
+      positionKeypair,
+      deployArgs,
+      xYAmountDistribution: dist,
+      finalArgsContext: {
+        pool: 'Pool11111111111111111111111111111111111111',
+        tokenXMint: 'Mint111111111111111111111111111111111111111',
+      },
+      sendTxFn: async () => 'sig-init',
+      pollTxConfirmFn: async () => {},
+    })
+  );
+
+  const marker = __getQuoteOnlyDeployMarkerForTests(positionKeypair.publicKey.toString());
+  assert.equal(marker?.phase, 'ADD_LIQUIDITY_FAILED');
+  assert.equal(marker?.source, 'BOT_QUOTE_ONLY_POSITION_FIRST');
+  assert.equal(__isBotQuoteOnlyPartialMarkerForTests(marker), true);
+
+  __setQuoteOnlyDeployMarkerForTests(positionKeypair.publicKey.toString(), null);
+});
+
+test('partial quote-only cleanup unlocks local state for empty position and avoids manual classification', async () => {
+  const positionKeypair = Keypair.generate();
+  const positionPubkey = positionKeypair.publicKey.toString();
+  const poolAddress = 'Pool11111111111111111111111111111111111111';
+
+  await setPositionLifecycle(positionPubkey, 'deploying', {
+    poolAddress,
+    deploySol: 0.1,
+    tokenXMint: 'Mint111111111111111111111111111111111111111',
+    tokenYMint: 'So11111111111111111111111111111111111111112',
+    rangeMin: 980,
+    rangeMax: 999,
+  }, { flush: true });
+  __setQuoteOnlyDeployMarkerForTests(positionPubkey, {
+    poolAddress,
+    tokenXMint: 'Mint111111111111111111111111111111111111111',
+    phase: 'ADD_LIQUIDITY_FAILED',
+    source: 'BOT_QUOTE_ONLY_POSITION_FIRST',
+    ttlMs: 120000,
+  });
+
+  const connection = {};
+  const wallet = { publicKey: Keypair.generate().publicKey };
+  const dlmmPool = {};
+
+  const cleanup = await __handleQuoteOnlyPartialDeployFailureForTests({
+    connection,
+    wallet,
+    dlmmPool,
+    poolAddress,
+    positionPubkey,
+    error: new Error('add failed'),
+    getFreshPositionFn: async () => ({
+      activePos: null,
+    }),
+    verifyClosedFn: async () => true,
+  });
+
+  assert.equal(cleanup?.hasLiquidity, false);
+  assert.equal(getPositionMeta(positionPubkey), null);
+  const marker = __getQuoteOnlyDeployMarkerForTests(positionPubkey);
+  assert.equal(marker?.phase, 'ADD_LIQUIDITY_FAILED');
+  assert.equal(marker?.cleanupStatus, 'POSITION_NOT_FOUND');
+  assert.equal(getPositionMeta(positionPubkey), null);
+  const status = await getPositionOnChainStatus(positionPubkey);
+  assert.equal(status.reason, 'BOT_DEPLOY_PARTIAL_EMPTY_POSITION');
+  assert.equal(status.manualWithdrawn, false);
+
+  __setQuoteOnlyDeployMarkerForTests(positionPubkey, null);
 });

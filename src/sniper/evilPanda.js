@@ -42,6 +42,14 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const HARVEST_LOG = join(__dirname, '../../harvest.log');
 const POSITION_LEDGER_LOG = join(__dirname, '../../position-ledger.jsonl');
 const ACTIVE_POSITIONS_STATE_KEY = 'evilPandaActivePositions';
+const QUOTE_ONLY_DEPLOY_MARKERS_STATE_KEY = 'evilPandaQuoteOnlyDeployMarkers';
+const QUOTE_ONLY_DEPLOY_MARKER_TTL_MS = 30 * 60 * 1000;
+const BOT_QUOTE_ONLY_DEPLOY_SOURCE = 'BOT_QUOTE_ONLY_POSITION_FIRST';
+const PHASE_POSITION_INIT_PENDING = 'POSITION_INIT_PENDING';
+const PHASE_POSITION_INIT_CONFIRMED = 'POSITION_INIT_CONFIRMED';
+const PHASE_ADD_LIQUIDITY_PENDING = 'ADD_LIQUIDITY_PENDING';
+const PHASE_ADD_LIQUIDITY_FAILED = 'ADD_LIQUIDITY_FAILED';
+const PHASE_ADD_LIQUIDITY_CONFIRMED = 'ADD_LIQUIDITY_CONFIRMED';
 
 // ── Evil Panda Hardcoded Strategy ────────────────────────────────
 const EP_CONFIG = {
@@ -62,6 +70,8 @@ const EP_CONFIG = {
 // Value: { poolAddress, deploySol, deployedAt, tokenXMint, tokenYMint,
 //          rangeMin, rangeMax, hwmPct }  ← hwmPct = High Water Mark PnL%
 const _activePositions = new Map();
+const _quoteOnlyDeployMarkers = new Map();
+let _quoteOnlyDeployMarkersLoaded = false;
 let _exitAccountingLock = false;
 let _notifyFn = null;
 // Bounded search radius for rent-free fallback slices on the same pool.
@@ -877,6 +887,7 @@ export async function executeQuoteOnlyPositionFirstFlow({
   const positionPubKey = positionKeypair.publicKey;
   const positionPubkey = positionPubKey.toString();
   const expectedPositionOwner = String(dlmmPool?.program?.programId?.toString?.() || '');
+  let addLiquidityAttempted = false;
 
   const existingAccInfo = await connection.getAccountInfo(positionPubKey).catch(() => null);
   const existingOwner = String(existingAccInfo?.owner?.toString?.() || '');
@@ -897,6 +908,15 @@ export async function executeQuoteOnlyPositionFirstFlow({
 
   let initSig = null;
   if (!existingAccInfo) {
+    upsertQuoteOnlyDeployMarker({
+      positionPubkey,
+      poolAddress: finalArgsContext?.pool || '',
+      tokenXMint: finalArgsContext?.tokenXMint || '',
+      phase: PHASE_POSITION_INIT_PENDING,
+      source: BOT_QUOTE_ONLY_DEPLOY_SOURCE,
+      ttlMs: QUOTE_ONLY_DEPLOY_MARKER_TTL_MS,
+      liquidityConfirmed: false,
+    });
     let initTx;
     try {
       initTx = await dlmmPool.createEmptyPosition({
@@ -926,6 +946,19 @@ export async function executeQuoteOnlyPositionFirstFlow({
     if (typeof pollTxConfirmFn === 'function') {
       await pollTxConfirmFn(connection, initSig);
     }
+    upsertQuoteOnlyDeployMarker({
+      positionPubkey,
+      poolAddress: finalArgsContext?.pool || '',
+      tokenXMint: finalArgsContext?.tokenXMint || '',
+      phase: PHASE_POSITION_INIT_CONFIRMED,
+      source: BOT_QUOTE_ONLY_DEPLOY_SOURCE,
+      ttlMs: QUOTE_ONLY_DEPLOY_MARKER_TTL_MS,
+      liquidityConfirmed: false,
+    });
+    console.log(
+      `[evilPanda] QUOTE_ONLY_POSITION_INIT_CONFIRMED pool=${String(finalArgsContext?.pool || '').slice(0,8)} ` +
+      `position=${positionPubkey.slice(0,8)}`
+    );
   }
 
   const postInitAccInfo = await connection.getAccountInfo(positionPubKey).catch(() => null);
@@ -947,6 +980,16 @@ export async function executeQuoteOnlyPositionFirstFlow({
 
   let addTxOrTxs;
   try {
+    addLiquidityAttempted = true;
+    upsertQuoteOnlyDeployMarker({
+      positionPubkey,
+      poolAddress: finalArgsContext?.pool || '',
+      tokenXMint: finalArgsContext?.tokenXMint || '',
+      phase: PHASE_ADD_LIQUIDITY_PENDING,
+      source: BOT_QUOTE_ONLY_DEPLOY_SOURCE,
+      ttlMs: QUOTE_ONLY_DEPLOY_MARKER_TTL_MS,
+      liquidityConfirmed: false,
+    });
     addTxOrTxs = await dlmmPool.addLiquidityByWeight({
       positionPubKey,
       user: walletPublicKey,
@@ -955,7 +998,33 @@ export async function executeQuoteOnlyPositionFirstFlow({
       xYAmountDistribution,
       slippage: slippagePct,
     });
+    upsertQuoteOnlyDeployMarker({
+      positionPubkey,
+      poolAddress: finalArgsContext?.pool || '',
+      tokenXMint: finalArgsContext?.tokenXMint || '',
+      phase: PHASE_ADD_LIQUIDITY_CONFIRMED,
+      source: BOT_QUOTE_ONLY_DEPLOY_SOURCE,
+      ttlMs: QUOTE_ONLY_DEPLOY_MARKER_TTL_MS,
+      liquidityConfirmed: true,
+    });
   } catch (addErr) {
+    upsertQuoteOnlyDeployMarker({
+      positionPubkey,
+      poolAddress: finalArgsContext?.pool || '',
+      tokenXMint: finalArgsContext?.tokenXMint || '',
+      phase: PHASE_ADD_LIQUIDITY_FAILED,
+      source: BOT_QUOTE_ONLY_DEPLOY_SOURCE,
+      ttlMs: QUOTE_ONLY_DEPLOY_MARKER_TTL_MS,
+      liquidityConfirmed: false,
+      extra: {
+        addLiquidityFailedAt: Date.now(),
+        addLiquidityError: String(addErr?.message || 'unknown'),
+      },
+    });
+    console.warn(
+      `[evilPanda] QUOTE_ONLY_ADD_LIQUIDITY_FAILED pool=${String(finalArgsContext?.pool || '').slice(0,8)} ` +
+      `position=${positionPubkey.slice(0,8)} reason=${String(addErr?.message || 'unknown')}`
+    );
     if (addErr && typeof addErr === 'object') {
       addErr.dlmmContextExtra = {
         ...(addErr.dlmmContextExtra || {}),
@@ -978,6 +1047,7 @@ export async function executeQuoteOnlyPositionFirstFlow({
     positionPubkey,
     positionOwner: postInitOwner || null,
     expectedPositionOwner: expectedPositionOwner || null,
+    addLiquidityAttempted,
   };
 }
 
@@ -1271,6 +1341,308 @@ async function persistActivePositionsState() {
     ...meta,
   }));
   setRuntimeState(ACTIVE_POSITIONS_STATE_KEY, rows);
+}
+
+function loadQuoteOnlyDeployMarkers() {
+  if (_quoteOnlyDeployMarkersLoaded) return;
+  _quoteOnlyDeployMarkersLoaded = true;
+  const saved = getRuntimeState(QUOTE_ONLY_DEPLOY_MARKERS_STATE_KEY, []);
+  const rows = Array.isArray(saved) ? saved : [];
+  const now = Date.now();
+  _quoteOnlyDeployMarkers.clear();
+  for (const row of rows) {
+    const positionPubkey = String(row?.positionPubkey || '');
+    if (!positionPubkey) continue;
+    const expiresAt = Number(row?.expiresAt || 0);
+    if (Number.isFinite(expiresAt) && expiresAt > 0 && expiresAt <= now) continue;
+    _quoteOnlyDeployMarkers.set(positionPubkey, {
+      poolAddress: String(row?.poolAddress || ''),
+      tokenXMint: String(row?.tokenXMint || ''),
+      positionPubkey,
+      startedAt: Number.isFinite(Number(row?.startedAt)) ? Number(row.startedAt) : now,
+      expiresAt: Number.isFinite(expiresAt) && expiresAt > 0 ? expiresAt : (now + QUOTE_ONLY_DEPLOY_MARKER_TTL_MS),
+      ttlMs: Number.isFinite(Number(row?.ttlMs)) ? Number(row.ttlMs) : QUOTE_ONLY_DEPLOY_MARKER_TTL_MS,
+      source: String(row?.source || BOT_QUOTE_ONLY_DEPLOY_SOURCE),
+      phase: String(row?.phase || PHASE_POSITION_INIT_PENDING),
+      liquidityConfirmed: row?.liquidityConfirmed === true,
+      updatedAt: Number.isFinite(Number(row?.updatedAt)) ? Number(row.updatedAt) : now,
+      addLiquidityFailedAt: Number.isFinite(Number(row?.addLiquidityFailedAt)) ? Number(row.addLiquidityFailedAt) : null,
+      addLiquidityError: row?.addLiquidityError ? String(row.addLiquidityError) : null,
+      cleanupStatus: row?.cleanupStatus ? String(row.cleanupStatus) : null,
+    });
+  }
+}
+
+function pruneExpiredQuoteOnlyDeployMarkers(now = Date.now()) {
+  loadQuoteOnlyDeployMarkers();
+  let changed = false;
+  for (const [positionPubkey, marker] of [..._quoteOnlyDeployMarkers.entries()]) {
+    const expiresAt = Number(marker?.expiresAt || 0);
+    if (Number.isFinite(expiresAt) && expiresAt > 0 && expiresAt <= now) {
+      _quoteOnlyDeployMarkers.delete(positionPubkey);
+      changed = true;
+    }
+  }
+  return changed;
+}
+
+function persistQuoteOnlyDeployMarkersState() {
+  pruneExpiredQuoteOnlyDeployMarkers();
+  const rows = [..._quoteOnlyDeployMarkers.values()].map((marker) => ({
+    ...marker,
+  }));
+  setRuntimeState(QUOTE_ONLY_DEPLOY_MARKERS_STATE_KEY, rows);
+}
+
+function getQuoteOnlyDeployMarker(positionPubkey = '') {
+  loadQuoteOnlyDeployMarkers();
+  pruneExpiredQuoteOnlyDeployMarkers();
+  return _quoteOnlyDeployMarkers.get(String(positionPubkey || '')) || null;
+}
+
+function isBotQuoteOnlyPartialMarker(marker = null) {
+  if (!marker) return false;
+  const phase = String(marker?.phase || '');
+  return marker?.source === BOT_QUOTE_ONLY_DEPLOY_SOURCE && (
+    phase === PHASE_POSITION_INIT_CONFIRMED ||
+    phase === PHASE_ADD_LIQUIDITY_PENDING ||
+    phase === PHASE_ADD_LIQUIDITY_FAILED
+  ) && marker?.liquidityConfirmed !== true;
+}
+
+function upsertQuoteOnlyDeployMarker({
+  positionPubkey = '',
+  poolAddress = '',
+  tokenXMint = '',
+  phase = PHASE_POSITION_INIT_PENDING,
+  source = BOT_QUOTE_ONLY_DEPLOY_SOURCE,
+  ttlMs = QUOTE_ONLY_DEPLOY_MARKER_TTL_MS,
+  liquidityConfirmed = false,
+  extra = {},
+} = {}) {
+  const safePosition = String(positionPubkey || '');
+  if (!safePosition) return null;
+  loadQuoteOnlyDeployMarkers();
+  const now = Date.now();
+  const current = _quoteOnlyDeployMarkers.get(safePosition) || {};
+  const safeTtl = Number.isFinite(Number(ttlMs)) && Number(ttlMs) > 0 ? Number(ttlMs) : QUOTE_ONLY_DEPLOY_MARKER_TTL_MS;
+  const next = {
+    poolAddress: String(poolAddress || current.poolAddress || ''),
+    tokenXMint: String(tokenXMint || current.tokenXMint || ''),
+    positionPubkey: safePosition,
+    startedAt: Number.isFinite(Number(current.startedAt)) ? Number(current.startedAt) : now,
+    expiresAt: now + safeTtl,
+    ttlMs: safeTtl,
+    source: String(source || current.source || BOT_QUOTE_ONLY_DEPLOY_SOURCE),
+    phase: String(phase || current.phase || PHASE_POSITION_INIT_PENDING),
+    liquidityConfirmed: liquidityConfirmed === true || current.liquidityConfirmed === true,
+    updatedAt: now,
+    addLiquidityFailedAt: extra?.addLiquidityFailedAt ?? current.addLiquidityFailedAt ?? null,
+    addLiquidityError: extra?.addLiquidityError ?? current.addLiquidityError ?? null,
+    cleanupStatus: extra?.cleanupStatus ?? current.cleanupStatus ?? null,
+  };
+  _quoteOnlyDeployMarkers.set(safePosition, next);
+  persistQuoteOnlyDeployMarkersState();
+  return next;
+}
+
+function clearQuoteOnlyDeployMarker(positionPubkey = '') {
+  const safePosition = String(positionPubkey || '');
+  if (!safePosition) return;
+  loadQuoteOnlyDeployMarkers();
+  if (_quoteOnlyDeployMarkers.delete(safePosition)) {
+    persistQuoteOnlyDeployMarkersState();
+  }
+}
+
+async function unlockFailedEmptyDeployPosition(positionPubkey, {
+  reason = 'BOT_DEPLOY_PARTIAL_EMPTY_POSITION',
+  cleanupStatus = null,
+} = {}) {
+  const reg = _activePositions.get(positionPubkey);
+  if (reg) {
+    _activePositions.delete(positionPubkey);
+    clearPositionRuntimeState(positionPubkey);
+    await persistActivePositionsStateNow();
+    console.warn(
+      `[evilPanda] DEPLOY_PARTIAL_EMPTY_POSITION_UNLOCK pool=${String(reg?.poolAddress || '').slice(0,8)} ` +
+      `position=${String(positionPubkey || '').slice(0,8)} reason=${reason}`
+    );
+  }
+  const marker = getQuoteOnlyDeployMarker(positionPubkey);
+  if (marker) {
+    upsertQuoteOnlyDeployMarker({
+      positionPubkey,
+      poolAddress: marker.poolAddress,
+      tokenXMint: marker.tokenXMint,
+      phase: PHASE_ADD_LIQUIDITY_FAILED,
+      source: marker.source || BOT_QUOTE_ONLY_DEPLOY_SOURCE,
+      ttlMs: marker.ttlMs || QUOTE_ONLY_DEPLOY_MARKER_TTL_MS,
+      liquidityConfirmed: false,
+      extra: {
+        cleanupStatus: cleanupStatus || marker.cleanupStatus || null,
+      },
+    });
+  }
+}
+
+async function cleanupQuoteOnlyPartialEmptyPosition({
+  connection,
+  wallet,
+  dlmmPool,
+  poolAddress = '',
+  positionPubkey = '',
+  marker = null,
+  microLamports = EP_CONFIG.MICRO_LAMPORTS,
+  getFreshPositionFn = null,
+  verifyClosedFn = null,
+} = {}) {
+  const safePositionPubkey = String(positionPubkey || '');
+  if (!connection || !wallet || !dlmmPool || !safePositionPubkey) {
+    return {
+      cleaned: false,
+      skipped: true,
+      reason: 'MISSING_CLEANUP_DEPENDENCIES',
+      hasLiquidity: false,
+    };
+  }
+
+  console.warn(
+    `[evilPanda] QUOTE_ONLY_EMPTY_POSITION_CLEANUP_START pool=${String(poolAddress || '').slice(0,8)} ` +
+    `position=${safePositionPubkey.slice(0,8)} phase=${String(marker?.phase || 'unknown')}`
+  );
+
+  let activePos = null;
+  try {
+    const fetchFn = typeof getFreshPositionFn === 'function'
+      ? getFreshPositionFn
+      : getFreshActivePosition;
+    const fresh = await fetchFn(connection, wallet, poolAddress, safePositionPubkey);
+    activePos = fresh?.activePos || null;
+  } catch (err) {
+    return {
+      cleaned: false,
+      skipped: true,
+      reason: `FETCH_POSITION_FAILED:${String(err?.message || 'unknown')}`,
+      hasLiquidity: false,
+    };
+  }
+
+  if (!activePos) {
+    console.log(
+      `[evilPanda] QUOTE_ONLY_EMPTY_POSITION_CLEANUP_SKIPPED pool=${String(poolAddress || '').slice(0,8)} ` +
+      `position=${safePositionPubkey.slice(0,8)} reason=POSITION_NOT_FOUND`
+    );
+    return { cleaned: true, skipped: false, reason: 'POSITION_NOT_FOUND', hasLiquidity: false };
+  }
+
+  const pd = activePos?.positionData || {};
+  const totalX = Number(pd.totalXAmount?.toString() || '0');
+  const totalY = Number(pd.totalYAmount?.toString() || '0');
+  const feeX = Number(pd.feeX?.toString() || '0');
+  const feeY = Number(pd.feeY?.toString() || '0');
+  const hasLiquidity = (totalX + totalY + feeX + feeY) > 0;
+
+  if (hasLiquidity) {
+    console.warn(
+      `[evilPanda] QUOTE_ONLY_EMPTY_POSITION_CLEANUP_SKIPPED pool=${String(poolAddress || '').slice(0,8)} ` +
+      `position=${safePositionPubkey.slice(0,8)} reason=HAS_LIQUIDITY`
+    );
+    return { cleaned: false, skipped: true, reason: 'HAS_LIQUIDITY', hasLiquidity: true };
+  }
+
+  let closeTxCount = 0;
+  try {
+    const cleanupTxs = await buildClosePositionTxs(dlmmPool, wallet, activePos);
+    const txList = Array.isArray(cleanupTxs) ? cleanupTxs : [cleanupTxs];
+    closeTxCount = txList.length;
+    for (const tx of txList) {
+      const sig = await sendExitTx(connection, wallet, tx, microLamports);
+      console.log(`[evilPanda] QUOTE_ONLY_EMPTY_POSITION_CLEANUP_TX ${sig.slice(0,8)}`);
+    }
+  } catch (closeErr) {
+    console.warn(
+      `[evilPanda] QUOTE_ONLY_EMPTY_POSITION_CLEANUP_SKIPPED pool=${String(poolAddress || '').slice(0,8)} ` +
+      `position=${safePositionPubkey.slice(0,8)} reason=${String(closeErr?.message || 'CLOSE_FAILED')}`
+    );
+    return {
+      cleaned: false,
+      skipped: true,
+      reason: `CLOSE_FAILED:${String(closeErr?.message || 'unknown')}`,
+      hasLiquidity: false,
+      closeTxCount,
+    };
+  }
+
+  const verifyFn = typeof verifyClosedFn === 'function'
+    ? verifyClosedFn
+    : verifyPositionClosedOnChain;
+  const closed = await verifyFn(connection, wallet, poolAddress, safePositionPubkey, {
+    attempts: 2,
+    delayMs: 800,
+  });
+  if (!closed) {
+    console.warn(
+      `[evilPanda] QUOTE_ONLY_EMPTY_POSITION_CLEANUP_SKIPPED pool=${String(poolAddress || '').slice(0,8)} ` +
+      `position=${safePositionPubkey.slice(0,8)} reason=CLOSE_NOT_CONFIRMED`
+    );
+    return {
+      cleaned: false,
+      skipped: true,
+      reason: 'CLOSE_NOT_CONFIRMED',
+      hasLiquidity: false,
+      closeTxCount,
+    };
+  }
+
+  console.log(
+    `[evilPanda] QUOTE_ONLY_EMPTY_POSITION_CLEANUP_OK pool=${String(poolAddress || '').slice(0,8)} ` +
+    `position=${safePositionPubkey.slice(0,8)} txs=${closeTxCount}`
+  );
+  return { cleaned: true, skipped: false, reason: 'CLOSED_EMPTY_POSITION', hasLiquidity: false, closeTxCount };
+}
+
+async function handleQuoteOnlyPartialDeployFailure({
+  connection,
+  wallet,
+  dlmmPool,
+  poolAddress = '',
+  positionPubkey = '',
+  microLamports = EP_CONFIG.MICRO_LAMPORTS,
+  error = null,
+  getFreshPositionFn = null,
+  verifyClosedFn = null,
+} = {}) {
+  const marker = getQuoteOnlyDeployMarker(positionPubkey);
+  if (!isBotQuoteOnlyPartialMarker(marker)) return null;
+  const cleanup = await cleanupQuoteOnlyPartialEmptyPosition({
+    connection,
+    wallet,
+    dlmmPool,
+    poolAddress,
+    positionPubkey,
+    marker,
+    microLamports,
+    getFreshPositionFn,
+    verifyClosedFn,
+  });
+
+  if (!cleanup?.hasLiquidity) {
+    await unlockFailedEmptyDeployPosition(positionPubkey, {
+      reason: 'BOT_DEPLOY_PARTIAL_EMPTY_POSITION',
+      cleanupStatus: cleanup?.reason || null,
+    });
+  }
+
+  if (error && typeof error === 'object') {
+    error.dlmmContextExtra = {
+      ...(error.dlmmContextExtra || {}),
+      botDeployPartialCleanup: cleanup?.reason || 'UNKNOWN',
+      cleanupHasLiquidity: cleanup?.hasLiquidity === true,
+      cleanupSkipped: cleanup?.skipped === true,
+    };
+  }
+  return cleanup;
 }
 
 async function persistActivePositionsStateNow() {
@@ -2137,23 +2509,37 @@ export async function deployPosition(poolAddress, deployOptions = {}) {
                 ...(state?.finalArgsContext || {}),
               },
             });
-            const quoteOnlyFlowResult = await executeQuoteOnlyPositionFirstFlow({
-              dlmmPool,
-              connection,
-              walletPublicKey: wallet.publicKey,
-              positionKeypair: statePositionKeypair,
-              deployArgs: args,
-              xYAmountDistribution: distribution,
-              slippagePct,
-              microLamports,
-              finalArgsContext: state?.finalArgsContext || {},
-              sendTxFn: async (tx) => {
-                injectPriorityFee(tx, { units: EP_CONFIG.COMPUTE_UNITS, microLamports });
-                const sig = await connection.sendTransaction(tx, [wallet, statePositionKeypair], { skipPreflight: false, maxRetries: 3 });
-                console.log(`[evilPanda] ✅ DLMM quote-only position init confirmed: ${sig.slice(0,8)} pos=${statePositionPubkey.slice(0,8)}`);
-                return sig;
-              },
-            });
+            let quoteOnlyFlowResult;
+            try {
+              quoteOnlyFlowResult = await executeQuoteOnlyPositionFirstFlow({
+                dlmmPool,
+                connection,
+                walletPublicKey: wallet.publicKey,
+                positionKeypair: statePositionKeypair,
+                deployArgs: args,
+                xYAmountDistribution: distribution,
+                slippagePct,
+                microLamports,
+                finalArgsContext: state?.finalArgsContext || {},
+                sendTxFn: async (tx) => {
+                  injectPriorityFee(tx, { units: EP_CONFIG.COMPUTE_UNITS, microLamports });
+                  const sig = await connection.sendTransaction(tx, [wallet, statePositionKeypair], { skipPreflight: false, maxRetries: 3 });
+                  console.log(`[evilPanda] ✅ DLMM quote-only position init confirmed: ${sig.slice(0,8)} pos=${statePositionPubkey.slice(0,8)}`);
+                  return sig;
+                },
+              });
+            } catch (quoteOnlyErr) {
+              await handleQuoteOnlyPartialDeployFailure({
+                connection,
+                wallet,
+                dlmmPool,
+                poolAddress,
+                positionPubkey: statePositionPubkey,
+                microLamports,
+                error: quoteOnlyErr,
+              });
+              throw quoteOnlyErr;
+            }
             state.finalArgsContext = {
               ...(state?.finalArgsContext || {}),
               positionOwner: quoteOnlyFlowResult?.positionOwner || null,
@@ -2220,6 +2606,7 @@ export async function deployPosition(poolAddress, deployOptions = {}) {
     }
     const safeRangeMin = Number(deployArgs.rangeMin);
     const safeRangeMax = Number(deployArgs.rangeMax);
+    const finalSdkPath = selectDlmmSdkPathForDeployArgs(deployArgs);
     const txList = Array.isArray(txOrTxs) ? txOrTxs : [txOrTxs];
 
       if (isDryRun()) {
@@ -2260,11 +2647,26 @@ export async function deployPosition(poolAddress, deployOptions = {}) {
         hwmPct: 0,
       }, { flush: true });
 
-      for (const tx of txList) {
-        injectPriorityFee(tx, { units: EP_CONFIG.COMPUTE_UNITS, microLamports });
-        const sig = await connection.sendTransaction(tx, [wallet, posKp], { skipPreflight: false, maxRetries: 3 });
-        await pollTxConfirm(connection, sig);
-        console.log(`[evilPanda] ✅ Monolith position deployed on-chain: ${sig.slice(0,8)}`);
+      try {
+        for (const tx of txList) {
+          injectPriorityFee(tx, { units: EP_CONFIG.COMPUTE_UNITS, microLamports });
+          const sig = await connection.sendTransaction(tx, [wallet, posKp], { skipPreflight: false, maxRetries: 3 });
+          await pollTxConfirm(connection, sig);
+          console.log(`[evilPanda] ✅ Monolith position deployed on-chain: ${sig.slice(0,8)}`);
+        }
+      } catch (sendErr) {
+        if (finalSdkPath === DLMM_SDK_PATH_WEIGHT_QUOTE_ONLY) {
+          await handleQuoteOnlyPartialDeployFailure({
+            connection,
+            wallet,
+            dlmmPool,
+            poolAddress,
+            positionPubkey,
+            microLamports,
+            error: sendErr,
+          });
+        }
+        throw sendErr;
       }
 
     await setPositionLifecycle(positionPubkey, 'open', {
@@ -2287,6 +2689,7 @@ export async function deployPosition(poolAddress, deployOptions = {}) {
     });
 
     console.log(`[evilPanda] ✅ Position open: ${positionPubkey.slice(0,8)}`);
+    clearQuoteOnlyDeployMarker(positionPubkey);
     return positionPubkey;
 
   }, { maxRetries: 3, baseDelay: 3000, maxDelay: 12_000 });
@@ -2446,6 +2849,24 @@ export async function monitorPnL(positionPubkey) {
     const activePos = userPositions.find(p => p.publicKey.toString() === positionPubkey);
 
     if (!activePos) {
+      const marker = getQuoteOnlyDeployMarker(positionPubkey);
+      if (marker && isBotQuoteOnlyPartialMarker(marker)) {
+        await unlockFailedEmptyDeployPosition(positionPubkey, {
+          reason: 'BOT_DEPLOY_PARTIAL_EMPTY_POSITION',
+          cleanupStatus: marker?.cleanupStatus || 'POSITION_NOT_FOUND_ON_CHAIN',
+        });
+        return {
+          action: 'HOLD',
+          currentValueSol: 0,
+          pnlPct: 0,
+          feePnlSol: 0,
+          feePnlPct: 0,
+          feePnlSource: 'none',
+          feePnlAvailable: false,
+          inRange: false,
+          note: 'BOT_DEPLOY_PARTIAL_EMPTY_POSITION',
+        };
+      }
       console.log(`[evilPanda] ℹ️ Manual close terdeteksi on-chain: ${positionPubkey.slice(0,8)}`);
       return {
         action: 'MANUAL_CLOSED',
@@ -2572,13 +2993,16 @@ export async function monitorPnL(positionPubkey) {
 
 export async function getPositionOnChainStatus(positionPubkey) {
   const reg = _activePositions.get(positionPubkey);
+  const marker = getQuoteOnlyDeployMarker(positionPubkey);
   if (!reg) {
     return {
       tracked: false,
       exists: false,
       hasLiquidity: false,
       manualWithdrawn: false,
-      reason: 'POSITION_NOT_IN_REGISTRY',
+      reason: marker && isBotQuoteOnlyPartialMarker(marker)
+        ? 'BOT_DEPLOY_PARTIAL_EMPTY_POSITION'
+        : 'POSITION_NOT_IN_REGISTRY',
     };
   }
 
@@ -2589,6 +3013,15 @@ export async function getPositionOnChainStatus(positionPubkey) {
   const activePos = userPositions.find(p => p.publicKey.toString() === positionPubkey);
 
   if (!activePos) {
+    if (marker && isBotQuoteOnlyPartialMarker(marker)) {
+      return {
+        tracked: true,
+        exists: false,
+        hasLiquidity: false,
+        manualWithdrawn: false,
+        reason: 'BOT_DEPLOY_PARTIAL_EMPTY_POSITION',
+      };
+    }
     return {
       tracked: true,
       exists: false,
@@ -2607,8 +3040,12 @@ export async function getPositionOnChainStatus(positionPubkey) {
     tracked: true,
     exists: true,
     hasLiquidity,
-    manualWithdrawn: !hasLiquidity,
-    reason: hasLiquidity ? 'POSITION_ACTIVE_ON_CHAIN' : 'POSITION_EMPTY_ON_CHAIN',
+    manualWithdrawn: !hasLiquidity && !(marker && isBotQuoteOnlyPartialMarker(marker)),
+    reason: hasLiquidity
+      ? 'POSITION_ACTIVE_ON_CHAIN'
+      : (marker && isBotQuoteOnlyPartialMarker(marker)
+        ? 'BOT_DEPLOY_PARTIAL_EMPTY_POSITION'
+        : 'POSITION_EMPTY_ON_CHAIN'),
   };
 }
 
@@ -2795,6 +3232,7 @@ export async function exitPosition(positionPubkey, reason = 'MANUAL') {
       _activePositions.delete(positionPubkey);
       await persistActivePositionsStateNow();
       clearPositionRuntimeState(positionPubkey);
+      clearQuoteOnlyDeployMarker(positionPubkey);
       console.log(`[evilPanda] ✅ Position closed & verified: ${positionPubkey.slice(0,8)} | reason=${reason}`);
 
       // 5. Harvest Log + Ledger + Blacklist
@@ -2913,6 +3351,7 @@ export async function markPositionManuallyClosed(positionPubkey, reason = 'MANUA
   _activePositions.delete(positionPubkey);
   await persistActivePositionsStateNow();
   clearPositionRuntimeState(positionPubkey);
+  clearQuoteOnlyDeployMarker(positionPubkey);
 
   const tokenSymbol = reg.tokenXMint?.slice(0, 8) || 'UNKNOWN';
   const normalizedReason = normalizeExitReason(reason);
@@ -2995,11 +3434,32 @@ export async function reconcileZombiePositions({ minAgeMs = 180_000 } = {}) {
       })();
 
       if (!activePos || !hasLiquidity) {
+        const marker = getQuoteOnlyDeployMarker(positionPubkey);
+        const isBotPartial = marker && isBotQuoteOnlyPartialMarker(marker);
         _activePositions.delete(positionPubkey);
         removed += 1;
+        if (isBotPartial) {
+          upsertQuoteOnlyDeployMarker({
+            positionPubkey,
+            poolAddress: marker.poolAddress,
+            tokenXMint: marker.tokenXMint,
+            phase: PHASE_ADD_LIQUIDITY_FAILED,
+            source: marker.source || BOT_QUOTE_ONLY_DEPLOY_SOURCE,
+            ttlMs: marker.ttlMs || QUOTE_ONLY_DEPLOY_MARKER_TTL_MS,
+            liquidityConfirmed: false,
+            extra: {
+              cleanupStatus: !activePos ? 'RECONCILE_POSITION_NOT_FOUND' : 'RECONCILE_NO_LIQUIDITY',
+            },
+          });
+        }
+        clearPositionRuntimeState(positionPubkey);
         console.warn(
           `[evilPanda] 🧹 Zombie position reconciled: ${positionPubkey.slice(0,8)} ` +
-          `age=${Math.round(ageMs / 1000)}s reason=${!activePos ? 'NOT_FOUND_ON_CHAIN' : 'NO_LIQUIDITY_ON_CHAIN'}`
+          `age=${Math.round(ageMs / 1000)}s reason=${
+            isBotPartial
+              ? 'BOT_DEPLOY_PARTIAL_EMPTY_POSITION'
+              : (!activePos ? 'NOT_FOUND_ON_CHAIN' : 'NO_LIQUIDITY_ON_CHAIN')
+          }`
         );
       }
     } catch (e) {
@@ -3075,6 +3535,41 @@ export function getActivePositionKeys() {
 
 export function getPositionMeta(positionPubkey) {
   return _activePositions.get(positionPubkey) || null;
+}
+
+export function __setQuoteOnlyDeployMarkerForTests(positionPubkey, marker = null) {
+  const pubkey = String(positionPubkey || '');
+  if (!pubkey) return;
+  if (marker === null) {
+    clearQuoteOnlyDeployMarker(pubkey);
+    return;
+  }
+  upsertQuoteOnlyDeployMarker({
+    positionPubkey: pubkey,
+    poolAddress: String(marker?.poolAddress || ''),
+    tokenXMint: String(marker?.tokenXMint || ''),
+    phase: String(marker?.phase || PHASE_POSITION_INIT_PENDING),
+    source: String(marker?.source || BOT_QUOTE_ONLY_DEPLOY_SOURCE),
+    ttlMs: Number(marker?.ttlMs || QUOTE_ONLY_DEPLOY_MARKER_TTL_MS),
+    liquidityConfirmed: marker?.liquidityConfirmed === true,
+    extra: {
+      addLiquidityFailedAt: marker?.addLiquidityFailedAt ?? null,
+      addLiquidityError: marker?.addLiquidityError ?? null,
+      cleanupStatus: marker?.cleanupStatus ?? null,
+    },
+  });
+}
+
+export function __getQuoteOnlyDeployMarkerForTests(positionPubkey) {
+  return getQuoteOnlyDeployMarker(positionPubkey);
+}
+
+export function __isBotQuoteOnlyPartialMarkerForTests(marker) {
+  return isBotQuoteOnlyPartialMarker(marker);
+}
+
+export async function __handleQuoteOnlyPartialDeployFailureForTests(args = {}) {
+  return handleQuoteOnlyPartialDeployFailure(args);
 }
 
 export { EP_CONFIG };
