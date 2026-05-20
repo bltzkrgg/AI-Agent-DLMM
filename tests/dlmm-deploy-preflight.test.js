@@ -21,6 +21,8 @@ import {
   __markQuoteOnlyLiquidityConfirmedForTests,
   __setQuoteOnlyDeployMarkerForTests,
   __verifyQuoteOnlyLiquidityOnChainForTests,
+  __extractRequiredSignerPubkeysForTests,
+  filterKnownTransactionSigners,
   getPositionMeta,
   getPositionOnChainStatus,
   setPositionLifecycle,
@@ -416,6 +418,41 @@ test('quote-only position-first flow initializes position before add liquidity a
       sdkMethod: 'addLiquidityByWeight',
     })
   );
+});
+
+test('transaction signer filter keeps position signer when tx requires it', () => {
+  const kp = Keypair.generate();
+  const tx = {
+    signatures: [
+      { publicKey: kp.publicKey },
+    ],
+  };
+  const filtered = filterKnownTransactionSigners(tx, [kp], { txStage: 'createPosition' });
+  assert.equal(filtered.length, 1);
+  assert.equal(filtered[0].publicKey.toString(), kp.publicKey.toString());
+});
+
+test('transaction signer filter drops position signer when tx does not require it', () => {
+  const kp = Keypair.generate();
+  const other = Keypair.generate();
+  const tx = {
+    signatures: [
+      { publicKey: other.publicKey },
+    ],
+  };
+  const filtered = filterKnownTransactionSigners(tx, [kp], { txStage: 'addLiquidity' });
+  assert.equal(filtered.length, 0);
+});
+
+test('required signer extraction supports legacy transaction signatures array fallback', () => {
+  const kp = Keypair.generate();
+  const tx = {
+    signatures: [
+      { publicKey: kp.publicKey },
+    ],
+  };
+  const keys = __extractRequiredSignerPubkeysForTests(tx);
+  assert.equal(keys.includes(kp.publicKey.toString()), true);
 });
 
 test('quote-only position-first flow fails when post-init owner remains system-owned before add', async () => {

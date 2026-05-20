@@ -880,6 +880,8 @@ export async function executeQuoteOnlyPositionFirstFlow({
   finalArgsContext = {},
   sendTxFn = null,
   pollTxConfirmFn = pollTxConfirm,
+  sendAddLiquidityTxFn = null,
+  isDryRunMode = false,
 } = {}) {
   if (!dlmmPool || !connection || !walletPublicKey || !positionKeypair) {
     throw buildInvalidDlmmArgsError('quote-only position-first flow missing required dependencies');
@@ -941,7 +943,14 @@ export async function executeQuoteOnlyPositionFirstFlow({
     injectPriorityFee(initTx, { units: EP_CONFIG.COMPUTE_UNITS, microLamports });
     const sendTx = typeof sendTxFn === 'function'
       ? sendTxFn
-      : async (tx) => connection.sendTransaction(tx, [getWallet(), positionKeypair], { skipPreflight: false, maxRetries: 3 });
+      : async (tx) => sendQuoteOnlyTxWithFilteredSigners({
+        connection,
+        wallet: getWallet(),
+        tx,
+        extraSigners: [positionKeypair],
+        txStage: 'createPosition',
+        finalArgsContext,
+      });
     initSig = await sendTx(initTx, [positionKeypair]);
     if (typeof pollTxConfirmFn === 'function') {
       await pollTxConfirmFn(connection, initSig);
@@ -998,6 +1007,36 @@ export async function executeQuoteOnlyPositionFirstFlow({
       xYAmountDistribution,
       slippage: slippagePct,
     });
+    if (isDryRunMode) {
+      const txList = Array.isArray(addTxOrTxs) ? addTxOrTxs : [addTxOrTxs];
+      for (const tx of txList) {
+        if (!tx) continue;
+        injectPriorityFee(tx, { units: EP_CONFIG.COMPUTE_UNITS, microLamports });
+        if (typeof sendAddLiquidityTxFn === 'function') {
+          await sendAddLiquidityTxFn(tx, [positionKeypair], {
+            txStage: 'addLiquidity',
+            finalArgsContext,
+            positionPubkey,
+          });
+        } else {
+          const signerList = filterKnownTransactionSigners(tx, [positionKeypair], { txStage: 'addLiquidity' });
+          try {
+            if (tx instanceof VersionedTransaction) {
+              tx.sign([getWallet(), ...signerList]);
+            } else {
+              tx.sign(...signerList, getWallet());
+            }
+          } catch (dryErr) {
+            throw wrapQuoteOnlySignerError({
+              error: dryErr,
+              finalArgsContext,
+              txStage: 'addLiquidity',
+              attemptedSigner: positionPubkey,
+            });
+          }
+        }
+      }
+    }
   } catch (addErr) {
     upsertQuoteOnlyDeployMarker({
       positionPubkey,
@@ -1941,6 +1980,122 @@ function logSendTxError(prefix, error) {
   }
 }
 
+function extractRequiredSignerPubkeys(tx) {
+  const required = new Set();
+  if (!tx) return required;
+
+  try {
+    if (tx instanceof VersionedTransaction) {
+      const msg = tx.message;
+      const keys = Array.isArray(msg?.staticAccountKeys) ? msg.staticAccountKeys : [];
+      const count = Number(msg?.header?.numRequiredSignatures || 0);
+      for (let i = 0; i < Math.min(count, keys.length); i++) {
+        const key = keys[i];
+        const pubkey = String(key?.toString?.() || '');
+        if (pubkey) required.add(pubkey);
+      }
+      return required;
+    }
+  } catch {}
+
+  try {
+    if (typeof tx?.compileMessage === 'function') {
+      const msg = tx.compileMessage();
+      const keys = Array.isArray(msg?.accountKeys) ? msg.accountKeys : [];
+      const count = Number(msg?.header?.numRequiredSignatures || 0);
+      for (let i = 0; i < Math.min(count, keys.length); i++) {
+        const key = keys[i];
+        const pubkey = String(key?.toString?.() || '');
+        if (pubkey) required.add(pubkey);
+      }
+    }
+  } catch {}
+
+  if (required.size > 0) return required;
+  if (Array.isArray(tx?.signatures)) {
+    for (const sig of tx.signatures) {
+      const pubkey = String(sig?.publicKey?.toString?.() || '');
+      if (pubkey) required.add(pubkey);
+    }
+  }
+  return required;
+}
+
+export function filterKnownTransactionSigners(tx, extraSigners = [], { txStage = 'unknown' } = {}) {
+  const extras = Array.isArray(extraSigners) ? extraSigners.filter(Boolean) : [];
+  if (extras.length === 0) return [];
+
+  const requiredSignerPubkeys = extractRequiredSignerPubkeys(tx);
+  if (requiredSignerPubkeys.size === 0) {
+    return extras;
+  }
+
+  const filtered = [];
+  for (const signer of extras) {
+    const signerPubkey = String(signer?.publicKey?.toString?.() || '');
+    if (!signerPubkey) continue;
+    if (requiredSignerPubkeys.has(signerPubkey)) {
+      filtered.push(signer);
+      continue;
+    }
+    console.warn(
+      `[evilPanda] SKIP_UNKNOWN_TX_SIGNER tx=${String(txStage || 'unknown')} signer=${signerPubkey.slice(0,8)}`
+    );
+  }
+  return filtered;
+}
+
+function extractUnknownSignerFromError(error) {
+  const msg = String(error?.message || error || '');
+  const direct = msg.match(/unknown signer:\s*([1-9A-HJ-NP-Za-km-z]{32,64})/i);
+  if (direct?.[1]) return direct[1];
+  return null;
+}
+
+function wrapQuoteOnlySignerError({
+  error,
+  finalArgsContext = {},
+  txStage = 'unknown',
+  attemptedSigner = null,
+} = {}) {
+  const raw = String(error?.message || error || '');
+  if (!/unknown signer/i.test(raw)) return error;
+  const wrapped = buildInvalidDlmmArgsError(`quote-only transaction signer mismatch at ${txStage}: ${raw}`);
+  wrapped.dlmmContextExtra = {
+    ...(finalArgsContext || {}),
+    sdkFlow: 'quote_only_position_first',
+    txStage,
+    attemptedSigner: attemptedSigner || extractUnknownSignerFromError(error),
+  };
+  return wrapped;
+}
+
+async function sendQuoteOnlyTxWithFilteredSigners({
+  connection,
+  wallet,
+  tx,
+  extraSigners = [],
+  txStage = 'unknown',
+  finalArgsContext = {},
+} = {}) {
+  const filteredSigners = filterKnownTransactionSigners(tx, extraSigners, { txStage });
+  try {
+    if (tx instanceof VersionedTransaction) {
+      tx.sign([wallet, ...filteredSigners]);
+      return await connection.sendTransaction(tx, { skipPreflight: false, maxRetries: 3 });
+    }
+    return await connection.sendTransaction(tx, [wallet, ...filteredSigners], { skipPreflight: false, maxRetries: 3 });
+  } catch (sendErr) {
+    const wrapped = wrapQuoteOnlySignerError({
+      error: sendErr,
+      finalArgsContext,
+      txStage,
+      attemptedSigner: extractUnknownSignerFromError(sendErr),
+    });
+    throw wrapped;
+  }
+}
+
 async function sendSignedTx(connection, wallet, tx) {
   if (tx instanceof VersionedTransaction) {
     tx.sign([wallet]);
@@ -2570,13 +2725,20 @@ export async function deployPosition(poolAddress, deployOptions = {}) {
                 xYAmountDistribution: distribution,
                 slippagePct,
                 microLamports,
-                finalArgsContext: state?.finalArgsContext || {},
-                sendTxFn: async (tx) => {
-                  injectPriorityFee(tx, { units: EP_CONFIG.COMPUTE_UNITS, microLamports });
-                  const sig = await connection.sendTransaction(tx, [wallet, statePositionKeypair], { skipPreflight: false, maxRetries: 3 });
-                  console.log(`[evilPanda] ✅ DLMM quote-only position init confirmed: ${sig.slice(0,8)} pos=${statePositionPubkey.slice(0,8)}`);
-                  return sig;
-                },
+              finalArgsContext: state?.finalArgsContext || {},
+              sendTxFn: async (tx) => {
+                injectPriorityFee(tx, { units: EP_CONFIG.COMPUTE_UNITS, microLamports });
+                const sig = await sendQuoteOnlyTxWithFilteredSigners({
+                  connection,
+                  wallet,
+                  tx,
+                  extraSigners: [statePositionKeypair],
+                  txStage: 'createPosition',
+                  finalArgsContext: state?.finalArgsContext || {},
+                });
+                console.log(`[evilPanda] ✅ DLMM quote-only position init confirmed: ${sig.slice(0,8)} pos=${statePositionPubkey.slice(0,8)}`);
+                return sig;
+              },
               });
             } catch (quoteOnlyErr) {
               await handleQuoteOnlyPartialDeployFailure({
@@ -2662,7 +2824,27 @@ export async function deployPosition(poolAddress, deployOptions = {}) {
       if (isDryRun()) {
         for (const tx of txList) {
           injectPriorityFee(tx, { units: EP_CONFIG.COMPUTE_UNITS, microLamports });
-          if (tx instanceof VersionedTransaction) {
+          if (finalSdkPath === DLMM_SDK_PATH_WEIGHT_QUOTE_ONLY) {
+            const filteredSigners = filterKnownTransactionSigners(tx, [posKp], { txStage: 'addLiquidity' });
+            try {
+              if (tx instanceof VersionedTransaction) {
+                tx.sign([wallet, ...filteredSigners]);
+              } else {
+                tx.sign(...filteredSigners, wallet);
+              }
+            } catch (drySignErr) {
+              throw wrapQuoteOnlySignerError({
+                error: drySignErr,
+                finalArgsContext: {
+                  ...(finalDeployState?.finalArgsContext || {}),
+                  sdkPath: finalSdkPath,
+                  positionPubkey,
+                },
+                txStage: 'addLiquidity',
+                attemptedSigner: posKp.publicKey.toString(),
+              });
+            }
+          } else if (tx instanceof VersionedTransaction) {
             tx.sign([wallet, posKp]);
           } else {
             tx.sign(posKp, wallet);
@@ -2700,7 +2882,20 @@ export async function deployPosition(poolAddress, deployOptions = {}) {
       try {
         for (const tx of txList) {
           injectPriorityFee(tx, { units: EP_CONFIG.COMPUTE_UNITS, microLamports });
-          const sig = await connection.sendTransaction(tx, [wallet, posKp], { skipPreflight: false, maxRetries: 3 });
+          const sig = finalSdkPath === DLMM_SDK_PATH_WEIGHT_QUOTE_ONLY
+            ? await sendQuoteOnlyTxWithFilteredSigners({
+              connection,
+              wallet,
+              tx,
+              extraSigners: [posKp],
+              txStage: 'addLiquidity',
+              finalArgsContext: {
+                ...(finalDeployState?.finalArgsContext || {}),
+                sdkPath: finalSdkPath,
+                positionPubkey,
+              },
+            })
+            : await connection.sendTransaction(tx, [wallet, posKp], { skipPreflight: false, maxRetries: 3 });
           await pollTxConfirm(connection, sig);
           console.log(`[evilPanda] ✅ Monolith position deployed on-chain: ${sig.slice(0,8)}`);
         }
@@ -3672,6 +3867,10 @@ export function __markQuoteOnlyLiquidityConfirmedForTests({
 
 export async function __verifyQuoteOnlyLiquidityOnChainForTests(args = {}) {
   return verifyQuoteOnlyLiquidityOnChain(args);
+}
+
+export function __extractRequiredSignerPubkeysForTests(tx) {
+  return [...extractRequiredSignerPubkeys(tx)];
 }
 
 export { EP_CONFIG };
