@@ -104,6 +104,15 @@ function stringifyAmount(value) {
   }
 }
 
+function isExplicitConfigTrue(value) {
+  if (value === true) return true;
+  if (typeof value === 'string') {
+    const normalized = value.trim().toLowerCase();
+    return normalized === 'true' || normalized === '1' || normalized === 'yes' || normalized === 'on';
+  }
+  return false;
+}
+
 function toBnAmountSafe(value) {
   try {
     if (BN.isBN(value)) return value;
@@ -942,6 +951,46 @@ export function buildDlmmSdkStrategyFromDeployArgs(deployArgs = {}) {
     strategyType: Number.isFinite(Number(deployArgs.strategyType))
       ? Number(deployArgs.strategyType)
       : SPOT_STRATEGY_TYPE,
+  };
+}
+
+export function deriveSpotBidAskSeedPlan({
+  cfg = {},
+  activeBinId,
+  rangeMin,
+  rangeMax,
+  totalLamports = 0,
+} = {}) {
+  const rangeIncludesActiveBin =
+    isFiniteInteger(activeBinId) &&
+    isFiniteInteger(rangeMin) &&
+    isFiniteInteger(rangeMax) &&
+    rangeMin <= activeBinId &&
+    rangeMax >= activeBinId;
+
+  const spotBidAskSeedEnabled = isExplicitConfigTrue(cfg?.spotBidAskSeedEnabled);
+  const shouldSeedTokenX = spotBidAskSeedEnabled && rangeIncludesActiveBin;
+  const rangeWidth = Math.max(1, Number(rangeMax) - Number(rangeMin));
+  const activeRatio = shouldSeedTokenX
+    ? Math.max(0, Math.min(1, (Number(activeBinId) - Number(rangeMin)) / rangeWidth))
+    : 0;
+  const seedPctOverride = Number(cfg?.deployTokenXSeedPct || cfg?.deployXSeedPct || 0);
+  const defaultSeedPct = shouldSeedTokenX
+    ? Math.max(10, Math.min(40, Math.round(40 - (activeRatio * 30))))
+    : 0;
+  const seedPct = Number.isFinite(seedPctOverride) && seedPctOverride > 0
+    ? Math.max(1, Math.min(60, seedPctOverride))
+    : defaultSeedPct;
+  const safeTotalLamports = Math.max(0, Number(totalLamports) || 0);
+  const seedLamports = Math.max(0, Math.floor(safeTotalLamports * (seedPct / 100)));
+
+  return {
+    spotBidAskSeedEnabled,
+    shouldSeedTokenX,
+    rangeIncludesActiveBin,
+    seedPct,
+    seedLamports,
+    activeRatio,
   };
 }
 
@@ -2520,19 +2569,23 @@ export async function deployPosition(poolAddress, deployOptions = {}) {
     const slippagePct   = slippageBps / 100;
     const totalLamports = Math.floor(deploySol * 1e9);
 
-    const shouldSeedTokenX = rangeMin <= activeBin.binId && rangeMax >= activeBin.binId;
-    const rangeWidth = Math.max(1, rangeMax - rangeMin);
-    const activeRatio = shouldSeedTokenX
-      ? Math.max(0, Math.min(1, (activeBin.binId - rangeMin) / rangeWidth))
-      : 0;
-    const seedPctOverride = Number(cfg2.deployTokenXSeedPct || cfg2.deployXSeedPct || 0);
-    const defaultSeedPct = shouldSeedTokenX
-      ? Math.max(10, Math.min(40, Math.round(40 - (activeRatio * 30))))
-      : 0;
-    const seedPct = Number.isFinite(seedPctOverride) && seedPctOverride > 0
-      ? Math.max(1, Math.min(60, seedPctOverride))
-      : defaultSeedPct;
-    const seedLamports = Math.max(0, Math.floor(totalLamports * (seedPct / 100)));
+    const seedPlan = deriveSpotBidAskSeedPlan({
+      cfg: cfg2,
+      activeBinId: Number(activeBin?.binId),
+      rangeMin: Number(rangeMin),
+      rangeMax: Number(rangeMax),
+      totalLamports,
+    });
+    const shouldSeedTokenX = seedPlan.shouldSeedTokenX;
+    const seedPct = seedPlan.seedPct;
+    const seedLamports = seedPlan.seedLamports;
+
+    if (!seedPlan.spotBidAskSeedEnabled && seedPlan.rangeIncludesActiveBin) {
+      console.log(
+        `[evilPanda] SEED_SWAP_DISABLED_FULL_SOL pool=${poolAddress.slice(0,8)} ` +
+        `range=[${rangeMin},${rangeMax}] active=${activeBin.binId}`
+      );
+    }
 
     let rentGuardStatus = null;
     if (hasNonRefundableFees) {
@@ -4117,6 +4170,10 @@ export function __inspectTxForBinArrayInitForTests(tx) {
 
 export async function __guardDlmmCostBeforeSendForTests(args = {}) {
   return guardDlmmCostBeforeSend(args);
+}
+
+export function __deriveSpotBidAskSeedPlanForTests(args = {}) {
+  return deriveSpotBidAskSeedPlan(args);
 }
 
 export { EP_CONFIG };

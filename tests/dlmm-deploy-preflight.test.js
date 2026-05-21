@@ -25,6 +25,7 @@ import {
   __extractRequiredSignerPubkeysForTests,
   __inspectTxForBinArrayInitForTests,
   __guardDlmmCostBeforeSendForTests,
+  __deriveSpotBidAskSeedPlanForTests,
   filterKnownTransactionSigners,
   getPositionMeta,
   getPositionOnChainStatus,
@@ -1601,6 +1602,95 @@ test('seed swap payload uses JSON.stringify (no bare stringify call)', () => {
   const src = readFileSync(new URL('../src/sniper/evilPanda.js', import.meta.url), 'utf8');
   assert.equal(src.includes('body: stringify({'), false);
   assert.equal(src.includes('body: JSON.stringify({'), true);
+});
+
+test('default seed plan is disabled and keeps full SOL single-side for 0.5 SOL', () => {
+  const plan = __deriveSpotBidAskSeedPlanForTests({
+    cfg: {},
+    activeBinId: -426,
+    rangeMin: -475,
+    rangeMax: -426,
+    totalLamports: 500_000_000,
+  });
+  assert.equal(plan.spotBidAskSeedEnabled, false);
+  assert.equal(plan.rangeIncludesActiveBin, true);
+  assert.equal(plan.shouldSeedTokenX, false);
+  assert.equal(plan.seedLamports, 0);
+
+  const deployArgs = buildDlmmDeployStrategyArgs({
+    activeBinId: -426,
+    rangeMin: -475,
+    rangeMax: -426,
+    amountXBn: new BN('0'),
+    amountYBn: new BN('500000000'),
+  });
+  assert.equal(deployArgs.amountXBn.toString(), '0');
+  assert.equal(deployArgs.amountYBn.toString(), '500000000');
+  assert.equal(deployArgs.singleSide, 'QUOTE_ONLY');
+  assert.equal(deployArgs.strategyType, Number(StrategyType?.Spot ?? 0));
+  assert.equal(selectDlmmSdkPathForDeployArgs(deployArgs), 'weight_quote_only');
+});
+
+test('dry-run default seed disabled does not produce seed plan branch signals', () => {
+  const plan = __deriveSpotBidAskSeedPlanForTests({
+    cfg: { dryRun: true },
+    activeBinId: -426,
+    rangeMin: -475,
+    rangeMax: -426,
+    totalLamports: 500_000_000,
+  });
+  assert.equal(plan.shouldSeedTokenX, false);
+  assert.equal(plan.seedLamports, 0);
+});
+
+test('regression guard: default seed disabled does not create mixed 0.45/0.05 split for 0.5 SOL', () => {
+  const plan = __deriveSpotBidAskSeedPlanForTests({
+    cfg: {},
+    activeBinId: -426,
+    rangeMin: -475,
+    rangeMax: -426,
+    totalLamports: 500_000_000,
+  });
+  assert.equal(plan.shouldSeedTokenX, false);
+  assert.notEqual(plan.seedLamports, 50_000_000);
+
+  const deployArgs = buildDlmmDeployStrategyArgs({
+    activeBinId: -426,
+    rangeMin: -475,
+    rangeMax: -426,
+    amountXBn: new BN('0'),
+    amountYBn: new BN('500000000'),
+  });
+  assert.notEqual(deployArgs.amountYBn.toString(), '450000000');
+  assert.equal(deployArgs.singleSide, 'QUOTE_ONLY');
+});
+
+test('explicit seed opt-in with swap failure fallback remains full SOL single-side', () => {
+  const plan = __deriveSpotBidAskSeedPlanForTests({
+    cfg: {
+      spotBidAskSeedEnabled: true,
+      deployTokenXSeedPct: 10,
+    },
+    activeBinId: -426,
+    rangeMin: -475,
+    rangeMax: -426,
+    totalLamports: 500_000_000,
+  });
+  assert.equal(plan.shouldSeedTokenX, true);
+  assert.equal(plan.seedLamports, 50_000_000);
+
+  const fallbackArgs = buildDlmmDeployStrategyArgs({
+    activeBinId: -426,
+    rangeMin: -475,
+    rangeMax: -426,
+    amountXBn: new BN('0'),
+    amountYBn: new BN('500000000'),
+    strategyType: Number(StrategyType?.Spot ?? 0),
+  });
+  assert.equal(fallbackArgs.amountXBn.toString(), '0');
+  assert.equal(fallbackArgs.amountYBn.toString(), '500000000');
+  assert.equal(fallbackArgs.singleSide, 'QUOTE_ONLY');
+  assert.equal(fallbackArgs.strategyType, Number(StrategyType?.Spot ?? 0));
 });
 
 test('tx guard detects initializeBinArray instruction discriminator', () => {
