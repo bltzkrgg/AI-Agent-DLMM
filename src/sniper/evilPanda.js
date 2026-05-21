@@ -1555,6 +1555,73 @@ export async function calculateFeeOnlyPnl({
   };
 }
 
+async function estimatePositionValueSolFromPositionData({
+  positionData = {},
+  tokenXMint = '',
+  xDec = 9,
+  yDec = 9,
+  activeBinPrice = 0,
+  quoteFn = getJupiterQuote,
+} = {}) {
+  const pd = positionData || {};
+  const safeXDec = Number.isFinite(Number(xDec)) ? Number(xDec) : 9;
+  const safeYDec = Number.isFinite(Number(yDec)) ? Number(yDec) : 9;
+  const totalXRaw = toBnAmountSafe(pd.totalXAmount).add(toBnAmountSafe(pd.feeX));
+  const totalYRaw = toBnAmountSafe(pd.totalYAmount).add(toBnAmountSafe(pd.feeY));
+  const totalYUi = Number(totalYRaw.toString()) / Math.pow(10, safeYDec);
+  const totalXRawToSell = totalXRaw.toString();
+  let xValueSol = 0;
+  let valueSource = 'position_y_only';
+
+  if (totalXRaw.gt(new BN('0'))) {
+    try {
+      const quote = await quoteFn(tokenXMint, WSOL_MINT, totalXRawToSell);
+      xValueSol = Math.max(0, Number(quote?.outAmount || 0) / 1e9);
+      valueSource = 'jupiter_quote';
+    } catch {
+      const totalXUi = Number(totalXRaw.toString()) / Math.pow(10, safeXDec);
+      xValueSol = Math.max(0, totalXUi * safeNum(activeBinPrice, 0));
+      valueSource = xValueSol > 0 ? 'pool_price' : 'position_y_only';
+    }
+  }
+
+  const positionValueSol = Math.max(0, totalYUi + xValueSol);
+  return {
+    positionValueSol,
+    totalYUi: Math.max(0, totalYUi),
+    xValueSol: Math.max(0, xValueSol),
+    totalXRawToSell,
+    valueSource,
+  };
+}
+
+export function computeFinalExitAccounting({
+  deploySol = 0,
+  positionValueSol = 0,
+  walletNetDeltaSol = 0,
+  txFeesSol = 0,
+} = {}) {
+  const safeDeploySol = Math.max(0, safeNum(deploySol, 0));
+  const safePositionValueSol = safeNum(positionValueSol, 0);
+  const safeWalletNetDeltaSol = safeNum(walletNetDeltaSol, 0);
+  const safeTxFeesSol = Math.max(0, safeNum(txFeesSol, 0));
+  const realizedTradingPnlSol = safePositionValueSol - safeDeploySol;
+  const realizedTradingPnlPct = safeDeploySol > 0
+    ? (realizedTradingPnlSol / safeDeploySol) * 100
+    : 0;
+  const rentRefundSol = safeWalletNetDeltaSol - safePositionValueSol + safeTxFeesSol;
+  return {
+    deploySol: safeDeploySol,
+    positionValueSol: safePositionValueSol,
+    walletNetDeltaSol: safeWalletNetDeltaSol,
+    txFeesSol: safeTxFeesSol,
+    rentRefundSol,
+    realizedTradingPnlSol,
+    realizedTradingPnlPct,
+    accountingStatus: 'estimated_rent_refund_from_wallet_delta',
+  };
+}
+
 async function findAdaptiveRentFreeRange({
   connection,
   poolPubkey,
@@ -2103,6 +2170,11 @@ function appendPositionLedger({
   feePnlSol = 0,
   pricePnlSol = 0,
   txCostSol = 0,
+  walletNetDeltaSol = null,
+  rentRefundSol = null,
+  positionValueSol = null,
+  realizedTradingPnlSol = null,
+  realizedTradingPnlPct = null,
   accountingStatus = 'final',
   manualCloseDetected = false,
   normalizedReason = '',
@@ -2115,6 +2187,21 @@ function appendPositionLedger({
     const feeSol = safeNum(feePnlSol, 0);
     const priceSol = safeNum(pricePnlSol, 0);
     const costSol = safeNum(txCostSol, 0);
+    const walletDelta = Number.isFinite(Number(walletNetDeltaSol))
+      ? Number(safeNum(walletNetDeltaSol, 0).toFixed(9))
+      : null;
+    const rentRefund = Number.isFinite(Number(rentRefundSol))
+      ? Number(safeNum(rentRefundSol, 0).toFixed(9))
+      : null;
+    const positionValue = Number.isFinite(Number(positionValueSol))
+      ? Number(safeNum(positionValueSol, 0).toFixed(9))
+      : null;
+    const realizedPnlSol = Number.isFinite(Number(realizedTradingPnlSol))
+      ? Number(safeNum(realizedTradingPnlSol, 0).toFixed(9))
+      : null;
+    const realizedPnlPct = Number.isFinite(Number(realizedTradingPnlPct))
+      ? Number(safeNum(realizedTradingPnlPct, 0).toFixed(6))
+      : null;
     const row = {
       ts: nowIso(),
       positionPubkey,
@@ -2134,6 +2221,11 @@ function appendPositionLedger({
         feePnlSol: Number(feeSol.toFixed(9)),
         pricePnlSol: Number(priceSol.toFixed(9)),
         txCostSol: Number(costSol.toFixed(9)),
+        positionValueSol: positionValue,
+        walletNetDeltaSol: walletDelta,
+        rentRefundSol: rentRefund,
+        realizedTradingPnlSol: realizedPnlSol,
+        realizedTradingPnlPct: realizedPnlPct,
       },
     };
     appendFileSync(POSITION_LEDGER_LOG, `${JSON.stringify(row)}\n`, 'utf8');
@@ -3628,7 +3720,7 @@ export async function getPositionOnChainStatus(positionPubkey) {
  *
  * @param {string} positionPubkey
  * @param {string} [reason='MANUAL']
- * @returns {Promise<{ solRecovered: number }>}
+ * @returns {Promise<{ positionValueSol: number, walletNetDeltaSol: number }>}
  */
 export async function exitPosition(positionPubkey, reason = 'MANUAL') {
   const reg = _activePositions.get(positionPubkey);
@@ -3643,7 +3735,7 @@ export async function exitPosition(positionPubkey, reason = 'MANUAL') {
 
   try {
     return await withExitAccountingLock(() => withExponentialBackoff(async () => {
-      const preSwapLamports = await connection.getBalance(wallet.publicKey);
+      const preExitWalletLamports = await connection.getBalance(wallet.publicKey);
       const dlmmPool = await DLMM.create(connection, new PublicKey(reg.poolAddress));
       await dlmmPool.refetchStates().catch(() => {});
       const { userPositions } = await dlmmPool.getPositionsByUserAndLbPair(wallet.publicKey);
@@ -3692,16 +3784,30 @@ export async function exitPosition(positionPubkey, reason = 'MANUAL') {
 
       await setPositionLifecycle(positionPubkey, 'closing', { closeReason: reason }, { flush: true });
 
-      // Snapshot fee composition sebelum close untuk accounting split.
+      // Snapshot composition sebelum close untuk final trading accounting (exclude rent refunds).
       let estimatedFeeSol = 0;
       let estimatedFeePct = 0;
       let estimatedFeeSource = 'none';
       let estimatedFeeAvailable = false;
+      let preClosePositionValueSol = 0;
+      let preClosePositionValueYComponentSol = 0;
+      let preClosePositionValueSource = 'none';
       try {
         const pd = activePos.positionData;
         const [xMeta, yMeta] = await resolveTokens([reg.tokenXMint, reg.tokenYMint]);
         const xDec = xMeta.decimals || 9;
         const yDec = yMeta.decimals || 9;
+        const activeBin = await dlmmPool.getActiveBin().catch(() => null);
+        const valueSnapshot = await estimatePositionValueSolFromPositionData({
+          positionData: pd,
+          tokenXMint: reg.tokenXMint,
+          xDec,
+          yDec,
+          activeBinPrice: safeNum(activeBin?.pricePerToken, 0),
+        });
+        preClosePositionValueSol = valueSnapshot.positionValueSol;
+        preClosePositionValueYComponentSol = valueSnapshot.totalYUi;
+        preClosePositionValueSource = valueSnapshot.valueSource;
         const feeOnly = await calculateFeeOnlyPnl({
           feeXRaw: pd.feeX?.toString() || '0',
           feeYRaw: pd.feeY?.toString() || '0',
@@ -3709,7 +3815,7 @@ export async function exitPosition(positionPubkey, reason = 'MANUAL') {
           yDec,
           tokenXMint: reg.tokenXMint,
           deploySol: reg.deploySol,
-          activeBinPrice: safeNum((await dlmmPool.getActiveBin())?.pricePerToken, 0),
+          activeBinPrice: safeNum(activeBin?.pricePerToken, 0),
         });
         estimatedFeeSol = feeOnly.feePnlSol;
         estimatedFeePct = feeOnly.feePnlPct;
@@ -3720,6 +3826,9 @@ export async function exitPosition(positionPubkey, reason = 'MANUAL') {
         estimatedFeePct = 0;
         estimatedFeeSource = 'none';
         estimatedFeeAvailable = false;
+        preClosePositionValueSol = 0;
+        preClosePositionValueYComponentSol = 0;
+        preClosePositionValueSource = 'none';
       }
 
       // 1. Remove all liquidity and request account close.
@@ -3761,12 +3870,15 @@ export async function exitPosition(positionPubkey, reason = 'MANUAL') {
       }
 
       // 2. Swap sisa token non-SOL → SOL (jika ada)
-      let solRecovered = 0;
+      let residualSwapOutSol = 0;
+      let trackedResidualSwapCount = 0;
+      let successfulResidualSwapCount = 0;
       try {
         const residualMints = [...new Set([reg.tokenXMint, reg.tokenYMint].filter((mint) => mint && mint !== WSOL_MINT))];
         for (const mint of residualMints) {
           const rawBalance = await getTokenBalanceRaw(mint);
           if (String(rawBalance || '0') === '0') continue;
+          trackedResidualSwapCount += 1;
           console.log(`[evilPanda] Swap residual token → SOL: ${mint.slice(0, 8)} amountRaw=${rawBalance}`);
           // legacy marker: swapToSol(mint, rawBalance, null, { isUrgent: true })
           const swapOptions = { isUrgent: true };
@@ -3777,15 +3889,30 @@ export async function exitPosition(positionPubkey, reason = 'MANUAL') {
           const swapResult = await swapToSol(mint, rawBalance, null, swapOptions);
           if (!swapResult?.success && !swapResult?.skipped) {
             console.warn(`[evilPanda] Swap residual token gagal untuk ${mint.slice(0,8)}: ${swapResult?.reason || 'SWAP_FAILED'}`);
+            continue;
+          }
+          if (swapResult?.success) {
+            successfulResidualSwapCount += 1;
+            residualSwapOutSol += Math.max(0, Number(swapResult?.outSol || 0));
           }
         }
       } catch (e) {
         console.warn(`[evilPanda] Swap sisa token gagal (tidak fatal): ${e.message}`);
       }
-      const postSwapLamports = await connection.getBalance(wallet.publicKey);
-      solRecovered = (postSwapLamports - preSwapLamports) / 1e9;
+      const postExitWalletLamports = await connection.getBalance(wallet.publicKey);
+      const walletNetDeltaSol = (postExitWalletLamports - preExitWalletLamports) / 1e9;
       const txFeeLamports = await estimateTxFeeLamports(connection, removeSignatures);
       const txFeeSol = txFeeLamports / 1e9;
+      let positionValueSol = Math.max(0, preClosePositionValueSol);
+      if (trackedResidualSwapCount > 0 && trackedResidualSwapCount === successfulResidualSwapCount) {
+        positionValueSol = Math.max(0, preClosePositionValueYComponentSol + residualSwapOutSol);
+      }
+      const finalAccounting = computeFinalExitAccounting({
+        deploySol: reg.deploySol,
+        positionValueSol,
+        walletNetDeltaSol,
+        txFeesSol: txFeeSol,
+      });
 
       // 3. Verifikasi posisi benar-benar sudah close di chain
       const isClosedOnChain = await verifyPositionClosedOnChain(connection, wallet, reg.poolAddress, positionPubkey, {
@@ -3809,12 +3936,10 @@ export async function exitPosition(positionPubkey, reason = 'MANUAL') {
 
       // 5. Harvest Log + Ledger + Blacklist
       const tokenSymbol = reg.tokenXMint?.slice(0,8) || 'UNKNOWN';
-      const pnlTotalSol = solRecovered - reg.deploySol;
+      const pnlTotalSol = finalAccounting.realizedTradingPnlSol;
       const feePnlSol = Math.max(0, estimatedFeeSol);
       const pricePnlSol = pnlTotalSol - feePnlSol;
-      const finalPnlPct = reg.deploySol > 0
-        ? (pnlTotalSol / reg.deploySol) * 100
-        : 0;
+      const finalPnlPct = finalAccounting.realizedTradingPnlPct;
       const normalizedReason = normalizeExitReason(reason, { pnlPct: finalPnlPct, pnlSol: pnlTotalSol });
       appendHarvestLog({
         token:          tokenSymbol,
@@ -3831,12 +3956,18 @@ export async function exitPosition(positionPubkey, reason = 'MANUAL') {
         closedAt: nowIso(),
         reason,
         capitalInSol: reg.deploySol || 0,
-        capitalOutSol: solRecovered,
+        capitalOutSol: finalAccounting.positionValueSol,
         pnlTotalSol,
         pnlTotalPct: finalPnlPct,
         feePnlSol,
         pricePnlSol,
         txCostSol: txFeeSol,
+        walletNetDeltaSol: finalAccounting.walletNetDeltaSol,
+        rentRefundSol: finalAccounting.rentRefundSol,
+        positionValueSol: finalAccounting.positionValueSol,
+        realizedTradingPnlSol: finalAccounting.realizedTradingPnlSol,
+        realizedTradingPnlPct: finalAccounting.realizedTradingPnlPct,
+        accountingStatus: finalAccounting.accountingStatus,
         normalizedReason,
       });
       recordPoolOutcome({
@@ -3892,13 +4023,22 @@ export async function exitPosition(positionPubkey, reason = 'MANUAL') {
       }
 
       return {
-        solRecovered,
+        solRecovered: finalAccounting.walletNetDeltaSol,
+        positionValueSol: finalAccounting.positionValueSol,
+        walletNetDeltaSol: finalAccounting.walletNetDeltaSol,
+        rentRefundSol: finalAccounting.rentRefundSol,
+        txFeesSol: finalAccounting.txFeesSol,
+        realizedTradingPnlSol: finalAccounting.realizedTradingPnlSol,
+        realizedTradingPnlPct: finalAccounting.realizedTradingPnlPct,
+        accountingStatus: finalAccounting.accountingStatus,
+        positionValueSource: preClosePositionValueSource,
+        residualSwapOutSol: Number(residualSwapOutSol.toFixed(9)),
         feePnlSol,
         feePnlPct: estimatedFeePct,
         feePnlSource: estimatedFeeSource,
         feePnlAvailable: estimatedFeeAvailable,
-        pnlTotalSol,
-        pnlTotalPct: finalPnlPct,
+        pnlTotalSol: finalAccounting.realizedTradingPnlSol,
+        pnlTotalPct: finalAccounting.realizedTradingPnlPct,
         exitReason: normalizedReason,
         rawExitReason: reason,
       };

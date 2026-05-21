@@ -34,6 +34,7 @@ import {
   isDlmmSdkInvalidArgumentsError,
   selectDlmmSdkPathForDeployArgs,
   wrapDlmmSdkInvalidArgumentsError,
+  computeFinalExitAccounting,
   ensureFinalRentCheckedDeployArgs,
 } from '../src/sniper/evilPanda.js';
 import { StrategyType } from '@meteora-ag/dlmm';
@@ -1964,4 +1965,34 @@ test('high bin count alone does not veto when arrays exist and no init instructi
     finalArgsContext: { sdkPath: 'strategy' },
   });
   assert.equal(out.action, 'ALLOW');
+});
+
+test('final exit accounting excludes rent refunds from realized trading pnl', () => {
+  const out = computeFinalExitAccounting({
+    deploySol: 0.5,
+    positionValueSol: 0.4498,
+    walletNetDeltaSol: 0.5526,
+    txFeesSol: 0.0002,
+  });
+
+  assert.equal(Number(out.positionValueSol.toFixed(4)), 0.4498);
+  assert.equal(Number(out.walletNetDeltaSol.toFixed(4)), 0.5526);
+  assert.equal(Number(out.realizedTradingPnlSol.toFixed(4)), -0.0502);
+  assert.equal(Number(out.realizedTradingPnlPct.toFixed(2)), -10.04);
+  assert.ok(out.rentRefundSol > 0.1);
+  assert.equal(out.accountingStatus, 'estimated_rent_refund_from_wallet_delta');
+});
+
+test('final exit accounting uses position value as capital-out basis, not wallet delta', () => {
+  const out = computeFinalExitAccounting({
+    deploySol: 0.5,
+    positionValueSol: 0.5,
+    walletNetDeltaSol: 0.56,
+    txFeesSol: 0.00015,
+  });
+
+  assert.equal(out.positionValueSol, 0.5);
+  assert.equal(out.realizedTradingPnlSol, 0);
+  assert.equal(out.realizedTradingPnlPct, 0);
+  assert.notEqual(out.walletNetDeltaSol, out.positionValueSol);
 });

@@ -1075,6 +1075,18 @@ function formatExposurePnlLine(result = {}) {
   return `Total Exposure PnL: <code>${sign}${totalPct.toFixed(2)}%</code>\n`;
 }
 
+function formatWalletDeltaLine(result = {}) {
+  const walletNetDeltaSol = Number(result?.walletNetDeltaSol);
+  if (!Number.isFinite(walletNetDeltaSol)) return '';
+  return `Wallet Net Delta: <code>${walletNetDeltaSol.toFixed(6)} SOL</code>\n`;
+}
+
+function formatRentRefundLine(result = {}) {
+  const rentRefundSol = Number(result?.rentRefundSol);
+  if (!Number.isFinite(rentRefundSol)) return '';
+  return `Rent Refund (est): <code>${rentRefundSol.toFixed(6)} SOL</code>\n`;
+}
+
 function formatMaybePct(value, digits = 2) {
   const num = Number(value);
   return Number.isFinite(num) ? `${num.toFixed(digits)}%` : 'UNKNOWN';
@@ -3016,9 +3028,9 @@ async function safeExit(positionPubkey, reason) {
       );
       return { ok: true, dryRun: true, simulated: true };
     }
-    const { solRecovered } = exitResult;
-    const positionValueLine = Number.isFinite(Number(solRecovered))
-      ? `Position Value: <code>${Number(solRecovered).toFixed(6)} SOL</code>\n`
+    const positionValue = Number(exitResult?.positionValueSol);
+    const positionValueLine = Number.isFinite(positionValue)
+      ? `Position Value: <code>${positionValue.toFixed(6)} SOL</code>\n`
       : '';
     const balance = await getWalletBalance();
     success = true;
@@ -3028,6 +3040,8 @@ async function safeExit(positionPubkey, reason) {
       formatFeePnlLine(exitResult) +
       positionValueLine +
       formatExposurePnlLine(exitResult) +
+      formatWalletDeltaLine(exitResult) +
+      formatRentRefundLine(exitResult) +
       `Balance: <code>${balance} SOL</code>`
     );
     return { ok: true, ...exitResult };
