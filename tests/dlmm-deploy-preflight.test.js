@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import BN from 'bn.js';
-import { Keypair, PublicKey } from '@solana/web3.js';
+import { Keypair, PublicKey, SystemProgram } from '@solana/web3.js';
 
 import {
   assertNoCombinedWeightForQuoteOnly,
@@ -26,6 +26,7 @@ import {
   __inspectTxForBinArrayInitForTests,
   __guardDlmmCostBeforeSendForTests,
   __deriveSpotBidAskSeedPlanForTests,
+  __assertNoUnexpectedSolTransferInTxForTests,
   filterKnownTransactionSigners,
   getPositionMeta,
   getPositionOnChainStatus,
@@ -1995,4 +1996,44 @@ test('final exit accounting uses position value as capital-out basis, not wallet
   assert.equal(out.realizedTradingPnlSol, 0);
   assert.equal(out.realizedTradingPnlPct, 0);
   assert.notEqual(out.walletNetDeltaSol, out.positionValueSol);
+});
+
+test('unexpected wallet->unknown SOL transfer is vetoed before send', () => {
+  const wallet = Keypair.generate().publicKey;
+  const unknown = Keypair.generate().publicKey;
+  const tx = {
+    instructions: [
+      SystemProgram.transfer({
+        fromPubkey: wallet,
+        toPubkey: unknown,
+        lamports: 150_000,
+      }),
+    ],
+  };
+  assert.throws(
+    () => __assertNoUnexpectedSolTransferInTxForTests({
+      tx,
+      walletPublicKey: wallet,
+      txStage: 'unit-test',
+    }),
+    /VETO_UNEXPECTED_SOL_TRANSFER/
+  );
+});
+
+test('normal tx without unexpected transfer is allowed by transfer guard', () => {
+  const wallet = Keypair.generate().publicKey;
+  const tx = {
+    instructions: [
+      SystemProgram.transfer({
+        fromPubkey: wallet,
+        toPubkey: wallet,
+        lamports: 150_000,
+      }),
+    ],
+  };
+  assert.doesNotThrow(() => __assertNoUnexpectedSolTransferInTxForTests({
+    tx,
+    walletPublicKey: wallet,
+    txStage: 'unit-test',
+  }));
 });

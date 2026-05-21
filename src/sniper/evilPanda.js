@@ -14,7 +14,7 @@
 'use strict';
 
 import DLMM, { StrategyType, getBinArraysRequiredByPositionRange, isOverflowDefaultBinArrayBitmap, deriveBinArrayBitmapExtension } from '@meteora-ag/dlmm';
-import { PublicKey, ComputeBudgetProgram, VersionedTransaction, TransactionMessage } from '@solana/web3.js';
+import { PublicKey, ComputeBudgetProgram, VersionedTransaction, TransactionMessage, SystemProgram, SystemInstruction } from '@solana/web3.js';
 import BN from 'bn.js';
 import { appendFileSync, mkdirSync } from 'fs';
 import { join, dirname } from 'path';
@@ -2396,6 +2396,145 @@ function extractUnknownSignerFromError(error) {
   return null;
 }
 
+function getInstructionAccountPubkeys(ix) {
+  if (!ix) return [];
+  if (Array.isArray(ix.keys) && ix.keys.length > 0) {
+    return ix.keys
+      .map((k) => String(k?.pubkey?.toString?.() || ''))
+      .filter(Boolean);
+  }
+  if (Array.isArray(ix.accounts) && ix.accounts.length > 0) {
+    return ix.accounts
+      .map((k) => String(k?.toString?.() || ''))
+      .filter(Boolean);
+  }
+  return [];
+}
+
+function getTransferLamportsFromSystemInstruction(ix) {
+  try {
+    const decoded = SystemInstruction.decodeTransfer(ix);
+    const lamports = Number(decoded?.lamports || 0);
+    return Number.isFinite(lamports) ? lamports : 0;
+  } catch {
+    return 0;
+  }
+}
+
+function getCompiledInstructionAccountPubkeys(tx, cix) {
+  const out = [];
+  if (!tx || !cix) return out;
+  const indexes = Array.isArray(cix.accountKeyIndexes) ? cix.accountKeyIndexes : [];
+  if (indexes.length < 2) return out;
+  let keysResolver = null;
+  try {
+    keysResolver = tx?.message?.getAccountKeys?.();
+  } catch {
+    keysResolver = null;
+  }
+  for (const idx of indexes.slice(0, 2)) {
+    const fromResolver = keysResolver?.get?.(idx);
+    if (fromResolver?.toString?.()) {
+      out.push(String(fromResolver.toString()));
+      continue;
+    }
+    const fromStatic = tx?.message?.staticAccountKeys?.[idx];
+    out.push(String(fromStatic?.toString?.() || ''));
+  }
+  return out;
+}
+
+function getTransferLamportsFromCompiledInstruction(cix) {
+  const data = cix?.data;
+  const buf = Buffer.isBuffer(data) ? data : Buffer.from(data || []);
+  if (buf.length < 12) return 0;
+  const tag = buf.readUInt32LE(0);
+  if (tag !== 2) return 0; // SystemInstruction::Transfer
+  const lamports = Number(buf.readBigUInt64LE(4));
+  return Number.isFinite(lamports) ? lamports : 0;
+}
+
+function assertNoUnexpectedSolTransferInTx({
+  tx,
+  walletPublicKey,
+  minLamports = 100_000,
+  allowedToPubkeys = [],
+  txStage = 'unknown',
+} = {}) {
+  if (!tx || !walletPublicKey) return;
+  const walletKey = String(walletPublicKey?.toString?.() || '');
+  if (!walletKey) return;
+  const allowed = new Set(
+    (Array.isArray(allowedToPubkeys) ? allowedToPubkeys : [])
+      .map((k) => String(k || ''))
+      .filter(Boolean)
+  );
+  allowed.add(walletKey);
+
+  const instructions = Array.isArray(tx?.instructions) ? tx.instructions : [];
+  for (const ix of instructions) {
+    const programId = String(ix?.programId?.toString?.() || '');
+    if (programId !== SystemProgram.programId.toString()) continue;
+    const accountPubkeys = getInstructionAccountPubkeys(ix);
+    const fromPubkey = accountPubkeys[0] || '';
+    const toPubkey = accountPubkeys[1] || '';
+    const lamports = getTransferLamportsFromSystemInstruction(ix);
+    if (!fromPubkey || !toPubkey || !Number.isFinite(lamports)) continue;
+    if (fromPubkey !== walletKey) continue;
+    if (lamports < minLamports) continue;
+    if (allowed.has(toPubkey)) continue;
+
+    const err = new Error(
+      `VETO_UNEXPECTED_SOL_TRANSFER: wallet->${toPubkey} lamports=${lamports}`
+    );
+    err.code = 'VETO_UNEXPECTED_SOL_TRANSFER';
+    err.isPermanent = true;
+    console.warn(
+      `[evilPanda] UNEXPECTED_SOL_TRANSFER_VETO from=${walletKey.slice(0,8)} to=${toPubkey.slice(0,8)} ` +
+      `lamports=${lamports} txStage=${String(txStage || 'unknown')}`
+    );
+    throw err;
+  }
+
+  if (tx instanceof VersionedTransaction) {
+    const compiled = Array.isArray(tx?.message?.compiledInstructions)
+      ? tx.message.compiledInstructions
+      : [];
+    const systemProgramId = SystemProgram.programId.toString();
+    for (const cix of compiled) {
+      const programIdIndex = Number(cix?.programIdIndex);
+      const staticProgram = tx?.message?.staticAccountKeys?.[programIdIndex];
+      const resolvedProgram = (() => {
+        try {
+          return tx?.message?.getAccountKeys?.().get?.(programIdIndex) || staticProgram;
+        } catch {
+          return staticProgram;
+        }
+      })();
+      const programId = String(resolvedProgram?.toString?.() || '');
+      if (programId !== systemProgramId) continue;
+      const accountPubkeys = getCompiledInstructionAccountPubkeys(tx, cix);
+      const fromPubkey = accountPubkeys[0] || '';
+      const toPubkey = accountPubkeys[1] || '';
+      const lamports = getTransferLamportsFromCompiledInstruction(cix);
+      if (!fromPubkey || !toPubkey || !Number.isFinite(lamports) || lamports <= 0) continue;
+      if (fromPubkey !== walletKey) continue;
+      if (lamports < minLamports) continue;
+      if (allowed.has(toPubkey)) continue;
+      const err = new Error(
+        `VETO_UNEXPECTED_SOL_TRANSFER: wallet->${toPubkey} lamports=${lamports}`
+      );
+      err.code = 'VETO_UNEXPECTED_SOL_TRANSFER';
+      err.isPermanent = true;
+      console.warn(
+        `[evilPanda] UNEXPECTED_SOL_TRANSFER_VETO from=${walletKey.slice(0,8)} to=${toPubkey.slice(0,8)} ` +
+        `lamports=${lamports} txStage=${String(txStage || 'unknown')}`
+      );
+      throw err;
+    }
+  }
+}
+
 function wrapQuoteOnlySignerError({
   error,
   finalArgsContext = {},
@@ -2422,6 +2561,11 @@ async function sendQuoteOnlyTxWithFilteredSigners({
   txStage = 'unknown',
   finalArgsContext = {},
 } = {}) {
+  assertNoUnexpectedSolTransferInTx({
+    tx,
+    walletPublicKey: wallet?.publicKey,
+    txStage,
+  });
   const filteredSigners = filterKnownTransactionSigners(tx, extraSigners, { txStage });
   try {
     if (tx instanceof VersionedTransaction) {
@@ -2441,6 +2585,11 @@ async function sendQuoteOnlyTxWithFilteredSigners({
 }
 
 async function sendSignedTx(connection, wallet, tx) {
+  assertNoUnexpectedSolTransferInTx({
+    tx,
+    walletPublicKey: wallet?.publicKey,
+    txStage: 'sendSignedTx',
+  });
   if (tx instanceof VersionedTransaction) {
     tx.sign([wallet]);
     return await connection.sendTransaction(tx, { skipPreflight: false, maxRetries: 3 });
@@ -2450,6 +2599,11 @@ async function sendSignedTx(connection, wallet, tx) {
 
 async function sendExitTx(connection, wallet, tx, microLamports) {
   injectPriorityFee(tx, { units: EP_CONFIG.EXIT_COMPUTE_UNITS, microLamports });
+  assertNoUnexpectedSolTransferInTx({
+    tx,
+    walletPublicKey: wallet?.publicKey,
+    txStage: 'exit',
+  });
 
   let sig;
   try {
@@ -2606,6 +2760,7 @@ export async function deployPosition(poolAddress, deployOptions = {}) {
   console.log(`[evilPanda] ▶ deployPosition pool=${poolAddress.slice(0,8)} sol=${deploySol}`);
 
   return withPermanentAwareBackoff(async () => {
+    console.log('[evilPanda] TIP_TRANSFER_DISABLED');
     await reconcileZombiePositions().catch((e) => {
       console.warn(`[evilPanda] Zombie reconcile non-fatal: ${e.message}`);
     });
@@ -4045,11 +4200,44 @@ export async function exitPosition(positionPubkey, reason = 'MANUAL') {
 
     }, { maxRetries: 2, baseDelay: 3000 }));
   } catch (e) {
-    if (_activePositions.has(positionPubkey)) {
+    const positionStillTracked = _activePositions.has(positionPubkey);
+    let positionStatus = null;
+    if (positionStillTracked) {
       await setPositionLifecycle(positionPubkey, 'needs_manual_reconcile', {
         manualReconcileReason: e?.message || 'exit failed before on-chain verification',
         closeReason: reason,
       }, { flush: true });
+      positionStatus = await getPositionOnChainStatus(positionPubkey).catch(() => null);
+    }
+
+    const positionStillOpenOrUncertain = Boolean(
+      positionStillTracked && (
+        positionStatus?.exists === true ||
+        (positionStatus?.tracked === true && positionStatus?.manualWithdrawn !== true)
+      )
+    );
+    const closeFailureMeta = {
+      closeAttemptStarted: true,
+      closeSucceeded: false,
+      closeRetriesExhausted: true,
+      positionStillOpenOrUncertain,
+      positionPubkey,
+      poolAddress: reg?.poolAddress || '',
+      tokenXMint: reg?.tokenXMint || '',
+      tokenYMint: reg?.tokenYMint || '',
+      exitTriggerReason: reason,
+      closeFailureError: String(e?.message || 'unknown'),
+      statusReason: positionStatus?.reason || null,
+      manualCloseRequired: positionStillOpenOrUncertain,
+    };
+    if (e && typeof e === 'object') {
+      e.closeFailureMeta = closeFailureMeta;
+    }
+    if (closeFailureMeta.manualCloseRequired) {
+      console.warn(
+        `[evilPanda] CLOSE_FAILED_MANUAL_REQUIRED token=${String(reg?.tokenXMint || '').slice(0,8)} ` +
+        `pool=${String(reg?.poolAddress || '').slice(0,8)} position=${positionPubkey.slice(0,8)} reason=${reason}`
+      );
     }
     throw e;
   }
@@ -4314,6 +4502,10 @@ export async function __guardDlmmCostBeforeSendForTests(args = {}) {
 
 export function __deriveSpotBidAskSeedPlanForTests(args = {}) {
   return deriveSpotBidAskSeedPlan(args);
+}
+
+export function __assertNoUnexpectedSolTransferInTxForTests(args = {}) {
+  return assertNoUnexpectedSolTransferInTx(args);
 }
 
 export { EP_CONFIG };

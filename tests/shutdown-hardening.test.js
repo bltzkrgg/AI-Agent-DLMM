@@ -43,6 +43,20 @@ test('manual close helper records manual withdrawals when called explicitly', ()
   assert.match(evilPandaSrc, /console\.log\(`\[evilPanda\] ℹ️ Manual close realtime:/);
   assert.match(hunterSrc, /action === 'MANUAL_CLOSED'/);
   assert.doesNotMatch(hunterSrc, /Manual close terdeteksi/);
+  assert.match(hunterSrc, /MANUAL_CLOSE_TELEGRAM_SENT/);
+  assert.match(hunterSrc, /shouldAlertManualClose/);
+  assert.match(hunterSrc, /closeFailureMeta/);
+});
+
+test('jito tip injection is removed from normal runtime send paths', () => {
+  const jupiterSrc = readFileSync(resolve(process.cwd(), 'src/solana/jupiter.js'), 'utf8');
+  const meteoraSrc = readFileSync(resolve(process.cwd(), 'src/solana/meteora.js'), 'utf8');
+  assert.doesNotMatch(jupiterSrc, /tipAmount = 1000000/);
+  assert.doesNotMatch(jupiterSrc, /Jito Anti-MEV Enabled/);
+  assert.doesNotMatch(jupiterSrc, /tipIx/);
+  assert.doesNotMatch(meteoraSrc, /tipAmount = 1000000/);
+  assert.doesNotMatch(meteoraSrc, /Jito Shield Active/);
+  assert.doesNotMatch(meteoraSrc, /getJitoTipAddresses/);
 });
 
 test('index starts manual close watcher during boot', () => {

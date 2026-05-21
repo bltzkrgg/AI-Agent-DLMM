@@ -1,5 +1,5 @@
 import DLMM from '@meteora-ag/dlmm';
-import { PublicKey, Keypair, Transaction, ComputeBudgetProgram, VersionedTransaction, SystemProgram, TransactionMessage } from '@solana/web3.js';
+import { PublicKey, Keypair, Transaction, ComputeBudgetProgram, VersionedTransaction, TransactionMessage, SystemProgram, SystemInstruction } from '@solana/web3.js';
 import BN from 'bn.js';
 import { getConnection, getWallet } from './wallet.js';
 import { fetchWithTimeout, safeNum, withRetry, withExponentialBackoff, stringify, getConservativeSlippage } from '../utils/safeJson.js';
@@ -34,49 +34,6 @@ const getLPAgentPositions                    = async () => [];
 const getMarketSnapshot                      = async () => null;
 
 const METEORA_DLMM_API = 'https://dlmm-api.meteora.ag';
-
-// 🛡️ Jito Anti-MEV — fallback addresses (used if live fetch fails)
-const JITO_TIP_ADDRESSES_FALLBACK = [
-  '96g9sRQCvMSN7Y7dqGfS9i77fof6q63tZ7AghqC9R94',
-  'HFqU5x63VTqvQss8hp11i4wVV8bD44PvwucfZ2bU7gRe',
-  'Cw8CFyMvAxE9tLDH96L3e2r2Zgrj6n8R6KX35tN7uA7y',
-  'ADaUMid9Tfdt98Z1k8n5A1S13TPrWfW19Vw935w1A3y',
-  'DfXy77Ym97yqT5xSUnXRH2B3D5YQ9v4A5Agh96yq9C7y',
-  'ADuX8sjZpK3xUn5iGfS9v5ADuUvYdfR6k9w35wYdfR5y',
-];
-
-// Cache: refresh every 60 seconds so stale addresses are detected quickly
-let _jitoTipCache = { addrs: null, fetchedAt: 0 };
-const JITO_TIP_CACHE_TTL_MS = 60_000;
-
-async function getJitoTipAddresses() {
-  const now = Date.now();
-  if (_jitoTipCache.addrs && now - _jitoTipCache.fetchedAt < JITO_TIP_CACHE_TTL_MS) {
-    return _jitoTipCache.addrs;
-  }
-  try {
-    const res = await fetchWithTimeout(
-      'https://mainnet.block-engine.jito.wtf/api/v1/bundles',
-      {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'getTipAccounts', params: [] }),
-      },
-      5000,
-    );
-    if (res.ok) {
-      const data = await res.json();
-      const addrs = data?.result;
-      if (Array.isArray(addrs) && addrs.length > 0) {
-        _jitoTipCache = { addrs, fetchedAt: now };
-        return addrs;
-      }
-    }
-  } catch (e) {
-    console.warn(`[meteora] Jito tip fetch failed (using fallback): ${e.message}`);
-  }
-  return JITO_TIP_ADDRESSES_FALLBACK;
-}
 
 // Strip existing ComputeBudget instructions then inject fresh ones.
 // Only works for Legacy Transaction — VersionedTransaction uses compiled format.
@@ -161,46 +118,81 @@ async function pollTxConfirm(connection, txHash, maxWaitMs = 60000) {
   throw new Error(`TX ${txHash.slice(0, 8)}… belum confirm setelah ${maxWaitMs / 1000}s`);
 }
 
-/**
- * 🛡️ Jito Bundle Status Polling
- * Verifies if a bundle has actually landed via Jito's JSON-RPC API.
- */
-async function pollJitoBundleStatus(bundleId, maxWaitMs = 60000) {
-  const start = Date.now();
-  const JITO_API = 'https://mainnet.block-engine.jito.wtf/api/v1/bundles';
-  
-  while (Date.now() - start < maxWaitMs) {
+async function blockUnexpectedSolTransfer({
+  connection,
+  tx,
+  walletPublicKey,
+  txStage = 'meteora.tx',
+  minLamports = 100_000,
+} = {}) {
+  if (!tx || !walletPublicKey) return;
+  const walletKey = String(walletPublicKey?.toString?.() || '');
+  if (!walletKey) return;
+
+  let instructions = [];
+  if (tx instanceof VersionedTransaction) {
+    const addressLookupTableAccounts = await Promise.all(
+      (tx?.message?.addressTableLookups || []).map(async (lookup) => {
+        const table = await connection.getAddressLookupTable(lookup.accountKey).catch(() => ({ value: null }));
+        return table?.value || null;
+      })
+    );
     try {
-      const res = await fetchWithTimeout(JITO_API, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: stringify({
-          jsonrpc: '2.0',
-          id: 1,
-          method: 'getBundleStatuses',
-          params: [[bundleId]]
-        })
+      const decompiled = TransactionMessage.decompile(tx.message, {
+        addressLookupTableAccounts: addressLookupTableAccounts.filter(Boolean),
       });
-      
-      const data = await res.json();
-      const status = data?.result?.value?.[0];
-      
-      if (status) {
-        if (status.confirmation_status === 'confirmed' || status.confirmation_status === 'finalized') {
-          console.log(`🛡️ [jito] Bundle ${bundleId.slice(0, 8)} landed at slot ${status.slot}`);
-          return { landed: true, status };
-        }
-        if (status.err) throw new Error(`Jito Bundle Error: ${stringify(status.err)}`);
-      }
-    } catch (e) {
-      if (e.message.includes('Jito Bundle Error')) throw e;
-      // Continue polling for network/timeout issues
+      instructions = Array.isArray(decompiled?.instructions) ? decompiled.instructions : [];
+    } catch (inspectErr) {
+      const err = new Error(
+        `VETO_UNEXPECTED_SOL_TRANSFER: unable to inspect tx at ${txStage}: ${String(inspectErr?.message || 'unknown')}`
+      );
+      err.code = 'VETO_UNEXPECTED_SOL_TRANSFER';
+      err.isPermanent = true;
+      throw err;
     }
-    await new Promise(r => setTimeout(r, 2000));
+  } else {
+    instructions = Array.isArray(tx?.instructions) ? tx.instructions : [];
   }
-  // Throw instead of returning landed:false — callers that forget to check the return
-  // value would silently record the position as open even when the TX never landed.
-  throw new Error(`Jito bundle ${bundleId.slice(0, 8)}… did not confirm after ${maxWaitMs / 1000}s`);
+
+  for (const ix of instructions) {
+    if (String(ix?.programId?.toString?.() || '') !== SystemProgram.programId.toString()) continue;
+    let ixType = '';
+    try {
+      ixType = String(SystemInstruction.decodeInstructionType(ix) || '');
+    } catch {
+      continue;
+    }
+    if (ixType !== 'Transfer' && ixType !== 'TransferWithSeed') continue;
+
+    let fromPubkey = '';
+    let toPubkey = '';
+    let lamports = 0;
+    try {
+      if (ixType === 'Transfer') {
+        const decoded = SystemInstruction.decodeTransfer(ix);
+        fromPubkey = String(decoded?.fromPubkey?.toString?.() || '');
+        toPubkey = String(decoded?.toPubkey?.toString?.() || '');
+        lamports = Number(decoded?.lamports || 0);
+      } else {
+        const decoded = SystemInstruction.decodeTransferWithSeed(ix);
+        fromPubkey = String(decoded?.fromPubkey?.toString?.() || decoded?.basePubkey?.toString?.() || '');
+        toPubkey = String(decoded?.toPubkey?.toString?.() || '');
+        lamports = Number(decoded?.lamports || 0);
+      }
+    } catch {
+      continue;
+    }
+
+    if (!fromPubkey || !toPubkey || !Number.isFinite(lamports)) continue;
+    if (fromPubkey !== walletKey) continue;
+    if (toPubkey === walletKey) continue;
+    if (lamports < minLamports) continue;
+    const err = new Error(`VETO_UNEXPECTED_SOL_TRANSFER: wallet->${toPubkey} lamports=${lamports}`);
+    err.code = 'VETO_UNEXPECTED_SOL_TRANSFER';
+    err.isPermanent = true;
+    console.warn(`[meteora] UNEXPECTED_SOL_TRANSFER_VETO from=${fromPubkey.slice(0,8)} to=${toPubkey.slice(0,8)} lamports=${lamports}`);
+    throw err;
+  }
 }
 
 // ─── Bin ID → display price helpers ─────────────────────────────
@@ -1413,32 +1405,12 @@ export async function closePositionDLMM(poolAddress, positionAddress, pnlData = 
         } catch { /* fallback already set higher for urgent */ }
 
         injectPriorityFee(tx, { units: 400_000, microLamports });
-
-        // 🛡️ Jito Integration (Anti-MEV)
-        if (isTxVersioned) {
-          try {
-            const tipAmount = 1000000; // 0.001 SOL Jito Tip
-            const jitoAddrs = await getJitoTipAddresses();
-            const tipAddr = jitoAddrs[Math.floor(Math.random() * jitoAddrs.length)];
-            const tipIx = SystemProgram.transfer({
-               fromPubkey: wallet.publicKey,
-               toPubkey: new PublicKey(tipAddr),
-               lamports: tipAmount,
-            });
-
-            const addressLookupTableAccounts = await Promise.all(
-              tx.message.addressTableLookups.map(async (lookup) => {
-                return (await connection.getAddressLookupTable(lookup.accountKey)).value;
-              })
-            );
-            const message = TransactionMessage.decompile(tx.message, { addressLookupTableAccounts });
-            message.instructions.push(tipIx);
-            tx.message = message.compileToV0Message(addressLookupTableAccounts);
-            console.log(`🛡️ [meteora] Jito Shield Active: Tip ${tipAmount/1e9} SOL added.`);
-          } catch (e) {
-            console.warn(`⚠️ [meteora] Gagal suntik Jito Tip, lanjut tanpa shield: ${e.message}`);
-          }
-        }
+        await blockUnexpectedSolTransfer({
+          connection,
+          tx,
+          walletPublicKey: wallet.publicKey,
+          txStage: 'meteora.close',
+        });
 
         if (isTxVersioned) {
           tx.sign([wallet]); 
@@ -1449,7 +1421,6 @@ export async function closePositionDLMM(poolAddress, positionAddress, pnlData = 
         const estFeeSol = estimatePriorityFeeSol({
           microLamports,
           computeUnits: 400_000,
-          jitoTipLamports: isTxVersioned ? 1_000_000 : 0,
         });
         const feeBudget = checkAndConsumePriorityFeeBudget({
           estimatedSol: estFeeSol,
@@ -1470,17 +1441,11 @@ export async function closePositionDLMM(poolAddress, positionAddress, pnlData = 
           throw sendErr;
         }
 
-        // 🛡️ Special Polling for Jito Bundles if landing on Block Engine
-        if (hash && hash.length > 32) { // rudimentary bundle ID check via length if applicable
-           // Note: Since we are using sendRawTransaction to a normal RPC with a tip, 
-           // the RPC itself might relay to Jito. Real Jito 'bundleId' is different.
-           // However, for now we stick to pollTxConfirm which is robust across RPCs.
-          try {
-            await pollTxConfirm(connection, hash, 60000);
-          } catch (confirmErr) {
-            recordTxFailure({ context: 'meteora.close', error: confirmErr });
-            throw confirmErr;
-          }
+        try {
+          await pollTxConfirm(connection, hash, 60000);
+        } catch (confirmErr) {
+          recordTxFailure({ context: 'meteora.close', error: confirmErr });
+          throw confirmErr;
         }
         recordTxSuccess({ context: 'meteora.close' });
         hashes.push(hash);

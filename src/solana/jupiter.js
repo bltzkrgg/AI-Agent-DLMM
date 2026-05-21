@@ -5,7 +5,7 @@
  * Fallback: lite-api.jup.ag jika api.jup.ag tidak dapat dijangkau.
  */
 
-import { VersionedTransaction, PublicKey } from '@solana/web3.js';
+import { VersionedTransaction, PublicKey, TransactionMessage, SystemProgram, SystemInstruction } from '@solana/web3.js';
 import { getConnection, getWallet } from './wallet.js';
 import { fetchWithTimeout, withRetry, withExponentialBackoff, stringify } from '../utils/safeJson.js';
 import { checkCooldown, setCooldown } from '../utils/jupiterCooldown.js';
@@ -89,6 +89,79 @@ function toBigIntAmount(value) {
     return BigInt(String(value || 0));
   } catch {
     return 0n;
+  }
+}
+
+async function blockUnexpectedSolTransfer({
+  connection,
+  tx,
+  walletPublicKey,
+  txStage = 'jupiter.swap',
+  minLamports = 100_000,
+} = {}) {
+  if (!tx || !(tx instanceof VersionedTransaction) || !walletPublicKey) return;
+  const walletKey = String(walletPublicKey?.toString?.() || '');
+  if (!walletKey) return;
+
+  const addressLookupTableAccounts = await Promise.all(
+    (tx?.message?.addressTableLookups || []).map(async (lookup) => {
+      const table = await connection.getAddressLookupTable(lookup.accountKey).catch(() => ({ value: null }));
+      return table?.value || null;
+    })
+  );
+
+  let instructions = [];
+  try {
+    const decompiled = TransactionMessage.decompile(tx.message, {
+      addressLookupTableAccounts: addressLookupTableAccounts.filter(Boolean),
+    });
+    instructions = Array.isArray(decompiled?.instructions) ? decompiled.instructions : [];
+  } catch (inspectErr) {
+    const err = new Error(
+      `VETO_UNEXPECTED_SOL_TRANSFER: unable to inspect tx at ${txStage}: ${String(inspectErr?.message || 'unknown')}`
+    );
+    err.code = 'VETO_UNEXPECTED_SOL_TRANSFER';
+    err.isPermanent = true;
+    throw err;
+  }
+
+  for (const ix of instructions) {
+    if (String(ix?.programId?.toString?.() || '') !== SystemProgram.programId.toString()) continue;
+    let ixType = '';
+    try {
+      ixType = String(SystemInstruction.decodeInstructionType(ix) || '');
+    } catch {
+      continue;
+    }
+    if (ixType !== 'Transfer' && ixType !== 'TransferWithSeed') continue;
+
+    let fromPubkey = '';
+    let toPubkey = '';
+    let lamports = 0;
+    try {
+      if (ixType === 'Transfer') {
+        const decoded = SystemInstruction.decodeTransfer(ix);
+        fromPubkey = String(decoded?.fromPubkey?.toString?.() || '');
+        toPubkey = String(decoded?.toPubkey?.toString?.() || '');
+        lamports = Number(decoded?.lamports || 0);
+      } else {
+        const decoded = SystemInstruction.decodeTransferWithSeed(ix);
+        fromPubkey = String(decoded?.fromPubkey?.toString?.() || decoded?.basePubkey?.toString?.() || '');
+        toPubkey = String(decoded?.toPubkey?.toString?.() || '');
+        lamports = Number(decoded?.lamports || 0);
+      }
+    } catch {
+      continue;
+    }
+    if (!fromPubkey || !toPubkey || !Number.isFinite(lamports)) continue;
+    if (fromPubkey !== walletKey) continue;
+    if (toPubkey === walletKey) continue;
+    if (lamports < minLamports) continue;
+    const err = new Error(`VETO_UNEXPECTED_SOL_TRANSFER: wallet->${toPubkey} lamports=${lamports}`);
+    err.code = 'VETO_UNEXPECTED_SOL_TRANSFER';
+    err.isPermanent = true;
+    console.warn(`[jupiter] UNEXPECTED_SOL_TRANSFER_VETO from=${fromPubkey.slice(0,8)} to=${toPubkey.slice(0,8)} lamports=${lamports}`);
+    throw err;
   }
 }
 
@@ -252,43 +325,28 @@ export async function swapToSOL(inputMint, amountRaw, slippageBps = 250, options
 
   const { swapTransaction } = await swapRes.json();
 
-  // 4. Deserialize → (optional Jito) → sign → send
+  // 4. Deserialize → sign → send
   let finalTx;
   try {
     const txBuf = Buffer.from(swapTransaction, 'base64');
     const versionedTx = VersionedTransaction.deserialize(txBuf);
-    
-    if (isUrgent) {
-      const tipAmount = 1000000; // 0.001 SOL Jito Tip
-      const tipAddr = JITO_TIP_ADDRESSES[Math.floor(Math.random() * JITO_TIP_ADDRESSES.length)];
-      
-      const tipIx = SystemProgram.transfer({
-        fromPubkey: wallet.publicKey,
-        toPubkey: new PublicKey(tipAddr),
-        lamports: tipAmount,
-      });
-
-      const addressLookupTableAccounts = await Promise.all(
-        versionedTx.message.addressTableLookups.map(async (lookup) => {
-          return (await connection.getAddressLookupTable(lookup.accountKey)).value;
-        })
-      );
-
-      const message = TransactionMessage.decompile(versionedTx.message, {
-        addressLookupTableAccounts,
-      });
-
-      message.instructions.push(tipIx);
-      versionedTx.message = message.compileToV0Message(addressLookupTableAccounts);
-      console.log(`🛡️ Jito Anti-MEV Enabled: Tip ${tipAmount/1e9} SOL added to ${tipAddr.slice(0, 8)}...`);
-    }
-
+    await blockUnexpectedSolTransfer({
+      connection,
+      tx: versionedTx,
+      walletPublicKey: wallet.publicKey,
+      txStage: 'jupiter.swap',
+    });
     versionedTx.sign([wallet]);
     finalTx = versionedTx;
   } catch (err) {
-    console.warn(`⚠️ Gagal menyuntikkan Jito Tip, lanjut tanpa tip: ${err.message}`);
     const txBuf = Buffer.from(swapTransaction, 'base64');
     const fallbackTx = VersionedTransaction.deserialize(txBuf);
+    await blockUnexpectedSolTransfer({
+      connection,
+      tx: fallbackTx,
+      walletPublicKey: wallet.publicKey,
+      txStage: 'jupiter.swap.fallback',
+    });
     fallbackTx.sign([wallet]);
     finalTx = fallbackTx;
   }

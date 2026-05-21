@@ -248,6 +248,8 @@ let _taWatchInFlight = false;
 let _manualCloseWatchTimer = null;
 let _manualCloseWatchInFlight = false;
 const OOR_ALERT_COOLDOWN_MS = 60_000;
+const MANUAL_CLOSE_ALERT_COOLDOWN_MS = 5 * 60_000;
+const _manualCloseAlertState = new Map(); // positionPubkey -> lastAlertAt
 
 function isOperatorDiscoveryPaused() {
   const state = getRuntimeState(OPERATOR_DISCOVERY_PAUSED_KEY, null);
@@ -3034,6 +3036,7 @@ async function safeExit(positionPubkey, reason) {
       : '';
     const balance = await getWalletBalance();
     success = true;
+    _manualCloseAlertState.delete(positionPubkey);
     await notify(
       `✅ <b>Posisi ditutup (${reason})</b>\n` +
       `Position: <code>${positionPubkey.slice(0,8)}</code>\n` +
@@ -3046,6 +3049,37 @@ async function safeExit(positionPubkey, reason) {
     );
     return { ok: true, ...exitResult };
   } catch (e) {
+    const closeMeta = e?.closeFailureMeta && typeof e.closeFailureMeta === 'object'
+      ? e.closeFailureMeta
+      : null;
+    const shouldAlertManualClose = Boolean(
+      closeMeta?.closeAttemptStarted === true &&
+      closeMeta?.closeSucceeded === false &&
+      closeMeta?.closeRetriesExhausted === true &&
+      closeMeta?.positionStillOpenOrUncertain === true &&
+      closeMeta?.manualCloseRequired === true
+    );
+    if (shouldAlertManualClose) {
+      const now = Date.now();
+      const lastSent = Number(_manualCloseAlertState.get(positionPubkey) || 0);
+      if (!lastSent || (now - lastSent) >= MANUAL_CLOSE_ALERT_COOLDOWN_MS) {
+        _manualCloseAlertState.set(positionPubkey, now);
+        const meta = getPositionMeta(positionPubkey) || {};
+        const token = (meta.tokenXMint || closeMeta?.tokenXMint || '').slice(0, 8) || positionPubkey.slice(0,8);
+        const pool = (meta.poolAddress || closeMeta?.poolAddress || '').slice(0, 8) || 'UNKNOWN';
+        const closeErr = String(closeMeta?.closeFailureError || e?.message || 'UNKNOWN_CLOSE_ERROR');
+        await notify(
+          `⚠️ <b>Manual close required</b>\n` +
+          `Token: <b>${escapeHTML(token)}</b>\n` +
+          `Position: <code>${positionPubkey.slice(0,8)}</code>\n` +
+          `Pool: <code>${pool}</code>\n` +
+          `Exit Trigger: <code>${escapeHTML(String(closeMeta?.exitTriggerReason || reason || 'UNKNOWN'))}</code>\n` +
+          `Error: <code>${escapeHTML(closeErr.slice(0, 240))}</code>\n` +
+          `<i>Tutup posisi ini manual di Meteora.</i>`
+        );
+        console.warn(`[hunter] MANUAL_CLOSE_TELEGRAM_SENT position=${positionPubkey.slice(0,8)}`);
+      }
+    }
     console.error(`[hunter] exitPosition error: ${e.message}`);
     await notify(
       `⚠️ <b>Exit gagal:</b>\n` +
