@@ -26,11 +26,15 @@ import { isBlacklisted }          from '../learn/tokenBlacklist.js';
 import { getRuntimeState }        from '../runtime/state.js';
 import { getPositionRuntimeState, updatePositionRuntimeState } from '../app/positionRuntimeState.js';
 import { evaluatePoolImpactGuard } from '../risk/poolImpactGuard.js';
-import { escapeHTML, safeParseAI } from '../utils/safeJson.js';
+import { escapeHTML, safeParseAI, fetchWithTimeout } from '../utils/safeJson.js';
 import reportManager              from '../utils/reportManager.js';
 import pendingStore               from '../utils/pendingStore.js';
 import { enqueueForDeploy, ensureFinalEntryCandleSanity, ensureFinalSupertrendBullish, isFreshDeployMeta, startDeployQueueWatcher, setDeployQueueNotifyFn, setDeployQueueMonitorFn } from '../utils/pendingDeployQueue.js';
 import { getDeploySlotUsage, reserveDeploySlot, releaseDeploySlot } from '../utils/deploySlotGuard.js';
+
+const WSOL_MINT = 'So11111111111111111111111111111111111111112';
+const DLMM_POOL_SEARCH_BASE = 'https://dlmm.datapi.meteora.ag/pools';
+const POOL_DISCOVERY_BASE = 'https://pool-discovery-api.datapi.meteora.ag/pools';
 // ── Pool selector: pilih pool terbaik per-token berdasarkan binStep priority ─────────────
 //
 // Input : array pool untuk satu token yang sama (tokenXMint identik)
@@ -497,14 +501,191 @@ function addWatchPassTa(pool, reason = 'TA PASS', source = 'TA') {
   return { admitted: false, row: null, evicted: null, reason: rejectReason };
 }
 
-async function resolveManualCaPool(address, cfg = getConfig()) {
+async function resolveManualCaPool(address, cfg = getConfig(), deps = {}) {
+  const getPoolInfoFn = typeof deps?.getPoolInfoFn === 'function' ? deps.getPoolInfoFn : getPoolInfo;
+  const fetchFn = typeof deps?.fetchWithTimeoutFn === 'function' ? deps.fetchWithTimeoutFn : fetchWithTimeout;
   const tokenMint = String(address || '').trim();
   const binStepPriority = Array.isArray(cfg.binStepPriority) && cfg.binStepPriority.length > 0
     ? cfg.binStepPriority.map(Number).filter(Number.isFinite)
     : [200, 125, 100];
+  const sourcesTried = [];
+
+  const isSolMint = (mint = '') => String(mint || '').trim() === WSOL_MINT;
+  const isSolSymbol = (symbol = '') => {
+    const s = String(symbol || '').trim().toUpperCase();
+    return s === 'SOL' || s === 'WSOL';
+  };
+  const parsePoolArray = (data) => {
+    if (Array.isArray(data?.data)) return data.data;
+    if (Array.isArray(data?.pools)) return data.pools;
+    if (Array.isArray(data)) return data;
+    return [];
+  };
+  const normalizePoolCandidate = (p = {}, source = 'UNKNOWN') => {
+    const tokenXMint = String(
+      p?.tokenXMint || p?.tokenX || p?.token_x?.address || p?.base?.mint || p?.mintA || p?.baseMint || ''
+    ).trim();
+    const tokenYMint = String(
+      p?.tokenYMint || p?.tokenY || p?.token_y?.address || p?.quote?.mint || p?.mintB || p?.quoteMint || ''
+    ).trim();
+    const tokenXSymbol = String(
+      p?.tokenXSymbol || p?.token_x?.symbol || p?.base?.symbol || p?.symbolA || ''
+    ).trim();
+    const tokenYSymbol = String(
+      p?.tokenYSymbol || p?.token_y?.symbol || p?.quote?.symbol || p?.symbolB || ''
+    ).trim();
+    const address = String(p?.address || p?.poolAddress || p?.pool_address || p?.pool || '').trim();
+    const binStep = Number(p?.binStep || p?.bin_step || p?.dlmm_params?.bin_step || 0);
+    const feePct = Number(p?.feePct || p?.fee_pct || 0);
+    const activeTvl = Number(p?.activeTvl || p?.active_tvl || 0);
+    const totalTvl = Number(p?.totalTvl || p?.tvl || p?.total_tvl || activeTvl || 0);
+    const volume24h = Number(
+      p?.volume24h || p?.volume_24h || p?.trade_volume_24h || p?.tradeVolume24h || p?.v24h || p?.volume || 0
+    );
+    const isDlmm =
+      String(p?.pool_type || p?.poolType || '').toLowerCase() === 'dlmm' ||
+      Number.isFinite(binStep) && binStep > 0 ||
+      Boolean(p?.dlmm_params);
+    return {
+      ...p,
+      address,
+      poolAddress: address,
+      tokenXMint,
+      tokenYMint,
+      tokenXSymbol,
+      tokenYSymbol,
+      quoteMint: tokenYMint || String(p?.quoteMint || ''),
+      quoteSymbol: tokenYSymbol || String(p?.quoteSymbol || ''),
+      binStep,
+      feePct,
+      activeTvl,
+      totalTvl,
+      volume24h,
+      isDlmm,
+      _source: source,
+    };
+  };
+  const swapPoolSides = (pool = {}) => ({
+    ...pool,
+    tokenXMint: pool.tokenYMint || '',
+    tokenYMint: pool.tokenXMint || '',
+    tokenXSymbol: pool.tokenYSymbol || '',
+    tokenYSymbol: pool.tokenXSymbol || '',
+    quoteMint: pool.tokenXMint || '',
+    quoteSymbol: pool.tokenXSymbol || '',
+  });
+  const canonicalizePoolForToken = (pool = {}, mint = '') => {
+    const xMint = String(pool?.tokenXMint || '').trim();
+    const yMint = String(pool?.tokenYMint || '').trim();
+    const tokenIsX = xMint === mint;
+    const tokenIsY = yMint === mint;
+    const xIsSol = isSolMint(xMint) || isSolSymbol(pool?.tokenXSymbol);
+    const yIsSol = isSolMint(yMint) || isSolSymbol(pool?.tokenYSymbol);
+    if (tokenIsY && xIsSol) return swapPoolSides(pool);
+    if (tokenIsX && yIsSol) return pool;
+    return pool;
+  };
+  const poolMintAliases = (pool = {}) => {
+    const out = new Set();
+    const add = (v) => {
+      const s = String(v || '').trim();
+      if (s) out.add(s);
+    };
+    add(pool?.tokenXMint);
+    add(pool?.tokenYMint);
+    add(pool?.token_x?.address);
+    add(pool?.token_y?.address);
+    add(pool?.base?.mint);
+    add(pool?.quote?.mint);
+    add(pool?.baseMint);
+    add(pool?.quoteMint);
+    add(pool?.mintA);
+    add(pool?.mintB);
+    add(pool?.tokenX);
+    add(pool?.tokenY);
+    add(pool?.mint);
+    return out;
+  };
+  const poolMatchesToken = (pool = {}, mint = '') => poolMintAliases(pool).has(mint);
+  const rankCandidates = (rows = []) => {
+    return [...rows].sort((a, b) => {
+      if (a.solPair !== b.solPair) return (b.solPair ? 1 : 0) - (a.solPair ? 1 : 0);
+      if (a.supportedBinStep !== b.supportedBinStep) return (b.supportedBinStep ? 1 : 0) - (a.supportedBinStep ? 1 : 0);
+      if (a.binStepPriorityRank !== b.binStepPriorityRank) return a.binStepPriorityRank - b.binStepPriorityRank;
+      if (a.totalTvl !== b.totalTvl) return b.totalTvl - a.totalTvl;
+      if (a.volume24h !== b.volume24h) return b.volume24h - a.volume24h;
+      if (a.hasPoolAddress !== b.hasPoolAddress) return (b.hasPoolAddress ? 1 : 0) - (a.hasPoolAddress ? 1 : 0);
+      return 0;
+    });
+  };
+  const pickCandidate = (rawPools = [], source = 'UNKNOWN') => {
+    const rejection = {
+      foundCount: 0,
+      rejectedNoSolPair: 0,
+      rejectedUnsupportedBinStep: 0,
+      rejectedMissingPoolAddress: 0,
+      rejectedNotDlmm: 0,
+      rejectedOther: 0,
+    };
+    const matched = rawPools
+      .map((p) => normalizePoolCandidate(p, source))
+      .filter((p) => poolMatchesToken(p, tokenMint));
+    rejection.foundCount = matched.length;
+
+    const scored = matched.map((candidate) => {
+      const c = canonicalizePoolForToken(candidate, tokenMint);
+      const xMint = String(c?.tokenXMint || '').trim();
+      const yMint = String(c?.tokenYMint || '').trim();
+      const xIsSol = isSolMint(xMint) || isSolSymbol(c?.tokenXSymbol);
+      const yIsSol = isSolMint(yMint) || isSolSymbol(c?.tokenYSymbol);
+      const solPair = xIsSol || yIsSol;
+      const hasPoolAddress = Boolean(String(c?.address || c?.poolAddress || '').trim());
+      const binStep = Number(c?.binStep || 0);
+      const prioIndex = binStepPriority.indexOf(binStep);
+      const supportedBinStep = prioIndex >= 0;
+      const binStepPriorityRank = prioIndex >= 0 ? prioIndex : Number.MAX_SAFE_INTEGER;
+      if (!c.isDlmm) rejection.rejectedNotDlmm += 1;
+      else if (!solPair) rejection.rejectedNoSolPair += 1;
+      else if (!supportedBinStep) rejection.rejectedUnsupportedBinStep += 1;
+      else if (!hasPoolAddress) rejection.rejectedMissingPoolAddress += 1;
+      return {
+        candidate: c,
+        solPair,
+        supportedBinStep,
+        binStepPriorityRank,
+        totalTvl: Number(c?.totalTvl || c?.activeTvl || 0),
+        volume24h: Number(c?.volume24h || 0),
+        hasPoolAddress,
+        accept: c.isDlmm && solPair && supportedBinStep && hasPoolAddress,
+      };
+    });
+    const accepted = rankCandidates(scored.filter((x) => x.accept));
+    return {
+      best: accepted[0]?.candidate || null,
+      rejection,
+    };
+  };
+  const buildResolveError = ({
+    reason = '',
+    directStat = null,
+    fallbackStat = null,
+  } = {}) => {
+    const parts = [
+      reason,
+      `sources=${sourcesTried.join('>') || 'none'}`,
+      'cacheUsed=no',
+    ];
+    const statToText = (label, stat) => {
+      if (!stat) return `${label}:none`;
+      return `${label}:{found=${stat.foundCount},noSol=${stat.rejectedNoSolPair},binStep=${stat.rejectedUnsupportedBinStep},noAddr=${stat.rejectedMissingPoolAddress},notDlmm=${stat.rejectedNotDlmm},other=${stat.rejectedOther}}`;
+    };
+    parts.push(statToText('direct', directStat));
+    parts.push(statToText('fallback', fallbackStat));
+    return new Error(parts.join(' | '));
+  };
 
   try {
-    const poolInfo = await getPoolInfo(tokenMint);
+    const poolInfo = await getPoolInfoFn(tokenMint);
     return {
       ok: true,
       kind: 'POOL',
@@ -515,43 +696,94 @@ async function resolveManualCaPool(address, cfg = getConfig()) {
       resolutionNote: 'Direct Meteora pool address',
     };
   } catch (directPoolError) {
-    const broadLimit = Math.max(
-      150,
-      Number(cfg.meteoraDiscoveryLimit) || 50,
-      Number(cfg.screeningTopPoolsLimit) || 10
-    );
-
-    const discoveryPools = await discoverHighFeePoolsMeridian({ limit: broadLimit }).catch((e) => {
-      throw new Error(`Gagal discovery pool Meteora untuk CA token: ${e.message}`);
-    });
-
-    const matches = discoveryPools.filter((pool) => {
-      const xMint = String(pool?.tokenXMint || pool?.tokenX || pool?.mint || '').trim();
-      const yMint = String(pool?.tokenYMint || pool?.tokenY || '').trim();
-      const poolAddress = String(pool?.address || pool?.poolAddress || pool?.pool_address || '').trim();
-      return tokenMint === xMint || tokenMint === yMint || tokenMint === poolAddress;
-    });
-
-    if (matches.length === 0) {
-      throw new Error(`Tidak ada pool Meteora yang cocok untuk mint ${tokenMint.slice(0, 8)}...`);
+    const searchUrl = `${DLMM_POOL_SEARCH_BASE}?query=${encodeURIComponent(tokenMint)}&sort_by=${encodeURIComponent('tvl:desc')}&page_size=20`;
+    let directRows = [];
+    let directStat = null;
+    try {
+      sourcesTried.push('dlmm.datapi.direct');
+      const res = await fetchFn(searchUrl, {}, 10_000);
+      if (res.ok) {
+        const data = await res.json().catch(() => null);
+        directRows = parsePoolArray(data);
+      } else {
+        sourcesTried.push(`dlmm.datapi.direct.http_${res.status}`);
+      }
+    } catch (e) {
+      sourcesTried.push(`dlmm.datapi.direct.err_${String(e?.message || 'unknown').slice(0, 24)}`);
+    }
+    if (directRows.length > 0) {
+      const picked = pickCandidate(directRows, 'DLMM_DIRECT');
+      directStat = picked.rejection;
+      if (picked.best) {
+        const bestPool = canonicalizePoolForToken(picked.best, tokenMint);
+        const symbol = bestPool.tokenXMint === tokenMint
+          ? (bestPool.tokenXSymbol || bestPool.name?.split('-')[0] || tokenMint.slice(0, 8))
+          : (bestPool.tokenYSymbol || bestPool.name?.split('-')[0] || tokenMint.slice(0, 8));
+        return {
+          ok: true,
+          kind: 'TOKEN',
+          poolInfo: bestPool,
+          tokenMint,
+          poolAddress: String(bestPool.address || bestPool.poolAddress || '').trim(),
+          symbol,
+          resolutionNote: `Token mint resolved via direct Meteora DLMM search (${picked.rejection.foundCount} candidate${picked.rejection.foundCount === 1 ? '' : 's'})`,
+          discoveryCount: directRows.length,
+        };
+      }
     }
 
-    const bestPool = selectBestPoolByBinStep(matches, binStepPriority);
-    if (!bestPool) {
-      throw new Error(`Pool Meteora ditemukan tapi gagal dipilih untuk mint ${tokenMint.slice(0, 8)}...`);
+    let fallbackRows = [];
+    let fallbackStat = null;
+    try {
+      sourcesTried.push('pool-discovery.fresh');
+      const fallbackLimit = Math.max(
+        200,
+        Number(cfg.meteoraDiscoveryLimit) || 50,
+        Number(cfg.screeningTopPoolsLimit) || 10
+      );
+      const fallbackUrl = `${POOL_DISCOVERY_BASE}?page_size=${fallbackLimit}&filter_by=${encodeURIComponent('pool_type=dlmm')}`;
+      const fallbackRes = await fetchFn(fallbackUrl, {}, 10_000);
+      if (fallbackRes.ok) {
+        const fallbackData = await fallbackRes.json().catch(() => null);
+        fallbackRows = parsePoolArray(fallbackData);
+      } else {
+        sourcesTried.push(`pool-discovery.http_${fallbackRes.status}`);
+      }
+    } catch (e) {
+      sourcesTried.push(`pool-discovery.err_${String(e?.message || 'unknown').slice(0, 24)}`);
     }
 
-    return {
-      ok: true,
-      kind: 'TOKEN',
-      poolInfo: bestPool,
-      tokenMint: String(bestPool.tokenXMint || bestPool.tokenX || bestPool.mint || '').trim(),
-      poolAddress: String(bestPool.address || bestPool.poolAddress || bestPool.pool_address || '').trim(),
-      symbol: bestPool.tokenXSymbol || bestPool.name?.split('-')[0] || tokenMint.slice(0, 8) || 'UNKNOWN',
-      resolutionNote: `Token mint resolved via Meteora discovery (${matches.length} match${matches.length === 1 ? '' : 'es'})`,
-      discoveryCount: discoveryPools.length,
-    };
+    if (fallbackRows.length > 0) {
+      const picked = pickCandidate(fallbackRows, 'POOL_DISCOVERY_FRESH');
+      fallbackStat = picked.rejection;
+      if (picked.best) {
+        const bestPool = canonicalizePoolForToken(picked.best, tokenMint);
+        const symbol = bestPool.tokenXMint === tokenMint
+          ? (bestPool.tokenXSymbol || bestPool.name?.split('-')[0] || tokenMint.slice(0, 8))
+          : (bestPool.tokenYSymbol || bestPool.name?.split('-')[0] || tokenMint.slice(0, 8));
+        return {
+          ok: true,
+          kind: 'TOKEN',
+          poolInfo: bestPool,
+          tokenMint,
+          poolAddress: String(bestPool.address || bestPool.poolAddress || '').trim(),
+          symbol,
+          resolutionNote: `Token mint resolved via fresh pool-discovery fallback (${picked.rejection.foundCount} candidate${picked.rejection.foundCount === 1 ? '' : 's'})`,
+          discoveryCount: fallbackRows.length,
+        };
+      }
+    }
+
+    throw buildResolveError({
+      reason: `Tidak ada pool Meteora yang cocok untuk mint ${tokenMint.slice(0, 8)}...`,
+      directStat,
+      fallbackStat,
+    });
   }
+}
+
+export async function __resolveManualCaPoolForTests(address, cfg = {}, deps = {}) {
+  return resolveManualCaPool(address, cfg, deps);
 }
 
 export async function submitManualCaPool(poolAddress, { source = 'TELEGRAM_CA' } = {}) {
