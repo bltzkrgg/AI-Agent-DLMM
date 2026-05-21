@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import BN from 'bn.js';
 import { Keypair, PublicKey } from '@solana/web3.js';
 
@@ -22,6 +23,8 @@ import {
   __setQuoteOnlyDeployMarkerForTests,
   __verifyQuoteOnlyLiquidityOnChainForTests,
   __extractRequiredSignerPubkeysForTests,
+  __inspectTxForBinArrayInitForTests,
+  __guardDlmmCostBeforeSendForTests,
   filterKnownTransactionSigners,
   getPositionMeta,
   getPositionOnChainStatus,
@@ -1592,4 +1595,272 @@ test('quote-only liquidity marker becomes confirmed only after explicit on-chain
   assert.equal(marker?.liquidityConfirmed, true);
 
   __setQuoteOnlyDeployMarkerForTests(positionPubkey, null);
+});
+
+test('seed swap payload uses JSON.stringify (no bare stringify call)', () => {
+  const src = readFileSync(new URL('../src/sniper/evilPanda.js', import.meta.url), 'utf8');
+  assert.equal(src.includes('body: stringify({'), false);
+  assert.equal(src.includes('body: JSON.stringify({'), true);
+});
+
+test('tx guard detects initializeBinArray instruction discriminator', () => {
+  const tx = {
+    instructions: [
+      {
+        programId: new PublicKey('LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo'),
+        data: Buffer.from([35, 86, 19, 185, 78, 212, 75, 211, 0]),
+      },
+    ],
+  };
+  const out = __inspectTxForBinArrayInitForTests(tx);
+  assert.equal(out.hasInitBinArray, true);
+  assert.equal(out.hasInitBitmap, false);
+});
+
+test('tx guard detects initializeBinArrayBitmapExtension instruction discriminator', () => {
+  const tx = {
+    instructions: [
+      {
+        programId: new PublicKey('LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo'),
+        data: Buffer.from([47, 157, 226, 180, 12, 240, 33, 71, 0]),
+      },
+    ],
+  };
+  const out = __inspectTxForBinArrayInitForTests(tx);
+  assert.equal(out.hasInitBinArray, false);
+  assert.equal(out.hasInitBitmap, true);
+});
+
+test('missing bin-array preflight vetoes before send and does not blacklist marker', async () => {
+  const poolPubkey = new PublicKey('Cbj8TZQdBwEWVgjLc7p2Xqx2D4CpekiPxPTB1qLS3SdT');
+  await assert.rejects(
+    __guardDlmmCostBeforeSendForTests({
+      connection: {
+        getMultipleAccountsInfo: async () => [null, null],
+        getAccountInfo: async () => ({ owner: new PublicKey('LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo') }),
+      },
+      poolPubkey,
+      poolAddress: poolPubkey.toString(),
+      dlmmPool: {
+        program: { programId: new PublicKey('LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo') },
+      },
+      deployArgs: { rangeMin: -467, rangeMax: -400 },
+      sdkPath: 'strategy',
+      txs: [{ instructions: [] }],
+      finalArgsContext: { sdkPath: 'strategy' },
+    }),
+    (err) => {
+      assert.equal(err?.code, 'VETO_BIN_ARRAY_RENT_REQUIRED');
+      assert.equal(String(err?.message || '').includes('blacklist'), false);
+      return true;
+    }
+  );
+});
+
+test('missing bitmap preflight vetoes with bitmap reason', async () => {
+  const poolPubkey = new PublicKey('Cbj8TZQdBwEWVgjLc7p2Xqx2D4CpekiPxPTB1qLS3SdT');
+  await assert.rejects(
+    __guardDlmmCostBeforeSendForTests({
+      connection: {
+        getMultipleAccountsInfo: async () => [1, 1, 1],
+        getAccountInfo: async () => null,
+      },
+      poolPubkey,
+      poolAddress: poolPubkey.toString(),
+      dlmmPool: {
+        program: { programId: new PublicKey('LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo') },
+      },
+      deployArgs: { rangeMin: -50000, rangeMax: -49900 },
+      sdkPath: 'strategy',
+      txs: [{ instructions: [] }],
+      finalArgsContext: { sdkPath: 'strategy' },
+    }),
+    (err) => {
+      assert.equal(err?.code, 'VETO_BIN_ARRAY_BITMAP_RENT_REQUIRED');
+      return true;
+    }
+  );
+});
+
+test('generated tx with initializeBinArray vetoes before send', async () => {
+  const poolPubkey = new PublicKey('Cbj8TZQdBwEWVgjLc7p2Xqx2D4CpekiPxPTB1qLS3SdT');
+  await assert.rejects(
+    __guardDlmmCostBeforeSendForTests({
+      connection: {
+        getMultipleAccountsInfo: async () => [1, 1],
+        getAccountInfo: async () => ({ owner: new PublicKey('LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo') }),
+      },
+      poolPubkey,
+      poolAddress: poolPubkey.toString(),
+      dlmmPool: {
+        program: { programId: new PublicKey('LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo') },
+      },
+      deployArgs: { rangeMin: -467, rangeMax: -400 },
+      sdkPath: 'strategy',
+      txs: [{
+        instructions: [{
+          programId: new PublicKey('LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo'),
+          data: Buffer.from([35, 86, 19, 185, 78, 212, 75, 211, 9]),
+        }],
+      }],
+      finalArgsContext: { sdkPath: 'strategy' },
+    }),
+    (err) => {
+      assert.equal(err?.code, 'VETO_BIN_ARRAY_RENT_REQUIRED');
+      return true;
+    }
+  );
+});
+
+test('generated tx with initializeBinArrayBitmapExtension vetoes before send', async () => {
+  const poolPubkey = new PublicKey('Cbj8TZQdBwEWVgjLc7p2Xqx2D4CpekiPxPTB1qLS3SdT');
+  await assert.rejects(
+    __guardDlmmCostBeforeSendForTests({
+      connection: {
+        getMultipleAccountsInfo: async () => [1, 1],
+        getAccountInfo: async () => ({ owner: new PublicKey('LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo') }),
+      },
+      poolPubkey,
+      poolAddress: poolPubkey.toString(),
+      dlmmPool: {
+        program: { programId: new PublicKey('LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo') },
+      },
+      deployArgs: { rangeMin: -467, rangeMax: -400 },
+      sdkPath: 'strategy',
+      txs: [{
+        instructions: [{
+          programId: new PublicKey('LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo'),
+          data: Buffer.from([47, 157, 226, 180, 12, 240, 33, 71, 9]),
+        }],
+      }],
+      finalArgsContext: { sdkPath: 'strategy' },
+    }),
+    (err) => {
+      assert.equal(err?.code, 'VETO_BIN_ARRAY_BITMAP_RENT_REQUIRED');
+      return true;
+    }
+  );
+});
+
+test('quote-only partial cleanup/unlock is triggered when cost guard vetoes after init', async () => {
+  const positionPubkey = Keypair.generate().publicKey.toString();
+  const poolPubkey = new PublicKey('Cbj8TZQdBwEWVgjLc7p2Xqx2D4CpekiPxPTB1qLS3SdT');
+  __setQuoteOnlyDeployMarkerForTests(positionPubkey, {
+    poolAddress: poolPubkey.toString(),
+    tokenXMint: 'Mint111111111111111111111111111111111111111',
+    phase: 'ADD_LIQUIDITY_FAILED',
+    source: 'BOT_QUOTE_ONLY_POSITION_FIRST',
+    ttlMs: 120000,
+  });
+  await setPositionLifecycle(positionPubkey, 'deploying', {
+    poolAddress: poolPubkey.toString(),
+    deploySol: 0.1,
+    tokenXMint: 'Mint111111111111111111111111111111111111111',
+    tokenYMint: 'So11111111111111111111111111111111111111112',
+    rangeMin: -467,
+    rangeMax: -400,
+  }, { flush: true });
+
+  let cleanupCalls = 0;
+  await assert.rejects(
+    __guardDlmmCostBeforeSendForTests({
+      connection: {
+        getMultipleAccountsInfo: async () => [1, 1],
+        getAccountInfo: async () => ({ owner: new PublicKey('LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo') }),
+      },
+      poolPubkey,
+      poolAddress: poolPubkey.toString(),
+      dlmmPool: {
+        program: { programId: new PublicKey('LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo') },
+      },
+      deployArgs: { rangeMin: -467, rangeMax: -400 },
+      sdkPath: 'weight_quote_only',
+      txs: [{
+        instructions: [{
+          programId: new PublicKey('LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo'),
+          data: Buffer.from([35, 86, 19, 185, 78, 212, 75, 211, 9]),
+        }],
+      }],
+      positionPubkey,
+      finalArgsContext: { sdkPath: 'weight_quote_only', positionPubkey },
+      cleanupFn: async () => {
+        cleanupCalls += 1;
+        await __handleQuoteOnlyPartialDeployFailureForTests({
+          connection: {},
+          wallet: { publicKey: Keypair.generate().publicKey },
+          dlmmPool: {},
+          poolAddress: poolPubkey.toString(),
+          positionPubkey,
+          error: new Error('guard veto'),
+          getFreshPositionFn: async () => ({ activePos: null }),
+          verifyClosedFn: async () => true,
+        });
+      },
+    }),
+  );
+  assert.equal(cleanupCalls, 1);
+  assert.equal(getPositionMeta(positionPubkey), null);
+  __setQuoteOnlyDeployMarkerForTests(positionPubkey, null);
+});
+
+test('normal tx without init bin-array/bitmap is allowed', async () => {
+  const poolPubkey = new PublicKey('Cbj8TZQdBwEWVgjLc7p2Xqx2D4CpekiPxPTB1qLS3SdT');
+  const out = await __guardDlmmCostBeforeSendForTests({
+    connection: {
+      getMultipleAccountsInfo: async () => [1, 1],
+      getAccountInfo: async () => ({ owner: new PublicKey('LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo') }),
+    },
+    poolPubkey,
+    poolAddress: poolPubkey.toString(),
+    dlmmPool: {
+      program: { programId: new PublicKey('LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo') },
+    },
+    deployArgs: { rangeMin: -467, rangeMax: -400 },
+    sdkPath: 'strategy',
+    txs: [{ instructions: [] }],
+    finalArgsContext: { sdkPath: 'strategy' },
+  });
+  assert.equal(out.action, 'ALLOW');
+});
+
+test('high tx count alone does not veto', async () => {
+  const poolPubkey = new PublicKey('Cbj8TZQdBwEWVgjLc7p2Xqx2D4CpekiPxPTB1qLS3SdT');
+  const txs = Array.from({ length: 12 }, () => ({ instructions: [] }));
+  const out = await __guardDlmmCostBeforeSendForTests({
+    connection: {
+      getMultipleAccountsInfo: async () => [1, 1],
+      getAccountInfo: async () => ({ owner: new PublicKey('LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo') }),
+    },
+    poolPubkey,
+    poolAddress: poolPubkey.toString(),
+    dlmmPool: {
+      program: { programId: new PublicKey('LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo') },
+    },
+    deployArgs: { rangeMin: -467, rangeMax: -400 },
+    sdkPath: 'strategy',
+    txs,
+    finalArgsContext: { sdkPath: 'strategy' },
+  });
+  assert.equal(out.action, 'ALLOW');
+  assert.equal(out.instructionCount, 0);
+});
+
+test('high bin count alone does not veto when arrays exist and no init instructions', async () => {
+  const poolPubkey = new PublicKey('Cbj8TZQdBwEWVgjLc7p2Xqx2D4CpekiPxPTB1qLS3SdT');
+  const out = await __guardDlmmCostBeforeSendForTests({
+    connection: {
+      getMultipleAccountsInfo: async (keys) => keys.map(() => ({ owner: new PublicKey('LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo') })),
+      getAccountInfo: async () => ({ owner: new PublicKey('LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo') }),
+    },
+    poolPubkey,
+    poolAddress: poolPubkey.toString(),
+    dlmmPool: {
+      program: { programId: new PublicKey('LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo') },
+    },
+    deployArgs: { rangeMin: -10000, rangeMax: -9900 },
+    sdkPath: 'strategy',
+    txs: [{ instructions: [] }],
+    finalArgsContext: { sdkPath: 'strategy' },
+  });
+  assert.equal(out.action, 'ALLOW');
 });

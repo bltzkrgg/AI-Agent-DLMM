@@ -13,7 +13,7 @@
 
 'use strict';
 
-import DLMM, { StrategyType } from '@meteora-ag/dlmm';
+import DLMM, { StrategyType, getBinArraysRequiredByPositionRange, isOverflowDefaultBinArrayBitmap, deriveBinArrayBitmapExtension } from '@meteora-ag/dlmm';
 import { PublicKey, ComputeBudgetProgram, VersionedTransaction, TransactionMessage } from '@solana/web3.js';
 import BN from 'bn.js';
 import { appendFileSync, mkdirSync } from 'fs';
@@ -81,6 +81,7 @@ const RENT_FREE_SEARCH_SLACK_ARRAYS = 100;
 const SPOT_STRATEGY_TYPE = StrategyType?.Spot ?? 0;
 const DLMM_SDK_PATH_STRATEGY = 'strategy';
 const DLMM_SDK_PATH_WEIGHT_QUOTE_ONLY = 'weight_quote_only';
+const DLMM_PROGRAM_ID = new PublicKey('LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo');
 
 function isFiniteInteger(value) {
   return Number.isFinite(value) && Number.isSafeInteger(value);
@@ -281,6 +282,201 @@ function safeStringifyErrorObject(value) {
   } catch {
     return '';
   }
+}
+
+function getTxInstructions(tx) {
+  if (!tx) return [];
+  if (Array.isArray(tx?.instructions)) return tx.instructions;
+  const msg = tx?.message;
+  if (Array.isArray(msg?.compiledInstructions) && Array.isArray(msg?.staticAccountKeys)) {
+    return msg.compiledInstructions.map((compiledIx) => {
+      const programId = msg.staticAccountKeys?.[compiledIx?.programIdIndex];
+      return {
+        programId,
+        data: compiledIx?.data,
+        accounts: Array.isArray(compiledIx?.accountKeyIndexes)
+          ? compiledIx.accountKeyIndexes.map((idx) => msg.staticAccountKeys?.[idx]).filter(Boolean)
+          : [],
+      };
+    });
+  }
+  return [];
+}
+
+function instructionDataToBuffer(data) {
+  if (!data) return Buffer.alloc(0);
+  if (Buffer.isBuffer(data)) return data;
+  if (data instanceof Uint8Array) return Buffer.from(data);
+  if (Array.isArray(data)) return Buffer.from(data);
+  if (typeof data === 'string') {
+    try { return Buffer.from(data, 'base64'); } catch { return Buffer.from(data); }
+  }
+  return Buffer.alloc(0);
+}
+
+const INITIALIZE_BIN_ARRAY_DISCRIMINATOR = Buffer.from([35, 86, 19, 185, 78, 212, 75, 211]);
+const INITIALIZE_BIN_ARRAY_BITMAP_DISCRIMINATOR = Buffer.from([47, 157, 226, 180, 12, 240, 33, 71]);
+
+function inspectTxForBinArrayInit(tx) {
+  const instructions = getTxInstructions(tx);
+  let hasInitBinArray = false;
+  let hasInitBitmap = false;
+  for (const ix of instructions) {
+    const programId = String(ix?.programId?.toString?.() || ix?.programId || '');
+    const data = instructionDataToBuffer(ix?.data);
+    const discriminator = data.length >= 8 ? data.subarray(0, 8) : Buffer.alloc(0);
+    if (discriminator.length === 8 && discriminator.equals(INITIALIZE_BIN_ARRAY_DISCRIMINATOR)) {
+      hasInitBinArray = true;
+    }
+    if (discriminator.length === 8 && discriminator.equals(INITIALIZE_BIN_ARRAY_BITMAP_DISCRIMINATOR)) {
+      hasInitBitmap = true;
+    }
+    if (/initializeBinArrayBitmapExtension/i.test(programId) || /initializeBinArrayBitmapExtension/i.test(String(ix?.name || ''))) {
+      hasInitBitmap = true;
+    }
+    if (/initializeBinArray/i.test(String(ix?.name || ''))) {
+      hasInitBinArray = true;
+    }
+  }
+  return { hasInitBinArray, hasInitBitmap, instructionCount: instructions.length };
+}
+
+function buildBinArrayGuardContext({
+  poolAddress = '',
+  sdkPath = '',
+  rangeMin = null,
+  rangeMax = null,
+  missingCount = 0,
+  missingIndexes = [],
+  hasInitBinArray = false,
+  hasInitBitmap = false,
+  action = 'ALLOW',
+  reason = '',
+  instructionCount = 0,
+} = {}) {
+  return {
+    pool: String(poolAddress || ''),
+    sdkPath: String(sdkPath || ''),
+    rangeMin: Number.isFinite(Number(rangeMin)) ? Number(rangeMin) : null,
+    rangeMax: Number.isFinite(Number(rangeMax)) ? Number(rangeMax) : null,
+    bins: Number.isFinite(Number(rangeMin)) && Number.isFinite(Number(rangeMax))
+      ? (Number(rangeMax) - Number(rangeMin) + 1)
+      : null,
+    hasMissingBinArray: Number(missingCount || 0) > 0,
+    hasInitBinArray: Boolean(hasInitBinArray),
+    hasInitBitmap: Boolean(hasInitBitmap),
+    action,
+    reason,
+    missingCount: Number(missingCount || 0),
+    missingIndexes: Array.isArray(missingIndexes) ? missingIndexes : [],
+    instructionCount,
+  };
+}
+
+async function guardDlmmCostBeforeSend({
+  connection,
+  poolPubkey,
+  poolAddress = '',
+  dlmmPool = null,
+  deployArgs = {},
+  sdkPath = '',
+  txs = [],
+  positionPubkey = '',
+  cleanupFn = null,
+  finalArgsContext = {},
+} = {}) {
+  const rangeMin = Number(deployArgs?.rangeMin);
+  const rangeMax = Number(deployArgs?.rangeMax);
+  const programId = dlmmPool?.program?.programId || dlmmPool?.programId || DLMM_PROGRAM_ID;
+  const preflightStatus = await inspectRangeBinArrayInitStatus(connection, poolPubkey, rangeMin, rangeMax).catch(() => null);
+  const preflightMissingIndexes = Array.isArray(preflightStatus?.arrayStatuses)
+    ? preflightStatus.arrayStatuses.filter((s) => s?.initialized === false).map((s) => Number(s?.idx))
+    : [];
+  const requiredBinArrays = getBinArraysRequiredByPositionRange(
+    poolPubkey,
+    new BN(String(rangeMin)),
+    new BN(String(rangeMax)),
+    programId,
+  ) || [];
+  const requiredIndexes = requiredBinArrays.map((item) => Number(item?.index?.toString?.() || item?.index || 0));
+  const requiredKeys = requiredBinArrays.map((item) => item?.key).filter(Boolean);
+  const accounts = requiredKeys.length > 0 && connection?.getMultipleAccountsInfo
+    ? await connection.getMultipleAccountsInfo(requiredKeys).catch(() => [])
+    : [];
+  const missingIndexes = [];
+  for (let i = 0; i < requiredBinArrays.length; i++) {
+    if (!accounts[i]) missingIndexes.push(requiredIndexes[i]);
+  }
+  if (preflightMissingIndexes.length > 0) {
+    for (const idx of preflightMissingIndexes) {
+      if (!missingIndexes.includes(idx)) missingIndexes.push(idx);
+    }
+  }
+  let hasInitBinArray = false;
+  let hasInitBitmap = false;
+  let instructionCount = 0;
+  for (const tx of Array.isArray(txs) ? txs : [txs]) {
+    const txInfo = inspectTxForBinArrayInit(tx);
+    instructionCount += txInfo.instructionCount;
+    hasInitBinArray = hasInitBinArray || txInfo.hasInitBinArray;
+    hasInitBitmap = hasInitBitmap || txInfo.hasInitBitmap;
+  }
+  const bitmapNeeded = requiredIndexes.some((idx) => isOverflowDefaultBinArrayBitmap(new BN(String(idx))));
+  let bitmapMissing = false;
+  if (bitmapNeeded && connection?.getAccountInfo) {
+    try {
+      const [bitmapPda] = deriveBinArrayBitmapExtension(poolPubkey, programId);
+      const bitmapAcc = await connection.getAccountInfo(bitmapPda);
+      bitmapMissing = !bitmapAcc;
+    } catch {
+      bitmapMissing = false;
+    }
+  }
+  const effectiveHasInitBitmap = hasInitBitmap || bitmapMissing;
+  const action = (missingIndexes.length > 0 || hasInitBinArray || effectiveHasInitBitmap)
+    ? 'VETO'
+    : 'ALLOW';
+  const reason = effectiveHasInitBitmap
+    ? 'VETO_BIN_ARRAY_BITMAP_RENT_REQUIRED'
+    : (hasInitBinArray || missingIndexes.length > 0)
+      ? 'VETO_BIN_ARRAY_RENT_REQUIRED'
+      : 'ALLOW';
+  const context = buildBinArrayGuardContext({
+    poolAddress,
+    sdkPath,
+    rangeMin,
+    rangeMax,
+    missingCount: missingIndexes.length,
+    missingIndexes,
+    hasInitBinArray,
+    hasInitBitmap: effectiveHasInitBitmap,
+    action,
+    reason,
+    instructionCount,
+  });
+  console.log(
+    `[evilPanda] DLMM_COST_GUARD pool=${String(poolAddress || '').slice(0,8)} sdkPath=${sdkPath} ` +
+      `range=[${rangeMin},${rangeMax}] bins=${context.bins} hasMissingBinArray=${context.hasMissingBinArray} ` +
+      `hasInitBinArray=${hasInitBinArray} hasInitBitmap=${effectiveHasInitBitmap} action=${action} reason=${reason}`
+  );
+  if (action === 'VETO') {
+    const err = buildInvalidDlmmArgsError(
+      `${reason}: missingCount=${missingIndexes.length} missingIndexes=${missingIndexes.join(',') || 'none'} ` +
+      `bitmapNeeded=${bitmapNeeded ? 'true' : 'false'} bitmapMissing=${bitmapMissing ? 'true' : 'false'} ` +
+      `estimatedRentSol=${String(preflightStatus?.estimatedRentSol || 'unknown')}`
+    );
+    err.code = reason;
+    err.isPermanent = true;
+    err.dlmmContextExtra = {
+      ...finalArgsContext,
+      ...context,
+    };
+    if (typeof cleanupFn === 'function') {
+      await cleanupFn({ reason, context: err.dlmmContextExtra }).catch(() => {});
+    }
+    throw err;
+  }
+  return context;
 }
 
 export function extractDlmmSdkDeployErrorMeta(error) {
@@ -2453,7 +2649,7 @@ export async function deployPosition(poolAddress, deployOptions = {}) {
         {
           method: 'POST',
           headers,
-          body: stringify({
+          body: JSON.stringify({
             quoteResponse: quote,
             userPublicKey: wallet.publicKey.toString(),
             wrapAndUnwrapSol: true,
@@ -2820,6 +3016,41 @@ export async function deployPosition(poolAddress, deployOptions = {}) {
     const safeRangeMax = Number(deployArgs.rangeMax);
     const finalSdkPath = selectDlmmSdkPathForDeployArgs(deployArgs);
     const txList = Array.isArray(txOrTxs) ? txOrTxs : [txOrTxs];
+    await guardDlmmCostBeforeSend({
+      connection,
+      poolPubkey,
+      poolAddress,
+      dlmmPool,
+      deployArgs,
+      sdkPath: finalSdkPath,
+      txs: txList,
+      positionPubkey,
+      finalArgsContext: {
+        ...(finalDeployState?.finalArgsContext || {}),
+        sdkPath: finalSdkPath,
+        positionPubkey,
+      },
+      cleanupFn: finalSdkPath === DLMM_SDK_PATH_WEIGHT_QUOTE_ONLY
+        ? async () => {
+          const vetoErr = buildInvalidDlmmArgsError('VETO_BIN_ARRAY_RENT_REQUIRED');
+          vetoErr.dlmmContextExtra = {
+            ...(finalDeployState?.finalArgsContext || {}),
+            sdkPath: finalSdkPath,
+            sdkFlow: 'quote_only_position_first',
+            positionPubkey,
+          };
+          await handleQuoteOnlyPartialDeployFailure({
+            connection,
+            wallet,
+            dlmmPool,
+            poolAddress,
+            positionPubkey,
+            microLamports,
+            error: vetoErr,
+          });
+        }
+        : null,
+    });
 
       if (isDryRun()) {
         for (const tx of txList) {
@@ -2851,7 +3082,7 @@ export async function deployPosition(poolAddress, deployOptions = {}) {
           }
           const sim = await connection.simulateTransaction(tx, { commitment: 'processed' });
           if (sim?.value?.err) {
-            throw new Error(`DRY_RUN_SIMULATION_FAILED: ${stringify(sim.value.err)}`);
+            throw new Error(`DRY_RUN_SIMULATION_FAILED: ${JSON.stringify(sim.value.err)}`);
           }
         }
         console.log(`[DRY RUN] deployPosition simulated only: pool=${poolAddress.slice(0,8)} pos=${positionPubkey.slice(0,8)} txs=${txList.length}`);
@@ -3391,7 +3622,7 @@ export async function exitPosition(positionPubkey, reason = 'MANUAL') {
           }
           const sim = await connection.simulateTransaction(tx, { commitment: 'processed' });
           if (sim?.value?.err) {
-            throw new Error(`DRY_RUN_SIMULATION_FAILED: ${stringify(sim.value.err)}`);
+            throw new Error(`DRY_RUN_SIMULATION_FAILED: ${JSON.stringify(sim.value.err)}`);
           }
         }
 
@@ -3871,6 +4102,14 @@ export async function __verifyQuoteOnlyLiquidityOnChainForTests(args = {}) {
 
 export function __extractRequiredSignerPubkeysForTests(tx) {
   return [...extractRequiredSignerPubkeys(tx)];
+}
+
+export function __inspectTxForBinArrayInitForTests(tx) {
+  return inspectTxForBinArrayInit(tx);
+}
+
+export async function __guardDlmmCostBeforeSendForTests(args = {}) {
+  return guardDlmmCostBeforeSend(args);
 }
 
 export { EP_CONFIG };
