@@ -367,8 +367,8 @@ function buildBinArrayGuardContext({
     hasInitBitmap: Boolean(hasInitBitmap),
     action,
     reason,
-    missingCount: Number(missingCount || 0),
-    missingIndexes: Array.isArray(missingIndexes) ? missingIndexes : [],
+    preflightMissingBinArrayCount: Number(missingCount || 0),
+    preflightMissingBinArrayIndexes: Array.isArray(missingIndexes) ? missingIndexes : [],
     instructionCount,
   };
 }
@@ -433,14 +433,19 @@ async function guardDlmmCostBeforeSend({
     }
   }
   const effectiveHasInitBitmap = hasInitBitmap || bitmapMissing;
-  const action = (missingIndexes.length > 0 || hasInitBinArray || effectiveHasInitBitmap)
+  const hasPreflightMissing = missingIndexes.length > 0 || bitmapMissing;
+  const hasGeneratedInitProof = hasInitBinArray || hasInitBitmap;
+  const action = hasGeneratedInitProof
     ? 'VETO'
-    : 'ALLOW';
-  const reason = effectiveHasInitBitmap
-    ? 'VETO_BIN_ARRAY_BITMAP_RENT_REQUIRED'
-    : (hasInitBinArray || missingIndexes.length > 0)
-      ? 'VETO_BIN_ARRAY_RENT_REQUIRED'
-      : 'ALLOW';
+    : (hasPreflightMissing ? 'DIAG_ONLY' : 'ALLOW');
+  let reason = 'ALLOW';
+  if (hasGeneratedInitProof) {
+    reason = hasInitBitmap
+      ? 'VETO_BIN_ARRAY_BITMAP_RENT_REQUIRED'
+      : 'VETO_BIN_ARRAY_RENT_REQUIRED';
+  } else if (hasPreflightMissing) {
+    reason = 'TX_CLEAN_PREFLIGHT_ONLY';
+  }
   const context = buildBinArrayGuardContext({
     poolAddress,
     sdkPath,
@@ -457,11 +462,13 @@ async function guardDlmmCostBeforeSend({
   console.log(
     `[evilPanda] DLMM_COST_GUARD pool=${String(poolAddress || '').slice(0,8)} sdkPath=${sdkPath} ` +
       `range=[${rangeMin},${rangeMax}] bins=${context.bins} hasMissingBinArray=${context.hasMissingBinArray} ` +
-      `hasInitBinArray=${hasInitBinArray} hasInitBitmap=${effectiveHasInitBitmap} action=${action} reason=${reason}`
+      `hasInitBinArray=${hasInitBinArray} hasInitBitmap=${effectiveHasInitBitmap} ` +
+      `preflightMissingBinArrayCount=${missingIndexes.length} preflightEstimatedRentSol=${String(preflightStatus?.estimatedRentSol || 'unknown')} ` +
+      `action=${action} reason=${reason}`
   );
   if (action === 'VETO') {
     const err = buildInvalidDlmmArgsError(
-      `${reason}: missingCount=${missingIndexes.length} missingIndexes=${missingIndexes.join(',') || 'none'} ` +
+      `${reason}: preflightMissingCount=${missingIndexes.length} preflightMissingIndexes=${missingIndexes.join(',') || 'none'} ` +
       `bitmapNeeded=${bitmapNeeded ? 'true' : 'false'} bitmapMissing=${bitmapMissing ? 'true' : 'false'} ` +
       `estimatedRentSol=${String(preflightStatus?.estimatedRentSol || 'unknown')}`
     );

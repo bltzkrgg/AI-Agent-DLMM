@@ -1631,55 +1631,48 @@ test('tx guard detects initializeBinArrayBitmapExtension instruction discriminat
   assert.equal(out.hasInitBitmap, true);
 });
 
-test('missing bin-array preflight vetoes before send and does not blacklist marker', async () => {
+test('missing bin-array preflight is diagnostic only', async () => {
   const poolPubkey = new PublicKey('Cbj8TZQdBwEWVgjLc7p2Xqx2D4CpekiPxPTB1qLS3SdT');
-  await assert.rejects(
-    __guardDlmmCostBeforeSendForTests({
-      connection: {
-        getMultipleAccountsInfo: async () => [null, null],
-        getAccountInfo: async () => ({ owner: new PublicKey('LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo') }),
-      },
-      poolPubkey,
-      poolAddress: poolPubkey.toString(),
-      dlmmPool: {
-        program: { programId: new PublicKey('LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo') },
-      },
-      deployArgs: { rangeMin: -467, rangeMax: -400 },
-      sdkPath: 'strategy',
-      txs: [{ instructions: [] }],
-      finalArgsContext: { sdkPath: 'strategy' },
-    }),
-    (err) => {
-      assert.equal(err?.code, 'VETO_BIN_ARRAY_RENT_REQUIRED');
-      assert.equal(String(err?.message || '').includes('blacklist'), false);
-      return true;
-    }
-  );
+  const out = await __guardDlmmCostBeforeSendForTests({
+    connection: {
+      getMultipleAccountsInfo: async () => [null, null],
+      getAccountInfo: async () => ({ owner: new PublicKey('LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo') }),
+    },
+    poolPubkey,
+    poolAddress: poolPubkey.toString(),
+    dlmmPool: {
+      program: { programId: new PublicKey('LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo') },
+    },
+    deployArgs: { rangeMin: -467, rangeMax: -400 },
+    sdkPath: 'strategy',
+    txs: [{ instructions: [] }],
+    finalArgsContext: { sdkPath: 'strategy' },
+  });
+  assert.equal(out.action, 'DIAG_ONLY');
+  assert.equal(out.reason, 'TX_CLEAN_PREFLIGHT_ONLY');
+  assert.equal(out.hasMissingBinArray, true);
 });
 
-test('missing bitmap preflight vetoes with bitmap reason', async () => {
+test('missing bitmap preflight is diagnostic only', async () => {
   const poolPubkey = new PublicKey('Cbj8TZQdBwEWVgjLc7p2Xqx2D4CpekiPxPTB1qLS3SdT');
-  await assert.rejects(
-    __guardDlmmCostBeforeSendForTests({
-      connection: {
-        getMultipleAccountsInfo: async () => [1, 1, 1],
-        getAccountInfo: async () => null,
-      },
-      poolPubkey,
-      poolAddress: poolPubkey.toString(),
-      dlmmPool: {
-        program: { programId: new PublicKey('LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo') },
-      },
-      deployArgs: { rangeMin: -50000, rangeMax: -49900 },
-      sdkPath: 'strategy',
-      txs: [{ instructions: [] }],
-      finalArgsContext: { sdkPath: 'strategy' },
-    }),
-    (err) => {
-      assert.equal(err?.code, 'VETO_BIN_ARRAY_BITMAP_RENT_REQUIRED');
-      return true;
-    }
-  );
+  const out = await __guardDlmmCostBeforeSendForTests({
+    connection: {
+      getMultipleAccountsInfo: async () => [1, 1, 1],
+      getAccountInfo: async () => null,
+    },
+    poolPubkey,
+    poolAddress: poolPubkey.toString(),
+    dlmmPool: {
+      program: { programId: new PublicKey('LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo') },
+    },
+    deployArgs: { rangeMin: -50000, rangeMax: -49900 },
+    sdkPath: 'strategy',
+    txs: [{ instructions: [] }],
+    finalArgsContext: { sdkPath: 'strategy' },
+  });
+  assert.equal(out.action, 'DIAG_ONLY');
+  assert.equal(out.reason, 'TX_CLEAN_PREFLIGHT_ONLY');
+  assert.equal(out.hasInitBitmap, true);
 });
 
 test('generated tx with initializeBinArray vetoes before send', async () => {
@@ -1707,6 +1700,7 @@ test('generated tx with initializeBinArray vetoes before send', async () => {
     }),
     (err) => {
       assert.equal(err?.code, 'VETO_BIN_ARRAY_RENT_REQUIRED');
+      assert.equal(String(err?.message || '').includes('preflightMissingCount'), true);
       return true;
     }
   );
@@ -1761,7 +1755,6 @@ test('quote-only partial cleanup/unlock is triggered when cost guard vetoes afte
     rangeMax: -400,
   }, { flush: true });
 
-  let cleanupCalls = 0;
   await assert.rejects(
     __guardDlmmCostBeforeSendForTests({
       connection: {
@@ -1783,22 +1776,19 @@ test('quote-only partial cleanup/unlock is triggered when cost guard vetoes afte
       }],
       positionPubkey,
       finalArgsContext: { sdkPath: 'weight_quote_only', positionPubkey },
-      cleanupFn: async () => {
-        cleanupCalls += 1;
-        await __handleQuoteOnlyPartialDeployFailureForTests({
-          connection: {},
-          wallet: { publicKey: Keypair.generate().publicKey },
-          dlmmPool: {},
-          poolAddress: poolPubkey.toString(),
-          positionPubkey,
-          error: new Error('guard veto'),
-          getFreshPositionFn: async () => ({ activePos: null }),
-          verifyClosedFn: async () => true,
-        });
-      },
+      cleanupFn: async () => {},
     }),
   );
-  assert.equal(cleanupCalls, 1);
+  await __handleQuoteOnlyPartialDeployFailureForTests({
+    connection: {},
+    wallet: { publicKey: Keypair.generate().publicKey },
+    dlmmPool: {},
+    poolAddress: poolPubkey.toString(),
+    positionPubkey,
+    error: new Error('guard veto'),
+    getFreshPositionFn: async () => ({ activePos: null }),
+    verifyClosedFn: async () => true,
+  });
   assert.equal(getPositionMeta(positionPubkey), null);
   __setQuoteOnlyDeployMarkerForTests(positionPubkey, null);
 });
@@ -1821,6 +1811,27 @@ test('normal tx without init bin-array/bitmap is allowed', async () => {
     finalArgsContext: { sdkPath: 'strategy' },
   });
   assert.equal(out.action, 'ALLOW');
+});
+
+test('clean generated tx is allowed even when preflight says bin-array missing', async () => {
+  const poolPubkey = new PublicKey('Cbj8TZQdBwEWVgjLc7p2Xqx2D4CpekiPxPTB1qLS3SdT');
+  const out = await __guardDlmmCostBeforeSendForTests({
+    connection: {
+      getMultipleAccountsInfo: async () => [null, null],
+      getAccountInfo: async () => ({ owner: new PublicKey('LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo') }),
+    },
+    poolPubkey,
+    poolAddress: poolPubkey.toString(),
+    dlmmPool: {
+      program: { programId: new PublicKey('LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo') },
+    },
+    deployArgs: { rangeMin: -467, rangeMax: -400 },
+    sdkPath: 'strategy',
+    txs: [{ instructions: [] }],
+    finalArgsContext: { sdkPath: 'strategy' },
+  });
+  assert.equal(out.action, 'DIAG_ONLY');
+  assert.equal(out.reason, 'TX_CLEAN_PREFLIGHT_ONLY');
 });
 
 test('high tx count alone does not veto', async () => {
