@@ -171,15 +171,36 @@ async function notify(msg, opts = {}) {
   } catch {}
 }
 
-async function runSilentScan({ emitFinalReport = false } = {}) {
+async function runSilentScan({ emitFinalReport = false, source = 'startup' } = {}) {
   if (isDiscoveryPaused()) {
     return { blocked: true, policy: 'OPERATOR_DISCOVERY_PAUSED' };
   }
+  console.log(`[autoscreen] AUTOSCREEN_SCAN_TRIGGER source=${source} silent=true`);
   setNotifyMuted(true);
   try {
     return await scanAndDeploy({ emitFinalReport });
   } finally {
     setNotifyMuted(false);
+    if (!emitFinalReport) {
+      console.log(`[autoscreen] AUTOSCREEN_FIRST_RUN_SUPPRESSED source=${source}`);
+    }
+  }
+}
+
+async function runImmediateAutoscreenScan({ source = 'manual_command', emitFinalReport = true } = {}) {
+  if (isDiscoveryPaused()) {
+    return { blocked: true, policy: 'OPERATOR_DISCOVERY_PAUSED' };
+  }
+  if (_screeningScanInFlight) {
+    console.log(`[autoscreen] immediate scan skipped source=${source}: scan in-flight`);
+    return { blocked: true, policy: 'SCREENING_SCAN_IN_FLIGHT' };
+  }
+  _screeningScanInFlight = true;
+  try {
+    console.log(`[autoscreen] AUTOSCREEN_SCAN_TRIGGER source=${source} silent=false`);
+    return await scanAndDeploy({ emitFinalReport });
+  } finally {
+    _screeningScanInFlight = false;
   }
 }
 
@@ -812,10 +833,10 @@ bot.onText(/\/autoscreen(?:\s+(on|off))?/, async (msg, match) => {
     // Wire Deploy Queue agar watcher bisa eksekusi
     await startAutoScreeningRuntime(chatId, { snapshotTopPools: true });
 
-    // ── 1. INSTANT FIRST RUN (awaited) ────────────────────────────────
-    // first-run autoscreen: snapshot top pools muncul, final cycle report disenyapkan
+    // ── 1. INSTANT FIRST RUN (awaited, user-triggered) ───────────────
+    // Manual /autoscreen on harus mengirim final report scan pertama.
     try {
-      await runSilentScan({ emitFinalReport: false });
+      await runImmediateAutoscreenScan({ source: 'manual_command', emitFinalReport: true });
     } catch (e) {
       console.error('[autoscreen] Scan pertama gagal:', e.message);
       await notify(`❌ <b>Scan pertama gagal:</b>\n<code>${escapeHTML(e.message)}</code>\n<i>Loop tetap dilanjutkan...</i>`);
@@ -1090,7 +1111,7 @@ async function restoreAutoScreeningOnStartup({
 
   await startAutoScreeningRuntime(chatId, { snapshotTopPools: false });
   try {
-    await runSilentScan({ emitFinalReport: false });
+    await runSilentScan({ emitFinalReport: false, source: 'startup' });
   } catch (e) {
     console.error('[autoscreen][startup] immediate scan gagal:', e.message);
     await notify(

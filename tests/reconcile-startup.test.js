@@ -28,7 +28,7 @@ test('index boot sequence calls reconcileStartupPositions and reports summary', 
   assert.match(src, /const reconcile = await reconcileStartupPositions\(\)/);
   assert.match(src, /Reconcile: <code>\$\{reconcile\.restored\}\/\$\{reconcile\.scanned\}<\/code>/);
   assert.match(src, /async function restoreAutoScreeningOnStartup/);
-  assert.match(src, /await runSilentScan\(\{ emitFinalReport: false \}\)/);
+  assert.match(src, /await runSilentScan\(\{ emitFinalReport: false, source: 'startup' \}\)/);
   assert.match(src, /stopScreeningLoop\(\);\s*runScreeningLoop\(\);/);
   assert.match(src, /await restoreAutoScreeningOnStartup\(\{/);
 });
