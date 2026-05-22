@@ -713,16 +713,16 @@ bot.onText(/\/setconfig(?:\s+(\S+))?(?:\s+(.+))?/, async (msg, match) => {
 
   // ── Efek samping khusus: autoScreeningEnabled ─────────────────────
   if (flatKey === 'autoScreeningEnabled') {
-    if (after === true) {
-      if (isDiscoveryPaused()) {
-        bot.sendMessage(chatId,
-          `📡 <b>Auto-Screening: ON</b>\n` +
-          `Config disimpan, tetapi discovery/deploy masih paused oleh <code>/stop</code>.\n` +
-          `Gunakan <code>/autoscreen on</code>, <code>/hunt</code>, atau <code>/screening on</code> untuk resume.`,
-          { parse_mode: 'HTML' }
-        );
-        return;
-      }
+      if (after === true) {
+        if (isDiscoveryPaused()) {
+          bot.sendMessage(chatId,
+            `📡 <b>Auto-Screening: ON</b>\n` +
+            `Config disimpan, tetapi discovery/deploy masih paused oleh <code>/stop</code>.\n` +
+            `Gunakan <code>/autoscreen on</code>, <code>/hunt</code>, atau <code>/screening on</code> untuk resume.`,
+            { parse_mode: 'HTML' }
+          );
+          return;
+        }
       // Start loop jika belum berjalan
       if (!_screeningLoopTimer) {
         await bot.sendMessage(chatId,
@@ -731,7 +731,7 @@ bot.onText(/\/setconfig(?:\s+(\S+))?(?:\s+(.+))?/, async (msg, match) => {
           `<i>Memulai scan pertama sekarang...</i>`,
           { parse_mode: 'HTML' }
         );
-        await startAutoScreeningRuntime(chatId, { snapshotTopPools: true });
+        await startAutoScreeningRuntime(chatId, { snapshotTopPools: false });
         await runSilentScan();
         runScreeningLoop();
       } else {
@@ -831,7 +831,7 @@ bot.onText(/\/autoscreen(?:\s+(on|off))?/, async (msg, match) => {
     );
 
     // Wire Deploy Queue agar watcher bisa eksekusi
-    await startAutoScreeningRuntime(chatId, { snapshotTopPools: true });
+    await startAutoScreeningRuntime(chatId, { snapshotTopPools: false });
 
     // ── 1. INSTANT FIRST RUN (awaited, user-triggered) ───────────────
     // Manual /autoscreen on harus mengirim final report scan pertama.

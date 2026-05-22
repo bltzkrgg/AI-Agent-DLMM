@@ -2328,7 +2328,6 @@ FORMAT JAWABAN (WAJIB JSON VALID, TANPA MARKDOWN):
 
   if (winners.length === 0) {
     console.log('[hunter] Tidak ada kandidat lolos screening siklus ini.');
-    await notify(`🔍 <i>Tidak ada kandidat lolos screening siklus ini. Laporan tetap dikirim.</i>`);
     // TIDAK ada sleep di sini — scheduler di luar yang mengatur jeda antar siklus
     return;
   }

@@ -274,14 +274,17 @@ test('general agent final decision prompt requires mature breakout momentum', ()
   assert.match(src, /DEPLOY jika:/);
 });
 
-test('/autoscreen sends top-pools snapshot before the scan loop', () => {
+test('/autoscreen uses single final scan report flow', () => {
   const src = readFileSync(join(process.cwd(), 'src/index.js'), 'utf8');
+  const hunterSrc = readFileSync(hunterPath, 'utf8');
   assert.match(src, /sendImmediateTopPoolsReport\(chatId\)/);
-  assert.match(src, /async function runSilentScan\(\{ emitFinalReport = false \} = \{\}\)/);
+  assert.match(src, /async function runSilentScan\(\{ emitFinalReport = false, source = 'startup' \} = \{\}\)/);
   assert.match(src, /setNotifyMuted\(true\)/);
-  assert.match(src, /await runSilentScan\(\{ emitFinalReport: false \}\);/);
+  assert.match(src, /await runImmediateAutoscreenScan\(\{ source: 'manual_command', emitFinalReport: true \}\);/);
   assert.match(src, /setNotifyMuted\(false\)/);
-  assert.match(src, /startAutoScreeningRuntime\(chatId, \{ snapshotTopPools: true \}\)/);
+  assert.match(src, /startAutoScreeningRuntime\(chatId, \{ snapshotTopPools: false \}\)/);
+  assert.doesNotMatch(src, /startAutoScreeningRuntime\(chatId, \{ snapshotTopPools: true \}\)/);
+  assert.doesNotMatch(hunterSrc, /Laporan tetap dikirim/);
   assert.match(src, /stopScreeningLoop\(\);[\s\S]*runScreeningLoop\(\);/);
   assert.match(src, /let\s+_screeningScanInFlight\s*=\s*false;/);
   assert.match(src, /if \(_screeningScanInFlight\) \{\s*console\.log\('\[screening-loop\] ⏭️ Skip tick: scan masih berjalan\.'\);/);
