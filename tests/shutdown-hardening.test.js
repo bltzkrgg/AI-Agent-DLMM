@@ -102,7 +102,9 @@ test('/stop pauses autonomous discovery without disabling operator commands', ()
   assert.match(indexSrc, /Screening is paused by <code>\/stop<\/code>/);
   assert.match(indexSrc, /if \(isDiscoveryPaused\(\)\) \{\s*await bot\.sendMessage\(chatId, `⏸️ \$\{getPausedMessage\(\)\}`/);
   assert.match(indexSrc, /const discoveryPaused = isDiscoveryPaused\(\)/);
-  assert.match(indexSrc, /if \(autoScr && !discoveryPaused\)/);
+  assert.match(indexSrc, /AUTOSCREEN_STARTUP_DISABLED/);
+  assert.match(indexSrc, /manual_command_required/);
+  assert.doesNotMatch(indexSrc, /startupScan=true/);
 
   assert.match(hunterSrc, /OPERATOR_DISCOVERY_PAUSED_KEY = 'operatorDiscoveryPaused'/);
   assert.match(hunterSrc, /policy: 'OPERATOR_DISCOVERY_PAUSED'/);

@@ -1094,36 +1094,13 @@ async function restoreAutoScreeningOnStartup({
   discoveryPaused = false,
   intervalMin = 15,
 } = {}) {
-  const shouldRunStartupScan = autoScreeningEnabled === true && discoveryPaused !== true;
   console.log(
-    `[autoscreen][startup] restoredFromConfig=${autoScreeningEnabled ? 'true' : 'false'} ` +
+    `[autoscreen][startup] AUTOSCREEN_STARTUP_DISABLED restoredFromConfig=${autoScreeningEnabled ? 'true' : 'false'} ` +
     `discoveryPaused=${discoveryPaused ? 'true' : 'false'} ` +
-    `immediateScan=${shouldRunStartupScan ? 'true' : 'false'} ` +
-    `nextIntervalMin=${intervalMin}`
+    `reason=manual_command_required nextIntervalMin=${intervalMin}`
   );
-
-  if (!shouldRunStartupScan) {
-    if (autoScreeningEnabled && discoveryPaused) {
-      stopScreeningLoop();
-    }
-    return;
-  }
-
-  await startAutoScreeningRuntime(chatId, { snapshotTopPools: false });
-  try {
-    await runSilentScan({ emitFinalReport: false, source: 'startup' });
-  } catch (e) {
-    console.error('[autoscreen][startup] immediate scan gagal:', e.message);
-    await notify(
-      `⚠️ <b>Auto Screening startup scan gagal</b>\n` +
-      `<code>${escapeHTML(e.message)}</code>\n` +
-      `<i>Scheduler tetap dilanjutkan.</i>`
-    );
-  }
-
-  // Pastikan tidak ada interval ganda saat startup restore.
+  stopAutoScreeningRuntime();
   stopScreeningLoop();
-  runScreeningLoop();
 }
 
 // ── Graceful Shutdown ─────────────────────────────────────────────
@@ -1208,14 +1185,13 @@ setTimeout(async () => {
     const autoScr = cfg.autoScreeningEnabled;
     const discoveryPaused = isDiscoveryPaused();
     const intervalMin = Number(cfg.screeningIntervalMin) || 15;
-    const startupScanWillRun = autoScr && !discoveryPaused;
 
     // Log startup Jupiter
     console.log(`✅ Jupiter V1 Direct — api.jup.ag/swap/v1 (fallback: lite-api.jup.ag)`);
     console.log(
       `[autoscreen][startup] config.autoScreeningEnabled=${autoScr ? 'true' : 'false'} ` +
       `paused=${discoveryPaused ? 'true' : 'false'} ` +
-      `startupScan=${startupScanWillRun ? 'true' : 'false'} intervalMin=${intervalMin}`
+      `startupScan=false intervalMin=${intervalMin}`
     );
 
     await notify(
@@ -1230,8 +1206,8 @@ setTimeout(async () => {
       `🎯 TP: <code>Trail ${cfg.trailingTriggerPct || 10}% → ${cfg.trailingDropPct || 3}%</code> | ` +
       `SL: <code>-${cfg.stopLossPct || 10}%</code>\n` +
       `📡 Auto Screening: <code>${discoveryPaused ? 'PAUSED by /stop' : autoScr ? `ON (${cfg.screeningIntervalMin}m)` : 'OFF'}</code>\n` +
-      `🔁 Auto Screening Restore: <code>${autoScr ? 'RESTORED_FROM_CONFIG' : 'DISABLED_IN_CONFIG'}</code>\n` +
-      `⚙️ Startup Scan: <code>${startupScanWillRun ? 'WILL_RUN_NOW' : discoveryPaused ? 'SKIPPED_PAUSED' : 'SKIPPED_DISABLED'}</code>\n` +
+      `🔁 Auto Screening Restore: <code>DISABLED_ON_BOOT</code>\n` +
+      `⚙️ Startup Scan: <code>SKIPPED_DISABLED</code>\n` +
       `⏱ Next Auto Scan Interval: <code>${intervalMin}m</code>\n` +
       `👀 Watch: <code>ON (${cfg.taWatchMaxPools || 10} max)</code>\n` +
       `📊 Realtime PnL: <code>${cfg.realtimePnlIntervalSec || 15}s</code>\n\n` +
@@ -1240,7 +1216,7 @@ setTimeout(async () => {
 
     await restoreAutoScreeningOnStartup({
       chatId: CHAT_ID,
-      autoScreeningEnabled: autoScr,
+      autoScreeningEnabled: false,
       discoveryPaused,
       intervalMin,
     });

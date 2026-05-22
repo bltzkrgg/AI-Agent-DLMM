@@ -28,7 +28,14 @@ test('index boot sequence calls reconcileStartupPositions and reports summary', 
   assert.match(src, /const reconcile = await reconcileStartupPositions\(\)/);
   assert.match(src, /Reconcile: <code>\$\{reconcile\.restored\}\/\$\{reconcile\.scanned\}<\/code>/);
   assert.match(src, /async function restoreAutoScreeningOnStartup/);
-  assert.match(src, /await runSilentScan\(\{ emitFinalReport: false, source: 'startup' \}\)/);
-  assert.match(src, /stopScreeningLoop\(\);\s*runScreeningLoop\(\);/);
+  const restoreStart = src.indexOf('async function restoreAutoScreeningOnStartup');
+  assert.notEqual(restoreStart, -1);
+  const restoreEnd = src.indexOf('// ── Graceful Shutdown', restoreStart);
+  const restoreBlock = src.slice(restoreStart, restoreEnd);
+  assert.match(restoreBlock, /AUTOSCREEN_STARTUP_DISABLED/);
+  assert.match(restoreBlock, /manual_command_required/);
+  assert.doesNotMatch(restoreBlock, /startAutoScreeningRuntime/);
+  assert.doesNotMatch(restoreBlock, /runSilentScan/);
+  assert.doesNotMatch(restoreBlock, /runScreeningLoop/);
   assert.match(src, /await restoreAutoScreeningOnStartup\(\{/);
 });
