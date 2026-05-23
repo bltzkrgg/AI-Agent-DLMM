@@ -2454,12 +2454,31 @@ function getTransferLamportsFromCompiledInstruction(cix) {
   return Number.isFinite(lamports) ? lamports : 0;
 }
 
+function normalizeExpectedLiquidityLamports(value) {
+  if (value === undefined || value === null) return null;
+  const num = Number(value);
+  if (!Number.isFinite(num) || num <= 0) return null;
+  return Math.floor(num);
+}
+
+function isExpectedSolLiquidityTransfer({
+  txStage = 'unknown',
+  lamports = 0,
+  expectedLiquidityLamports = null,
+} = {}) {
+  if (String(txStage || '') !== 'addLiquidity') return false;
+  const expectedLamports = normalizeExpectedLiquidityLamports(expectedLiquidityLamports);
+  if (!Number.isFinite(lamports) || lamports <= 0 || expectedLamports === null) return false;
+  return lamports === expectedLamports;
+}
+
 function assertNoUnexpectedSolTransferInTx({
   tx,
   walletPublicKey,
   minLamports = 100_000,
   allowedToPubkeys = [],
   txStage = 'unknown',
+  expectedLiquidityLamports = null,
 } = {}) {
   if (!tx || !walletPublicKey) return;
   const walletKey = String(walletPublicKey?.toString?.() || '');
@@ -2483,6 +2502,12 @@ function assertNoUnexpectedSolTransferInTx({
     if (fromPubkey !== walletKey) continue;
     if (lamports < minLamports) continue;
     if (allowed.has(toPubkey)) continue;
+    if (isExpectedSolLiquidityTransfer({ txStage, lamports, expectedLiquidityLamports })) {
+      console.log(
+        `[evilPanda] EXPECTED_SOL_LIQUIDITY_TRANSFER_ALLOWED stage=${String(txStage || 'unknown')} lamports=${lamports}`
+      );
+      continue;
+    }
 
     const err = new Error(
       `VETO_UNEXPECTED_SOL_TRANSFER: wallet->${toPubkey} lamports=${lamports}`
@@ -2491,7 +2516,7 @@ function assertNoUnexpectedSolTransferInTx({
     err.isPermanent = true;
     console.warn(
       `[evilPanda] UNEXPECTED_SOL_TRANSFER_VETO from=${walletKey.slice(0,8)} to=${toPubkey.slice(0,8)} ` +
-      `lamports=${lamports} txStage=${String(txStage || 'unknown')}`
+      `lamports=${lamports} stage=${String(txStage || 'unknown')} reason=unexpected_wallet_transfer`
     );
     throw err;
   }
@@ -2521,6 +2546,12 @@ function assertNoUnexpectedSolTransferInTx({
       if (fromPubkey !== walletKey) continue;
       if (lamports < minLamports) continue;
       if (allowed.has(toPubkey)) continue;
+      if (isExpectedSolLiquidityTransfer({ txStage, lamports, expectedLiquidityLamports })) {
+        console.log(
+          `[evilPanda] EXPECTED_SOL_LIQUIDITY_TRANSFER_ALLOWED stage=${String(txStage || 'unknown')} lamports=${lamports}`
+        );
+        continue;
+      }
       const err = new Error(
         `VETO_UNEXPECTED_SOL_TRANSFER: wallet->${toPubkey} lamports=${lamports}`
       );
@@ -2528,7 +2559,7 @@ function assertNoUnexpectedSolTransferInTx({
       err.isPermanent = true;
       console.warn(
         `[evilPanda] UNEXPECTED_SOL_TRANSFER_VETO from=${walletKey.slice(0,8)} to=${toPubkey.slice(0,8)} ` +
-        `lamports=${lamports} txStage=${String(txStage || 'unknown')}`
+        `lamports=${lamports} stage=${String(txStage || 'unknown')} reason=unexpected_wallet_transfer`
       );
       throw err;
     }
@@ -2560,11 +2591,13 @@ async function sendQuoteOnlyTxWithFilteredSigners({
   extraSigners = [],
   txStage = 'unknown',
   finalArgsContext = {},
+  expectedLiquidityLamports = null,
 } = {}) {
   assertNoUnexpectedSolTransferInTx({
     tx,
     walletPublicKey: wallet?.publicKey,
     txStage,
+    expectedLiquidityLamports,
   });
   const filteredSigners = filterKnownTransactionSigners(tx, extraSigners, { txStage });
   try {
@@ -3427,6 +3460,7 @@ export async function deployPosition(poolAddress, deployOptions = {}) {
               tx,
               extraSigners: [posKp],
               txStage: 'addLiquidity',
+              expectedLiquidityLamports: Number(deployArgs?.amountYBn?.toString?.() || 0),
               finalArgsContext: {
                 ...(finalDeployState?.finalArgsContext || {}),
                 sdkPath: finalSdkPath,

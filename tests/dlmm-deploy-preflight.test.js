@@ -2020,6 +2020,67 @@ test('unexpected wallet->unknown SOL transfer is vetoed before send', () => {
   );
 });
 
+test('expected quote-only addLiquidity SOL funding equal to amountY is allowed', () => {
+  const wallet = Keypair.generate().publicKey;
+  const funding = Keypair.generate().publicKey;
+  const tx = {
+    instructions: [
+      SystemProgram.transfer({
+        fromPubkey: wallet,
+        toPubkey: funding,
+        lamports: 500_000_000,
+      }),
+    ],
+  };
+  assert.doesNotThrow(() => __assertNoUnexpectedSolTransferInTxForTests({
+    tx,
+    walletPublicKey: wallet,
+    txStage: 'addLiquidity',
+    expectedLiquidityLamports: 500_000_000,
+  }));
+});
+
+test('quote-only full SOL deploy addLiquidity transfer is not vetoed by guard', () => {
+  const wallet = Keypair.generate().publicKey;
+  const tx = {
+    instructions: [
+      SystemProgram.transfer({
+        fromPubkey: wallet,
+        toPubkey: Keypair.generate().publicKey,
+        lamports: 500_000_000,
+      }),
+    ],
+  };
+  assert.doesNotThrow(() => __assertNoUnexpectedSolTransferInTxForTests({
+    tx,
+    walletPublicKey: wallet,
+    txStage: 'addLiquidity',
+    expectedLiquidityLamports: 500_000_000,
+  }));
+});
+
+test('old Jito-like transfer to unknown address is still vetoed', () => {
+  const wallet = Keypair.generate().publicKey;
+  const unknown = Keypair.generate().publicKey;
+  const tx = {
+    instructions: [
+      SystemProgram.transfer({
+        fromPubkey: wallet,
+        toPubkey: unknown,
+        lamports: 1_000_000,
+      }),
+    ],
+  };
+  assert.throws(
+    () => __assertNoUnexpectedSolTransferInTxForTests({
+      tx,
+      walletPublicKey: wallet,
+      txStage: 'unknown',
+    }),
+    /VETO_UNEXPECTED_SOL_TRANSFER/
+  );
+});
+
 test('normal tx without unexpected transfer is allowed by transfer guard', () => {
   const wallet = Keypair.generate().publicKey;
   const tx = {
@@ -2036,4 +2097,14 @@ test('normal tx without unexpected transfer is allowed by transfer guard', () =>
     walletPublicKey: wallet,
     txStage: 'unit-test',
   }));
+});
+
+test('no Jito tip runtime strings reintroduced', () => {
+  const src = readFileSync(new URL('../src/sniper/evilPanda.js', import.meta.url), 'utf8');
+  assert.equal(src.includes('tipAmount = 1000000'), false);
+  assert.equal(src.includes('JITO_TIP'), false);
+  assert.equal(src.includes('getJitoTipAddresses'), false);
+  assert.equal(src.includes('Jito Tip'), false);
+  assert.equal(src.includes('tipIx'), false);
+  assert.equal(src.includes('gasRU'), false);
 });
