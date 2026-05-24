@@ -114,7 +114,7 @@ test('/stop pauses autonomous discovery without disabling operator commands', ()
 
 test('evilPanda uses monolith positions with one Meteora account for the full range', () => {
   const src = readFileSync(evilPandaPath, 'utf8');
-  assert.match(src, /const posKp = Keypair\.generate\(\)/);
+  assert.match(src, /(?:const|let) posKp = Keypair\.generate\(\)/);
   assert.match(src, /let rangeMax = activeBin\.binId - offsetMinBins/);
   assert.match(src, /const rangeMaxBins = getConfiguredDeployRangeMaxBins\(\)/);
   assert.match(src, /if \(\(rangeMax - rangeMin \+ 1\) > rangeMaxBins\)/);

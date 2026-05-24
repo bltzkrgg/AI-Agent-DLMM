@@ -11,6 +11,7 @@
 
 'use strict';
 
+import { PublicKey } from '@solana/web3.js';
 import { getConfig }              from '../config.js';
 import { screenToken }            from '../market/coinfilter.js';
 import { runMeridianVeto, discoverHighFeePoolsMeridian, isSupportedQuoteToken, getQuoteTokenLabel } from '../market/meridianVeto.js';
@@ -19,7 +20,7 @@ import { getPoolMemorySignal, recordPoolDecision } from '../market/poolMemory.js
 import { getPoolInfo }            from '../solana/meteora.js';
 import { deployPosition, monitorPnL, exitPosition, markPositionManuallyClosed, setEvilPandaNotifyFn, setPositionLifecycle, getPositionOnChainStatus, EP_CONFIG, getActivePositionKeys, getPositionMeta, reconcileZombiePositions } from '../sniper/evilPanda.js';
 import { createMessage }          from '../agent/provider.js';
-import { getWalletBalance }       from '../solana/wallet.js';
+import { getConnection, getWalletBalance } from '../solana/wallet.js';
 import { appendDecisionLog }      from '../learn/decisionLog.js';
 import { applyPoolPatternLearningToCandidates, applyPoolPatternLearningToScore, extractPoolPatternFeatures, recordPoolPatternEntry } from '../learn/poolPatternLearning.js';
 import { isBlacklisted }          from '../learn/tokenBlacklist.js';
@@ -106,6 +107,19 @@ function getOutOfRangeWaitMs(cfg = getConfig()) {
   const minutes = Number(cfg?.outOfRangeWaitMinutes);
   const safeMinutes = Number.isFinite(minutes) && minutes > 0 ? minutes : 30;
   return Math.max(60_000, Math.round(safeMinutes * 60_000));
+}
+
+function getMonitorFastLaneConfig(cfg = getConfig()) {
+  const enabled = cfg?.monitorFastLaneEnabled !== false;
+  const throttleMs = Math.max(250, Number(cfg?.monitorFastLaneThrottleMs || 1200));
+  const fallbackPollMs = Math.max(1000, Number(cfg?.monitorFastLaneFallbackPollMs || 12_000));
+  return {
+    enabled,
+    throttleMs,
+    fallbackPollMs,
+    usePoolAccount: cfg?.monitorFastLaneUsePoolAccount !== false,
+    usePositionAccount: cfg?.monitorFastLaneUsePositionAccount !== false,
+  };
 }
 
 function formatDurationFromMs(ms = 0) {
@@ -2798,10 +2812,107 @@ async function monitorLoop(positionPubkey, symbol, poolAddress) {
   _monitoredPositions.add(positionPubkey);
   console.log(`[hunter] 🔒 MONITOR lock: ${positionPubkey.slice(0,8)} | RealtimePnL interval=${Math.round(getRealtimePnlIntervalMs() / 1000)}s`);
   let consecutiveErrors = 0;
+  const connection = getConnection();
+  const fastLaneSubs = [];
+  let wakeResolver = null;
+  let wakeTimeout = null;
+  let lastFastLaneWakeAt = 0;
+
+  function clearWakeTimeout() {
+    if (wakeTimeout) {
+      clearTimeout(wakeTimeout);
+      wakeTimeout = null;
+    }
+  }
+
+  function triggerMonitorWake(reason = 'unknown') {
+    const cfg = getConfig();
+    const fastCfg = getMonitorFastLaneConfig(cfg);
+    const now = Date.now();
+    if ((now - lastFastLaneWakeAt) < fastCfg.throttleMs) return;
+    lastFastLaneWakeAt = now;
+    if (typeof wakeResolver === 'function') {
+      const resolver = wakeResolver;
+      wakeResolver = null;
+      clearWakeTimeout();
+      resolver(reason);
+    }
+  }
+
+  function subscribeFastLaneAccount(pubkey, label) {
+    if (!(pubkey instanceof PublicKey)) return;
+    const subId = connection.onAccountChange(
+      pubkey,
+      () => triggerMonitorWake(`ws:${label}`),
+      'confirmed'
+    );
+    fastLaneSubs.push(subId);
+  }
+
+  async function setupFastLaneSubscriptions() {
+    const cfg = getConfig();
+    const fastCfg = getMonitorFastLaneConfig(cfg);
+    if (!fastCfg.enabled) return;
+
+    try {
+      if (fastCfg.usePositionAccount) {
+        subscribeFastLaneAccount(new PublicKey(positionPubkey), 'position');
+      }
+    } catch (e) {
+      console.warn(`[hunter] fast-lane position subscribe gagal: ${e.message}`);
+    }
+
+    if (fastCfg.usePoolAccount && poolAddress) {
+      try {
+        subscribeFastLaneAccount(new PublicKey(poolAddress), 'pool');
+      } catch (e) {
+        console.warn(`[hunter] fast-lane pool subscribe gagal: ${e.message}`);
+      }
+    }
+
+    if (fastLaneSubs.length > 0) {
+      console.log(
+        `[hunter] ⚡ Fast-lane aktif: ${fastLaneSubs.length} websocket subscription(s) ` +
+        `(throttle=${fastCfg.throttleMs}ms fallback=${fastCfg.fallbackPollMs}ms)`
+      );
+    }
+  }
+
+  async function teardownFastLaneSubscriptions() {
+    clearWakeTimeout();
+    wakeResolver = null;
+    for (const subId of fastLaneSubs.splice(0)) {
+      try {
+        await connection.removeAccountChangeListener(subId);
+      } catch {
+        // non-fatal cleanup
+      }
+    }
+  }
+
+  async function waitForMonitorWake() {
+    const cfg = getConfig();
+    const fastCfg = getMonitorFastLaneConfig(cfg);
+
+    if (!fastCfg.enabled || fastLaneSubs.length === 0) {
+      await sleep(EP_CONFIG.MONITOR_INTERVAL_MS);
+      return 'poll:interval';
+    }
+
+    return await new Promise((resolve) => {
+      wakeResolver = resolve;
+      wakeTimeout = setTimeout(() => {
+        wakeResolver = null;
+        wakeTimeout = null;
+        resolve('poll:fallback');
+      }, fastCfg.fallbackPollMs);
+    });
+  }
 
   try {
+    await setupFastLaneSubscriptions();
     while (_running || getActivePositionKeys().includes(positionPubkey)) {
-      await sleep(EP_CONFIG.MONITOR_INTERVAL_MS);
+      await waitForMonitorWake();
 
       let status;
       try {
@@ -2998,6 +3109,7 @@ async function monitorLoop(positionPubkey, symbol, poolAddress) {
     await notify(`⏹ <b>Loop dihentikan.</b> Menutup posisi aktif...`);
     await safeExit(positionPubkey, 'LOOP_STOPPED');
   } finally {
+    await teardownFastLaneSubscriptions();
     _monitoredPositions.delete(positionPubkey);
     _lastRealtimePnlLogAt.delete(positionPubkey);
   }
