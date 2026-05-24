@@ -26,6 +26,7 @@ import {
   __inspectTxForBinArrayInitForTests,
   __guardDlmmCostBeforeSendForTests,
   __deriveSpotBidAskSeedPlanForTests,
+  __getDlmmStrategyTypeFromConfigForTests,
   __assertNoUnexpectedSolTransferInTxForTests,
   filterKnownTransactionSigners,
   getPositionMeta,
@@ -234,6 +235,14 @@ test('strategy type defaults to SDK Spot enum when available', () => {
 
   const expectedSpot = Number(StrategyType?.Spot ?? 0);
   assert.equal(out.strategyType, expectedSpot);
+});
+
+test('dlmm strategy type maps from config shape selector', () => {
+  const spot = __getDlmmStrategyTypeFromConfigForTests({ dlmmLiquidityShape: 'spot' });
+  const bidask = __getDlmmStrategyTypeFromConfigForTests({ dlmmLiquidityShape: 'bid-ask' });
+
+  assert.equal(spot, Number(StrategyType?.Spot ?? 0));
+  assert.equal(bidask, Number(StrategyType?.BidAsk ?? 2));
 });
 
 test('pure quote-only final deploy selects one-side weight SDK path', () => {

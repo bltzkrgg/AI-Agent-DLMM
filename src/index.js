@@ -571,13 +571,14 @@ bot.onText(/\/config/, (msg) => {
     `minMcap               = ${cfg.minMcap}`,
     `maxMcap               = ${cfg.maxMcap}`,
   ].join('\n');
-  const strategy = [
-    `stopLossPct           = ${cfg.stopLossPct}`,
-    `trailingTriggerPct    = ${cfg.trailingTriggerPct}`,
-    `trailingDropPct       = ${cfg.trailingDropPct}`,
-    `trailingStopPct       = ${cfg.trailingStopPct}`,
-    `deployRangeMaxBins    = ${cfg.deployRangeMaxBins}`,
-    `taWatchEnabled        = ${cfg.taWatchEnabled}`,
+    const strategy = [
+      `stopLossPct           = ${cfg.stopLossPct}`,
+      `trailingTriggerPct    = ${cfg.trailingTriggerPct}`,
+      `trailingDropPct       = ${cfg.trailingDropPct}`,
+      `trailingStopPct       = ${cfg.trailingStopPct}`,
+      `dlmmLiquidityShape    = ${cfg.dlmmLiquidityShape}`,
+      `deployRangeMaxBins    = ${cfg.deployRangeMaxBins}`,
+      `taWatchEnabled        = ${cfg.taWatchEnabled}`,
     `taWatchMaxPools       = ${cfg.taWatchMaxPools}`,
     `taWatchExpiryMin      = ${cfg.taWatchExpiryMin}`,
     `watchIntervalSec      = ${cfg.watchIntervalSec}`,
@@ -632,6 +633,7 @@ bot.onText(/\/setconfig(?:\s+(\S+))?(?:\s+(.+))?/, async (msg, match) => {
       `atau:   <code>/setconfig [section].[key] [value]</code>\n\n` +
       `<b>💰 Finance:</b>\n${bySection('finance')}\n\n` +
       `<b>🔍 Discovery:</b>\n${bySection('discovery')}\n\n` +
+      `<b>🎯 Strategy:</b>\n${bySection('strategy')}\n\n` +
       `<b>🕯️ Entry:</b>\n${bySection('entry')}\n\n` +
       `<b>👀 Watch:</b>\n${bySection('watch')}\n\n` +
       `<b>📉 OOR:</b>\n${bySection('oor')}\n\n` +
@@ -640,6 +642,7 @@ bot.onText(/\/setconfig(?:\s+(\S+))?(?:\s+(.+))?/, async (msg, match) => {
       `<i>Contoh:\n` +
       `/setconfig deployAmountSol 1.5\n` +
       `/setconfig minTvl 50000\n` +
+      `/setconfig strategy.liquidityShape bidask\n` +
       `/setconfig taWatchEnabled true\n` +
       `/setconfig outOfRangeWaitMinutes 45\n` +
       `/setconfig poolImpactGuardEnabled true\n` +
@@ -693,6 +696,22 @@ bot.onText(/\/setconfig(?:\s+(\S+))?(?:\s+(.+))?/, async (msg, match) => {
     }
   } else {
     parsed = rawVal; // string as-is
+  }
+
+  if (flatKey === 'dlmmLiquidityShape') {
+    const normalized = String(parsed || '')
+      .trim()
+      .toLowerCase()
+      .replace(/[\s_-]/g, '');
+    if (normalized !== 'spot' && normalized !== 'bidask') {
+      bot.sendMessage(chatId,
+        `❌ <code>${escapeHTML(flatKey)}</code> harus <code>spot</code> atau <code>bidask</code>.\n` +
+        `<i>Contoh: /setconfig strategy.liquidityShape bidask</i>`,
+        { parse_mode: 'HTML' }
+      );
+      return;
+    }
+    parsed = normalized;
   }
 
   // Apply melalui updateConfig (bounds check otomatis)

@@ -27,6 +27,22 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const CONFIG_PATH = process.env.BOT_CONFIG_PATH || join(__dirname, '../user-config.json');
 const CONFIG_BACKUP_PATH = `${CONFIG_PATH}.bak`;
 
+export function normalizeDlmmLiquidityShape(value) {
+  const normalized = String(value || '')
+    .trim()
+    .toLowerCase()
+    .replace(/[\s_-]/g, '');
+  return normalized === 'bidask' ? 'bidask' : 'spot';
+}
+
+function isValidDlmmLiquidityShape(value) {
+  const normalized = String(value || '')
+    .trim()
+    .toLowerCase()
+    .replace(/[\s_-]/g, '');
+  return normalized === 'spot' || normalized === 'bidask';
+}
+
 // ── DEFAULTS ──────────────────────────────────────────────────────────────────
 // Semua nilai default dalam format flat. Nilai ini digunakan jika kunci tidak
 // ditemukan di user-config.json maupun di process.env.
@@ -150,6 +166,7 @@ const DEFAULTS = {
 
   // ── Evil Panda Position ───────────────────────────────────────────────────
   slippageBps:            250,
+  dlmmLiquidityShape:     'spot',
   stopLossPct:            10,
   trailingStopPct:        5.0,
   trailingTriggerPct:     10,
@@ -260,6 +277,7 @@ const CONFIG_BOUNDS = {
   maxTvlMcapRatio:        { min: 0.01,  max: 1.0 },
   maxPriceImpactPct:      { min: 0.1,   max: 5 },
   slippageBps:            { min: 10,    max: 1000 },
+  dlmmLiquidityShape:     { type: 'string' },
   stopLossPct:            { min: 1,     max: 50 },
   trailingStopPct:        { min: 0.5,   max: 50 },
   trailingTriggerPct:     { min: 0.5,   max: 50 },
@@ -345,6 +363,8 @@ const NESTED_SECTION_MAP = {
     depthPct:           'depthPct',
     targetBinSteps:     'allowedBinSteps',
     binStepPriority:    'binStepPriority',
+    liquidityShape:     'dlmmLiquidityShape',
+    shape:              'dlmmLiquidityShape',
     stopLossPct:        'stopLossPct',
     trailingStopPct:    'trailingStopPct',
     trailingTriggerPct: 'trailingTriggerPct',
@@ -546,6 +566,18 @@ export function getConfig() {
     }
   }
 
+  if (typeof merged.dlmmLiquidityShape === 'string') {
+    const rawShape = merged.dlmmLiquidityShape;
+    const normalizedShape = normalizeDlmmLiquidityShape(rawShape);
+    if (!isValidDlmmLiquidityShape(rawShape)) {
+      console.warn(
+        `[config] Invalid dlmmLiquidityShape "${rawShape}" — fallback ke "spot" ` +
+        `(valid: spot, bidask)`
+      );
+    }
+    merged.dlmmLiquidityShape = normalizedShape;
+  }
+
   // Failsafe: maxPoolAgeHours tidak boleh 0 atau NaN
   merged.maxPoolAgeHours = (Number(merged.maxPoolAgeHours) > 0) ? Number(merged.maxPoolAgeHours) : 2160;
 
@@ -581,6 +613,9 @@ export const SETCONFIG_WHITELIST = {
   slippageBps:            { section: 'finance',            type: 'number',  desc: 'Slippage (bps, 10–1000)' },
   dailyLossLimitUsd:      { section: 'finance',            type: 'number',  desc: 'Batas rugi harian (USD)' },
   maxDailyPriorityFeeSol: { section: 'finance',            type: 'number',  desc: 'Batas fee prioritas/hari' },
+
+  // ── Strategy / DLMM Shape ───────────────────────────────────────
+  dlmmLiquidityShape:     { section: 'strategy',           type: 'string',  desc: 'Shape DLMM: spot atau bidask' },
 
   // ── Discovery Quality ────────────────────────────────────────────
   minTvl:                 { section: 'discovery',          type: 'number',  desc: 'TVL minimum pool (USD)' },
@@ -742,6 +777,16 @@ export function updateConfig(updates) {
       const allowed = ['strict', 'lp_simple_m15'];
       if (!allowed.includes(mode)) { rejected.push(`${key}: must be one of ${allowed.join(', ')}`); continue; }
       validated[key] = mode;
+      continue;
+    }
+    if (key === 'dlmmLiquidityShape') {
+      const rawShape = String(value || '');
+      const normalized = normalizeDlmmLiquidityShape(rawShape);
+      if (!isValidDlmmLiquidityShape(rawShape)) {
+        rejected.push(`${key}: must be one of spot, bidask`);
+        continue;
+      }
+      validated[key] = normalized;
       continue;
     }
 

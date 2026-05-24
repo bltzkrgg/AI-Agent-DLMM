@@ -81,6 +81,7 @@
   "entryDeferOnM15PreviousUnknown": true,
 
   "slippageBps": 150,
+  "dlmmLiquidityShape": "spot",
   "stopLossPct": 5,
   "trailingStopPct": 5.0,
   "trailingTriggerPct": 10,

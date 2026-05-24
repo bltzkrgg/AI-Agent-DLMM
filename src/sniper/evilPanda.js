@@ -113,6 +113,27 @@ function isExplicitConfigTrue(value) {
   return false;
 }
 
+function normalizeDlmmLiquidityShape(value) {
+  const normalized = String(value || '').trim().toLowerCase().replace(/[\s_-]/g, '');
+  if (normalized === 'bidask') return 'bidask';
+  return 'spot';
+}
+
+function getDlmmLiquidityShapeDebug(cfg = {}) {
+  const raw = cfg?.dlmmLiquidityShape;
+  return {
+    raw: raw === undefined || raw === null ? '' : String(raw),
+    normalized: normalizeDlmmLiquidityShape(raw),
+  };
+}
+
+export function getDlmmStrategyTypeFromConfig(cfg = {}) {
+  const shape = normalizeDlmmLiquidityShape(cfg?.dlmmLiquidityShape);
+  return shape === 'bidask'
+    ? (StrategyType?.BidAsk ?? 2)
+    : (StrategyType?.Spot ?? 0);
+}
+
 function toBnAmountSafe(value) {
   try {
     if (BN.isBN(value)) return value;
@@ -992,6 +1013,10 @@ export function deriveSpotBidAskSeedPlan({
     seedLamports,
     activeRatio,
   };
+}
+
+export function getDlmmLiquidityShapeFromConfig(cfg = {}) {
+  return normalizeDlmmLiquidityShape(cfg?.dlmmLiquidityShape);
 }
 
 export function selectDlmmSdkPathForDeployArgs(deployArgs = {}) {
@@ -2858,6 +2883,9 @@ export async function deployPosition(poolAddress, deployOptions = {}) {
     const slippageBps   = Number(cfg2.slippageBps) || 250;
     const slippagePct   = slippageBps / 100;
     const totalLamports = Math.floor(deploySol * 1e9);
+    const dlmmShapeDebug = getDlmmLiquidityShapeDebug(cfg2);
+    const dlmmStrategyType = getDlmmStrategyTypeFromConfig(cfg2);
+    const dlmmLiquidityShape = dlmmShapeDebug.normalized;
 
     const seedPlan = deriveSpotBidAskSeedPlan({
       cfg: cfg2,
@@ -2872,10 +2900,15 @@ export async function deployPosition(poolAddress, deployOptions = {}) {
 
     if (!seedPlan.spotBidAskSeedEnabled && seedPlan.rangeIncludesActiveBin) {
       console.log(
-        `[evilPanda] SEED_SWAP_DISABLED_FULL_SOL pool=${poolAddress.slice(0,8)} ` +
+        `[evilPanda] DLMM_SHAPE=${dlmmLiquidityShape} FULL_SOL pool=${poolAddress.slice(0,8)} ` +
         `range=[${rangeMin},${rangeMax}] active=${activeBin.binId}`
       );
     }
+
+    console.log(
+      `[evilPanda] DLMM_SHAPE_RUNTIME pool=${poolAddress.slice(0,8)} ` +
+      `raw="${dlmmShapeDebug.raw}" normalized=${dlmmLiquidityShape} strategyType=${dlmmStrategyType}`
+    );
 
     let rentGuardStatus = null;
     if (hasNonRefundableFees) {
@@ -3080,14 +3113,15 @@ export async function deployPosition(poolAddress, deployOptions = {}) {
         rangeMax: Number(rangeMax),
         amountXBn,
         amountYBn,
-        strategyType: SPOT_STRATEGY_TYPE,
+        strategyType: dlmmStrategyType,
       });
     } catch (preflightErr) {
       console.error(
         `[evilPanda] DLMM_PRECHECK_FAIL pool=${poolAddress} active=${String(activeBin?.binId)} ` +
         `range=[${rangeMin},${rangeMax}] amountX=${amountXBn.toString()} amountY=${amountYBn.toString()} ` +
         `shouldSeedTokenX=${shouldSeedTokenX} seedSwapSucceeded=${amountXBn.gt(new BN('0'))} ` +
-        `strategyType=${SPOT_STRATEGY_TYPE} slippage=${slippagePct}% reason=${preflightErr.message}`
+        `strategyType=${dlmmStrategyType} shapeRaw="${dlmmShapeDebug.raw}" ` +
+        `shapeNormalized=${dlmmLiquidityShape} slippage=${slippagePct}% reason=${preflightErr.message}`
       );
       throw preflightErr;
     }
@@ -4594,6 +4628,10 @@ export async function __guardDlmmCostBeforeSendForTests(args = {}) {
 
 export function __deriveSpotBidAskSeedPlanForTests(args = {}) {
   return deriveSpotBidAskSeedPlan(args);
+}
+
+export function __getDlmmStrategyTypeFromConfigForTests(args = {}) {
+  return getDlmmStrategyTypeFromConfig(args);
 }
 
 export function __assertNoUnexpectedSolTransferInTxForTests(args = {}) {

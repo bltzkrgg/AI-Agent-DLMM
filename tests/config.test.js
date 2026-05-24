@@ -23,9 +23,12 @@ test('config rejects unknown keys and merges nested signal weights safely', asyn
   assert.equal(configModule.isConfigKeySupported('deployAmountSol'), true);
   assert.equal(configModule.isConfigKeySupported('autonomyMode'), true);
   assert.equal(configModule.isConfigKeySupported('deployRangeMaxBins'), true);
+  assert.equal(configModule.isConfigKeySupported('dlmmLiquidityShape'), true);
   assert.equal(configModule.isConfigKeySupported('totallyUnknownKey'), false);
 
   assert.equal(configModule.resolveNestedKey('strategy.outOfRangeWaitMinutes')?.flatKey, 'outOfRangeWaitMinutes');
+  assert.equal(configModule.resolveNestedKey('strategy.liquidityShape')?.flatKey, 'dlmmLiquidityShape');
+  assert.equal(configModule.resolveNestedKey('strategy.shape')?.flatKey, 'dlmmLiquidityShape');
 
   configModule.updateConfig({
     signalWeights: { volume: 0.99 },
@@ -126,6 +129,7 @@ test('safer defaults stay conservative for real-capital usage', async () => {
   assert.equal(cfg.poolPatternLearningMinSamples, 10);
   assert.equal(cfg.poolPatternLearningMaxScoreDelta, 8);
   assert.equal(cfg.poolPatternLearningLookbackDays, 14);
+  assert.equal(cfg.dlmmLiquidityShape, 'spot');
   assert.equal(cfg.entryCandleSanityEnabled, true);
   assert.equal(cfg.entryRequireGreenCandle, true);
   assert.equal(cfg.entryRequireVolumeConfirm, true);
@@ -152,6 +156,7 @@ test('user-config.example includes pool pattern learning keys', () => {
   assert.equal(parsed.poolPatternLearningMinSamples, 10);
   assert.equal(parsed.poolPatternLearningMaxScoreDelta, 8);
   assert.equal(parsed.poolPatternLearningLookbackDays, 14);
+  assert.equal(parsed.dlmmLiquidityShape, 'spot');
   assert.equal(parsed.entryCandleSanityEnabled, true);
   assert.equal(parsed.entryRequireGreenCandle, true);
   assert.equal(parsed.entryRequireVolumeConfirm, true);
@@ -519,6 +524,7 @@ test('/setconfig whitelist is curated for operational keys only', async () => {
   assert.equal(keys.includes('deployAmountSol'), true);
   assert.equal(keys.includes('minTvl'), true);
   assert.equal(keys.includes('maxMcap'), true);
+  assert.equal(keys.includes('dlmmLiquidityShape'), true);
   assert.equal(keys.includes('watchIntervalSec'), true);
   assert.equal(keys.includes('outOfRangeWaitMinutes'), true);
   assert.equal(keys.includes('poolImpactGuardEnabled'), true);
@@ -548,6 +554,62 @@ test('/setconfig whitelist is curated for operational keys only', async () => {
   assert.equal(keys.includes('poolImpactCheckIntervalMs'), false);
   assert.equal(keys.includes('poolImpactAlertCooldownMs'), false);
   assert.equal(keys.includes('poolPatternLearningLookbackDays'), false);
+});
+
+test('dlmmLiquidityShape supports nested strategy alias and persists normalized values', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'dlmm-liquidity-shape-'));
+  const configPath = join(root, 'user-config.json');
+  process.env.BOT_CONFIG_PATH = configPath;
+  const configModule = await importFresh(join(repoRoot, 'src/config.js'));
+
+  configModule.updateConfig({ dlmmLiquidityShape: 'bid-ask' });
+  let cfg = configModule.getConfig();
+  assert.equal(cfg.dlmmLiquidityShape, 'bidask');
+
+  const resolved = configModule.resolveNestedKey('strategy.liquidityShape');
+  assert.equal(resolved?.flatKey, 'dlmmLiquidityShape');
+
+  configModule.updateConfig({ [resolved.flatKey]: 'spot' });
+  cfg = configModule.getConfig();
+  assert.equal(cfg.dlmmLiquidityShape, 'spot');
+
+  const saved = JSON.parse(readFileSync(configPath, 'utf-8'));
+  assert.equal(saved.dlmmLiquidityShape, 'spot');
+});
+
+test('dlmmLiquidityShape from config file invalid value falls back to spot with warning', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'dlmm-liquidity-shape-invalid-'));
+  const configPath = join(root, 'user-config.json');
+  process.env.BOT_CONFIG_PATH = configPath;
+  writeFileSync(configPath, JSON.stringify({
+    dlmmLiquidityShape: 'curve',
+  }, null, 2), 'utf-8');
+
+  const warnLogs = [];
+  const originalWarn = console.warn;
+  console.warn = (...args) => { warnLogs.push(args.map((v) => String(v)).join(' ')); };
+  try {
+    const configModule = await importFresh(join(repoRoot, 'src/config.js'));
+    const cfg = configModule.getConfig();
+    assert.equal(cfg.dlmmLiquidityShape, 'spot');
+    assert.equal(
+      warnLogs.some((line) => line.includes('Invalid dlmmLiquidityShape "curve"') && line.includes('fallback ke "spot"')),
+      true
+    );
+  } finally {
+    console.warn = originalWarn;
+  }
+});
+
+test('dlmmLiquidityShape accepts mixed separator/case values and normalizes to bidask', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'dlmm-liquidity-shape-normalize-'));
+  const configPath = join(root, 'user-config.json');
+  process.env.BOT_CONFIG_PATH = configPath;
+  const configModule = await importFresh(join(repoRoot, 'src/config.js'));
+
+  configModule.updateConfig({ dlmmLiquidityShape: ' Bid_Ask ' });
+  const cfg = configModule.getConfig();
+  assert.equal(cfg.dlmmLiquidityShape, 'bidask');
 });
 
 test('nested discovery maxMcap and legacy maxMcapUsd both map to canonical maxMcap', async () => {
