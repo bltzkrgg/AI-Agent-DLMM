@@ -7,26 +7,24 @@ Scope completed:
 - Momentum proxy fallback is ignored as a live rejection source.
 - Cache hit, miss, and fallback logs were added for local observability.
 - LP metadata propagation remains intact across manual CA, WATCH, and queue promotion.
-- Memory-layer blueprint now exists as a separate plan with a clear GPT-5.5 / 5.4 Mini split.
-- GPT-5.5 runtime memory core has been implemented: local pool memory, cooldown, priority adjustment, and close outcome write-back.
-- GPT-5.4 Mini helper layer has been completed: memory logs, lookup latency observability, and no-network/no-LLM hot-path audits.
+- README now explains the fast-path vs slow-path monitor split in plain language.
+- The hybrid exit monitor now uses a fast wake-up lane for quick SL/TP checks and keeps detailed quote/TA work on the slower path.
 
 Changed files:
 
-- `src/utils/pendingDeployQueue.js`
-- `tests/pending-deploy-queue.test.js`
-- `tests/metadata-propagation.test.js`
+- `README.md`
+- `docs/LP_AGENT_5_4_MINI_REPORT.md`
 - `docs/LP_AGENT_5_4_MINI_TASKS.md`
-- `docs/LP_AGENT_MEMORY_LAYER_PLAN.md`
-- `src/market/poolMemory.js`
-- `tests/pool-memory.test.js`
+- `src/agents/hunterAlpha.js`
+- `src/sniper/evilPanda.js`
 
-Tests added:
+Tests verified:
 
 - queue cache and fallback reliability
 - manual CA metadata propagation
 - WATCH to queue metadata preservation
 - pool memory cooldown, priority, lookup latency, and local-only hot-path audit
+- exit monitor regression coverage still passes after the fast-path split
 
 Impact by situation:
 
@@ -41,3 +39,4 @@ Remaining risk:
 
 - If upstream market data is stale, queue still depends on the best available snapshot, so live data can lag the candle by a bit.
 - Core policy remains strict on reliable bearish live data.
+- Fast-path estimates are intentionally lightweight, so the detailed slow-path quote can still differ slightly when volatility is extreme.

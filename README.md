@@ -67,6 +67,14 @@ Exit monitoring now uses a hybrid model:
 - `monitorFastLaneFallbackPollMs` keeps a polling fallback alive when websocket updates are quiet.
 - `monitorFastLaneUsePoolAccount` and `monitorFastLaneUsePositionAccount` control which accounts are subscribed for fast wake-ups.
 
+Operationally, the monitor now has two lanes:
+
+- Fast-path: lightweight checks that are meant to catch stop loss and trailing profit quickly.
+- Slow-path: detailed valuation plus TA/logging when the position survives the fast-path.
+- Trade off: faster exits usually need more wake-ups and can cost more quota, while slower polling is cheaper but can miss a short spike before price turns.
+- For volatile pairs, keep fast-lane on and trim `monitorFastLaneFallbackPollMs` only if quota is still comfortable.
+- For calmer pairs, the fallback poll can stay wider because the chance of a missed peak is lower.
+
 ## Strategy Scope
 
 Current execution is SOL/WSOL quote only:
