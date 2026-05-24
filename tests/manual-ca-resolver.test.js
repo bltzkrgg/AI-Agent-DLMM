@@ -81,6 +81,32 @@ test('TRK-SOL binStep 100 fee 3% candidate is accepted', async () => {
   assert.equal(Number(out.poolInfo.feePct), 3);
 });
 
+test('latest Meteora schema pool_config.bin_step is treated as DLMM (not notDlmm)', async () => {
+  const out = await __resolveManualCaPoolForTests(
+    'GWjQzhiTgHNA7E4nEoYzYPTbwQBJ35h89zjYyyTepump',
+    { binStepPriority: [200, 125, 100] },
+    {
+      getPoolInfoFn: async () => { throw new Error('not a pool address'); },
+      fetchWithTimeoutFn: async () => mockResponse(true, 200, {
+        data: [{
+          address: 'A3TiKgaSCFracfVwZiEs1rW2oFJfTYz8KwezcXmuwc9E',
+          name: 'GYATT-SOL',
+          token_x: { address: 'GWjQzhiTgHNA7E4nEoYzYPTbwQBJ35h89zjYyyTepump', symbol: 'GYATT' },
+          token_y: { address: WSOL, symbol: 'SOL' },
+          pool_config: { bin_step: 100, base_fee_pct: 3 },
+          tvl: 19264.17,
+        }],
+      }),
+    }
+  );
+
+  assert.equal(out.ok, true);
+  assert.equal(out.kind, 'TOKEN');
+  assert.equal(out.poolAddress, 'A3TiKgaSCFracfVwZiEs1rW2oFJfTYz8KwezcXmuwc9E');
+  assert.equal(out.poolInfo.binStep, 100);
+  assert.equal(out.poolInfo.isDlmm, true);
+});
+
 test('direct dlmm search success bypasses fallback discovery fetch', async () => {
   let fallbackCalled = false;
   const out = await __resolveManualCaPoolForTests(CA, { binStepPriority: [200, 125, 100] }, {

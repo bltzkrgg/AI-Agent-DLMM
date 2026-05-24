@@ -537,7 +537,13 @@ async function resolveManualCaPool(address, cfg = getConfig(), deps = {}) {
       p?.tokenYSymbol || p?.token_y?.symbol || p?.quote?.symbol || p?.symbolB || ''
     ).trim();
     const address = String(p?.address || p?.poolAddress || p?.pool_address || p?.pool || '').trim();
-    const binStep = Number(p?.binStep || p?.bin_step || p?.dlmm_params?.bin_step || 0);
+    const rawBinStep =
+      p?.binStep ??
+      p?.bin_step ??
+      p?.pool_config?.bin_step ??
+      p?.dlmm_params?.bin_step ??
+      null;
+    const binStep = Number(rawBinStep || 0);
     const feePct = Number(p?.feePct || p?.fee_pct || 0);
     const activeTvl = Number(p?.activeTvl || p?.active_tvl || 0);
     const totalTvl = Number(p?.totalTvl || p?.tvl || p?.total_tvl || activeTvl || 0);
@@ -545,9 +551,11 @@ async function resolveManualCaPool(address, cfg = getConfig(), deps = {}) {
       p?.volume24h || p?.volume_24h || p?.trade_volume_24h || p?.tradeVolume24h || p?.v24h || p?.volume || 0
     );
     const isDlmm =
+      String(p?.type || '').toLowerCase() === 'dlmm' ||
       String(p?.pool_type || p?.poolType || '').toLowerCase() === 'dlmm' ||
       Number.isFinite(binStep) && binStep > 0 ||
-      Boolean(p?.dlmm_params);
+      Boolean(p?.dlmm_params) ||
+      Boolean(p?.pool_config);
     return {
       ...p,
       address,
