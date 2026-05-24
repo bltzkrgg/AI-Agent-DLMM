@@ -1983,15 +1983,46 @@ export async function scanAndDeploy({ emitFinalReport = true } = {}) {
       const s1 = screenResult?.stageWaterfall?.stage1PublicData || 'UNKNOWN';
       const s2 = screenResult?.stageWaterfall?.stage2GmgnAudit || 'UNKNOWN';
       const s3 = screenResult?.stageWaterfall?.stage3Jupiter || 'UNKNOWN';
+      const decisionLines = Array.isArray(screenResult?.decisions)
+        ? screenResult.decisions.map((d) => String(d?.line || '')).filter(Boolean)
+        : [];
+      const gmgnRejectMessages = Array.isArray(screenResult?.gmgnRejects)
+        ? screenResult.gmgnRejects.map((r) => String(r?.msg || '')).filter(Boolean)
+        : [];
+      const stage1Messages = Array.isArray(screenResult?.highFlags)
+        ? screenResult.highFlags
+            .map((f) => String(f?.msg || ''))
+            .filter((msg) => msg && !msg.startsWith('[VETO] Jupiter simulation gagal:'))
+        : [];
+      const stage3Messages = Array.isArray(screenResult?.highFlags)
+        ? screenResult.highFlags
+            .map((f) => String(f?.msg || ''))
+            .filter((msg) => msg && (msg.startsWith('[VETO] Jupiter simulation gagal:') || msg.startsWith('[FAIL_CLOSED] Jupiter safety unavailable:')))
+        : [];
       
       reportManager.updateGate(tokenSymbol, 'STAGE_1_PUBLIC', s1 === 'PASS' ? 'PASS' : s1 === 'SKIPPED' ? 'SKIPPED' : 'FAIL', screenResult?.sources?.okx === false ? 'OKX unavailable' : '');
-      if (s1 !== 'PASS') return { ok: false, symbol: tokenSymbol, stage: 'STAGE_1_PUBLIC', reason: 'Failed Stage 1' };
+      if (s1 !== 'PASS') {
+        const stage1Reason = stage1Messages[0]
+          || decisionLines.find((line) => line.includes('stage-1') || line.includes('Stage-1') || line.includes('FAIL_CLOSED'))
+          || 'Failed Stage 1';
+        return { ok: false, symbol: tokenSymbol, stage: 'STAGE_1_PUBLIC', reason: stage1Reason };
+      }
 
       reportManager.updateGate(tokenSymbol, 'STAGE_2_GMGN', s2 === 'PASS' ? 'PASS' : s2 === 'SKIPPED' ? 'SKIPPED' : 'FAIL', Array.isArray(screenResult?.gmgnRejects) && screenResult.gmgnRejects.length ? screenResult.gmgnRejects.map((r) => r.msg).join(' | ') : '');
-      if (s2 !== 'PASS') return { ok: false, symbol: tokenSymbol, stage: 'STAGE_2_GMGN', reason: 'Failed GMGN' };
+      if (s2 !== 'PASS') {
+        const stage2Reason = gmgnRejectMessages.length > 0
+          ? gmgnRejectMessages.join(' | ')
+          : (decisionLines.find((line) => line.includes('[STAGE-2]')) || 'Failed GMGN');
+        return { ok: false, symbol: tokenSymbol, stage: 'STAGE_2_GMGN', reason: stage2Reason };
+      }
 
       reportManager.updateGate(tokenSymbol, 'STAGE_3_JUPITER', s3 === 'PASS' ? 'PASS' : s3 === 'SKIPPED' ? 'SKIPPED' : 'FAIL', Array.isArray(screenResult?.highFlags) && screenResult.highFlags.length ? screenResult.highFlags.map((f) => f.msg).join(' | ') : '');
-      if (s3 !== 'PASS') return { ok: false, symbol: tokenSymbol, stage: 'STAGE_3_JUPITER', reason: 'Failed Jupiter' };
+      if (s3 !== 'PASS') {
+        const stage3Reason = stage3Messages[0]
+          || decisionLines.find((line) => line.includes('[STAGE-3]') || line.includes('Jupiter'))
+          || 'Failed Jupiter';
+        return { ok: false, symbol: tokenSymbol, stage: 'STAGE_3_JUPITER', reason: stage3Reason };
+      }
 
       if (!screenResult?.eligible) {
         return { ok: false, symbol: tokenSymbol, stage: 'WATERFALL', reason: 'Not eligible' };
