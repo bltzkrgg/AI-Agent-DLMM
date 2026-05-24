@@ -371,6 +371,42 @@ test('watch layer config keys are supported and persist via updateConfig', async
   assert.equal(cfg.watchIntervalSec, 20);
 });
 
+test('monitor fast-lane config keys are supported and persist via updateConfig', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'dlmm-monitor-fastlane-config-'));
+  const configPath = join(root, 'user-config.json');
+
+  process.env.BOT_CONFIG_PATH = configPath;
+  const configModule = await importFresh(join(repoRoot, 'src/config.js'));
+
+  assert.equal(configModule.isConfigKeySupported('monitorFastLaneEnabled'), true);
+  assert.equal(configModule.isConfigKeySupported('monitorFastLaneThrottleMs'), true);
+  assert.equal(configModule.isConfigKeySupported('monitorFastLaneFallbackPollMs'), true);
+  assert.equal(configModule.isConfigKeySupported('monitorFastLaneUsePoolAccount'), true);
+  assert.equal(configModule.isConfigKeySupported('monitorFastLaneUsePositionAccount'), true);
+  assert.equal(configModule.resolveNestedKey('watch.monitorFastLaneEnabled')?.flatKey, 'monitorFastLaneEnabled');
+  assert.equal(configModule.resolveNestedKey('watch.monitorFastLaneThrottleMs')?.flatKey, 'monitorFastLaneThrottleMs');
+
+  configModule.updateConfig({
+    monitorFastLaneEnabled: false,
+    monitorFastLaneThrottleMs: 2500,
+    monitorFastLaneFallbackPollMs: 18000,
+    monitorFastLaneUsePoolAccount: false,
+    monitorFastLaneUsePositionAccount: true,
+  });
+
+  const cfg = configModule.getConfig();
+  assert.equal(cfg.monitorFastLaneEnabled, false);
+  assert.equal(cfg.monitorFastLaneThrottleMs, 2500);
+  assert.equal(cfg.monitorFastLaneFallbackPollMs, 18000);
+  assert.equal(cfg.monitorFastLaneUsePoolAccount, false);
+  assert.equal(cfg.monitorFastLaneUsePositionAccount, true);
+
+  const saved = JSON.parse(readFileSync(configPath, 'utf-8'));
+  assert.equal(saved.monitorFastLaneEnabled, false);
+  assert.equal(saved.monitorFastLaneThrottleMs, 2500);
+  assert.equal(saved.monitorFastLaneFallbackPollMs, 18000);
+});
+
 test('deploy range max bins is configurable and persisted via updateConfig', async () => {
   const root = mkdtempSync(join(tmpdir(), 'dlmm-deploy-range-config-'));
   const configPath = join(root, 'user-config.json');

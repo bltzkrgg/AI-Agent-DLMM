@@ -60,6 +60,13 @@ Important operational keys:
 
 Use `maxMcap` for market-cap ceiling. Deprecated market-cap aliases are not exposed through `/setconfig` and should not be used in new config.
 
+Exit monitoring now uses a hybrid model:
+
+- `monitorFastLaneEnabled` turns websocket fast-lane triggers on or off.
+- `monitorFastLaneThrottleMs` limits how often a websocket wake-up can retrigger the monitor loop.
+- `monitorFastLaneFallbackPollMs` keeps a polling fallback alive when websocket updates are quiet.
+- `monitorFastLaneUsePoolAccount` and `monitorFastLaneUsePositionAccount` control which accounts are subscribed for fast wake-ups.
+
 ## Strategy Scope
 
 Current execution is SOL/WSOL quote only:
