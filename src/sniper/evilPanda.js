@@ -1531,11 +1531,16 @@ export async function calculateFeeOnlyPnl({
   let feePnlSource = feeXRawStr === '0' ? 'none' : 'pool_price';
 
   if (feeXRawStr !== '0') {
-    try {
-      const quote = await quoteFn(tokenXMint, WSOL_MINT, feeXRawStr);
-      feeXSol = Math.max(0, Number(quote?.outAmount || 0) / 1e9);
-      feePnlSource = 'jupiter';
-    } catch {
+    if (typeof quoteFn === 'function') {
+      try {
+        const quote = await quoteFn(tokenXMint, WSOL_MINT, feeXRawStr);
+        feeXSol = Math.max(0, Number(quote?.outAmount || 0) / 1e9);
+        feePnlSource = 'jupiter';
+      } catch {
+        // fall through ke pool price fallback
+      }
+    }
+    if (feePnlSource !== 'jupiter') {
       const feeXUi = Math.max(0, safeNum(feeXRawStr, 0) / Math.pow(10, safeXDec));
       feeXSol = Math.max(0, feeXUi * safeNum(activeBinPrice, 0));
       feePnlSource = feeXSol > 0 ? 'pool_price' : 'none';
@@ -1555,7 +1560,7 @@ export async function calculateFeeOnlyPnl({
   };
 }
 
-async function estimatePositionValueSolFromPositionData({
+export async function estimatePositionValueSolFromPositionData({
   positionData = {},
   tokenXMint = '',
   xDec = 9,
@@ -1574,11 +1579,16 @@ async function estimatePositionValueSolFromPositionData({
   let valueSource = 'position_y_only';
 
   if (totalXRaw.gt(new BN('0'))) {
-    try {
-      const quote = await quoteFn(tokenXMint, WSOL_MINT, totalXRawToSell);
-      xValueSol = Math.max(0, Number(quote?.outAmount || 0) / 1e9);
-      valueSource = 'jupiter_quote';
-    } catch {
+    if (typeof quoteFn === 'function') {
+      try {
+        const quote = await quoteFn(tokenXMint, WSOL_MINT, totalXRawToSell);
+        xValueSol = Math.max(0, Number(quote?.outAmount || 0) / 1e9);
+        valueSource = 'jupiter_quote';
+      } catch {
+        // fall through ke pool price fallback
+      }
+    }
+    if (valueSource !== 'jupiter_quote') {
       const totalXUi = Number(totalXRaw.toString()) / Math.pow(10, safeXDec);
       xValueSol = Math.max(0, totalXUi * safeNum(activeBinPrice, 0));
       valueSource = xValueSol > 0 ? 'pool_price' : 'position_y_only';
@@ -3745,17 +3755,60 @@ export async function monitorPnL(positionPubkey) {
     const totalYUi = Number(pd.totalYAmount?.toString() || '0') / Math.pow(10, yDec);
     const feeXUi   = Number(pd.feeX?.toString() || '0')         / Math.pow(10, xDec);
     const feeYUi   = Number(pd.feeY?.toString() || '0')         / Math.pow(10, yDec);
-    const feeOnlyPnl = await calculateFeeOnlyPnl({
-      feeXRaw: pd.feeX?.toString() || '0',
-      feeYRaw: pd.feeY?.toString() || '0',
+    const totalXRawToSell = Math.floor((totalXUi + feeXUi) * Math.pow(10, xDec)).toString();
+
+    const inRange = activeBin.binId >= reg.rangeMin && activeBin.binId <= reg.rangeMax;
+    const fastValueSnapshot = await estimatePositionValueSolFromPositionData({
+      positionData: pd,
+      tokenXMint: reg.tokenXMint,
       xDec,
       yDec,
-      tokenXMint: reg.tokenXMint,
-      deploySol: reg.deploySol,
       activeBinPrice: rawPrice,
+      quoteFn: null,
     });
+    const fastCurrentValueSol = fastValueSnapshot.positionValueSol;
+    const fastPnlPct = reg.deploySol > 0
+      ? ((fastCurrentValueSol - reg.deploySol) / reg.deploySol) * 100
+      : 0;
+    const stopLossPct = getConfiguredStopLossPct();
+    if (fastPnlPct <= -stopLossPct) {
+      console.log(`[evilPanda] 🛑 STOP_LOSS ${positionPubkey.slice(0,8)} pnl=${fastPnlPct.toFixed(2)}% (fast path)`);
+      return {
+        action: 'STOP_LOSS',
+        currentValueSol: fastCurrentValueSol,
+        pnlPct: fastPnlPct,
+        feePnlSol: 0,
+        feePnlPct: 0,
+        feePnlSource: 'fast_path',
+        feePnlAvailable: false,
+        inRange,
+        exitReason: `Hard SL fast path: PnL=${fastPnlPct.toFixed(2)}% ≤ -${stopLossPct}%`,
+      };
+    }
 
-    const totalXRawToSell = Math.floor((totalXUi + feeXUi) * Math.pow(10, xDec)).toString();
+    const trailingTriggerPct = getConfiguredTrailingTriggerPct();
+    const trailingDropPct = getConfiguredTrailingDropPct();
+    if (fastPnlPct > reg.hwmPct) {
+      reg.hwmPct = fastPnlPct;
+      console.log(`[evilPanda] 📈 New HWM: ${reg.hwmPct.toFixed(2)}%`);
+    }
+    const fastTrailingArmed = trailingTriggerPct > 0 ? reg.hwmPct >= trailingTriggerPct : reg.hwmPct > 0;
+    if (trailingDropPct > 0 && fastTrailingArmed && (reg.hwmPct - fastPnlPct) >= trailingDropPct) {
+      const drawdown = reg.hwmPct - fastPnlPct;
+      console.log(`[evilPanda] 📈 TAKE_PROFIT (TRAILING FAST) ${positionPubkey.slice(0,8)} hwm=${reg.hwmPct.toFixed(2)}% pnl=${fastPnlPct.toFixed(2)}% drop=${drawdown.toFixed(2)}%`);
+      return {
+        action: 'TAKE_PROFIT',
+        currentValueSol: fastCurrentValueSol,
+        pnlPct: fastPnlPct,
+        feePnlSol: 0,
+        feePnlPct: 0,
+        feePnlSource: 'fast_path',
+        feePnlAvailable: false,
+        inRange,
+        exitScenario: 'TRAILING_PROFIT',
+        exitReason: `Trailing TP fast path: turun ${drawdown.toFixed(2)}% dari HWM ${reg.hwmPct.toFixed(2)}% (trigger ${trailingTriggerPct}%, drop ${trailingDropPct}%)`,
+      };
+    }
 
     let currentValueSol = 0;
     try {
@@ -3774,12 +3827,20 @@ export async function monitorPnL(positionPubkey) {
     const pnlPct = reg.deploySol > 0
       ? ((currentValueSol - reg.deploySol) / reg.deploySol) * 100
       : 0;
-    const inRange = activeBin.binId >= reg.rangeMin && activeBin.binId <= reg.rangeMax;
     const entryActiveBin = Number.isFinite(Number(reg.entryActiveBin)) ? Number(reg.entryActiveBin) : null;
     const entryPrice = Number.isFinite(Number(reg.entryPrice)) ? Number(reg.entryPrice) : null;
+    const feeOnlyPnl = await calculateFeeOnlyPnl({
+      feeXRaw: pd.feeX?.toString() || '0',
+      feeYRaw: pd.feeY?.toString() || '0',
+      xDec,
+      yDec,
+      tokenXMint: reg.tokenXMint,
+      deploySol: reg.deploySol,
+      activeBinPrice: rawPrice,
+      quoteFn: null,
+    });
 
     // ── PRIORITAS 1: Hard Stop Loss ───────────────────────────────────────
-    const stopLossPct = getConfiguredStopLossPct();
     if (pnlPct <= -stopLossPct) {
       console.log(`[evilPanda] 🛑 STOP_LOSS ${positionPubkey.slice(0,8)} pnl=${pnlPct.toFixed(2)}%`);
       return { action: 'STOP_LOSS', currentValueSol, pnlPct, ...feeOnlyPnl, inRange,
@@ -3789,9 +3850,6 @@ export async function monitorPnL(positionPubkey) {
     // ── PRIORITAS 2: Trailing Profit Lock berbasis config ────────────────
     // Perbarui HWM jika PnL saat ini lebih tinggi dari sebelumnya.
     // Jika PnL turun > trailingDropPct dari HWM setelah trigger tercapai → TAKE_PROFIT.
-    const trailingTriggerPct = getConfiguredTrailingTriggerPct();
-    const trailingDropPct    = getConfiguredTrailingDropPct();
-
     if (pnlPct > reg.hwmPct) {
       reg.hwmPct = pnlPct; // update HWM in-place (Map entry adalah referensi)
       console.log(`[evilPanda] 📈 New HWM: ${reg.hwmPct.toFixed(2)}%`);

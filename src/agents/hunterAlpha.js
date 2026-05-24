@@ -2844,7 +2844,7 @@ async function monitorLoop(positionPubkey, symbol, poolAddress) {
     const subId = connection.onAccountChange(
       pubkey,
       () => triggerMonitorWake(`ws:${label}`),
-      'confirmed'
+      'processed'
     );
     fastLaneSubs.push(subId);
   }
