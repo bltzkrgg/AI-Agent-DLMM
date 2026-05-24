@@ -87,6 +87,13 @@ class ReportManager {
     return null;
   }
 
+  getGateDetailsText(token, gateName) {
+    if (!token || !gateName) return '';
+    const raw = token.details?.[gateName];
+    if (!raw) return '';
+    return String(raw).trim();
+  }
+
   generateReport() {
     if (this.currentCycle.length === 0) {
       return '🚫 Tidak ada deploy pada siklus ini.';
@@ -191,8 +198,10 @@ class ReportManager {
       } else {
         // REJECTED ❌ — tampilkan tahap dan alasan
         const failedGate = this.getFirstFailedGate(token) || 'UNKNOWN';
+        const gateDetails = this.getGateDetailsText(token, failedGate);
+        const reasonText = gateDetails || token.reason || 'Tidak ada alasan spesifik';
         report += `Tahap gagal: <code>${failedGate}</code>\n`;
-        report += `Alasan: <i>${token.reason || 'Tidak ada alasan spesifik'}</i>\n`;
+        report += `Alasan: <i>${reasonText}</i>\n`;
       }
       
       if (token.details.PENDING_RETEST) {
