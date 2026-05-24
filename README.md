@@ -69,11 +69,11 @@ Exit monitoring now uses a hybrid model:
 
 Operationally, the monitor now has two lanes:
 
-- Fast-path: lightweight checks that are meant to catch stop loss and trailing profit quickly.
-- Slow-path: detailed valuation plus TA/logging when the position survives the fast-path.
-- Trade off: faster exits usually need more wake-ups and can cost more quota, while slower polling is cheaper but can miss a short spike before price turns.
-- For volatile pairs, keep fast-lane on and trim `monitorFastLaneFallbackPollMs` only if quota is still comfortable.
-- For calmer pairs, the fallback poll can stay wider because the chance of a missed peak is lower.
+- Fast-path: jalur cepat buat cek harga dan profit loss secara ringan, supaya bot bisa respon secepat mungkin.
+- Slow-path: jalur lebih berat buat hitung nilai posisi, TA, dan detail logging setelah posisi lolos cek cepat.
+- Trade off: makin cepat responnya, makin sering bot bangun dan makin boros kuota; makin jarang polling, makin hemat kuota tapi ada risiko puncak profit kelewat lalu harga keburu turun.
+- Kalau pair-nya liar dan cepat gerak, fast-lane biasanya lebih layak.
+- Kalau pair-nya lebih tenang, fallback poll bisa dibuat lebih longgar supaya kuota tetap irit.
 
 ## Strategy Scope
 

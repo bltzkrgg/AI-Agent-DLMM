@@ -9,6 +9,7 @@ Scope completed:
 - LP metadata propagation remains intact across manual CA, WATCH, and queue promotion.
 - README now explains the fast-path vs slow-path monitor split in plain language.
 - The hybrid exit monitor now uses a fast wake-up lane for quick SL/TP checks and keeps detailed quote/TA work on the slower path.
+- The docs now spell out the quota-versus-speed trade off in plain language so operators can choose the right fallback cadence.
 
 Changed files:
 
@@ -34,6 +35,8 @@ Impact by situation:
 - Neutral live snapshot no longer blocks trusted WATCH flow.
 - Repeated queue ticks on the same mint: faster because the snapshot is cached briefly.
 - Memory reads stay local and emit lookup timing so entry latency can be observed.
+- Fast-path is best when you want quicker SL/TP response.
+- Slow-path is better when you want lower quota usage and can tolerate a small delay.
 
 Remaining risk:
 
