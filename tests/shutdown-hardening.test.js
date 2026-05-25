@@ -104,7 +104,10 @@ test('/stop pauses autonomous discovery without disabling operator commands', ()
   assert.doesNotMatch(stopBlock, /bot\.stopPolling\(/);
   assert.doesNotMatch(stopBlock, /closeAllActivePositions/);
 
-  assert.match(indexSrc, /resumeDiscovery\('TELEGRAM_AUTOSCREEN_ON'\)/);
+  assert.match(indexSrc, /async function resumeAutoScreeningRuntime/);
+  assert.match(indexSrc, /resumeDiscovery\(source\);/);
+  assert.match(indexSrc, /await resumeAutoScreeningRuntime\(chatId, \{ snapshotTopPools: false, source: 'TELEGRAM_AUTOSCREEN_ON' \}\);/);
+  assert.match(indexSrc, /const wasPaused = isDiscoveryPaused\(\);/);
   assert.match(indexSrc, /resumeDiscovery\('TELEGRAM_HUNT'\)/);
   assert.match(indexSrc, /resumeDiscovery\('TELEGRAM_SCREENING_ON'\)/);
   assert.match(indexSrc, /Screening is paused by <code>\/stop<\/code>/);
@@ -112,12 +115,26 @@ test('/stop pauses autonomous discovery without disabling operator commands', ()
   assert.match(indexSrc, /const discoveryPaused = isDiscoveryPaused\(\)/);
   assert.match(indexSrc, /AUTOSCREEN_STARTUP_DISABLED/);
   assert.match(indexSrc, /manual_command_required/);
+  assert.match(indexSrc, /runScreeningLoop\(\);/);
   assert.doesNotMatch(indexSrc, /startupScan=true/);
 
   assert.match(hunterSrc, /OPERATOR_DISCOVERY_PAUSED_KEY = 'operatorDiscoveryPaused'/);
   assert.match(hunterSrc, /policy: 'OPERATOR_DISCOVERY_PAUSED'/);
   assert.match(queueSrc, /OPERATOR_DISCOVERY_PAUSED_KEY = 'operatorDiscoveryPaused'/);
   assert.match(queueSrc, /if \(isOperatorDiscoveryPaused\(\)\) \{\s*_watcherTimer = null;\s*return;/);
+});
+
+test('/autoscreen on and setconfig autoScreeningEnabled=true resume screening after /stop', () => {
+  const src = readFileSync(indexPath, 'utf8');
+
+  assert.match(src, /async function resumeAutoScreeningRuntime/);
+  assert.match(src, /resumeDiscovery\(source\);/);
+  assert.match(src, /await resumeAutoScreeningRuntime\(chatId, \{ snapshotTopPools: false, source: 'TELEGRAM_AUTOSCREEN_ON' \}\);/);
+  assert.match(src, /const wasPaused = isDiscoveryPaused\(\);/);
+  assert.match(src, /const loopWasRunning = Boolean\(_screeningLoopTimer\);/);
+  assert.match(src, /TELEGRAM_SETCONFIG_AUTO_SCREENING_ON/);
+  assert.match(src, /runScreeningLoop\(\);/);
+  assert.doesNotMatch(src, /Config disimpan, tetapi discovery\/deploy masih paused by <code>\/stop<\/code>/);
 });
 
 test('evilPanda uses monolith positions with one Meteora account for the full range', () => {

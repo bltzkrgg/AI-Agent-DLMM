@@ -230,6 +230,13 @@ function stopAutoScreeningRuntime() {
   stopDeployQueueWatcher();
 }
 
+async function resumeAutoScreeningRuntime(chatId, { snapshotTopPools = false, source = 'operator_resume' } = {}) {
+  resumeDiscovery(source);
+  stopScreeningLoop();
+  await startAutoScreeningRuntime(chatId, { snapshotTopPools });
+  return true;
+}
+
 async function urgentNotify(msg) {
   await notify(msg);
 }
@@ -740,34 +747,31 @@ bot.onText(/\/setconfig(?:\s+(\S+))?(?:\s+(.+))?/, async (msg, match) => {
 
   // ── Efek samping khusus: autoScreeningEnabled ─────────────────────
   if (flatKey === 'autoScreeningEnabled') {
-      if (after === true) {
-        if (isDiscoveryPaused()) {
-          bot.sendMessage(chatId,
-            `📡 <b>Auto-Screening: ON</b>\n` +
-            `Config disimpan, tetapi discovery/deploy masih paused oleh <code>/stop</code>.\n` +
-            `Gunakan <code>/autoscreen on</code>, <code>/hunt</code>, atau <code>/screening on</code> untuk resume.`,
-            { parse_mode: 'HTML' }
-          );
-          return;
-        }
-      // Start loop jika belum berjalan
-      if (!_screeningLoopTimer) {
+    if (after === true) {
+      const wasPaused = isDiscoveryPaused();
+      const loopWasRunning = Boolean(_screeningLoopTimer);
+      if (wasPaused || !loopWasRunning) {
         await bot.sendMessage(chatId,
           `📡 <b>Auto-Screening: ON</b>\n` +
-          `Loop dimulai — interval <code>${result.screeningIntervalMin || 15} menit</code>.\n\n` +
+          `Loop akan diaktifkan ulang — interval <code>${result.screeningIntervalMin || 15} menit</code>.\n\n` +
           `<i>Memulai scan pertama sekarang...</i>`,
           { parse_mode: 'HTML' }
         );
-        await startAutoScreeningRuntime(chatId, { snapshotTopPools: false });
-        await runSilentScan();
+        await resumeAutoScreeningRuntime(chatId, { snapshotTopPools: false, source: 'TELEGRAM_SETCONFIG_AUTO_SCREENING_ON' });
+        try {
+          await runImmediateAutoscreenScan({ source: 'setconfig', emitFinalReport: true });
+        } catch (e) {
+          console.error('[autoscreen] Scan pertama via setconfig gagal:', e.message);
+          await notify(`❌ <b>Scan pertama gagal:</b>\n<code>${escapeHTML(e.message)}</code>\n<i>Loop tetap dilanjutkan...</i>`);
+        }
         runScreeningLoop();
-      } else {
-        bot.sendMessage(chatId,
-          `📡 <b>Auto-Screening: ON</b>\n` +
-          `Loop sudah berjalan — interval <code>${result.screeningIntervalMin || 15} menit</code>.`,
-          { parse_mode: 'HTML' }
-        );
+        return;
       }
+      bot.sendMessage(chatId,
+        `📡 <b>Auto-Screening: ON</b>\n` +
+        `Loop sudah berjalan — interval <code>${result.screeningIntervalMin || 15} menit</code>.`,
+        { parse_mode: 'HTML' }
+      );
     } else {
       // Stop loop
       stopAutoScreeningRuntime();
@@ -848,17 +852,14 @@ bot.onText(/\/autoscreen(?:\s+(on|off))?/, async (msg, match) => {
   const after  = result.autoScreeningEnabled;
 
   if (after === true) {
-    resumeDiscovery('TELEGRAM_AUTOSCREEN_ON');
     // ── Clear interval lama (anti double-execution) ───────────────────
-    stopScreeningLoop();
-
     await bot.sendMessage(chatId,
       `📡 <b>Auto-Screening: ON</b>\n🔍 Eksekusi scan pertama dimulai sekarang...`,
       { parse_mode: 'HTML' }
     );
 
     // Wire Deploy Queue agar watcher bisa eksekusi
-    await startAutoScreeningRuntime(chatId, { snapshotTopPools: false });
+    await resumeAutoScreeningRuntime(chatId, { snapshotTopPools: false, source: 'TELEGRAM_AUTOSCREEN_ON' });
 
     // ── 1. INSTANT FIRST RUN (awaited, user-triggered) ───────────────
     // Manual /autoscreen on harus mengirim final report scan pertama.
