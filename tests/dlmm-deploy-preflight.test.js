@@ -27,6 +27,7 @@ import {
   __guardDlmmCostBeforeSendForTests,
   __deriveSpotBidAskSeedPlanForTests,
   __getDlmmStrategyTypeFromConfigForTests,
+  __evaluateDeployWalletFundsForTests,
   __assertNoUnexpectedSolTransferInTxForTests,
   filterKnownTransactionSigners,
   getPositionMeta,
@@ -1652,6 +1653,35 @@ test('dry-run default seed disabled does not produce seed plan branch signals', 
   });
   assert.equal(plan.shouldSeedTokenX, false);
   assert.equal(plan.seedLamports, 0);
+});
+
+test('deploy balance guard blocks when available SOL is below deploy + reserve + fee buffer', () => {
+  const out = __evaluateDeployWalletFundsForTests({
+    walletLamports: 153_701_228,
+    deploySol: 0.5,
+    cfg: {
+      minSolToOpen: 0.1,
+      gasReserve: 0.1,
+    },
+  });
+  assert.equal(out.ok, false);
+  assert.equal(Number(out.availableSol.toFixed(6)), 0.153701);
+  assert.equal(Number(out.requiredSol.toFixed(6)), 0.615);
+  assert.equal(Number(out.shortfallSol.toFixed(6)), 0.461299);
+});
+
+test('deploy balance guard passes when available SOL covers deploy + reserve + fee buffer', () => {
+  const out = __evaluateDeployWalletFundsForTests({
+    walletLamports: 716_200_000,
+    deploySol: 0.5,
+    cfg: {
+      minSolToOpen: 0.1,
+      gasReserve: 0.1,
+    },
+  });
+  assert.equal(out.ok, true);
+  assert.equal(Number(out.availableSol.toFixed(4)), 0.7162);
+  assert.equal(Number(out.requiredSol.toFixed(3)), 0.615);
 });
 
 test('regression guard: default seed disabled does not create mixed 0.45/0.05 split for 0.5 SOL', () => {

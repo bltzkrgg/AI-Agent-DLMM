@@ -2745,6 +2745,7 @@ Balas HANYA JSON valid tanpa Markdown.`;
         if (deployResult && typeof deployResult === 'object' && deployResult.blocked) {
           const reasonText = deployResult.reason || 'DEPLOY_BLOCKED';
           const detailText = deployResult.detail ? `\nDetail: <code>${escapeHTML(String(deployResult.detail).slice(0, 240))}</code>` : '';
+          const blockedByBalance = String(reasonText).includes('INSUFFICIENT_SOL_BALANCE');
           if (winner._record) {
             recordGate(winner._record, 'SCOUT_AGENT', 'DEFER', reasonText, {
               blocked: true,
@@ -2755,12 +2756,20 @@ Balas HANYA JSON valid tanpa Markdown.`;
             });
           }
           await notify(
-            `⛔ <b>Deploy Ditolak</b>\n` +
+            `${blockedByBalance ? '⏸️ <b>Deploy Ditahan</b>' : '⛔ <b>Deploy Ditolak</b>'}\n` +
             `<b>${escapeHTML(symbol)}</b> — <code>${reasonText}</code>\n` +
-          `Pool: <code>${poolAddress.slice(0,8)}</code>\n` +
-          `Range: <code>${deployResult.rangeMin}-${deployResult.rangeMax}</code> (max ${deployResult.rangeMaxBins} bin)\n` +
-          `${detailText}\n` +
-          `<i>Pool/range ini tidak dideploy karena memicu non-refundable rent. Pool lain tetap normal.</i>`
+            `Pool: <code>${poolAddress.slice(0,8)}</code>\n` +
+            (
+              Number.isFinite(Number(deployResult.rangeMin)) && Number.isFinite(Number(deployResult.rangeMax))
+                ? `Range: <code>${deployResult.rangeMin}-${deployResult.rangeMax}</code> (max ${deployResult.rangeMaxBins ?? 'n/a'} bin)\n`
+                : ''
+            ) +
+            `${detailText}\n` +
+            (
+              blockedByBalance
+                ? `<i>Saldo belum cukup untuk deploy aman. Top-up atau turunkan deployAmountSol.</i>`
+                : `<i>Pool/range ini tidak dideploy karena memicu non-refundable rent. Pool lain tetap normal.</i>`
+            )
           );
           return false;
         }

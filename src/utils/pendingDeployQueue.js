@@ -1148,12 +1148,41 @@ async function runWatcher() {
           continue;
         }
         if (result && typeof result === 'object' && result.blocked) {
+          const blockedReason = String(result.reason || 'DEPLOY_BLOCKED');
           const blockedByRent = String(result.reason || '').includes('VETO_NON_REFUNDABLE_RENT');
+          const blockedByBalance = blockedReason.includes('INSUFFICIENT_SOL_BALANCE');
+          if (blockedByBalance) {
+            const holdCooldownSec = Math.max(60, Number(cfg.deployQueueHoldNotifyCooldownSec) || 180);
+            const holdNotice = shouldSendDeployQueueHoldNotification({
+              poolAddress,
+              mint,
+              reason: blockedReason,
+              now: Date.now(),
+              cooldownMs: holdCooldownSec * 1000,
+            });
+            entry.attempts = Math.max(0, entry.attempts - 1);
+            entry.nextEligibleAt = Date.now() + holdCooldownSec * 1000;
+            _queue.set(mint, entry);
+            if (holdNotice.shouldSend) {
+              await safeSend(
+                `⏸️ <b>Deploy Queue Hold</b>\n` +
+                `<b>${symbol}</b> — <code>${blockedReason}</code>\n` +
+                `Pool: <code>${poolAddress.slice(0, 8)}</code>\n` +
+                (result.detail ? `Detail: <code>${escapeHTML(String(result.detail).slice(0, 240))}</code>\n` : '') +
+                `<i>Saldo belum cukup untuk deploy aman. Queue akan cek ulang otomatis setelah ${holdCooldownSec}s.</i>`
+              );
+            }
+            continue;
+          }
           await safeSend(
             `${blockedByRent ? '⛔ <b>Deploy Ditolak (Queue)</b>' : '⛔ <b>Deploy Ditolak (Queue)</b>'}\n` +
-            `<b>${symbol}</b> — <code>${result.reason || 'DEPLOY_BLOCKED'}</code>\n` +
+            `<b>${symbol}</b> — <code>${blockedReason}</code>\n` +
           `Pool: <code>${poolAddress.slice(0, 8)}</code>\n` +
-          `Range: <code>${result.rangeMin}-${result.rangeMax}</code> (max ${result.rangeMaxBins} bin)\n` +
+          (
+            Number.isFinite(Number(result.rangeMin)) && Number.isFinite(Number(result.rangeMax))
+              ? `Range: <code>${result.rangeMin}-${result.rangeMax}</code> (max ${result.rangeMaxBins ?? 'n/a'} bin)\n`
+              : ''
+          ) +
           (result.detail ? `Detail: <code>${escapeHTML(String(result.detail).slice(0, 240))}</code>\n` : '') +
           (blockedByRent
               ? `<i>Adjust range gagal untuk pool/range ini. Pool lain tetap normal.</i>`

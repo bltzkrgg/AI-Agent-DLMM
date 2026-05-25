@@ -82,9 +82,62 @@ const SPOT_STRATEGY_TYPE = StrategyType?.Spot ?? 0;
 const DLMM_SDK_PATH_STRATEGY = 'strategy';
 const DLMM_SDK_PATH_WEIGHT_QUOTE_ONLY = 'weight_quote_only';
 const DLMM_PROGRAM_ID = new PublicKey('LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo');
+const DEPLOY_PREFLIGHT_FEE_BUFFER_SOL = 0.015;
 
 function isFiniteInteger(value) {
   return Number.isFinite(value) && Number.isSafeInteger(value);
+}
+
+function evaluateDeployWalletFunds({
+  walletLamports = 0,
+  deploySol = 0,
+  cfg = getConfig(),
+} = {}) {
+  const availableSol = Math.max(0, Number(walletLamports || 0) / 1e9);
+  const safeDeploySol = Math.max(0, Number(deploySol) || 0);
+  const minSolToOpen = Math.max(0, Number(cfg?.minSolToOpen) || 0);
+  const gasReserveSol = Math.max(0, Number(cfg?.gasReserve) || 0);
+  const requiredSol = Math.max(safeDeploySol, minSolToOpen) + gasReserveSol + DEPLOY_PREFLIGHT_FEE_BUFFER_SOL;
+  const ok = availableSol >= requiredSol;
+  return {
+    ok,
+    availableSol,
+    requiredSol,
+    deploySol: safeDeploySol,
+    minSolToOpen,
+    gasReserveSol,
+    feeBufferSol: DEPLOY_PREFLIGHT_FEE_BUFFER_SOL,
+    shortfallSol: Math.max(0, requiredSol - availableSol),
+  };
+}
+
+function buildInsufficientBalanceBlockedResult({
+  walletCheck = {},
+  poolAddress = '',
+  strategyShape = 'spot',
+  strategyType = null,
+} = {}) {
+  const detail =
+    `available=${walletCheck.availableSol.toFixed(6)} SOL, ` +
+    `required=${walletCheck.requiredSol.toFixed(6)} SOL ` +
+    `(deploy=${walletCheck.deploySol.toFixed(6)} + reserve=${walletCheck.gasReserveSol.toFixed(6)} + feeBuffer=${walletCheck.feeBufferSol.toFixed(6)}), ` +
+    `shortfall=${walletCheck.shortfallSol.toFixed(6)} SOL, ` +
+    `shape=${String(strategyShape || 'spot')}, strategyType=${Number.isFinite(Number(strategyType)) ? Number(strategyType) : 'na'}`;
+  return {
+    blocked: true,
+    reason: 'INSUFFICIENT_SOL_BALANCE',
+    detail,
+    poolAddress,
+    requiredSol: walletCheck.requiredSol,
+    availableSol: walletCheck.availableSol,
+    shortfallSol: walletCheck.shortfallSol,
+    deploySol: walletCheck.deploySol,
+    minSolToOpen: walletCheck.minSolToOpen,
+    gasReserveSol: walletCheck.gasReserveSol,
+    feeBufferSol: walletCheck.feeBufferSol,
+    strategyShape: String(strategyShape || 'spot'),
+    strategyType: Number.isFinite(Number(strategyType)) ? Number(strategyType) : null,
+  };
 }
 
 function buildInvalidDlmmArgsError(message) {
@@ -2960,6 +3013,26 @@ export async function deployPosition(poolAddress, deployOptions = {}) {
     const dlmmShapeDebug = getDlmmLiquidityShapeDebug(cfg2);
     const dlmmStrategyType = getDlmmStrategyTypeFromConfig(cfg2);
     const dlmmLiquidityShape = dlmmShapeDebug.normalized;
+    const walletLamports = await connection.getBalance(wallet.publicKey).catch(() => 0);
+    const walletCheck = evaluateDeployWalletFunds({
+      walletLamports,
+      deploySol,
+      cfg: cfg2,
+    });
+    if (!walletCheck.ok) {
+      console.warn(
+        `[evilPanda] DEPLOY_BLOCK_INSUFFICIENT_SOL pool=${poolAddress.slice(0,8)} ` +
+        `available=${walletCheck.availableSol.toFixed(6)} required=${walletCheck.requiredSol.toFixed(6)} ` +
+        `deploy=${walletCheck.deploySol.toFixed(6)} reserve=${walletCheck.gasReserveSol.toFixed(6)} buffer=${walletCheck.feeBufferSol.toFixed(6)} ` +
+        `shape=${dlmmLiquidityShape} strategyType=${dlmmStrategyType}`
+      );
+      return buildInsufficientBalanceBlockedResult({
+        walletCheck,
+        poolAddress,
+        strategyShape: dlmmLiquidityShape,
+        strategyType: dlmmStrategyType,
+      });
+    }
 
     const seedPlan = deriveSpotBidAskSeedPlan({
       cfg: cfg2,
@@ -4735,6 +4808,10 @@ export function __deriveSpotBidAskSeedPlanForTests(args = {}) {
 
 export function __getDlmmStrategyTypeFromConfigForTests(args = {}) {
   return getDlmmStrategyTypeFromConfig(args);
+}
+
+export function __evaluateDeployWalletFundsForTests(args = {}) {
+  return evaluateDeployWalletFunds(args);
 }
 
 export function __assertNoUnexpectedSolTransferInTxForTests(args = {}) {
