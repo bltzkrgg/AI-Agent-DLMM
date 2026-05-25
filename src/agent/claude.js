@@ -129,6 +129,15 @@ const tools = [
     },
   },
   {
+    name: 'zap_out',
+    description: 'Emergency exit all open positions to SOL with close + auto-swap best effort.',
+    input_schema: {
+      type: 'object',
+      properties: {},
+      required: [],
+    },
+  },
+  {
     name: 'get_top_pools',
     description: 'Analisa pool DLMM terbaik berdasarkan fee APR dan volume',
     input_schema: {
@@ -299,6 +308,85 @@ async function executeTool(toolName, toolInput) {
         execute: () => claimFees(toolInput.pool_address, toolInput.position_address),
       });
       return JSON.stringify({ operationId, ...result }, null, 2);
+    }
+    case 'zap_out': {
+      const openPositions = getOpenPositions();
+      if (!openPositions || openPositions.length === 0) {
+        return JSON.stringify({
+          mode: 'zap_out',
+          total: 0,
+          closed: 0,
+          failed: 0,
+          note: 'Tidak ada posisi terbuka.',
+        }, null, 2);
+      }
+
+      const closed = [];
+      const failed = [];
+      for (const pos of openPositions) {
+        const poolAddress = pos.pool_address;
+        const positionAddress = pos.position_address;
+        if (!poolAddress || !positionAddress) {
+          failed.push({
+            position: positionAddress || 'UNKNOWN',
+            pool: poolAddress || 'UNKNOWN',
+            reason: 'MISSING_POOL_OR_POSITION',
+          });
+          continue;
+        }
+        try {
+          const { result, operationId } = await executeControlledOperation({
+            operationType: 'CLOSE_POSITION',
+            entityId: positionAddress,
+            payload: { pool_address: poolAddress, position_address: positionAddress },
+            metadata: { source: 'claude_tool_zap_out', poolAddress },
+            execute: () => closePositionDLMM(poolAddress, positionAddress, {}, { isUrgent: true }),
+          });
+
+          const poolInfo = await getPoolInfo(poolAddress).catch(() => null);
+          const swapResults = [];
+          const swapErrors = [];
+          if (poolInfo) {
+            for (const mint of [poolInfo.tokenX, poolInfo.tokenY]) {
+              if (!mint || mint === SOL_MINT) continue;
+              try {
+                const swapRes = await swapAllToSOL(mint, null, { isUrgent: true });
+                if (swapRes?.success) {
+                  swapResults.push({ mint: mint.slice(0, 8), outSol: swapRes.outSol });
+                } else if (swapRes?.reason) {
+                  swapResults.push({ mint: mint.slice(0, 8), skipped: swapRes.reason });
+                }
+              } catch (swapErr) {
+                swapErrors.push({ mint: mint.slice(0, 8), error: swapErr.message });
+              }
+            }
+          }
+
+          closed.push({
+            operationId,
+            pool: poolAddress,
+            position: positionAddress,
+            result,
+            autoSwap: swapResults.length > 0 ? swapResults : 'skipped',
+            swapErrors: swapErrors.length > 0 ? swapErrors : undefined,
+          });
+        } catch (e) {
+          failed.push({
+            pool: poolAddress,
+            position: positionAddress,
+            reason: e.message,
+          });
+        }
+      }
+
+      return JSON.stringify({
+        mode: 'zap_out',
+        total: openPositions.length,
+        closed: closed.length,
+        failed: failed.length,
+        closedPositions: closed,
+        failedPositions: failed,
+      }, null, 2);
     }
     case 'get_top_pools': {
       const pools = await getTopPools(toolInput.limit || 5);
