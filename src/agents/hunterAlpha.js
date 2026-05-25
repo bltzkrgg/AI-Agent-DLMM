@@ -120,6 +120,10 @@ function getDisplayedOutOfRangeWaitMs(cfg = getConfig()) {
   return Math.max(60_000, Math.round(displayMinutes * 60_000));
 }
 
+function getOorAlertCooldownMs(cfg = getConfig()) {
+  return getDisplayedOutOfRangeWaitMs(cfg);
+}
+
 function getMonitorFastLaneConfig(cfg = getConfig()) {
   const enabled = cfg?.monitorFastLaneEnabled !== false;
   const throttleMs = Math.max(250, Number(cfg?.monitorFastLaneThrottleMs || 1200));
@@ -213,7 +217,8 @@ export function evaluateOutOfRangeMonitorState({
 
   const nextOorSince = oorSince ?? now;
   const elapsedMs = Math.max(0, now - nextOorSince);
-  const shouldAlert = lastOorAlertAt === null || (now - lastOorAlertAt) >= OOR_ALERT_COOLDOWN_MS;
+  const alertCooldownMs = getOorAlertCooldownMs(cfg);
+  const shouldAlert = lastOorAlertAt === null || (now - lastOorAlertAt) >= alertCooldownMs;
   const runtimePatch = {
     oorSince: nextOorSince,
     lastOorAlertAt: shouldAlert ? now : lastOorAlertAt,
@@ -272,7 +277,6 @@ let _taWatchTimer = null;
 let _taWatchInFlight = false;
 let _manualCloseWatchTimer = null;
 let _manualCloseWatchInFlight = false;
-const OOR_ALERT_COOLDOWN_MS = 60_000;
 const OOR_DISPLAY_WAIT_MINUTES = 5;
 const MANUAL_CLOSE_ALERT_COOLDOWN_MS = 5 * 60_000;
 const _manualCloseAlertState = new Map(); // positionPubkey -> lastAlertAt
