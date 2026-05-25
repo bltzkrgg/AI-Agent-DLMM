@@ -2704,6 +2704,29 @@ async function getFreshActivePosition(connection, wallet, poolAddress, positionP
   return { dlmmPool, activePos };
 }
 
+async function buildZapOutCloseTxs(dlmmPool, wallet, activePos) {
+  const pd = activePos?.positionData || {};
+  const lowerBinId = pd.lowerBinId;
+  const upperBinId = pd.upperBinId;
+  if (lowerBinId === undefined || upperBinId === undefined) {
+    throw new Error(`ZAP_OUT_RANGE_UNAVAILABLE_${activePos?.publicKey?.toString?.().slice(0, 8) || 'UNKNOWN'}`);
+  }
+
+  const removeTxs = await dlmmPool.removeLiquidity({
+    position: activePos.publicKey,
+    user: wallet.publicKey,
+    fromBinId: lowerBinId,
+    toBinId: upperBinId,
+    bps: new BN(10000),
+    shouldClaimAndClose: true,
+  });
+  const txList = Array.isArray(removeTxs) ? removeTxs : [removeTxs];
+  if (!txList.length) {
+    throw new Error(`ZAP_OUT_EMPTY_TX_LIST_${activePos.publicKey.toString().slice(0, 8)}`);
+  }
+  return txList;
+}
+
 async function buildClosePositionTxs(dlmmPool, wallet, activePos) {
   const pd = activePos?.positionData || {};
   const lowerBinId = pd.lowerBinId;
@@ -2769,6 +2792,57 @@ async function buildClosePositionTxs(dlmmPool, wallet, activePos) {
 
   if (txs.length > 0) return txs;
   throw new Error(`NO_CLOSE_METHOD_AVAILABLE_${activePos.publicKey.toString().slice(0, 8)}`);
+}
+
+async function executeExitCloseWithZapPreferred({
+  connection,
+  wallet,
+  dlmmPool,
+  activePos,
+  microLamports,
+  removeSignatures,
+  stage = 'primary',
+  notifyOnFallback = true,
+} = {}) {
+  try {
+    const zapTxList = await buildZapOutCloseTxs(dlmmPool, wallet, activePos);
+    for (const tx of zapTxList) {
+      const sig = await sendExitTx(connection, wallet, tx, microLamports);
+      removeSignatures.push(sig);
+      console.log(`[evilPanda] ZAP_OUT TX confirmed (${stage}): ${sig.slice(0,8)}`);
+    }
+    return { path: 'ZAP_OUT', usedFallback: false, txCount: zapTxList.length };
+  } catch (zapErr) {
+    const zapReason = String(zapErr?.message || zapErr || 'UNKNOWN_ZAP_ERROR');
+    console.warn(`[evilPanda] ZAP_OUT_FAIL stage=${stage} reason=${zapReason}`);
+    if (notifyOnFallback) {
+      await notify(
+        `⚠️ <b>Zap-Out gagal, fallback darurat aktif</b>\n` +
+        `Stage: <code>${stage}</code>\n` +
+        `Posisi: <code>${activePos.publicKey.toString().slice(0, 8)}</code>\n` +
+        `Reason: <code>${escapeHTML(zapReason)}</code>`
+      );
+    }
+    try {
+      const fallbackTxList = await buildClosePositionTxs(dlmmPool, wallet, activePos);
+      for (const tx of fallbackTxList) {
+        const sig = await sendExitTx(connection, wallet, tx, microLamports);
+        removeSignatures.push(sig);
+        console.log(`[evilPanda] FALLBACK CLOSE TX confirmed (${stage}): ${sig.slice(0,8)}`);
+      }
+      console.warn(
+        `[evilPanda] EXIT_FALLBACK_USED stage=${stage} pos=${activePos.publicKey.toString().slice(0,8)} ` +
+        `reason=${zapReason}`
+      );
+      return { path: 'FALLBACK_LEGACY', usedFallback: true, txCount: fallbackTxList.length, zapReason };
+    } catch (fallbackErr) {
+      const fallbackReason = String(fallbackErr?.message || fallbackErr || 'UNKNOWN_FALLBACK_ERROR');
+      const combined = `EXIT_ZAP_AND_FALLBACK_FAILED stage=${stage} zap=${zapReason} fallback=${fallbackReason}`;
+      const err = new Error(combined);
+      err.code = 'EXIT_ZAP_AND_FALLBACK_FAILED';
+      throw err;
+    }
+  }
 }
 
 async function verifyPositionClosedOnChain(connection, wallet, poolAddress, positionPubkey, {
@@ -4045,7 +4119,15 @@ export async function exitPosition(positionPubkey, reason = 'MANUAL') {
       }
 
       if (isDryRun()) {
-        const dryRunTxList = await buildClosePositionTxs(dlmmPool, wallet, activePos);
+        let dryRunTxList;
+        try {
+          dryRunTxList = await buildZapOutCloseTxs(dlmmPool, wallet, activePos);
+          console.log(`[DRY RUN] exitPosition path=ZAP_OUT pos=${positionPubkey.slice(0,8)}`);
+        } catch (dryZapErr) {
+          console.warn(`[DRY RUN] ZAP_OUT_FAIL pos=${positionPubkey.slice(0,8)} reason=${dryZapErr.message}`);
+          dryRunTxList = await buildClosePositionTxs(dlmmPool, wallet, activePos);
+          console.log(`[DRY RUN] exitPosition path=FALLBACK_LEGACY pos=${positionPubkey.slice(0,8)}`);
+        }
         for (const tx of dryRunTxList) {
           injectPriorityFee(tx, { units: EP_CONFIG.EXIT_COMPUTE_UNITS, microLamports: isEmergencyExit ? Math.max(microLamports * 5, microLamports) : microLamports });
           if (tx instanceof VersionedTransaction) {
@@ -4113,14 +4195,21 @@ export async function exitPosition(positionPubkey, reason = 'MANUAL') {
       }
 
       // 1. Remove all liquidity and request account close.
-      const removeTxList = await buildClosePositionTxs(dlmmPool, wallet, activePos);
       const removeSignatures = [];
       const exitMicroLamports = isEmergencyExit ? Math.max(microLamports * 5, microLamports) : microLamports;
-      for (const tx of removeTxList) {
-        const sig = await sendExitTx(connection, wallet, tx, exitMicroLamports);
-        removeSignatures.push(sig);
-        console.log(`[evilPanda] Remove liquidity TX confirmed: ${sig.slice(0,8)}`);
-      }
+      const exitPathStats = { zapUsed: false, fallbackUsed: false };
+      const primaryExit = await executeExitCloseWithZapPreferred({
+        connection,
+        wallet,
+        dlmmPool,
+        activePos,
+        microLamports: exitMicroLamports,
+        removeSignatures,
+        stage: 'primary',
+        notifyOnFallback: true,
+      });
+      if (primaryExit.path === 'ZAP_OUT') exitPathStats.zapUsed = true;
+      if (primaryExit.path === 'FALLBACK_LEGACY') exitPathStats.fallbackUsed = true;
 
       // Some DLMM accounts need a fresh-state cleanup after fees/rewards settle.
       for (let cleanupAttempt = 1; cleanupAttempt <= 3; cleanupAttempt++) {
@@ -4142,12 +4231,18 @@ export async function exitPosition(positionPubkey, reason = 'MANUAL') {
         }
 
         console.warn(`[evilPanda] Position masih open setelah remove; cleanup attempt ${cleanupAttempt}/3`);
-        const cleanupTxList = await buildClosePositionTxs(freshPool, wallet, freshPos);
-        for (const tx of cleanupTxList) {
-          const sig = await sendExitTx(connection, wallet, tx, exitMicroLamports);
-          removeSignatures.push(sig);
-          console.log(`[evilPanda] Cleanup close TX confirmed: ${sig.slice(0,8)}`);
-        }
+        const cleanupExit = await executeExitCloseWithZapPreferred({
+          connection,
+          wallet,
+          dlmmPool: freshPool,
+          activePos: freshPos,
+          microLamports: exitMicroLamports,
+          removeSignatures,
+          stage: `cleanup_${cleanupAttempt}`,
+          notifyOnFallback: cleanupAttempt === 1,
+        });
+        if (cleanupExit.path === 'ZAP_OUT') exitPathStats.zapUsed = true;
+        if (cleanupExit.path === 'FALLBACK_LEGACY') exitPathStats.fallbackUsed = true;
       }
 
       // 2. Swap sisa token non-SOL → SOL (jika ada)
@@ -4213,6 +4308,14 @@ export async function exitPosition(positionPubkey, reason = 'MANUAL') {
       await persistActivePositionsStateNow();
       clearPositionRuntimeState(positionPubkey);
       clearQuoteOnlyDeployMarker(positionPubkey);
+      if (exitPathStats.fallbackUsed) {
+        await notify(
+          `⚠️ <b>Exit pakai fallback darurat</b>\n` +
+          `Posisi: <code>${positionPubkey.slice(0, 8)}</code>\n` +
+          `Reason: <code>${escapeHTML(reason)}</code>\n` +
+          `<i>Zap-Out tidak full sukses di semua tahap. Cek liquidity/impact pool.</i>`
+        );
+      }
       console.log(`[evilPanda] ✅ Position closed & verified: ${positionPubkey.slice(0,8)} | reason=${reason}`);
 
       // 5. Harvest Log + Ledger + Blacklist

@@ -172,6 +172,11 @@ test('evilPanda removeLiquidity uses Meteora SDK parameter names', () => {
 
 test('evilPanda retries close cleanup before reporting manual exit failure', () => {
   const src = readFileSync(evilPandaPath, 'utf8');
+  assert.match(src, /async function buildZapOutCloseTxs/);
+  assert.match(src, /shouldClaimAndClose:\s*true/);
+  assert.match(src, /async function executeExitCloseWithZapPreferred/);
+  assert.match(src, /ZAP_OUT_FAIL/);
+  assert.match(src, /EXIT_FALLBACK_USED/);
   assert.match(src, /async function buildClosePositionTxs/);
   assert.match(src, /shouldClaimAndClose:\s*false/);
   assert.match(src, /claimSwapFee/);
@@ -196,7 +201,8 @@ test('evilPanda exit path swaps residual non-SOL tokens using raw balances', () 
   assert.match(src, /getTokenBalanceRaw/);
   assert.match(src, /residualMints = \[\.\.\.new Set\(\[reg\.tokenXMint, reg\.tokenYMint\]\.filter\(/);
   assert.match(src, /Swap residual token → SOL/);
-  assert.match(src, /swapToSol\(mint, rawBalance, null, \{ isUrgent: true \}\)/);
+  assert.match(src, /const swapOptions = \{ isUrgent: true \}/);
+  assert.match(src, /swapToSol\(mint, rawBalance, null, swapOptions\)/);
 });
 
 test('deploy path blocks duplicate pool entries before opening a second position', () => {
