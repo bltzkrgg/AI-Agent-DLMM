@@ -59,6 +59,14 @@ test('jito tip injection is removed from normal runtime send paths', () => {
   assert.doesNotMatch(meteoraSrc, /getJitoTipAddresses/);
 });
 
+test('legacy meteora deploy path resolves strategyType from dlmmLiquidityShape config', () => {
+  const meteoraSrc = readFileSync(resolve(process.cwd(), 'src/solana/meteora.js'), 'utf8');
+  assert.match(meteoraSrc, /function resolveDlmmStrategyTypeFromConfig/);
+  assert.match(meteoraSrc, /DLMM_SHAPE_RUNTIME raw=/);
+  assert.match(meteoraSrc, /strategyType:\s*resolvedStrategyType/);
+  assert.doesNotMatch(meteoraSrc, /strategyType:\s*0/);
+});
+
 test('index starts manual close watcher during boot', () => {
   const indexSrc = readFileSync(indexPath, 'utf8');
   assert.match(indexSrc, /startManualCloseWatcher/);

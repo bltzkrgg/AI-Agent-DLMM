@@ -17,6 +17,19 @@ import {
 } from '../safety/gasGuard.js';
 import crypto from 'crypto';
 
+function normalizeDlmmLiquidityShape(value) {
+  const normalized = String(value || '')
+    .trim()
+    .toLowerCase()
+    .replace(/[\s_-]/g, '');
+  return normalized === 'bidask' ? 'bidask' : 'spot';
+}
+
+function resolveDlmmStrategyTypeFromConfig(cfg = {}) {
+  const shape = normalizeDlmmLiquidityShape(cfg?.dlmmLiquidityShape);
+  return shape === 'bidask' ? 2 : 0;
+}
+
 // ── Stateless stubs (DB + legacy imports removed) ─────────────────────
 // Semua fungsi ini sebelumnya membaca/menulis SQLite.
 // Sekarang menjadi no-op — state dikelola di-memory oleh evilPanda.js.
@@ -612,6 +625,12 @@ async function _openPositionLogic(poolAddress, tokenXAmount, tokenYAmount, price
 
   const binStep = dlmmPool.lbPair.binStep;
   const cfg = getConfig();
+  const resolvedStrategyType = resolveDlmmStrategyTypeFromConfig(cfg);
+  const normalizedShape = normalizeDlmmLiquidityShape(cfg?.dlmmLiquidityShape);
+  console.log(
+    `[meteora] DLMM_SHAPE_RUNTIME raw="${String(cfg?.dlmmLiquidityShape || '')}" ` +
+    `normalized=${normalizedShape} strategyType=${resolvedStrategyType}`
+  );
   const allowedBinSteps = Array.isArray(cfg.allowedBinSteps) && cfg.allowedBinSteps.length > 0
     ? cfg.allowedBinSteps.map(v => Number(v)).filter(Number.isFinite)
     : [100, 125];
@@ -942,7 +961,7 @@ async function _openPositionLogic(poolAddress, tokenXAmount, tokenYAmount, price
         // initializePositionAndAddLiquidityByWeight only works with X+Y, not Y-only
         if (isDipFishing) {
           // Dip Fishing: Y-only deposit below price (all in range)
-          // Use strategy with spot distribution (type 0)
+          // Use strategy type from global config so /setconfig shape applies everywhere.
           console.log(`[meteora] case A dip fishing: range [${chunk.lowerBinId}, ${chunk.upperBinId}], totalY=${chunkTotalY.toString()}`);
 
           txs = await dlmmPool.initializePositionAndAddLiquidityByStrategy({
@@ -950,7 +969,7 @@ async function _openPositionLogic(poolAddress, tokenXAmount, tokenYAmount, price
             user: wallet.publicKey,
             totalXAmount: chunkTotalX,
             totalYAmount: chunkTotalY,
-            strategy: { maxBinId: chunk.upperBinId, minBinId: chunk.lowerBinId, strategyType: 0 },
+            strategy: { maxBinId: chunk.upperBinId, minBinId: chunk.lowerBinId, strategyType: resolvedStrategyType },
           });
         } else {
           // Standard Deployment (e.g. Single-side SOL)
@@ -961,7 +980,7 @@ async function _openPositionLogic(poolAddress, tokenXAmount, tokenYAmount, price
             user: wallet.publicKey,
             totalXAmount: chunkTotalX,
             totalYAmount: chunkTotalY,
-            strategy: { maxBinId: chunk.upperBinId, minBinId: chunk.lowerBinId, strategyType: 0 },
+            strategy: { maxBinId: chunk.upperBinId, minBinId: chunk.lowerBinId, strategyType: resolvedStrategyType },
           });
         }
       } else {
@@ -976,17 +995,17 @@ async function _openPositionLogic(poolAddress, tokenXAmount, tokenYAmount, price
             user: wallet.publicKey,
             totalXAmount: chunkTotalX,
             totalYAmount: chunkTotalY,
-            strategy: { maxBinId: chunk.upperBinId, minBinId: chunk.lowerBinId, strategyType: 0 },
+            strategy: { maxBinId: chunk.upperBinId, minBinId: chunk.lowerBinId, strategyType: resolvedStrategyType },
           });
         } else {
-          // Normal case B: strategy-based (spot distribution, type 0) — unified with dip-fishing path
+          // Normal case B: strategy-based using resolved global shape.
           console.log(`[meteora] case B normal add: range [${chunk.lowerBinId}, ${chunk.upperBinId}], totalX=${chunkTotalX.toString()}, totalY=${chunkTotalY.toString()}`);
           txs = await dlmmPool.addLiquidityByStrategy({
             positionPubKey: posKp.publicKey,
             user: wallet.publicKey,
             totalXAmount: chunkTotalX,
             totalYAmount: chunkTotalY,
-            strategy: { maxBinId: chunk.upperBinId, minBinId: chunk.lowerBinId, strategyType: 0 },
+            strategy: { maxBinId: chunk.upperBinId, minBinId: chunk.lowerBinId, strategyType: resolvedStrategyType },
           });
         }
       }
