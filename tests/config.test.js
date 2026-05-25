@@ -174,6 +174,11 @@ test('user-config.example includes pool pattern learning keys', () => {
   assert.equal(parsed.entryM5HardGateEnabled, true);
   assert.equal(parsed.entryDeferOnM15PreviousUnknown, true);
   assert.equal(parsed.deployQueueHoldNotifyCooldownSec, 180);
+  assert.equal(parsed.monitorFastLaneEnabled, true);
+  assert.equal(parsed.monitorFastLaneThrottleMs, 1200);
+  assert.equal(parsed.monitorFastLaneFallbackPollMs, 12000);
+  assert.equal(parsed.monitorFastLaneUsePoolAccount, true);
+  assert.equal(parsed.monitorFastLaneUsePositionAccount, true);
   assert.equal(parsed.maxMcap, 0);
 });
 
