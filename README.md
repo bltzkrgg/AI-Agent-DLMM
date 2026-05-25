@@ -75,6 +75,13 @@ Operationally, the monitor now has two lanes:
 - Kalau pair-nya liar dan cepat gerak, fast-lane biasanya lebih layak.
 - Kalau pair-nya lebih tenang, fallback poll bisa dibuat lebih longgar supaya kuota tetap irit.
 
+For DLMM shape tuning:
+
+- `dlmmLiquidityShape` is global and can be changed live with `/setconfig strategy.liquidityShape spot` or `/setconfig strategy.liquidityShape bidask`.
+- `spot` is the safer default for balanced liquidity distribution.
+- `bidask` is the more aggressive shape for swing/DCA-style deployment and needs closer monitoring.
+- If you change the shape, all deploy paths should follow that setting on the next deploy cycle.
+
 ## Strategy Scope
 
 Current execution is SOL/WSOL quote only:

@@ -612,6 +612,15 @@ test('dlmmLiquidityShape accepts mixed separator/case values and normalizes to b
   assert.equal(cfg.dlmmLiquidityShape, 'bidask');
 });
 
+test('setconfig help and shape alias keep spot/bidask global tuning visible', async () => {
+  const indexPath = join(repoRoot, 'src/index.js');
+  const content = readFileSync(indexPath, 'utf-8');
+
+  assert.match(content, /\/setconfig strategy\.liquidityShape bidask/);
+  assert.match(content, /\/setconfig strategy\.liquidityShape spot/);
+  assert.match(content, /shape ini global, jadi sekali diubah akan dipakai semua jalur deploy berikutnya/);
+});
+
 test('nested discovery maxMcap and legacy maxMcapUsd both map to canonical maxMcap', async () => {
   const root = mkdtempSync(join(tmpdir(), 'dlmm-mcap-alias-'));
   const configPath = join(root, 'user-config.json');

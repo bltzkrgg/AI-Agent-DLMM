@@ -643,6 +643,8 @@ bot.onText(/\/setconfig(?:\s+(\S+))?(?:\s+(.+))?/, async (msg, match) => {
       `/setconfig deployAmountSol 1.5\n` +
       `/setconfig minTvl 50000\n` +
       `/setconfig strategy.liquidityShape bidask\n` +
+      `/setconfig strategy.liquidityShape spot\n` +
+      `Catatan: shape ini global, jadi sekali diubah akan dipakai semua jalur deploy berikutnya.\n` +
       `/setconfig taWatchEnabled true\n` +
       `/setconfig outOfRangeWaitMinutes 45\n` +
       `/setconfig poolImpactGuardEnabled true\n` +

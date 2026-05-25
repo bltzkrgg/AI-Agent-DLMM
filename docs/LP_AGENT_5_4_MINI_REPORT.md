@@ -10,6 +10,8 @@ Scope completed:
 - README now explains the fast-path vs slow-path monitor split in plain language.
 - The hybrid exit monitor now uses a fast wake-up lane for quick SL/TP checks and keeps detailed quote/TA work on the slower path.
 - The docs now spell out the quota-versus-speed trade off in plain language so operators can choose the right fallback cadence.
+- README now also explains `dlmmLiquidityShape` tuning, including `/setconfig strategy.liquidityShape spot|bidask`, so the shape choice is treated as a global deploy setting.
+- The operator note now makes the Spot vs BidAsk trade off explicit: Spot is calmer and balanced, BidAsk is more aggressive and better suited for swing/DCA style tuning.
 
 Changed files:
 
@@ -37,6 +39,8 @@ Impact by situation:
 - Memory reads stay local and emit lookup timing so entry latency can be observed.
 - Fast-path is best when you want quicker SL/TP response.
 - Slow-path is better when you want lower quota usage and can tolerate a small delay.
+- Spot is the safer default when you want balanced liquidity.
+- BidAsk is more aggressive and should be used when you want the shape to react harder to swings.
 
 Remaining risk:
 
