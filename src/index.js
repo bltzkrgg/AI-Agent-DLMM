@@ -596,8 +596,8 @@ bot.onText(/\/config/, (msg) => {
     `screeningIntervalMin  = ${cfg.screeningIntervalMin}`,
   ].join('\n');
   const oor = [
-    `outOfRangeWaitMinutes = ${cfg.outOfRangeWaitMinutes}`,
-    `oorDisplayWaitMinutes = ${cfg.oorDisplayWaitMinutes}`,
+    `outOfRangeWaitMinutes = ${cfg.outOfRangeWaitMinutes} (close threshold)`,
+    `oorDisplayWaitMinutes = ${cfg.oorDisplayWaitMinutes} (display only)`,
   ].join('\n');
   const management = [
     `managementIntervalMin = ${cfg.managementIntervalMin}`,
@@ -612,6 +612,8 @@ bot.onText(/\/config/, (msg) => {
     `<b>🎯 Strategy</b>\n<pre><code>${strategy}</code></pre>\n` +
     `<b>📉 OOR</b>\n<pre><code>${oor}</code></pre>\n` +
     `<b>🩺 Management</b>\n<pre><code>${management}</code></pre>\n` +
+    `<i>Catatan: outOfRangeWaitMinutes mengatur kapan posisi benar-benar ditutup, ` +
+    `sedangkan oorDisplayWaitMinutes hanya mengatur seberapa sering status OOR muncul di log/Telegram.</i>\n` +
     `<i>Edit: /setconfig ? untuk lihat key yang bisa diubah</i>`,
     { parse_mode: 'HTML' }
   );

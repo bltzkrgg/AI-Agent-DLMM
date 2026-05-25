@@ -82,6 +82,12 @@ For DLMM shape tuning:
 - `bidask` is the more aggressive shape for swing/DCA-style deployment and needs closer monitoring.
 - If you change the shape, all deploy paths should follow that setting on the next deploy cycle.
 
+For OOR timing:
+
+- `outOfRangeWaitMinutes` is the actual wait before the position is closed when it stays out of range.
+- `oorDisplayWaitMinutes` only controls how often the OOR status is shown in logs and Telegram.
+- If you set `outOfRangeWaitMinutes` to 30 and `oorDisplayWaitMinutes` to 5, the position can stay open for 30 minutes while the log only reminds you every 5 minutes.
+
 ## Strategy Scope
 
 Current execution is SOL/WSOL quote only:

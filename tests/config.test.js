@@ -462,6 +462,16 @@ test('OOR display wait minutes is configurable and persists independently from c
   assert.equal(saved.oorDisplayWaitMinutes, 7);
 });
 
+test('/config output and OOR help distinguish close wait from display cadence', async () => {
+  const indexPath = join(repoRoot, 'src/index.js');
+  const content = readFileSync(indexPath, 'utf-8');
+
+  assert.match(content, /outOfRangeWaitMinutes = \$\{cfg\.outOfRangeWaitMinutes\} \(close threshold\)/);
+  assert.match(content, /oorDisplayWaitMinutes = \$\{cfg\.oorDisplayWaitMinutes\} \(display only\)/);
+  assert.match(content, /outOfRangeWaitMinutes mengatur kapan posisi benar-benar ditutup/);
+  assert.match(content, /oorDisplayWaitMinutes hanya mengatur seberapa sering status OOR muncul/);
+});
+
 test('pool impact guard config keys are supported and persisted via user config', async () => {
   const root = mkdtempSync(join(tmpdir(), 'dlmm-pool-impact-config-'));
   const configPath = join(root, 'user-config.json');

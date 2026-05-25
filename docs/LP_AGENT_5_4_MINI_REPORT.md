@@ -12,14 +12,18 @@ Scope completed:
 - The docs now spell out the quota-versus-speed trade off in plain language so operators can choose the right fallback cadence.
 - README now also explains `dlmmLiquidityShape` tuning, including `/setconfig strategy.liquidityShape spot|bidask`, so the shape choice is treated as a global deploy setting.
 - The operator note now makes the Spot vs BidAsk trade off explicit: Spot is calmer and balanced, BidAsk is more aggressive and better suited for swing/DCA style tuning.
+- README and `/config` now also spell out the difference between `outOfRangeWaitMinutes` and `oorDisplayWaitMinutes`, so display cadence is not mistaken for the actual close threshold.
 
 Changed files:
 
 - `README.md`
 - `docs/LP_AGENT_5_4_MINI_REPORT.md`
 - `docs/LP_AGENT_5_4_MINI_TASKS.md`
+- `src/index.js`
 - `src/agents/hunterAlpha.js`
 - `src/sniper/evilPanda.js`
+- `tests/config.test.js`
+- `tests/readme-monitor-notes.test.js`
 
 Tests verified:
 
@@ -41,6 +45,7 @@ Impact by situation:
 - Slow-path is better when you want lower quota usage and can tolerate a small delay.
 - Spot is the safer default when you want balanced liquidity.
 - BidAsk is more aggressive and should be used when you want the shape to react harder to swings.
+- `outOfRangeWaitMinutes` is the real close wait, while `oorDisplayWaitMinutes` is only the reminder cadence.
 
 Remaining risk:
 

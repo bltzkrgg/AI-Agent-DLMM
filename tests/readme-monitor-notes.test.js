@@ -13,4 +13,6 @@ test('README explains fast-path, slow-path, and monitor trade offs', () => {
   assert.match(source, /Slow-path: jalur lebih berat buat hitung nilai posisi, TA, dan detail logging/);
   assert.match(source, /Trade off: makin cepat responnya, makin sering bot bangun dan makin boros kuota/);
   assert.match(source, /monitorFastLaneFallbackPollMs/);
+  assert.match(source, /outOfRangeWaitMinutes.*actual wait before the position is closed/);
+  assert.match(source, /oorDisplayWaitMinutes.*only controls how often the OOR status is shown/);
 });
