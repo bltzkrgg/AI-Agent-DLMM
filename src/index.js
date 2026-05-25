@@ -571,7 +571,7 @@ bot.onText(/\/config/, (msg) => {
     `minMcap               = ${cfg.minMcap}`,
     `maxMcap               = ${cfg.maxMcap}`,
   ].join('\n');
-    const strategy = [
+  const strategy = [
       `stopLossPct           = ${cfg.stopLossPct}`,
       `trailingTriggerPct    = ${cfg.trailingTriggerPct}`,
       `trailingDropPct       = ${cfg.trailingDropPct}`,
@@ -588,6 +588,10 @@ bot.onText(/\/config/, (msg) => {
     `autoScreeningEnabled  = ${cfg.autoScreeningEnabled}`,
     `screeningIntervalMin  = ${cfg.screeningIntervalMin}`,
   ].join('\n');
+  const oor = [
+    `outOfRangeWaitMinutes = ${cfg.outOfRangeWaitMinutes}`,
+    `oorDisplayWaitMinutes = ${cfg.oorDisplayWaitMinutes}`,
+  ].join('\n');
   const management = [
     `managementIntervalMin = ${cfg.managementIntervalMin}`,
     `positionUpdateMin     = ${cfg.positionUpdateIntervalMin}`,
@@ -599,6 +603,7 @@ bot.onText(/\/config/, (msg) => {
     `<b>💰 Finance</b>\n<pre><code>${finance}</code></pre>\n` +
     `<b>🔍 Discovery</b>\n<pre><code>${discovery}</code></pre>\n` +
     `<b>🎯 Strategy</b>\n<pre><code>${strategy}</code></pre>\n` +
+    `<b>📉 OOR</b>\n<pre><code>${oor}</code></pre>\n` +
     `<b>🩺 Management</b>\n<pre><code>${management}</code></pre>\n` +
     `<i>Edit: /setconfig ? untuk lihat key yang bisa diubah</i>`,
     { parse_mode: 'HTML' }
@@ -647,6 +652,7 @@ bot.onText(/\/setconfig(?:\s+(\S+))?(?:\s+(.+))?/, async (msg, match) => {
       `Catatan: shape ini global, jadi sekali diubah akan dipakai semua jalur deploy berikutnya.\n` +
       `/setconfig taWatchEnabled true\n` +
       `/setconfig outOfRangeWaitMinutes 45\n` +
+      `/setconfig oor.displayWaitMinutes 5\n` +
       `/setconfig poolImpactGuardEnabled true\n` +
       `/setconfig poolPatternLearningShadowMode true</i>`,
       { parse_mode: 'HTML' }

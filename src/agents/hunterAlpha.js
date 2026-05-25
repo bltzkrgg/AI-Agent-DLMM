@@ -109,6 +109,17 @@ function getOutOfRangeWaitMs(cfg = getConfig()) {
   return Math.max(60_000, Math.round(safeMinutes * 60_000));
 }
 
+function getDisplayedOutOfRangeWaitMs(cfg = getConfig()) {
+  const actualMinutes = Number(cfg?.outOfRangeWaitMinutes);
+  const safeMinutes = Number.isFinite(actualMinutes) && actualMinutes > 0 ? actualMinutes : 30;
+  const configuredDisplay = Number(cfg?.oorDisplayWaitMinutes);
+  const safeDisplay = Number.isFinite(configuredDisplay) && configuredDisplay > 0
+    ? configuredDisplay
+    : OOR_DISPLAY_WAIT_MINUTES;
+  const displayMinutes = Math.min(safeDisplay, safeMinutes);
+  return Math.max(60_000, Math.round(displayMinutes * 60_000));
+}
+
 function getMonitorFastLaneConfig(cfg = getConfig()) {
   const enabled = cfg?.monitorFastLaneEnabled !== false;
   const throttleMs = Math.max(250, Number(cfg?.monitorFastLaneThrottleMs || 1200));
@@ -176,6 +187,7 @@ export function evaluateOutOfRangeMonitorState({
 } = {}) {
   const inRange = status?.inRange === true;
   const waitMs = getOutOfRangeWaitMs(cfg);
+  const displayWaitMs = getDisplayedOutOfRangeWaitMs(cfg);
   const oorSince = Number.isFinite(runtimeState?.oorSince) ? runtimeState.oorSince : null;
   const lastOorAlertAt = Number.isFinite(runtimeState?.lastOorAlertAt) ? runtimeState.lastOorAlertAt : null;
 
@@ -201,7 +213,6 @@ export function evaluateOutOfRangeMonitorState({
 
   const nextOorSince = oorSince ?? now;
   const elapsedMs = Math.max(0, now - nextOorSince);
-  const remainingMs = Math.max(0, waitMs - elapsedMs);
   const shouldAlert = lastOorAlertAt === null || (now - lastOorAlertAt) >= OOR_ALERT_COOLDOWN_MS;
   const runtimePatch = {
     oorSince: nextOorSince,
@@ -217,12 +228,12 @@ export function evaluateOutOfRangeMonitorState({
         symbol,
         positionPubkey,
         elapsedMs,
-        waitMs,
+        waitMs: displayWaitMs,
         currentValueSol: Number(status?.currentValueSol) || 0,
         pnlPct: Number(status?.pnlPct) || 0,
         inRange,
       }),
-      logMessage: `[hunter] ${symbol} OOR timeout: elapsed=${elapsedMs}ms wait=${waitMs}ms remaining=${remainingMs}ms`,
+      logMessage: `[hunter] ${symbol} OOR timeout: elapsed=${elapsedMs}ms wait=${displayWaitMs}ms remaining=${Math.max(0, displayWaitMs - elapsedMs)}ms (config=${waitMs}ms)`,
       exitReason: `OUT_OF_RANGE_${Math.round(waitMs / 60_000)}M`,
     };
   }
@@ -235,11 +246,11 @@ export function evaluateOutOfRangeMonitorState({
       symbol,
       positionPubkey,
       elapsedMs,
-      waitMs,
+      waitMs: displayWaitMs,
       currentValueSol: Number(status?.currentValueSol) || 0,
       pnlPct: Number(status?.pnlPct) || 0,
     }) : null,
-    logMessage: shouldAlert ? `[hunter] ${symbol} OOR wait: elapsed=${elapsedMs}ms remaining=${remainingMs}ms wait=${waitMs}ms` : null,
+    logMessage: shouldAlert ? `[hunter] ${symbol} OOR wait: elapsed=${elapsedMs}ms remaining=${Math.max(0, displayWaitMs - elapsedMs)}ms wait=${displayWaitMs}ms (config=${waitMs}ms)` : null,
     exitReason: null,
   };
 }
@@ -262,6 +273,7 @@ let _taWatchInFlight = false;
 let _manualCloseWatchTimer = null;
 let _manualCloseWatchInFlight = false;
 const OOR_ALERT_COOLDOWN_MS = 60_000;
+const OOR_DISPLAY_WAIT_MINUTES = 5;
 const MANUAL_CLOSE_ALERT_COOLDOWN_MS = 5 * 60_000;
 const _manualCloseAlertState = new Map(); // positionPubkey -> lastAlertAt
 

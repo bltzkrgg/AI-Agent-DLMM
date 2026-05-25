@@ -173,6 +173,7 @@ const DEFAULTS = {
   trailingDropPct:        3.0,
   maxHoldHours:           72,
   outOfRangeWaitMinutes:  30,   // Tunggu N menit OOR sebelum close
+  oorDisplayWaitMinutes:  5,    // Tampilan OOR di log/notify
   deployRangeMaxBins:     68,   // Lebar range deploy monolith
   poolImpactGuardEnabled: false,
   poolImpactCheckIntervalMs: 3000,
@@ -284,6 +285,7 @@ const CONFIG_BOUNDS = {
   trailingDropPct:        { min: 0.1,   max: 20 },
   maxHoldHours:           { min: 1,     max: 168 },
   outOfRangeWaitMinutes:  { min: 1,     max: 1440 },
+  oorDisplayWaitMinutes:  { min: 1,     max: 1440 },
   deployRangeMaxBins:     { min: 5,     max: 68 },
   poolImpactGuardEnabled: { type: 'boolean' },
   poolImpactCheckIntervalMs: { min: 1000, max: 60000 },
@@ -372,7 +374,13 @@ const NESTED_SECTION_MAP = {
     smartExitRsi:       'smartExitRsi',
     maxHoldHours:       'maxHoldHours',
     outOfRangeWaitMinutes: 'outOfRangeWaitMinutes',
+    oorDisplayWaitMinutes: 'oorDisplayWaitMinutes',
     deployRangeMaxBins: 'deployRangeMaxBins',
+  },
+
+  oor: {
+    waitMinutes:       'outOfRangeWaitMinutes',
+    displayWaitMinutes: 'oorDisplayWaitMinutes',
   },
 
   watch: {
@@ -653,6 +661,7 @@ export const SETCONFIG_WHITELIST = {
 
   // ── OOR Monitoring ───────────────────────────────────────────────
   outOfRangeWaitMinutes:  { section: 'oor',                type: 'number',  desc: 'Waktu tunggu OOR sebelum close (menit)' },
+  oorDisplayWaitMinutes:  { section: 'oor',                type: 'number',  desc: 'Tampilan OOR di log/notify (menit)' },
 
   // ── Pool Impact Guard ────────────────────────────────────────────
   poolImpactGuardEnabled:         { section: 'poolImpactGuard',     type: 'boolean', desc: 'Aktifkan Pool Impact Exit Guard' },

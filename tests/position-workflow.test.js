@@ -99,6 +99,36 @@ test('out-of-range monitor state waits, expires, and clears correctly', async ()
   assert.match(recovered.notifyMessage, /OOR recovered/);
 });
 
+test('out-of-range monitor state can display 5 minutes while config remains 30 minutes', async () => {
+  const { evaluateOutOfRangeMonitorState } = await importFresh(join(repoRoot, 'src/agents/hunterAlpha.js'));
+
+  const waiting = evaluateOutOfRangeMonitorState({
+    positionPubkey: 'pos-oor-2',
+    symbol: 'OOR2',
+    status: { inRange: false, currentValueSol: 0.4, pnlPct: -1.1 },
+    runtimeState: {},
+    cfg: { outOfRangeWaitMinutes: 30 },
+    now: 0,
+  });
+
+  assert.equal(waiting.shouldExit, false);
+  assert.match(waiting.notifyMessage, /batas <code>5(?:\.0)? menit<\/code>/);
+
+  const expired = evaluateOutOfRangeMonitorState({
+    positionPubkey: 'pos-oor-2',
+    symbol: 'OOR2',
+    status: { inRange: false, currentValueSol: 0.4, pnlPct: -1.1 },
+    runtimeState: { oorSince: 0, lastOorAlertAt: 0 },
+    cfg: { outOfRangeWaitMinutes: 30 },
+    now: 30 * 60_000 + 1,
+  });
+
+  assert.equal(expired.shouldExit, true);
+  assert.equal(expired.exitReason, 'OUT_OF_RANGE_30M');
+  assert.match(expired.logMessage, /wait=300000ms/);
+  assert.match(expired.logMessage, /config=1800000ms/);
+});
+
 test('position lifecycle state is stored alongside close records', async (t) => {
   const root = mkdtempSync(join(tmpdir(), 'dlmm-db-'));
   process.env.BOT_DB_PATH = join(root, 'test.db');

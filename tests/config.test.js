@@ -24,9 +24,11 @@ test('config rejects unknown keys and merges nested signal weights safely', asyn
   assert.equal(configModule.isConfigKeySupported('autonomyMode'), true);
   assert.equal(configModule.isConfigKeySupported('deployRangeMaxBins'), true);
   assert.equal(configModule.isConfigKeySupported('dlmmLiquidityShape'), true);
+  assert.equal(configModule.isConfigKeySupported('oorDisplayWaitMinutes'), true);
   assert.equal(configModule.isConfigKeySupported('totallyUnknownKey'), false);
 
   assert.equal(configModule.resolveNestedKey('strategy.outOfRangeWaitMinutes')?.flatKey, 'outOfRangeWaitMinutes');
+  assert.equal(configModule.resolveNestedKey('oor.displayWaitMinutes')?.flatKey, 'oorDisplayWaitMinutes');
   assert.equal(configModule.resolveNestedKey('strategy.liquidityShape')?.flatKey, 'dlmmLiquidityShape');
   assert.equal(configModule.resolveNestedKey('strategy.shape')?.flatKey, 'dlmmLiquidityShape');
 
@@ -432,6 +434,27 @@ test('deploy range max bins is configurable and persisted via updateConfig', asy
 
   const saved = JSON.parse(readFileSync(configPath, 'utf-8'));
   assert.equal(saved.deployRangeMaxBins, 40);
+});
+
+test('OOR display wait minutes is configurable and persists independently from close wait', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'dlmm-oor-display-config-'));
+  const configPath = join(root, 'user-config.json');
+
+  process.env.BOT_CONFIG_PATH = configPath;
+  const configModule = await importFresh(join(repoRoot, 'src/config.js'));
+
+  configModule.updateConfig({
+    outOfRangeWaitMinutes: 30,
+    oorDisplayWaitMinutes: 7,
+  });
+
+  const cfg = configModule.getConfig();
+  assert.equal(cfg.outOfRangeWaitMinutes, 30);
+  assert.equal(cfg.oorDisplayWaitMinutes, 7);
+
+  const saved = JSON.parse(readFileSync(configPath, 'utf-8'));
+  assert.equal(saved.outOfRangeWaitMinutes, 30);
+  assert.equal(saved.oorDisplayWaitMinutes, 7);
 });
 
 test('pool impact guard config keys are supported and persisted via user config', async () => {

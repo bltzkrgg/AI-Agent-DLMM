@@ -88,6 +88,7 @@
   "trailingDropPct": 3.0,
   "maxHoldHours": 6,
   "outOfRangeWaitMinutes": 30,
+  "oorDisplayWaitMinutes": 5,
   "deployRangeMaxBins": 68,
   "maxDailyPriorityFeeSol": 0.2,
   "activeStrategy": "Evil Panda",
