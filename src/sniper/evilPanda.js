@@ -21,7 +21,6 @@ import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { getConnection, getWallet, getTokenBalanceRaw } from '../solana/wallet.js';
 import { getConfig, isDryRun } from '../config.js';
-import { swapToSol } from '../utils/jupiter.js';
 import { getJupiterQuote } from '../solana/jupiter.js';
 import { safeNum, withExponentialBackoff, fetchWithTimeout } from '../utils/safeJson.js';
 import { resolveTokens, WSOL_MINT } from '../utils/tokenMeta.js';
@@ -4226,7 +4225,6 @@ export async function exitPosition(positionPubkey, reason = 'MANUAL') {
       let estimatedFeeSource = 'none';
       let estimatedFeeAvailable = false;
       let preClosePositionValueSol = 0;
-      let preClosePositionValueYComponentSol = 0;
       let preClosePositionValueSource = 'none';
       try {
         const pd = activePos.positionData;
@@ -4242,7 +4240,6 @@ export async function exitPosition(positionPubkey, reason = 'MANUAL') {
           activeBinPrice: safeNum(activeBin?.pricePerToken, 0),
         });
         preClosePositionValueSol = valueSnapshot.positionValueSol;
-        preClosePositionValueYComponentSol = valueSnapshot.totalYUi;
         preClosePositionValueSource = valueSnapshot.valueSource;
         const feeOnly = await calculateFeeOnlyPnl({
           feeXRaw: pd.feeX?.toString() || '0',
@@ -4263,7 +4260,6 @@ export async function exitPosition(positionPubkey, reason = 'MANUAL') {
         estimatedFeeSource = 'none';
         estimatedFeeAvailable = false;
         preClosePositionValueSol = 0;
-        preClosePositionValueYComponentSol = 0;
         preClosePositionValueSource = 'none';
       }
 
@@ -4318,44 +4314,14 @@ export async function exitPosition(positionPubkey, reason = 'MANUAL') {
         if (cleanupExit.path === 'FALLBACK_LEGACY') exitPathStats.fallbackUsed = true;
       }
 
-      // 2. Swap sisa token non-SOL → SOL (jika ada)
-      let residualSwapOutSol = 0;
-      let trackedResidualSwapCount = 0;
-      let successfulResidualSwapCount = 0;
-      try {
-        const residualMints = [...new Set([reg.tokenXMint, reg.tokenYMint].filter((mint) => mint && mint !== WSOL_MINT))];
-        for (const mint of residualMints) {
-          const rawBalance = await getTokenBalanceRaw(mint);
-          if (String(rawBalance || '0') === '0') continue;
-          trackedResidualSwapCount += 1;
-          console.log(`[evilPanda] Swap residual token → SOL: ${mint.slice(0, 8)} amountRaw=${rawBalance}`);
-          // legacy marker: swapToSol(mint, rawBalance, null, { isUrgent: true })
-          const swapOptions = { isUrgent: true };
-          if (isEmergencyExit) {
-            swapOptions.isEmergencyExit = true;
-            swapOptions.emergencySlippageBps = Number(getConfig().emergencyExitSlippageBps || 1000);
-          }
-          const swapResult = await swapToSol(mint, rawBalance, null, swapOptions);
-          if (!swapResult?.success && !swapResult?.skipped) {
-            console.warn(`[evilPanda] Swap residual token gagal untuk ${mint.slice(0,8)}: ${swapResult?.reason || 'SWAP_FAILED'}`);
-            continue;
-          }
-          if (swapResult?.success) {
-            successfulResidualSwapCount += 1;
-            residualSwapOutSol += Math.max(0, Number(swapResult?.outSol || 0));
-          }
-        }
-      } catch (e) {
-        console.warn(`[evilPanda] Swap sisa token gagal (tidak fatal): ${e.message}`);
-      }
+      // 2. Zap-out / fallback close menjadi final close flow.
+      // Residual swap non-SOL sengaja dinonaktifkan untuk mencegah fee tambahan
+      // yang bisa menggerus saldo saat profit tipis.
       const postExitWalletLamports = await connection.getBalance(wallet.publicKey);
       const walletNetDeltaSol = (postExitWalletLamports - preExitWalletLamports) / 1e9;
       const txFeeLamports = await estimateTxFeeLamports(connection, removeSignatures);
       const txFeeSol = txFeeLamports / 1e9;
-      let positionValueSol = Math.max(0, preClosePositionValueSol);
-      if (trackedResidualSwapCount > 0 && trackedResidualSwapCount === successfulResidualSwapCount) {
-        positionValueSol = Math.max(0, preClosePositionValueYComponentSol + residualSwapOutSol);
-      }
+      const positionValueSol = Math.max(0, preClosePositionValueSol);
       const finalAccounting = computeFinalExitAccounting({
         deploySol: reg.deploySol,
         positionValueSol,
@@ -4489,7 +4455,7 @@ export async function exitPosition(positionPubkey, reason = 'MANUAL') {
         realizedTradingPnlPct: finalAccounting.realizedTradingPnlPct,
         accountingStatus: finalAccounting.accountingStatus,
         positionValueSource: preClosePositionValueSource,
-        residualSwapOutSol: Number(residualSwapOutSol.toFixed(9)),
+        residualSwapOutSol: 0,
         feePnlSol,
         feePnlPct: estimatedFeePct,
         feePnlSource: estimatedFeeSource,
