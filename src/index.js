@@ -749,7 +749,7 @@ bot.onText(/\/setconfig(?:\s+(\S+))?(?:\s+(.+))?/, async (msg, match) => {
 
   // ── Efek samping khusus: autoScreeningEnabled ─────────────────────
   if (flatKey === 'autoScreeningEnabled') {
-    if (after === true) {
+    if (parsed === true) {
       const wasPaused = isDiscoveryPaused();
       const loopWasRunning = Boolean(_screeningLoopTimer);
       if (wasPaused || !loopWasRunning) {
@@ -853,7 +853,7 @@ bot.onText(/\/autoscreen(?:\s+(on|off))?/, async (msg, match) => {
   const result = updateConfig({ autoScreeningEnabled: enable });
   const after  = result.autoScreeningEnabled;
 
-  if (after === true) {
+  if (enable) {
     // ── Clear interval lama (anti double-execution) ───────────────────
     await bot.sendMessage(chatId,
       `📡 <b>Auto-Screening: ON</b>\n🔍 Eksekusi scan pertama dimulai sekarang...`,
