@@ -215,6 +215,8 @@ Close policy tuning is also exposed for live ops:
 - `closeAutoSwapMinNetSol`: minimum net SOL after estimated costs
 - `closeEstimatedSwapCostSol`: cost buffer used by the auto-swap gate
 
+This policy applies to both operator-triggered close flows and agent-triggered exits, so the bot stays consistent whether `/exit` is manual or the monitor closes a TP position.
+
 Examples:
 
 ```text

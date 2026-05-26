@@ -13,6 +13,7 @@ test('Claude tool registry exposes zap_out', () => {
 
   assert.match(source, /name:\s*'zap_out'/);
   assert.match(source, /description:\s*'Emergency exit all open positions with unified close flow/);
+  assert.match(source, /fee-first guarded swap, residual optional/);
 });
 
 test('Claude executeTool delegates zap_out swap behavior to close flow', () => {

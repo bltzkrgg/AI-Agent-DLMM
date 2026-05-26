@@ -129,7 +129,7 @@ const tools = [
   },
   {
     name: 'zap_out',
-    description: 'Emergency exit all open positions with unified close flow (zap-out preferred, guarded fee swap).',
+    description: 'Emergency exit all open positions with unified close flow (zap-out preferred, fee-first guarded swap, residual optional).',
     input_schema: {
       type: 'object',
       properties: {},
