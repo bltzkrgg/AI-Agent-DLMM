@@ -22,6 +22,7 @@ import { fileURLToPath } from 'url';
 import { getConnection, getWallet, getTokenBalanceRaw } from '../solana/wallet.js';
 import { getConfig, isDryRun } from '../config.js';
 import { getJupiterQuote } from '../solana/jupiter.js';
+import { getSwapQuoteToSol, swapToSol } from '../utils/jupiter.js';
 import { safeNum, withExponentialBackoff, fetchWithTimeout } from '../utils/safeJson.js';
 import { resolveTokens, WSOL_MINT } from '../utils/tokenMeta.js';
 import { getRecommendedPriorityFee } from '../utils/helius.js';
@@ -1714,6 +1715,96 @@ export function computeFinalExitAccounting({
     realizedTradingPnlPct,
     accountingStatus: 'estimated_rent_refund_from_wallet_delta',
   };
+}
+
+function toSafeBigIntRaw(value) {
+  try {
+    return BigInt(String(value ?? '0'));
+  } catch {
+    return 0n;
+  }
+}
+
+function isValidPositiveIntegerString(value) {
+  return typeof value === 'string' && /^[0-9]+$/.test(value) && value !== '0';
+}
+
+function buildExitSwapPolicy(cfg = {}, isUrgent = false) {
+  const modeRaw = String(cfg.closeSwapMode ?? 'fee_only').trim().toLowerCase();
+  const swapMode = modeRaw === 'off' ? 'off' : (modeRaw === 'all' ? 'all' : 'fee_only');
+  return {
+    swapMode,
+    allowResidualSwap: cfg.closeResidualSwapEnabled === true,
+    maxImpactPct: Math.max(0.1, Number(cfg.maxExitPriceImpactPct ?? 5.0)),
+    minOutSol: Math.max(0, Number(cfg.closeAutoSwapMinOutSol ?? 0.0003)),
+    minNetSol: Math.max(0, Number(cfg.closeAutoSwapMinNetSol ?? 0.00015)),
+    estimatedCostSol: Math.max(
+      0,
+      Number(cfg.closeEstimatedSwapCostSol ?? (isUrgent ? 0.0002 : 0.00012)),
+    ),
+  };
+}
+
+async function attemptGatedExitSwapToSol({
+  mint,
+  rawAmount,
+  slippageBps,
+  isUrgent,
+  isEmergencyExit,
+  emergencySlippageBps,
+  maxImpactPct,
+  minOutSol,
+  minNetSol,
+  estimatedCostSol,
+  label,
+} = {}) {
+  const amountStr = String(rawAmount || '0');
+  if (!mint || mint === WSOL_MINT || !isValidPositiveIntegerString(amountStr)) {
+    return { skipped: true, reason: `${label}_INVALID_AMOUNT_OR_MINT` };
+  }
+
+  let quote;
+  try {
+    quote = await getSwapQuoteToSol(mint, amountStr, slippageBps);
+  } catch (err) {
+    return { skipped: true, reason: `${label}_QUOTE_FAILED`, error: err.message };
+  }
+
+  const outSol = Number(quote?.outAmount || 0) / 1e9;
+  const impact = Number(quote?.priceImpactPct || 0);
+  const netOutSol = outSol - estimatedCostSol;
+
+  if (!Number.isFinite(outSol) || outSol <= 0) {
+    return { skipped: true, reason: `${label}_ZERO_OUT` };
+  }
+  if (!Number.isFinite(impact) || impact > maxImpactPct) {
+    return { skipped: true, reason: `${label}_HIGH_IMPACT_${impact.toFixed(2)}%` };
+  }
+  if (outSol < minOutSol) {
+    return { skipped: true, reason: `${label}_OUT_BELOW_MIN_${outSol.toFixed(6)}` };
+  }
+  if (netOutSol < minNetSol) {
+    return { skipped: true, reason: `${label}_NET_BELOW_MIN_${netOutSol.toFixed(6)}` };
+  }
+
+  try {
+    const swapRes = await swapToSol(mint, amountStr, slippageBps, {
+      isUrgent,
+      isEmergencyExit,
+      emergencySlippageBps,
+    });
+    if (swapRes?.success) {
+      return {
+        success: true,
+        txHash: swapRes.txHash,
+        outSol: Number(swapRes.outSol || outSol),
+        priceImpactPct: Number(swapRes.priceImpactPct || impact),
+      };
+    }
+    return { skipped: true, reason: `${label}_${swapRes?.reason || 'SWAP_NOT_EXECUTED'}` };
+  } catch (err) {
+    return { skipped: true, reason: `${label}_SWAP_FAILED`, error: err.message };
+  }
 }
 
 async function findAdaptiveRentFreeRange({
@@ -4321,10 +4412,13 @@ export async function exitPosition(positionPubkey, reason = 'MANUAL') {
       let estimatedFeePct = 0;
       let estimatedFeeSource = 'none';
       let estimatedFeeAvailable = false;
+      let estimatedFeeXRaw = '0';
       let preClosePositionValueSol = 0;
       let preClosePositionValueSource = 'none';
+      const preCloseTokenXRaw = await getTokenBalanceRaw(reg.tokenXMint).catch(() => '0');
       try {
         const pd = activePos.positionData;
+        estimatedFeeXRaw = pd.feeX?.toString() || '0';
         const [xMeta, yMeta] = await resolveTokens([reg.tokenXMint, reg.tokenYMint]);
         const xDec = xMeta.decimals || 9;
         const yDec = yMeta.decimals || 9;
@@ -4356,6 +4450,7 @@ export async function exitPosition(positionPubkey, reason = 'MANUAL') {
         estimatedFeePct = 0;
         estimatedFeeSource = 'none';
         estimatedFeeAvailable = false;
+        estimatedFeeXRaw = '0';
         preClosePositionValueSol = 0;
         preClosePositionValueSource = 'none';
       }
@@ -4415,22 +4510,7 @@ export async function exitPosition(positionPubkey, reason = 'MANUAL') {
         if (cleanupExit.path === 'FALLBACK_LEGACY') exitPathStats.fallbackUsed = true;
       }
 
-      // 2. Zap-out / fallback close menjadi final close flow.
-      // Residual swap non-SOL sengaja dinonaktifkan untuk mencegah fee tambahan
-      // yang bisa menggerus saldo saat profit tipis.
-      const postExitWalletLamports = await connection.getBalance(wallet.publicKey);
-      const walletNetDeltaSol = (postExitWalletLamports - preExitWalletLamports) / 1e9;
-      const txFeeLamports = await estimateTxFeeLamports(connection, removeSignatures);
-      const txFeeSol = txFeeLamports / 1e9;
-      const positionValueSol = Math.max(0, preClosePositionValueSol);
-      const finalAccounting = computeFinalExitAccounting({
-        deploySol: reg.deploySol,
-        positionValueSol,
-        walletNetDeltaSol,
-        txFeesSol: txFeeSol,
-      });
-
-      // 3. Verifikasi posisi benar-benar sudah close di chain
+      // 2. Verifikasi posisi benar-benar sudah close di chain
       const isClosedOnChain = await verifyPositionClosedOnChain(connection, wallet, reg.poolAddress, positionPubkey, {
         attempts: 3,
         delayMs: 1200,
@@ -4445,6 +4525,96 @@ export async function exitPosition(positionPubkey, reason = 'MANUAL') {
           'POSITION_STILL_OPEN_AFTER_EXIT'
         );
       }
+
+      // 3. Auto-swap jalur agent: fee-only (default), residual optional by config.
+      // Ini menyamakan perilaku safeExit/exitPosition dengan close policy lain.
+      let feeAutoSwapOutSol = 0;
+      const cfg = getConfig();
+      const swapPolicy = buildExitSwapPolicy(cfg, isEmergencyExit);
+      if (swapPolicy.swapMode !== 'off') {
+        try {
+          const postCloseTokenXRaw = await getTokenBalanceRaw(reg.tokenXMint).catch(() => '0');
+          const preX = toSafeBigIntRaw(preCloseTokenXRaw);
+          const postX = toSafeBigIntRaw(postCloseTokenXRaw);
+          const feeX = toSafeBigIntRaw(estimatedFeeXRaw);
+          const deltaX = postX > preX ? postX - preX : 0n;
+          const feeSwapRaw = deltaX > 0n ? (feeX > 0n ? (deltaX < feeX ? deltaX : feeX) : deltaX) : 0n;
+
+          const shouldSwapFeeOnly = swapPolicy.swapMode === 'fee_only' || swapPolicy.swapMode === 'all';
+          const shouldSwapResidual = swapPolicy.swapMode === 'all' || swapPolicy.allowResidualSwap;
+          const emergencySlippageBps = Math.max(750, Number(cfg.panicExitSlippageBps ?? 750));
+          const baseSlippageBps = Math.max(50, Number(cfg.slippageBps || 250));
+          const effectiveSlippageBps = isEmergencyExit ? emergencySlippageBps : baseSlippageBps;
+
+          if (shouldSwapFeeOnly && feeSwapRaw > 0n) {
+            const feeSwap = await attemptGatedExitSwapToSol({
+              mint: reg.tokenXMint,
+              rawAmount: feeSwapRaw.toString(),
+              slippageBps: effectiveSlippageBps,
+              isUrgent: isEmergencyExit,
+              isEmergencyExit,
+              emergencySlippageBps,
+              maxImpactPct: swapPolicy.maxImpactPct,
+              minOutSol: swapPolicy.minOutSol,
+              minNetSol: swapPolicy.minNetSol,
+              estimatedCostSol: swapPolicy.estimatedCostSol,
+              label: 'AGENT_EXIT_FEE_SWAP',
+            });
+            if (feeSwap?.success) {
+              feeAutoSwapOutSol = Number(feeSwap.outSol || 0);
+              if (feeSwap.txHash) removeSignatures.push(feeSwap.txHash);
+              console.log(
+                `[evilPanda] AGENT_EXIT_FEE_SWAP_DONE out=${feeAutoSwapOutSol.toFixed(6)} SOL impact=${Number(feeSwap.priceImpactPct || 0).toFixed(2)}%`,
+              );
+            } else {
+              console.log(`[evilPanda] AGENT_EXIT_FEE_SWAP_SKIP reason=${feeSwap?.reason || 'UNKNOWN'}`);
+            }
+          } else if (shouldSwapFeeOnly) {
+            console.log('[evilPanda] AGENT_EXIT_FEE_SWAP_SKIP reason=NO_FEE_DELTA');
+          }
+
+          if (shouldSwapResidual) {
+            const postFeeSwapTokenXRaw = await getTokenBalanceRaw(reg.tokenXMint).catch(() => '0');
+            if (isValidPositiveIntegerString(postFeeSwapTokenXRaw)) {
+              const residualSwap = await attemptGatedExitSwapToSol({
+                mint: reg.tokenXMint,
+                rawAmount: postFeeSwapTokenXRaw,
+                slippageBps: effectiveSlippageBps,
+                isUrgent: isEmergencyExit,
+                isEmergencyExit,
+                emergencySlippageBps,
+                maxImpactPct: swapPolicy.maxImpactPct,
+                minOutSol: swapPolicy.minOutSol,
+                minNetSol: swapPolicy.minNetSol,
+                estimatedCostSol: swapPolicy.estimatedCostSol,
+                label: 'AGENT_EXIT_RESIDUAL_SWAP',
+              });
+              if (residualSwap?.success && residualSwap.txHash) {
+                removeSignatures.push(residualSwap.txHash);
+                console.log(
+                  `[evilPanda] AGENT_EXIT_RESIDUAL_SWAP_DONE out=${Number(residualSwap.outSol || 0).toFixed(6)} SOL impact=${Number(residualSwap.priceImpactPct || 0).toFixed(2)}%`,
+                );
+              } else if (residualSwap?.skipped) {
+                console.log(`[evilPanda] AGENT_EXIT_RESIDUAL_SWAP_SKIP reason=${residualSwap.reason || 'UNKNOWN'}`);
+              }
+            }
+          }
+        } catch (swapErr) {
+          console.warn(`[evilPanda] AGENT_EXIT_SWAP_ERROR: ${swapErr.message}`);
+        }
+      }
+
+      const postExitWalletLamports = await connection.getBalance(wallet.publicKey);
+      const walletNetDeltaSol = (postExitWalletLamports - preExitWalletLamports) / 1e9;
+      const txFeeLamports = await estimateTxFeeLamports(connection, removeSignatures);
+      const txFeeSol = txFeeLamports / 1e9;
+      const positionValueSol = Math.max(0, preClosePositionValueSol);
+      const finalAccounting = computeFinalExitAccounting({
+        deploySol: reg.deploySol,
+        positionValueSol,
+        walletNetDeltaSol,
+        txFeesSol: txFeeSol,
+      });
 
       // 4. Bersihkan registry lokal setelah verifikasi close sukses
       _activePositions.delete(positionPubkey);
@@ -4560,6 +4730,7 @@ export async function exitPosition(positionPubkey, reason = 'MANUAL') {
         accountingStatus: finalAccounting.accountingStatus,
         positionValueSource: preClosePositionValueSource,
         residualSwapOutSol: 0,
+        feeAutoSwapOutSol,
         feePnlSol,
         feePnlPct: estimatedFeePct,
         feePnlSource: estimatedFeeSource,

@@ -229,11 +229,13 @@ test('evilPanda treats trailing-profit exits as non-emergency fee path', () => {
   assert.doesNotMatch(src, /STOP_LOSS\|SCENARIO_C\|SUPPORT\|TRAILING\|BEARISH\|PANIC\|OUT_OF_RANGE/);
 });
 
-test('evilPanda exit path does not auto-swap residual non-SOL balances after close', () => {
+test('evilPanda exit path applies fee-first auto swap with residual swap behind policy gate', () => {
   const src = readFileSync(evilPandaPath, 'utf8');
   assert.match(src, /getTokenBalanceRaw/);
-  assert.match(src, /Residual swap non-SOL sengaja dinonaktifkan/);
-  assert.doesNotMatch(src, /Swap residual token → SOL/);
+  assert.match(src, /buildExitSwapPolicy/);
+  assert.match(src, /attemptGatedExitSwapToSol/);
+  assert.match(src, /AGENT_EXIT_FEE_SWAP/);
+  assert.match(src, /const shouldSwapResidual = swapPolicy\.swapMode === 'all' \|\| swapPolicy\.allowResidualSwap/);
   assert.doesNotMatch(src, /swapToSol\(mint, rawBalance, null, swapOptions\)/);
 });
 
