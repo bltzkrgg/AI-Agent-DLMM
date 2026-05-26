@@ -902,6 +902,7 @@ export async function submitManualCaPool(poolAddress, { source = 'TELEGRAM_CA' }
     symbol,
     pool,
     meta: {},
+    liveSnapshot: marketSnapshot,
     currentPrice: entrySignals.currentPrice ?? marketSnapshot?.price?.currentPrice ?? 0,
   });
   if (!manualStGate.ok) {
@@ -2646,6 +2647,7 @@ Balas HANYA JSON valid tanpa Markdown.`;
         symbol,
         pool: winner,
         meta: {},
+        liveSnapshot: winner._marketSnapshot || null,
         currentPrice: winner?._entrySignals?.currentPrice || winner?.price || winner?.pool_price || 0,
       });
       if (!finalSt.ok) {
