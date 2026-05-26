@@ -31,6 +31,20 @@ test('watch promotion preserves the same LP metadata fields for deploy queue', (
   assert.match(hunterSrc, /snapshotAt: row\.snapshotAt \|\| now/);
 });
 
+test('watch and deploy queue carry frozen entry intent fields through the LP path', () => {
+  const hunterSrc = readSource('src/agents/hunterAlpha.js');
+  const queueSrc = readSource('src/utils/pendingDeployQueue.js');
+  const pandaSrc = readSource('src/sniper/evilPanda.js');
+
+  assert.match(hunterSrc, /_entryActiveBin:\s*entryIntent\.entryActiveBin/);
+  assert.match(hunterSrc, /hasFrozenEntryIntent:\s*entryIntent\.hasFrozenEntryIntent/);
+  assert.match(hunterSrc, /entryActiveBin:\s*toFiniteNumber\(pool\._entryActiveBin \?\? row\.entryActiveBin/);
+  assert.match(queueSrc, /frozenEntryIntent:\s*\{/);
+  assert.match(queueSrc, /enabled:\s*meta\?\.hasFrozenEntryIntent === true/);
+  assert.match(pandaSrc, /ENTRY_INTENT_FROZEN/);
+  assert.match(pandaSrc, /skipActiveBinRefresh:\s*frozenIntentEnabled/);
+});
+
 test('queue helper emits cache and fallback observability logs', () => {
   const queueSrc = readSource('src/utils/pendingDeployQueue.js');
 

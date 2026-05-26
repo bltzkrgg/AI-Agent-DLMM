@@ -593,6 +593,44 @@ test('deploy args are rebuilt from refreshed active bin before final strategy', 
   assert.equal(rebuilt.rangeMax, 1014);
 });
 
+test('prepare final deploy attempt can keep frozen active bin intent without refreshing range', async () => {
+  let refetchCalls = 0;
+  let activeBinCalls = 0;
+  const initial = buildDlmmDeployStrategyArgs({
+    activeBinId: 1000,
+    rangeMin: 995,
+    rangeMax: 1005,
+    amountXBn: new BN('1'),
+    amountYBn: new BN('0'),
+  });
+
+  const out = await prepareFinalDlmmDeployAttemptState({
+    dlmmPool: {},
+    poolAddress: 'Pool11111111111111111111111111111111111111',
+    xMint: 'Mint111111111111111111111111111111111111111',
+    yMint: 'So11111111111111111111111111111111111111112',
+    deployArgs: initial,
+    currentRentGuard: { ok: true, deployArgs: initial, guard: 'UNCHANGED_RANGE_PASS' },
+    hasNonRefundableFees: false,
+    checkedRangeMin: initial.rangeMin,
+    checkedRangeMax: initial.rangeMax,
+    initialActiveBinId: 1000,
+    skipActiveBinRefresh: true,
+    refetchStatesFn: async () => { refetchCalls += 1; },
+    getActiveBinFn: async () => { activeBinCalls += 1; return { binId: 1003 }; },
+  });
+
+  assert.equal(out.ok, true);
+  assert.equal(refetchCalls, 0);
+  assert.equal(activeBinCalls, 0);
+  assert.equal(out.deployArgs.activeBinId, 1000);
+  assert.equal(out.deployArgs.rangeMin, 1001);
+  assert.equal(out.deployArgs.rangeMax, 1011);
+  assert.equal(out.deployArgs.adjustmentReason, 'frozen_entry_intent');
+  assert.equal(out.finalArgsContext.initialActiveBinId, 1000);
+  assert.equal(out.finalArgsContext.refreshedActiveBinId, 1000);
+});
+
 test('invalid adjusted range fails before SDK call', () => {
   assert.throws(
     () => buildDlmmDeployStrategyArgs({
