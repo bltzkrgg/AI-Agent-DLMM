@@ -213,6 +213,14 @@ test('evilPanda exit path uses high compute budget with CU retry', () => {
   assert.match(src, /Exit TX kehabisan compute unit/);
 });
 
+test('evilPanda treats trailing-profit exits as non-emergency fee path', () => {
+  const src = readFileSync(evilPandaPath, 'utf8');
+  assert.match(src, /const normalizedExitReason = normalizeExitReason\(reason\)/);
+  assert.match(src, /normalizedExitReason === 'STOP_LOSS'/);
+  assert.match(src, /normalizedExitReason === 'OUT_OF_RANGE'/);
+  assert.doesNotMatch(src, /STOP_LOSS\|SCENARIO_C\|SUPPORT\|TRAILING\|BEARISH\|PANIC\|OUT_OF_RANGE/);
+});
+
 test('evilPanda exit path does not auto-swap residual non-SOL balances after close', () => {
   const src = readFileSync(evilPandaPath, 'utf8');
   assert.match(src, /getTokenBalanceRaw/);

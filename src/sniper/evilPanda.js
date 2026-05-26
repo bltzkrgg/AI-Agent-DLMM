@@ -4158,7 +4158,11 @@ export async function exitPosition(positionPubkey, reason = 'MANUAL') {
   const connection = getConnection();
   const wallet     = getWallet();
   const microLamports = await getPriorityFee();
-  const isEmergencyExit = /STOP_LOSS|SCENARIO_C|SUPPORT|TRAILING|BEARISH|PANIC|OUT_OF_RANGE/i.test(String(reason || ''));
+  const normalizedExitReason = normalizeExitReason(reason);
+  const isEmergencyExit =
+    normalizedExitReason === 'STOP_LOSS' ||
+    normalizedExitReason === 'OUT_OF_RANGE' ||
+    /SCENARIO_C|SUPPORT|BEARISH|PANIC/i.test(String(reason || ''));
 
   try {
     return await withExitAccountingLock(() => withExponentialBackoff(async () => {
