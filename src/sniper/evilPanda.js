@@ -2846,6 +2846,55 @@ async function buildClosePositionTxs(dlmmPool, wallet, activePos) {
   throw new Error(`NO_CLOSE_METHOD_AVAILABLE_${activePos.publicKey.toString().slice(0, 8)}`);
 }
 
+function isLikelyAlreadyEmptyCloseState(error) {
+  const msg = String(error?.message || error || '').toLowerCase();
+  return (
+    msg.includes('no liquidity') ||
+    msg.includes('position empty') ||
+    msg.includes('position not found') ||
+    msg.includes('position already closed')
+  );
+}
+
+async function buildCloseEmptyPositionTxs(dlmmPool, wallet, activePos) {
+  const txs = [];
+
+  if (typeof dlmmPool.closePositionIfEmpty === 'function') {
+    try {
+      const closeIfEmptyTxs = await dlmmPool.closePositionIfEmpty({
+        owner: wallet.publicKey,
+        position: activePos,
+      });
+      txs.push(...(Array.isArray(closeIfEmptyTxs) ? closeIfEmptyTxs : [closeIfEmptyTxs]));
+      if (txs.length > 0) return txs;
+    } catch (e) {
+      const msg = String(e?.message || e);
+      if (!isLikelyAlreadyEmptyCloseState(msg)) {
+        console.warn(`[evilPanda] closePositionIfEmpty cleanup attempt failed: ${msg}`);
+      }
+    }
+  }
+
+  if (typeof dlmmPool.closePosition === 'function') {
+    try {
+      const closeTxs = await dlmmPool.closePosition({
+        owner: wallet.publicKey,
+        position: activePos,
+      });
+      txs.push(...(Array.isArray(closeTxs) ? closeTxs : [closeTxs]));
+      if (txs.length > 0) return txs;
+    } catch (e) {
+      const msg = String(e?.message || e);
+      if (!isLikelyAlreadyEmptyCloseState(msg)) {
+        console.warn(`[evilPanda] closePosition cleanup attempt failed: ${msg}`);
+      }
+    }
+  }
+
+  if (txs.length > 0) return txs;
+  throw new Error(`NO_EMPTY_CLOSE_METHOD_AVAILABLE_${activePos.publicKey.toString().slice(0, 8)}`);
+}
+
 async function executeExitCloseWithZapPreferred({
   connection,
   wallet,
@@ -2855,6 +2904,7 @@ async function executeExitCloseWithZapPreferred({
   removeSignatures,
   stage = 'primary',
   notifyOnFallback = true,
+  fallbackMode = 'legacy',
 } = {}) {
   try {
     const zapTxList = await buildZapOutCloseTxs(dlmmPool, wallet, activePos);
@@ -2867,6 +2917,41 @@ async function executeExitCloseWithZapPreferred({
   } catch (zapErr) {
     const zapReason = String(zapErr?.message || zapErr || 'UNKNOWN_ZAP_ERROR');
     console.warn(`[evilPanda] ZAP_OUT_FAIL stage=${stage} reason=${zapReason}`);
+
+    const shouldUseEmptyCloseOnly =
+      fallbackMode === 'empty_only' ||
+      (fallbackMode === 'legacy' && isLikelyAlreadyEmptyCloseState(zapReason));
+    if (shouldUseEmptyCloseOnly) {
+      try {
+        const cleanupTxList = await buildCloseEmptyPositionTxs(dlmmPool, wallet, activePos);
+        for (const tx of cleanupTxList) {
+          const sig = await sendExitTx(connection, wallet, tx, microLamports);
+          removeSignatures.push(sig);
+          console.log(`[evilPanda] EMPTY CLOSE TX confirmed (${stage}): ${sig.slice(0,8)}`);
+        }
+        return {
+          path: 'EMPTY_CLOSE_ONLY',
+          usedFallback: false,
+          txCount: cleanupTxList.length,
+          zapReason,
+        };
+      } catch (emptyCloseErr) {
+        const emptyReason = String(emptyCloseErr?.message || emptyCloseErr || 'UNKNOWN_EMPTY_CLOSE_ERROR');
+        console.warn(`[evilPanda] EMPTY_CLOSE_FAIL stage=${stage} reason=${emptyReason}`);
+        if (fallbackMode === 'empty_only') {
+          const err = new Error(`EXIT_ZAP_AND_EMPTY_CLOSE_FAILED stage=${stage} zap=${zapReason} empty=${emptyReason}`);
+          err.code = 'EXIT_ZAP_AND_EMPTY_CLOSE_FAILED';
+          throw err;
+        }
+      }
+    }
+
+    if (fallbackMode === 'none') {
+      const err = new Error(`EXIT_ZAP_ONLY_FAILED stage=${stage} zap=${zapReason}`);
+      err.code = 'EXIT_ZAP_ONLY_FAILED';
+      throw err;
+    }
+
     if (notifyOnFallback) {
       await notify(
         `⚠️ <b>Zap-Out gagal, fallback darurat aktif</b>\n` +
@@ -4163,6 +4248,7 @@ export async function exitPosition(positionPubkey, reason = 'MANUAL') {
     normalizedExitReason === 'STOP_LOSS' ||
     normalizedExitReason === 'OUT_OF_RANGE' ||
     /SCENARIO_C|SUPPORT|BEARISH|PANIC/i.test(String(reason || ''));
+  const maxCleanupAttempts = isEmergencyExit ? 3 : 1;
 
   try {
     return await withExitAccountingLock(() => withExponentialBackoff(async () => {
@@ -4280,12 +4366,13 @@ export async function exitPosition(positionPubkey, reason = 'MANUAL') {
         removeSignatures,
         stage: 'primary',
         notifyOnFallback: true,
+        fallbackMode: 'legacy',
       });
       if (primaryExit.path === 'ZAP_OUT') exitPathStats.zapUsed = true;
       if (primaryExit.path === 'FALLBACK_LEGACY') exitPathStats.fallbackUsed = true;
 
       // Some DLMM accounts need a fresh-state cleanup after fees/rewards settle.
-      for (let cleanupAttempt = 1; cleanupAttempt <= 3; cleanupAttempt++) {
+      for (let cleanupAttempt = 1; cleanupAttempt <= maxCleanupAttempts; cleanupAttempt++) {
         await sleep(cleanupAttempt === 1 ? 6000 : 4000);
         const isClosed = await verifyPositionClosedOnChain(connection, wallet, reg.poolAddress, positionPubkey, {
           attempts: 1,
@@ -4303,7 +4390,9 @@ export async function exitPosition(positionPubkey, reason = 'MANUAL') {
           continue;
         }
 
-        console.warn(`[evilPanda] Position masih open setelah remove; cleanup attempt ${cleanupAttempt}/3`);
+        console.warn(
+          `[evilPanda] Position masih open setelah remove; cleanup attempt ${cleanupAttempt}/${maxCleanupAttempts}`
+        );
         const cleanupExit = await executeExitCloseWithZapPreferred({
           connection,
           wallet,
@@ -4312,7 +4401,8 @@ export async function exitPosition(positionPubkey, reason = 'MANUAL') {
           microLamports: exitMicroLamports,
           removeSignatures,
           stage: `cleanup_${cleanupAttempt}`,
-          notifyOnFallback: cleanupAttempt === 1,
+          notifyOnFallback: false,
+          fallbackMode: 'empty_only',
         });
         if (cleanupExit.path === 'ZAP_OUT') exitPathStats.zapUsed = true;
         if (cleanupExit.path === 'FALLBACK_LEGACY') exitPathStats.fallbackUsed = true;
