@@ -15,4 +15,6 @@ test('README explains fast-path, slow-path, and monitor trade offs', () => {
   assert.match(source, /monitorFastLaneFallbackPollMs/);
   assert.match(source, /outOfRangeWaitMinutes.*actual wait before the position is closed/);
   assert.match(source, /oorDisplayWaitMinutes.*only controls how often the OOR status is shown/);
+  assert.match(source, /Wallet Net Delta.*real post-close SOL movement/);
+  assert.match(source, /Close flow stays zap-first/);
 });

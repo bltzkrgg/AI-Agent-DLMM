@@ -151,6 +151,8 @@ Exit execution and ledger accounting are unchanged. Telegram exit messages separ
 - If fee data is unavailable: `Fee PnL: unavailable`
 - Position value is shown separately as `Position Value: X SOL`.
 - Exposure movement is shown separately as `Total Exposure PnL: Y%` when available.
+- `Wallet Net Delta` is the real post-close SOL movement after tx fees and rent refund effects.
+- Close flow stays zap-first: the main path tries Meteora-style close/claim first, cleanup only handles already-empty positions, and legacy fallback stays reserved for real failures.
 
 Stop loss and take profit decisions do not switch to fee-only PnL unless existing logic already uses that data.
 
