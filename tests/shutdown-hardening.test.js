@@ -198,6 +198,8 @@ test('evilPanda retries close cleanup before reporting manual exit failure', () 
   assert.match(src, /fallbackMode = 'legacy'/);
   assert.match(src, /fallbackMode:\s*'legacy'/);
   assert.match(src, /fallbackMode:\s*'empty_only'/);
+  assert.match(src, /withExitAccountingLock\(\(\) => withPermanentAwareBackoff/);
+  assert.match(src, /buildPermanentExitError\(/);
   assert.match(src, /EXIT_FALLBACK_USED/);
   assert.match(src, /async function buildClosePositionTxs/);
   assert.match(src, /shouldClaimAndClose:\s*false/);

@@ -966,6 +966,13 @@ async function withPermanentAwareBackoff(fn, { maxRetries = 3, baseDelay = 1000,
   throw lastError;
 }
 
+function buildPermanentExitError(message, code = 'EXIT_PERMANENT_ERROR') {
+  const err = new Error(message);
+  err.code = code;
+  err.isPermanent = true;
+  return err;
+}
+
 export function buildDlmmDeployStrategyArgs({
   activeBinId,
   rangeMin,
@@ -2939,17 +2946,19 @@ async function executeExitCloseWithZapPreferred({
         const emptyReason = String(emptyCloseErr?.message || emptyCloseErr || 'UNKNOWN_EMPTY_CLOSE_ERROR');
         console.warn(`[evilPanda] EMPTY_CLOSE_FAIL stage=${stage} reason=${emptyReason}`);
         if (fallbackMode === 'empty_only') {
-          const err = new Error(`EXIT_ZAP_AND_EMPTY_CLOSE_FAILED stage=${stage} zap=${zapReason} empty=${emptyReason}`);
-          err.code = 'EXIT_ZAP_AND_EMPTY_CLOSE_FAILED';
-          throw err;
+          throw buildPermanentExitError(
+            `EXIT_ZAP_AND_EMPTY_CLOSE_FAILED stage=${stage} zap=${zapReason} empty=${emptyReason}`,
+            'EXIT_ZAP_AND_EMPTY_CLOSE_FAILED'
+          );
         }
       }
     }
 
     if (fallbackMode === 'none') {
-      const err = new Error(`EXIT_ZAP_ONLY_FAILED stage=${stage} zap=${zapReason}`);
-      err.code = 'EXIT_ZAP_ONLY_FAILED';
-      throw err;
+      throw buildPermanentExitError(
+        `EXIT_ZAP_ONLY_FAILED stage=${stage} zap=${zapReason}`,
+        'EXIT_ZAP_ONLY_FAILED'
+      );
     }
 
     if (notifyOnFallback) {
@@ -2975,9 +2984,7 @@ async function executeExitCloseWithZapPreferred({
     } catch (fallbackErr) {
       const fallbackReason = String(fallbackErr?.message || fallbackErr || 'UNKNOWN_FALLBACK_ERROR');
       const combined = `EXIT_ZAP_AND_FALLBACK_FAILED stage=${stage} zap=${zapReason} fallback=${fallbackReason}`;
-      const err = new Error(combined);
-      err.code = 'EXIT_ZAP_AND_FALLBACK_FAILED';
-      throw err;
+      throw buildPermanentExitError(combined, 'EXIT_ZAP_AND_FALLBACK_FAILED');
     }
   }
 }
@@ -4251,7 +4258,7 @@ export async function exitPosition(positionPubkey, reason = 'MANUAL') {
   const maxCleanupAttempts = isEmergencyExit ? 3 : 1;
 
   try {
-    return await withExitAccountingLock(() => withExponentialBackoff(async () => {
+    return await withExitAccountingLock(() => withPermanentAwareBackoff(async () => {
       const preExitWalletLamports = await connection.getBalance(wallet.publicKey);
       const dlmmPool = await DLMM.create(connection, new PublicKey(reg.poolAddress));
       await dlmmPool.refetchStates().catch(() => {});
@@ -4277,7 +4284,7 @@ export async function exitPosition(positionPubkey, reason = 'MANUAL') {
           manualReconcileReason: 'incomplete position data or RPC timeout',
           closeReason: reason,
         }, { flush: true });
-        throw new Error(msg);
+        throw buildPermanentExitError(msg, 'POSITION_STATE_AMBIGUOUS');
       }
 
       if (isDryRun()) {
@@ -4433,7 +4440,10 @@ export async function exitPosition(positionPubkey, reason = 'MANUAL') {
           manualReconcileReason: 'close verification failed',
           closeReason: reason,
         }, { flush: true });
-        throw new Error(`POSITION_STILL_OPEN_AFTER_EXIT_${positionPubkey.slice(0,8)}`);
+        throw buildPermanentExitError(
+          `POSITION_STILL_OPEN_AFTER_EXIT_${positionPubkey.slice(0,8)}`,
+          'POSITION_STILL_OPEN_AFTER_EXIT'
+        );
       }
 
       // 4. Bersihkan registry lokal setelah verifikasi close sukses
@@ -4560,7 +4570,7 @@ export async function exitPosition(positionPubkey, reason = 'MANUAL') {
         rawExitReason: reason,
       };
 
-    }, { maxRetries: 2, baseDelay: 3000 }));
+    }, { maxRetries: 2, baseDelay: 3000, maxDelay: 10_000 }));
   } catch (e) {
     const positionStillTracked = _activePositions.has(positionPubkey);
     let positionStatus = null;
