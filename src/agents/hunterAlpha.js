@@ -309,6 +309,13 @@ function isWatcherModeActive() {
   return isRunning() || cfg.autoScreeningEnabled === true || _pendingRetestQueue.size > 0 || _taWatchQueue.size > 0;
 }
 
+function isAutoScreeningRuntimeEnabled() {
+  const state = getRuntimeState('autoScreeningRuntimeEnabled', null);
+  if (state === true || state?.enabled === true) return true;
+  if (state === false || state?.enabled === false) return false;
+  return getConfig().autoScreeningEnabled === true;
+}
+
 function hasActiveMint(mint) {
   if (!mint) return false;
   return listActivePositions().some((p) => p.mint === mint);
@@ -1874,7 +1881,7 @@ export async function scanAndDeploy({ emitFinalReport = true } = {}) {
     if ((cb?.pausedUntil || 0) > Date.now()) return { blocked: true, policy: 'CIRCUIT_BREAKER_ACTIVE', pausedUntil: cb?.pausedUntil };
 
     // — Gembok: jika auto-screening dimatikan, pause senyap tanpa log
-    if (!cfg.autoScreeningEnabled) {
+    if (!isAutoScreeningRuntimeEnabled()) {
       await sleep(10_000);
       return;
     }

@@ -139,10 +139,30 @@ async function sendLong(chatId, text, opts = {}) {
 // ── Notify helper ─────────────────────────────────────────────────
 const CHAT_ID = ALLOWED_ID; // bot hanya punya satu user
 const OPERATOR_DISCOVERY_PAUSED_KEY = 'operatorDiscoveryPaused';
+const AUTO_SCREENING_RUNTIME_KEY = 'autoScreeningRuntimeEnabled';
 
 function isDiscoveryPaused() {
   const state = getRuntimeState(OPERATOR_DISCOVERY_PAUSED_KEY, null);
   return state === true || state?.paused === true;
+}
+
+function setAutoScreeningRuntimeEnabled(enabled, reason = 'OPERATOR_RESUME') {
+  setRuntimeState(AUTO_SCREENING_RUNTIME_KEY, {
+    enabled: Boolean(enabled),
+    reason,
+    updatedAt: Date.now(),
+  });
+}
+
+function isAutoScreeningRuntimeEnabled() {
+  const state = getRuntimeState(AUTO_SCREENING_RUNTIME_KEY, null);
+  if (state === true || state?.enabled === true) return true;
+  if (state === false || state?.enabled === false) return false;
+  return getConfig().autoScreeningEnabled === true;
+}
+
+function clearAutoScreeningRuntimeEnabled() {
+  deleteRuntimeState(AUTO_SCREENING_RUNTIME_KEY);
 }
 
 function pauseDiscovery(reason = 'TELEGRAM_STOP') {
@@ -232,6 +252,7 @@ function stopAutoScreeningRuntime() {
 
 async function resumeAutoScreeningRuntime(chatId, { snapshotTopPools = false, source = 'operator_resume' } = {}) {
   resumeDiscovery(source);
+  setAutoScreeningRuntimeEnabled(true, source);
   stopScreeningLoop();
   await startAutoScreeningRuntime(chatId, { snapshotTopPools });
   return true;
@@ -749,6 +770,7 @@ bot.onText(/\/setconfig(?:\s+(\S+))?(?:\s+(.+))?/, async (msg, match) => {
 
   // ── Efek samping khusus: autoScreeningEnabled ─────────────────────
   if (flatKey === 'autoScreeningEnabled') {
+    setAutoScreeningRuntimeEnabled(parsed === true, 'TELEGRAM_SETCONFIG');
     if (parsed === true) {
       const wasPaused = isDiscoveryPaused();
       const loopWasRunning = Boolean(_screeningLoopTimer);
@@ -852,6 +874,7 @@ bot.onText(/\/autoscreen(?:\s+(on|off))?/, async (msg, match) => {
   const enable = toggle === 'on';
   const result = updateConfig({ autoScreeningEnabled: enable });
   const after  = result.autoScreeningEnabled;
+  setAutoScreeningRuntimeEnabled(enable, 'TELEGRAM_AUTOSCREEN');
 
   if (enable) {
     // ── Clear interval lama (anti double-execution) ───────────────────
@@ -1049,7 +1072,7 @@ let _lastDailyLossAlertAt = 0;
 async function runScreeningLoop() {
   // Baca config FRESH saat start (bukan dari closure lama)
   const startCfg   = getConfig();
-  if (!startCfg.autoScreeningEnabled) {
+  if (!isAutoScreeningRuntimeEnabled()) {
     console.log('[screening-loop] autoScreeningEnabled=false — loop tidak dijalankan.');
     return;
   }
@@ -1068,7 +1091,7 @@ async function runScreeningLoop() {
     }
 
     // Guard: hentikan diri sendiri jika dinonaktifkan via /setconfig
-    if (!cfg.autoScreeningEnabled) {
+    if (!isAutoScreeningRuntimeEnabled()) {
       stopScreeningLoop();
       return;
     }
@@ -1129,6 +1152,7 @@ async function restoreAutoScreeningOnStartup({
     `discoveryPaused=${discoveryPaused ? 'true' : 'false'} ` +
     `reason=manual_command_required nextIntervalMin=${intervalMin}`
   );
+  clearAutoScreeningRuntimeEnabled();
   stopAutoScreeningRuntime();
   stopScreeningLoop();
 }
