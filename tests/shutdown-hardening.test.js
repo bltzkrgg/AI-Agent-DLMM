@@ -213,13 +213,12 @@ test('evilPanda exit path uses high compute budget with CU retry', () => {
   assert.match(src, /Exit TX kehabisan compute unit/);
 });
 
-test('evilPanda exit path swaps residual non-SOL tokens using raw balances', () => {
+test('evilPanda exit path does not auto-swap residual non-SOL balances after close', () => {
   const src = readFileSync(evilPandaPath, 'utf8');
   assert.match(src, /getTokenBalanceRaw/);
-  assert.match(src, /residualMints = \[\.\.\.new Set\(\[reg\.tokenXMint, reg\.tokenYMint\]\.filter\(/);
-  assert.match(src, /Swap residual token → SOL/);
-  assert.match(src, /const swapOptions = \{ isUrgent: true \}/);
-  assert.match(src, /swapToSol\(mint, rawBalance, null, swapOptions\)/);
+  assert.match(src, /Residual swap non-SOL sengaja dinonaktifkan/);
+  assert.doesNotMatch(src, /Swap residual token → SOL/);
+  assert.doesNotMatch(src, /swapToSol\(mint, rawBalance, null, swapOptions\)/);
 });
 
 test('deploy path blocks duplicate pool entries before opening a second position', () => {
