@@ -385,6 +385,36 @@ function normalizeSupertrendDirection(value = '') {
   return 'UNKNOWN';
 }
 
+function normalizeLiveTrend(value = '') {
+  const trend = String(value || '').toUpperCase();
+  if (trend === 'BULLISH' || trend === 'BEARISH' || trend === 'NEUTRAL') return trend;
+  return 'UNKNOWN';
+}
+
+function readLiveSnapshotTrend(liveSnapshot = null) {
+  return normalizeLiveTrend(
+    liveSnapshot?.quality?.taTrend ||
+    liveSnapshot?.ta?.supertrend?.trend ||
+    'UNKNOWN'
+  );
+}
+
+function clearBullishSupertrendCache(meta = {}, pool = {}) {
+  const clearIfBullish = (obj, dirKey, atKey) => {
+    if (!obj || typeof obj !== 'object') return;
+    const dir = String(obj?.[dirKey] || '').toUpperCase();
+    if (dir === 'BULLISH') {
+      delete obj[dirKey];
+      delete obj[atKey];
+    }
+  };
+
+  clearIfBullish(meta, 'finalSupertrend15m', 'finalSupertrend15mAt');
+  clearIfBullish(meta, 'supertrend15m', 'supertrend15mAt');
+  clearIfBullish(pool, '_finalSupertrend15m', '_finalSupertrend15mAt');
+  clearIfBullish(pool, '_supertrend15m', '_supertrend15mAt');
+}
+
 function readCachedSupertrend15m(meta = {}, pool = {}) {
   const direction = normalizeSupertrendDirection(
     meta.finalSupertrend15m ||
@@ -412,12 +442,35 @@ export async function getFinalSupertrendDeployDecision({
   symbol = '',
   pool = {},
   meta = {},
+  liveSnapshot = null,
   currentPrice = 0,
   now = Date.now(),
   ttlMs = FINAL_ST_CACHE_TTL_MS,
   checkFn = checkSupertrendVeto,
 } = {}) {
   const label = symbol || mint?.slice?.(0, 8) || 'UNKNOWN';
+  const liveTrend = readLiveSnapshotTrend(liveSnapshot);
+  const liveReliable = isReliableLiveSnapshot(liveSnapshot);
+  if (liveReliable && liveTrend === 'BEARISH') {
+    clearBullishSupertrendCache(meta, pool);
+    return {
+      ok: false,
+      action: 'VETO',
+      reason: 'live Supertrend 15m bearish from reliable snapshot',
+      source: 'live_snapshot',
+      direction: 'BEARISH',
+    };
+  }
+  if (liveReliable && liveTrend === 'BULLISH') {
+    return {
+      ok: true,
+      action: 'ALLOW',
+      reason: 'live Supertrend 15m bullish from reliable snapshot',
+      source: 'live_snapshot',
+      direction: 'BULLISH',
+    };
+  }
+
   const cached = readCachedSupertrend15m(meta, pool);
   const fresh = cached.at > 0 && (now - cached.at) <= ttlMs;
 
@@ -441,6 +494,7 @@ export async function getFinalSupertrendDeployDecision({
       return { ok: true, action: 'ALLOW', reason: result.reason || 'fresh Supertrend 15m bullish', source: 'fresh_fetch', direction: 'BULLISH' };
     }
     if (direction === 'BEARISH' || String(result?.reason || '').toUpperCase().includes('BEARISH')) {
+      clearBullishSupertrendCache(meta, pool);
       return { ok: false, action: 'VETO', reason: result?.reason || 'fresh Supertrend 15m bearish', source: 'fresh_fetch', direction: 'BEARISH' };
     }
     return { ok: false, action: 'HOLD', reason: result?.reason || 'Supertrend 15m unavailable', source: 'fresh_fetch', direction: direction || 'UNKNOWN' };
@@ -587,11 +641,15 @@ export function summarizeQueueDecision({ meta = {}, liveSnapshot = null, cfg = g
 
   let decision = 'DEPLOY';
   let reason = '';
+  const liveTrend = readLiveSnapshotTrend(liveSnapshot);
+  const liveReliable = isReliableLiveSnapshot(liveSnapshot);
 
   if (lpMode) {
-    if (trendBearish) {
+    if ((liveReliable && liveTrend === 'BEARISH') || trendBearish) {
       decision = 'DROP';
-      reason = `Supertrend 15m bearish (${signals.trendSource})`;
+      reason = liveReliable && liveTrend === 'BEARISH'
+        ? 'Supertrend 15m bearish (live_snapshot)'
+        : `Supertrend 15m bearish (${signals.trendSource})`;
     } else if (bothUnknown) {
       decision = 'HOLD';
       reason = 'HOLD: realtime trend/M5 unknown; waiting for fresh deploy signal';
@@ -788,7 +846,19 @@ async function evaluateDeployConditions(entry) {
     entry.lastLiveSnapshot = liveSnapshot || entry.lastLiveSnapshot || null;
     if (liveSnapshot) {
       const liveSignals = summarizeQueueDecision({ meta, liveSnapshot, cfg, lpMode });
+      const liveSnapshotTrend = readLiveSnapshotTrend(liveSnapshot);
       const liveReliable = isReliableLiveSnapshot(liveSnapshot);
+      if (liveSignals.trendSource === 'live' && liveSnapshotTrend === 'BEARISH') {
+        return {
+          ok: false,
+          decision: 'DROP',
+          reason: 'Supertrend 15m bearish (live_snapshot)',
+          trendSource: 'live',
+          m5Source: liveSignals.m5Source,
+          liveTrend: 'BEARISH',
+          liveM5: liveSignals.m5,
+        };
+      }
       if (!liveReliable) {
         logUnreliableLiveSnapshot({
           symbol: entry.symbol || '',
@@ -859,6 +929,12 @@ async function evaluateDeployConditions(entry) {
   entry.lastLiveSnapshot = liveSnapshot || entry.lastLiveSnapshot || null;
   if (liveSnapshot) {
     const liveSignals = summarizeQueueDecision({ meta, liveSnapshot, cfg, lpMode });
+    const liveSnapshotTrend = readLiveSnapshotTrend(liveSnapshot);
+    if (liveSignals.trendSource === 'live' && liveSnapshotTrend === 'BEARISH') {
+      ({ m5: liveM5, m5Source } = liveSignals);
+      liveTrend = 'BEARISH';
+      trendSource = 'live';
+    }
     if (!isReliableLiveSnapshot(liveSnapshot)) {
       logUnreliableLiveSnapshot({
         symbol: entry.symbol || '',
@@ -868,7 +944,9 @@ async function evaluateDeployConditions(entry) {
         poolAddressPassed: Boolean(poolAddress),
       });
     }
-    ({ trend: liveTrend, trendSource, m5: liveM5, m5Source } = liveSignals);
+    if (!(trendSource === 'live' && liveTrend === 'BEARISH')) {
+      ({ trend: liveTrend, trendSource, m5: liveM5, m5Source } = liveSignals);
+    }
   }
 
   const livePrice = Number(liveSnapshot?.ohlcv?.currentPrice || liveSnapshot?.price?.currentPrice || pool?.price || 0);
