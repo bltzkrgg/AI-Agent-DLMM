@@ -1171,6 +1171,7 @@ async function runWatcher() {
         `[QUEUE] 🚀 Attempting deploy for ${symbol} ` +
         `decision=${decision} trend=${check.liveTrend || 'UNKNOWN'} (${check.trendSource || 'unknown'}) ` +
         `m5=${formatPct(check.liveM5)} (${check.m5Source || 'unknown'}) ` +
+        `intent=${meta?.hasFrozenEntryIntent === true ? 'FROZEN' : 'LIVE'} ` +
         `amount=${solAmount} SOL (Pool: ${poolAddress.slice(0, 8)})`
       );
       const slotReservation = reserveDeploySlot({
@@ -1215,6 +1216,12 @@ async function runWatcher() {
             pool?.hasNonRefundableFees ??
             meta?.hasNonRefundableFees ??
             false,
+          frozenEntryIntent: {
+            entryActiveBin: Number.isFinite(Number(meta?.entryActiveBin)) ? Number(meta.entryActiveBin) : null,
+            entryPrice: Number.isFinite(Number(meta?.entryPrice)) ? Number(meta.entryPrice) : null,
+            snapshotAt: Number.isFinite(Number(meta?.snapshotAt)) ? Number(meta.snapshotAt) : null,
+            enabled: meta?.hasFrozenEntryIntent === true,
+          },
         });
 
         if (result && typeof result === 'object' && result.dryRun) {

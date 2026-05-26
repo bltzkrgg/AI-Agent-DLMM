@@ -477,10 +477,13 @@ function addWatchPassTa(pool, reason = 'TA PASS', source = 'TA') {
     snapshotAthDistancePct: existing?.snapshotAthDistancePct ?? signals.signalAthDistancePct ?? null,
     snapshotM5Change: existing?.snapshotM5Change ?? signals.priceChangeM5 ?? null,
     snapshotM15Change: existing?.snapshotM15Change ?? signals.priceChangeM15 ?? null,
+    entryActiveBin: existing?.entryActiveBin ?? toFiniteNumber(pool?._entryActiveBin ?? null, null),
+    entryPrice: existing?.entryPrice ?? toFiniteNumber(pool?._entryPrice ?? signals.currentPrice ?? null, null),
     taTrend: existing?.taTrend ?? signals.taTrend ?? null,
     priceChangeM5: existing?.priceChangeM5 ?? signals.priceChangeM5 ?? null,
     watchWindowSec: existing?.watchWindowSec || watchWindowSec,
     maxDriftPct: existing?.maxDriftPct || maxDriftPct,
+    hasFrozenEntryIntent: existing?.hasFrozenEntryIntent === true || Number.isFinite(Number(pool?._entryActiveBin)),
     memoryPriorityDelta,
     memoryReason: memorySignal.reason,
     priorityScore,
@@ -876,6 +879,7 @@ export async function submitManualCaPool(poolAddress, { source = 'TELEGRAM_CA' }
   const now = Date.now();
   const watchWindowSec = getLpWatchWindowSec(cfg);
   const maxDriftPct = getLpMaxDriftPct(cfg);
+  const entryIntent = extractEntryIntent(poolInfo, marketSnapshot, entrySignals);
 
   const pool = {
     ...poolInfo,
@@ -893,6 +897,8 @@ export async function submitManualCaPool(poolAddress, { source = 'TELEGRAM_CA' }
     _watchSnapshotM5Change: entrySignals.priceChangeM5 ?? null,
     _watchSnapshotM15Change: entrySignals.priceChangeM15 ?? null,
     _watchTaTrend: entrySignals.taTrend ?? null,
+    _entryActiveBin: entryIntent.entryActiveBin,
+    _entryPrice: entryIntent.entryPrice,
     _marketSnapshot: marketSnapshot,
     hasNonRefundableFees: Boolean(marketSnapshot?.pool?.hasNonRefundableFees),
   };
@@ -927,6 +933,9 @@ export async function submitManualCaPool(poolAddress, { source = 'TELEGRAM_CA' }
     snapshotHigh24h: pool._watchSnapshotHigh24h,
     watchWindowSec,
     maxDriftPct,
+    entryActiveBin: entryIntent.entryActiveBin,
+    entryPrice: entryIntent.entryPrice,
+    hasFrozenEntryIntent: entryIntent.hasFrozenEntryIntent,
     hasNonRefundableFees: pool.hasNonRefundableFees,
   };
 
@@ -1164,6 +1173,39 @@ function getLpMaxDriftPct(cfg = getConfig(), fallback = 2.5) {
 
 function isLPLiveTimingState(state = '') {
   return ['LP_LIVE', 'RECLAIM', 'RECLAIM_LIVE', 'BREAKOUT', 'ATH_BREAK'].includes(String(state || '').toUpperCase());
+}
+
+function toFiniteNumber(value, fallback = null) {
+  const num = Number(value);
+  return Number.isFinite(num) ? num : fallback;
+}
+
+function extractEntryIntent(pool = {}, marketSnapshot = null, entrySignals = null) {
+  const entryActiveBin = toFiniteNumber(
+    pool?._entryActiveBin ??
+      pool?.activeBinId ??
+      pool?.active_bin ??
+      pool?.activeBin ??
+      marketSnapshot?.pool?.activeBinId ??
+      marketSnapshot?.pool?.active_bin ??
+      null,
+    null,
+  );
+  const entryPrice = toFiniteNumber(
+    pool?._entryPrice ??
+      entrySignals?.currentPrice ??
+      marketSnapshot?.ohlcv?.currentPrice ??
+      marketSnapshot?.price?.currentPrice ??
+      pool?.price ??
+      pool?.pool_price ??
+      null,
+    null,
+  );
+  return {
+    entryActiveBin,
+    entryPrice,
+    hasFrozenEntryIntent: Number.isFinite(entryActiveBin),
+  };
 }
 
 function deriveBreakoutEntrySignals({ pool = {}, vetoResult = null, marketSnapshot = null, cfg = getConfig() } = {}) {
@@ -1664,6 +1706,9 @@ async function processTaWatchQueue(cfg = getConfig()) {
         snapshotHigh24h: row.snapshotHigh24h ?? pool._entrySignals?.high24h ?? null,
         watchWindowSec: row.watchWindowSec || getLpWatchWindowSec(cfg),
         maxDriftPct: row.maxDriftPct || getLpMaxDriftPct(cfg),
+        entryActiveBin: toFiniteNumber(pool._entryActiveBin ?? row.entryActiveBin ?? null, null),
+        entryPrice: toFiniteNumber(pool._entryPrice ?? row.entryPrice ?? pool._entrySignals?.currentPrice ?? null, null),
+        hasFrozenEntryIntent: Boolean(Number.isFinite(Number(pool._entryActiveBin ?? row.entryActiveBin))),
       },
     });
   }

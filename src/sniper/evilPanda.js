@@ -88,6 +88,11 @@ function isFiniteInteger(value) {
   return Number.isFinite(value) && Number.isSafeInteger(value);
 }
 
+function toFiniteNumber(value, fallback = null) {
+  const num = Number(value);
+  return Number.isFinite(num) ? num : fallback;
+}
+
 function evaluateDeployWalletFunds({
   walletLamports = 0,
   deploySol = 0,
@@ -709,31 +714,37 @@ export async function prepareFinalDlmmDeployAttemptState({
   ensureFinalRentCheckedDeployArgsFn = ensureFinalRentCheckedDeployArgs,
   assertDlmmFinalSdkArgsFn = assertDlmmFinalSdkArgs,
   buildDlmmSdkStrategyFromDeployArgsFn = buildDlmmSdkStrategyFromDeployArgs,
+  skipActiveBinRefresh = false,
 } = {}) {
   let refreshedActiveBinId = Number(deployArgs?.activeBinId);
   let activeRefreshReason = null;
 
-  try {
-    if (typeof refetchStatesFn === 'function') {
-      await refetchStatesFn();
-    } else if (dlmmPool?.refetchStates) {
-      await dlmmPool.refetchStates();
-    }
-    const refreshedActiveBin = typeof getActiveBinFn === 'function'
-      ? await getActiveBinFn()
-      : (dlmmPool?.getActiveBin ? await dlmmPool.getActiveBin() : null);
-    if (isFiniteInteger(Number(refreshedActiveBin?.binId))) {
-      refreshedActiveBinId = Number(refreshedActiveBin.binId);
-      if (refreshedActiveBinId !== Number(initialActiveBinId)) {
-        activeRefreshReason = 'active_bin_moved_before_final_args';
-        console.log(
-          `[evilPanda] ACTIVE_BIN_REFRESH pool=${poolAddress.slice(0,8)} ` +
-          `initial=${Number(initialActiveBinId)} refreshed=${refreshedActiveBinId} attempt=${attempt}`
-        );
+  if (!skipActiveBinRefresh) {
+    try {
+      if (typeof refetchStatesFn === 'function') {
+        await refetchStatesFn();
+      } else if (dlmmPool?.refetchStates) {
+        await dlmmPool.refetchStates();
       }
+      const refreshedActiveBin = typeof getActiveBinFn === 'function'
+        ? await getActiveBinFn()
+        : (dlmmPool?.getActiveBin ? await dlmmPool.getActiveBin() : null);
+      if (isFiniteInteger(Number(refreshedActiveBin?.binId))) {
+        refreshedActiveBinId = Number(refreshedActiveBin.binId);
+        if (refreshedActiveBinId !== Number(initialActiveBinId)) {
+          activeRefreshReason = 'active_bin_moved_before_final_args';
+          console.log(
+            `[evilPanda] ACTIVE_BIN_REFRESH pool=${poolAddress.slice(0,8)} ` +
+            `initial=${Number(initialActiveBinId)} refreshed=${refreshedActiveBinId} attempt=${attempt}`
+          );
+        }
+      }
+    } catch (refreshErr) {
+      console.warn(`[evilPanda] ACTIVE_BIN_REFRESH_FAIL pool=${poolAddress.slice(0,8)} reason=${refreshErr?.message || 'unknown'} attempt=${attempt}`);
     }
-  } catch (refreshErr) {
-    console.warn(`[evilPanda] ACTIVE_BIN_REFRESH_FAIL pool=${poolAddress.slice(0,8)} reason=${refreshErr?.message || 'unknown'} attempt=${attempt}`);
+  } else {
+    refreshedActiveBinId = Number(deployArgs?.activeBinId);
+    activeRefreshReason = 'frozen_entry_intent';
   }
 
   const beforeRefreshRangeMin = Number(deployArgs.rangeMin);
@@ -3133,6 +3144,14 @@ export async function deployPosition(poolAddress, deployOptions = {}) {
     poolAddress,
     deployOptions?.hasNonRefundableFees ?? null,
   );
+  const frozenIntent = (deployOptions && typeof deployOptions.frozenEntryIntent === 'object')
+    ? deployOptions.frozenEntryIntent
+    : null;
+  const frozenEntryActiveBin = isFiniteInteger(Number(frozenIntent?.entryActiveBin))
+    ? Number(frozenIntent.entryActiveBin)
+    : null;
+  const frozenEntryPrice = toFiniteNumber(frozenIntent?.entryPrice, null);
+  const frozenIntentEnabled = frozenIntent?.enabled === true && Number.isFinite(frozenEntryActiveBin);
 
   console.log(`[evilPanda] ▶ deployPosition pool=${poolAddress.slice(0,8)} sol=${deploySol}`);
 
@@ -3150,6 +3169,19 @@ export async function deployPosition(poolAddress, deployOptions = {}) {
     await dlmmPool.refetchStates();
     const initialActiveBin = await dlmmPool.getActiveBin();
     let activeBin = initialActiveBin;
+    if (frozenIntentEnabled && Number.isFinite(frozenEntryActiveBin)) {
+      activeBin = {
+        ...initialActiveBin,
+        binId: Number(frozenEntryActiveBin),
+        pricePerToken: Number.isFinite(frozenEntryPrice)
+          ? Number(frozenEntryPrice)
+          : initialActiveBin?.pricePerToken,
+      };
+      console.log(
+        `[evilPanda] ENTRY_INTENT_FROZEN pool=${poolAddress.slice(0,8)} ` +
+        `bin=${Number(activeBin.binId)} price=${Number.isFinite(Number(activeBin.pricePerToken)) ? Number(activeBin.pricePerToken).toFixed(10) : 'na'}`
+      );
+    }
     const binStep   = dlmmPool.lbPair.binStep;
 
     const xMint = dlmmPool.tokenX.publicKey.toString();
@@ -3497,10 +3529,15 @@ export async function deployPosition(poolAddress, deployOptions = {}) {
         checkedRangeMax: rentCheckedRangeMax,
         initialActiveBinId: Number(initialActiveBin?.binId),
         attempt,
+        skipActiveBinRefresh: frozenIntentEnabled,
         refetchStatesFn: async () => {
+          if (frozenIntentEnabled) return;
           if (dlmmPool?.refetchStates) await dlmmPool.refetchStates();
         },
         getActiveBinFn: async () => {
+          if (frozenIntentEnabled) {
+            return { binId: Number(baseDeployArgs?.activeBinId) };
+          }
           const refreshed = dlmmPool?.getActiveBin ? await dlmmPool.getActiveBin() : null;
           if (refreshed && isFiniteInteger(Number(refreshed?.binId))) {
             activeBin = refreshed;
