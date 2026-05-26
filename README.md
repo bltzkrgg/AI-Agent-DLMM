@@ -207,6 +207,14 @@ Run in shadow mode first so the bot records pattern deltas without applying them
 
 Curated `/setconfig` sections include finance, discovery, entry, watch, OOR, Pool Impact Guard, and Pool Pattern Learning. Sensitive or structural keys such as wallet, LLM provider, API credentials, range internals, and deprecated aliases are intentionally not editable from Telegram.
 
+Close policy tuning is also exposed for live ops:
+
+- `closeSwapMode`: `fee_only`, `all`, or `off`
+- `closeResidualSwapEnabled`: allow or block residual token swap after close
+- `closeAutoSwapMinOutSol`: minimum expected SOL before auto-swap is allowed
+- `closeAutoSwapMinNetSol`: minimum net SOL after estimated costs
+- `closeEstimatedSwapCostSol`: cost buffer used by the auto-swap gate
+
 Examples:
 
 ```text
@@ -214,6 +222,8 @@ Examples:
 /setconfig maxMcap 5000000
 /setconfig entryCandleSanityEnabled true
 /setconfig entryMinVolumeRatio 1.8
+/setconfig strategy.closeSwapMode fee_only
+/setconfig strategy.closeResidualSwapEnabled false
 /setconfig taWatchMaxPools 10
 /setconfig poolPatternLearningShadowMode true
 ```

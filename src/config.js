@@ -192,6 +192,11 @@ const DEFAULTS = {
   activeStrategy:         'Evil Panda',
   smartExitRsi:           90,   // RSI(2) threshold untuk Meridian Smart Exit
   depthPct:               90,   // Depth jaring SOL ke bawah (%)
+  closeSwapMode:          'fee_only',
+  closeResidualSwapEnabled: false,
+  closeAutoSwapMinOutSol:  0.0003,
+  closeAutoSwapMinNetSol:  0.00015,
+  closeEstimatedSwapCostSol: 0.00012,
   entrySupertrendMinDistancePct: 1.5,
   entrySupertrendMaxDistancePct: 18,
   entryBreakoutMinAthDistancePct: 95,
@@ -301,6 +306,11 @@ const CONFIG_BOUNDS = {
   poolPatternLearningMaxScoreDelta: { min: 0, max: 50 },
   poolPatternLearningLookbackDays: { min: 1, max: 180 },
   maxDailyPriorityFeeSol: { min: 0.01,  max: 10 },
+  closeSwapMode:          { type: 'string' },
+  closeResidualSwapEnabled: { type: 'boolean' },
+  closeAutoSwapMinOutSol:  { min: 0,     max: 1 },
+  closeAutoSwapMinNetSol:  { min: 0,     max: 1 },
+  closeEstimatedSwapCostSol: { min: 0,   max: 1 },
   // Discovery bounds
   discoveryTimeframe:     { type: 'string' },
   discoveryCategory:      { type: 'string' },
@@ -363,6 +373,11 @@ const NESTED_SECTION_MAP = {
   strategy: {
     name:               'activeStrategy',
     depthPct:           'depthPct',
+    closeSwapMode:      'closeSwapMode',
+    closeResidualSwapEnabled: 'closeResidualSwapEnabled',
+    closeAutoSwapMinOutSol: 'closeAutoSwapMinOutSol',
+    closeAutoSwapMinNetSol: 'closeAutoSwapMinNetSol',
+    closeEstimatedSwapCostSol: 'closeEstimatedSwapCostSol',
     targetBinSteps:     'allowedBinSteps',
     binStepPriority:    'binStepPriority',
     liquidityShape:     'dlmmLiquidityShape',
@@ -676,6 +691,13 @@ export const SETCONFIG_WHITELIST = {
   poolPatternLearningShadowMode:  { section: 'poolPatternLearning', type: 'boolean', desc: 'Mode bayangan (hitung delta tanpa apply ke score)' },
   poolPatternLearningMinSamples:  { section: 'poolPatternLearning', type: 'number',  desc: 'Minimum sample pattern sebelum delta dipakai' },
   poolPatternLearningMaxScoreDelta:{ section: 'poolPatternLearning',type: 'number',  desc: 'Batas bonus/penalty score pattern learning' },
+
+  // ── Close / Exit ───────────────────────────────────────────────
+  closeSwapMode:          { section: 'strategy',           type: 'string',  desc: 'Mode close swap: fee_only, all, atau off' },
+  closeResidualSwapEnabled: { section: 'strategy',         type: 'boolean', desc: 'Izinkan swap residual token setelah close' },
+  closeAutoSwapMinOutSol: { section: 'strategy',           type: 'number',  desc: 'Minimum hasil auto-swap fee dalam SOL' },
+  closeAutoSwapMinNetSol: { section: 'strategy',           type: 'number',  desc: 'Minimum net hasil auto-swap fee dalam SOL' },
+  closeEstimatedSwapCostSol: { section: 'strategy',        type: 'number',  desc: 'Estimasi biaya swap residual/fee dalam SOL' },
 };
 
 // ── resolveNestedKey ─────────────────────────────────────────────────────────

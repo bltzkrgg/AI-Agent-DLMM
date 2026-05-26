@@ -609,7 +609,10 @@ function buildCloseSwapPolicy(cfg = {}, options = {}, isUrgent = false) {
     .trim()
     .toLowerCase();
   const swapMode = modeRaw === 'off' ? 'off' : (modeRaw === 'all' ? 'all' : 'fee_only');
-  const allowResidualSwap = options.allowResidualSwap === true || options.residualSwapEnabled === true;
+  const allowResidualSwap =
+    options.allowResidualSwap === true ||
+    options.residualSwapEnabled === true ||
+    cfg.closeResidualSwapEnabled === true;
 
   return {
     swapMode,

@@ -2,19 +2,16 @@
   "dryRun": true,
   "autonomyMode": "active",
   "autoScreeningEnabled": false,
-
   "deployAmountSol": 0.5,
   "maxPositions": 3,
   "minSolToOpen": 0.1,
   "gasReserve": 0.1,
   "dailyLossLimitUsd": 25,
-
   "managementIntervalMin": 10,
   "screeningIntervalMin": 15,
   "screeningTopPoolsLimit": 5,
   "positionUpdateIntervalMin": 5,
   "realtimePnlIntervalSec": 15,
-
   "deployQueueExpiryMin": 60,
   "pendingRetestEnabled": true,
   "retestIntervalMin": 5,
@@ -31,7 +28,6 @@
   "taWatchMaxPools": 10,
   "taWatchExpiryMin": 60,
   "watchIntervalSec": 30,
-
   "meteoraDiscoveryLimit": 180,
   "discoveryTimeframe": "1h",
   "discoveryCategory": "trending",
@@ -43,13 +39,26 @@
   "minVolume": 100000,
   "maxVolume": 0,
   "minOrganic": 55,
-  "binStepPriority": [200, 125, 100],
+  "binStepPriority": [
+    200,
+    125,
+    100
+  ],
   "minFeeActiveTvlRatio": 0.002,
-  "minDailyFeeYieldPct": 1.0,
+  "minDailyFeeYieldPct": 1,
   "maxPriceImpactPct": 1.5,
   "maxTvlMcapRatio": 0.2,
-  "bannedNarratives": ["kanye", "taylor", "trump", "biden", "kamala", "justice", "bags", "moo deng", "pesto"],
-
+  "bannedNarratives": [
+    "kanye",
+    "taylor",
+    "trump",
+    "biden",
+    "kamala",
+    "justice",
+    "bags",
+    "moo deng",
+    "pesto"
+  ],
   "gmgnEnabled": true,
   "gmgnMinTotalFeesSol": 30,
   "gmgnTop10HolderMaxPct": 30,
@@ -65,7 +74,6 @@
   "gmgnMinAgeHours": 0,
   "gmgnMaxAgeHours": 168,
   "gmgnRequireKnownAge": false,
-
   "entrySupertrendBreakMinPct": 1.25,
   "entryFreshBreakoutMinAthDistancePct": 99.25,
   "entryFreshWatchWindowSec": 90,
@@ -84,13 +92,12 @@
   "entryM15MaxAgeSec": 1800,
   "entryM5HardGateEnabled": true,
   "entryDeferOnM15PreviousUnknown": true,
-
   "slippageBps": 150,
   "dlmmLiquidityShape": "spot",
   "stopLossPct": 5,
-  "trailingStopPct": 5.0,
+  "trailingStopPct": 5,
   "trailingTriggerPct": 10,
-  "trailingDropPct": 3.0,
+  "trailingDropPct": 3,
   "maxHoldHours": 6,
   "outOfRangeWaitMinutes": 30,
   "oorDisplayWaitMinutes": 5,
@@ -103,7 +110,6 @@
   "atrMultiplier": 1.5,
   "maxDynamicSl": 20,
   "blacklistEnabled": true,
-
   "poolImpactGuardEnabled": false,
   "poolImpactCheckIntervalMs": 3000,
   "poolImpactPriceDropWarnPct": 2.5,
@@ -117,13 +123,11 @@
   "poolPatternLearningMinSamples": 10,
   "poolPatternLearningMaxScoreDelta": 8,
   "poolPatternLearningLookbackDays": 14,
-
   "screeningModel": "nvidia/nemotron-3-super-120b-a12b:free",
   "managementModel": "deepseek/deepseek-v3.2",
   "agentModel": "deepseek/deepseek-v3.2",
   "generalModel": "nvidia/nemotron-nano-9b-v2:free",
   "activeModel": null,
-
   "lpAgentRelayEnabled": true,
   "publicApiKey": "bWVyaWRpYW4taXMtdGhlLWJlc3QtYWdlbnRz",
   "agentMeridianApiUrl": "https://api.agentmeridian.xyz/api",
@@ -131,13 +135,17 @@
   "meridianSupertrendRetries": 2,
   "maxAthDistancePct": 15,
   "dominanceMinPct": 15,
-
   "okxApiKey": "",
   "signalWeights": {
     "mcap": 2.5,
     "feeActiveTvlRatio": 2.3,
-    "volume": 1.0,
+    "volume": 1,
     "holderCount": 0.3
   },
-  "strategyOverrides": {}
+  "strategyOverrides": {},
+  "closeSwapMode": "fee_only",
+  "closeResidualSwapEnabled": false,
+  "closeAutoSwapMinOutSol": 0.0003,
+  "closeAutoSwapMinNetSol": 0.00015,
+  "closeEstimatedSwapCostSol": 0.00012
 }
