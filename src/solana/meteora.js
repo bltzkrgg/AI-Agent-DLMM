@@ -2,13 +2,13 @@ import DLMM from '@meteora-ag/dlmm';
 import { PublicKey, Keypair, Transaction, ComputeBudgetProgram, VersionedTransaction, TransactionMessage, SystemProgram, SystemInstruction } from '@solana/web3.js';
 import BN from 'bn.js';
 import { getConnection, getWallet } from './wallet.js';
-import { fetchWithTimeout, safeNum, withRetry, withExponentialBackoff, stringify, getConservativeSlippage } from '../utils/safeJson.js';
+import { fetchWithTimeout, safeNum, withRetry, withExponentialBackoff, stringify } from '../utils/safeJson.js';
 import { toLamports, fromLamports, sumBigInts } from '../utils/units.js';
 import { resolveTokens, WSOL_MINT } from '../utils/tokenMeta.js';
 import { getRecommendedPriorityFee } from '../utils/helius.js';
 import { isDryRun, getConfig } from '../config.js';
 import { swapToSol, getSwapQuoteToSol } from '../utils/jupiter.js';
-import { getTokenBalance } from './wallet.js';
+import { getTokenBalanceRaw } from './wallet.js';
 import {
   checkAndConsumePriorityFeeBudget,
   estimatePriorityFeeSol,
@@ -594,6 +594,100 @@ export async function getSolPriceUsd() {
 function isEmergencyCloseReason(reason) {
   const normalized = String(reason || '').toUpperCase();
   return normalized.includes('PANIC_EXIT') || normalized.includes('TVL_DRAIN');
+}
+
+function toSafeBigInt(value) {
+  try {
+    return BigInt(String(value ?? '0'));
+  } catch {
+    return 0n;
+  }
+}
+
+function buildCloseSwapPolicy(cfg = {}, options = {}, isUrgent = false) {
+  const modeRaw = String(options.swapMode ?? cfg.closeSwapMode ?? 'fee_only')
+    .trim()
+    .toLowerCase();
+  const swapMode = modeRaw === 'off' ? 'off' : (modeRaw === 'all' ? 'all' : 'fee_only');
+  const allowResidualSwap = options.allowResidualSwap === true || options.residualSwapEnabled === true;
+
+  return {
+    swapMode,
+    allowResidualSwap,
+    maxImpactPct: Math.max(0.1, Number(options.maxSwapImpactPct ?? cfg.maxExitPriceImpactPct ?? 5.0)),
+    minOutSol: Math.max(0, Number(options.minAutoSwapOutSol ?? cfg.closeAutoSwapMinOutSol ?? 0.0003)),
+    minNetSol: Math.max(0, Number(options.minAutoSwapNetSol ?? cfg.closeAutoSwapMinNetSol ?? 0.00015)),
+    estimatedCostSol: Math.max(
+      0,
+      Number(options.estimatedSwapCostSol ?? cfg.closeEstimatedSwapCostSol ?? (isUrgent ? 0.0002 : 0.00012)),
+    ),
+  };
+}
+
+function isValidPositiveIntegerString(value) {
+  return typeof value === 'string' && /^[0-9]+$/.test(value) && value !== '0';
+}
+
+async function attemptGatedSwapToSol({
+  mint,
+  rawAmount,
+  slippageBps,
+  isUrgent,
+  isEmergencyExit,
+  emergencySlippageBps,
+  maxImpactPct,
+  minOutSol,
+  minNetSol,
+  estimatedCostSol,
+  label,
+} = {}) {
+  const amountStr = String(rawAmount || '0');
+  if (!mint || mint === WSOL_MINT || !isValidPositiveIntegerString(amountStr)) {
+    return { skipped: true, reason: `${label}_INVALID_AMOUNT_OR_MINT` };
+  }
+
+  let quote;
+  try {
+    quote = await getSwapQuoteToSol(mint, amountStr, slippageBps);
+  } catch (err) {
+    return { skipped: true, reason: `${label}_QUOTE_FAILED`, error: err.message };
+  }
+
+  const outSol = Number(quote?.outAmount || 0) / 1e9;
+  const impact = Number(quote?.priceImpactPct || 0);
+  const netOutSol = outSol - estimatedCostSol;
+
+  if (!Number.isFinite(outSol) || outSol <= 0) {
+    return { skipped: true, reason: `${label}_ZERO_OUT` };
+  }
+  if (!Number.isFinite(impact) || impact > maxImpactPct) {
+    return { skipped: true, reason: `${label}_HIGH_IMPACT_${impact.toFixed(2)}%` };
+  }
+  if (outSol < minOutSol) {
+    return { skipped: true, reason: `${label}_OUT_BELOW_MIN_${outSol.toFixed(6)}` };
+  }
+  if (netOutSol < minNetSol) {
+    return { skipped: true, reason: `${label}_NET_BELOW_MIN_${netOutSol.toFixed(6)}` };
+  }
+
+  try {
+    const swapRes = await swapToSol(mint, amountStr, slippageBps, {
+      isUrgent,
+      isEmergencyExit,
+      emergencySlippageBps,
+    });
+    if (swapRes?.success) {
+      return {
+        success: true,
+        txHash: swapRes.txHash,
+        outSol: Number(swapRes.outSol || outSol),
+        priceImpactPct: Number(swapRes.priceImpactPct || impact),
+      };
+    }
+    return { skipped: true, reason: `${label}_${swapRes?.reason || 'SWAP_NOT_EXECUTED'}` };
+  } catch (err) {
+    return { skipped: true, reason: `${label}_SWAP_FAILED`, error: err.message };
+  }
 }
 
 // ─── Open Position ───────────────────────────────────────────────
@@ -1291,6 +1385,8 @@ async function _openPositionLogic(poolAddress, tokenXAmount, tokenYAmount, price
 
 export async function closePositionDLMM(poolAddress, positionAddress, pnlData = {}, options = {}) {
   const isUrgent = options.isUrgent === true;
+  const cfg = getConfig();
+  const swapPolicy = buildCloseSwapPolicy(cfg, options, isUrgent);
   if (isDryRun()) {
     const urgentFlag = isUrgent ? ' [URGENT]' : '';
     console.log(`[DRY RUN] closePositionDLMM skipped${urgentFlag}: pool=${poolAddress} pos=${positionAddress}`);
@@ -1344,8 +1440,13 @@ export async function closePositionDLMM(poolAddress, positionAddress, pnlData = 
       }
 
       const pd = position.positionData;
+      const tokenXMint = String(pd?.tokenX?.toString?.() || dlmmPool.tokenX.publicKey.toString());
+      const tokenYMint = String(pd?.tokenY?.toString?.() || dlmmPool.tokenY.publicKey.toString());
+      const preCloseBalances = {
+        tokenXRaw: await getTokenBalanceRaw(tokenXMint).catch(() => '0'),
+        tokenYRaw: await getTokenBalanceRaw(tokenYMint).catch(() => '0'),
+      };
       const binIdsToRemove = pd.positionBinData?.map(b => b.binId) ?? [];
-      const cfg = getConfig();
       const maxExitPriceImpactPct = Math.max(0.1, Number(cfg.maxExitPriceImpactPct ?? 5.0));
 
       // Hard gate: jangan lepas likuiditas jika estimasi swap balik ke SOL terlalu merusak harga.
@@ -1533,26 +1634,6 @@ export async function closePositionDLMM(poolAddress, positionAddress, pnlData = 
         }
       }
 
-      // 💉 INJECT & SEND (Jika ada TX baru)
-      if (removeLiqTx) {
-        await executeTransactions([removeLiqTx], { isUrgent: true, poolAddress: pd.lbPair });
-      }
-
-      // 🧹 FINAL CLEANUP: Swap sisa debu (dust) ke SOL & narik balik biaya sewa akun (Rent Recovery)
-      try {
-        console.log(`🧹 [meteora] Membersihkan sisa token untuk mint ${pd.tokenX.slice(0, 8)}...`);
-        await swapToSol(pd.tokenX, '0', 250); // Swap all X
-        await swapToSol(pd.tokenY, '0', 250); // Swap all Y
-        
-        const { closeTokenAccount } = await import('./wallet.js');
-        await closeTokenAccount(pd.tokenX).catch(() => {});
-        await closeTokenAccount(pd.tokenY).catch(() => {});
-        console.log('✅ [meteora] Zero Dust & Rent Recovery sukses.');
-      } catch (err) {
-        console.warn(`⚠️ [meteora] Cleanup gagal (non-kritis): ${err.message}`);
-      }
-
-
       // ── 5. Kirim & konfirmasi setiap TX ─────────────────────
       const txList = Array.isArray(removeLiqTx) ? removeLiqTx : [removeLiqTx];
       const txHashes = [];
@@ -1694,66 +1775,78 @@ export async function closePositionDLMM(poolAddress, positionAddress, pnlData = 
         lifecycleState: pnlData.lifecycleState || 'closed_pending_swap',
       });
 
-      // ── 8. Aegis Zero-Dust Swap ─────────────────────────────
+      // ── 8. Swap policy: fee-only (default) + residual optional ───────
       if (!isDryRun()) {
         try {
-          const xMint = pd.tokenX.toString();
-          const yMint = pd.tokenY.toString();
-          
-          // Helper: Resolve metadata for decimals
-          const [xMeta] = await resolveTokens([xMint, yMint]);
+          const postCloseBalances = {
+            tokenXRaw: await getTokenBalanceRaw(tokenXMint).catch(() => '0'),
+            tokenYRaw: await getTokenBalanceRaw(tokenYMint).catch(() => '0'),
+          };
+          const isEmergencyExit = isEmergencyCloseReason(pnlData.closeReason);
+          const emergencySlippageBps = Math.max(750, Number(cfg.panicExitSlippageBps ?? 750));
+          const baseSlippageBps = Math.max(50, Number(options.deploySlippageBps || cfg.slippageBps || 250));
+          const effectiveSlippageBps = isEmergencyExit ? emergencySlippageBps : baseSlippageBps;
 
-          const xBalance = await getTokenBalance(xMint);
-          if (xBalance > 0) {
-            // Logika Irit: Hitung slippage dinamis biar gak rugi price impact.
-            // Use deploy-time slippage (stored in options.deploySlippageBps) as a floor
-            // to avoid under-slippage when current market is calmer than at deploy time.
-            const emergencyClose = isEmergencyCloseReason(pnlData.closeReason);
-            const emergencySlippageBps = Math.max(750, Number(cfg.panicExitSlippageBps ?? 750));
-            let slippage = emergencyClose ? emergencySlippageBps : 100; // default 1.0%
-            if (!emergencyClose) {
-              try {
-                const snapshot = await getMarketSnapshot(xMint, poolAddress);
-                slippage = getConservativeSlippage(snapshot?.price?.volatility24h || 0, isUrgent);
-              } catch { /* fallback 1% */ }
-            }
-            if (options.deploySlippageBps && options.deploySlippageBps > slippage) {
-              slippage = options.deploySlippageBps; // deploy-time slippage is the minimum
-            }
+          const preX = toSafeBigInt(preCloseBalances.tokenXRaw);
+          const postX = toSafeBigInt(postCloseBalances.tokenXRaw);
+          const feeDeltaX = postX > preX ? (postX - preX).toString() : '0';
 
-            console.log(`[closePositionDLMM] Auto-Swap: Converting ${xBalance} Token X back to SOL (Slippage: ${slippage/100}%)...`);
-            const swapResult = await swapToSol(xMint, Math.floor(xBalance * Math.pow(10, xMeta.decimals)), slippage);
-            if (swapResult?.swapTransaction) {
-               const connection = getConnection();
-               const wallet = getWallet();
-               const { VersionedTransaction } = await import('@solana/web3.js');
-               const swapTx = VersionedTransaction.deserialize(Buffer.from(swapResult.swapTransaction, 'base64'));
-               swapTx.sign([wallet]);
-               let hash;
-               try {
-                 hash = await connection.sendRawTransaction(swapTx.serialize(), { skipPreflight: true });
-                 await pollTxConfirm(connection, hash, 45000);
-               } catch (swapTxErr) {
-                 recordTxFailure({ context: 'meteora.close.auto_swap', error: swapTxErr });
-                 throw swapTxErr;
-               }
-               recordTxSuccess({ context: 'meteora.close.auto_swap' });
-               console.log(`[closePositionDLMM] Auto-Swap Success: ${hash}`);
-               txHashes.push(hash);
-            } else if (swapResult?.reason) {
-              console.warn(`[closePositionDLMM] Auto-Swap skipped: ${swapResult.reason}${Number.isFinite(swapResult.shift) ? ` (shift ${(swapResult.shift * 100).toFixed(2)}%)` : ''}`);
+          const shouldSwapFeeOnly = swapPolicy.swapMode === 'fee_only' || swapPolicy.swapMode === 'all';
+          const shouldSwapResidual = swapPolicy.swapMode === 'all' || swapPolicy.allowResidualSwap;
+
+          if (shouldSwapFeeOnly && isValidPositiveIntegerString(feeDeltaX)) {
+            const feeSwap = await attemptGatedSwapToSol({
+              mint: tokenXMint,
+              rawAmount: feeDeltaX,
+              slippageBps: effectiveSlippageBps,
+              isUrgent,
+              isEmergencyExit,
+              emergencySlippageBps,
+              maxImpactPct: swapPolicy.maxImpactPct,
+              minOutSol: swapPolicy.minOutSol,
+              minNetSol: swapPolicy.minNetSol,
+              estimatedCostSol: swapPolicy.estimatedCostSol,
+              label: 'FEE_SWAP',
+            });
+            if (feeSwap?.success && feeSwap.txHash) {
+              txHashes.push(feeSwap.txHash);
             } else {
-              console.warn('[closePositionDLMM] Auto-Swap failed: no swap transaction returned');
+              console.log(`[closePositionDLMM] Fee auto-swap skipped: ${feeSwap?.reason || 'UNKNOWN'}`);
             }
-          }
-          
-          // Rent Recovery: Tutup akun token yang sudah kosong untuk narik 0.002 SOL
-          const { closeTokenAccount } = await import('./wallet.js');
-          await closeTokenAccount(xMint).catch(() => {});
-          if (yMint !== WSOL_MINT) {
-            await closeTokenAccount(yMint).catch(() => {});
+          } else if (shouldSwapFeeOnly) {
+            console.log('[closePositionDLMM] Fee auto-swap skipped: NO_FEE_DELTA');
           }
 
+          if (shouldSwapResidual) {
+            const remainingX = await getTokenBalanceRaw(tokenXMint).catch(() => '0');
+            if (isValidPositiveIntegerString(remainingX)) {
+              const residualSwap = await attemptGatedSwapToSol({
+                mint: tokenXMint,
+                rawAmount: remainingX,
+                slippageBps: effectiveSlippageBps,
+                isUrgent,
+                isEmergencyExit,
+                emergencySlippageBps,
+                maxImpactPct: swapPolicy.maxImpactPct,
+                minOutSol: swapPolicy.minOutSol,
+                minNetSol: swapPolicy.minNetSol,
+                estimatedCostSol: swapPolicy.estimatedCostSol,
+                label: 'RESIDUAL_SWAP',
+              });
+              if (residualSwap?.success && residualSwap.txHash) {
+                txHashes.push(residualSwap.txHash);
+              } else {
+                console.log(`[closePositionDLMM] Residual swap skipped: ${residualSwap?.reason || 'UNKNOWN'}`);
+              }
+            }
+          }
+
+          // Rent Recovery: tutup token account kosong.
+          const { closeTokenAccount } = await import('./wallet.js');
+          await closeTokenAccount(tokenXMint).catch(() => {});
+          if (tokenYMint !== WSOL_MINT) {
+            await closeTokenAccount(tokenYMint).catch(() => {});
+          }
         } catch (eSwap) {
           console.warn('[closePositionDLMM] Auto-Swap / Rent Recovery failed:', eSwap.message);
         }

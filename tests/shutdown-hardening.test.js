@@ -237,6 +237,16 @@ test('evilPanda exit path does not auto-swap residual non-SOL balances after clo
   assert.doesNotMatch(src, /swapToSol\(mint, rawBalance, null, swapOptions\)/);
 });
 
+test('meteora close flow applies fee-first guarded swap and optional residual swap', () => {
+  const meteoraPath = resolve(process.cwd(), 'src/solana/meteora.js');
+  const src = readFileSync(meteoraPath, 'utf8');
+  assert.match(src, /function buildCloseSwapPolicy/);
+  assert.match(src, /const shouldSwapFeeOnly = swapPolicy\.swapMode === 'fee_only' \|\| swapPolicy\.swapMode === 'all'/);
+  assert.match(src, /const shouldSwapResidual = swapPolicy\.swapMode === 'all' \|\| swapPolicy\.allowResidualSwap/);
+  assert.match(src, /attemptGatedSwapToSol/);
+  assert.doesNotMatch(src, /await executeTransactions\(\[removeLiqTx\]/);
+});
+
 test('deploy path blocks duplicate pool entries before opening a second position', () => {
   const evilPandaSrc = readFileSync(evilPandaPath, 'utf8');
   const hunterSrc = readFileSync(hunterPath, 'utf8');

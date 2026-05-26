@@ -4,7 +4,6 @@ import { getPoolInfo, getPositionInfo, openPosition, closePositionDLMM, getTopPo
 import { getOpenPositions, getConversationHistory, addToHistory, getPositionStats, listRecentOperations } from '../db/database.js';
 import { getAllStrategies, getStrategyByName, parseStrategyParameters } from '../strategies/strategyManager.js';
 import { getConfig } from '../config.js';
-import { swapAllToSOL, SOL_MINT } from '../solana/jupiter.js';
 import { executeControlledOperation } from '../app/executionService.js';
 import { stringify, scrubSensitiveText } from '../utils/safeJson.js';
 
@@ -130,7 +129,7 @@ const tools = [
   },
   {
     name: 'zap_out',
-    description: 'Emergency exit all open positions to SOL with close + auto-swap best effort.',
+    description: 'Emergency exit all open positions with unified close flow (zap-out preferred, guarded fee swap).',
     input_schema: {
       type: 'object',
       properties: {},
@@ -260,35 +259,10 @@ async function executeTool(toolName, toolInput) {
         execute: () => closePositionDLMM(toolInput.pool_address, toolInput.position_address),
       });
 
-      // Auto-swap token X → SOL setelah close (retry 2x), sama seperti healerAlpha
-      const swapResults = [];
-      const swapErrors  = [];
-      try {
-        const poolInfo = await getPoolInfo(toolInput.pool_address);
-        for (const mint of [poolInfo.tokenX, poolInfo.tokenY]) {
-          if (!mint || mint === SOL_MINT) continue;
-          for (let attempt = 1; attempt <= 2; attempt++) {
-            try {
-              const swapRes = await swapAllToSOL(mint);
-              if (swapRes.success) {
-                swapResults.push({ mint: mint.slice(0, 8), outSol: swapRes.outSol });
-              } else {
-                swapResults.push({ mint: mint.slice(0, 8), skipped: swapRes.reason });
-              }
-              break;
-            } catch (e) {
-              if (attempt === 2) swapErrors.push({ mint: mint.slice(0, 8), error: e.message });
-              else await new Promise(r => setTimeout(r, 2000));
-            }
-          }
-        }
-      } catch { /* swap best-effort, close tetap dianggap sukses */ }
-
       return JSON.stringify({
         ...result,
         operationId,
-        autoSwap:   swapResults.length > 0 ? swapResults : 'skipped',
-        swapErrors: swapErrors.length  > 0 ? swapErrors  : undefined,
+        autoSwap: 'managed_by_close_flow',
       }, null, 2);
     }
     case 'recommend_claim_fees': {
@@ -343,32 +317,12 @@ async function executeTool(toolName, toolInput) {
             execute: () => closePositionDLMM(poolAddress, positionAddress, {}, { isUrgent: true }),
           });
 
-          const poolInfo = await getPoolInfo(poolAddress).catch(() => null);
-          const swapResults = [];
-          const swapErrors = [];
-          if (poolInfo) {
-            for (const mint of [poolInfo.tokenX, poolInfo.tokenY]) {
-              if (!mint || mint === SOL_MINT) continue;
-              try {
-                const swapRes = await swapAllToSOL(mint, null, { isUrgent: true });
-                if (swapRes?.success) {
-                  swapResults.push({ mint: mint.slice(0, 8), outSol: swapRes.outSol });
-                } else if (swapRes?.reason) {
-                  swapResults.push({ mint: mint.slice(0, 8), skipped: swapRes.reason });
-                }
-              } catch (swapErr) {
-                swapErrors.push({ mint: mint.slice(0, 8), error: swapErr.message });
-              }
-            }
-          }
-
           closed.push({
             operationId,
             pool: poolAddress,
             position: positionAddress,
             result,
-            autoSwap: swapResults.length > 0 ? swapResults : 'skipped',
-            swapErrors: swapErrors.length > 0 ? swapErrors : undefined,
+            autoSwap: 'managed_by_close_flow',
           });
         } catch (e) {
           failed.push({
