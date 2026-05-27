@@ -1167,11 +1167,16 @@ async function runWatcher() {
           recentM5: check.liveM5,
         },
       });
+      const intentBin = Number.isFinite(Number(meta?.entryActiveBin)) ? Number(meta.entryActiveBin) : null;
+      const intentPrice = Number.isFinite(Number(meta?.entryPrice)) ? Number(meta.entryPrice) : null;
+      const frozenEnabled = meta?.hasFrozenEntryIntent === true && Number.isFinite(intentBin);
       console.log(
         `[QUEUE] 🚀 Attempting deploy for ${symbol} ` +
         `decision=${decision} trend=${check.liveTrend || 'UNKNOWN'} (${check.trendSource || 'unknown'}) ` +
         `m5=${formatPct(check.liveM5)} (${check.m5Source || 'unknown'}) ` +
-        `intent=${meta?.hasFrozenEntryIntent === true ? 'FROZEN' : 'LIVE'} ` +
+        `intent=${frozenEnabled ? 'FROZEN' : 'LIVE'} ` +
+        `intentBin=${Number.isFinite(intentBin) ? intentBin : 'na'} ` +
+        `intentPrice=${Number.isFinite(intentPrice) ? intentPrice.toFixed(10) : 'na'} ` +
         `amount=${solAmount} SOL (Pool: ${poolAddress.slice(0, 8)})`
       );
       const slotReservation = reserveDeploySlot({
@@ -1217,10 +1222,10 @@ async function runWatcher() {
             meta?.hasNonRefundableFees ??
             false,
           frozenEntryIntent: {
-            entryActiveBin: Number.isFinite(Number(meta?.entryActiveBin)) ? Number(meta.entryActiveBin) : null,
-            entryPrice: Number.isFinite(Number(meta?.entryPrice)) ? Number(meta.entryPrice) : null,
+            entryActiveBin: intentBin,
+            entryPrice: intentPrice,
             snapshotAt: Number.isFinite(Number(meta?.snapshotAt)) ? Number(meta.snapshotAt) : null,
-            enabled: meta?.hasFrozenEntryIntent === true,
+            enabled: frozenEnabled,
           },
         });
 

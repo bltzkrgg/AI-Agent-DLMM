@@ -38,9 +38,9 @@ test('watch and deploy queue carry frozen entry intent fields through the LP pat
 
   assert.match(hunterSrc, /_entryActiveBin:\s*entryIntent\.entryActiveBin/);
   assert.match(hunterSrc, /hasFrozenEntryIntent:\s*entryIntent\.hasFrozenEntryIntent/);
-  assert.match(hunterSrc, /entryActiveBin:\s*toFiniteNumber\(pool\._entryActiveBin \?\? row\.entryActiveBin/);
+  assert.match(hunterSrc, /entryActiveBin:\s*toFiniteNumber\(row\.entryActiveBin \?\? pool\._entryActiveBin/);
   assert.match(queueSrc, /frozenEntryIntent:\s*\{/);
-  assert.match(queueSrc, /enabled:\s*meta\?\.hasFrozenEntryIntent === true/);
+  assert.match(queueSrc, /enabled:\s*frozenEnabled/);
   assert.match(pandaSrc, /ENTRY_INTENT_FROZEN/);
   assert.match(pandaSrc, /skipActiveBinRefresh:\s*frozenIntentEnabled/);
 });

@@ -457,6 +457,16 @@ function addWatchPassTa(pool, reason = 'TA PASS', source = 'TA') {
   const watchWindowSec = getLpWatchWindowSec(cfg);
   const maxDriftPct = getLpMaxDriftPct(cfg);
   const memoryPriorityDelta = Number(memorySignal.priorityDelta || 0);
+  const frozenIntent = resolveFrozenEntryIntent(pool, existing, signals);
+  if (!Number.isFinite(Number(pool?._entryActiveBin)) && Number.isFinite(frozenIntent.entryActiveBin)) {
+    pool._entryActiveBin = Number(frozenIntent.entryActiveBin);
+  }
+  if (!Number.isFinite(Number(pool?._entryPrice)) && Number.isFinite(frozenIntent.entryPrice)) {
+    pool._entryPrice = Number(frozenIntent.entryPrice);
+  }
+  if (!Number.isFinite(Number(pool?._entryIntentSnapshotAt)) && Number.isFinite(frozenIntent.snapshotAt)) {
+    pool._entryIntentSnapshotAt = Number(frozenIntent.snapshotAt);
+  }
   const priorityScore = computeTaWatchPriorityScore({
     pool,
     entrySignals: signals,
@@ -477,20 +487,20 @@ function addWatchPassTa(pool, reason = 'TA PASS', source = 'TA') {
     nextCheckAt: now,
     expiresAt: existing?.expiresAt || (now + effectiveExpiryMin * 60 * 1000),
     lastHeartbeatAt: existing?.lastHeartbeatAt || 0,
-    snapshotAt: existing?.snapshotAt || now,
+    snapshotAt: existing?.snapshotAt || frozenIntent.snapshotAt || now,
     snapshotPrice: existing?.snapshotPrice ?? signals.currentPrice ?? null,
     snapshotHigh24h: existing?.snapshotHigh24h ?? signals.high24h ?? null,
     snapshotStDistancePct: existing?.snapshotStDistancePct ?? signals.signalStDistancePct ?? null,
     snapshotAthDistancePct: existing?.snapshotAthDistancePct ?? signals.signalAthDistancePct ?? null,
     snapshotM5Change: existing?.snapshotM5Change ?? signals.priceChangeM5 ?? null,
     snapshotM15Change: existing?.snapshotM15Change ?? signals.priceChangeM15 ?? null,
-    entryActiveBin: existing?.entryActiveBin ?? toFiniteNumber(pool?._entryActiveBin ?? null, null),
-    entryPrice: existing?.entryPrice ?? toFiniteNumber(pool?._entryPrice ?? signals.currentPrice ?? null, null),
+    entryActiveBin: existing?.entryActiveBin ?? frozenIntent.entryActiveBin,
+    entryPrice: existing?.entryPrice ?? frozenIntent.entryPrice,
     taTrend: existing?.taTrend ?? signals.taTrend ?? null,
     priceChangeM5: existing?.priceChangeM5 ?? signals.priceChangeM5 ?? null,
     watchWindowSec: existing?.watchWindowSec || watchWindowSec,
     maxDriftPct: existing?.maxDriftPct || maxDriftPct,
-    hasFrozenEntryIntent: existing?.hasFrozenEntryIntent === true || Number.isFinite(Number(pool?._entryActiveBin)),
+    hasFrozenEntryIntent: existing?.hasFrozenEntryIntent === true || frozenIntent.hasFrozenEntryIntent === true,
     memoryPriorityDelta,
     memoryReason: memorySignal.reason,
     priorityScore,
@@ -1037,6 +1047,9 @@ async function collectReadyRetestPools(cfg = getConfig()) {
             _retestAttempts: row.attempts,
             _entrySignals: entrySignals,
             hasNonRefundableFees: Boolean(marketSnapshot?.pool?.hasNonRefundableFees),
+            _entryActiveBin: toFiniteNumber(row.entryActiveBin ?? row.pool?._entryActiveBin ?? null, null),
+            _entryPrice: toFiniteNumber(row.entryPrice ?? row.pool?._entryPrice ?? null, null),
+            _entryIntentSnapshotAt: toFiniteNumber(row.snapshotAt ?? row.pool?._entryIntentSnapshotAt ?? now, now),
             _watchSnapshotAt: row.snapshotAt || now,
             _watchSnapshotPrice: row.snapshotPrice ?? entrySignals.currentPrice ?? null,
             _watchSnapshotHigh24h: row.snapshotHigh24h ?? entrySignals.high24h ?? null,
@@ -1185,6 +1198,33 @@ function isLPLiveTimingState(state = '') {
 function toFiniteNumber(value, fallback = null) {
   const num = Number(value);
   return Number.isFinite(num) ? num : fallback;
+}
+
+function resolveFrozenEntryIntent(pool = {}, existing = null, entrySignals = null) {
+  const existingActiveBin = toFiniteNumber(existing?.entryActiveBin ?? null, null);
+  const existingPrice = toFiniteNumber(existing?.entryPrice ?? null, null);
+  const existingSnapshotAt = toFiniteNumber(existing?.snapshotAt ?? null, null);
+  if (Number.isFinite(existingActiveBin)) {
+    return {
+      entryActiveBin: existingActiveBin,
+      entryPrice: existingPrice,
+      snapshotAt: existingSnapshotAt,
+      hasFrozenEntryIntent: true,
+    };
+  }
+
+  const marketSnapshot = pool?._marketSnapshot ?? null;
+  const resolved = extractEntryIntent(pool, marketSnapshot, entrySignals || pool?._entrySignals || null);
+  const snapshotAt = toFiniteNumber(
+    pool?._entryIntentSnapshotAt ?? pool?._watchSnapshotAt ?? Date.now(),
+    Date.now(),
+  );
+  return {
+    entryActiveBin: resolved.entryActiveBin,
+    entryPrice: resolved.entryPrice,
+    snapshotAt,
+    hasFrozenEntryIntent: resolved.hasFrozenEntryIntent === true,
+  };
 }
 
 function extractEntryIntent(pool = {}, marketSnapshot = null, entrySignals = null) {
@@ -1549,6 +1589,9 @@ async function processPendingTaRadar(cfg = getConfig()) {
             _retestAttempts: row.attempts,
             _entrySignals: entrySignals,
             hasNonRefundableFees: Boolean(marketSnapshot?.pool?.hasNonRefundableFees),
+            _entryActiveBin: toFiniteNumber(row.entryActiveBin ?? row.pool?._entryActiveBin ?? null, null),
+            _entryPrice: toFiniteNumber(row.entryPrice ?? row.pool?._entryPrice ?? null, null),
+            _entryIntentSnapshotAt: toFiniteNumber(row.snapshotAt ?? row.pool?._entryIntentSnapshotAt ?? now, now),
           };
           const watchResult = addWatchPassTa(pool, row.reason || 'TA PASS', 'RADAR');
           if (watchResult?.admitted) {
@@ -1713,9 +1756,9 @@ async function processTaWatchQueue(cfg = getConfig()) {
         snapshotHigh24h: row.snapshotHigh24h ?? pool._entrySignals?.high24h ?? null,
         watchWindowSec: row.watchWindowSec || getLpWatchWindowSec(cfg),
         maxDriftPct: row.maxDriftPct || getLpMaxDriftPct(cfg),
-        entryActiveBin: toFiniteNumber(pool._entryActiveBin ?? row.entryActiveBin ?? null, null),
-        entryPrice: toFiniteNumber(pool._entryPrice ?? row.entryPrice ?? pool._entrySignals?.currentPrice ?? null, null),
-        hasFrozenEntryIntent: Boolean(Number.isFinite(Number(pool._entryActiveBin ?? row.entryActiveBin))),
+        entryActiveBin: toFiniteNumber(row.entryActiveBin ?? pool._entryActiveBin ?? null, null),
+        entryPrice: toFiniteNumber(row.entryPrice ?? pool._entryPrice ?? pool._entrySignals?.currentPrice ?? null, null),
+        hasFrozenEntryIntent: Boolean(Number.isFinite(Number(row.entryActiveBin ?? pool._entryActiveBin))),
       },
     });
   }

@@ -3181,6 +3181,11 @@ export async function deployPosition(poolAddress, deployOptions = {}) {
         `[evilPanda] ENTRY_INTENT_FROZEN pool=${poolAddress.slice(0,8)} ` +
         `bin=${Number(activeBin.binId)} price=${Number.isFinite(Number(activeBin.pricePerToken)) ? Number(activeBin.pricePerToken).toFixed(10) : 'na'}`
       );
+    } else {
+      console.log(
+        `[evilPanda] ENTRY_INTENT_LIVE_FALLBACK pool=${poolAddress.slice(0,8)} ` +
+        `bin=${Number(initialActiveBin?.binId)} price=${Number.isFinite(Number(initialActiveBin?.pricePerToken)) ? Number(initialActiveBin.pricePerToken).toFixed(10) : 'na'}`
+      );
     }
     const binStep   = dlmmPool.lbPair.binStep;
 
