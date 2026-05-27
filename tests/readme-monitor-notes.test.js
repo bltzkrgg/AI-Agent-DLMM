@@ -17,6 +17,12 @@ test('README explains fast-path, slow-path, and monitor trade offs', () => {
   assert.match(source, /oorDisplayWaitMinutes.*only controls how often the OOR status is shown/);
   assert.match(source, /Wallet Net Delta.*real post-close SOL movement/);
   assert.match(source, /Close flow stays zap-first/);
+  assert.match(source, /Entry tuning that stays fast but avoids stale decisions:/);
+  assert.match(source, /entryDecisionMode.*stricter gate set or the lighter `lp_simple_m15` flow/);
+  assert.match(source, /entryFreshWatchWindowSec.*WATCH candidates fresh enough for queue\/deploy reuse/);
+  assert.match(source, /entryFreshBreakoutMaxDriftPct.*how far the breakout can drift/);
+  assert.match(source, /entryM15MaxAgeSec.*maximum age allowed for the M15 sanity candle/);
+  assert.match(source, /entryM5HardGateEnabled.*adds a stricter M5 gate/);
   assert.match(source, /Entry anchor freeze: candidate yang sudah masuk WATCH akan membawa `entryActiveBin`\/`entryPrice` snapshot ke queue dan deploy/);
   assert.match(source, /Live bin fallback: deploy hanya pakai bin live jika snapshot intent tidak valid/);
   assert.match(source, /If the range would require a new bin array, deploy is vetoed before position init/);

@@ -82,6 +82,15 @@ For DLMM shape tuning:
 - `bidask` is the more aggressive shape for swing/DCA-style deployment and needs closer monitoring.
 - If you change the shape, all deploy paths should follow that setting on the next deploy cycle.
 
+Entry tuning that stays fast but avoids stale decisions:
+
+- `entryDecisionMode` controls whether entry uses the stricter gate set or the lighter `lp_simple_m15` flow.
+- `entryFreshWatchWindowSec` keeps WATCH candidates fresh enough for queue/deploy reuse without re-reading old snapshots.
+- `entryFreshBreakoutMaxDriftPct` limits how far the breakout can drift before the candidate is treated as stale.
+- `entryM15MaxAgeSec` is the maximum age allowed for the M15 sanity candle before deploy is held.
+- `entryM5HardGateEnabled` adds a stricter M5 gate when you want fewer false entries; it can be disabled in lighter mode.
+- These keys are the main knobs if you want to stay close to the yellow-candle timing without making entry path materially slower.
+
 For OOR timing:
 
 - `outOfRangeWaitMinutes` is the actual wait before the position is closed when it stays out of range.
