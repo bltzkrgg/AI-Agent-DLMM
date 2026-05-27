@@ -3435,7 +3435,7 @@ export async function deployPosition(poolAddress, deployOptions = {}) {
           `Range awal: <code>${prevMin}-${prevMax}</code>\n` +
           `Range aman: <code>${rangeMin}-${rangeMax}</code>\n` +
           `Lebar: <code>${adjustedWidth} bin</code> | Max: <code>${rangeMaxBins} bin</code>\n` +
-          `<i>Range awal menyentuh bin array baru, jadi bot geser ke slice yang masih rent-free dan tetap lanjut deploy.</i>`
+          `<i>Range awal menyentuh bin array baru, jadi bot stop lebih awal sebelum init posisi dan tidak membayar rent non-refundable.</i>`
         );
         rentCheckedRangeMin = rangeMin;
         rentCheckedRangeMax = rangeMax;

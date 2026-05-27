@@ -144,8 +144,8 @@ This gate runs only for shortlisted final deploy candidates and uses cache first
 For pools with non-refundable bin-array fees:
 
 - The bot first checks whether the intended range would initialize new bin arrays.
-- If possible, it adjusts to a rent-free range on the same pool.
-- If no rent-free range is available, deploy returns `VETO_NON_REFUNDABLE_RENT`.
+- If the range would require a new bin array, deploy is vetoed before position init.
+- This is a hard safety gate to avoid paying non-refundable rent from live capital.
 - This is not treated as a token blacklist, rug, or security failure.
 
 ## Exit And PnL Display
