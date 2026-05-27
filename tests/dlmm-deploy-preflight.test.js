@@ -556,52 +556,18 @@ test('quote-only position-first flow fails early when existing position owner mi
   assert.equal(addCalls, 0);
 });
 
-test('quote-only position-first flow fails fast when quote ATA missing before add-liquidity', async () => {
-  const positionKeypair = Keypair.generate();
-  const expectedProgramId = new PublicKey('LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo');
-  let addCalls = 0;
-  const walletPublicKey = Keypair.generate().publicKey;
-  const dlmmPool = {
-    program: { programId: expectedProgramId },
-    createEmptyPosition: async () => ({ instructions: [] }),
-    addLiquidityByWeight: async () => {
-      addCalls += 1;
-      return [{ ok: true }];
+test('wrapped SDK errors keep simulation/account wording when anchor signals are present', () => {
+  const wrapped = wrapDlmmSdkInvalidArgumentsError({
+    error: new Error('Transaction simulation failed: InstructionError[0]: custom program error: 0x1 {"InstructionError":[0,{"Custom":3012}]}'),
+    finalArgsContext: {
+      sdkPath: 'weight_quote_only',
+      sdkMethod: 'addLiquidityByWeight',
+      pool: 'Pool111',
     },
-  };
-  await assert.rejects(
-    executeQuoteOnlyPositionFirstFlow({
-      dlmmPool,
-      connection: {
-        getAccountInfo: async (pubkey) => {
-          const key = String(pubkey?.toString?.() || pubkey || '');
-          if (key === positionKeypair.publicKey.toString()) {
-            return { owner: expectedProgramId };
-          }
-          return null;
-        },
-      },
-      walletPublicKey,
-      positionKeypair,
-      deployArgs: {
-        rangeMin: 980,
-        rangeMax: 999,
-        amountXBn: new BN('0'),
-        amountYBn: new BN('1'),
-      },
-      finalArgsContext: {
-        tokenYMint: 'So11111111111111111111111111111111111111112',
-      },
-      xYAmountDistribution: buildQuoteOnlyWeightDistribution({ rangeMin: 980, rangeMax: 999 }),
-    }),
-    (err) => {
-      assert.equal(err?.code, 'INVALID_DLMM_DEPLOY_ARGS');
-      const msg = String(err?.message || '');
-      assert.match(msg, /prerequisite missing: user_token ATA not initialized/i);
-      return true;
-    }
-  );
-  assert.equal(addCalls, 0);
+  });
+  assert.equal(wrapped?.code, 'INVALID_DLMM_DEPLOY_ARGS');
+  assert.match(String(wrapped?.message || ''), /deploy simulation\/account error/);
+  assert.match(String(wrapped?.message || ''), /"anchorErrorCode":3012/);
 });
 
 test('final SDK strategy is built from adjusted deployArgs range, not original unsafe range', () => {

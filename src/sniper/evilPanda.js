@@ -101,6 +101,24 @@ function isAccountNotInitializedDlmmError(error) {
   return /accountnotinitialized/i.test(text) || /error code:\s*3012/i.test(text) || /custom program error:\s*0xbc4/i.test(text);
 }
 
+function extractInsufficientLamportsError(error) {
+  const text = `${String(error?.message || '')}\n${String(error?.stack || '')}`;
+  const match = text.match(/insufficient lamports\s+(\d+),\s*need\s+(\d+)/i);
+  if (!match) return null;
+  const availableLamports = Number(match[1]);
+  const requiredLamports = Number(match[2]);
+  return {
+    availableLamports: Number.isFinite(availableLamports) ? availableLamports : null,
+    requiredLamports: Number.isFinite(requiredLamports) ? requiredLamports : null,
+  };
+}
+
+function isInsufficientLamportsDlmmError(error) {
+  if (!error) return false;
+  const text = `${String(error?.message || '')}\n${String(error?.stack || '')}`;
+  return /insufficient lamports/i.test(text);
+}
+
 function evaluateDeployWalletFunds({
   walletLamports = 0,
   deploySol = 0,
@@ -327,6 +345,37 @@ export function wrapDlmmSdkInvalidArgumentsError({
   error,
   finalArgsContext = {},
 } = {}) {
+  const insufficientLamports = extractInsufficientLamportsError(error);
+  if (insufficientLamports) {
+    const availableSol = Number.isFinite(insufficientLamports.availableLamports)
+      ? insufficientLamports.availableLamports / 1e9
+      : null;
+    const requiredSol = Number.isFinite(insufficientLamports.requiredLamports)
+      ? insufficientLamports.requiredLamports / 1e9
+      : null;
+    const err = buildInvalidDlmmArgsError(
+      `INSUFFICIENT_SOL_BALANCE: available=${availableSol !== null ? availableSol.toFixed(6) : 'unknown'} ` +
+      `required=${requiredSol !== null ? requiredSol.toFixed(6) : 'unknown'} ` +
+      `context=${JSON.stringify(finalArgsContext || {})}`
+    );
+    err.code = 'INSUFFICIENT_SOL_BALANCE';
+    err.isPermanent = true;
+    err.balanceMeta = {
+      availableLamports: insufficientLamports.availableLamports,
+      requiredLamports: insufficientLamports.requiredLamports,
+      availableSol,
+      requiredSol,
+    };
+    err.dlmmContextExtra = {
+      ...(finalArgsContext || {}),
+      balanceAvailableLamports: insufficientLamports.availableLamports,
+      balanceRequiredLamports: insufficientLamports.requiredLamports,
+      balanceAvailableSol: availableSol,
+      balanceRequiredSol: requiredSol,
+    };
+    return err;
+  }
+
   const sdkErrorMeta = extractDlmmSdkDeployErrorMeta(error);
   const hasInvalidCode = error?.code === 'INVALID_DLMM_DEPLOY_ARGS';
   if (!sdkErrorMeta?.isDlmmSdkDeployError && !hasInvalidCode) {
@@ -357,7 +406,11 @@ export function wrapDlmmSdkInvalidArgumentsError({
       ? Number(sdkErrorMeta.instructionIndex)
       : null,
   };
-  const reasonLabel = (sdkErrorMeta?.isInvalidArguments || hasInvalidCode)
+  const hasAnchorSignals =
+    Number.isFinite(Number(sdkErrorMeta?.anchorErrorCode)) ||
+    Boolean(sdkErrorMeta?.anchorErrorName) ||
+    Number.isFinite(Number(sdkErrorMeta?.instructionIndex));
+  const reasonLabel = ((sdkErrorMeta?.isInvalidArguments || hasInvalidCode) && !hasAnchorSignals)
     ? 'invalid arguments'
     : 'deploy simulation/account error';
   return buildInvalidDlmmArgsError(
@@ -609,8 +662,9 @@ export function extractDlmmSdkDeployErrorMeta(error) {
   ].filter(Boolean);
   const text = blobs.join('\n');
   const lower = text.toLowerCase();
+  const isWrappedDlmmDeployArgs = /^Invalid DLMM deploy args:/i.test(String(error?.message || ''));
 
-  const invalidArguments = /invalid arguments/i.test(text);
+  const invalidArguments = !isWrappedDlmmDeployArgs && /invalid arguments/i.test(text);
   const instructionIndexMatch =
     text.match(/instructionerror"\s*:\s*\[\s*(-?\d+)/i)
     || text.match(/instructionerror\s*:\s*\[\s*(-?\d+)/i);
@@ -870,6 +924,9 @@ export async function executeDlmmInitializePositionWithRetry({
     const txOrTxs = await sdkCallFn(firstState);
     return { txOrTxs, state: firstState, attempt: 1 };
   } catch (firstErr) {
+    if (firstErr?.isPermanent) {
+      throw firstErr;
+    }
     if (!isDlmmSdkInvalidArgumentsError(firstErr)) {
       throw firstErr;
     }
@@ -884,6 +941,9 @@ export async function executeDlmmInitializePositionWithRetry({
       const txOrTxs = await sdkCallFn(retryState);
       return { txOrTxs, state: retryState, attempt: 2 };
     } catch (retryErr) {
+      if (retryErr?.isPermanent) {
+        throw retryErr;
+      }
       if (!isDlmmSdkInvalidArgumentsError(retryErr)) {
         throw retryErr;
       }
@@ -1354,32 +1414,6 @@ export async function executeQuoteOnlyPositionFirstFlow({
     };
     throw err;
   }
-  if (deployArgs?.amountYBn && toBnAmountSafe(deployArgs.amountYBn).gt(new BN('0')) && finalArgsContext?.tokenYMint) {
-    const { getAssociatedTokenAddressSync, TOKEN_PROGRAM_ID } = await import('@solana/spl-token');
-    const userTokenAta = getAssociatedTokenAddressSync(
-      new PublicKey(finalArgsContext.tokenYMint),
-      walletPublicKey,
-      false,
-      TOKEN_PROGRAM_ID,
-    );
-    const ataInfo = await connection.getAccountInfo(userTokenAta).catch(() => null);
-    if (!ataInfo) {
-      const err = buildInvalidDlmmArgsError(
-        `quote-only one-side prerequisite missing: user_token ATA not initialized for ${String(finalArgsContext.tokenYMint).slice(0, 8)}`
-      );
-      err.code = 'INVALID_DLMM_DEPLOY_ARGS';
-      err.isPermanent = true;
-      err.dlmmContextExtra = {
-        ...finalArgsContext,
-        positionPubkey,
-        expectedPositionOwner: expectedPositionOwner || null,
-        sdkFlow: 'quote_only_position_first',
-        sdkMethod: 'ataPrecheck',
-      };
-      throw err;
-    }
-  }
-
   let addTxOrTxs;
   try {
     addLiquidityAttempted = true;
@@ -3811,12 +3845,40 @@ export async function deployPosition(poolAddress, deployOptions = {}) {
         );
         return deployErr.vetoResult;
       }
-      if (deployErr?.isPermanent || deployErr?.code === 'INVALID_DLMM_DEPLOY_ARGS') {
-        throw deployErr;
-      }
-      const wrappedInvalidArgs = wrapDlmmSdkInvalidArgumentsError({
-        error: deployErr,
-        finalArgsContext: {
+    if (deployErr?.isPermanent || deployErr?.code === 'INVALID_DLMM_DEPLOY_ARGS') {
+      throw deployErr;
+    }
+    const insufficientLamports = extractInsufficientLamportsError(deployErr);
+    if (insufficientLamports) {
+      const availableSol = Number.isFinite(insufficientLamports.availableLamports)
+        ? insufficientLamports.availableLamports / 1e9
+        : null;
+      const requiredSol = Number.isFinite(insufficientLamports.requiredLamports)
+        ? insufficientLamports.requiredLamports / 1e9
+        : null;
+      const balanceErr = buildInvalidDlmmArgsError(
+        `INSUFFICIENT_SOL_BALANCE: available=${availableSol !== null ? availableSol.toFixed(6) : 'unknown'} ` +
+        `required=${requiredSol !== null ? requiredSol.toFixed(6) : 'unknown'} ` +
+        `context=${JSON.stringify({
+          ...(finalDeployState?.finalArgsContext || {}),
+          attempt: 1,
+          retryAttempt: 0,
+        })}`
+      );
+      balanceErr.code = 'INSUFFICIENT_SOL_BALANCE';
+      balanceErr.isPermanent = true;
+      balanceErr.dlmmContextExtra = {
+        ...(finalDeployState?.finalArgsContext || {}),
+        attempt: 1,
+        retryAttempt: 0,
+        availableLamports: insufficientLamports.availableLamports,
+        requiredLamports: insufficientLamports.requiredLamports,
+      };
+      throw balanceErr;
+    }
+    const wrappedInvalidArgs = wrapDlmmSdkInvalidArgumentsError({
+      error: deployErr,
+      finalArgsContext: {
           ...(finalDeployState?.finalArgsContext || {}),
           attempt: 1,
           retryAttempt: 0,
