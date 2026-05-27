@@ -71,7 +71,7 @@ Operationally, the monitor now has two lanes:
 
 - Fast-path: jalur cepat buat cek harga dan profit loss secara ringan, supaya bot bisa respon secepat mungkin.
 - Slow-path: jalur lebih berat buat hitung nilai posisi, TA, dan detail logging setelah posisi lolos cek cepat.
-- Trade off: makin cepat responnya, makin sering bot bangun dan makin boros kuota; makin jarang polling, makin hemat kuota tapi ada risiko puncak profit kelewat lalu harga keburu turun.
+- Trade off kuota vs presisi: makin cepat responnya, makin sering bot bangun dan makin boros kuota; makin jarang polling, makin hemat kuota tapi ada risiko puncak profit kelewat lalu harga keburu turun.
 - Kalau pair-nya liar dan cepat gerak, fast-lane biasanya lebih layak.
 - Kalau pair-nya lebih tenang, fallback poll bisa dibuat lebih longgar supaya kuota tetap irit.
 
@@ -113,6 +113,8 @@ Safety behavior:
 - M5 unknown/stale is `HOLD`.
 - Non-SOL quote is `VETO/SKIP` with reason `Unsupported quote token <QUOTE>; expected SOL/WSOL`.
 - Pool Impact Guard behavior is unchanged and remains separate from stop loss.
+- Entry anchor freeze: candidate yang sudah masuk WATCH akan membawa `entryActiveBin`/`entryPrice` snapshot ke queue dan deploy.
+- Live bin fallback: deploy hanya pakai bin live jika snapshot intent tidak valid; log queue/deploy menandai ini sebagai `intent=LIVE` fallback.
 
 OHLCV behavior:
 
