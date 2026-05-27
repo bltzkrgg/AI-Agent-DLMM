@@ -533,6 +533,7 @@ async function guardDlmmCostBeforeSend({
   positionPubkey = '',
   cleanupFn = null,
   finalArgsContext = {},
+  strictPreflightVeto = false,
 } = {}) {
   const rangeMin = Number(deployArgs?.rangeMin);
   const rangeMax = Number(deployArgs?.rangeMax);
@@ -584,12 +585,19 @@ async function guardDlmmCostBeforeSend({
   const effectiveHasInitBitmap = hasInitBitmap || bitmapMissing;
   const hasPreflightMissing = missingIndexes.length > 0 || bitmapMissing;
   const hasGeneratedInitProof = hasInitBinArray || hasInitBitmap;
+  const strictPreflightMode = Boolean(strictPreflightVeto);
   const action = hasGeneratedInitProof
     ? 'VETO'
-    : (hasPreflightMissing ? 'DIAG_ONLY' : 'ALLOW');
+    : (strictPreflightMode && hasPreflightMissing
+      ? 'VETO'
+      : (hasPreflightMissing ? 'DIAG_ONLY' : 'ALLOW'));
   let reason = 'ALLOW';
   if (hasGeneratedInitProof) {
     reason = hasInitBitmap
+      ? 'VETO_BIN_ARRAY_BITMAP_RENT_REQUIRED'
+      : 'VETO_BIN_ARRAY_RENT_REQUIRED';
+  } else if (strictPreflightMode && hasPreflightMissing) {
+    reason = bitmapMissing
       ? 'VETO_BIN_ARRAY_BITMAP_RENT_REQUIRED'
       : 'VETO_BIN_ARRAY_RENT_REQUIRED';
   } else if (hasPreflightMissing) {
@@ -613,7 +621,7 @@ async function guardDlmmCostBeforeSend({
       `range=[${rangeMin},${rangeMax}] bins=${context.bins} hasMissingBinArray=${context.hasMissingBinArray} ` +
       `hasInitBinArray=${hasInitBinArray} hasInitBitmap=${effectiveHasInitBitmap} ` +
       `preflightMissingBinArrayCount=${missingIndexes.length} preflightEstimatedRentSol=${String(preflightStatus?.estimatedRentSol || 'unknown')} ` +
-      `action=${action} reason=${reason}`
+      `strictPreflightVeto=${strictPreflightMode ? 'true' : 'false'} action=${action} reason=${reason}`
   );
   if (action === 'VETO') {
     const err = buildInvalidDlmmArgsError(
@@ -626,6 +634,7 @@ async function guardDlmmCostBeforeSend({
     err.dlmmContextExtra = {
       ...finalArgsContext,
       ...context,
+      strictPreflightVeto: strictPreflightMode,
     };
     if (typeof cleanupFn === 'function') {
       await cleanupFn({ reason, context: err.dlmmContextExtra }).catch(() => {});
@@ -3766,6 +3775,22 @@ export async function deployPosition(poolAddress, deployOptions = {}) {
               };
               return dryRunPlan;
             }
+            await guardDlmmCostBeforeSend({
+              connection,
+              poolPubkey,
+              poolAddress,
+              dlmmPool,
+              deployArgs: args,
+              sdkPath,
+              txs: [],
+              positionPubkey: statePositionPubkey,
+              finalArgsContext: {
+                ...(state?.finalArgsContext || {}),
+                sdkPath,
+                positionPubkey: statePositionPubkey,
+              },
+              strictPreflightVeto: true,
+            });
             await ensurePositionOwnerPrecheck({
               connection,
               positionPubKey: statePositionKeypair.publicKey,

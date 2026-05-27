@@ -436,6 +436,38 @@ test('quote-only position-first flow initializes position before add liquidity a
   );
 });
 
+test('strict preflight veto blocks quote-only deploy before createEmptyPosition when bin-array is missing', async () => {
+  const calls = [];
+  const poolPubkey = new PublicKey('Cbj8TZQdBwEWVgjLc7p2Xqx2D4CpekiPxPTB1qLS3SdT');
+  await assert.rejects(
+    __guardDlmmCostBeforeSendForTests({
+      connection: {
+        getMultipleAccountsInfo: async () => [null, null],
+        getAccountInfo: async () => ({ owner: new PublicKey('LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo') }),
+      },
+      poolPubkey,
+      poolAddress: poolPubkey.toString(),
+      dlmmPool: {
+        program: { programId: new PublicKey('LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo') },
+      },
+      deployArgs: { rangeMin: -50, rangeMax: -1 },
+      sdkPath: 'weight_quote_only',
+      txs: [],
+      finalArgsContext: { sdkPath: 'weight_quote_only' },
+      strictPreflightVeto: true,
+      cleanupFn: async () => {
+        calls.push('cleanup');
+      },
+    }),
+    (err) => {
+      assert.equal(err?.code, 'VETO_BIN_ARRAY_RENT_REQUIRED');
+      assert.match(String(err?.message || ''), /preflightMissingCount/);
+      return true;
+    }
+  );
+  assert.equal(calls.includes('cleanup'), true);
+});
+
 test('transaction signer filter keeps position signer when tx requires it', () => {
   const kp = Keypair.generate();
   const tx = {
