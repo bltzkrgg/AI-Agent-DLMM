@@ -93,6 +93,14 @@ function toFiniteNumber(value, fallback = null) {
   return Number.isFinite(num) ? num : fallback;
 }
 
+function isAccountNotInitializedDlmmError(error) {
+  if (!error) return false;
+  const meta = extractDlmmSdkDeployErrorMeta(error);
+  if (Number(meta?.anchorErrorCode) === 3012) return true;
+  const text = `${String(error?.message || '')}\n${String(error?.stack || '')}`;
+  return /accountnotinitialized/i.test(text) || /error code:\s*3012/i.test(text) || /custom program error:\s*0xbc4/i.test(text);
+}
+
 function evaluateDeployWalletFunds({
   walletLamports = 0,
   deploySol = 0,
@@ -621,23 +629,35 @@ export function extractDlmmSdkDeployErrorMeta(error) {
   let anchorErrorHex = hexMatch ? String(hexMatch[1]).toLowerCase() : null;
 
   const hasInstructionError = lower.includes('instructionerror');
+  const hasCode3012 = customCode === 3012 || /"custom"\s*:\s*3012/i.test(text);
+  const hasHex0bc4 = anchorErrorHex === '0xbc4' || /custom program error:\s*0xbc4/i.test(text);
   const hasCode3007 = customCode === 3007 || /"custom"\s*:\s*3007/i.test(text);
   const hasHex0bbf = anchorErrorHex === '0xbbf' || /custom program error:\s*0xbbf/i.test(text);
   const hasOwnedByWrongProgram = /accountownedbywrongprogram/i.test(text);
+  const hasAccountNotInitialized = /accountnotinitialized/i.test(text);
 
   let anchorErrorCode = Number.isFinite(customCode) ? customCode : null;
+  if (anchorErrorCode === null && hasCode3012) anchorErrorCode = 3012;
   if (anchorErrorCode === null && hasCode3007) anchorErrorCode = 3007;
+  if (anchorErrorCode === null && anchorErrorHex === '0xbc4') anchorErrorCode = 3012;
   if (anchorErrorCode === null && anchorErrorHex === '0xbbf') anchorErrorCode = 3007;
+  if (!anchorErrorHex && anchorErrorCode === 3012) anchorErrorHex = '0xbc4';
   if (!anchorErrorHex && anchorErrorCode === 3007) anchorErrorHex = '0xbbf';
 
-  const anchorErrorName = (hasOwnedByWrongProgram || anchorErrorCode === 3007 || anchorErrorHex === '0xbbf')
-    ? 'AccountOwnedByWrongProgram'
-    : null;
+  let anchorErrorName = null;
+  if (hasOwnedByWrongProgram || anchorErrorCode === 3007 || anchorErrorHex === '0xbbf') {
+    anchorErrorName = 'AccountOwnedByWrongProgram';
+  } else if (hasAccountNotInitialized || anchorErrorCode === 3012 || anchorErrorHex === '0xbc4') {
+    anchorErrorName = 'AccountNotInitialized';
+  }
 
   const isSimulationAccountError =
     hasHex0bbf ||
+    hasHex0bc4 ||
     hasCode3007 ||
+    hasCode3012 ||
     hasOwnedByWrongProgram ||
+    hasAccountNotInitialized ||
     (hasInstructionError && (anchorErrorCode !== null || /custom program error/i.test(lower)));
 
   return {
@@ -1334,6 +1354,31 @@ export async function executeQuoteOnlyPositionFirstFlow({
     };
     throw err;
   }
+  if (deployArgs?.amountYBn && toBnAmountSafe(deployArgs.amountYBn).gt(new BN('0')) && finalArgsContext?.tokenYMint) {
+    const { getAssociatedTokenAddressSync, TOKEN_PROGRAM_ID } = await import('@solana/spl-token');
+    const userTokenAta = getAssociatedTokenAddressSync(
+      new PublicKey(finalArgsContext.tokenYMint),
+      walletPublicKey,
+      false,
+      TOKEN_PROGRAM_ID,
+    );
+    const ataInfo = await connection.getAccountInfo(userTokenAta).catch(() => null);
+    if (!ataInfo) {
+      const err = buildInvalidDlmmArgsError(
+        `quote-only one-side prerequisite missing: user_token ATA not initialized for ${String(finalArgsContext.tokenYMint).slice(0, 8)}`
+      );
+      err.code = 'INVALID_DLMM_DEPLOY_ARGS';
+      err.isPermanent = true;
+      err.dlmmContextExtra = {
+        ...finalArgsContext,
+        positionPubkey,
+        expectedPositionOwner: expectedPositionOwner || null,
+        sdkFlow: 'quote_only_position_first',
+        sdkMethod: 'ataPrecheck',
+      };
+      throw err;
+    }
+  }
 
   let addTxOrTxs;
   try {
@@ -1403,6 +1448,33 @@ export async function executeQuoteOnlyPositionFirstFlow({
       `[evilPanda] QUOTE_ONLY_ADD_LIQUIDITY_FAILED pool=${String(finalArgsContext?.pool || '').slice(0,8)} ` +
       `position=${positionPubkey.slice(0,8)} reason=${String(addErr?.message || 'unknown')}`
     );
+    if (isAccountNotInitializedDlmmError(addErr)) {
+      const wrapped = buildInvalidDlmmArgsError(
+        `quote-only addLiquidity prerequisite failed: user token account not initialized ` +
+        `context=${JSON.stringify({
+          ...(finalArgsContext || {}),
+          positionPubkey,
+          sdkFlow: 'quote_only_position_first',
+          sdkMethod: 'addLiquidityByWeight',
+          anchorErrorCode: 3012,
+          anchorErrorHex: '0xbc4',
+          anchorErrorName: 'AccountNotInitialized',
+        })}`
+      );
+      wrapped.code = 'INVALID_DLMM_DEPLOY_ARGS';
+      wrapped.isPermanent = true;
+      wrapped.dlmmContextExtra = {
+        ...(addErr?.dlmmContextExtra || {}),
+        ...(finalArgsContext || {}),
+        positionPubkey,
+        sdkFlow: 'quote_only_position_first',
+        sdkMethod: 'addLiquidityByWeight',
+        anchorErrorCode: 3012,
+        anchorErrorHex: '0xbc4',
+        anchorErrorName: 'AccountNotInitialized',
+      };
+      throw wrapped;
+    }
     if (addErr && typeof addErr === 'object') {
       addErr.dlmmContextExtra = {
         ...(addErr.dlmmContextExtra || {}),
@@ -3151,7 +3223,10 @@ export async function deployPosition(poolAddress, deployOptions = {}) {
     ? Number(frozenIntent.entryActiveBin)
     : null;
   const frozenEntryPrice = toFiniteNumber(frozenIntent?.entryPrice, null);
-  const frozenIntentEnabled = frozenIntent?.enabled === true && Number.isFinite(frozenEntryActiveBin);
+  const frozenIntentEnabled = frozenIntent?.enabled === true &&
+    Number.isFinite(frozenEntryActiveBin) &&
+    Number.isFinite(frozenEntryPrice) &&
+    frozenEntryPrice > 0;
 
   console.log(`[evilPanda] ▶ deployPosition pool=${poolAddress.slice(0,8)} sol=${deploySol}`);
 

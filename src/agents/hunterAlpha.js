@@ -1200,11 +1200,31 @@ function toFiniteNumber(value, fallback = null) {
   return Number.isFinite(num) ? num : fallback;
 }
 
+function hasValidFrozenEntryIntent({
+  entryActiveBin = null,
+  entryPrice = null,
+  snapshotAt = null,
+} = {}) {
+  const bin = Number(entryActiveBin);
+  const price = Number(entryPrice);
+  const ts = Number(snapshotAt);
+  return Number.isFinite(bin) &&
+    Number.isSafeInteger(bin) &&
+    Number.isFinite(price) &&
+    price > 0 &&
+    Number.isFinite(ts) &&
+    ts > 0;
+}
+
 function resolveFrozenEntryIntent(pool = {}, existing = null, entrySignals = null) {
   const existingActiveBin = toFiniteNumber(existing?.entryActiveBin ?? null, null);
   const existingPrice = toFiniteNumber(existing?.entryPrice ?? null, null);
   const existingSnapshotAt = toFiniteNumber(existing?.snapshotAt ?? null, null);
-  if (Number.isFinite(existingActiveBin)) {
+  if (hasValidFrozenEntryIntent({
+    entryActiveBin: existingActiveBin,
+    entryPrice: existingPrice,
+    snapshotAt: existingSnapshotAt,
+  })) {
     return {
       entryActiveBin: existingActiveBin,
       entryPrice: existingPrice,
@@ -1219,11 +1239,16 @@ function resolveFrozenEntryIntent(pool = {}, existing = null, entrySignals = nul
     pool?._entryIntentSnapshotAt ?? pool?._watchSnapshotAt ?? Date.now(),
     Date.now(),
   );
-  return {
+  const hasFrozenEntryIntent = hasValidFrozenEntryIntent({
     entryActiveBin: resolved.entryActiveBin,
     entryPrice: resolved.entryPrice,
     snapshotAt,
-    hasFrozenEntryIntent: resolved.hasFrozenEntryIntent === true,
+  });
+  return {
+    entryActiveBin: hasFrozenEntryIntent ? resolved.entryActiveBin : null,
+    entryPrice: hasFrozenEntryIntent ? resolved.entryPrice : null,
+    snapshotAt,
+    hasFrozenEntryIntent,
   };
 }
 
@@ -1251,7 +1276,7 @@ function extractEntryIntent(pool = {}, marketSnapshot = null, entrySignals = nul
   return {
     entryActiveBin,
     entryPrice,
-    hasFrozenEntryIntent: Number.isFinite(entryActiveBin),
+    hasFrozenEntryIntent: Number.isFinite(entryActiveBin) && Number.isSafeInteger(entryActiveBin) && Number.isFinite(entryPrice) && entryPrice > 0,
   };
 }
 

@@ -556,6 +556,54 @@ test('quote-only position-first flow fails early when existing position owner mi
   assert.equal(addCalls, 0);
 });
 
+test('quote-only position-first flow fails fast when quote ATA missing before add-liquidity', async () => {
+  const positionKeypair = Keypair.generate();
+  const expectedProgramId = new PublicKey('LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo');
+  let addCalls = 0;
+  const walletPublicKey = Keypair.generate().publicKey;
+  const dlmmPool = {
+    program: { programId: expectedProgramId },
+    createEmptyPosition: async () => ({ instructions: [] }),
+    addLiquidityByWeight: async () => {
+      addCalls += 1;
+      return [{ ok: true }];
+    },
+  };
+  await assert.rejects(
+    executeQuoteOnlyPositionFirstFlow({
+      dlmmPool,
+      connection: {
+        getAccountInfo: async (pubkey) => {
+          const key = String(pubkey?.toString?.() || pubkey || '');
+          if (key === positionKeypair.publicKey.toString()) {
+            return { owner: expectedProgramId };
+          }
+          return null;
+        },
+      },
+      walletPublicKey,
+      positionKeypair,
+      deployArgs: {
+        rangeMin: 980,
+        rangeMax: 999,
+        amountXBn: new BN('0'),
+        amountYBn: new BN('1'),
+      },
+      finalArgsContext: {
+        tokenYMint: 'So11111111111111111111111111111111111111112',
+      },
+      xYAmountDistribution: buildQuoteOnlyWeightDistribution({ rangeMin: 980, rangeMax: 999 }),
+    }),
+    (err) => {
+      assert.equal(err?.code, 'INVALID_DLMM_DEPLOY_ARGS');
+      const msg = String(err?.message || '');
+      assert.match(msg, /prerequisite missing: user_token ATA not initialized/i);
+      return true;
+    }
+  );
+  assert.equal(addCalls, 0);
+});
+
 test('final SDK strategy is built from adjusted deployArgs range, not original unsafe range', () => {
   const activeBinId = 1000;
   const originalRangeMin = 932;
@@ -1010,6 +1058,22 @@ test('dlmm sdk error meta detects anchor 3007 / 0xbbf variants', () => {
   const metaName = extractDlmmSdkDeployErrorMeta(errName);
   assert.equal(metaName.isDlmmSdkDeployError, true);
   assert.equal(metaName.anchorErrorName, 'AccountOwnedByWrongProgram');
+});
+
+test('dlmm sdk error meta detects anchor 3012 / 0xbc4 account-not-initialized variants', () => {
+  const errHex = new Error('Program failed: custom program error: 0xbc4');
+  const metaHex = extractDlmmSdkDeployErrorMeta(errHex);
+  assert.equal(metaHex.isDlmmSdkDeployError, true);
+  assert.equal(metaHex.anchorErrorHex, '0xbc4');
+  assert.equal(metaHex.anchorErrorCode, 3012);
+  assert.equal(metaHex.anchorErrorName, 'AccountNotInitialized');
+
+  const errInstruction = new Error('{"InstructionError":[1,{"Custom":3012}]}');
+  const metaInstruction = extractDlmmSdkDeployErrorMeta(errInstruction);
+  assert.equal(metaInstruction.isDlmmSdkDeployError, true);
+  assert.equal(metaInstruction.anchorErrorCode, 3012);
+  assert.equal(metaInstruction.instructionIndex, 1);
+  assert.equal(metaInstruction.anchorErrorHex, '0xbc4');
 });
 
 test('quote-only weight path anchor 3007 wraps with full sdk and anchor context', () => {

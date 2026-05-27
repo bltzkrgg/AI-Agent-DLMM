@@ -1490,3 +1490,12 @@ test('deploy/drop notifications are not gated by hold dedupe helper', () => {
   assert.match(src, /Deploy Queue Drop/);
   assert.match(src, /Real-time Deploy Triggered!/);
 });
+
+test('deploy queue freezes intent only when bin, price, and snapshot are valid', () => {
+  const src = readFileSync(new URL('../src/utils/pendingDeployQueue.js', import.meta.url), 'utf8');
+  assert.match(src, /function hasValidFrozenDeployIntent/);
+  assert.match(src, /entryActiveBin:\s*intentBin/);
+  assert.match(src, /entryPrice:\s*intentPrice/);
+  assert.match(src, /snapshotAt:\s*intentSnapshotAt/);
+  assert.match(src, /enabled:\s*frozenEnabled/);
+});

@@ -168,6 +168,22 @@ function getPoolAddress(pool = {}) {
   return pool.address || pool.pool_address || pool.pool || pool.poolAddress || pool.pubkey || '';
 }
 
+function hasValidFrozenDeployIntent({
+  entryActiveBin = null,
+  entryPrice = null,
+  snapshotAt = null,
+} = {}) {
+  const bin = Number(entryActiveBin);
+  const price = Number(entryPrice);
+  const ts = Number(snapshotAt);
+  return Number.isFinite(bin) &&
+    Number.isSafeInteger(bin) &&
+    Number.isFinite(price) &&
+    price > 0 &&
+    Number.isFinite(ts) &&
+    ts > 0;
+}
+
 function removeQueueCandidate(mint = '', entry = null) {
   _queue.delete(mint);
   clearDeployQueueHoldNotifyState({
@@ -1169,7 +1185,12 @@ async function runWatcher() {
       });
       const intentBin = Number.isFinite(Number(meta?.entryActiveBin)) ? Number(meta.entryActiveBin) : null;
       const intentPrice = Number.isFinite(Number(meta?.entryPrice)) ? Number(meta.entryPrice) : null;
-      const frozenEnabled = meta?.hasFrozenEntryIntent === true && Number.isFinite(intentBin);
+      const intentSnapshotAt = Number.isFinite(Number(meta?.snapshotAt)) ? Number(meta.snapshotAt) : null;
+      const frozenEnabled = meta?.hasFrozenEntryIntent === true && hasValidFrozenDeployIntent({
+        entryActiveBin: intentBin,
+        entryPrice: intentPrice,
+        snapshotAt: intentSnapshotAt,
+      });
       console.log(
         `[QUEUE] 🚀 Attempting deploy for ${symbol} ` +
         `decision=${decision} trend=${check.liveTrend || 'UNKNOWN'} (${check.trendSource || 'unknown'}) ` +
@@ -1224,7 +1245,7 @@ async function runWatcher() {
           frozenEntryIntent: {
             entryActiveBin: intentBin,
             entryPrice: intentPrice,
-            snapshotAt: Number.isFinite(Number(meta?.snapshotAt)) ? Number(meta.snapshotAt) : null,
+            snapshotAt: intentSnapshotAt,
             enabled: frozenEnabled,
           },
         });
