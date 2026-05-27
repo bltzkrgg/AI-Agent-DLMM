@@ -83,6 +83,8 @@ const DLMM_SDK_PATH_STRATEGY = 'strategy';
 const DLMM_SDK_PATH_WEIGHT_QUOTE_ONLY = 'weight_quote_only';
 const DLMM_PROGRAM_ID = new PublicKey('LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo');
 const DEPLOY_PREFLIGHT_FEE_BUFFER_SOL = 0.015;
+const FROZEN_INTENT_MAX_BIN_DRIFT = 4;
+const FROZEN_INTENT_MAX_AGE_MS = 180_000;
 
 function isFiniteInteger(value) {
   return Number.isFinite(value) && Number.isSafeInteger(value);
@@ -91,6 +93,38 @@ function isFiniteInteger(value) {
 function toFiniteNumber(value, fallback = null) {
   const num = Number(value);
   return Number.isFinite(num) ? num : fallback;
+}
+
+function evaluateFrozenEntryIntentForDeploy({
+  enabled = false,
+  frozenEntryActiveBin = null,
+  frozenEntryPrice = null,
+  frozenSnapshotAt = null,
+  liveActiveBinId = null,
+  nowMs = Date.now(),
+} = {}) {
+  if (!enabled) {
+    return { useFrozen: false, reason: 'disabled', driftBins: null, snapshotAgeMs: null };
+  }
+  if (!isFiniteInteger(Number(frozenEntryActiveBin)) || !Number.isFinite(Number(frozenEntryPrice)) || Number(frozenEntryPrice) <= 0) {
+    return { useFrozen: false, reason: 'invalid_intent_fields', driftBins: null, snapshotAgeMs: null };
+  }
+  const snapshotTs = Number(frozenSnapshotAt);
+  if (!Number.isFinite(snapshotTs) || snapshotTs <= 0) {
+    return { useFrozen: false, reason: 'missing_snapshot_at', driftBins: null, snapshotAgeMs: null };
+  }
+  const snapshotAgeMs = Math.max(0, nowMs - snapshotTs);
+  if (snapshotAgeMs > FROZEN_INTENT_MAX_AGE_MS) {
+    return { useFrozen: false, reason: 'stale_snapshot', driftBins: null, snapshotAgeMs };
+  }
+  if (!isFiniteInteger(Number(liveActiveBinId))) {
+    return { useFrozen: false, reason: 'live_active_unavailable', driftBins: null, snapshotAgeMs };
+  }
+  const driftBins = Math.abs(Number(frozenEntryActiveBin) - Number(liveActiveBinId));
+  if (driftBins > FROZEN_INTENT_MAX_BIN_DRIFT) {
+    return { useFrozen: false, reason: 'active_bin_drift_too_large', driftBins, snapshotAgeMs };
+  }
+  return { useFrozen: true, reason: 'ok', driftBins, snapshotAgeMs };
 }
 
 function isAccountNotInitializedDlmmError(error) {
@@ -3286,8 +3320,16 @@ export async function deployPosition(poolAddress, deployOptions = {}) {
     const dlmmPool  = await DLMM.create(connection, poolPubkey);
     await dlmmPool.refetchStates();
     const initialActiveBin = await dlmmPool.getActiveBin();
+    const frozenIntentDecision = evaluateFrozenEntryIntentForDeploy({
+      enabled: frozenIntentEnabled,
+      frozenEntryActiveBin,
+      frozenEntryPrice,
+      frozenSnapshotAt: frozenIntent?.snapshotAt,
+      liveActiveBinId: Number(initialActiveBin?.binId),
+    });
+    const shouldUseFrozenIntent = frozenIntentDecision.useFrozen === true;
     let activeBin = initialActiveBin;
-    if (frozenIntentEnabled && Number.isFinite(frozenEntryActiveBin)) {
+    if (shouldUseFrozenIntent && Number.isFinite(frozenEntryActiveBin)) {
       activeBin = {
         ...initialActiveBin,
         binId: Number(frozenEntryActiveBin),
@@ -3297,12 +3339,16 @@ export async function deployPosition(poolAddress, deployOptions = {}) {
       };
       console.log(
         `[evilPanda] ENTRY_INTENT_FROZEN pool=${poolAddress.slice(0,8)} ` +
-        `bin=${Number(activeBin.binId)} price=${Number.isFinite(Number(activeBin.pricePerToken)) ? Number(activeBin.pricePerToken).toFixed(10) : 'na'}`
+        `bin=${Number(activeBin.binId)} price=${Number.isFinite(Number(activeBin.pricePerToken)) ? Number(activeBin.pricePerToken).toFixed(10) : 'na'} ` +
+        `driftBins=${Number.isFinite(frozenIntentDecision?.driftBins) ? Number(frozenIntentDecision.driftBins) : 'na'} ` +
+        `ageMs=${Number.isFinite(frozenIntentDecision?.snapshotAgeMs) ? Number(frozenIntentDecision.snapshotAgeMs) : 'na'}`
       );
     } else {
       console.log(
         `[evilPanda] ENTRY_INTENT_LIVE_FALLBACK pool=${poolAddress.slice(0,8)} ` +
-        `bin=${Number(initialActiveBin?.binId)} price=${Number.isFinite(Number(initialActiveBin?.pricePerToken)) ? Number(initialActiveBin.pricePerToken).toFixed(10) : 'na'}`
+        `bin=${Number(initialActiveBin?.binId)} price=${Number.isFinite(Number(initialActiveBin?.pricePerToken)) ? Number(initialActiveBin.pricePerToken).toFixed(10) : 'na'} ` +
+        `reason=${frozenIntentDecision.reason} driftBins=${Number.isFinite(frozenIntentDecision?.driftBins) ? Number(frozenIntentDecision.driftBins) : 'na'} ` +
+        `ageMs=${Number.isFinite(frozenIntentDecision?.snapshotAgeMs) ? Number(frozenIntentDecision.snapshotAgeMs) : 'na'}`
       );
     }
     const binStep   = dlmmPool.lbPair.binStep;
@@ -3652,13 +3698,13 @@ export async function deployPosition(poolAddress, deployOptions = {}) {
         checkedRangeMax: rentCheckedRangeMax,
         initialActiveBinId: Number(initialActiveBin?.binId),
         attempt,
-        skipActiveBinRefresh: frozenIntentEnabled,
+        skipActiveBinRefresh: shouldUseFrozenIntent,
         refetchStatesFn: async () => {
-          if (frozenIntentEnabled) return;
+          if (shouldUseFrozenIntent) return;
           if (dlmmPool?.refetchStates) await dlmmPool.refetchStates();
         },
         getActiveBinFn: async () => {
-          if (frozenIntentEnabled) {
+          if (shouldUseFrozenIntent) {
             return { binId: Number(baseDeployArgs?.activeBinId) };
           }
           const refreshed = dlmmPool?.getActiveBin ? await dlmmPool.getActiveBin() : null;
@@ -5261,6 +5307,10 @@ export function __evaluateDeployWalletFundsForTests(args = {}) {
 
 export function __assertNoUnexpectedSolTransferInTxForTests(args = {}) {
   return assertNoUnexpectedSolTransferInTx(args);
+}
+
+export function __evaluateFrozenEntryIntentForDeployForTests(args = {}) {
+  return evaluateFrozenEntryIntentForDeploy(args);
 }
 
 export { EP_CONFIG };

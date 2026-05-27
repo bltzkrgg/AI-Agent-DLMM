@@ -28,6 +28,7 @@ import {
   __deriveSpotBidAskSeedPlanForTests,
   __getDlmmStrategyTypeFromConfigForTests,
   __evaluateDeployWalletFundsForTests,
+  __evaluateFrozenEntryIntentForDeployForTests,
   __assertNoUnexpectedSolTransferInTxForTests,
   filterKnownTransactionSigners,
   getPositionMeta,
@@ -54,6 +55,56 @@ test('single-side quote including active bin is adjusted below active bin', () =
   assert.equal(out.adjustedBelowActive, true);
   assert.equal(out.rangeMax, 999);
   assert.equal(out.rangeMin, 989);
+});
+
+test('frozen entry intent is used when snapshot fresh and drift within guard', () => {
+  const now = 1_000_000;
+  const out = __evaluateFrozenEntryIntentForDeployForTests({
+    enabled: true,
+    frozenEntryActiveBin: 100,
+    frozenEntryPrice: 0.123,
+    frozenSnapshotAt: now - 30_000,
+    liveActiveBinId: 103,
+    nowMs: now,
+  });
+
+  assert.equal(out.useFrozen, true);
+  assert.equal(out.reason, 'ok');
+  assert.equal(out.driftBins, 3);
+  assert.equal(out.snapshotAgeMs, 30_000);
+});
+
+test('frozen entry intent falls back when snapshot is stale', () => {
+  const now = 1_000_000;
+  const out = __evaluateFrozenEntryIntentForDeployForTests({
+    enabled: true,
+    frozenEntryActiveBin: 100,
+    frozenEntryPrice: 0.123,
+    frozenSnapshotAt: now - 181_000,
+    liveActiveBinId: 101,
+    nowMs: now,
+  });
+
+  assert.equal(out.useFrozen, false);
+  assert.equal(out.reason, 'stale_snapshot');
+  assert.equal(out.snapshotAgeMs, 181_000);
+});
+
+test('frozen entry intent falls back when active-bin drift too large', () => {
+  const now = 1_000_000;
+  const out = __evaluateFrozenEntryIntentForDeployForTests({
+    enabled: true,
+    frozenEntryActiveBin: 100,
+    frozenEntryPrice: 0.123,
+    frozenSnapshotAt: now - 60_000,
+    liveActiveBinId: 106,
+    nowMs: now,
+  });
+
+  assert.equal(out.useFrozen, false);
+  assert.equal(out.reason, 'active_bin_drift_too_large');
+  assert.equal(out.driftBins, 6);
+  assert.equal(out.snapshotAgeMs, 60_000);
 });
 
 test('single-side tokenX including active bin is adjusted above active bin', () => {
