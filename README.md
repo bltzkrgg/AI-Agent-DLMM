@@ -156,6 +156,10 @@ For pools with non-refundable bin-array fees:
 - If the range would require a new bin array, deploy is vetoed before position init.
 - This is a hard safety gate to avoid paying non-refundable rent from live capital.
 - This is not treated as a token blacklist, rug, or security failure.
+- A `bin` is one small price step; a `bin array` is the 70-bin block that stores those bins on-chain.
+- The bot checks the actual on-chain PDA for each bin-array block in the final range, not just the visible range width.
+- Meteora UI can show a range that looks safe, but the bot still vetoes if the live on-chain bin-array block is missing.
+- Negative bin-array indexes now use the same seed encoding as the Meteora SDK, so the rent check matches on-chain addresses more closely.
 
 ## Exit And PnL Display
 

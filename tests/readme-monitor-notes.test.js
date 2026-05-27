@@ -26,4 +26,6 @@ test('README explains fast-path, slow-path, and monitor trade offs', () => {
   assert.match(source, /Entry anchor freeze: candidate yang sudah masuk WATCH akan membawa `entryActiveBin`\/`entryPrice` snapshot ke queue dan deploy/);
   assert.match(source, /Live bin fallback: deploy hanya pakai bin live jika snapshot intent tidak valid/);
   assert.match(source, /If the range would require a new bin array, deploy is vetoed before position init/);
+  assert.match(source, /A `bin` is one small price step; a `bin array` is the 70-bin block that stores those bins on-chain/);
+  assert.match(source, /Negative bin-array indexes now use the same seed encoding as the Meteora SDK/);
 });
