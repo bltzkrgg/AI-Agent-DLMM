@@ -2050,6 +2050,33 @@ const DLMM_PROGRAM_ID = new PublicKey('LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPw
 const BINS_PER_ARRAY = 70;
 const BIN_ARRAY_RENT_SOL = 0.07;
 
+function toBinArrayIndexBN(index) {
+  if (BN.isBN(index)) return index;
+  const num = Number(index);
+  if (!Number.isFinite(num) || !Number.isInteger(num)) {
+    throw new Error(`invalid_bin_array_index: ${String(index)}`);
+  }
+  return new BN(String(num));
+}
+
+// Meteora SDK encodes negative bin-array indexes in 64-bit two's complement.
+// Using plain toArrayLike() for negative values produces a different seed and false missing-array detections.
+export function encodeDlmmBinArrayIndexSeed(index) {
+  const indexBn = toBinArrayIndexBN(index);
+  return indexBn.isNeg()
+    ? indexBn.toTwos(64).toArrayLike(Buffer, 'le', 8)
+    : indexBn.toArrayLike(Buffer, 'le', 8);
+}
+
+export function deriveDlmmBinArrayPda(lbPairPubkey, index, programId = DLMM_PROGRAM_ID) {
+  const seed = encodeDlmmBinArrayIndexSeed(index);
+  const [pda] = PublicKey.findProgramAddressSync(
+    [Buffer.from('bin_array'), lbPairPubkey.toBuffer(), seed],
+    programId,
+  );
+  return pda;
+}
+
 /**
  * Returns the accumulated uncollected fee balance for a specific position in SOL terms.
  * Wraps getPositionInfo so callers don't need to filter the array themselves.
@@ -2084,10 +2111,7 @@ export async function inspectRangeBinArrayInitStatus(connection, lbPairPubkey, l
     const arrayStatuses = [];
     const pdas = [];
     for (let idx = lowerArrayIdx; idx <= upperArrayIdx; idx++) {
-      const [pda] = PublicKey.findProgramAddressSync(
-        [Buffer.from('bin_array'), lbPairPubkey.toBuffer(), new BN(idx).toArrayLike(Buffer, 'le', 8)],
-        DLMM_PROGRAM_ID,
-      );
+      const pda = deriveDlmmBinArrayPda(lbPairPubkey, idx, DLMM_PROGRAM_ID);
       pdas.push({ idx, pda });
     }
 
