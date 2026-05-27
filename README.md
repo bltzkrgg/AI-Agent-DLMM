@@ -114,6 +114,9 @@ Safety behavior:
 - Non-SOL quote is `VETO/SKIP` with reason `Unsupported quote token <QUOTE>; expected SOL/WSOL`.
 - Pool Impact Guard behavior is unchanged and remains separate from stop loss.
 - Entry anchor freeze: candidate yang sudah masuk WATCH akan membawa `entryActiveBin`/`entryPrice` snapshot ke queue dan deploy.
+- Frozen intent only applies when `entryActiveBin`, `entryPrice`, dan `snapshotAt` semuanya valid; kalau tidak, deploy log akan menandai `intent=LIVE` fallback.
+- Quote-only deploy sekarang fail-fast kalau ATA quote belum ada atau belum terinisialisasi, jadi flow mahal tidak diteruskan ke simulasi add-liquidity.
+- Anchor `AccountNotInitialized` (`3012` / `0xbc4`) diperlakukan sebagai alasan deploy yang jelas, bukan retry acak.
 - Live bin fallback: deploy hanya pakai bin live jika snapshot intent tidak valid; log queue/deploy menandai ini sebagai `intent=LIVE` fallback.
 
 OHLCV behavior:
