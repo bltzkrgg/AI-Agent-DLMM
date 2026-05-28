@@ -458,6 +458,21 @@ function addWatchPassTa(pool, reason = 'TA PASS', source = 'TA') {
   const maxDriftPct = getLpMaxDriftPct(cfg);
   const memoryPriorityDelta = Number(memorySignal.priorityDelta || 0);
   const frozenIntent = resolveFrozenEntryIntent(pool, existing, signals);
+  const resolvedSnapshotAt = Number.isFinite(Number(existing?.snapshotAt))
+    ? Number(existing.snapshotAt)
+    : Number.isFinite(Number(frozenIntent.snapshotAt))
+      ? Number(frozenIntent.snapshotAt)
+      : now;
+  const resolvedEntryActiveBin = Number.isFinite(Number(existing?.entryActiveBin))
+    ? Number(existing.entryActiveBin)
+    : Number.isFinite(Number(frozenIntent.entryActiveBin))
+      ? Number(frozenIntent.entryActiveBin)
+      : null;
+  const resolvedEntryPrice = Number.isFinite(Number(existing?.entryPrice))
+    ? Number(existing.entryPrice)
+    : Number.isFinite(Number(frozenIntent.entryPrice))
+      ? Number(frozenIntent.entryPrice)
+      : null;
   if (!Number.isFinite(Number(pool?._entryActiveBin)) && Number.isFinite(frozenIntent.entryActiveBin)) {
     pool._entryActiveBin = Number(frozenIntent.entryActiveBin);
   }
@@ -487,20 +502,26 @@ function addWatchPassTa(pool, reason = 'TA PASS', source = 'TA') {
     nextCheckAt: now,
     expiresAt: existing?.expiresAt || (now + effectiveExpiryMin * 60 * 1000),
     lastHeartbeatAt: existing?.lastHeartbeatAt || 0,
-    snapshotAt: existing?.snapshotAt || frozenIntent.snapshotAt || now,
+    snapshotAt: resolvedSnapshotAt,
     snapshotPrice: existing?.snapshotPrice ?? signals.currentPrice ?? null,
     snapshotHigh24h: existing?.snapshotHigh24h ?? signals.high24h ?? null,
     snapshotStDistancePct: existing?.snapshotStDistancePct ?? signals.signalStDistancePct ?? null,
     snapshotAthDistancePct: existing?.snapshotAthDistancePct ?? signals.signalAthDistancePct ?? null,
     snapshotM5Change: existing?.snapshotM5Change ?? signals.priceChangeM5 ?? null,
     snapshotM15Change: existing?.snapshotM15Change ?? signals.priceChangeM15 ?? null,
-    entryActiveBin: existing?.entryActiveBin ?? frozenIntent.entryActiveBin,
-    entryPrice: existing?.entryPrice ?? frozenIntent.entryPrice,
+    entryActiveBin: resolvedEntryActiveBin,
+    entryPrice: resolvedEntryPrice,
     taTrend: existing?.taTrend ?? signals.taTrend ?? null,
     priceChangeM5: existing?.priceChangeM5 ?? signals.priceChangeM5 ?? null,
     watchWindowSec: existing?.watchWindowSec || watchWindowSec,
     maxDriftPct: existing?.maxDriftPct || maxDriftPct,
-    hasFrozenEntryIntent: existing?.hasFrozenEntryIntent === true || frozenIntent.hasFrozenEntryIntent === true,
+    hasFrozenEntryIntent:
+      (existing?.hasFrozenEntryIntent === true || frozenIntent.hasFrozenEntryIntent === true) &&
+      Number.isFinite(resolvedEntryActiveBin) &&
+      Number.isFinite(resolvedEntryPrice) &&
+      resolvedEntryPrice > 0 &&
+      Number.isFinite(resolvedSnapshotAt) &&
+      resolvedSnapshotAt > 0,
     memoryPriorityDelta,
     memoryReason: memorySignal.reason,
     priorityScore,
@@ -1777,7 +1798,7 @@ async function processTaWatchQueue(cfg = getConfig()) {
         signalStDistancePct: pool._entrySignals?.signalStDistancePct ?? row.snapshotStDistancePct ?? pool._watchSnapshotStDistancePct,
         signalAthDistancePct: pool._entrySignals?.signalAthDistancePct ?? row.snapshotAthDistancePct ?? pool._watchSnapshotAthDistancePct,
         priceChangeM5: pool._entrySignals?.priceChangeM5 ?? row.priceChangeM5 ?? row.snapshotM5Change ?? pool._watchSnapshotM5Change,
-        snapshotAt: row.snapshotAt || now,
+        snapshotAt: Number.isFinite(Number(row.snapshotAt)) ? Number(row.snapshotAt) : now,
         snapshotPrice: row.snapshotPrice ?? pool._entrySignals?.currentPrice ?? null,
         snapshotHigh24h: row.snapshotHigh24h ?? pool._entrySignals?.high24h ?? null,
         watchWindowSec: row.watchWindowSec || getLpWatchWindowSec(cfg),
@@ -1787,7 +1808,7 @@ async function processTaWatchQueue(cfg = getConfig()) {
         hasFrozenEntryIntent: hasValidFrozenEntryIntent({
           entryActiveBin: toFiniteNumber(row.entryActiveBin ?? pool._entryActiveBin ?? null, null),
           entryPrice: toFiniteNumber(row.entryPrice ?? pool._entryPrice ?? pool._entrySignals?.currentPrice ?? null, null),
-          snapshotAt: toFiniteNumber(row.snapshotAt ?? now, now),
+          snapshotAt: toFiniteNumber(row.snapshotAt ?? pool._entryIntentSnapshotAt ?? now, now),
         }),
       },
     });
