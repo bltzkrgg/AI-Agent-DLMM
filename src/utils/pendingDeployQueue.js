@@ -1277,6 +1277,10 @@ async function runWatcher() {
           const blockedReason = String(result.reason || 'DEPLOY_BLOCKED');
           const blockedByRent = String(result.reason || '').includes('VETO_NON_REFUNDABLE_RENT');
           const blockedByBalance = blockedReason.includes('INSUFFICIENT_SOL_BALANCE');
+          const blockedByInvalidInput = blockedReason.includes('INVALID_DLMM_DEPLOY_ARGS') ||
+            blockedReason.includes('anchorErrorCode":6002') ||
+            blockedReason.includes('anchorErrorHex":"0x1772') ||
+            blockedReason.includes('InvalidInput');
           if (blockedByBalance) {
             const holdCooldownSec = Math.max(60, Number(cfg.deployQueueHoldNotifyCooldownSec) || 180);
             const holdNotice = shouldSendDeployQueueHoldNotification({
@@ -1296,6 +1300,29 @@ async function runWatcher() {
                 `Pool: <code>${poolAddress.slice(0, 8)}</code>\n` +
                 (result.detail ? `Detail: <code>${escapeHTML(String(result.detail).slice(0, 240))}</code>\n` : '') +
                 `<i>Saldo belum cukup untuk deploy aman. Queue akan cek ulang otomatis setelah ${holdCooldownSec}s.</i>`
+              );
+            }
+            continue;
+          }
+          if (blockedByInvalidInput) {
+            const holdCooldownSec = Math.max(60, Number(cfg.deployQueueHoldNotifyCooldownSec) || 180);
+            const holdNotice = shouldSendDeployQueueHoldNotification({
+              poolAddress,
+              mint,
+              reason: 'HOLD: DLMM invalid input during simulation',
+              now: Date.now(),
+              cooldownMs: holdCooldownSec * 1000,
+            });
+            entry.attempts = Math.max(0, entry.attempts - 1);
+            entry.nextEligibleAt = Date.now() + holdCooldownSec * 1000;
+            _queue.set(mint, entry);
+            if (holdNotice.shouldSend) {
+              await safeSend(
+                `⏸️ <b>Deploy Queue Hold</b>\n` +
+                `<b>${symbol}</b> — <code>DLMM_INVALID_INPUT</code>\n` +
+                `Pool: <code>${poolAddress.slice(0, 8)}</code>\n` +
+                (result.detail ? `Detail: <code>${escapeHTML(String(result.detail).slice(0, 240))}</code>\n` : '') +
+                `<i>Simulasi DLMM menolak input. Queue akan cek ulang otomatis setelah ${holdCooldownSec}s.</i>`
               );
             }
             continue;

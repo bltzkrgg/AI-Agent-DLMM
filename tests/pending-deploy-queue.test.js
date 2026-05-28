@@ -1361,6 +1361,13 @@ test('deploy queue hold notification dedupe suppresses same candidate + same rea
   assert.equal(second.shouldSend, false);
 });
 
+test('queue treats DLMM invalid input as hold-notifyable retry signal', () => {
+  const src = readFileSync(new URL('../src/utils/pendingDeployQueue.js', import.meta.url), 'utf8');
+  assert.match(src, /blockedByInvalidInput/);
+  assert.match(src, /DLMM_INVALID_INPUT/);
+  assert.match(src, /HOLD: DLMM invalid input during simulation/);
+});
+
 test('deploy queue hold notification dedupe allows same candidate + same reason after cooldown', () => {
   __resetDeployQueueHoldNotifyState();
   const now = 1_700_000_000_000;
