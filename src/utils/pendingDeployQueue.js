@@ -1198,13 +1198,16 @@ async function runWatcher() {
         snapshotAt: intentSnapshotAt,
         maxAgeSec: intentMaxAgeSec,
       });
+      const deployIntentBin = frozenEnabled ? intentBin : null;
+      const deployIntentPrice = frozenEnabled ? intentPrice : null;
+      const deployIntentSnapshotAt = frozenEnabled ? intentSnapshotAt : null;
       console.log(
         `[QUEUE] 🚀 Attempting deploy for ${symbol} ` +
         `decision=${decision} trend=${check.liveTrend || 'UNKNOWN'} (${check.trendSource || 'unknown'}) ` +
         `m5=${formatPct(check.liveM5)} (${check.m5Source || 'unknown'}) ` +
         `intent=${frozenEnabled ? 'FROZEN' : 'LIVE'} ` +
-        `intentBin=${Number.isFinite(intentBin) ? intentBin : 'na'} ` +
-        `intentPrice=${Number.isFinite(intentPrice) ? intentPrice.toFixed(10) : 'na'} ` +
+        `intentBin=${Number.isFinite(deployIntentBin) ? deployIntentBin : 'na'} ` +
+        `intentPrice=${Number.isFinite(deployIntentPrice) ? deployIntentPrice.toFixed(10) : 'na'} ` +
         `amount=${solAmount} SOL (Pool: ${poolAddress.slice(0, 8)})`
       );
       const slotReservation = reserveDeploySlot({
@@ -1250,9 +1253,9 @@ async function runWatcher() {
             meta?.hasNonRefundableFees ??
             false,
           frozenEntryIntent: {
-            entryActiveBin: intentBin,
-            entryPrice: intentPrice,
-            snapshotAt: intentSnapshotAt,
+            entryActiveBin: deployIntentBin,
+            entryPrice: deployIntentPrice,
+            snapshotAt: deployIntentSnapshotAt,
             enabled: frozenEnabled,
             binStep: Number(entry?.pool?.binStep || pool?.binStep || 0),
             maxDriftPct: Number(meta?.maxDriftPct || cfg.entryFreshBreakoutMaxDriftPct || 8),

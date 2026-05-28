@@ -1494,8 +1494,11 @@ test('deploy/drop notifications are not gated by hold dedupe helper', () => {
 test('deploy queue freezes intent only when bin, price, and snapshot are valid', () => {
   const src = readFileSync(new URL('../src/utils/pendingDeployQueue.js', import.meta.url), 'utf8');
   assert.match(src, /function hasValidFrozenDeployIntent/);
-  assert.match(src, /entryActiveBin:\s*intentBin/);
-  assert.match(src, /entryPrice:\s*intentPrice/);
-  assert.match(src, /snapshotAt:\s*intentSnapshotAt/);
+  assert.match(src, /const deployIntentBin = frozenEnabled \? intentBin : null/);
+  assert.match(src, /const deployIntentPrice = frozenEnabled \? intentPrice : null/);
+  assert.match(src, /const deployIntentSnapshotAt = frozenEnabled \? intentSnapshotAt : null/);
+  assert.match(src, /entryActiveBin:\s*deployIntentBin/);
+  assert.match(src, /entryPrice:\s*deployIntentPrice/);
+  assert.match(src, /snapshotAt:\s*deployIntentSnapshotAt/);
   assert.match(src, /enabled:\s*frozenEnabled/);
 });
