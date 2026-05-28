@@ -1259,9 +1259,9 @@ async function runWatcher() {
             enabled: frozenEnabled,
             binStep: Number(entry?.pool?.binStep || pool?.binStep || 0),
             maxDriftPct: Number(meta?.maxDriftPct || cfg.entryFreshBreakoutMaxDriftPct || 8),
-            // Require frozen anchor only when the payload is actually valid.
-            // This prevents false ENTRY_ANCHOR_UNSAFE(disabled) vetoes.
-            required: frozenEnabled,
+            // Keep frozen intent as an optimization, but allow safe live fallback
+            // when anchor drift makes the frozen snapshot unusable.
+            required: false,
           },
         });
 

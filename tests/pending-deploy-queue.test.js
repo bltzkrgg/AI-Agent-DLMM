@@ -1508,4 +1508,5 @@ test('deploy queue freezes intent only when bin, price, and snapshot are valid',
   assert.match(src, /entryPrice:\s*deployIntentPrice/);
   assert.match(src, /snapshotAt:\s*deployIntentSnapshotAt/);
   assert.match(src, /enabled:\s*frozenEnabled/);
+  assert.match(src, /required:\s*false/);
 });
