@@ -734,7 +734,8 @@ export function extractDlmmSdkDeployErrorMeta(error) {
   const invalidArguments = !isWrappedDlmmDeployArgs && /invalid arguments/i.test(text);
   const instructionIndexMatch =
     text.match(/instructionerror"\s*:\s*\[\s*(-?\d+)/i)
-    || text.match(/instructionerror\s*:\s*\[\s*(-?\d+)/i);
+    || text.match(/instructionerror\s*:\s*\[\s*(-?\d+)/i)
+    || text.match(/error processing instruction\s+(-?\d+)\s*:\s*custom program error/i);
   const instructionIndex = instructionIndexMatch
     ? Number.parseInt(instructionIndexMatch[1], 10)
     : null;
@@ -749,6 +750,10 @@ export function extractDlmmSdkDeployErrorMeta(error) {
   const hexMatch = text.match(/custom program error:\s*(0x[0-9a-f]+)/i);
   let anchorErrorHex = hexMatch ? String(hexMatch[1]).toLowerCase() : null;
 
+  const parsedHexCode = anchorErrorHex
+    ? Number.parseInt(anchorErrorHex, 16)
+    : null;
+
   const hasInstructionError = lower.includes('instructionerror');
   const hasCode3012 = customCode === 3012 || /"custom"\s*:\s*3012/i.test(text);
   const hasHex0bc4 = anchorErrorHex === '0xbc4' || /custom program error:\s*0xbc4/i.test(text);
@@ -760,6 +765,7 @@ export function extractDlmmSdkDeployErrorMeta(error) {
   let anchorErrorCode = Number.isFinite(customCode) ? customCode : null;
   if (anchorErrorCode === null && hasCode3012) anchorErrorCode = 3012;
   if (anchorErrorCode === null && hasCode3007) anchorErrorCode = 3007;
+  if (anchorErrorCode === null && Number.isFinite(parsedHexCode)) anchorErrorCode = Number(parsedHexCode);
   if (anchorErrorCode === null && anchorErrorHex === '0xbc4') anchorErrorCode = 3012;
   if (anchorErrorCode === null && anchorErrorHex === '0xbbf') anchorErrorCode = 3007;
   if (!anchorErrorHex && anchorErrorCode === 3012) anchorErrorHex = '0xbc4';
@@ -770,13 +776,20 @@ export function extractDlmmSdkDeployErrorMeta(error) {
     anchorErrorName = 'AccountOwnedByWrongProgram';
   } else if (hasAccountNotInitialized || anchorErrorCode === 3012 || anchorErrorHex === '0xbc4') {
     anchorErrorName = 'AccountNotInitialized';
+  } else if (anchorErrorCode === 6002 || anchorErrorHex === '0x1772') {
+    anchorErrorName = 'InvalidInput';
   }
+
+  const hasProcessingInstructionCustomProgramError = /error processing instruction\s+\d+\s*:\s*custom program error/i.test(lower);
+  const hasKnownAnchorHex = anchorErrorHex === '0xbbf' || anchorErrorHex === '0xbc4';
+  const hasHighCustomProgramCode = Number.isFinite(anchorErrorCode) && Number(anchorErrorCode) >= 6000;
 
   const isSimulationAccountError =
     hasHex0bbf ||
     hasHex0bc4 ||
     hasCode3007 ||
     hasCode3012 ||
+    hasProcessingInstructionCustomProgramError && (hasKnownAnchorHex || hasHighCustomProgramCode) ||
     hasOwnedByWrongProgram ||
     hasAccountNotInitialized ||
     (hasInstructionError && (anchorErrorCode !== null || /custom program error/i.test(lower)));

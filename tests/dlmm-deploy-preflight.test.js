@@ -1146,6 +1146,39 @@ test('dlmm sdk error meta detects anchor 3007 / 0xbbf variants', () => {
   assert.equal(metaName.anchorErrorName, 'AccountOwnedByWrongProgram');
 });
 
+test('dlmm sdk error meta parses 0x1772 as anchor code 6002 (InvalidInput)', () => {
+  const err = new Error('Transaction simulation failed: Error processing Instruction 2: custom program error: 0x1772.');
+  const meta = extractDlmmSdkDeployErrorMeta(err);
+  assert.equal(meta.isDlmmSdkDeployError, true);
+  assert.equal(meta.anchorErrorHex, '0x1772');
+  assert.equal(meta.anchorErrorCode, 6002);
+  assert.equal(meta.anchorErrorName, 'InvalidInput');
+  assert.equal(meta.instructionIndex, 2);
+});
+
+test('wrapper keeps context-rich message for 0x1772 simulation failures', () => {
+  const wrapped = wrapDlmmSdkInvalidArgumentsError({
+    error: new Error('Simulation failed: Error processing Instruction 2: custom program error: 0x1772'),
+    finalArgsContext: {
+      pool: 'PoolRICH111',
+      sdkPath: 'weight_quote_only',
+      activeBinId: -404,
+      rangeMin: -454,
+      rangeMax: -405,
+      attempt: 2,
+      retryAttempt: 1,
+    },
+  });
+  assert.equal(wrapped?.code, 'INVALID_DLMM_DEPLOY_ARGS');
+  const msg = String(wrapped?.message || '');
+  assert.match(msg, /addLiquidityByWeight|initializePositionAndAddLiquidityByWeight/);
+  assert.match(msg, /"anchorErrorCode":6002/);
+  assert.match(msg, /"anchorErrorHex":"0x1772"/);
+  assert.match(msg, /"anchorErrorName":"InvalidInput"/);
+  assert.match(msg, /"instructionIndex":2/);
+  assert.match(msg, /"pool":"PoolRICH111"/);
+});
+
 test('dlmm sdk error meta detects anchor 3012 / 0xbc4 account-not-initialized variants', () => {
   const errHex = new Error('Program failed: custom program error: 0xbc4');
   const metaHex = extractDlmmSdkDeployErrorMeta(errHex);
