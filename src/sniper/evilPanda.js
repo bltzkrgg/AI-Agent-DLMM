@@ -4110,8 +4110,8 @@ export async function deployPosition(poolAddress, deployOptions = {}) {
         tokenYMint: yMint,
         rangeMin: safeRangeMin,
         rangeMax: safeRangeMax,
-        entryActiveBin: safeNum(activeBin.binId, 0),
-        entryPrice: safeNum(activeBin.pricePerToken, 0),
+        entryActiveBin: safeNum(activeBin.binId, null),
+        entryPrice: safeNum(activeBin.pricePerToken, null),
         hwmPct: 0,
       }, { flush: true });
 
@@ -4195,8 +4195,8 @@ export async function deployPosition(poolAddress, deployOptions = {}) {
       tokenYMint:  yMint,
       rangeMin: safeRangeMin,
       rangeMax: safeRangeMax,
-      entryActiveBin: safeNum(activeBin.binId, 0),
-      entryPrice: safeNum(activeBin.pricePerToken, 0),
+      entryActiveBin: safeNum(activeBin.binId, null),
+      entryPrice: safeNum(activeBin.pricePerToken, null),
       hwmPct:      0,
     }, { flush: true });
     recordPoolDeploy({

@@ -26,9 +26,9 @@ test('watch promotion preserves the same LP metadata fields for deploy queue', (
   assert.match(hunterSrc, /entryTimingState:\s*'LP_LIVE'/);
   assert.match(hunterSrc, /breakoutQuality:\s*'VALID'/);
   assert.match(hunterSrc, /queueTrustedWatch:\s*true/);
-  assert.match(hunterSrc, /taTrend: pool\._entrySignals\?\.taTrend \?\? row\.taTrend/);
-  assert.match(hunterSrc, /priceChangeM5: pool\._entrySignals\?\.priceChangeM5 \?\? row\.priceChangeM5/);
-  assert.match(hunterSrc, /snapshotAt: row\.snapshotAt \|\| now/);
+  assert.match(hunterSrc, /taTrend:\s*pool\._entrySignals\?\.taTrend \?\? row\.taTrend \?\? pool\._watchTaTrend/);
+  assert.match(hunterSrc, /priceChangeM5:\s*pool\._entrySignals\?\.priceChangeM5 \?\? row\.priceChangeM5 \?\? row\.snapshotM5Change \?\? pool\._watchSnapshotM5Change/);
+  assert.match(hunterSrc, /snapshotAt:\s*Number\.isFinite\(Number\(row\.snapshotAt\)\) \? Number\(row\.snapshotAt\) : now/);
 });
 
 test('watch and deploy queue carry frozen entry intent fields through the LP path', () => {
@@ -64,4 +64,11 @@ test('pool memory observability stays on local hot path only', () => {
   assert.match(queueSrc, /Memory advisory/);
   assert.doesNotMatch(queueSrc, /Memory hold/);
   assert.doesNotMatch(memorySrc, /createMessage|getMarketSnapshot|fetchWithTimeout|fetch\(/);
+});
+
+test('position runtime state avoids zero placeholder fallback for entry anchor fields', () => {
+  const pandaSrc = readSource('src/sniper/evilPanda.js');
+
+  assert.match(pandaSrc, /entryActiveBin:\s*safeNum\(activeBin\.binId,\s*null\)/);
+  assert.match(pandaSrc, /entryPrice:\s*safeNum\(activeBin\.pricePerToken,\s*null\)/);
 });
