@@ -40,6 +40,7 @@ Queue flow is now `WATCH-trusted`, `metadata-first`, `cache-first`, and `bearish
    - Count snapshot cache hit/miss in local logs.
    - Do not add external telemetry.
    - Do not increase network calls.
+   - Keep frozen anchor freshness logs visible so operators can tell when a queue deploy is using the frozen path versus a live fallback.
 
 5. Prepare memory-layer implementation plan.
    - Pool decision memory.
@@ -49,6 +50,7 @@ Queue flow is now `WATCH-trusted`, `metadata-first`, `cache-first`, and `bearish
    - Keep this as a plan unless GPT-5.5 approves the core policy.
    - Canonical draft: `docs/LP_AGENT_MEMORY_LAYER_PLAN.md`.
    - GPT-5.5 handles the runtime memory core; 5.4 Mini handles tests, logs, and validation only.
+   - Keep the entry-anchor freeze behavior documented as part of the queue hardening path, not as a policy rewrite.
 
 ## Do Not Edit
 

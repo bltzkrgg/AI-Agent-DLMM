@@ -107,6 +107,26 @@ test('frozen entry intent falls back when active-bin drift too large', () => {
   assert.equal(out.snapshotAgeMs, 60_000);
 });
 
+test('frozen entry intent stays usable when price drift is still within tolerance', () => {
+  const now = 1_000_000;
+  const out = __evaluateFrozenEntryIntentForDeployForTests({
+    enabled: true,
+    frozenEntryActiveBin: 100,
+    frozenEntryPrice: 1.00,
+    frozenSnapshotAt: now - 45_000,
+    liveActiveBinId: 109,
+    livePrice: 1.02,
+    maxDriftPct: 3,
+    nowMs: now,
+  });
+
+  assert.equal(out.useFrozen, true);
+  assert.equal(out.reason, 'price_drift_within_tolerance');
+  assert.equal(out.driftBins, 9);
+  assert.equal(out.snapshotAgeMs, 45_000);
+  assert.equal(Math.round(Number(out.driftPct) * 1000) / 1000, 2.000);
+});
+
 test('single-side tokenX including active bin is adjusted above active bin', () => {
   const out = buildDlmmDeployStrategyArgs({
     activeBinId: 1000,

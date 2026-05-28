@@ -13,6 +13,8 @@ Scope completed:
 - README now also explains `dlmmLiquidityShape` tuning, including `/setconfig strategy.liquidityShape spot|bidask`, so the shape choice is treated as a global deploy setting.
 - The operator note now makes the Spot vs BidAsk trade off explicit: Spot is calmer and balanced, BidAsk is more aggressive and better suited for swing/DCA style tuning.
 - README and `/config` now also spell out the difference between `outOfRangeWaitMinutes` and `oorDisplayWaitMinutes`, so display cadence is not mistaken for the actual close threshold.
+- Frozen entry intent now blocks stale or unsafe queue deploys, while still allowing small price drift to stay on the fast path when the anchor is still close.
+- The LP deploy path now keeps frozen intent required in the queue, so the watcher cannot silently fall back to a drifting live bin at the last second.
 
 Changed files:
 
@@ -24,6 +26,7 @@ Changed files:
 - `src/sniper/evilPanda.js`
 - `tests/config.test.js`
 - `tests/readme-monitor-notes.test.js`
+- `tests/dlmm-deploy-preflight.test.js`
 
 Tests verified:
 
@@ -32,6 +35,7 @@ Tests verified:
 - WATCH to queue metadata preservation
 - pool memory cooldown, priority, lookup latency, and local-only hot-path audit
 - exit monitor regression coverage still passes after the fast-path split
+- frozen entry anchor freshness and price-drift tolerance coverage
 
 Impact by situation:
 
@@ -52,3 +56,4 @@ Remaining risk:
 - If upstream market data is stale, queue still depends on the best available snapshot, so live data can lag the candle by a bit.
 - Core policy remains strict on reliable bearish live data.
 - Fast-path estimates are intentionally lightweight, so the detailed slow-path quote can still differ slightly when volatility is extreme.
+- If price moves a lot but still remains within the tolerance window, the fast path will keep the anchor; that is intentional to preserve entry speed.
