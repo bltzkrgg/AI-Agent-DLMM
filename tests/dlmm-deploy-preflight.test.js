@@ -128,6 +128,22 @@ test('frozen entry intent stays usable when price drift is still within toleranc
   assert.equal(Math.round(Number(out.driftPct) * 1000) / 1000, 2.000);
 });
 
+test('required frozen intent blocks deploy when intent payload is invalid', () => {
+  const now = 1_000_000;
+  const out = __evaluateFrozenEntryIntentForDeployForTests({
+    enabled: false,
+    frozenEntryActiveBin: null,
+    frozenEntryPrice: null,
+    frozenSnapshotAt: now - 10_000,
+    liveActiveBinId: 100,
+    livePrice: 1.0,
+    nowMs: now,
+  });
+
+  assert.equal(out.useFrozen, false);
+  assert.equal(out.reason, 'disabled');
+});
+
 test('single-side tokenX including active bin is adjusted above active bin', () => {
   const out = buildDlmmDeployStrategyArgs({
     activeBinId: 1000,

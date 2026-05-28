@@ -3358,7 +3358,7 @@ export async function deployPosition(poolAddress, deployOptions = {}) {
     });
     const shouldUseFrozenIntent = frozenIntentDecision.useFrozen === true;
     const frozenIntentEnabledForDeploy = shouldUseFrozenIntent;
-    if (!shouldUseFrozenIntent && frozenIntentEnabled && frozenIntentRequired) {
+    if (frozenIntentRequired && !shouldUseFrozenIntent) {
       const reason = `ENTRY_ANCHOR_UNSAFE: ${frozenIntentDecision.reason || 'unknown'} ` +
         `driftBins=${Number.isFinite(frozenIntentDecision?.driftBins) ? Number(frozenIntentDecision.driftBins) : 'na'} ` +
         `driftPct=${Number.isFinite(frozenIntentDecision?.driftPct) ? Number(frozenIntentDecision.driftPct).toFixed(3) : 'na'} ` +
