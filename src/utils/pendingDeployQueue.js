@@ -1256,7 +1256,9 @@ async function runWatcher() {
             enabled: frozenEnabled,
             binStep: Number(entry?.pool?.binStep || pool?.binStep || 0),
             maxDriftPct: Number(meta?.maxDriftPct || cfg.entryFreshBreakoutMaxDriftPct || 8),
-            required: true,
+            // Require frozen anchor only when the payload is actually valid.
+            // This prevents false ENTRY_ANCHOR_UNSAFE(disabled) vetoes.
+            required: frozenEnabled,
           },
         });
 
