@@ -1254,6 +1254,7 @@ async function runWatcher() {
             entryPrice: intentPrice,
             snapshotAt: intentSnapshotAt,
             enabled: frozenEnabled,
+            binStep: Number(entry?.pool?.binStep || pool?.binStep || 0),
             maxDriftPct: Number(meta?.maxDriftPct || cfg.entryFreshBreakoutMaxDriftPct || 8),
             required: true,
           },

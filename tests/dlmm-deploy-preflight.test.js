@@ -116,6 +116,7 @@ test('frozen entry intent stays usable when price drift is still within toleranc
     frozenSnapshotAt: now - 45_000,
     liveActiveBinId: 109,
     livePrice: 1.02,
+    binStep: 100,
     maxDriftPct: 3,
     nowMs: now,
   });

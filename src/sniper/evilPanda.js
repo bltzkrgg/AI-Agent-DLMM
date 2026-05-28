@@ -90,6 +90,14 @@ function isFiniteInteger(value) {
   return Number.isFinite(value) && Number.isSafeInteger(value);
 }
 
+function estimateLpSafeFrozenDriftPct(binStep = 0, rangeWidthBins = 50) {
+  const safeBinStep = Math.max(1, Number(binStep) || 1);
+  const safeRangeWidth = Math.max(1, Number(rangeWidthBins) || 50);
+  const coarseBand = Math.max(4, Math.min(12, Math.round((safeRangeWidth / 50) * 8)));
+  const stepBand = Math.max(1.5, Math.min(10, safeBinStep / 20));
+  return Math.max(stepBand, coarseBand);
+}
+
 function toFiniteNumber(value, fallback = null) {
   if (value === null || value === undefined || value === '') return fallback;
   const num = Number(value);
@@ -103,6 +111,7 @@ function evaluateFrozenEntryIntentForDeploy({
   frozenSnapshotAt = null,
   liveActiveBinId = null,
   livePrice = null,
+  binStep = null,
   maxDriftPct = null,
   nowMs = Date.now(),
 } = {}) {
@@ -124,7 +133,10 @@ function evaluateFrozenEntryIntentForDeploy({
     return { useFrozen: false, reason: 'live_active_unavailable', driftBins: null, snapshotAgeMs };
   }
   const driftBins = Math.abs(Number(frozenEntryActiveBin) - Number(liveActiveBinId));
-  const safeMaxDriftPct = Math.max(0.1, Number(maxDriftPct) || 8);
+  const safeMaxDriftPct = Math.max(
+    0.1,
+    Number(maxDriftPct) || estimateLpSafeFrozenDriftPct(binStep, 50),
+  );
   const livePriceNum = Number(livePrice);
   const frozenPriceNum = Number(frozenEntryPrice);
   const driftPct = Number.isFinite(livePriceNum) && livePriceNum > 0 && Number.isFinite(frozenPriceNum) && frozenPriceNum > 0
@@ -3341,6 +3353,7 @@ export async function deployPosition(poolAddress, deployOptions = {}) {
       frozenSnapshotAt: frozenIntent?.snapshotAt,
       liveActiveBinId: Number(initialActiveBin?.binId),
       livePrice: Number(initialActiveBin?.pricePerToken),
+      binStep: Number(dlmmPool?.lbPair?.binStep || 0),
       maxDriftPct: frozenMaxDriftPct,
     });
     const shouldUseFrozenIntent = frozenIntentDecision.useFrozen === true;
