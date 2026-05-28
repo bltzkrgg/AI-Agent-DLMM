@@ -1196,6 +1196,7 @@ function isLPLiveTimingState(state = '') {
 }
 
 function toFiniteNumber(value, fallback = null) {
+  if (value === null || value === undefined || value === '') return fallback;
   const num = Number(value);
   return Number.isFinite(num) ? num : fallback;
 }
@@ -1783,7 +1784,11 @@ async function processTaWatchQueue(cfg = getConfig()) {
         maxDriftPct: row.maxDriftPct || getLpMaxDriftPct(cfg),
         entryActiveBin: toFiniteNumber(row.entryActiveBin ?? pool._entryActiveBin ?? null, null),
         entryPrice: toFiniteNumber(row.entryPrice ?? pool._entryPrice ?? pool._entrySignals?.currentPrice ?? null, null),
-        hasFrozenEntryIntent: Boolean(Number.isFinite(Number(row.entryActiveBin ?? pool._entryActiveBin))),
+        hasFrozenEntryIntent: hasValidFrozenEntryIntent({
+          entryActiveBin: toFiniteNumber(row.entryActiveBin ?? pool._entryActiveBin ?? null, null),
+          entryPrice: toFiniteNumber(row.entryPrice ?? pool._entryPrice ?? pool._entrySignals?.currentPrice ?? null, null),
+          snapshotAt: toFiniteNumber(row.snapshotAt ?? now, now),
+        }),
       },
     });
   }

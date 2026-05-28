@@ -172,16 +172,21 @@ function hasValidFrozenDeployIntent({
   entryActiveBin = null,
   entryPrice = null,
   snapshotAt = null,
+  maxAgeSec = 180,
+  now = Date.now(),
 } = {}) {
   const bin = Number(entryActiveBin);
   const price = Number(entryPrice);
   const ts = Number(snapshotAt);
+  const safeMaxAgeSec = Math.max(30, Number(maxAgeSec) || 180);
+  const ageMs = Number.isFinite(ts) && ts > 0 ? Math.max(0, now - ts) : Number.POSITIVE_INFINITY;
   return Number.isFinite(bin) &&
     Number.isSafeInteger(bin) &&
     Number.isFinite(price) &&
     price > 0 &&
     Number.isFinite(ts) &&
-    ts > 0;
+    ts > 0 &&
+    ageMs <= (safeMaxAgeSec * 1000);
 }
 
 function removeQueueCandidate(mint = '', entry = null) {
@@ -1186,10 +1191,12 @@ async function runWatcher() {
       const intentBin = Number.isFinite(Number(meta?.entryActiveBin)) ? Number(meta.entryActiveBin) : null;
       const intentPrice = Number.isFinite(Number(meta?.entryPrice)) ? Number(meta.entryPrice) : null;
       const intentSnapshotAt = Number.isFinite(Number(meta?.snapshotAt)) ? Number(meta.snapshotAt) : null;
+      const intentMaxAgeSec = Math.max(30, Number(meta?.watchWindowSec || cfg.entryFreshWatchWindowSec || 180) || 180);
       const frozenEnabled = meta?.hasFrozenEntryIntent === true && hasValidFrozenDeployIntent({
         entryActiveBin: intentBin,
         entryPrice: intentPrice,
         snapshotAt: intentSnapshotAt,
+        maxAgeSec: intentMaxAgeSec,
       });
       console.log(
         `[QUEUE] 🚀 Attempting deploy for ${symbol} ` +
@@ -1247,6 +1254,8 @@ async function runWatcher() {
             entryPrice: intentPrice,
             snapshotAt: intentSnapshotAt,
             enabled: frozenEnabled,
+            maxDriftPct: Number(meta?.maxDriftPct || cfg.entryFreshBreakoutMaxDriftPct || 8),
+            required: true,
           },
         });
 

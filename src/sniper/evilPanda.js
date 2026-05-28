@@ -91,6 +91,7 @@ function isFiniteInteger(value) {
 }
 
 function toFiniteNumber(value, fallback = null) {
+  if (value === null || value === undefined || value === '') return fallback;
   const num = Number(value);
   return Number.isFinite(num) ? num : fallback;
 }
@@ -101,6 +102,8 @@ function evaluateFrozenEntryIntentForDeploy({
   frozenEntryPrice = null,
   frozenSnapshotAt = null,
   liveActiveBinId = null,
+  livePrice = null,
+  maxDriftPct = null,
   nowMs = Date.now(),
 } = {}) {
   if (!enabled) {
@@ -121,10 +124,19 @@ function evaluateFrozenEntryIntentForDeploy({
     return { useFrozen: false, reason: 'live_active_unavailable', driftBins: null, snapshotAgeMs };
   }
   const driftBins = Math.abs(Number(frozenEntryActiveBin) - Number(liveActiveBinId));
-  if (driftBins > FROZEN_INTENT_MAX_BIN_DRIFT) {
-    return { useFrozen: false, reason: 'active_bin_drift_too_large', driftBins, snapshotAgeMs };
+  const safeMaxDriftPct = Math.max(0.1, Number(maxDriftPct) || 8);
+  const livePriceNum = Number(livePrice);
+  const frozenPriceNum = Number(frozenEntryPrice);
+  const driftPct = Number.isFinite(livePriceNum) && livePriceNum > 0 && Number.isFinite(frozenPriceNum) && frozenPriceNum > 0
+    ? Math.abs(((livePriceNum - frozenPriceNum) / frozenPriceNum) * 100)
+    : null;
+  if (driftBins > FROZEN_INTENT_MAX_BIN_DRIFT && Number.isFinite(driftPct) && driftPct <= safeMaxDriftPct) {
+    return { useFrozen: true, reason: 'price_drift_within_tolerance', driftBins, snapshotAgeMs, driftPct };
   }
-  return { useFrozen: true, reason: 'ok', driftBins, snapshotAgeMs };
+  if (driftBins > FROZEN_INTENT_MAX_BIN_DRIFT) {
+    return { useFrozen: false, reason: 'active_bin_drift_too_large', driftBins, snapshotAgeMs, driftPct };
+  }
+  return { useFrozen: true, reason: 'ok', driftBins, snapshotAgeMs, driftPct };
 }
 
 function isAccountNotInitializedDlmmError(error) {
@@ -3300,6 +3312,8 @@ export async function deployPosition(poolAddress, deployOptions = {}) {
     ? Number(frozenIntent.entryActiveBin)
     : null;
   const frozenEntryPrice = toFiniteNumber(frozenIntent?.entryPrice, null);
+  const frozenMaxDriftPct = Math.max(0.1, Number(frozenIntent?.maxDriftPct) || Number(cfg?.entryFreshBreakoutMaxDriftPct) || 8);
+  const frozenIntentRequired = frozenIntent?.required === true;
   const frozenIntentEnabled = frozenIntent?.enabled === true &&
     Number.isFinite(frozenEntryActiveBin) &&
     Number.isFinite(frozenEntryPrice) &&
@@ -3326,8 +3340,23 @@ export async function deployPosition(poolAddress, deployOptions = {}) {
       frozenEntryPrice,
       frozenSnapshotAt: frozenIntent?.snapshotAt,
       liveActiveBinId: Number(initialActiveBin?.binId),
+      livePrice: Number(initialActiveBin?.pricePerToken),
+      maxDriftPct: frozenMaxDriftPct,
     });
     const shouldUseFrozenIntent = frozenIntentDecision.useFrozen === true;
+    const frozenIntentEnabledForDeploy = shouldUseFrozenIntent;
+    if (!shouldUseFrozenIntent && frozenIntentEnabled && frozenIntentRequired) {
+      const reason = `ENTRY_ANCHOR_UNSAFE: ${frozenIntentDecision.reason || 'unknown'} ` +
+        `driftBins=${Number.isFinite(frozenIntentDecision?.driftBins) ? Number(frozenIntentDecision.driftBins) : 'na'} ` +
+        `driftPct=${Number.isFinite(frozenIntentDecision?.driftPct) ? Number(frozenIntentDecision.driftPct).toFixed(3) : 'na'} ` +
+        `ageMs=${Number.isFinite(frozenIntentDecision?.snapshotAgeMs) ? Number(frozenIntentDecision.snapshotAgeMs) : 'na'}`;
+      console.warn(`[evilPanda] DEPLOY_BLOCK_FROZEN_ANCHOR_UNSAFE pool=${poolAddress.slice(0,8)} ${reason}`);
+      return {
+        blocked: true,
+        reason: 'ENTRY_ANCHOR_UNSAFE',
+        detail: reason,
+      };
+    }
     let activeBin = initialActiveBin;
     if (shouldUseFrozenIntent && Number.isFinite(frozenEntryActiveBin)) {
       activeBin = {
@@ -3341,6 +3370,7 @@ export async function deployPosition(poolAddress, deployOptions = {}) {
         `[evilPanda] ENTRY_INTENT_FROZEN pool=${poolAddress.slice(0,8)} ` +
         `bin=${Number(activeBin.binId)} price=${Number.isFinite(Number(activeBin.pricePerToken)) ? Number(activeBin.pricePerToken).toFixed(10) : 'na'} ` +
         `driftBins=${Number.isFinite(frozenIntentDecision?.driftBins) ? Number(frozenIntentDecision.driftBins) : 'na'} ` +
+        `driftPct=${Number.isFinite(frozenIntentDecision?.driftPct) ? Number(frozenIntentDecision.driftPct).toFixed(3) : 'na'} ` +
         `ageMs=${Number.isFinite(frozenIntentDecision?.snapshotAgeMs) ? Number(frozenIntentDecision.snapshotAgeMs) : 'na'}`
       );
     } else {
@@ -3348,6 +3378,7 @@ export async function deployPosition(poolAddress, deployOptions = {}) {
         `[evilPanda] ENTRY_INTENT_LIVE_FALLBACK pool=${poolAddress.slice(0,8)} ` +
         `bin=${Number(initialActiveBin?.binId)} price=${Number.isFinite(Number(initialActiveBin?.pricePerToken)) ? Number(initialActiveBin.pricePerToken).toFixed(10) : 'na'} ` +
         `reason=${frozenIntentDecision.reason} driftBins=${Number.isFinite(frozenIntentDecision?.driftBins) ? Number(frozenIntentDecision.driftBins) : 'na'} ` +
+        `driftPct=${Number.isFinite(frozenIntentDecision?.driftPct) ? Number(frozenIntentDecision.driftPct).toFixed(3) : 'na'} ` +
         `ageMs=${Number.isFinite(frozenIntentDecision?.snapshotAgeMs) ? Number(frozenIntentDecision.snapshotAgeMs) : 'na'}`
       );
     }
@@ -3698,13 +3729,13 @@ export async function deployPosition(poolAddress, deployOptions = {}) {
         checkedRangeMax: rentCheckedRangeMax,
         initialActiveBinId: Number(initialActiveBin?.binId),
         attempt,
-        skipActiveBinRefresh: shouldUseFrozenIntent,
+        skipActiveBinRefresh: frozenIntentEnabledForDeploy,
         refetchStatesFn: async () => {
-          if (shouldUseFrozenIntent) return;
+          if (frozenIntentEnabledForDeploy) return;
           if (dlmmPool?.refetchStates) await dlmmPool.refetchStates();
         },
         getActiveBinFn: async () => {
-          if (shouldUseFrozenIntent) {
+          if (frozenIntentEnabledForDeploy) {
             return { binId: Number(baseDeployArgs?.activeBinId) };
           }
           const refreshed = dlmmPool?.getActiveBin ? await dlmmPool.getActiveBin() : null;
