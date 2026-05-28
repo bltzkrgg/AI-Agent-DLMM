@@ -107,7 +107,7 @@ test('frozen entry intent falls back when active-bin drift too large', () => {
   assert.equal(out.snapshotAgeMs, 60_000);
 });
 
-test('frozen entry intent stays usable when price drift is still within tolerance', () => {
+test('frozen entry intent falls back when active-bin drift is too large even if price drift is small', () => {
   const now = 1_000_000;
   const out = __evaluateFrozenEntryIntentForDeployForTests({
     enabled: true,
@@ -121,8 +121,8 @@ test('frozen entry intent stays usable when price drift is still within toleranc
     nowMs: now,
   });
 
-  assert.equal(out.useFrozen, true);
-  assert.equal(out.reason, 'price_drift_within_tolerance');
+  assert.equal(out.useFrozen, false);
+  assert.equal(out.reason, 'active_bin_drift_too_large');
   assert.equal(out.driftBins, 9);
   assert.equal(out.snapshotAgeMs, 45_000);
   assert.equal(Math.round(Number(out.driftPct) * 1000) / 1000, 2.000);
