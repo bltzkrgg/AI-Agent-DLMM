@@ -4818,7 +4818,7 @@ export async function exitPosition(positionPubkey, reason = 'MANUAL') {
         );
       }
 
-      // 3. Auto-swap jalur agent: fee-only (default), residual optional by config.
+      // 3. Auto-swap jalur agent: full-sweep for zap_out semantics, residual guarded by policy.
       // Ini menyamakan perilaku safeExit/exitPosition dengan close policy lain.
       let feeAutoSwapOutSol = 0;
       const cfg = getConfig();
@@ -4891,6 +4891,7 @@ export async function exitPosition(positionPubkey, reason = 'MANUAL') {
               }
             }
           }
+          console.log('[evilPanda] AGENT_EXIT_SWAP_STAGE_DONE');
         } catch (swapErr) {
           console.warn(`[evilPanda] AGENT_EXIT_SWAP_ERROR: ${swapErr.message}`);
         }

@@ -1778,7 +1778,7 @@ export async function closePositionDLMM(poolAddress, positionAddress, pnlData = 
         lifecycleState: pnlData.lifecycleState || 'closed_pending_swap',
       });
 
-      // ── 8. Swap policy: fee-only (default) + residual optional ───────
+      // ── 8. Swap policy: fee-first by default, residual optional by policy ───────
       if (!isDryRun()) {
         try {
           const postCloseBalances = {
@@ -1813,6 +1813,7 @@ export async function closePositionDLMM(poolAddress, positionAddress, pnlData = 
             });
             if (feeSwap?.success && feeSwap.txHash) {
               txHashes.push(feeSwap.txHash);
+              console.log(`[closePositionDLMM] FEE_CLAIM_DONE out=${Number(feeSwap.outSol || 0).toFixed(6)} SOL`);
             } else {
               console.log(`[closePositionDLMM] Fee auto-swap skipped: ${feeSwap?.reason || 'UNKNOWN'}`);
             }
@@ -1838,8 +1839,9 @@ export async function closePositionDLMM(poolAddress, positionAddress, pnlData = 
               });
               if (residualSwap?.success && residualSwap.txHash) {
                 txHashes.push(residualSwap.txHash);
+                console.log(`[closePositionDLMM] RESIDUAL_SWAP_DONE out=${Number(residualSwap.outSol || 0).toFixed(6)} SOL`);
               } else {
-                console.log(`[closePositionDLMM] Residual swap skipped: ${residualSwap?.reason || 'UNKNOWN'}`);
+                console.log(`[closePositionDLMM] RESIDUAL_SWAP_SKIP reason=${residualSwap?.reason || 'UNKNOWN'}`);
               }
             }
           }

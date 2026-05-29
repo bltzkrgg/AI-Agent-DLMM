@@ -150,7 +150,7 @@ test('evilPanda uses monolith positions with one Meteora account for the full ra
   assert.match(src, /RENT_FREE_SEARCH_SLACK_ARRAYS/);
   assert.match(src, /findAdaptiveRentFreeRange/);
   assert.match(src, /searchSlackArrays/);
-  assert.match(src, /geser ke slice yang masih rent-free dan tetap lanjut deploy/);
+  assert.match(src, /RANGE_ADJUSTED_FOR_RENT/);
   assert.doesNotMatch(src, /rangeMax = activeBin\.binId - offsetMinBins - 1/);
   assert.doesNotMatch(src, /rangeMax - rangeMin > 1000/);
   assert.match(src, /initializePositionAndAddLiquidityByStrategy/);
@@ -246,6 +246,9 @@ test('meteora close flow applies fee-first guarded swap and optional residual sw
   assert.match(src, /const shouldSwapFeeOnly = swapPolicy\.swapMode === 'fee_only' \|\| swapPolicy\.swapMode === 'all'/);
   assert.match(src, /const shouldSwapResidual = swapPolicy\.swapMode === 'all' \|\| swapPolicy\.allowResidualSwap/);
   assert.match(src, /attemptGatedSwapToSol/);
+  assert.match(src, /FEE_CLAIM_DONE/);
+  assert.match(src, /RESIDUAL_SWAP_DONE/);
+  assert.match(src, /RESIDUAL_SWAP_SKIP/);
   assert.doesNotMatch(src, /await executeTransactions\(\[removeLiqTx\]/);
 });
 
