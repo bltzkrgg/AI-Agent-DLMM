@@ -129,7 +129,7 @@ const tools = [
   },
   {
     name: 'zap_out',
-    description: 'Emergency exit all open positions with unified close flow (zap-out preferred, fee-first guarded swap, residual optional).',
+    description: 'Emergency exit all open positions with unified close flow (zap-out preferred, claim fees, guarded full sweep to SOL).',
     input_schema: {
       type: 'object',
       properties: {},
@@ -314,7 +314,16 @@ async function executeTool(toolName, toolInput) {
             entityId: positionAddress,
             payload: { pool_address: poolAddress, position_address: positionAddress },
             metadata: { source: 'claude_tool_zap_out', poolAddress },
-            execute: () => closePositionDLMM(poolAddress, positionAddress, {}, { isUrgent: true }),
+            execute: () => closePositionDLMM(
+              poolAddress,
+              positionAddress,
+              {},
+              {
+                isUrgent: true,
+                swapMode: 'all',
+                residualSwapEnabled: true,
+              },
+            ),
           });
 
           closed.push({

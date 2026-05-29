@@ -13,7 +13,7 @@ test('Claude tool registry exposes zap_out', () => {
 
   assert.match(source, /name:\s*'zap_out'/);
   assert.match(source, /description:\s*'Emergency exit all open positions with unified close flow/);
-  assert.match(source, /fee-first guarded swap, residual optional/);
+  assert.match(source, /guarded full sweep to SOL/);
 });
 
 test('Claude executeTool delegates zap_out swap behavior to close flow', () => {
@@ -21,7 +21,7 @@ test('Claude executeTool delegates zap_out swap behavior to close flow', () => {
   const source = readFileSync(claudePath, 'utf-8');
 
   assert.match(source, /case\s+'zap_out'\s*:\s*\{/);
-  assert.match(source, /closePositionDLMM\(poolAddress,\s*positionAddress,\s*\{\},\s*\{\s*isUrgent:\s*true\s*\}\)/);
+  assert.match(source, /closePositionDLMM\(\s*poolAddress,\s*positionAddress,\s*\{\},\s*\{\s*isUrgent:\s*true,\s*swapMode:\s*'all',\s*residualSwapEnabled:\s*true,/);
   assert.match(source, /autoSwap:\s*'managed_by_close_flow'/);
   assert.doesNotMatch(source, /swapAllToSOL\(/);
 });
