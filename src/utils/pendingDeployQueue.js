@@ -231,6 +231,10 @@ export function __resetDeployQueueHoldNotifyState() {
   _holdNotifyKeysByCandidate.clear();
 }
 
+function isSlotSaturationHoldReason(reason = '') {
+  return String(reason || '').includes('SLOT_SATURATED_PROMOTION_PAUSED');
+}
+
 export function getLiveSnapshotReliability(snapshot = null) {
   if (!snapshot) return { reliable: false, reason: 'SNAPSHOT_NULL' };
   const source = String(snapshot.dataSource || snapshot.ohlcv?.source || '').toLowerCase();
@@ -1151,6 +1155,9 @@ async function runWatcher() {
         entry.nextEligibleAt = Date.now() + 15_000;
         entry.deferReason = finalCandle.reason;
         console.log(`[QUEUE] ⏸️ ${symbol} HOLD sebelum deploy: ${finalCandle.reason}`);
+        if (isSlotSaturationHoldReason(finalCandle.reason)) {
+          continue;
+        }
         const cfg = getConfig();
         const cooldownSec = Math.max(30, Number(cfg.deployQueueHoldNotifyCooldownSec ?? 180) || 180);
         const notifyDecision = shouldSendDeployQueueHoldNotification({
@@ -1293,7 +1300,7 @@ async function runWatcher() {
             entry.attempts = Math.max(0, entry.attempts - 1);
             entry.nextEligibleAt = Date.now() + holdCooldownSec * 1000;
             _queue.set(mint, entry);
-            if (holdNotice.shouldSend) {
+            if (holdNotice.shouldSend && !isSlotSaturationHoldReason(blockedReason)) {
               await safeSend(
                 `⏸️ <b>Deploy Queue Hold</b>\n` +
                 `<b>${symbol}</b> — <code>${blockedReason}</code>\n` +
@@ -1316,7 +1323,7 @@ async function runWatcher() {
             entry.attempts = Math.max(0, entry.attempts - 1);
             entry.nextEligibleAt = Date.now() + holdCooldownSec * 1000;
             _queue.set(mint, entry);
-            if (holdNotice.shouldSend) {
+            if (holdNotice.shouldSend && !isSlotSaturationHoldReason(blockedReason)) {
               await safeSend(
                 `⏸️ <b>Deploy Queue Hold</b>\n` +
                 `<b>${symbol}</b> — <code>DLMM_INVALID_INPUT</code>\n` +
