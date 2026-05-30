@@ -433,6 +433,7 @@ function formatMemorySignal(signal = {}) {
 function addWatchPassTa(pool, reason = 'TA PASS', source = 'TA') {
   const cfg = getConfig();
   const watchCfg = getWatchConfig(cfg);
+  const slotUsage = getDeploySlotUsage();
 
   const mint = getPoolMint(pool);
   if (!mint || hasActiveMint(mint)) return { admitted: false, reason: 'Mint aktif / tidak valid', row: null, evicted: null };
@@ -542,6 +543,12 @@ function addWatchPassTa(pool, reason = 'TA PASS', source = 'TA') {
     _taWatchQueue.set(mint, row);
     console.log(`[WATCH] 👀 ${symbol} refresh watch queue (${source}) — ${reason} | ${formatMemorySignal(memorySignal)}`);
     return { admitted: true, row, evicted: null, reason: null };
+  }
+
+  if (slotUsage.slotLimit > 0 && slotUsage.usedSlots >= slotUsage.slotLimit) {
+    const rejectReason = `SLOT_SATURATED_PROMOTION_PAUSED (${slotUsage.usedSlots}/${slotUsage.slotLimit})`;
+    console.log(`[WATCH] ⏸️ ${symbol} tunda masuk watch: ${rejectReason}`);
+    return { admitted: false, row: null, evicted: null, reason: rejectReason };
   }
 
   if (_taWatchQueue.size < effectiveMaxPools) {
@@ -1689,6 +1696,8 @@ export function startPendingTaRadarWatcher() {
       const ready = await processPendingTaRadar(cfg);
       for (const item of ready) {
         const { pool, symbol, entrySignals, reason } = item;
+        const slotUsage = getDeploySlotUsage();
+        if (slotUsage.slotLimit > 0 && slotUsage.usedSlots >= slotUsage.slotLimit) continue;
         const poolAddress = pool.address || pool.poolAddress || pool.pool || pool.pubkey || '';
         const tokenMint = pool.tokenXMint || pool.tokenX || pool.mint || '';
         if (!poolAddress || !tokenMint) continue;
@@ -2468,13 +2477,16 @@ FORMAT JAWABAN (WAJIB JSON VALID, TANPA MARKDOWN):
           if (watchResult.evicted?.pool) {
             addPendingRetest(watchResult.evicted.pool, 'WATCH digeser oleh prioritas lebih kuat');
           }
-          await notify(
-            `👀 <b>WATCH</b>\n` +
-            `Token: <b>${tokenSymbol}</b> masuk watch layer!\n` +
-            `Entry: <code>${entryReadiness || 'N/A'}</code> | Breakout: <code>${breakoutQuality || 'N/A'}</code>\n` +
-            `Alasan: <i>${scoutReason || 'Scout Approved'}</i>\n` +
-            `⏳ <i>Watcher aktif — deploy otomatis saat slot tersedia.</i>`
-          );
+          const slotUsage = getDeploySlotUsage();
+          if (!(slotUsage.slotLimit > 0 && slotUsage.usedSlots >= slotUsage.slotLimit)) {
+            await notify(
+              `👀 <b>WATCH</b>\n` +
+              `Token: <b>${tokenSymbol}</b> masuk watch layer!\n` +
+              `Entry: <code>${entryReadiness || 'N/A'}</code> | Breakout: <code>${breakoutQuality || 'N/A'}</code>\n` +
+              `Alasan: <i>${scoutReason || 'Scout Approved'}</i>\n` +
+              `⏳ <i>Watcher aktif — deploy otomatis saat slot tersedia.</i>`
+            );
+          }
           return { ok: true, pool, symbol: tokenSymbol || 'UNKNOWN' };
         }
 
@@ -2484,13 +2496,15 @@ FORMAT JAWABAN (WAJIB JSON VALID, TANPA MARKDOWN):
         pendingStore.add(tokenMint || '', tokenSymbol, 0, 0, pool);
         addPendingRetest(pool, watchFallbackReason);
         console.log(`[SCREEN] ⏳ ${tokenSymbol} → pending retest (WATCH fallback: ${watchFallbackReason})`);
-        await notify(
-          `⏳ <b>KANDIDAT DITUNDA (WATCH FULL)</b>\n` +
-          `Token: <b>${tokenSymbol}</b>\n` +
-          `Entry: <code>${entryReadiness || 'N/A'}</code> | Breakout: <code>${breakoutQuality || 'N/A'}</code>\n` +
-          `Alasan Tunda: <i>${watchFallbackReason}</i>\n` +
-          `👁️‍🗨️ <i>Radar memantau real-time sampai slot WATCH longgar.</i>`
-        );
+        if (!String(watchFallbackReason).includes('SLOT_SATURATED_PROMOTION_PAUSED')) {
+          await notify(
+            `⏳ <b>KANDIDAT DITUNDA (WATCH FULL)</b>\n` +
+            `Token: <b>${tokenSymbol}</b>\n` +
+            `Entry: <code>${entryReadiness || 'N/A'}</code> | Breakout: <code>${breakoutQuality || 'N/A'}</code>\n` +
+            `Alasan Tunda: <i>${watchFallbackReason}</i>\n` +
+            `👁️‍🗨️ <i>Radar memantau real-time sampai slot WATCH longgar.</i>`
+          );
+        }
         return { ok: false, symbol: tokenSymbol || 'UNKNOWN', stage: 'SCOUT_AGENT', reason: watchFallbackReason };
       }
       const isDeferred = decision.includes('DEFER');
