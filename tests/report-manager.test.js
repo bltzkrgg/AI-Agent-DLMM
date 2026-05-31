@@ -20,3 +20,24 @@ test('report manager prefers gate-specific details over generic reject reason', 
   assert.match(report, /Tahap gagal: <code>STAGE_2_GMGN<\/code>/);
   assert.match(report, /Alasan: <i>Top 10 Holders 31\.42% > 30% \| Dev Hold 6\.20% > 5%<\/i>/);
 });
+
+test('slot-saturated summary mode suppresses per-token reject details but keeps header counts', () => {
+  reportManager.currentCycle = [];
+  reportManager.cycleId = 0;
+  reportManager.newCycle();
+  reportManager.setSlotSaturatedSummaryOnly(true);
+
+  const token = reportManager.addToken('KINS', 'MintKins');
+  reportManager.updateGate('KINS', 'STAGE_0_DISCOVERY', 'PASS');
+  reportManager.updateGate('KINS', 'BLACKLIST_LOCAL', 'PASS');
+  reportManager.updateGate('KINS', 'STAGE_1_PUBLIC', 'FAIL', 'stale market snapshot');
+  reportManager.setFinalVerdict('KINS', 'REJECT', 'stale market snapshot');
+
+  const report = reportManager.generateReport();
+
+  assert.match(report, /📊 <b>VISUAL PROGRESS REPORT<\/b>/);
+  assert.match(report, /🔍 <b>Total Discan:<\/b> 1 token/);
+  assert.match(report, /🚫 <b>Gagal\/Reject:<\/b> 1 token/);
+  assert.doesNotMatch(report, /Tahap gagal:/);
+  assert.doesNotMatch(report, /Alasan:/);
+});

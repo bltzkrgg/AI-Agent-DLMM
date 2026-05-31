@@ -1493,7 +1493,8 @@ test('deploy/drop notifications are not gated by hold dedupe helper', () => {
   const holdSectionStart = src.indexOf('if (!finalCandle.ok) {');
   const holdSectionEnd = src.indexOf('continue;', holdSectionStart);
   const holdSection = src.slice(holdSectionStart, holdSectionEnd);
-  assert.match(holdSection, /shouldSendDeployQueueHoldNotification\(/);
+  assert.match(holdSection, /isSlotSaturationHoldReason\(/);
+  assert.match(src, /shouldSendDeployQueueHoldNotification\(/);
   assert.match(src, /Deploy Queue Drop/);
   assert.match(src, /Real-time Deploy Triggered!/);
 });

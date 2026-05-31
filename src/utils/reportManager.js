@@ -4,12 +4,18 @@ class ReportManager {
   constructor() {
     this.currentCycle = [];
     this.cycleId = 0;
+    this.slotSaturatedSummaryOnly = false;
   }
 
   newCycle() {
     this.currentCycle = [];
     this.cycleId++;
+    this.slotSaturatedSummaryOnly = false;
     console.log(`📋 [ReportManager] Memulai siklus baru #${this.cycleId}`);
+  }
+
+  setSlotSaturatedSummaryOnly(enabled = false) {
+    this.slotSaturatedSummaryOnly = Boolean(enabled);
   }
 
   addToken(tokenName, tokenAddress = '') {
@@ -197,11 +203,13 @@ class ReportManager {
         }
       } else {
         // REJECTED ❌ — tampilkan tahap dan alasan
-        const failedGate = this.getFirstFailedGate(token) || 'UNKNOWN';
-        const gateDetails = this.getGateDetailsText(token, failedGate);
-        const reasonText = gateDetails || token.reason || 'Tidak ada alasan spesifik';
-        report += `Tahap gagal: <code>${failedGate}</code>\n`;
-        report += `Alasan: <i>${reasonText}</i>\n`;
+        if (!this.slotSaturatedSummaryOnly) {
+          const failedGate = this.getFirstFailedGate(token) || 'UNKNOWN';
+          const gateDetails = this.getGateDetailsText(token, failedGate);
+          const reasonText = gateDetails || token.reason || 'Tidak ada alasan spesifik';
+          report += `Tahap gagal: <code>${failedGate}</code>\n`;
+          report += `Alasan: <i>${reasonText}</i>\n`;
+        }
       }
       
       if (token.details.PENDING_RETEST) {

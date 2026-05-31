@@ -1694,10 +1694,12 @@ export function startPendingTaRadarWatcher() {
       if (cfg.pendingRetestEnabled === false) return;
       console.log(`[RADAR] 🛰️ heartbeat pending=${_pendingRetestQueue.size} watch=${_taWatchQueue.size}`);
       const ready = await processPendingTaRadar(cfg);
+      const slotUsage = getDeploySlotUsage();
+      const slotSaturated = slotUsage.slotLimit > 0 && slotUsage.usedSlots >= slotUsage.slotLimit;
+      reportManager.setSlotSaturatedSummaryOnly(slotSaturated);
       for (const item of ready) {
         const { pool, symbol, entrySignals, reason } = item;
-        const slotUsage = getDeploySlotUsage();
-        if (slotUsage.slotLimit > 0 && slotUsage.usedSlots >= slotUsage.slotLimit) continue;
+        if (slotSaturated) continue;
         const poolAddress = pool.address || pool.poolAddress || pool.pool || pool.pubkey || '';
         const tokenMint = pool.tokenXMint || pool.tokenX || pool.mint || '';
         if (!poolAddress || !tokenMint) continue;
