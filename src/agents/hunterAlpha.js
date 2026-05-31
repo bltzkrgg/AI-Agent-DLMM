@@ -153,8 +153,8 @@ function buildOorWaitingMessage({ symbol, positionPubkey, elapsedMs, waitMs, cur
     `Position: <code>${positionPubkey.slice(0, 8)}</code>\n` +
     `PnL: <code>${sign}${pnlPct.toFixed(2)}%</code>\n` +
     `Value: <code>${currentValueSol.toFixed(4)} SOL</code>\n` +
-    `Durasi OOR: <code>${formatDurationFromMs(elapsedMs)}</code> / batas <code>${formatDurationFromMs(waitMs)}</code>\n` +
-    `<i>Posisi masih dipantau sesuai config.</i>`
+    `<i>Status: monitoring</i>\n` +
+    `<i>Next check: 5m</i>`
   );
 }
 

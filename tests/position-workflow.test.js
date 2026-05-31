@@ -112,7 +112,9 @@ test('out-of-range monitor state can display 5 minutes while config remains 30 m
   });
 
   assert.equal(waiting.shouldExit, false);
-  assert.match(waiting.notifyMessage, /batas <code>5(?:\.0)? menit<\/code>/);
+  assert.match(waiting.notifyMessage, /OOR Watch/);
+  assert.match(waiting.notifyMessage, /Status: monitoring/);
+  assert.match(waiting.notifyMessage, /Next check: 5m/);
 
   const expired = evaluateOutOfRangeMonitorState({
     positionPubkey: 'pos-oor-2',
