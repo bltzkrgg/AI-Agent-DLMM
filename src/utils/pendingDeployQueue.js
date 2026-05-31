@@ -530,6 +530,23 @@ export async function getFinalSupertrendDeployDecision({
 
 export async function ensureFinalSupertrendBullish(args = {}) {
   const decision = await getFinalSupertrendDeployDecision(args);
+  const { meta = {}, pool = {}, now = Date.now() } = args || {};
+  if (decision.direction === 'BULLISH' || decision.direction === 'BEARISH') {
+    const stampDirection = decision.direction;
+    const stampAt = Number.isFinite(Number(now)) ? Number(now) : Date.now();
+    if (meta && typeof meta === 'object') {
+      meta.finalSupertrend15m = stampDirection;
+      meta.finalSupertrend15mAt = stampAt;
+      meta.supertrend15m = stampDirection;
+      meta.supertrend15mAt = stampAt;
+    }
+    if (pool && typeof pool === 'object') {
+      pool._finalSupertrend15m = stampDirection;
+      pool._finalSupertrend15mAt = stampAt;
+      pool._supertrend15m = stampDirection;
+      pool._supertrend15mAt = stampAt;
+    }
+  }
   const label = args.symbol || args.mint?.slice?.(0, 8) || 'UNKNOWN';
   const mintShort = args.mint?.slice?.(0, 8) || 'UNKNOWN';
   if (decision.action === 'ALLOW') {
