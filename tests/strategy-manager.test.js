@@ -2,14 +2,16 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { getStrategy, parseStrategyParameters } from '../src/strategies/strategyManager.js';
 
-test('parseStrategyParameters preserves Evil Panda wide range and maps single_side_y to strategyType 2', () => {
+test('parseStrategyParameters preserves Evil Panda range and maps strategyType from resolved shape', () => {
   const evilPanda = getStrategy('Evil Panda');
   const parsed = parseStrategyParameters(evilPanda);
 
   assert.equal(parsed.priceRangePercent, 94);
-  assert.equal(parsed.strategyType, 2);
-  assert.equal(parsed.tokenXWeight, 0);
-  assert.equal(parsed.tokenYWeight, 100);
+  assert.ok(parsed.dlmmLiquidityShape === 'spot' || parsed.dlmmLiquidityShape === 'bidask');
+  const expectedStrategyType = parsed.dlmmLiquidityShape === 'bidask' ? 2 : 0;
+  assert.equal(parsed.strategyType, expectedStrategyType);
+  assert.equal(parsed.tokenXWeight, expectedStrategyType === 2 ? 0 : 50);
+  assert.equal(parsed.tokenYWeight, expectedStrategyType === 2 ? 100 : 50);
 });
 
 test('parseStrategyParameters honors explicit deploy strategyType override', () => {

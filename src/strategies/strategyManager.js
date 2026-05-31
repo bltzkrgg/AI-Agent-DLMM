@@ -26,6 +26,15 @@ const EVIL_PANDA = {
   },
 };
 
+function normalizeDlmmLiquidityShape(value) {
+  const normalized = String(value || '').trim().toLowerCase().replace(/[\s_-]/g, '');
+  return normalized === 'bidask' ? 'bidask' : 'spot';
+}
+
+function resolveStrategyTypeFromShape(shape) {
+  return shape === 'bidask' ? 2 : 0;
+}
+
 /** Ambil strategi berdasarkan nama — selalu return Evil Panda */
 export function getStrategy(name) {
   const cfg = getConfig();
@@ -70,6 +79,9 @@ export function getAllStrategies() {
 
 /** Parse strategy parameters dari string atau object */
 export function parseStrategyParameters(input) {
+  const cfg = getConfig();
+  const configShape = normalizeDlmmLiquidityShape(cfg?.dlmmLiquidityShape);
+  const configStrategyType = resolveStrategyTypeFromShape(configShape);
   const base = getStrategy('Evil Panda');
   const strategy = (!input || typeof input !== 'object') ? base : { ...base, ...input };
   const deploy = strategy.deploy || strategy.parameters || {};
@@ -79,13 +91,16 @@ export function parseStrategyParameters(input) {
     priceRangePercent = Math.max(0, Number(deploy.entryPriceOffsetMax) - Number(deploy.entryPriceOffsetMin));
   }
 
+  // Source of truth untuk shape/strategyType adalah config global (/setconfig strategy.liquidityShape).
+  // Override eksplisit deploy.strategyType masih diizinkan untuk backward compatibility.
   const strategyType = Number.isFinite(Number(deploy.strategyType))
     ? Number(deploy.strategyType)
-    : ((strategy.type === 'single_side_y' || strategy.name === 'Evil Panda') ? 2 : 0);
+    : configStrategyType;
 
   return {
     ...strategy,
     priceRangePercent,
+    dlmmLiquidityShape: configShape,
     strategyType,
     tokenXWeight: strategyType === 2 ? 0 : 50,
     tokenYWeight: strategyType === 2 ? 100 : 50,
