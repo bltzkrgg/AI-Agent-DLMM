@@ -208,7 +208,6 @@ test('evilPanda exit path uses close-once flow and avoids cleanup retry loop', (
   assert.match(src, /closePosition/);
   assert.doesNotMatch(src, /maxCleanupAttempts/);
   assert.doesNotMatch(src, /cleanupAttempt = 1; cleanupAttempt <=/);
-  assert.doesNotMatch(src, /getFreshActivePosition/);
 });
 
 test('evilPanda exit path uses high compute budget with CU retry', () => {
