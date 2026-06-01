@@ -1141,13 +1141,22 @@ async function runWatcher() {
       }
 
       const currentPrice = Number(
+        entry?.lastLiveSnapshot?.ohlcv?.currentPrice ||
+        entry?.lastLiveSnapshot?.price?.currentPrice ||
         pool?._entrySignals?.currentPrice ||
         meta?.currentPrice ||
         pool?.price ||
         pool?.pool_price ||
         0
       );
-      const finalSt = await ensureFinalSupertrendBullish({ mint, symbol, pool, meta, currentPrice });
+      const finalSt = await ensureFinalSupertrendBullish({
+        mint,
+        symbol,
+        pool,
+        meta,
+        liveSnapshot: entry.lastLiveSnapshot || null,
+        currentPrice,
+      });
       if (!finalSt.ok) {
         if (finalSt.action === 'VETO') {
           removeQueueCandidate(mint, entry);

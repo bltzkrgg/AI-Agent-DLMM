@@ -1529,6 +1529,12 @@ test('deploy/drop notifications are not gated by hold dedupe helper', () => {
   assert.match(src, /Real-time Deploy Triggered!/);
 });
 
+test('queue final ST gate uses latest live snapshot wiring', () => {
+  const src = readFileSync(new URL('../src/utils/pendingDeployQueue.js', import.meta.url), 'utf8');
+  assert.match(src, /ensureFinalSupertrendBullish\(\{\s*mint,\s*symbol,\s*pool,\s*meta,\s*liveSnapshot:\s*entry\.lastLiveSnapshot\s*\|\|\s*null,\s*currentPrice,\s*\}\)/s);
+  assert.match(src, /entry\?\.lastLiveSnapshot\?\.ohlcv\?\.currentPrice/);
+});
+
 test('deploy queue freezes intent only when bin, price, and snapshot are valid', () => {
   const src = readFileSync(new URL('../src/utils/pendingDeployQueue.js', import.meta.url), 'utf8');
   assert.match(src, /function hasValidFrozenDeployIntent/);
