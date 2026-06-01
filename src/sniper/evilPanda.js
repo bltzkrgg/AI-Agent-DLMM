@@ -3059,55 +3059,6 @@ async function buildZapOutCloseTxs(dlmmPool, wallet, activePos) {
   return txList;
 }
 
-function isLikelyAlreadyEmptyCloseState(error) {
-  const msg = String(error?.message || error || '').toLowerCase();
-  return (
-    msg.includes('no liquidity') ||
-    msg.includes('position empty') ||
-    msg.includes('position not found') ||
-    msg.includes('position already closed')
-  );
-}
-
-async function buildCloseEmptyPositionTxs(dlmmPool, wallet, activePos) {
-  const txs = [];
-
-  if (typeof dlmmPool.closePositionIfEmpty === 'function') {
-    try {
-      const closeIfEmptyTxs = await dlmmPool.closePositionIfEmpty({
-        owner: wallet.publicKey,
-        position: activePos,
-      });
-      txs.push(...(Array.isArray(closeIfEmptyTxs) ? closeIfEmptyTxs : [closeIfEmptyTxs]));
-      if (txs.length > 0) return txs;
-    } catch (e) {
-      const msg = String(e?.message || e);
-      if (!isLikelyAlreadyEmptyCloseState(msg)) {
-        console.warn(`[evilPanda] closePositionIfEmpty cleanup attempt failed: ${msg}`);
-      }
-    }
-  }
-
-  if (typeof dlmmPool.closePosition === 'function') {
-    try {
-      const closeTxs = await dlmmPool.closePosition({
-        owner: wallet.publicKey,
-        position: activePos,
-      });
-      txs.push(...(Array.isArray(closeTxs) ? closeTxs : [closeTxs]));
-      if (txs.length > 0) return txs;
-    } catch (e) {
-      const msg = String(e?.message || e);
-      if (!isLikelyAlreadyEmptyCloseState(msg)) {
-        console.warn(`[evilPanda] closePosition cleanup attempt failed: ${msg}`);
-      }
-    }
-  }
-
-  if (txs.length > 0) return txs;
-  throw new Error(`NO_EMPTY_CLOSE_METHOD_AVAILABLE_${activePos.publicKey.toString().slice(0, 8)}`);
-}
-
 async function executeExitCloseWithZapPreferred({
   connection,
   wallet,
@@ -3130,33 +3081,6 @@ async function executeExitCloseWithZapPreferred({
   } catch (zapErr) {
     const zapReason = String(zapErr?.message || zapErr || 'UNKNOWN_ZAP_ERROR');
     console.warn(`[evilPanda] ZAP_OUT_FAIL stage=${stage} reason=${zapReason}`);
-
-    const shouldUseEmptyCloseOnly = fallbackMode === 'legacy' && isLikelyAlreadyEmptyCloseState(zapReason);
-    if (shouldUseEmptyCloseOnly) {
-      try {
-        const cleanupTxList = await buildCloseEmptyPositionTxs(dlmmPool, wallet, activePos);
-        for (const tx of cleanupTxList) {
-          const sig = await sendExitTx(connection, wallet, tx, microLamports);
-          removeSignatures.push(sig);
-          console.log(`[evilPanda] EMPTY CLOSE TX confirmed (${stage}): ${sig.slice(0,8)}`);
-        }
-        return {
-          path: 'EMPTY_CLOSE_ONLY',
-          usedFallback: false,
-          txCount: cleanupTxList.length,
-          zapReason,
-        };
-      } catch (emptyCloseErr) {
-        const emptyReason = String(emptyCloseErr?.message || emptyCloseErr || 'UNKNOWN_EMPTY_CLOSE_ERROR');
-        console.warn(`[evilPanda] EMPTY_CLOSE_FAIL stage=${stage} reason=${emptyReason}`);
-        if (fallbackMode === 'empty_only') {
-          throw buildPermanentExitError(
-            `EXIT_ZAP_AND_EMPTY_CLOSE_FAILED stage=${stage} zap=${zapReason} empty=${emptyReason}`,
-            'EXIT_ZAP_AND_EMPTY_CLOSE_FAILED'
-          );
-        }
-      }
-    }
 
     if (fallbackMode === 'none') {
       throw buildPermanentExitError(
