@@ -250,6 +250,18 @@ test('meteora close flow applies fee-first guarded swap and optional residual sw
   assert.doesNotMatch(src, /await executeTransactions\(\[removeLiqTx\]/);
 });
 
+test('meteora close flow stays one-shot and does not retain fallback close branches', () => {
+  const src = readFileSync(resolve(process.cwd(), 'src/solana/meteora.js'), 'utf8');
+  assert.match(src, /removeLiquidity\(\{\s*position:\s*positionPubkey,\s*user:\s*wallet\.publicKey,\s*fromBinId,\s*toBinId,\s*bps:\s*new BN\(10000\),\s*shouldClaimAndClose:\s*true/);
+  assert.match(src, /closePositionDLMM\] Account masih ada setelah close attempt pertama/);
+  assert.match(src, /manual_review/);
+  assert.doesNotMatch(src, /shouldClaimAndClose:\s*false/);
+  assert.doesNotMatch(src, /cleanup cycle/);
+  assert.doesNotMatch(src, /cleanupDone/);
+  assert.doesNotMatch(src, /re-run removeLiquidity/);
+  assert.doesNotMatch(src, /Last resort: closePosition/);
+});
+
 test('deploy path blocks duplicate pool entries before opening a second position', () => {
   const evilPandaSrc = readFileSync(evilPandaPath, 'utf8');
   const hunterSrc = readFileSync(hunterPath, 'utf8');
