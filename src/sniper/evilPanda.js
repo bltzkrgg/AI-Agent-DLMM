@@ -4638,7 +4638,6 @@ export async function exitPosition(positionPubkey, reason = 'MANUAL') {
     normalizedExitReason === 'STOP_LOSS' ||
     normalizedExitReason === 'OUT_OF_RANGE' ||
     /SCENARIO_C|SUPPORT|BEARISH|PANIC/i.test(String(reason || ''));
-  const maxCleanupAttempts = isEmergencyExit ? 3 : 1;
 
   try {
     return await withExitAccountingLock(() => withPermanentAwareBackoff(async () => {
@@ -4764,43 +4763,6 @@ export async function exitPosition(positionPubkey, reason = 'MANUAL') {
       });
       if (primaryExit.path === 'ZAP_OUT') exitPathStats.zapUsed = true;
       if (primaryExit.path === 'FALLBACK_LEGACY') exitPathStats.fallbackUsed = true;
-
-      // Some DLMM accounts need a fresh-state cleanup after fees/rewards settle.
-      for (let cleanupAttempt = 1; cleanupAttempt <= maxCleanupAttempts; cleanupAttempt++) {
-        await sleep(cleanupAttempt === 1 ? 6000 : 4000);
-        const isClosed = await verifyPositionClosedOnChain(connection, wallet, reg.poolAddress, positionPubkey, {
-          attempts: 1,
-          delayMs: 0,
-        });
-        if (isClosed) break;
-
-        const { dlmmPool: freshPool, activePos: freshPos } = await getFreshActivePosition(
-          connection,
-          wallet,
-          reg.poolAddress,
-          positionPubkey,
-        );
-        if (!freshPos) {
-          continue;
-        }
-
-        console.warn(
-          `[evilPanda] Position masih open setelah remove; cleanup attempt ${cleanupAttempt}/${maxCleanupAttempts}`
-        );
-        const cleanupExit = await executeExitCloseWithZapPreferred({
-          connection,
-          wallet,
-          dlmmPool: freshPool,
-          activePos: freshPos,
-          microLamports: exitMicroLamports,
-          removeSignatures,
-          stage: `cleanup_${cleanupAttempt}`,
-          notifyOnFallback: false,
-          fallbackMode: 'empty_only',
-        });
-        if (cleanupExit.path === 'ZAP_OUT') exitPathStats.zapUsed = true;
-        if (cleanupExit.path === 'FALLBACK_LEGACY') exitPathStats.fallbackUsed = true;
-      }
 
       // 2. Verifikasi posisi benar-benar sudah close di chain
       const isClosedOnChain = await verifyPositionClosedOnChain(connection, wallet, reg.poolAddress, positionPubkey, {

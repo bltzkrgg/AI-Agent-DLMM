@@ -187,7 +187,7 @@ test('evilPanda removeLiquidity uses Meteora SDK parameter names', () => {
   assert.doesNotMatch(src, /liquidityBpsToRemove:/);
 });
 
-test('evilPanda retries close cleanup before reporting manual exit failure', () => {
+test('evilPanda exit path uses close-once flow and avoids cleanup retry loop', () => {
   const src = readFileSync(evilPandaPath, 'utf8');
   assert.match(src, /async function buildZapOutCloseTxs/);
   assert.match(src, /shouldClaimAndClose:\s*true/);
@@ -197,7 +197,7 @@ test('evilPanda retries close cleanup before reporting manual exit failure', () 
   assert.match(src, /EMPTY CLOSE TX confirmed/);
   assert.match(src, /fallbackMode = 'legacy'/);
   assert.match(src, /fallbackMode:\s*'legacy'/);
-  assert.match(src, /fallbackMode:\s*'empty_only'/);
+  assert.doesNotMatch(src, /fallbackMode:\s*'empty_only'/);
   assert.match(src, /withExitAccountingLock\(\(\) => withPermanentAwareBackoff/);
   assert.match(src, /buildPermanentExitError\(/);
   assert.match(src, /EXIT_FALLBACK_USED/);
@@ -206,10 +206,9 @@ test('evilPanda retries close cleanup before reporting manual exit failure', () 
   assert.match(src, /claimSwapFee/);
   assert.match(src, /closePositionIfEmpty/);
   assert.match(src, /closePosition/);
-  assert.match(src, /const maxCleanupAttempts = isEmergencyExit \? 3 : 1/);
-  assert.match(src, /cleanupAttempt = 1; cleanupAttempt <= maxCleanupAttempts/);
-  assert.match(src, /getFreshActivePosition/);
-  assert.match(src, /accountInfo === null/);
+  assert.doesNotMatch(src, /maxCleanupAttempts/);
+  assert.doesNotMatch(src, /cleanupAttempt = 1; cleanupAttempt <=/);
+  assert.doesNotMatch(src, /getFreshActivePosition/);
 });
 
 test('evilPanda exit path uses high compute budget with CU retry', () => {
