@@ -3198,9 +3198,7 @@ async function executeExitCloseWithZapPreferred({
     const zapReason = String(zapErr?.message || zapErr || 'UNKNOWN_ZAP_ERROR');
     console.warn(`[evilPanda] ZAP_OUT_FAIL stage=${stage} reason=${zapReason}`);
 
-    const shouldUseEmptyCloseOnly =
-      fallbackMode === 'empty_only' ||
-      (fallbackMode === 'legacy' && isLikelyAlreadyEmptyCloseState(zapReason));
+    const shouldUseEmptyCloseOnly = fallbackMode === 'legacy' && isLikelyAlreadyEmptyCloseState(zapReason);
     if (shouldUseEmptyCloseOnly) {
       try {
         const cleanupTxList = await buildCloseEmptyPositionTxs(dlmmPool, wallet, activePos);
