@@ -4512,15 +4512,8 @@ export async function exitPosition(positionPubkey, reason = 'MANUAL') {
       }
 
       if (isDryRun()) {
-        let dryRunTxList;
-        try {
-          dryRunTxList = await buildZapOutCloseTxs(dlmmPool, wallet, activePos);
-          console.log(`[DRY RUN] exitPosition path=ZAP_OUT pos=${positionPubkey.slice(0,8)}`);
-        } catch (dryZapErr) {
-          console.warn(`[DRY RUN] ZAP_OUT_FAIL pos=${positionPubkey.slice(0,8)} reason=${dryZapErr.message}`);
-          dryRunTxList = await buildClosePositionTxs(dlmmPool, wallet, activePos);
-          console.log(`[DRY RUN] exitPosition path=FALLBACK_LEGACY pos=${positionPubkey.slice(0,8)}`);
-        }
+        const dryRunTxList = await buildZapOutCloseTxs(dlmmPool, wallet, activePos);
+        console.log(`[DRY RUN] exitPosition path=ZAP_OUT pos=${positionPubkey.slice(0,8)}`);
         for (const tx of dryRunTxList) {
           injectPriorityFee(tx, { units: EP_CONFIG.EXIT_COMPUTE_UNITS, microLamports: isEmergencyExit ? Math.max(microLamports * 5, microLamports) : microLamports });
           if (tx instanceof VersionedTransaction) {
@@ -4591,7 +4584,7 @@ export async function exitPosition(positionPubkey, reason = 'MANUAL') {
       // 1. Remove all liquidity and request account close.
       const removeSignatures = [];
       const exitMicroLamports = isEmergencyExit ? Math.max(microLamports * 5, microLamports) : microLamports;
-      const exitPathStats = { zapUsed: false, fallbackUsed: false };
+      const exitPathStats = { zapUsed: false };
       const primaryExit = await executeExitCloseWithZapPreferred({
         connection,
         wallet,
@@ -4601,10 +4594,9 @@ export async function exitPosition(positionPubkey, reason = 'MANUAL') {
         removeSignatures,
         stage: 'primary',
         notifyOnFallback: true,
-        fallbackMode: 'legacy',
+        fallbackMode: 'none',
       });
       if (primaryExit.path === 'ZAP_OUT') exitPathStats.zapUsed = true;
-      if (primaryExit.path === 'FALLBACK_LEGACY') exitPathStats.fallbackUsed = true;
 
       // 2. Verifikasi posisi benar-benar sudah close di chain
       const isClosedOnChain = await verifyPositionClosedOnChain(connection, wallet, reg.poolAddress, positionPubkey, {
