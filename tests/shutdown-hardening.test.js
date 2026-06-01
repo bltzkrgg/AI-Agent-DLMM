@@ -205,6 +205,7 @@ test('evilPanda exit path uses close-once flow and avoids cleanup retry loop', (
   assert.doesNotMatch(src, /shouldClaimAndClose:\s*false/);
   assert.doesNotMatch(src, /claimSwapFee/);
   assert.doesNotMatch(src, /closePositionIfEmpty/);
+  assert.doesNotMatch(src, /QUOTE_ONLY_EMPTY_POSITION_CLEANUP_TX/);
   assert.doesNotMatch(src, /maxCleanupAttempts/);
   assert.doesNotMatch(src, /cleanupAttempt = 1; cleanupAttempt <=/);
 });

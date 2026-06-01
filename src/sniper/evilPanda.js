@@ -2326,29 +2326,6 @@ async function cleanupQuoteOnlyPartialEmptyPosition({
     return { cleaned: false, skipped: true, reason: 'HAS_LIQUIDITY', hasLiquidity: true };
   }
 
-  let closeTxCount = 0;
-  try {
-    const cleanupTxs = await buildClosePositionTxs(dlmmPool, wallet, activePos);
-    const txList = Array.isArray(cleanupTxs) ? cleanupTxs : [cleanupTxs];
-    closeTxCount = txList.length;
-    for (const tx of txList) {
-      const sig = await sendExitTx(connection, wallet, tx, microLamports);
-      console.log(`[evilPanda] QUOTE_ONLY_EMPTY_POSITION_CLEANUP_TX ${sig.slice(0,8)}`);
-    }
-  } catch (closeErr) {
-    console.warn(
-      `[evilPanda] QUOTE_ONLY_EMPTY_POSITION_CLEANUP_SKIPPED pool=${String(poolAddress || '').slice(0,8)} ` +
-      `position=${safePositionPubkey.slice(0,8)} reason=${String(closeErr?.message || 'CLOSE_FAILED')}`
-    );
-    return {
-      cleaned: false,
-      skipped: true,
-      reason: `CLOSE_FAILED:${String(closeErr?.message || 'unknown')}`,
-      hasLiquidity: false,
-      closeTxCount,
-    };
-  }
-
   const verifyFn = typeof verifyClosedFn === 'function'
     ? verifyClosedFn
     : verifyPositionClosedOnChain;
@@ -2366,15 +2343,14 @@ async function cleanupQuoteOnlyPartialEmptyPosition({
       skipped: true,
       reason: 'CLOSE_NOT_CONFIRMED',
       hasLiquidity: false,
-      closeTxCount,
     };
   }
 
   console.log(
     `[evilPanda] QUOTE_ONLY_EMPTY_POSITION_CLEANUP_OK pool=${String(poolAddress || '').slice(0,8)} ` +
-    `position=${safePositionPubkey.slice(0,8)} txs=${closeTxCount}`
+    `position=${safePositionPubkey.slice(0,8)} verified=ON_CHAIN`
   );
-  return { cleaned: true, skipped: false, reason: 'CLOSED_EMPTY_POSITION', hasLiquidity: false, closeTxCount };
+  return { cleaned: true, skipped: false, reason: 'CLOSED_EMPTY_POSITION', hasLiquidity: false };
 }
 
 async function handleQuoteOnlyPartialDeployFailure({

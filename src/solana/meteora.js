@@ -1405,9 +1405,6 @@ export async function closePositionDLMM(poolAddress, positionAddress, pnlData = 
   const { userPositions } = await dlmmPool.getPositionsByUserAndLbPair(wallet.publicKey);
   const position = userPositions?.find(p => p.publicKey.toString() === positionAddress);
 
-  // ── 1. Posisi tidak ditemukan via SDK ────────────────────
-  // JANGAN langsung anggap closed — SDK bisa return empty karena RPC glitch.
-  // Verifikasi dulu via getAccountInfo: kalau account masih ada = posisi masih terbuka.
   if (!position) {
     let accountStillExists = false;
     try {
@@ -1422,7 +1419,6 @@ export async function closePositionDLMM(poolAddress, positionAddress, pnlData = 
       );
     }
 
-    // Account benar-benar tidak ada → posisi sudah tertutup
     await closePositionWithPnl(positionAddress, {
       pnlUsd: pnlData.pnlUsd || 0,
       pnlPct: pnlData.pnlPct || 0,
@@ -1433,308 +1429,264 @@ export async function closePositionDLMM(poolAddress, positionAddress, pnlData = 
     return { success: true, txHashes: [], alreadyClosed: true };
   }
 
-      const pd = position.positionData;
-      const tokenXMint = String(pd?.tokenX?.toString?.() || dlmmPool.tokenX.publicKey.toString());
-      const tokenYMint = String(pd?.tokenY?.toString?.() || dlmmPool.tokenY.publicKey.toString());
-      const preCloseBalances = {
-        tokenXRaw: await getTokenBalanceRaw(tokenXMint).catch(() => '0'),
-        tokenYRaw: await getTokenBalanceRaw(tokenYMint).catch(() => '0'),
-      };
-      const binIdsToRemove = pd.positionBinData?.map(b => b.binId) ?? [];
-      const maxExitPriceImpactPct = Math.max(0.1, Number(cfg.maxExitPriceImpactPct ?? 5.0));
+  const pd = position.positionData;
+  const tokenXMint = String(pd?.tokenX?.toString?.() || dlmmPool.tokenX.publicKey.toString());
+  const tokenYMint = String(pd?.tokenY?.toString?.() || dlmmPool.tokenY.publicKey.toString());
+  const preCloseBalances = {
+    tokenXRaw: await getTokenBalanceRaw(tokenXMint).catch(() => '0'),
+    tokenYRaw: await getTokenBalanceRaw(tokenYMint).catch(() => '0'),
+  };
+  const binIdsToRemove = pd.positionBinData?.map(b => b.binId) ?? [];
+  const maxExitPriceImpactPct = Math.max(0.1, Number(cfg.maxExitPriceImpactPct ?? 5.0));
 
-      // Hard gate: jangan lepas likuiditas jika estimasi swap balik ke SOL terlalu merusak harga.
-      // Ini mencegah posisi berubah jadi zombie bag setelah removeLiquidity.
-      try {
-        const xMint = dlmmPool.tokenX.publicKey.toString();
-        const yMint = dlmmPool.tokenY.publicKey.toString();
-        const [xMeta] = await resolveTokens([xMint, yMint]);
-        const rawAmountX = toRawAmountString(pd.totalXAmount?.toString() || '0', xMeta?.decimals ?? 9);
-        const shouldQuoteX = xMint !== WSOL_MINT && /^[0-9]+$/.test(rawAmountX) && rawAmountX !== '0';
-        if (shouldQuoteX) {
-          const quote = await getSwapQuoteToSol(xMint, rawAmountX);
-          const impact = Number(quote?.priceImpactPct ?? 0);
-          if (Number.isFinite(impact) && impact > maxExitPriceImpactPct) {
-            const reason = `HIGH_PRICE_IMPACT_ABORT: ${impact.toFixed(2)}% > ${maxExitPriceImpactPct.toFixed(2)}%`;
-            await updatePositionLifecycle(positionAddress, 'manual_review').catch(() => {});
-            await enqueueReconcileIssue({
-              issueType: 'HIGH_PRICE_IMPACT_ABORT',
-              entityId: positionAddress,
-              payload: {
-                poolAddress,
-                positionAddress,
-                tokenMint: xMint,
-                priceImpactPct: impact,
-                maxExitPriceImpactPct,
-              },
-              notes: reason,
-            }).catch(() => {});
-            throw new Error(reason);
-          }
-        }
-      } catch (impactErr) {
-        // Jika error dari hard gate atau quote, jangan lanjut removeLiquidity.
-        if (String(impactErr?.message || '').includes('HIGH_PRICE_IMPACT_ABORT')) {
-          throw impactErr;
-        }
-        console.warn(`[closePositionDLMM] Jupiter pre-quote failed, abort close for safety: ${impactErr.message}`);
+  try {
+    const xMint = dlmmPool.tokenX.publicKey.toString();
+    const yMint = dlmmPool.tokenY.publicKey.toString();
+    const [xMeta] = await resolveTokens([xMint, yMint]);
+    const rawAmountX = toRawAmountString(pd.totalXAmount?.toString() || '0', xMeta?.decimals ?? 9);
+    const shouldQuoteX = xMint !== WSOL_MINT && /^[0-9]+$/.test(rawAmountX) && rawAmountX !== '0';
+    if (shouldQuoteX) {
+      const quote = await getSwapQuoteToSol(xMint, rawAmountX);
+      const impact = Number(quote?.priceImpactPct ?? 0);
+      if (Number.isFinite(impact) && impact > maxExitPriceImpactPct) {
+        const reason = `HIGH_PRICE_IMPACT_ABORT: ${impact.toFixed(2)}% > ${maxExitPriceImpactPct.toFixed(2)}%`;
         await updatePositionLifecycle(positionAddress, 'manual_review').catch(() => {});
         await enqueueReconcileIssue({
           issueType: 'HIGH_PRICE_IMPACT_ABORT',
           entityId: positionAddress,
-          payload: { poolAddress, positionAddress, error: impactErr.message },
-          notes: 'Pre-exit quote unavailable; close aborted to avoid unsafe swap conditions.',
+          payload: {
+            poolAddress,
+            positionAddress,
+            tokenMint: xMint,
+            priceImpactPct: impact,
+            maxExitPriceImpactPct,
+          },
+          notes: reason,
         }).catch(() => {});
-        throw new Error(`HIGH_PRICE_IMPACT_ABORT: pre-exit quote unavailable (${impactErr.message})`);
+        throw new Error(reason);
       }
+    }
+  } catch (impactErr) {
+    if (String(impactErr?.message || '').includes('HIGH_PRICE_IMPACT_ABORT')) {
+      throw impactErr;
+    }
+    console.warn(`[closePositionDLMM] Jupiter pre-quote failed, abort close for safety: ${impactErr.message}`);
+    await updatePositionLifecycle(positionAddress, 'manual_review').catch(() => {});
+    await enqueueReconcileIssue({
+      issueType: 'HIGH_PRICE_IMPACT_ABORT',
+      entityId: positionAddress,
+      payload: { poolAddress, positionAddress, error: impactErr.message },
+      notes: 'Pre-exit quote unavailable; close aborted to avoid unsafe swap conditions.',
+    }).catch(() => {});
+    throw new Error(`HIGH_PRICE_IMPACT_ABORT: pre-exit quote unavailable (${impactErr.message})`);
+  }
 
-      let removeLiqTx;
+  let removeLiqTx;
+  const sendAndConfirmTx = async (tx, hashes) => {
+    const { blockhash } = await connection.getLatestBlockhash('confirmed');
+    const isTxVersioned = tx instanceof VersionedTransaction;
+    if (isTxVersioned) {
+      tx.message.recentBlockhash = blockhash;
+    } else {
+      tx.recentBlockhash = blockhash;
+      tx.feePayer = wallet.publicKey;
+    }
 
-      // Helper: kirim satu TX dan tunggu konfirmasi, tambahkan hash ke txHashes
-      // Dipakai di step 4 dan step 6 closePosition cleanup.
-      const sendAndConfirmTx = async (tx, hashes) => {
-        // Access 'connection' via closure from outer scope (defined at line 541)
-        const { blockhash } = await connection.getLatestBlockhash('confirmed');
-        const isTxVersioned = tx instanceof VersionedTransaction;
-
-        if (isTxVersioned) {
-          // VersionedTransaction: blockhash masuk ke message, tidak ada field feePayer
-          tx.message.recentBlockhash = blockhash;
-        } else {
-          // Legacy Transaction
-          tx.recentBlockhash = blockhash;
-          tx.feePayer = wallet.publicKey;
-        }
-
-        let microLamports = isUrgent ? 1_000_000 : 250_000;
-        try {
-          // Dynamic Exit Fee: Royal priority during dumps
-          const rec = await getRecommendedPriorityFee([poolAddress]);
-          if (rec > 0) {
-            // TURBO EXIT: 2.5x multiplier for Panic Watchdog closures
-            // STANDARD EXIT: 1.5x multiplier for normal rebalances
-            const multiplier = isUrgent ? 2.5 : 1.5;
-            microLamports = Math.floor(rec * multiplier);
-          }
-        } catch { /* fallback already set higher for urgent */ }
-
-        injectPriorityFee(tx, { units: 400_000, microLamports });
-        await blockUnexpectedSolTransfer({
-          connection,
-          tx,
-          walletPublicKey: wallet.publicKey,
-          txStage: 'meteora.close',
-        });
-
-        if (isTxVersioned) {
-          tx.sign([wallet]); 
-        } else {
-          tx.sign(wallet);  
-        }
-
-        const estFeeSol = estimatePriorityFeeSol({
-          microLamports,
-          computeUnits: 400_000,
-        });
-        const feeBudget = checkAndConsumePriorityFeeBudget({
-          estimatedSol: estFeeSol,
-          context: 'meteora.close',
-        });
-        if (!feeBudget.allowed) {
-          throw new Error(`TX_GUARD_BLOCKED: ${feeBudget.reason}`);
-        }
-
-        let hash;
-        try {
-          hash = await connection.sendRawTransaction(tx.serialize(), {
-            skipPreflight: true,
-            maxRetries: 3,
-          });
-        } catch (sendErr) {
-          recordTxFailure({ context: 'meteora.close', error: sendErr });
-          throw sendErr;
-        }
-
-        try {
-          await pollTxConfirm(connection, hash, 60000);
-        } catch (confirmErr) {
-          recordTxFailure({ context: 'meteora.close', error: confirmErr });
-          throw confirmErr;
-        }
-        recordTxSuccess({ context: 'meteora.close' });
-        hashes.push(hash);
-      };
-
-      // SDK removeLiquidity minta fromBinId/toBinId/bps (BN) — BUKAN binIds/liquiditiesBpsToRemove.
-      // bps = 10000 = 100% removal. Range dari positionData.lowerBinId/upperBinId.
-      const fromBinId = pd.lowerBinId;
-      const toBinId = pd.upperBinId;
-
-      if (binIdsToRemove.length > 0) {
-        // One-shot close: direct remove + claim + close only.
-        removeLiqTx = await dlmmPool.removeLiquidity({
-          position: positionPubkey,
-          user: wallet.publicKey,
-          fromBinId,
-          toBinId,
-          bps: new BN(10000), // 100% removal
-          shouldClaimAndClose: true,
-        });
-      } else {
-        // One-shot close untuk posisi kosong: langsung claim + close jika SDK support.
-        if (typeof dlmmPool.closePositionIfEmpty === 'function') {
-          removeLiqTx = await dlmmPool.closePositionIfEmpty({
-            owner: wallet.publicKey,
-            position: position,
-          });
-        } else {
-          removeLiqTx = await dlmmPool.removeLiquidity({
-            position: positionPubkey,
-            user: wallet.publicKey,
-            fromBinId,
-            toBinId,
-            bps: new BN(10000),
-            shouldClaimAndClose: true,
-          });
-        }
+    let microLamports = isUrgent ? 1_000_000 : 250_000;
+    try {
+      const rec = await getRecommendedPriorityFee([poolAddress]);
+      if (rec > 0) {
+        const multiplier = isUrgent ? 2.5 : 1.5;
+        microLamports = Math.floor(rec * multiplier);
       }
+    } catch { /* fallback already set higher for urgent */ }
 
-      // ── 5. Kirim & konfirmasi setiap TX ─────────────────────
-      const txList = Array.isArray(removeLiqTx) ? removeLiqTx : [removeLiqTx];
-      const txHashes = [];
+    injectPriorityFee(tx, { units: 400_000, microLamports });
+    await blockUnexpectedSolTransfer({
+      connection,
+      tx,
+      walletPublicKey: wallet.publicKey,
+      txStage: 'meteora.close',
+    });
 
-      for (const tx of txList) {
-        await sendAndConfirmTx(tx, txHashes);
-      }
+    if (isTxVersioned) {
+      tx.sign([wallet]);
+    } else {
+      tx.sign(wallet);
+    }
 
-      // ── 6. Verifikasi sekali saja ───────────────────────────────
-      // One-shot close: kalau account masih ada setelah satu close attempt,
-      // jangan kirim cleanup TX tambahan di jalur default. Biarkan manual reconcile
-      // atau jalur swap/claim terpisah menangani sisa state.
+    const estFeeSol = estimatePriorityFeeSol({ microLamports, computeUnits: 400_000 });
+    const feeBudget = checkAndConsumePriorityFeeBudget({ estimatedSol: estFeeSol, context: 'meteora.close' });
+    if (!feeBudget.allowed) {
+      throw new Error(`TX_GUARD_BLOCKED: ${feeBudget.reason}`);
+    }
 
-      await new Promise(r => setTimeout(r, 10000)); // tunggu state propagation
+    let hash;
+    try {
+      hash = await connection.sendRawTransaction(tx.serialize(), { skipPreflight: true, maxRetries: 3 });
+    } catch (sendErr) {
+      recordTxFailure({ context: 'meteora.close', error: sendErr });
+      throw sendErr;
+    }
 
-      let stillHasLiquidity = true;
-      try {
-        const accountInfo = await connection.getAccountInfo(positionPubkey);
-        stillHasLiquidity = accountInfo !== null;
-        if (stillHasLiquidity) {
-          console.warn('[closePositionDLMM] Account masih ada setelah close attempt pertama — one-shot policy berhenti di sini');
-        }
-      } catch (e) {
-        console.warn('[closePositionDLMM] getAccountInfo verify failed:', e.message);
-      }
+    try {
+      await pollTxConfirm(connection, hash, 60000);
+    } catch (confirmErr) {
+      recordTxFailure({ context: 'meteora.close', error: confirmErr });
+      throw confirmErr;
+    }
+    recordTxSuccess({ context: 'meteora.close' });
+    hashes.push(hash);
+  };
 
-      if (stillHasLiquidity) {
-        await updatePositionLifecycle(positionAddress, 'manual_review');
-        await enqueueReconcileIssue({
-          issueType: 'CLOSE_POSITION_RETRY_EXHAUSTED',
-          entityId: positionAddress,
-          payload: { poolAddress, positionAddress, pnlData },
-          notes: 'One-shot close finished but account still appears on-chain. Manual reconcile required.',
-        });
-        throw new Error(
-          'Posisi masih terlihat on-chain setelah satu percobaan close — ' +
-          'lifecycle diubah ke manual_review. Verifikasi manual di Meteora UI diperlukan.'
-        );
-      }
+  const fromBinId = pd.lowerBinId;
+  const toBinId = pd.upperBinId;
 
-      // ── 7. Verified closed → update DB ──────────────────────
-      await closePositionWithPnl(positionAddress, {
-        pnlUsd: pnlData.pnlUsd || 0,
-        pnlPct: pnlData.pnlPct || 0,
-        feesUsd: pnlData.feeUsd || 0,
-        pnlSol: pnlData.pnlSol || 0,
-        feesSol: pnlData.feeSol || 0,
-        closeReason: pnlData.closeReason || 'closed',
-        lifecycleState: pnlData.lifecycleState || 'closed_pending_swap',
+  if (binIdsToRemove.length > 0) {
+    removeLiqTx = await dlmmPool.removeLiquidity({
+      position: positionPubkey,
+      user: wallet.publicKey,
+      fromBinId,
+      toBinId,
+      bps: new BN(10000),
+      shouldClaimAndClose: true,
+    });
+  } else {
+    if (typeof dlmmPool.closePositionIfEmpty === 'function') {
+      removeLiqTx = await dlmmPool.closePositionIfEmpty({
+        owner: wallet.publicKey,
+        position,
       });
-
-      // ── 8. Swap policy: fee-first by default, residual optional by policy ───────
-      if (!isDryRun()) {
-        try {
-          const postCloseBalances = {
-            tokenXRaw: await getTokenBalanceRaw(tokenXMint).catch(() => '0'),
-            tokenYRaw: await getTokenBalanceRaw(tokenYMint).catch(() => '0'),
-          };
-          const isEmergencyExit = isEmergencyCloseReason(pnlData.closeReason);
-          const emergencySlippageBps = Math.max(750, Number(cfg.panicExitSlippageBps ?? 750));
-          const baseSlippageBps = Math.max(50, Number(options.deploySlippageBps || cfg.slippageBps || 250));
-          const effectiveSlippageBps = isEmergencyExit ? emergencySlippageBps : baseSlippageBps;
-
-          const preX = toSafeBigInt(preCloseBalances.tokenXRaw);
-          const postX = toSafeBigInt(postCloseBalances.tokenXRaw);
-          const feeDeltaX = postX > preX ? (postX - preX).toString() : '0';
-
-          const shouldSwapFeeOnly = swapPolicy.swapMode === 'fee_only' || swapPolicy.swapMode === 'all';
-          const shouldSwapResidual = swapPolicy.swapMode === 'all' || swapPolicy.allowResidualSwap;
-
-          if (shouldSwapFeeOnly && isValidPositiveIntegerString(feeDeltaX)) {
-            const feeSwap = await attemptGatedSwapToSol({
-              mint: tokenXMint,
-              rawAmount: feeDeltaX,
-              slippageBps: effectiveSlippageBps,
-              isUrgent,
-              isEmergencyExit,
-              emergencySlippageBps,
-              maxImpactPct: swapPolicy.maxImpactPct,
-              minOutSol: swapPolicy.minOutSol,
-              minNetSol: swapPolicy.minNetSol,
-              estimatedCostSol: swapPolicy.estimatedCostSol,
-              label: 'FEE_SWAP',
-            });
-            if (feeSwap?.success && feeSwap.txHash) {
-              txHashes.push(feeSwap.txHash);
-              console.log(`[closePositionDLMM] FEE_CLAIM_DONE out=${Number(feeSwap.outSol || 0).toFixed(6)} SOL`);
-            } else {
-              console.log(`[closePositionDLMM] Fee auto-swap skipped: ${feeSwap?.reason || 'UNKNOWN'}`);
-            }
-          } else if (shouldSwapFeeOnly) {
-            console.log('[closePositionDLMM] Fee auto-swap skipped: NO_FEE_DELTA');
-          }
-
-          if (shouldSwapResidual) {
-            const remainingX = await getTokenBalanceRaw(tokenXMint).catch(() => '0');
-            if (isValidPositiveIntegerString(remainingX)) {
-              const residualSwap = await attemptGatedSwapToSol({
-                mint: tokenXMint,
-                rawAmount: remainingX,
-                slippageBps: effectiveSlippageBps,
-                isUrgent,
-                isEmergencyExit,
-                emergencySlippageBps,
-                maxImpactPct: swapPolicy.maxImpactPct,
-                minOutSol: swapPolicy.minOutSol,
-                minNetSol: swapPolicy.minNetSol,
-                estimatedCostSol: swapPolicy.estimatedCostSol,
-                label: 'RESIDUAL_SWAP',
-              });
-              if (residualSwap?.success && residualSwap.txHash) {
-                txHashes.push(residualSwap.txHash);
-                console.log(`[closePositionDLMM] RESIDUAL_SWAP_DONE out=${Number(residualSwap.outSol || 0).toFixed(6)} SOL`);
-              } else {
-                console.log(`[closePositionDLMM] RESIDUAL_SWAP_SKIP reason=${residualSwap?.reason || 'UNKNOWN'}`);
-              }
-            }
-          }
-
-          // Rent Recovery: tutup token account kosong.
-          const { closeTokenAccount } = await import('./wallet.js');
-          await closeTokenAccount(tokenXMint).catch(() => {});
-          if (tokenYMint !== WSOL_MINT) {
-            await closeTokenAccount(tokenYMint).catch(() => {});
-          }
-        } catch (eSwap) {
-          console.warn('[closePositionDLMM] Auto-Swap / Rent Recovery failed:', eSwap.message);
-        }
-      }
-
-      return { success: true, txHashes };
-
-    } catch (e) {
-      throw e;
+    } else {
+      removeLiqTx = await dlmmPool.removeLiquidity({
+        position: positionPubkey,
+        user: wallet.publicKey,
+        fromBinId,
+        toBinId,
+        bps: new BN(10000),
+        shouldClaimAndClose: true,
+      });
     }
   }
+
+  const txList = Array.isArray(removeLiqTx) ? removeLiqTx : [removeLiqTx];
+  const txHashes = [];
+  for (const tx of txList) {
+    await sendAndConfirmTx(tx, txHashes);
+  }
+
+  await new Promise(r => setTimeout(r, 10000));
+  let stillHasLiquidity = true;
+  try {
+    const accountInfo = await connection.getAccountInfo(positionPubkey);
+    stillHasLiquidity = accountInfo !== null;
+    if (stillHasLiquidity) {
+      console.warn('[closePositionDLMM] Account masih ada setelah close attempt pertama — one-shot policy berhenti di sini');
+    }
+  } catch (e) {
+    console.warn('[closePositionDLMM] getAccountInfo verify failed:', e.message);
+  }
+
+  if (stillHasLiquidity) {
+    await updatePositionLifecycle(positionAddress, 'manual_review');
+    await enqueueReconcileIssue({
+      issueType: 'CLOSE_POSITION_RETRY_EXHAUSTED',
+      entityId: positionAddress,
+      payload: { poolAddress, positionAddress, pnlData },
+      notes: 'One-shot close finished but account still appears on-chain. Manual reconcile required.',
+    });
+    throw new Error(
+      'Posisi masih terlihat on-chain setelah satu percobaan close — ' +
+      'lifecycle diubah ke manual_review. Verifikasi manual di Meteora UI diperlukan.'
+    );
+  }
+
+  await closePositionWithPnl(positionAddress, {
+    pnlUsd: pnlData.pnlUsd || 0,
+    pnlPct: pnlData.pnlPct || 0,
+    feesUsd: pnlData.feeUsd || 0,
+    pnlSol: pnlData.pnlSol || 0,
+    feesSol: pnlData.feeSol || 0,
+    closeReason: pnlData.closeReason || 'closed',
+    lifecycleState: pnlData.lifecycleState || 'closed_pending_swap',
+  });
+
+  if (!isDryRun()) {
+    try {
+      const postCloseBalances = {
+        tokenXRaw: await getTokenBalanceRaw(tokenXMint).catch(() => '0'),
+        tokenYRaw: await getTokenBalanceRaw(tokenYMint).catch(() => '0'),
+      };
+      const isEmergencyExit = isEmergencyCloseReason(pnlData.closeReason);
+      const emergencySlippageBps = Math.max(750, Number(cfg.panicExitSlippageBps ?? 750));
+      const baseSlippageBps = Math.max(50, Number(options.deploySlippageBps || cfg.slippageBps || 250));
+      const effectiveSlippageBps = isEmergencyExit ? emergencySlippageBps : baseSlippageBps;
+      const preX = toSafeBigInt(preCloseBalances.tokenXRaw);
+      const postX = toSafeBigInt(postCloseBalances.tokenXRaw);
+      const feeDeltaX = postX > preX ? (postX - preX).toString() : '0';
+      const shouldSwapFeeOnly = swapPolicy.swapMode === 'fee_only' || swapPolicy.swapMode === 'all';
+      const shouldSwapResidual = swapPolicy.swapMode === 'all' || swapPolicy.allowResidualSwap;
+
+      if (shouldSwapFeeOnly && isValidPositiveIntegerString(feeDeltaX)) {
+        const feeSwap = await attemptGatedSwapToSol({
+          mint: tokenXMint,
+          rawAmount: feeDeltaX,
+          slippageBps: effectiveSlippageBps,
+          isUrgent,
+          isEmergencyExit,
+          emergencySlippageBps,
+          maxImpactPct: swapPolicy.maxImpactPct,
+          minOutSol: swapPolicy.minOutSol,
+          minNetSol: swapPolicy.minNetSol,
+          estimatedCostSol: swapPolicy.estimatedCostSol,
+          label: 'FEE_SWAP',
+        });
+        if (feeSwap?.success && feeSwap.txHash) {
+          txHashes.push(feeSwap.txHash);
+          console.log(`[closePositionDLMM] FEE_CLAIM_DONE out=${Number(feeSwap.outSol || 0).toFixed(6)} SOL`);
+        } else {
+          console.log(`[closePositionDLMM] Fee auto-swap skipped: ${feeSwap?.reason || 'UNKNOWN'}`);
+        }
+      } else if (shouldSwapFeeOnly) {
+        console.log('[closePositionDLMM] Fee auto-swap skipped: NO_FEE_DELTA');
+      }
+
+      if (shouldSwapResidual) {
+        const remainingX = await getTokenBalanceRaw(tokenXMint).catch(() => '0');
+        if (isValidPositiveIntegerString(remainingX)) {
+          const residualSwap = await attemptGatedSwapToSol({
+            mint: tokenXMint,
+            rawAmount: remainingX,
+            slippageBps: effectiveSlippageBps,
+            isUrgent,
+            isEmergencyExit,
+            emergencySlippageBps,
+            maxImpactPct: swapPolicy.maxImpactPct,
+            minOutSol: swapPolicy.minOutSol,
+            minNetSol: swapPolicy.minNetSol,
+            estimatedCostSol: swapPolicy.estimatedCostSol,
+            label: 'RESIDUAL_SWAP',
+          });
+          if (residualSwap?.success && residualSwap.txHash) {
+            txHashes.push(residualSwap.txHash);
+            console.log(`[closePositionDLMM] RESIDUAL_SWAP_DONE out=${Number(residualSwap.outSol || 0).toFixed(6)} SOL`);
+          } else {
+            console.log(`[closePositionDLMM] RESIDUAL_SWAP_SKIP reason=${residualSwap?.reason || 'UNKNOWN'}`);
+          }
+        }
+      }
+
+      const { closeTokenAccount } = await import('./wallet.js');
+      await closeTokenAccount(tokenXMint).catch(() => {});
+      if (tokenYMint !== WSOL_MINT) {
+        await closeTokenAccount(tokenYMint).catch(() => {});
+      }
+    } catch (eSwap) {
+      console.warn('[closePositionDLMM] Auto-Swap / Rent Recovery failed:', eSwap.message);
+    }
+  }
+
+  return { success: true, txHashes };
 }
 
 // ─── Claim Fees ──────────────────────────────────────────────────
