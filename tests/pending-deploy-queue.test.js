@@ -548,6 +548,36 @@ test('final Supertrend deploy gate prioritizes reliable live snapshot over bulli
   assert.equal(meta.supertrend15mAt, undefined);
 });
 
+test('final Supertrend deploy gate still vetoes when live snapshot is bearish but unreliable', async () => {
+  const now = 1_700_000_000_000;
+  const meta = { supertrend15m: 'BULLISH', supertrend15mAt: now - 5_000 };
+  const pool = {};
+  let calls = 0;
+
+  const decision = await getFinalSupertrendDeployDecision({
+    mint: 'Mint111111111111111111111111111111111111111',
+    meta,
+    pool,
+    now,
+    liveSnapshot: {
+      dataSource: 'meteora-dlmm-ohlcv',
+      quality: { taTrend: 'BEARISH' },
+      ohlcv: { source: 'meteora-dlmm-ohlcv', historySuccess: false, priceChangeM5: 0.8 },
+      ta: { supertrend: { trend: 'BEARISH' } },
+    },
+    checkFn: async () => {
+      calls += 1;
+      return { veto: false, direction: 'BULLISH', reason: 'PASS (should not run)' };
+    },
+  });
+
+  assert.equal(decision.action, 'VETO');
+  assert.equal(decision.source, 'live_snapshot');
+  assert.equal(calls, 0);
+  assert.equal(meta.supertrend15m, undefined);
+  assert.equal(meta.supertrend15mAt, undefined);
+});
+
 test('final entry candle sanity passes fresh green candle with volume confirmation', async () => {
   const now = 1_700_000_000_000;
   const decision = await getFinalEntryCandleSanityDecision({

@@ -476,12 +476,16 @@ export async function getFinalSupertrendDeployDecision({
   const label = symbol || mint?.slice?.(0, 8) || 'UNKNOWN';
   const liveTrend = readLiveSnapshotTrend(liveSnapshot);
   const liveReliable = isReliableLiveSnapshot(liveSnapshot);
-  if (liveReliable && liveTrend === 'BEARISH') {
+  // Hard-stop policy: explicit live bearish must always veto entry.
+  // This prevents a fresh bearish read from being overridden by cached bullish state.
+  if (liveTrend === 'BEARISH') {
     clearBullishSupertrendCache(meta, pool);
     return {
       ok: false,
       action: 'VETO',
-      reason: 'live Supertrend 15m bearish from reliable snapshot',
+      reason: liveReliable
+        ? 'live Supertrend 15m bearish from reliable snapshot'
+        : 'live Supertrend 15m bearish from snapshot',
       source: 'live_snapshot',
       direction: 'BEARISH',
     };

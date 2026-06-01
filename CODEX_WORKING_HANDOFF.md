@@ -87,3 +87,4 @@ Do not edit these unless the user explicitly scopes the change there.
 - 2026-05-31: Suppressed slot-saturation queue hold notifications.
 - 2026-05-31: Persisted final Supertrend 15m decision stamps in deploy queue path to keep bearish veto and bullish freshness state consistent across retries.
 - 2026-05-31: Completed 5.3 wiring hardening for shape consistency: strategy parser now defaults to config `dlmmLiquidityShape` so `/setconfig strategy.liquidityShape` flows consistently into strategyType defaults.
+- 2026-06-01: Completed 5.3 Supertrend hard-stop hardening: final deploy ST gate now treats explicit live BEARISH as VETO even when snapshot reliability is degraded, preventing stale bullish cache override.
