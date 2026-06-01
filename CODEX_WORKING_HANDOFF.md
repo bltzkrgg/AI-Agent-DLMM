@@ -91,3 +91,4 @@ Do not edit these unless the user explicitly scopes the change there.
 - 2026-06-01: Completed 5.4 mini Supertrend wiring hardening: queue final ST gate now reuses latest queue live snapshot/current price for final deploy check, avoiding split-decision between freshness evaluation and final ST gate.
 - 2026-06-01: Hardened LP queue admission fail-closed for trusted watch path: non-bullish trusted metadata now requires a fresh bullish final ST stamp, and unreliable live snapshots with non-bullish trend now hold instead of progressing.
 - 2026-06-01: Completed close-once exit hardening in evilPanda: removed normal close cleanup retry loop so exit can close once, then continue fee swap policy without extra cleanup TXs.
+- 2026-06-01: Extended 5.4 mini coverage with a trusted WATCH LP test that confirms non-bullish trusted entries still depend on a fresh bullish final ST cache.

@@ -1578,6 +1578,37 @@ test('queue final ST gate uses latest live snapshot wiring', () => {
   assert.match(src, /entry\?\.lastLiveSnapshot\?\.ohlcv\?\.currentPrice/);
 });
 
+test('trusted WATCH LP entries still require fresh bullish final ST when trend is not bullish', async () => {
+  const now = 1_700_000_000_000;
+  const meta = {
+    entryGateMode: 'lp_simple_m15',
+    entryTimingState: 'LP_LIVE',
+    entryReadiness: 'HIGH',
+    breakoutQuality: 'VALID',
+    queueTrustedWatch: true,
+    taTrend: 'NEUTRAL',
+    supertrend15m: 'BULLISH',
+    supertrend15mAt: now - 5_000,
+  };
+
+  const decision = await getFinalSupertrendDeployDecision({
+    mint: 'Mint111111111111111111111111111111111111111',
+    meta,
+    now,
+    liveSnapshot: {
+      dataSource: 'meteora-dlmm-ohlcv',
+      quality: { taTrend: 'NEUTRAL' },
+      ohlcv: { source: 'meteora-dlmm-ohlcv', historySuccess: true, priceChangeM5: 1.2 },
+      ta: { supertrend: { trend: 'NEUTRAL' } },
+    },
+    checkFn: async () => ({ veto: false, direction: 'BULLISH', reason: 'PASS (should not run)' }),
+  });
+
+  assert.equal(decision.action, 'ALLOW');
+  assert.equal(decision.source, 'cache');
+  assert.equal(decision.direction, 'BULLISH');
+});
+
 test('deploy queue freezes intent only when bin, price, and snapshot are valid', () => {
   const src = readFileSync(new URL('../src/utils/pendingDeployQueue.js', import.meta.url), 'utf8');
   assert.match(src, /function hasValidFrozenDeployIntent/);
