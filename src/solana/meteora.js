@@ -1571,60 +1571,31 @@ export async function closePositionDLMM(poolAddress, positionAddress, pnlData = 
       const toBinId = pd.upperBinId;
 
       if (binIdsToRemove.length > 0) {
-        // ── 4a. Position dengan bin aktif ────────────────────────
-        // Selalu coba shouldClaimAndClose:true dulu — removes liq + claim fees + hapus account.
-        // shouldClaimAndClose:false hanya tarik likuiditas, account TETAP ADA → Meteora UI open!
-        try {
-          removeLiqTx = await dlmmPool.removeLiquidity({
-            position: positionPubkey,
-            user: wallet.publicKey,
-            fromBinId,
-            toBinId,
-            bps: new BN(10000), // 100% removal
-            shouldClaimAndClose: true,
+        // One-shot close: direct remove + claim + close only.
+        removeLiqTx = await dlmmPool.removeLiquidity({
+          position: positionPubkey,
+          user: wallet.publicKey,
+          fromBinId,
+          toBinId,
+          bps: new BN(10000), // 100% removal
+          shouldClaimAndClose: true,
+        });
+      } else {
+        // One-shot close untuk posisi kosong: langsung claim + close jika SDK support.
+        if (typeof dlmmPool.closePositionIfEmpty === 'function') {
+          removeLiqTx = await dlmmPool.closePositionIfEmpty({
+            owner: wallet.publicKey,
+            position: position,
           });
-        } catch {
-          // Fallback: tarik likuiditas saja — account akan tetap ada.
-          // Step 6 akan panggil closePosition() dengan LbPosition object yang benar.
+        } else {
           removeLiqTx = await dlmmPool.removeLiquidity({
             position: positionPubkey,
             user: wallet.publicKey,
             fromBinId,
             toBinId,
             bps: new BN(10000),
-            shouldClaimAndClose: false,
+            shouldClaimAndClose: true,
           });
-        }
-      } else {
-        // ── 4b. Position tanpa bin (kosong) ──────────────────────
-        // PENTING: closePositionIfEmpty & closePosition minta LbPosition object (bukan PublicKey).
-        // `position` di sini adalah LbPosition dari getPositionsByUserAndLbPair (step 1).
-        let emptyCloseOk = false;
-
-        // Coba 1: closePositionIfEmpty — designed khusus untuk empty position
-        try {
-          if (typeof dlmmPool.closePositionIfEmpty === 'function') {
-            removeLiqTx = await dlmmPool.closePositionIfEmpty({
-              owner: wallet.publicKey,
-              position: position, // LbPosition object dari step 1
-            });
-            emptyCloseOk = true;
-          }
-        } catch { /* lanjut ke coba 2 */ }
-
-        // Coba 3: removeLiquidity shouldClaimAndClose=true dengan range penuh
-        if (!emptyCloseOk) {
-          try {
-            removeLiqTx = await dlmmPool.removeLiquidity({
-              position: positionPubkey,
-              user: wallet.publicKey,
-              fromBinId,
-              toBinId,
-              bps: new BN(10000),
-              shouldClaimAndClose: true,
-            });
-            emptyCloseOk = true;
-          } catch { /* posisi keras kepala, biarkan cleanup yang sapu sisa */ }
         }
       }
 
