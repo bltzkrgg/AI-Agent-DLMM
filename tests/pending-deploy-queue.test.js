@@ -180,6 +180,26 @@ test('fresh deploy meta allows breakout-valid, high-readiness entries including 
     breakoutQuality: 'VALID',
     taTrend: 'NEUTRAL',
     queueTrustedWatch: true,
+  }), false);
+
+  assert.equal(isFreshDeployMeta({
+    entryTimingState: 'LP_LIVE',
+    entryReadiness: 'HIGH',
+    breakoutQuality: 'VALID',
+    taTrend: 'NEUTRAL',
+    queueTrustedWatch: true,
+    supertrend15m: 'BULLISH',
+    supertrend15mAt: Date.now() - 60_000,
+  }), false);
+
+  assert.equal(isFreshDeployMeta({
+    entryTimingState: 'LP_LIVE',
+    entryReadiness: 'HIGH',
+    breakoutQuality: 'VALID',
+    taTrend: 'NEUTRAL',
+    queueTrustedWatch: true,
+    supertrend15m: 'BULLISH',
+    supertrend15mAt: Date.now() - 5_000,
   }), true);
 
   assert.equal(isFreshDeployMeta({
@@ -187,7 +207,7 @@ test('fresh deploy meta allows breakout-valid, high-readiness entries including 
     entryReadiness: 'HIGH',
     breakoutQuality: 'VALID',
     queueTrustedWatch: true,
-  }), true);
+  }), false);
 
   assert.equal(isFreshDeployMeta({
     entryTimingState: 'LP_LIVE',
@@ -1358,6 +1378,29 @@ test('reliable meridian fallback still holds when trend or m5 cannot be resolved
   });
 
   assert.equal(decision.decision, 'HOLD');
+});
+
+test('queue holds when snapshot is unreliable and trend is not explicitly bullish', () => {
+  const decision = summarizeQueueDecision({
+    meta: {
+      entryTimingState: 'LP_LIVE',
+      entryReadiness: 'HIGH',
+      breakoutQuality: 'VALID',
+      queueTrustedWatch: true,
+      taTrend: 'UNKNOWN',
+      priceChangeM5: 1.2,
+    },
+    liveSnapshot: {
+      dataSource: 'meteora-dlmm-ohlcv',
+      quality: { taTrend: 'NEUTRAL' },
+      ohlcv: { source: 'meteora-dlmm-ohlcv', historySuccess: false, priceChangeM5: 1.2 },
+      ta: { supertrend: { trend: 'NEUTRAL' } },
+    },
+    lpMode: true,
+  });
+
+  assert.equal(decision.decision, 'HOLD');
+  assert.match(decision.reason, /unreliable/i);
 });
 
 test('queue snapshot path passes poolAddress to market snapshot resolver', () => {

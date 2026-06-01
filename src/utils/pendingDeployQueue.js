@@ -708,6 +708,9 @@ export function summarizeQueueDecision({ meta = {}, liveSnapshot = null, cfg = g
     } else if (trendUnknown && !hasFreshBullishFinalStCache) {
       decision = 'HOLD';
       reason = 'HOLD: realtime trend unknown; waiting fresh trend or final ST 15m bullish cache';
+    } else if (!liveReliable && signals.trend !== 'BULLISH' && !hasFreshBullishFinalStCache) {
+      decision = 'HOLD';
+      reason = 'HOLD: live snapshot unreliable and trend not explicitly bullish';
     } else if (!trendFresh && !(trendUnknown && hasFreshBullishFinalStCache)) {
       decision = 'HOLD';
       reason = `HOLD: realtime trend stale (${signals.trendSource}); waiting fresh live trend`;
@@ -753,6 +756,9 @@ export function isFreshDeployMeta(meta = {}) {
     if (timingState !== 'LP_LIVE' && timingState !== 'BREAKOUT' && timingState !== 'ATH_BREAK') return false;
     if (taTrend === 'BEARISH') return false;
     if (!trustedLpWatch && taTrend !== 'BULLISH') return false;
+    if (trustedLpWatch && taTrend !== 'BULLISH' && !isFreshBullishSupertrend15m(meta, {}, Date.now(), FINAL_ST_CACHE_TTL_MS)) {
+      return false;
+    }
   } else if (timingState !== 'BREAKOUT' && timingState !== 'ATH_BREAK') {
     return false;
   }
