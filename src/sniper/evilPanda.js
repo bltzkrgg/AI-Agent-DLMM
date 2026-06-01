@@ -3059,73 +3059,6 @@ async function buildZapOutCloseTxs(dlmmPool, wallet, activePos) {
   return txList;
 }
 
-async function buildClosePositionTxs(dlmmPool, wallet, activePos) {
-  const pd = activePos?.positionData || {};
-  const lowerBinId = pd.lowerBinId;
-  const upperBinId = pd.upperBinId;
-  const txs = [];
-
-  if (lowerBinId !== undefined && upperBinId !== undefined) {
-    try {
-      const removeTxs = await dlmmPool.removeLiquidity({
-        position: activePos.publicKey,
-        user: wallet.publicKey,
-        fromBinId: lowerBinId,
-        toBinId: upperBinId,
-        bps: new BN(10000),
-        shouldClaimAndClose: false,
-      });
-      txs.push(...(Array.isArray(removeTxs) ? removeTxs : [removeTxs]));
-    } catch (e) {
-      console.warn(`[evilPanda] removeLiquidity close attempt failed: ${e.message}`);
-    }
-  }
-
-  if (typeof dlmmPool.claimSwapFee === 'function') {
-    try {
-      const claimTxs = await dlmmPool.claimSwapFee({
-        owner: wallet.publicKey,
-        position: activePos,
-      });
-      txs.push(...(Array.isArray(claimTxs) ? claimTxs : [claimTxs]));
-    } catch (e) {
-      const msg = String(e?.message || e);
-      if (!msg.toLowerCase().includes('no fee')) {
-        console.warn(`[evilPanda] claimSwapFee attempt failed: ${msg}`);
-      }
-    }
-  }
-
-  if (typeof dlmmPool.closePositionIfEmpty === 'function') {
-    try {
-      const closeIfEmptyTxs = await dlmmPool.closePositionIfEmpty({
-        owner: wallet.publicKey,
-        position: activePos,
-      });
-      txs.push(...(Array.isArray(closeIfEmptyTxs) ? closeIfEmptyTxs : [closeIfEmptyTxs]));
-      if (txs.length > 0) return txs;
-    } catch (e) {
-      console.warn(`[evilPanda] closePositionIfEmpty attempt failed: ${e.message}`);
-    }
-  }
-
-  if (typeof dlmmPool.closePosition === 'function') {
-    try {
-      const closeTxs = await dlmmPool.closePosition({
-        owner: wallet.publicKey,
-        position: activePos,
-      });
-      txs.push(...(Array.isArray(closeTxs) ? closeTxs : [closeTxs]));
-      if (txs.length > 0) return txs;
-    } catch (e) {
-      console.warn(`[evilPanda] closePosition attempt failed: ${e.message}`);
-    }
-  }
-
-  if (txs.length > 0) return txs;
-  throw new Error(`NO_CLOSE_METHOD_AVAILABLE_${activePos.publicKey.toString().slice(0, 8)}`);
-}
-
 function isLikelyAlreadyEmptyCloseState(error) {
   const msg = String(error?.message || error || '').toLowerCase();
   return (
@@ -3240,23 +3173,10 @@ async function executeExitCloseWithZapPreferred({
         `Reason: <code>${escapeHTML(zapReason)}</code>`
       );
     }
-    try {
-      const fallbackTxList = await buildClosePositionTxs(dlmmPool, wallet, activePos);
-      for (const tx of fallbackTxList) {
-        const sig = await sendExitTx(connection, wallet, tx, microLamports);
-        removeSignatures.push(sig);
-        console.log(`[evilPanda] FALLBACK CLOSE TX confirmed (${stage}): ${sig.slice(0,8)}`);
-      }
-      console.warn(
-        `[evilPanda] EXIT_FALLBACK_USED stage=${stage} pos=${activePos.publicKey.toString().slice(0,8)} ` +
-        `reason=${zapReason}`
-      );
-      return { path: 'FALLBACK_LEGACY', usedFallback: true, txCount: fallbackTxList.length, zapReason };
-    } catch (fallbackErr) {
-      const fallbackReason = String(fallbackErr?.message || fallbackErr || 'UNKNOWN_FALLBACK_ERROR');
-      const combined = `EXIT_ZAP_AND_FALLBACK_FAILED stage=${stage} zap=${zapReason} fallback=${fallbackReason}`;
-      throw buildPermanentExitError(combined, 'EXIT_ZAP_AND_FALLBACK_FAILED');
-    }
+    throw buildPermanentExitError(
+      `EXIT_ZAP_ONLY_FAILED stage=${stage} zap=${zapReason}`,
+      'EXIT_ZAP_ONLY_FAILED'
+    );
   }
 }
 
