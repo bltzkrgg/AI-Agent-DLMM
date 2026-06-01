@@ -94,3 +94,6 @@ Do not edit these unless the user explicitly scopes the change there.
 - 2026-06-01: Extended 5.4 mini coverage with a trusted WATCH LP test that confirms non-bullish trusted entries still depend on a fresh bullish final ST cache.
 - 2026-06-01: Scoped `src/solana/meteora.js` close flow to one-shot verification only; removed default cleanup retry chain so close no longer replays removeLiquidity/closePosition helpers as a default path.
 - 2026-06-01: Removed legacy exit fallback TX paths and quote-only partial cleanup TX emitters from `src/sniper/evilPanda.js`; recovery/exit close flows now stop after one-shot verification instead of sending additional close TXs.
+- 2026-06-01: Tightened `src/solana/meteora.js` empty-close edge case to fail closed instead of falling back to `closePositionIfEmpty`, keeping close behavior strictly one-shot.
+- 2026-06-01: Removed remaining exit CU retry fallback in `src/sniper/evilPanda.js` and removed claim fee fallback to `claimAllRewardsByPosition`; exit/claim paths now stay one-shot and fail fast per Meteora docs alignment.
+- 2026-06-01: Hardened deploy slot admission race in `src/utils/deploySlotGuard.js` by adding in-process reservation lock and fresh reservation re-check before write, reducing simultaneous double-reservation risk across hunter/queue callers.
