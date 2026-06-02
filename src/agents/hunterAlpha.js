@@ -3275,6 +3275,20 @@ async function monitorLoop(positionPubkey, symbol, poolAddress) {
         return;
       }
 
+      if (action === 'MAX_HOLD') {
+        await notify(
+          `⏰ <b>MAX HOLD EXIT!</b>\n` +
+          `Token: <b>${symbol}</b>\n` +
+          `Fee PnL: <code>${feePnlSol.toFixed(6)} SOL / ${feeSign}${feePnlPct.toFixed(2)}%</code>\n` +
+          `Position Value: <code>${currentValueSol.toFixed(4)} SOL</code>\n` +
+          `Total Exposure PnL: <code>${pnlPct >= 0 ? '+' : ''}${pnlPct.toFixed(2)}%</code>\n` +
+          (status.exitReason ? `Reason: <code>${escapeHTML(status.exitReason)}</code>\n` : '') +
+          `\n⏳ <i>Menutup posisi...</i>`
+        );
+        await safeExit(positionPubkey, 'MAX_HOLD_EXIT');
+        return;
+      }
+
       if (action === 'HOLD') {
         if (poolImpactDecision.action === 'FORCE_EXIT') {
           const priceDrop = Number(poolImpactDecision.metrics?.priceDropPctFromEntry || 0);

@@ -97,3 +97,4 @@ Do not edit these unless the user explicitly scopes the change there.
 - 2026-06-01: Tightened `src/solana/meteora.js` empty-close edge case to fail closed instead of falling back to `closePositionIfEmpty`, keeping close behavior strictly one-shot.
 - 2026-06-01: Removed remaining exit CU retry fallback in `src/sniper/evilPanda.js` and removed claim fee fallback to `claimAllRewardsByPosition`; exit/claim paths now stay one-shot and fail fast per Meteora docs alignment.
 - 2026-06-01: Hardened deploy slot admission race in `src/utils/deploySlotGuard.js` by adding in-process reservation lock and fresh reservation re-check before write, reducing simultaneous double-reservation risk across hunter/queue callers.
+- 2026-06-02: Wired active monitor exit policy so take profit is triggered by TA (`evaluateExitSignal`) while stop loss and max hold remain hard config guards (`stopLossPct`, `maxHoldHours`); trailing config no longer emits `TAKE_PROFIT` from `monitorPnL`.

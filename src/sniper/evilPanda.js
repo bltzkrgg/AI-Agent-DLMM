@@ -2448,18 +2448,10 @@ function getConfiguredSmartExitRsi() {
   return Number.isFinite(value) && value > 0 ? value : EP_CONFIG.RSI_EXIT_THRESHOLD;
 }
 
-function getConfiguredTrailingTriggerPct() {
+function getConfiguredMaxHoldHours() {
   const cfg = getConfig();
-  const value = Number(cfg.trailingTriggerPct);
-  return Number.isFinite(value) && value > 0 ? value : EP_CONFIG.TRAILING_TRIGGER_PCT;
-}
-
-function getConfiguredTrailingDropPct() {
-  const cfg = getConfig();
-  const value = Number(cfg.trailingDropPct);
-  if (Number.isFinite(value) && value > 0) return value;
-  const legacy = Number(cfg.trailingStopPct);
-  return Number.isFinite(legacy) && legacy > 0 ? legacy : EP_CONFIG.TRAILING_DROP_PCT;
+  const value = Number(cfg.maxHoldHours);
+  return Number.isFinite(value) && value > 0 ? value : 72;
 }
 
 function getConfiguredDeployRangeMaxBins() {
@@ -2986,18 +2978,7 @@ async function sendExitTx(connection, wallet, tx, microLamports) {
     sig = await sendSignedTx(connection, wallet, tx);
   } catch (e) {
     logSendTxError('exit send failed', e);
-    if (!isComputeUnitExhausted(e)) throw e;
-
-    console.warn(
-      `[evilPanda] Exit TX kehabisan compute unit; retry dengan ${EP_CONFIG.EXIT_MAX_COMPUTE_UNITS} CU`
-    );
-    injectPriorityFee(tx, { units: EP_CONFIG.EXIT_MAX_COMPUTE_UNITS, microLamports });
-    try {
-      sig = await sendSignedTx(connection, wallet, tx);
-    } catch (retryErr) {
-      logSendTxError('exit send retry failed', retryErr);
-      throw retryErr;
-    }
+    throw e;
   }
 
   await pollTxConfirm(connection, sig, 90_000);
@@ -4150,7 +4131,7 @@ function evaluateExitSignal(signal) {
 
 /**
  * @typedef {Object} PnLStatus
- * @property {'HOLD'|'TAKE_PROFIT'|'STOP_LOSS'|'MANUAL_CLOSED'|'ERROR'} action
+ * @property {'HOLD'|'TAKE_PROFIT'|'STOP_LOSS'|'MAX_HOLD'|'MANUAL_CLOSED'|'ERROR'} action
  * @property {number}  currentValueSol
  * @property {number}  pnlPct
  * @property {boolean} inRange
@@ -4160,7 +4141,7 @@ function evaluateExitSignal(signal) {
 
 /**
  * Poll on-chain + Meridian TA sekali, tentukan action.
- * Priority: Hard SL (-10%) > Skenario TA (A/B).
+ * Priority: Hard SL config > MaxHold config > TA take-profit.
  * Fail-open: jika Meridian API down, TA-exit tidak dipicu.
  *
  * @param {string} positionPubkey
@@ -4244,6 +4225,10 @@ export async function monitorPnL(positionPubkey) {
       ? ((fastCurrentValueSol - reg.deploySol) / reg.deploySol) * 100
       : 0;
     const stopLossPct = getConfiguredStopLossPct();
+    const maxHoldHours = getConfiguredMaxHoldHours();
+    const deployedAtMs = reg.deployedAt ? new Date(reg.deployedAt).getTime() : null;
+    const ageMs = Number.isFinite(deployedAtMs) ? Math.max(0, Date.now() - deployedAtMs) : 0;
+    const maxHoldMs = maxHoldHours * 60 * 60 * 1000;
     if (fastPnlPct <= -stopLossPct) {
       console.log(`[evilPanda] 🛑 STOP_LOSS ${positionPubkey.slice(0,8)} pnl=${fastPnlPct.toFixed(2)}% (fast path)`);
       return {
@@ -4259,18 +4244,11 @@ export async function monitorPnL(positionPubkey) {
       };
     }
 
-    const trailingTriggerPct = getConfiguredTrailingTriggerPct();
-    const trailingDropPct = getConfiguredTrailingDropPct();
-    if (fastPnlPct > reg.hwmPct) {
-      reg.hwmPct = fastPnlPct;
-      console.log(`[evilPanda] 📈 New HWM: ${reg.hwmPct.toFixed(2)}%`);
-    }
-    const fastTrailingArmed = trailingTriggerPct > 0 ? reg.hwmPct >= trailingTriggerPct : reg.hwmPct > 0;
-    if (trailingDropPct > 0 && fastTrailingArmed && (reg.hwmPct - fastPnlPct) >= trailingDropPct) {
-      const drawdown = reg.hwmPct - fastPnlPct;
-      console.log(`[evilPanda] 📈 TAKE_PROFIT (TRAILING FAST) ${positionPubkey.slice(0,8)} hwm=${reg.hwmPct.toFixed(2)}% pnl=${fastPnlPct.toFixed(2)}% drop=${drawdown.toFixed(2)}%`);
+    if (maxHoldMs > 0 && ageMs >= maxHoldMs) {
+      const ageHours = ageMs / (60 * 60 * 1000);
+      console.log(`[evilPanda] ⏰ MAX_HOLD ${positionPubkey.slice(0,8)} age=${ageHours.toFixed(2)}h limit=${maxHoldHours}h (fast path)`);
       return {
-        action: 'TAKE_PROFIT',
+        action: 'MAX_HOLD',
         currentValueSol: fastCurrentValueSol,
         pnlPct: fastPnlPct,
         feePnlSol: 0,
@@ -4278,9 +4256,13 @@ export async function monitorPnL(positionPubkey) {
         feePnlSource: 'fast_path',
         feePnlAvailable: false,
         inRange,
-        exitScenario: 'TRAILING_PROFIT',
-        exitReason: `Trailing TP fast path: turun ${drawdown.toFixed(2)}% dari HWM ${reg.hwmPct.toFixed(2)}% (trigger ${trailingTriggerPct}%, drop ${trailingDropPct}%)`,
+        exitReason: `Max hold fast path: age=${ageHours.toFixed(2)}h ≥ ${maxHoldHours}h`,
       };
+    }
+
+    if (fastPnlPct > reg.hwmPct) {
+      reg.hwmPct = fastPnlPct;
+      console.log(`[evilPanda] 📈 New HWM: ${reg.hwmPct.toFixed(2)}%`);
     }
 
     let currentValueSol = 0;
@@ -4320,32 +4302,45 @@ export async function monitorPnL(positionPubkey) {
                exitReason: `Hard SL: PnL=${pnlPct.toFixed(2)}% ≤ -${stopLossPct}%` };
     }
 
-    // ── PRIORITAS 2: Trailing Profit Lock berbasis config ────────────────
-    // Perbarui HWM jika PnL saat ini lebih tinggi dari sebelumnya.
-    // Jika PnL turun > trailingDropPct dari HWM setelah trigger tercapai → TAKE_PROFIT.
+    // ── PRIORITAS 2: Max Hold berbasis config ─────────────────────────────
+    if (maxHoldMs > 0 && ageMs >= maxHoldMs) {
+      const ageHours = ageMs / (60 * 60 * 1000);
+      console.log(`[evilPanda] ⏰ MAX_HOLD ${positionPubkey.slice(0,8)} age=${ageHours.toFixed(2)}h limit=${maxHoldHours}h`);
+      return {
+        action: 'MAX_HOLD',
+        currentValueSol,
+        pnlPct,
+        ...feeOnlyPnl,
+        inRange,
+        exitReason: `Max hold: age=${ageHours.toFixed(2)}h ≥ ${maxHoldHours}h`,
+      };
+    }
+
+    // ── Telemetry: HWM tetap dicatat, tapi TP diputuskan oleh TA. ─────────
     if (pnlPct > reg.hwmPct) {
       reg.hwmPct = pnlPct; // update HWM in-place (Map entry adalah referensi)
       console.log(`[evilPanda] 📈 New HWM: ${reg.hwmPct.toFixed(2)}%`);
     }
 
-    const trailingArmed = trailingTriggerPct > 0 ? reg.hwmPct >= trailingTriggerPct : reg.hwmPct > 0;
-    if (trailingDropPct > 0 && trailingArmed && (reg.hwmPct - pnlPct) >= trailingDropPct) {
-      const drawdown = reg.hwmPct - pnlPct;
-      console.log(`[evilPanda] 📈 TAKE_PROFIT (TRAILING) ${positionPubkey.slice(0,8)} hwm=${reg.hwmPct.toFixed(2)}% pnl=${pnlPct.toFixed(2)}% drop=${drawdown.toFixed(2)}%`);
-      return {
-        action:       'TAKE_PROFIT',
-        currentValueSol, pnlPct, ...feeOnlyPnl, inRange,
-        exitScenario: 'TRAILING_PROFIT',
-        exitReason:   `Trailing TP: turun ${drawdown.toFixed(2)}% dari HWM ${reg.hwmPct.toFixed(2)}% (trigger ${trailingTriggerPct}%, drop ${trailingDropPct}%)`,
-      };
-    }
-
-    // ── TA Insight only (tidak memutuskan exit) ─────────────────────────
+    // ── PRIORITAS 3: Take Profit berbasis TA ──────────────────────────────
     // Fetch RSI(2) + BB + MACD dari Meridian, fail-open jika API down.
     const signal     = await fetchExitSignal(reg.tokenXMint);
     const exitDecision = evaluateExitSignal(signal);
 
-    console.log(`[evilPanda] 📊 ${positionPubkey.slice(0,8)} pnl=${pnlPct.toFixed(2)}% val=${currentValueSol.toFixed(4)}SOL | TA info: ${exitDecision.reason}`);
+    if (exitDecision.shouldExit) {
+      console.log(`[evilPanda] 📈 TAKE_PROFIT (TA) ${positionPubkey.slice(0,8)} scenario=${exitDecision.scenario} pnl=${pnlPct.toFixed(2)}% reason=${exitDecision.reason}`);
+      return {
+        action: 'TAKE_PROFIT',
+        currentValueSol,
+        pnlPct,
+        ...feeOnlyPnl,
+        inRange,
+        exitScenario: exitDecision.scenario || 'TA',
+        exitReason: exitDecision.reason,
+      };
+    }
+
+    console.log(`[evilPanda] 📊 ${positionPubkey.slice(0,8)} pnl=${pnlPct.toFixed(2)}% val=${currentValueSol.toFixed(4)}SOL | TA hold: ${exitDecision.reason}`);
 
     return {
       action: 'HOLD',

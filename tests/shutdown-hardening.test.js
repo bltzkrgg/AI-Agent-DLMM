@@ -210,13 +210,17 @@ test('evilPanda exit path uses close-once flow and avoids cleanup retry loop', (
   assert.doesNotMatch(src, /cleanupAttempt = 1; cleanupAttempt <=/);
 });
 
-test('evilPanda exit path uses high compute budget with CU retry', () => {
+test('evilPanda exit path stays one-shot without CU retry fallback', () => {
   const src = readFileSync(evilPandaPath, 'utf8');
   assert.match(src, /EXIT_COMPUTE_UNITS:\s*1_200_000/);
-  assert.match(src, /EXIT_MAX_COMPUTE_UNITS:\s*1_400_000/);
   assert.match(src, /injectPriorityFee\(tx,\s*\{\s*units:\s*EP_CONFIG\.EXIT_COMPUTE_UNITS/);
-  assert.match(src, /isComputeUnitExhausted/);
-  assert.match(src, /Exit TX kehabisan compute unit/);
+  const sendExitTxBlockStart = src.indexOf('async function sendExitTx');
+  const sendExitTxBlockEnd = src.indexOf('async function getFreshActivePosition', sendExitTxBlockStart);
+  const sendExitTxBlock = src.slice(sendExitTxBlockStart, sendExitTxBlockEnd);
+  assert.doesNotMatch(sendExitTxBlock, /isComputeUnitExhausted/);
+  assert.doesNotMatch(sendExitTxBlock, /Exit TX kehabisan compute unit/);
+  assert.doesNotMatch(sendExitTxBlock, /exit send retry failed/);
+  assert.doesNotMatch(sendExitTxBlock, /maxRetries:\s*3.*maxRetries:\s*3/s);
 });
 
 test('evilPanda treats trailing-profit exits as non-emergency fee path', () => {
@@ -225,6 +229,21 @@ test('evilPanda treats trailing-profit exits as non-emergency fee path', () => {
   assert.match(src, /normalizedExitReason === 'STOP_LOSS'/);
   assert.match(src, /normalizedExitReason === 'OUT_OF_RANGE'/);
   assert.doesNotMatch(src, /STOP_LOSS\|SCENARIO_C\|SUPPORT\|TRAILING\|BEARISH\|PANIC\|OUT_OF_RANGE/);
+});
+
+test('monitor exit policy uses TA for take profit and config for hard stop/max hold', () => {
+  const evilPandaSrc = readFileSync(evilPandaPath, 'utf8');
+  const hunterSrc = readFileSync(hunterPath, 'utf8');
+
+  assert.match(evilPandaSrc, /function getConfiguredMaxHoldHours/);
+  assert.match(evilPandaSrc, /action:\s*'MAX_HOLD'/);
+  assert.match(evilPandaSrc, /TAKE_PROFIT \(TA\)/);
+  assert.match(evilPandaSrc, /if \(exitDecision\.shouldExit\) \{/);
+  assert.match(hunterSrc, /if \(action === 'MAX_HOLD'\)/);
+  assert.match(hunterSrc, /safeExit\(positionPubkey, 'MAX_HOLD_EXIT'\)/);
+  assert.doesNotMatch(evilPandaSrc, /TRAILING_PROFIT/);
+  assert.doesNotMatch(evilPandaSrc, /TAKE_PROFIT \(TRAILING/);
+  assert.doesNotMatch(evilPandaSrc, /Trailing TP/);
 });
 
 test('evilPanda exit path applies fee-first auto swap with residual swap behind policy gate', () => {
