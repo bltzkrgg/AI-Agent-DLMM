@@ -191,6 +191,7 @@ const DEFAULTS = {
   maxDailyPriorityFeeSol: 0.2,
   activeStrategy:         'Evil Panda',
   smartExitRsi:           90,   // RSI(2) threshold untuk Meridian Smart Exit
+  takeProfitMinNetPnlPct:  0,    // TA take-profit hanya valid jika net exposure PnL >= threshold
   depthPct:               90,   // Depth jaring SOL ke bawah (%)
   closeSwapMode:          'fee_only',
   closeResidualSwapEnabled: false,
@@ -318,6 +319,7 @@ const CONFIG_BOUNDS = {
   maxTvl:                 { min: 0,     max: 100_000_000 },
   minHolders:             { min: 0,     max: 1_000_000 },
   smartExitRsi:           { min: 50,    max: 100 },
+  takeProfitMinNetPnlPct: { min: 0,     max: 20 },
   depthPct:               { min: 10,    max: 100 },
   entrySupertrendMinDistancePct: { min: 0, max: 100 },
   entrySupertrendMaxDistancePct: { min: 0, max: 100 },
@@ -387,6 +389,7 @@ const NESTED_SECTION_MAP = {
     trailingTriggerPct: 'trailingTriggerPct',
     trailingDropPct:    'trailingDropPct',
     smartExitRsi:       'smartExitRsi',
+    takeProfitMinNetPnlPct: 'takeProfitMinNetPnlPct',
     maxHoldHours:       'maxHoldHours',
     outOfRangeWaitMinutes: 'outOfRangeWaitMinutes',
     oorDisplayWaitMinutes: 'oorDisplayWaitMinutes',
@@ -639,6 +642,7 @@ export const SETCONFIG_WHITELIST = {
 
   // ── Strategy / DLMM Shape ───────────────────────────────────────
   dlmmLiquidityShape:     { section: 'strategy',           type: 'string',  desc: 'Shape DLMM: spot atau bidask' },
+  takeProfitMinNetPnlPct: { section: 'strategy',           type: 'number',  desc: 'Minimum net exposure PnL untuk TA take-profit (%)' },
 
   // ── Discovery Quality ────────────────────────────────────────────
   minTvl:                 { section: 'discovery',          type: 'number',  desc: 'TVL minimum pool (USD)' },

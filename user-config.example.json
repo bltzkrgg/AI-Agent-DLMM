@@ -105,6 +105,7 @@
   "maxDailyPriorityFeeSol": 0.2,
   "activeStrategy": "Evil Panda",
   "smartExitRsi": 90,
+  "takeProfitMinNetPnlPct": 0,
   "depthPct": 90,
   "atrGuardEnabled": true,
   "atrMultiplier": 1.5,

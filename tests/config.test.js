@@ -26,6 +26,7 @@ test('config rejects unknown keys and merges nested signal weights safely', asyn
   assert.equal(configModule.isConfigKeySupported('dlmmLiquidityShape'), true);
   assert.equal(configModule.isConfigKeySupported('oorDisplayWaitMinutes'), true);
   assert.equal(configModule.isConfigKeySupported('closeSwapMode'), true);
+  assert.equal(configModule.isConfigKeySupported('takeProfitMinNetPnlPct'), true);
   assert.equal(configModule.isConfigKeySupported('totallyUnknownKey'), false);
 
   assert.equal(configModule.resolveNestedKey('strategy.outOfRangeWaitMinutes')?.flatKey, 'outOfRangeWaitMinutes');
@@ -34,6 +35,7 @@ test('config rejects unknown keys and merges nested signal weights safely', asyn
   assert.equal(configModule.resolveNestedKey('strategy.shape')?.flatKey, 'dlmmLiquidityShape');
   assert.equal(configModule.resolveNestedKey('strategy.closeSwapMode')?.flatKey, 'closeSwapMode');
   assert.equal(configModule.resolveNestedKey('strategy.closeResidualSwapEnabled')?.flatKey, 'closeResidualSwapEnabled');
+  assert.equal(configModule.resolveNestedKey('strategy.takeProfitMinNetPnlPct')?.flatKey, 'takeProfitMinNetPnlPct');
 
   configModule.updateConfig({
     signalWeights: { volume: 0.99 },
@@ -43,6 +45,7 @@ test('config rejects unknown keys and merges nested signal weights safely', asyn
     closeAutoSwapMinOutSol: 0.001,
     closeAutoSwapMinNetSol: 0.0005,
     closeEstimatedSwapCostSol: 0.0002,
+    takeProfitMinNetPnlPct: 0.15,
     totallyUnknownKey: 123,
   });
 
@@ -59,6 +62,7 @@ test('config rejects unknown keys and merges nested signal weights safely', asyn
   assert.equal(saved.closeAutoSwapMinOutSol, 0.001);
   assert.equal(saved.closeAutoSwapMinNetSol, 0.0005);
   assert.equal(saved.closeEstimatedSwapCostSol, 0.0002);
+  assert.equal(saved.takeProfitMinNetPnlPct, 0.15);
   assert.equal('totallyUnknownKey' in saved, false);
 });
 
@@ -150,6 +154,7 @@ test('safer defaults stay conservative for real-capital usage', async () => {
   assert.equal(cfg.closeAutoSwapMinOutSol, 0.0003);
   assert.equal(cfg.closeAutoSwapMinNetSol, 0.00015);
   assert.equal(cfg.closeEstimatedSwapCostSol, 0.00012);
+  assert.equal(cfg.takeProfitMinNetPnlPct, 0);
   assert.equal(cfg.entryCandleSanityEnabled, true);
   assert.equal(cfg.entryRequireGreenCandle, true);
   assert.equal(cfg.entryRequireVolumeConfirm, true);
@@ -182,6 +187,7 @@ test('user-config.example includes pool pattern learning keys', () => {
   assert.equal(parsed.closeAutoSwapMinOutSol, 0.0003);
   assert.equal(parsed.closeAutoSwapMinNetSol, 0.00015);
   assert.equal(parsed.closeEstimatedSwapCostSol, 0.00012);
+  assert.equal(parsed.takeProfitMinNetPnlPct, 0);
   assert.equal(parsed.entryCandleSanityEnabled, true);
   assert.equal(parsed.entryRequireGreenCandle, true);
   assert.equal(parsed.entryRequireVolumeConfirm, true);

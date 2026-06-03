@@ -24,6 +24,7 @@ prefer the explicit user request, then update this file after the change lands.
 - OOR Telegram display should stay compact and cadence-driven, not verbose.
 - Supertrend 15m bearish must remain a hard stop for entry unless the user explicitly changes that policy.
 - Pool impact exit logic must remain a risk guard, not a generic panic rewrite.
+- TA profit exits must respect `takeProfitMinNetPnlPct`; TA defensive exits can still close for risk control.
 
 ## Recently completed changes
 
@@ -100,3 +101,4 @@ Do not edit these unless the user explicitly scopes the change there.
 - 2026-06-02: Wired active monitor exit policy so take profit is triggered by TA (`evaluateExitSignal`) while stop loss and max hold remain hard config guards (`stopLossPct`, `maxHoldHours`); trailing config no longer emits `TAKE_PROFIT` from `monitorPnL`.
 - 2026-06-03: Removed remaining operator-facing TP wording that still said "Trail"; status, briefing, strategy report, and deploy toast now describe TP as TA exit so UI text matches the TA-driven exit policy.
 - 2026-06-03: Completed 5.5 Supertrend fallback hardening in `pendingDeployQueue`: final ST gate now HOLDS when a live snapshot exists but is not reliable bullish, and LP queue summary no longer uses fresh bullish cache to pass unknown/unreliable live trend.
+- 2026-06-03: Added TA profit guard wiring: `takeProfitMinNetPnlPct` is configurable via `/setconfig`, TA profit scenarios A/B hold until net exposure PnL meets the threshold, and operator-facing TP labels now show the required net PnL.

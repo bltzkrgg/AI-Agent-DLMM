@@ -34,7 +34,7 @@ import { deployPosition } from './sniper/evilPanda.js';
 import { sendImmediateTopPoolsReport }    from './agents/hunterAlpha.js';
 
 // ── PID Lock — cegah multiple instance ───────────────────────────
-const PID_FILE = new URL('../../bot.pid', import.meta.url).pathname;
+const PID_FILE = new URL('../bot.pid', import.meta.url).pathname;
 if (existsSync(PID_FILE)) {
   const oldPid = parseInt(readFileSync(PID_FILE, 'utf-8').trim());
   try {
@@ -420,7 +420,7 @@ bot.onText(/\/status/, async (msg) => {
     `${posLine}\n` +
     `Balance: <code>${balance} SOL</code>\n` +
     `Deploy Amount: <code>${cfg.deployAmountSol || 0.1} SOL</code>\n` +
-    `TP: <code>Trail ${cfg.trailingTriggerPct || 10}% → ${cfg.trailingDropPct || 3}% drop</code> | SL: <code>-${cfg.stopLossPct || 10}%</code>\n` +
+    `TP: <code>TA exit &gt;= net ${cfg.takeProfitMinNetPnlPct || 0}%</code> | SL: <code>-${cfg.stopLossPct || 10}%</code>\n` +
     `TA: <code>info only (RSI ref ${cfg.smartExitRsi || 90})</code>`,
     { parse_mode: 'HTML' }
   );
@@ -606,6 +606,7 @@ bot.onText(/\/config/, (msg) => {
       `trailingStopPct       = ${cfg.trailingStopPct}`,
       `dlmmLiquidityShape    = ${cfg.dlmmLiquidityShape}`,
       `deployRangeMaxBins    = ${cfg.deployRangeMaxBins}`,
+      `takeProfitMinNetPnlPct = ${cfg.takeProfitMinNetPnlPct}`,
       `taWatchEnabled        = ${cfg.taWatchEnabled}`,
     `taWatchMaxPools       = ${cfg.taWatchMaxPools}`,
     `taWatchExpiryMin      = ${cfg.taWatchExpiryMin}`,
@@ -680,6 +681,7 @@ bot.onText(/\/setconfig(?:\s+(\S+))?(?:\s+(.+))?/, async (msg, match) => {
       `/setconfig strategy.liquidityShape bidask\n` +
       `/setconfig strategy.liquidityShape spot\n` +
       `Catatan: shape ini global, jadi sekali diubah akan dipakai semua jalur deploy berikutnya.\n` +
+      `/setconfig takeProfitMinNetPnlPct 0.1\n` +
       `/setconfig taWatchEnabled true\n` +
       `/setconfig outOfRangeWaitMinutes 45\n` +
       `/setconfig oor.displayWaitMinutes 5\n` +
@@ -1046,7 +1048,7 @@ bot.onText(/\/strategy_report/, async (msg) => {
     `📘 <b>Strategy Report</b>\n\n` +
     `Strategy: <code>${cfg.activeStrategy || 'Evil Panda'}</code>\n` +
     `Deploy: <code>${cfg.deployAmountSol || 0.1} SOL</code>\n` +
-    `TP: <code>Trail ${cfg.trailingTriggerPct || 10}% → ${cfg.trailingDropPct || 3}% drop</code> | SL: <code>${cfg.stopLossPct || 10}%</code>\n` +
+    `TP: <code>TA exit &gt;= net ${cfg.takeProfitMinNetPnlPct || 0}%</code> | SL: <code>${cfg.stopLossPct || 10}%</code>\n` +
     `TA: <code>info only (RSI ref ${cfg.smartExitRsi || 90})</code>\n` +
     `Screening: <code>${cfg.autoScreeningEnabled ? 'ON' : 'OFF'}</code>`;
   await sendLong(chatId, text);
@@ -1257,7 +1259,7 @@ setTimeout(async () => {
       `🛰️ Radar Layer: <code>${cfg.pendingRetestEnabled === false ? 'OFF' : 'ON'}</code>\n` +
       `💰 Balance: <code>${balance} SOL</code>\n` +
       `📐 Deploy: <code>${cfg.deployAmountSol || 0.1} SOL</code>\n` +
-      `🎯 TP: <code>Trail ${cfg.trailingTriggerPct || 10}% → ${cfg.trailingDropPct || 3}%</code> | ` +
+      `🎯 TP: <code>TA exit &gt;= net ${cfg.takeProfitMinNetPnlPct || 0}%</code> | ` +
       `SL: <code>-${cfg.stopLossPct || 10}%</code>\n` +
       `📡 Auto Screening: <code>${discoveryPaused ? 'PAUSED by /stop' : autoScr ? `ON (${cfg.screeningIntervalMin}m)` : 'OFF'}</code>\n` +
       `🔁 Auto Screening Restore: <code>DISABLED_ON_BOOT</code>\n` +

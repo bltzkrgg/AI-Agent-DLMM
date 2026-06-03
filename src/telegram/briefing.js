@@ -196,7 +196,7 @@ export async function generateBriefing(hoursBack = 24) {
     `\n\n⚙️ <b>Config Aktif</b>\n` +
     `   Deploy : <code>${cfg.deployAmountSol} SOL</code> ` +
     `| SL: <code>${cfg.stopLossPct}%</code> ` +
-    `| Trail: <code>${cfg.trailingTriggerPct || 10}% → ${cfg.trailingDropPct || 3}%</code>\n` +
+    `| TP: <code>TA exit &gt;= net ${cfg.takeProfitMinNetPnlPct || 0}%</code>\n` +
     `   Dry Run: <code>${cfg.dryRun ? 'ON' : 'OFF'}</code> ` +
     `| ATR Guard: <code>${cfg.atrGuardEnabled ? 'ON' : 'OFF'}</code>\n` +
     `   Realtime PnL: <code>${cfg.realtimePnlIntervalSec || 15}s</code> ` +
