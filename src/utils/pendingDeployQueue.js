@@ -499,6 +499,17 @@ export async function getFinalSupertrendDeployDecision({
       direction: 'BULLISH',
     };
   }
+  if (liveSnapshot && (!liveReliable || liveTrend !== 'BULLISH')) {
+    return {
+      ok: false,
+      action: 'HOLD',
+      reason: !liveReliable
+        ? 'live Supertrend 15m snapshot unreliable; waiting fresh reliable bullish snapshot'
+        : `live Supertrend 15m not bullish (${liveTrend || 'UNKNOWN'}); waiting bullish confirmation`,
+      source: 'live_snapshot',
+      direction: liveTrend || 'UNKNOWN',
+    };
+  }
 
   const cached = readCachedSupertrend15m(meta, pool);
   const fresh = cached.at > 0 && (now - cached.at) <= ttlMs;
@@ -676,7 +687,6 @@ export function summarizeQueueDecision({ meta = {}, liveSnapshot = null, cfg = g
   const m5HardGateEnabled = cfg?.entryM5HardGateEnabled !== false;
   const timingState = String(meta.entryTimingState || '').toUpperCase();
   const trustedLpWatch = isTrustedLpWatchMeta(meta);
-  const hasFreshBullishFinalStCache = isFreshBullishSupertrend15m(meta, {}, Date.now(), FINAL_ST_CACHE_TTL_MS);
   const trendUnknown = signals.trend === 'UNKNOWN';
   const trendBearish = signals.trend === 'BEARISH';
   const trendFresh = signals.trendSource === 'live';
@@ -705,16 +715,16 @@ export function summarizeQueueDecision({ meta = {}, liveSnapshot = null, cfg = g
     } else if ((!lpSimpleM15Mode || m5HardGateEnabled) && !m5FreshPositive) {
       decision = 'HOLD';
       reason = `HOLD: realtime M5 non-positive (${formatPct(signals.m5)}); waiting positive momentum`;
-    } else if (trendUnknown && !hasFreshBullishFinalStCache) {
+    } else if (trendUnknown) {
       decision = 'HOLD';
-      reason = 'HOLD: realtime trend unknown; waiting fresh trend or final ST 15m bullish cache';
-    } else if (!liveReliable && signals.trend !== 'BULLISH' && !hasFreshBullishFinalStCache) {
+      reason = 'HOLD: realtime trend unknown; waiting fresh live bullish trend';
+    } else if (!liveReliable) {
       decision = 'HOLD';
-      reason = 'HOLD: live snapshot unreliable and trend not explicitly bullish';
-    } else if (!trendFresh && !(trendUnknown && hasFreshBullishFinalStCache)) {
+      reason = 'HOLD: live snapshot unreliable; waiting fresh reliable bullish trend';
+    } else if (!trendFresh) {
       decision = 'HOLD';
       reason = `HOLD: realtime trend stale (${signals.trendSource}); waiting fresh live trend`;
-    } else if (signals.trend !== 'BULLISH' && !(trendUnknown && hasFreshBullishFinalStCache)) {
+    } else if (signals.trend !== 'BULLISH') {
       decision = 'HOLD';
       reason = `Freshness hilang: trend=${signals.trend || 'UNKNOWN'} (${signals.trendSource}) m5=${formatPct(signals.m5)} (${signals.m5Source})`;
     } else if (trustedLpWatch) {

@@ -394,7 +394,7 @@ test('lp_simple_m15 bypasses M5 non-positive hold when hard gate disabled', () =
     liveSnapshot: {
       dataSource: 'meteora-dlmm-ohlcv',
       quality: { taTrend: 'BULLISH' },
-      ohlcv: { source: 'meteora-dlmm-ohlcv' },
+      ohlcv: { source: 'meteora-dlmm-ohlcv', historySuccess: true },
     },
     cfg: {
       entryDecisionMode: 'lp_simple_m15',
@@ -1578,7 +1578,7 @@ test('queue final ST gate uses latest live snapshot wiring', () => {
   assert.match(src, /entry\?\.lastLiveSnapshot\?\.ohlcv\?\.currentPrice/);
 });
 
-test('trusted WATCH LP entries still require fresh bullish final ST when trend is not bullish', async () => {
+test('trusted WATCH LP entries hold on non-bullish live ST even with fresh bullish cache', async () => {
   const now = 1_700_000_000_000;
   const meta = {
     entryGateMode: 'lp_simple_m15',
@@ -1604,9 +1604,10 @@ test('trusted WATCH LP entries still require fresh bullish final ST when trend i
     checkFn: async () => ({ veto: false, direction: 'BULLISH', reason: 'PASS (should not run)' }),
   });
 
-  assert.equal(decision.action, 'ALLOW');
-  assert.equal(decision.source, 'cache');
-  assert.equal(decision.direction, 'BULLISH');
+  assert.equal(decision.action, 'HOLD');
+  assert.equal(decision.source, 'live_snapshot');
+  assert.equal(decision.direction, 'NEUTRAL');
+  assert.match(decision.reason, /not bullish/i);
 });
 
 test('deploy queue freezes intent only when bin, price, and snapshot are valid', () => {
