@@ -2454,6 +2454,24 @@ function getConfiguredMaxHoldHours() {
   return Number.isFinite(value) && value > 0 ? value : 72;
 }
 
+function getConfiguredTrailingTriggerPct() {
+  const cfg = getConfig();
+  const value = Number(cfg.trailingTriggerPct);
+  return Number.isFinite(value) && value >= 0 ? value : 0;
+}
+
+function getConfiguredTrailingDropPct() {
+  const cfg = getConfig();
+  const value = Number(cfg.trailingDropPct);
+  return Number.isFinite(value) && value > 0 ? value : 0;
+}
+
+function getConfiguredTakeProfitMinNetPnlPct() {
+  const cfg = getConfig();
+  const value = Number(cfg.takeProfitMinNetPnlPct);
+  return Number.isFinite(value) && value >= 0 ? value : 0;
+}
+
 function getConfiguredDeployRangeMaxBins() {
   const cfg = getConfig();
   const value = Number(cfg.deployRangeMaxBins);
@@ -4141,8 +4159,8 @@ function evaluateExitSignal(signal) {
 
 /**
  * Poll on-chain + Meridian TA sekali, tentukan action.
- * Priority: Hard SL config > MaxHold config > TA take-profit.
- * Fail-open: jika Meridian API down, TA-exit tidak dipicu.
+ * Priority: Hard SL config > MaxHold config > Trailing take-profit > TA fallback.
+ * Fail-open: jika Meridian API down, TA fallback tidak dipicu.
  *
  * @param {string} positionPubkey
  * @returns {Promise<PnLStatus>}
@@ -4226,6 +4244,9 @@ export async function monitorPnL(positionPubkey) {
       : 0;
     const stopLossPct = getConfiguredStopLossPct();
     const maxHoldHours = getConfiguredMaxHoldHours();
+    const trailingTriggerPct = getConfiguredTrailingTriggerPct();
+    const trailingDropPct = getConfiguredTrailingDropPct();
+    const takeProfitMinNetPnlPct = getConfiguredTakeProfitMinNetPnlPct();
     const deployedAtMs = reg.deployedAt ? new Date(reg.deployedAt).getTime() : null;
     const ageMs = Number.isFinite(deployedAtMs) ? Math.max(0, Date.now() - deployedAtMs) : 0;
     const maxHoldMs = maxHoldHours * 60 * 60 * 1000;
@@ -4316,19 +4337,66 @@ export async function monitorPnL(positionPubkey) {
       };
     }
 
-    // ── Telemetry: HWM tetap dicatat, tapi TP diputuskan oleh TA. ─────────
+    // ── Telemetry: trailing memakai HWM profit, lalu TA hanya jadi fallback. ─────
     if (pnlPct > reg.hwmPct) {
       reg.hwmPct = pnlPct; // update HWM in-place (Map entry adalah referensi)
       console.log(`[evilPanda] 📈 New HWM: ${reg.hwmPct.toFixed(2)}%`);
     }
 
-    // ── PRIORITAS 3: Take Profit berbasis TA ──────────────────────────────
+    const trailingEligible = trailingTriggerPct > 0 && pnlPct >= trailingTriggerPct;
+    if (trailingEligible) {
+      const trailingDrawdownPct = reg.hwmPct - pnlPct;
+      if (trailingDrawdownPct >= trailingDropPct) {
+        const reason =
+          `Trailing Profit Trigger: HWM=${reg.hwmPct.toFixed(2)}% retraced ${trailingDrawdownPct.toFixed(2)}% >= ${trailingDropPct.toFixed(2)}%`;
+        console.log(`[evilPanda] 📈 TAKE_PROFIT (TRAILING) ${positionPubkey.slice(0,8)} pnl=${pnlPct.toFixed(2)}% hwm=${reg.hwmPct.toFixed(2)}% drawdown=${trailingDrawdownPct.toFixed(2)}%`);
+        return {
+          action: 'TAKE_PROFIT',
+          currentValueSol,
+          pnlPct,
+          ...feeOnlyPnl,
+          inRange,
+          exitScenario: 'TRAILING',
+          exitReason: reason,
+        };
+      }
+    }
+
+    // ── PRIORITAS 3B: Take Profit fallback berbasis TA ─────────────────────
     // Fetch RSI(2) + BB + MACD dari Meridian, fail-open jika API down.
     const signal     = await fetchExitSignal(reg.tokenXMint);
     const exitDecision = evaluateExitSignal(signal);
+    const isDefensiveTaExit = exitDecision.scenario === 'C';
+
+    if (exitDecision.shouldExit && !isDefensiveTaExit && pnlPct < takeProfitMinNetPnlPct) {
+      const reason =
+        `TA exit gated: net PnL ${pnlPct.toFixed(2)}% < min ${takeProfitMinNetPnlPct.toFixed(2)}%; ${exitDecision.reason}`;
+      console.log(`[evilPanda] 📊 TAKE_PROFIT gated ${positionPubkey.slice(0,8)} pnl=${pnlPct.toFixed(2)}% min=${takeProfitMinNetPnlPct.toFixed(2)}% reason=${exitDecision.reason}`);
+      return {
+        action: 'HOLD',
+        currentValueSol,
+        pnlPct,
+        ...feeOnlyPnl,
+        inRange,
+        activeBinId: activeBin.binId,
+        activePrice: rawPrice,
+        entryActiveBin,
+        entryPrice,
+        rangeMin: reg.rangeMin,
+        rangeMax: reg.rangeMax,
+        taReason: reason,
+        taSignal: signal ? {
+          rsi: signal.rsi,
+          close: signal.close,
+          bbUpper: signal.bbUpper,
+          macdHist: signal.macdHist,
+          direction: signal.direction,
+        } : null,
+      };
+    }
 
     if (exitDecision.shouldExit) {
-      console.log(`[evilPanda] 📈 TAKE_PROFIT (TA) ${positionPubkey.slice(0,8)} scenario=${exitDecision.scenario} pnl=${pnlPct.toFixed(2)}% reason=${exitDecision.reason}`);
+      console.log(`[evilPanda] 📈 TAKE_PROFIT (TA_FALLBACK) ${positionPubkey.slice(0,8)} scenario=${exitDecision.scenario} pnl=${pnlPct.toFixed(2)}% reason=${exitDecision.reason}`);
       return {
         action: 'TAKE_PROFIT',
         currentValueSol,

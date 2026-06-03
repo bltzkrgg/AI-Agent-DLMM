@@ -158,6 +158,21 @@ test('evilPanda uses monolith positions with one Meteora account for the full ra
   assert.match(src, /const activePos = userPositions\.find\(p => p\.publicKey\.toString\(\) === positionPubkey\)/);
 });
 
+test('operator-facing TP labels no longer describe trailing as the exit driver', () => {
+  const indexSrc = readFileSync(indexPath, 'utf8');
+  const hunterSrc = readFileSync(hunterPath, 'utf8');
+  const briefingSrc = readFileSync(resolve(process.cwd(), 'src/telegram/briefing.js'), 'utf8');
+  const claudeSrc = readFileSync(resolve(process.cwd(), 'src/agent/claude.js'), 'utf8');
+
+  assert.match(indexSrc, /TP: <code>TA exit &gt;= net \$\{cfg\.takeProfitMinNetPnlPct \|\| 0\}%<\/code>/);
+  assert.match(hunterSrc, /TP: TA exit >= net \$\{currentCfg\.takeProfitMinNetPnlPct \|\| 0\}% \| SL:/);
+  assert.match(briefingSrc, /\| TP: <code>TA exit &gt;= net \$\{cfg\.takeProfitMinNetPnlPct \|\| 0\}%<\/code>/);
+  assert.doesNotMatch(indexSrc, /TP: <code>Trail /);
+  assert.doesNotMatch(hunterSrc, /TP: trail /);
+  assert.doesNotMatch(briefingSrc, /Trail: <code>/);
+  assert.doesNotMatch(claudeSrc, /Trailing TP/);
+});
+
 test('blocked deploy results are handled by hunter and queue callers', () => {
   const hunterSrc = readFileSync(hunterPath, 'utf8');
   const queueSrc = readFileSync(resolve(process.cwd(), 'src/utils/pendingDeployQueue.js'), 'utf8');
@@ -231,18 +246,27 @@ test('evilPanda treats trailing-profit exits as non-emergency fee path', () => {
   assert.doesNotMatch(src, /STOP_LOSS\|SCENARIO_C\|SUPPORT\|TRAILING\|BEARISH\|PANIC\|OUT_OF_RANGE/);
 });
 
-test('monitor exit policy uses TA for take profit and config for hard stop/max hold', () => {
+test('monitor exit policy uses trailing for take profit and TA as fallback', () => {
   const evilPandaSrc = readFileSync(evilPandaPath, 'utf8');
   const hunterSrc = readFileSync(hunterPath, 'utf8');
 
   assert.match(evilPandaSrc, /function getConfiguredMaxHoldHours/);
+  assert.match(evilPandaSrc, /function getConfiguredTrailingTriggerPct/);
+  assert.match(evilPandaSrc, /function getConfiguredTrailingDropPct/);
   assert.match(evilPandaSrc, /action:\s*'MAX_HOLD'/);
-  assert.match(evilPandaSrc, /TAKE_PROFIT \(TA\)/);
+  assert.match(evilPandaSrc, /TAKE_PROFIT \(TRAILING\)/);
+  assert.match(evilPandaSrc, /const trailingEligible = trailingTriggerPct > 0 && pnlPct >= trailingTriggerPct/);
+  assert.match(evilPandaSrc, /trailingDrawdownPct >= trailingDropPct/);
+  assert.match(evilPandaSrc, /TAKE_PROFIT \(TA_FALLBACK\)/);
   assert.match(evilPandaSrc, /if \(exitDecision\.shouldExit\) \{/);
+  assert.match(evilPandaSrc, /getConfiguredTakeProfitMinNetPnlPct/);
+  assert.match(evilPandaSrc, /pnlPct < takeProfitMinNetPnlPct/);
+  assert.match(evilPandaSrc, /!isDefensiveTaExit/);
+  assert.match(hunterSrc, /TAKE PROFIT/);
+  assert.match(hunterSrc, /Trailing Profit Trigger/);
+  assert.match(hunterSrc, /Take Profit Trigger/);
   assert.match(hunterSrc, /if \(action === 'MAX_HOLD'\)/);
   assert.match(hunterSrc, /safeExit\(positionPubkey, 'MAX_HOLD_EXIT'\)/);
-  assert.doesNotMatch(evilPandaSrc, /TRAILING_PROFIT/);
-  assert.doesNotMatch(evilPandaSrc, /TAKE_PROFIT \(TRAILING/);
   assert.doesNotMatch(evilPandaSrc, /Trailing TP/);
 });
 

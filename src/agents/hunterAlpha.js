@@ -2964,7 +2964,7 @@ Balas HANYA JSON valid tanpa Markdown.`;
           `Tahap: <code>EXECUTION_SUCCESS</code>\n` +
           `Position: <code>${positionPubkey.slice(0,8)}</code>\n` +
           `Pool: <code>${poolAddress.slice(0,8)}</code>\n` +
-          `TP: trail ${currentCfg.trailingTriggerPct || 10}% → drop ${currentCfg.trailingDropPct || 3}% | SL: -${currentCfg.stopLossPct || 10}%\n\n` +
+          `TP: TA exit >= net ${currentCfg.takeProfitMinNetPnlPct || 0}% | SL: -${currentCfg.stopLossPct || 10}%\n\n` +
           `🔒 <i>Masuk mode monitor (Background)...</i>`
         );
 
@@ -3248,13 +3248,20 @@ async function monitorLoop(positionPubkey, symbol, poolAddress) {
 
       // Exit trigger
       if (action === 'TAKE_PROFIT') {
+        const exitScenario = String(status.exitScenario || '').toUpperCase();
+        const isDefensiveTaExit = exitScenario === 'C';
+        const reasonLabel = isDefensiveTaExit
+          ? 'Take Profit Trigger'
+          : exitScenario === 'TRAILING'
+            ? 'Trailing Profit Trigger'
+            : 'Take Profit Trigger';
         await notify(
-          `🎉 <b>TAKE PROFIT!</b>\n` +
+          `🎉 <b>TAKE PROFIT</b>\n` +
           `Token: <b>${symbol}</b>\n` +
           `Fee PnL: <code>${feePnlSol.toFixed(6)} SOL / ${feeSign}${feePnlPct.toFixed(2)}%</code>\n` +
           `Position Value: <code>${currentValueSol.toFixed(4)} SOL</code>\n` +
           `Total Exposure PnL: <code>${pnlPct >= 0 ? '+' : ''}${pnlPct.toFixed(2)}%</code>\n` +
-          (status.exitScenario ? `📊 Skenario <b>${status.exitScenario}</b>: <code>${status.exitReason || ''}</code>\n` : '') +
+          `Reason: <code>${reasonLabel}</code>\n` +
           `\n⏳ <i>Menutup posisi...</i>`
         );
         await safeExit(positionPubkey, `TAKE_PROFIT_${status.exitScenario || 'TA'}`);
