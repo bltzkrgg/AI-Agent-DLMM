@@ -2965,6 +2965,7 @@ Balas HANYA JSON valid tanpa Markdown.`;
           `Position: <code>${positionPubkey.slice(0,8)}</code>\n` +
           `Pool: <code>${poolAddress.slice(0,8)}</code>\n` +
           `TP: TA exit >= net ${currentCfg.takeProfitMinNetPnlPct || 0}% | SL: -${currentCfg.stopLossPct || 10}%\n\n` +
+          `Anchor: DLMM active bin | Source: frozen/live fallback\n` +
           `🔒 <i>Masuk mode monitor (Background)...</i>`
         );
 

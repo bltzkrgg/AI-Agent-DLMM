@@ -421,6 +421,7 @@ bot.onText(/\/status/, async (msg) => {
     `Balance: <code>${balance} SOL</code>\n` +
     `Deploy Amount: <code>${cfg.deployAmountSol || 0.1} SOL</code>\n` +
     `TP: <code>TA exit &gt;= net ${cfg.takeProfitMinNetPnlPct || 0}%</code> | SL: <code>-${cfg.stopLossPct || 10}%</code>\n` +
+    `Anchor: <code>DLMM active bin</code> | Source: <code>frozen/live fallback</code>\n` +
     `TA: <code>info only (RSI ref ${cfg.smartExitRsi || 90})</code>`,
     { parse_mode: 'HTML' }
   );
@@ -1049,6 +1050,7 @@ bot.onText(/\/strategy_report/, async (msg) => {
     `Strategy: <code>${cfg.activeStrategy || 'Evil Panda'}</code>\n` +
     `Deploy: <code>${cfg.deployAmountSol || 0.1} SOL</code>\n` +
     `TP: <code>TA exit &gt;= net ${cfg.takeProfitMinNetPnlPct || 0}%</code> | SL: <code>${cfg.stopLossPct || 10}%</code>\n` +
+    `Anchor: <code>DLMM active bin</code> | Source: <code>frozen/live fallback</code>\n` +
     `TA: <code>info only (RSI ref ${cfg.smartExitRsi || 90})</code>\n` +
     `Screening: <code>${cfg.autoScreeningEnabled ? 'ON' : 'OFF'}</code>`;
   await sendLong(chatId, text);
@@ -1260,6 +1262,7 @@ setTimeout(async () => {
       `💰 Balance: <code>${balance} SOL</code>\n` +
       `📐 Deploy: <code>${cfg.deployAmountSol || 0.1} SOL</code>\n` +
       `🎯 TP: <code>TA exit &gt;= net ${cfg.takeProfitMinNetPnlPct || 0}%</code> | ` +
+      `Anchor: <code>DLMM active bin</code> | Source: <code>frozen/live fallback</code>\n` +
       `SL: <code>-${cfg.stopLossPct || 10}%</code>\n` +
       `📡 Auto Screening: <code>${discoveryPaused ? 'PAUSED by /stop' : autoScr ? `ON (${cfg.screeningIntervalMin}m)` : 'OFF'}</code>\n` +
       `🔁 Auto Screening Restore: <code>DISABLED_ON_BOOT</code>\n` +

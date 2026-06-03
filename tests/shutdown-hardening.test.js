@@ -168,6 +168,9 @@ test('operator-facing TP labels no longer describe trailing as the exit driver',
   assert.match(indexSrc, /TP: <code>TA exit &gt;= net \$\{cfg\.takeProfitMinNetPnlPct \|\| 0\}%<\/code>/);
   assert.match(hunterSrc, /TP: TA exit >= net \$\{currentCfg\.takeProfitMinNetPnlPct \|\| 0\}% \| SL:/);
   assert.match(briefingSrc, /\| TP: <code>TA exit &gt;= net \$\{cfg\.takeProfitMinNetPnlPct \|\| 0\}%<\/code>/);
+  assert.match(indexSrc, /Anchor: <code>DLMM active bin<\/code> \| Source: <code>frozen\/live fallback<\/code>/);
+  assert.match(hunterSrc, /Anchor: DLMM active bin \| Source: frozen\/live fallback/);
+  assert.match(briefingSrc, /Anchor\s*:.*DLMM active bin.*Source:.*frozen\/live fallback/s);
   assert.doesNotMatch(indexSrc, /TP: <code>Trail /);
   assert.doesNotMatch(hunterSrc, /TP: trail /);
   assert.doesNotMatch(briefingSrc, /Trail: <code>/);
