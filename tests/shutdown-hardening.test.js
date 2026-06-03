@@ -151,6 +151,7 @@ test('evilPanda uses monolith positions with one Meteora account for the full ra
   assert.match(src, /findAdaptiveRentFreeRange/);
   assert.match(src, /searchSlackArrays/);
   assert.match(src, /RANGE_ADJUSTED_FOR_RENT/);
+  assert.match(src, /FINAL_RENT_GUARD_ADJUST/);
   assert.doesNotMatch(src, /rangeMax = activeBin\.binId - offsetMinBins - 1/);
   assert.doesNotMatch(src, /rangeMax - rangeMin > 1000/);
   assert.match(src, /initializePositionAndAddLiquidityByStrategy/);
@@ -183,6 +184,16 @@ test('blocked deploy results are handled by hunter and queue callers', () => {
   assert.match(queueSrc, /Deploy Ditolak \(Queue\)/);
   assert.match(queueSrc, /Adjust range gagal untuk pool\/range ini\. Pool lain tetap normal\./);
   assert.doesNotMatch(queueSrc, /Queue menghormati veto non-refundable rent/);
+});
+
+test('DLMM final args observability records anchor source and range adjustment reason', () => {
+  const src = readFileSync(evilPandaPath, 'utf8');
+  assert.match(src, /anchorSource = null/);
+  assert.match(src, /rangeAdjustReason = null/);
+  assert.match(src, /anchor=\$\{debug\.anchorSource \|\| 'unknown'\}/);
+  assert.match(src, /rangeAdjust=\$\{debug\.rangeAdjustReason \|\| 'none'\}/);
+  assert.match(src, /anchor=\$\{finalArgsContext\.anchorSource \|\| 'unknown'\}/);
+  assert.match(src, /rangeAdjust=\$\{finalArgsContext\.rangeAdjustReason \|\| 'none'\}/);
 });
 
 test('monolith monitor treats missing active position as stop loss fail-safe', () => {

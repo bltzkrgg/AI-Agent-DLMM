@@ -71,4 +71,20 @@ test('position runtime state avoids zero placeholder fallback for entry anchor f
 
   assert.match(pandaSrc, /entryActiveBin:\s*safeNum\(activeBin\.binId,\s*null\)/);
   assert.match(pandaSrc, /entryPrice:\s*safeNum\(activeBin\.pricePerToken,\s*null\)/);
+  assert.match(pandaSrc, /entryAnchorSource:\s*finalDeployState\?\..*anchorSource \|\| anchorMetadata\.anchorSource/);
+  assert.match(pandaSrc, /entryAnchorBin:\s*finalDeployState\?\..*anchorActiveBinId .* anchorMetadata\.anchorActiveBinId/);
+  assert.match(pandaSrc, /entryAnchorPrice:\s*finalDeployState\?\..*anchorPrice .* anchorMetadata\.anchorPrice/);
+  assert.match(pandaSrc, /rangeAdjustReason:\s*finalDeployState\?\..*rangeAdjustReason \|\| null/);
+});
+
+test('DLMM deploy logs carry anchor provenance and range adjustment observability', () => {
+  const pandaSrc = readSource('src/sniper/evilPanda.js');
+
+  assert.match(pandaSrc, /anchorSource:\s*shouldUseFrozenIntent \? 'frozen' : 'live_fallback'/);
+  assert.match(pandaSrc, /anchorDriftBins:\s*Number\.isFinite\(frozenIntentDecision\?\.driftBins\)/);
+  assert.match(pandaSrc, /anchorDriftPct:\s*Number\.isFinite\(frozenIntentDecision\?\.driftPct\)/);
+  assert.match(pandaSrc, /anchor=\$\{debug\.anchorSource \|\| 'unknown'\}/);
+  assert.match(pandaSrc, /rangeAdjust=\$\{debug\.rangeAdjustReason \|\| 'none'\}/);
+  assert.match(pandaSrc, /anchor=\$\{finalArgsContext\.anchorSource \|\| 'unknown'\}/);
+  assert.match(pandaSrc, /rangeAdjust=\$\{finalArgsContext\.rangeAdjustReason \|\| 'none'\}/);
 });

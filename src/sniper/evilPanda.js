@@ -798,6 +798,14 @@ export function buildDlmmFinalArgsContext({
   initialActiveBinId = null,
   refreshedActiveBinId = null,
   adjustmentReason = null,
+  anchorSource = null,
+  anchorActiveBinId = null,
+  anchorPrice = null,
+  anchorSnapshotAt = null,
+  anchorDriftBins = null,
+  anchorDriftPct = null,
+  anchorReason = null,
+  rangeAdjustReason = null,
 } = {}) {
   const activeBinId = Number(deployArgs?.activeBinId);
   const rangeMin = Number(deployArgs?.rangeMin);
@@ -828,8 +836,16 @@ export function buildDlmmFinalArgsContext({
     strategyType: Number.isFinite(strategyType) ? strategyType : null,
     quoteSide: String(yMint || '') === WSOL_MINT ? 'SOL' : 'QUOTE',
     adjustedReason: adjustmentReason || deployArgs?.adjustmentReason || null,
+    rangeAdjustReason: rangeAdjustReason || adjustmentReason || deployArgs?.adjustmentReason || null,
     sdkMinBinId: Number.isFinite(Number(sdkStrategy?.minBinId)) ? Number(sdkStrategy.minBinId) : null,
     sdkMaxBinId: Number.isFinite(Number(sdkStrategy?.maxBinId)) ? Number(sdkStrategy.maxBinId) : null,
+    anchorSource: anchorSource ? String(anchorSource) : null,
+    anchorActiveBinId: isFiniteInteger(Number(anchorActiveBinId)) ? Number(anchorActiveBinId) : null,
+    anchorPrice: Number.isFinite(Number(anchorPrice)) ? Number(anchorPrice) : null,
+    anchorSnapshotAt: Number.isFinite(Number(anchorSnapshotAt)) ? Number(anchorSnapshotAt) : null,
+    anchorDriftBins: Number.isFinite(Number(anchorDriftBins)) ? Number(anchorDriftBins) : null,
+    anchorDriftPct: Number.isFinite(Number(anchorDriftPct)) ? Number(anchorDriftPct) : null,
+    anchorReason: anchorReason ? String(anchorReason) : null,
   };
 }
 
@@ -854,6 +870,7 @@ export async function prepareFinalDlmmDeployAttemptState({
   assertDlmmFinalSdkArgsFn = assertDlmmFinalSdkArgs,
   buildDlmmSdkStrategyFromDeployArgsFn = buildDlmmSdkStrategyFromDeployArgs,
   skipActiveBinRefresh = false,
+  anchorMetadata = null,
 } = {}) {
   let refreshedActiveBinId = Number(deployArgs?.activeBinId);
   let activeRefreshReason = null;
@@ -941,6 +958,14 @@ export async function prepareFinalDlmmDeployAttemptState({
     poolAddress,
     initialActiveBinId: Number(initialActiveBinId),
     refreshedActiveBinId,
+    anchorSource: anchorMetadata?.anchorSource || null,
+    anchorActiveBinId: anchorMetadata?.anchorActiveBinId ?? null,
+    anchorPrice: anchorMetadata?.anchorPrice ?? null,
+    anchorSnapshotAt: anchorMetadata?.anchorSnapshotAt ?? null,
+    anchorDriftBins: anchorMetadata?.anchorDriftBins ?? null,
+    anchorDriftPct: anchorMetadata?.anchorDriftPct ?? null,
+    anchorReason: anchorMetadata?.anchorReason || null,
+    rangeAdjustReason: finalDeployArgs.adjustmentReason || anchorMetadata?.rangeAdjustReason || null,
   });
 
   if (finalDeployArgs.adjustedBelowActive || finalDeployArgs.adjustedAboveActive) {
@@ -953,12 +978,15 @@ export async function prepareFinalDlmmDeployAttemptState({
   console.log(
     `[evilPanda] DLMM_PRECHECK_OK pool=${poolAddress} active=${finalDeployArgs.activeBinId} ` +
     `range=[${safeRangeMin},${safeRangeMax}] amountX=${finalDeployArgs.amountXBn.toString()} amountY=${finalDeployArgs.amountYBn.toString()} ` +
-    `strategyType=${finalDeployArgs.strategyType} attempt=${attempt}`
+    `strategyType=${finalDeployArgs.strategyType} anchor=${finalArgsContext.anchorSource || 'unknown'} ` +
+    `rangeAdjust=${finalArgsContext.rangeAdjustReason || 'none'} attempt=${attempt}`
   );
   console.log(
     `[evilPanda] FINAL_SDK_RANGE pool=${poolAddress.slice(0,8)} ` +
     `rentGuard=${finalRentGuard.guard || 'UNKNOWN'} checked=[${checkedRangeMin},${checkedRangeMax}] ` +
-    `strategy=[${sdkStrategy.minBinId},${sdkStrategy.maxBinId}] attempt=${attempt}`
+    `strategy=[${sdkStrategy.minBinId},${sdkStrategy.maxBinId}] ` +
+    `anchor=${finalArgsContext.anchorSource || 'unknown'} anchorBin=${finalArgsContext.anchorActiveBinId ?? 'na'} ` +
+    `rangeAdjust=${finalArgsContext.rangeAdjustReason || 'none'} attempt=${attempt}`
   );
   console.log(
     `[evilPanda] bins=${finalTotalBins} range=[${safeRangeMin},${safeRangeMax}] attempt=${attempt}`
@@ -1032,6 +1060,14 @@ export function assertDlmmFinalSdkArgs({
   poolAddress = '',
   initialActiveBinId = null,
   refreshedActiveBinId = null,
+  anchorSource = null,
+  anchorActiveBinId = null,
+  anchorPrice = null,
+  anchorSnapshotAt = null,
+  anchorDriftBins = null,
+  anchorDriftPct = null,
+  anchorReason = null,
+  rangeAdjustReason = null,
 } = {}) {
   const activeBinId = Number(deployArgs?.activeBinId);
   const rangeMin = Number(deployArgs?.rangeMin);
@@ -1091,6 +1127,14 @@ export function assertDlmmFinalSdkArgs({
     sdkStrategy,
     initialActiveBinId,
     refreshedActiveBinId,
+    anchorSource,
+    anchorActiveBinId,
+    anchorPrice,
+    anchorSnapshotAt,
+    anchorDriftBins,
+    anchorDriftPct,
+    anchorReason,
+    rangeAdjustReason,
   });
   console.log(
     `[DLMM_FINAL_ARGS] pool=${debug.pool} tokenXMint=${debug.tokenXMint} tokenYMint=${debug.tokenYMint} ` +
@@ -1098,7 +1142,8 @@ export function assertDlmmFinalSdkArgs({
     `range=[${debug.rangeMin},${debug.rangeMax}] width=${debug.rangeWidth} ` +
     `amountX=${debug.amountX} amountY=${debug.amountY} amountXIsZero=${debug.amountXIsZero} amountYIsZero=${debug.amountYIsZero} ` +
     `strategyType=${debug.strategyType} side=${debug.singleSide} quoteSide=${debug.quoteSide} activeInside=${debug.activeInsideRange} ` +
-    `reason=${debug.adjustedReason || 'none'}`
+    `anchor=${debug.anchorSource || 'unknown'} anchorBin=${debug.anchorActiveBinId ?? 'na'} ` +
+    `rangeAdjust=${debug.rangeAdjustReason || 'none'} reason=${debug.adjustedReason || 'none'}`
   );
   return debug;
 }
@@ -1731,6 +1776,7 @@ export async function ensureFinalRentCheckedDeployArgs({
       amountYBn: deployArgs.amountYBn,
       strategyType: deployArgs.strategyType,
     });
+    rebuilt.adjustmentReason = 'rent_guard_final_adjust';
 
     try {
       await assertRangeFn(connection, poolPubkey, Number(rebuilt.rangeMin), Number(rebuilt.rangeMax));
@@ -3186,6 +3232,20 @@ export async function deployPosition(poolAddress, deployOptions = {}) {
       };
     }
     let activeBin = initialActiveBin;
+    const anchorMetadata = {
+      anchorSource: shouldUseFrozenIntent ? 'frozen' : 'live_fallback',
+      anchorActiveBinId: shouldUseFrozenIntent ? Number(frozenEntryActiveBin) : Number(initialActiveBin?.binId),
+      anchorPrice: shouldUseFrozenIntent
+        ? (Number.isFinite(frozenEntryPrice) ? Number(frozenEntryPrice) : Number(initialActiveBin?.pricePerToken))
+        : Number(initialActiveBin?.pricePerToken),
+      anchorSnapshotAt: Number.isFinite(Number(frozenIntent?.snapshotAt)) ? Number(frozenIntent.snapshotAt) : null,
+      anchorDriftBins: Number.isFinite(frozenIntentDecision?.driftBins) ? Number(frozenIntentDecision.driftBins) : null,
+      anchorDriftPct: Number.isFinite(frozenIntentDecision?.driftPct) ? Number(frozenIntentDecision.driftPct) : null,
+      anchorReason: shouldUseFrozenIntent
+        ? 'frozen_entry_intent'
+        : String(frozenIntentDecision?.reason || 'live_fallback'),
+      rangeAdjustReason: null,
+    };
     if (shouldUseFrozenIntent && Number.isFinite(frozenEntryActiveBin)) {
       activeBin = {
         ...initialActiveBin,
@@ -3326,6 +3386,7 @@ export async function deployPosition(poolAddress, deployOptions = {}) {
         const prevMax = rangeMax;
         rangeMin = rentAdjusted.rangeMin;
         rangeMax = rentAdjusted.rangeMax;
+        anchorMetadata.rangeAdjustReason = 'rent_guard_precheck_adjust';
         const adjustedWidth = rangeMax - rangeMin + 1;
         console.warn(
           `[evilPanda] RANGE_ADJUSTED_FOR_RENT ${poolAddress.slice(0,8)} desired=[${prevMin},${prevMax}] adjusted=[${rangeMin},${rangeMax}] ` +
@@ -3558,6 +3619,7 @@ export async function deployPosition(poolAddress, deployOptions = {}) {
         initialActiveBinId: Number(initialActiveBin?.binId),
         attempt,
         skipActiveBinRefresh: frozenIntentEnabledForDeploy,
+        anchorMetadata,
         refetchStatesFn: async () => {
           if (frozenIntentEnabledForDeploy) return;
           if (dlmmPool?.refetchStates) await dlmmPool.refetchStates();
@@ -3929,6 +3991,14 @@ export async function deployPosition(poolAddress, deployOptions = {}) {
         rangeMax: safeRangeMax,
         entryActiveBin: safeNum(activeBin.binId, null),
         entryPrice: safeNum(activeBin.pricePerToken, null),
+        entryAnchorSource: finalDeployState?.finalArgsContext?.anchorSource || anchorMetadata.anchorSource,
+        entryAnchorBin: finalDeployState?.finalArgsContext?.anchorActiveBinId ?? anchorMetadata.anchorActiveBinId,
+        entryAnchorPrice: finalDeployState?.finalArgsContext?.anchorPrice ?? anchorMetadata.anchorPrice,
+        entryAnchorSnapshotAt: finalDeployState?.finalArgsContext?.anchorSnapshotAt ?? anchorMetadata.anchorSnapshotAt,
+        entryAnchorDriftBins: finalDeployState?.finalArgsContext?.anchorDriftBins ?? anchorMetadata.anchorDriftBins,
+        entryAnchorDriftPct: finalDeployState?.finalArgsContext?.anchorDriftPct ?? anchorMetadata.anchorDriftPct,
+        entryAnchorReason: finalDeployState?.finalArgsContext?.anchorReason || anchorMetadata.anchorReason,
+        rangeAdjustReason: finalDeployState?.finalArgsContext?.rangeAdjustReason || null,
         hwmPct: 0,
       }, { flush: true });
 
@@ -4014,6 +4084,14 @@ export async function deployPosition(poolAddress, deployOptions = {}) {
       rangeMax: safeRangeMax,
       entryActiveBin: safeNum(activeBin.binId, null),
       entryPrice: safeNum(activeBin.pricePerToken, null),
+      entryAnchorSource: finalDeployState?.finalArgsContext?.anchorSource || anchorMetadata.anchorSource,
+      entryAnchorBin: finalDeployState?.finalArgsContext?.anchorActiveBinId ?? anchorMetadata.anchorActiveBinId,
+      entryAnchorPrice: finalDeployState?.finalArgsContext?.anchorPrice ?? anchorMetadata.anchorPrice,
+      entryAnchorSnapshotAt: finalDeployState?.finalArgsContext?.anchorSnapshotAt ?? anchorMetadata.anchorSnapshotAt,
+      entryAnchorDriftBins: finalDeployState?.finalArgsContext?.anchorDriftBins ?? anchorMetadata.anchorDriftBins,
+      entryAnchorDriftPct: finalDeployState?.finalArgsContext?.anchorDriftPct ?? anchorMetadata.anchorDriftPct,
+      entryAnchorReason: finalDeployState?.finalArgsContext?.anchorReason || anchorMetadata.anchorReason,
+      rangeAdjustReason: finalDeployState?.finalArgsContext?.rangeAdjustReason || null,
       hwmPct:      0,
     }, { flush: true });
     recordPoolDeploy({

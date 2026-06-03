@@ -25,6 +25,7 @@ prefer the explicit user request, then update this file after the change lands.
 - Supertrend 15m bearish must remain a hard stop for entry unless the user explicitly changes that policy.
 - Pool impact exit logic must remain a risk guard, not a generic panic rewrite.
 - TA profit exits must respect `takeProfitMinNetPnlPct`; TA defensive exits can still close for risk control.
+- DLMM deploy range must stay active-bin-based per Meteora, but anchor provenance and range-adjust reasons should be observable in logs/state.
 
 ## Recently completed changes
 
@@ -102,3 +103,4 @@ Do not edit these unless the user explicitly scopes the change there.
 - 2026-06-03: Removed remaining operator-facing TP wording that still said "Trail"; status, briefing, strategy report, and deploy toast now describe TP as TA exit so UI text matches the TA-driven exit policy.
 - 2026-06-03: Completed 5.5 Supertrend fallback hardening in `pendingDeployQueue`: final ST gate now HOLDS when a live snapshot exists but is not reliable bullish, and LP queue summary no longer uses fresh bullish cache to pass unknown/unreliable live trend.
 - 2026-06-03: Added TA profit guard wiring: `takeProfitMinNetPnlPct` is configurable via `/setconfig`, TA profit scenarios A/B hold until net exposure PnL meets the threshold, and operator-facing TP labels now show the required net PnL.
+- 2026-06-04: Completed 5.5 DLMM anchor provenance wiring in `evilPanda`: deploy logs and position lifecycle now record whether range came from frozen intent or live fallback, plus drift/range-adjust reasons, without adding deploy gates or extra TXs.
