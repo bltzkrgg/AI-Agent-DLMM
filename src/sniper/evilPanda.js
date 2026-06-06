@@ -13,7 +13,7 @@
 
 'use strict';
 
-import DLMM, { StrategyType, getBinArraysRequiredByPositionRange, isOverflowDefaultBinArrayBitmap, deriveBinArrayBitmapExtension } from '@meteora-ag/dlmm';
+import DLMM, { StrategyType, POSITION_FEE, getBinArraysRequiredByPositionRange, isOverflowDefaultBinArrayBitmap, deriveBinArrayBitmapExtension } from '@meteora-ag/dlmm';
 import { PublicKey, ComputeBudgetProgram, VersionedTransaction, TransactionMessage, SystemProgram, SystemInstruction } from '@solana/web3.js';
 import BN from 'bn.js';
 import { appendFileSync, mkdirSync } from 'fs';
@@ -74,6 +74,7 @@ const _quoteOnlyDeployMarkers = new Map();
 let _quoteOnlyDeployMarkersLoaded = false;
 let _exitAccountingLock = false;
 let _notifyFn = null;
+const _deployBudgetReservations = new Map();
 // Bounded search radius for rent-free fallback slices on the same pool.
 // This only affects pools that already tripped the rent guard.
 const RENT_FREE_SEARCH_SLACK_ARRAYS = 100;
@@ -83,6 +84,8 @@ const DLMM_SDK_PATH_STRATEGY = 'strategy';
 const DLMM_SDK_PATH_WEIGHT_QUOTE_ONLY = 'weight_quote_only';
 const DLMM_PROGRAM_ID = new PublicKey('LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo');
 const DEPLOY_PREFLIGHT_FEE_BUFFER_SOL = 0.015;
+const DEPLOY_POSITION_SETUP_SOL = Math.max(0, Number(POSITION_FEE || 0.05740608));
+const DEPLOY_BUDGET_RESERVATION_TTL_MS = 5 * 60 * 1000;
 const FROZEN_INTENT_MAX_BIN_DRIFT = 4;
 const FROZEN_INTENT_MAX_AGE_MS = 180_000;
 
@@ -162,25 +165,151 @@ function isInsufficientLamportsDlmmError(error) {
   return /insufficient lamports/i.test(text);
 }
 
+function pruneExpiredDeployBudgetReservations(now = Date.now()) {
+  for (const [id, row] of [..._deployBudgetReservations.entries()]) {
+    const expiresAt = Number(row?.expiresAt || 0);
+    if (!Number.isFinite(expiresAt) || expiresAt <= now) {
+      _deployBudgetReservations.delete(id);
+    }
+  }
+}
+
+function reserveDeployBudget({
+  owner = 'unknown',
+  poolAddress = '',
+  requestedLamports = 0,
+  ttlMs = DEPLOY_BUDGET_RESERVATION_TTL_MS,
+} = {}) {
+  const lamports = Math.max(0, Math.floor(Number(requestedLamports) || 0));
+  const now = Date.now();
+  pruneExpiredDeployBudgetReservations(now);
+  const id = `${owner}:${String(poolAddress || 'nopool')}:${now}:${Math.random().toString(36).slice(2, 8)}`;
+  _deployBudgetReservations.set(id, {
+    id,
+    owner: String(owner || 'unknown'),
+    poolAddress: String(poolAddress || ''),
+    requestedLamports: lamports,
+    reservedAt: now,
+    expiresAt: now + Math.max(30_000, Number(ttlMs) || DEPLOY_BUDGET_RESERVATION_TTL_MS),
+  });
+  return { ok: true, id, requestedLamports: lamports };
+}
+
+function releaseDeployBudget(reservationId = '') {
+  const id = String(reservationId || '');
+  if (!id) return false;
+  return _deployBudgetReservations.delete(id);
+}
+
+function getReservedDeployBudgetLamports({ excludeId = null } = {}) {
+  pruneExpiredDeployBudgetReservations();
+  let total = 0;
+  for (const [id, row] of _deployBudgetReservations.entries()) {
+    if (excludeId && id === excludeId) continue;
+    total += Math.max(0, Math.floor(Number(row?.requestedLamports) || 0));
+  }
+  return total;
+}
+
+function estimateDeployRequiredLamports({
+  deploySol = 0,
+  cfg = getConfig(),
+  positionSetupSol = DEPLOY_POSITION_SETUP_SOL,
+} = {}) {
+  const safeDeploySol = Math.max(0, Number(deploySol) || 0);
+  const minSolToOpen = Math.max(0, Number(cfg?.minSolToOpen) || 0);
+  const gasReserveSol = Math.max(0, Number(cfg?.gasReserve) || 0);
+  const safePositionSetupSol = Math.max(0, Number(positionSetupSol) || 0);
+  const requiredSol = Math.max(safeDeploySol, minSolToOpen) + gasReserveSol + DEPLOY_PREFLIGHT_FEE_BUFFER_SOL + safePositionSetupSol;
+  return Math.ceil(requiredSol * 1e9);
+}
+
+let _deployBudgetReservationLock = false;
+
+async function reserveDeployBudgetAgainstWallet({
+  connection,
+  walletPublicKey,
+  deploySol = 0,
+  cfg = getConfig(),
+  poolAddress = '',
+  owner = 'deployPosition',
+  positionSetupSol = DEPLOY_POSITION_SETUP_SOL,
+} = {}) {
+  const startedAt = Date.now();
+  while (_deployBudgetReservationLock) {
+    if ((Date.now() - startedAt) > 2_000) {
+      return { ok: false, reason: 'DEPLOY_BUDGET_LOCK_TIMEOUT' };
+    }
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+
+  _deployBudgetReservationLock = true;
+  try {
+    const walletLamports = await connection.getBalance(walletPublicKey).catch(() => 0);
+    const reservedLamports = getReservedDeployBudgetLamports();
+    const requestedLamports = estimateDeployRequiredLamports({ deploySol, cfg, positionSetupSol });
+    const walletCheck = evaluateDeployWalletFunds({
+      walletLamports,
+      deploySol,
+      cfg,
+      reservedLamports,
+      positionSetupSol,
+    });
+    const totalNeededLamports = reservedLamports + requestedLamports;
+    if (!walletCheck.ok || walletLamports < totalNeededLamports) {
+      return {
+        ok: false,
+        walletLamports,
+        reservedLamports,
+        requestedLamports,
+        walletCheck,
+      };
+    }
+    const reservation = reserveDeployBudget({
+      owner,
+      poolAddress,
+      requestedLamports,
+    });
+    return {
+      ok: true,
+      id: reservation.id,
+      requestedLamports,
+      walletLamports,
+      reservedLamports,
+    };
+  } finally {
+    _deployBudgetReservationLock = false;
+  }
+}
+
 function evaluateDeployWalletFunds({
   walletLamports = 0,
   deploySol = 0,
   cfg = getConfig(),
+  reservedLamports = 0,
+  positionSetupSol = DEPLOY_POSITION_SETUP_SOL,
 } = {}) {
-  const availableSol = Math.max(0, Number(walletLamports || 0) / 1e9);
+  const walletLamportsSafe = Math.max(0, Number(walletLamports || 0));
+  const reservedLamportsSafe = Math.max(0, Math.floor(Number(reservedLamports) || 0));
+  const effectiveAvailableLamports = Math.max(0, walletLamportsSafe - reservedLamportsSafe);
+  const availableSol = effectiveAvailableLamports / 1e9;
   const safeDeploySol = Math.max(0, Number(deploySol) || 0);
   const minSolToOpen = Math.max(0, Number(cfg?.minSolToOpen) || 0);
   const gasReserveSol = Math.max(0, Number(cfg?.gasReserve) || 0);
-  const requiredSol = Math.max(safeDeploySol, minSolToOpen) + gasReserveSol + DEPLOY_PREFLIGHT_FEE_BUFFER_SOL;
+  const positionSetupSolSafe = Math.max(0, Number(positionSetupSol) || 0);
+  const requiredSol = Math.max(safeDeploySol, minSolToOpen) + gasReserveSol + DEPLOY_PREFLIGHT_FEE_BUFFER_SOL + positionSetupSolSafe;
   const ok = availableSol >= requiredSol;
   return {
     ok,
     availableSol,
+    walletSol: walletLamportsSafe / 1e9,
     requiredSol,
     deploySol: safeDeploySol,
     minSolToOpen,
     gasReserveSol,
     feeBufferSol: DEPLOY_PREFLIGHT_FEE_BUFFER_SOL,
+    positionSetupSol: positionSetupSolSafe,
+    reservedSol: reservedLamportsSafe / 1e9,
     shortfallSol: Math.max(0, requiredSol - availableSol),
   };
 }
@@ -194,7 +323,8 @@ function buildInsufficientBalanceBlockedResult({
   const detail =
     `available=${walletCheck.availableSol.toFixed(6)} SOL, ` +
     `required=${walletCheck.requiredSol.toFixed(6)} SOL ` +
-    `(deploy=${walletCheck.deploySol.toFixed(6)} + reserve=${walletCheck.gasReserveSol.toFixed(6)} + feeBuffer=${walletCheck.feeBufferSol.toFixed(6)}), ` +
+    `(deploy=${walletCheck.deploySol.toFixed(6)} + reserve=${walletCheck.gasReserveSol.toFixed(6)} + feeBuffer=${walletCheck.feeBufferSol.toFixed(6)} + setup=${Number(walletCheck.positionSetupSol || 0).toFixed(6)}` +
+    `${Number(walletCheck.reservedSol || 0) > 0 ? ` + reserved=${Number(walletCheck.reservedSol || 0).toFixed(6)}` : ''}), ` +
     `shortfall=${walletCheck.shortfallSol.toFixed(6)} SOL, ` +
     `shape=${String(strategyShape || 'spot')}, strategyType=${Number.isFinite(Number(strategyType)) ? Number(strategyType) : 'na'}`;
   return {
@@ -209,6 +339,8 @@ function buildInsufficientBalanceBlockedResult({
     minSolToOpen: walletCheck.minSolToOpen,
     gasReserveSol: walletCheck.gasReserveSol,
     feeBufferSol: walletCheck.feeBufferSol,
+    positionSetupSol: walletCheck.positionSetupSol,
+    reservedSol: walletCheck.reservedSol,
     strategyShape: String(strategyShape || 'spot'),
     strategyType: Number.isFinite(Number(strategyType)) ? Number(strategyType) : null,
   };
@@ -3173,6 +3305,28 @@ export async function deployPosition(poolAddress, deployOptions = {}) {
   const deploySol  = cfg.deployAmountSol || 0.1;
   const connection = getConnection();
   const wallet     = getWallet();
+  const deployBudgetReservation = await reserveDeployBudgetAgainstWallet({
+    connection,
+    walletPublicKey: wallet.publicKey,
+    deploySol,
+    cfg,
+    poolAddress,
+    owner: 'deployPosition',
+  });
+  if (!deployBudgetReservation.ok) {
+    const walletCheck = deployBudgetReservation.walletCheck || evaluateDeployWalletFunds({
+      walletLamports: Number(deployBudgetReservation.walletLamports || 0),
+      deploySol,
+      cfg,
+      reservedLamports: Number(deployBudgetReservation.reservedLamports || 0),
+    });
+    return buildInsufficientBalanceBlockedResult({
+      walletCheck,
+      poolAddress,
+      strategyShape: normalizeDlmmLiquidityShape(cfg.dlmmLiquidityShape),
+      strategyType: getDlmmStrategyTypeFromConfig(cfg),
+    });
+  }
   const poolPubkey = new PublicKey(poolAddress);
   const hasNonRefundableFees = await resolveNonRefundableFeeFlag(
     poolAddress,
@@ -3194,11 +3348,12 @@ export async function deployPosition(poolAddress, deployOptions = {}) {
 
   console.log(`[evilPanda] ▶ deployPosition pool=${poolAddress.slice(0,8)} sol=${deploySol}`);
 
-  return withPermanentAwareBackoff(async () => {
-    console.log('[evilPanda] TIP_TRANSFER_DISABLED');
-    await reconcileZombiePositions().catch((e) => {
-      console.warn(`[evilPanda] Zombie reconcile non-fatal: ${e.message}`);
-    });
+  try {
+    return await withPermanentAwareBackoff(async () => {
+      console.log('[evilPanda] TIP_TRANSFER_DISABLED');
+      await reconcileZombiePositions().catch((e) => {
+        console.warn(`[evilPanda] Zombie reconcile non-fatal: ${e.message}`);
+      });
 
     if (hasTrackedPoolPosition(poolAddress)) {
       throw new Error(`[evilPanda] Pool ${poolAddress.slice(0,8)} already has an active or pending position`);
@@ -3320,6 +3475,7 @@ export async function deployPosition(poolAddress, deployOptions = {}) {
       walletLamports,
       deploySol,
       cfg: cfg2,
+      reservedLamports: getReservedDeployBudgetLamports({ excludeId: deployBudgetReservation.id }),
     });
     if (!walletCheck.ok) {
       console.warn(
@@ -4105,7 +4261,10 @@ export async function deployPosition(poolAddress, deployOptions = {}) {
     clearQuoteOnlyDeployMarker(positionPubkey);
     return positionPubkey;
 
-  }, { maxRetries: 3, baseDelay: 3000, maxDelay: 12_000 });
+    }, { maxRetries: 3, baseDelay: 3000, maxDelay: 12_000 });
+  } finally {
+    releaseDeployBudget(deployBudgetReservation.id);
+  }
 }
 
 // ── Meridian Exit Signal Fetcher ──────────────────────────────────

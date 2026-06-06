@@ -1876,7 +1876,7 @@ test('dry-run default seed disabled does not produce seed plan branch signals', 
   assert.equal(plan.seedLamports, 0);
 });
 
-test('deploy balance guard blocks when available SOL is below deploy + reserve + fee buffer', () => {
+test('deploy balance guard blocks when available SOL is below deploy + reserve + fee buffer + setup', () => {
   const out = __evaluateDeployWalletFundsForTests({
     walletLamports: 153_701_228,
     deploySol: 0.5,
@@ -1887,11 +1887,11 @@ test('deploy balance guard blocks when available SOL is below deploy + reserve +
   });
   assert.equal(out.ok, false);
   assert.equal(Number(out.availableSol.toFixed(6)), 0.153701);
-  assert.equal(Number(out.requiredSol.toFixed(6)), 0.615);
-  assert.equal(Number(out.shortfallSol.toFixed(6)), 0.461299);
+  assert.equal(Number(out.requiredSol.toFixed(6)), 0.672406);
+  assert.equal(Number(out.shortfallSol.toFixed(6)), 0.518705);
 });
 
-test('deploy balance guard passes when available SOL covers deploy + reserve + fee buffer', () => {
+test('deploy balance guard passes when available SOL covers deploy + reserve + fee buffer + setup', () => {
   const out = __evaluateDeployWalletFundsForTests({
     walletLamports: 716_200_000,
     deploySol: 0.5,
@@ -1902,7 +1902,25 @@ test('deploy balance guard passes when available SOL covers deploy + reserve + f
   });
   assert.equal(out.ok, true);
   assert.equal(Number(out.availableSol.toFixed(4)), 0.7162);
-  assert.equal(Number(out.requiredSol.toFixed(3)), 0.615);
+  assert.equal(Number(out.requiredSol.toFixed(6)), 0.672406);
+});
+
+test('deploy balance guard subtracts reserved lamports before allowing a new deploy', () => {
+  const out = __evaluateDeployWalletFundsForTests({
+    walletLamports: 716_200_000,
+    reservedLamports: 100_000_000,
+    deploySol: 0.5,
+    cfg: {
+      minSolToOpen: 0.1,
+      gasReserve: 0.1,
+    },
+  });
+  assert.equal(out.ok, false);
+  assert.equal(Number(out.walletSol.toFixed(4)), 0.7162);
+  assert.equal(Number(out.availableSol.toFixed(4)), 0.6162);
+  assert.equal(Number(out.reservedSol.toFixed(1)), 0.1);
+  assert.equal(Number(out.requiredSol.toFixed(6)), 0.672406);
+  assert.equal(Number(out.shortfallSol.toFixed(6)), 0.056206);
 });
 
 test('regression guard: default seed disabled does not create mixed 0.45/0.05 split for 0.5 SOL', () => {
