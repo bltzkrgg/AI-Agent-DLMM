@@ -83,7 +83,6 @@ const SPOT_STRATEGY_TYPE = StrategyType?.Spot ?? 0;
 const DLMM_SDK_PATH_STRATEGY = 'strategy';
 const DLMM_SDK_PATH_WEIGHT_QUOTE_ONLY = 'weight_quote_only';
 const DLMM_PROGRAM_ID = new PublicKey('LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo');
-const DEPLOY_PREFLIGHT_FEE_BUFFER_SOL = 0.015;
 const DEPLOY_POSITION_SETUP_SOL = Math.max(0, Number(POSITION_FEE || 0.05740608));
 const DEPLOY_BUDGET_RESERVATION_TTL_MS = 5 * 60 * 1000;
 const FROZEN_INTENT_MAX_BIN_DRIFT = 4;
@@ -220,7 +219,7 @@ function estimateDeployRequiredLamports({
   const minSolToOpen = Math.max(0, Number(cfg?.minSolToOpen) || 0);
   const gasReserveSol = Math.max(0, Number(cfg?.gasReserve) || 0);
   const safePositionSetupSol = Math.max(0, Number(positionSetupSol) || 0);
-  const requiredSol = Math.max(safeDeploySol, minSolToOpen) + gasReserveSol + DEPLOY_PREFLIGHT_FEE_BUFFER_SOL + safePositionSetupSol;
+  const requiredSol = Math.max(safeDeploySol, minSolToOpen) + gasReserveSol + safePositionSetupSol;
   return Math.ceil(requiredSol * 1e9);
 }
 
@@ -297,7 +296,7 @@ function evaluateDeployWalletFunds({
   const minSolToOpen = Math.max(0, Number(cfg?.minSolToOpen) || 0);
   const gasReserveSol = Math.max(0, Number(cfg?.gasReserve) || 0);
   const positionSetupSolSafe = Math.max(0, Number(positionSetupSol) || 0);
-  const requiredSol = Math.max(safeDeploySol, minSolToOpen) + gasReserveSol + DEPLOY_PREFLIGHT_FEE_BUFFER_SOL + positionSetupSolSafe;
+  const requiredSol = Math.max(safeDeploySol, minSolToOpen) + gasReserveSol + positionSetupSolSafe;
   const ok = availableSol >= requiredSol;
   return {
     ok,
@@ -307,7 +306,6 @@ function evaluateDeployWalletFunds({
     deploySol: safeDeploySol,
     minSolToOpen,
     gasReserveSol,
-    feeBufferSol: DEPLOY_PREFLIGHT_FEE_BUFFER_SOL,
     positionSetupSol: positionSetupSolSafe,
     reservedSol: reservedLamportsSafe / 1e9,
     shortfallSol: Math.max(0, requiredSol - availableSol),
@@ -323,7 +321,7 @@ function buildInsufficientBalanceBlockedResult({
   const detail =
     `available=${walletCheck.availableSol.toFixed(6)} SOL, ` +
     `required=${walletCheck.requiredSol.toFixed(6)} SOL ` +
-    `(deploy=${walletCheck.deploySol.toFixed(6)} + reserve=${walletCheck.gasReserveSol.toFixed(6)} + feeBuffer=${walletCheck.feeBufferSol.toFixed(6)} + setup=${Number(walletCheck.positionSetupSol || 0).toFixed(6)}` +
+    `(deploy=${walletCheck.deploySol.toFixed(6)} + reserve=${walletCheck.gasReserveSol.toFixed(6)} + setup=${Number(walletCheck.positionSetupSol || 0).toFixed(6)}` +
     `${Number(walletCheck.reservedSol || 0) > 0 ? ` + reserved=${Number(walletCheck.reservedSol || 0).toFixed(6)}` : ''}), ` +
     `shortfall=${walletCheck.shortfallSol.toFixed(6)} SOL, ` +
     `shape=${String(strategyShape || 'spot')}, strategyType=${Number.isFinite(Number(strategyType)) ? Number(strategyType) : 'na'}`;
@@ -338,7 +336,6 @@ function buildInsufficientBalanceBlockedResult({
     deploySol: walletCheck.deploySol,
     minSolToOpen: walletCheck.minSolToOpen,
     gasReserveSol: walletCheck.gasReserveSol,
-    feeBufferSol: walletCheck.feeBufferSol,
     positionSetupSol: walletCheck.positionSetupSol,
     reservedSol: walletCheck.reservedSol,
     strategyShape: String(strategyShape || 'spot'),
@@ -3479,10 +3476,10 @@ export async function deployPosition(poolAddress, deployOptions = {}) {
     });
     if (!walletCheck.ok) {
       console.warn(
-        `[evilPanda] DEPLOY_BLOCK_INSUFFICIENT_SOL pool=${poolAddress.slice(0,8)} ` +
-        `available=${walletCheck.availableSol.toFixed(6)} required=${walletCheck.requiredSol.toFixed(6)} ` +
-        `deploy=${walletCheck.deploySol.toFixed(6)} reserve=${walletCheck.gasReserveSol.toFixed(6)} buffer=${walletCheck.feeBufferSol.toFixed(6)} ` +
-        `shape=${dlmmLiquidityShape} strategyType=${dlmmStrategyType}`
+      `[evilPanda] DEPLOY_BLOCK_INSUFFICIENT_SOL pool=${poolAddress.slice(0,8)} ` +
+      `available=${walletCheck.availableSol.toFixed(6)} required=${walletCheck.requiredSol.toFixed(6)} ` +
+      `deploy=${walletCheck.deploySol.toFixed(6)} reserve=${walletCheck.gasReserveSol.toFixed(6)} ` +
+      `shape=${dlmmLiquidityShape} strategyType=${dlmmStrategyType}`
       );
       return buildInsufficientBalanceBlockedResult({
         walletCheck,
