@@ -46,6 +46,12 @@ test('manual close helper records manual withdrawals when called explicitly', ()
   assert.match(hunterSrc, /MANUAL_CLOSE_TELEGRAM_SENT/);
   assert.match(hunterSrc, /shouldAlertManualClose/);
   assert.match(hunterSrc, /closeFailureMeta/);
+  assert.match(evilPandaSrc, /function hasManualCloseAccountingSnapshot/);
+  assert.match(evilPandaSrc, /function buildManualCloseAccounting/);
+  assert.match(evilPandaSrc, /manual_close_reconciled_from_snapshot/);
+  assert.match(evilPandaSrc, /PnL manual close dicatat dari snapshot posisi terakhir bot/);
+  assert.match(hunterSrc, /feePnlSol,/);
+  assert.match(hunterSrc, /feePnlPct,/);
 });
 
 test('jito tip injection is removed from normal runtime send paths', () => {

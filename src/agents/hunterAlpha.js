@@ -3218,6 +3218,10 @@ async function monitorLoop(positionPubkey, symbol, poolAddress) {
       const lifecycleExtra = {
         currentValueSol,
         pnlPct,
+        feePnlSol,
+        feePnlPct,
+        feePnlAvailable: status?.feePnlAvailable === true,
+        feePnlSource: status?.feePnlSource || 'none',
         inRange,
         deploySol,
         oorState: inRange ? 'IN_RANGE' : 'OUT_OF_RANGE',

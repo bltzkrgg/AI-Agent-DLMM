@@ -39,6 +39,7 @@ prefer the explicit user request, then update this file after the change lands.
 - Deploy preflight now reserves effective SOL budget per in-flight deploy and includes Meteora position setup cost in fail-before-touch wallet checks.
 - Removed hardcoded deploy fee buffer from `evilPanda` preflight after confirming Meteora docs do not require it.
 - Take-profit exit now uses a dedicated full-swap policy so TP behavior is consistent; manual `claimFees()` remains claim-only and non-TP exits keep their existing swap policy.
+- Manual close now reuses the latest tracked position snapshot when available to record Telegram PnL, ledger cashflow, and pool-learning outcome; unresolved cases still stay pending/manual-reconcile instead of inventing on-chain numbers.
 
 ## Behavior contracts to preserve
 
@@ -119,3 +120,4 @@ Do not edit these unless the user explicitly scopes the change there.
 - 2026-06-09: Hardened final Supertrend live snapshot handling so conflicting `quality.taTrend` vs `ta.supertrend.trend` now HOLD for canonical confirmation instead of making a deploy decision on mixed live trend data.
 - 2026-06-09: Split operator-facing TP messaging so TA scenario C is shown as `DEFENSIVE EXIT` / `Supertrend Bearish Exit`, while real profit exits keep `TAKE PROFIT` and trailing keeps `Trailing Profit Trigger`.
 - 2026-06-09: Hardened slot-saturated WATCH suppression to use normalized deploy-slot usage fields so new radar candidates stay quiet whenever deploy capacity is full.
+- 2026-06-09: Manual close accounting now records snapshot-based PnL when the bot has a fresh tracked position snapshot, includes that PnL in Telegram and briefing stats, and only leaves manual close pending when no trustworthy snapshot exists.

@@ -56,8 +56,8 @@ export function computeRealizedPoolPnlStats(rows = [], hoursBack = 24) {
   const realized = (Array.isArray(rows) ? rows : []).filter((row) => {
     const closedTs = new Date(row?.closedAt || row?.ts || 0).getTime();
     if (!Number.isFinite(closedTs) || closedTs < cutoff) return false;
-    if (row?.manualCloseDetected) return false;
     if (row?.accountingStatus === 'manual_close_pnl_unknown') return false;
+    if (row?.accountingStatus === 'manual_close_pnl_pending') return false;
     return Number.isFinite(Number(row?.cashflow?.pnlTotalSol));
   });
 
