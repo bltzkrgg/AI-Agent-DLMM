@@ -461,6 +461,28 @@ test('lp_simple_m15 still blocks bearish trend', () => {
   assert.equal(decision.decision, 'DROP');
 });
 
+test('queue holds when live quality trend and TA trend conflict', () => {
+  const decision = summarizeQueueDecision({
+    meta: {
+      entryTimingState: 'LP_LIVE',
+      entryReadiness: 'HIGH',
+      breakoutQuality: 'VALID',
+      queueTrustedWatch: true,
+    },
+    liveSnapshot: {
+      dataSource: 'meteora-dlmm-ohlcv',
+      quality: { taTrend: 'BULLISH' },
+      ohlcv: { source: 'meteora-dlmm-ohlcv', historySuccess: true, priceChangeM5: 1.1 },
+      ta: { supertrend: { trend: 'BEARISH' } },
+    },
+    lpMode: true,
+  });
+
+  assert.equal(decision.decision, 'HOLD');
+  assert.equal(decision.trend, 'UNKNOWN');
+  assert.match(decision.reason, /live trend conflict/i);
+});
+
 test('final Supertrend deploy gate allows only fresh bullish cache', async () => {
   const now = 1_700_000_000_000;
 
@@ -598,6 +620,23 @@ test('final Supertrend deploy gate still vetoes when live snapshot is bearish bu
   assert.equal(meta.supertrend15mAt, undefined);
 });
 
+test('final Supertrend deploy gate holds when live quality trend and TA trend conflict', async () => {
+  const decision = await getFinalSupertrendDeployDecision({
+    mint: 'Mint111111111111111111111111111111111111111',
+    liveSnapshot: {
+      dataSource: 'meteora-dlmm-ohlcv',
+      quality: { taTrend: 'BULLISH' },
+      ohlcv: { source: 'meteora-dlmm-ohlcv', historySuccess: true, priceChangeM5: 1.0 },
+      ta: { supertrend: { trend: 'BEARISH' } },
+    },
+    checkFn: async () => ({ veto: false, direction: 'BULLISH', reason: 'PASS (should not run)' }),
+  });
+
+  assert.equal(decision.action, 'HOLD');
+  assert.equal(decision.source, 'live_snapshot');
+  assert.equal(decision.direction, 'UNKNOWN');
+  assert.match(decision.reason, /waiting canonical confirmation/i);
+});
 test('final entry candle sanity passes fresh green candle with volume confirmation', async () => {
   const now = 1_700_000_000_000;
   const decision = await getFinalEntryCandleSanityDecision({

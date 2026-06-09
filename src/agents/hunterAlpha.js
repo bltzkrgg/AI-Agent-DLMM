@@ -3251,13 +3251,14 @@ async function monitorLoop(positionPubkey, symbol, poolAddress) {
       if (action === 'TAKE_PROFIT') {
         const exitScenario = String(status.exitScenario || '').toUpperCase();
         const isDefensiveTaExit = exitScenario === 'C';
+        const headerLabel = isDefensiveTaExit ? 'DEFENSIVE EXIT' : 'TAKE PROFIT';
         const reasonLabel = isDefensiveTaExit
-          ? 'Take Profit Trigger'
+          ? 'Supertrend Bearish Exit'
           : exitScenario === 'TRAILING'
             ? 'Trailing Profit Trigger'
             : 'Take Profit Trigger';
         await notify(
-          `🎉 <b>TAKE PROFIT</b>\n` +
+          `🎉 <b>${headerLabel}</b>\n` +
           `Token: <b>${symbol}</b>\n` +
           `Fee PnL: <code>${feePnlSol.toFixed(6)} SOL / ${feeSign}${feePnlPct.toFixed(2)}%</code>\n` +
           `Position Value: <code>${currentValueSol.toFixed(4)} SOL</code>\n` +

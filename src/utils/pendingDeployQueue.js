@@ -366,16 +366,13 @@ export function getSnapshotCacheStats() {
 function resolveQueueSignalSources({ meta = {}, liveSnapshot = null } = {}) {
   const metaTrendRaw = String(meta.taTrend || meta.liveTrend || '').toUpperCase();
   const metaM5Raw = Number(meta.priceChangeM5 ?? meta.snapshotM5Change ?? 0);
-  const liveTrendRaw = String(
-    liveSnapshot?.quality?.taTrend ||
-    liveSnapshot?.ta?.supertrend?.trend ||
-    'UNKNOWN'
-  ).toUpperCase();
+  const canonicalLiveTrend = readCanonicalLiveSnapshotTrend(liveSnapshot);
+  const liveTrendRaw = canonicalLiveTrend.trend;
   const liveM5Raw = Number(liveSnapshot?.ohlcv?.priceChangeM5 ?? 0);
   const liveSource = String(liveSnapshot?.ohlcv?.source || liveSnapshot?.dataSource || '').toLowerCase();
   const liveEntry5mHistory = liveSnapshot?.ohlcv?.entry5mHistorySuccess === true;
   const liveHistorySuccess = liveSnapshot?.ohlcv?.historySuccess === true;
-  const liveTrendKnown = ['BULLISH', 'BEARISH', 'NEUTRAL'].includes(liveTrendRaw);
+  const liveTrendKnown = ['BULLISH', 'BEARISH', 'NEUTRAL'].includes(liveTrendRaw) && canonicalLiveTrend.conflicted !== true;
   const liveM5Known = Number.isFinite(liveM5Raw) && (
     liveEntry5mHistory ||
     liveHistorySuccess ||
@@ -391,6 +388,9 @@ function resolveQueueSignalSources({ meta = {}, liveSnapshot = null } = {}) {
     liveM5Raw,
     metaTrendRaw,
     metaM5Raw,
+    liveTrendConflicted: canonicalLiveTrend.conflicted === true,
+    liveQualityTrend: canonicalLiveTrend.qualityTrend,
+    liveTaTrend: canonicalLiveTrend.taTrend,
   };
 }
 
@@ -416,12 +416,28 @@ function normalizeLiveTrend(value = '') {
   return 'UNKNOWN';
 }
 
+function readCanonicalLiveSnapshotTrend(liveSnapshot = null) {
+  const qualityTrend = normalizeLiveTrend(liveSnapshot?.quality?.taTrend || 'UNKNOWN');
+  const taTrend = normalizeLiveTrend(liveSnapshot?.ta?.supertrend?.trend || 'UNKNOWN');
+
+  if (qualityTrend === 'UNKNOWN' && taTrend === 'UNKNOWN') {
+    return { trend: 'UNKNOWN', conflicted: false, qualityTrend, taTrend };
+  }
+  if (qualityTrend === 'UNKNOWN') {
+    return { trend: taTrend, conflicted: false, qualityTrend, taTrend };
+  }
+  if (taTrend === 'UNKNOWN') {
+    return { trend: qualityTrend, conflicted: false, qualityTrend, taTrend };
+  }
+  if (qualityTrend === taTrend) {
+    return { trend: qualityTrend, conflicted: false, qualityTrend, taTrend };
+  }
+
+  return { trend: 'UNKNOWN', conflicted: true, qualityTrend, taTrend };
+}
+
 function readLiveSnapshotTrend(liveSnapshot = null) {
-  return normalizeLiveTrend(
-    liveSnapshot?.quality?.taTrend ||
-    liveSnapshot?.ta?.supertrend?.trend ||
-    'UNKNOWN'
-  );
+  return readCanonicalLiveSnapshotTrend(liveSnapshot).trend;
 }
 
 function clearBullishSupertrendCache(meta = {}, pool = {}) {
@@ -474,8 +490,18 @@ export async function getFinalSupertrendDeployDecision({
   checkFn = checkSupertrendVeto,
 } = {}) {
   const label = symbol || mint?.slice?.(0, 8) || 'UNKNOWN';
+  const liveTrendState = readCanonicalLiveSnapshotTrend(liveSnapshot);
   const liveTrend = readLiveSnapshotTrend(liveSnapshot);
   const liveReliable = isReliableLiveSnapshot(liveSnapshot);
+  if (liveSnapshot && liveTrendState.conflicted === true) {
+    return {
+      ok: false,
+      action: 'HOLD',
+      reason: `live Supertrend 15m conflict quality=${liveTrendState.qualityTrend} ta=${liveTrendState.taTrend}; waiting canonical confirmation`,
+      source: 'live_snapshot',
+      direction: 'UNKNOWN',
+    };
+  }
   // Hard-stop policy: explicit live bearish must always veto entry.
   // This prevents a fresh bearish read from being overridden by cached bullish state.
   if (liveTrend === 'BEARISH') {
@@ -701,7 +727,10 @@ export function summarizeQueueDecision({ meta = {}, liveSnapshot = null, cfg = g
   const liveReliable = isReliableLiveSnapshot(liveSnapshot);
 
   if (lpMode) {
-    if ((liveReliable && liveTrend === 'BEARISH') || trendBearish) {
+    if (signals.liveTrendConflicted) {
+      decision = 'HOLD';
+      reason = `HOLD: live trend conflict quality=${signals.liveQualityTrend} ta=${signals.liveTaTrend}; waiting canonical confirmation`;
+    } else if ((liveReliable && liveTrend === 'BEARISH') || trendBearish) {
       decision = 'DROP';
       reason = liveReliable && liveTrend === 'BEARISH'
         ? 'Supertrend 15m bearish (live_snapshot)'
