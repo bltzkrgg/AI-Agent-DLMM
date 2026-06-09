@@ -32,6 +32,7 @@ prefer the explicit user request, then update this file after the change lands.
 ## Recently completed changes
 
 - Slot-saturated WATCH promotion is paused for new candidates.
+- Slot saturation checks now use the normalized deploy slot helper shape (`maxPositions` / `active` / `reserved` / `available`) so WATCH/radar suppression stays aligned with the actual slot guard.
 - Slot-saturated queue hold notifications are suppressed.
 - OOR Telegram display was simplified to a compact status message.
 - Strategy parser now uses global `dlmmLiquidityShape` as the default source-of-truth for `strategyType` (spot=0, bidask=2), with explicit strategy overrides still allowed.
@@ -117,3 +118,4 @@ Do not edit these unless the user explicitly scopes the change there.
 - 2026-06-09: Added a dedicated take-profit full-swap policy in `evilPanda` so TP exit consistently swaps fee/residual tokenX to SOL, while `claimFees()` stays claim-only and non-TP exit policy remains unchanged.
 - 2026-06-09: Hardened final Supertrend live snapshot handling so conflicting `quality.taTrend` vs `ta.supertrend.trend` now HOLD for canonical confirmation instead of making a deploy decision on mixed live trend data.
 - 2026-06-09: Split operator-facing TP messaging so TA scenario C is shown as `DEFENSIVE EXIT` / `Supertrend Bearish Exit`, while real profit exits keep `TAKE PROFIT` and trailing keeps `Trailing Profit Trigger`.
+- 2026-06-09: Hardened slot-saturated WATCH suppression to use normalized deploy-slot usage fields so new radar candidates stay quiet whenever deploy capacity is full.

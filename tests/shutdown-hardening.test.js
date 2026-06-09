@@ -462,6 +462,15 @@ test('deploy natural failures are silenced from Telegram notifications', () => {
   assert.match(src, /deployPosition natural fail silenced/);
 });
 
+test('slot-saturated watch promotion stays quiet for new radar candidates', () => {
+  const src = readFileSync(hunterPath, 'utf8');
+  assert.match(src, /function isDeploySlotSaturated\(slotUsage = getDeploySlotUsage\(\)\)/);
+  assert.match(src, /SLOT_SATURATED_PROMOTION_PAUSED/);
+  assert.match(src, /if \(!isDeploySlotSaturated\(slotUsage\)\) \{\s*await notify\(/);
+  assert.match(src, /if \(slotSaturated\) continue;/);
+  assert.match(src, /reportManager\.setSlotSaturatedSummaryOnly\(slotSaturated\)/);
+});
+
 test('exit telegram messages display Meteora fee-only PnL', () => {
   const hunterSrc = readFileSync(hunterPath, 'utf8');
   const evilPandaSrc = readFileSync(evilPandaPath, 'utf8');

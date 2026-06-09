@@ -430,6 +430,13 @@ function formatMemorySignal(signal = {}) {
   return `memory=${signal.reason || 'NO_MEMORY'} delta=${delta} lookup=${lookupMs}ms`;
 }
 
+function isDeploySlotSaturated(slotUsage = getDeploySlotUsage()) {
+  const maxPositions = Number(slotUsage?.maxPositions || 0);
+  const active = Number(slotUsage?.active || 0);
+  const reserved = Number(slotUsage?.reserved || 0);
+  return maxPositions > 0 && (active + reserved) >= maxPositions;
+}
+
 function addWatchPassTa(pool, reason = 'TA PASS', source = 'TA') {
   const cfg = getConfig();
   const watchCfg = getWatchConfig(cfg);
@@ -545,8 +552,8 @@ function addWatchPassTa(pool, reason = 'TA PASS', source = 'TA') {
     return { admitted: true, row, evicted: null, reason: null };
   }
 
-  if (slotUsage.slotLimit > 0 && slotUsage.usedSlots >= slotUsage.slotLimit) {
-    const rejectReason = `SLOT_SATURATED_PROMOTION_PAUSED (${slotUsage.usedSlots}/${slotUsage.slotLimit})`;
+  if (isDeploySlotSaturated(slotUsage)) {
+    const rejectReason = `SLOT_SATURATED_PROMOTION_PAUSED (${slotUsage.active + slotUsage.reserved}/${slotUsage.maxPositions})`;
     console.log(`[WATCH] ⏸️ ${symbol} tunda masuk watch: ${rejectReason}`);
     return { admitted: false, row: null, evicted: null, reason: rejectReason };
   }
@@ -1695,7 +1702,7 @@ export function startPendingTaRadarWatcher() {
       console.log(`[RADAR] 🛰️ heartbeat pending=${_pendingRetestQueue.size} watch=${_taWatchQueue.size}`);
       const ready = await processPendingTaRadar(cfg);
       const slotUsage = getDeploySlotUsage();
-      const slotSaturated = slotUsage.slotLimit > 0 && slotUsage.usedSlots >= slotUsage.slotLimit;
+      const slotSaturated = isDeploySlotSaturated(slotUsage);
       reportManager.setSlotSaturatedSummaryOnly(slotSaturated);
       for (const item of ready) {
         const { pool, symbol, entrySignals, reason } = item;
@@ -2480,7 +2487,7 @@ FORMAT JAWABAN (WAJIB JSON VALID, TANPA MARKDOWN):
             addPendingRetest(watchResult.evicted.pool, 'WATCH digeser oleh prioritas lebih kuat');
           }
           const slotUsage = getDeploySlotUsage();
-          if (!(slotUsage.slotLimit > 0 && slotUsage.usedSlots >= slotUsage.slotLimit)) {
+          if (!isDeploySlotSaturated(slotUsage)) {
             await notify(
               `👀 <b>WATCH</b>\n` +
               `Token: <b>${tokenSymbol}</b> masuk watch layer!\n` +
