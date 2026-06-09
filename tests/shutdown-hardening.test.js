@@ -288,10 +288,32 @@ test('evilPanda exit path applies fee-first auto swap with residual swap behind 
   const src = readFileSync(evilPandaPath, 'utf8');
   assert.match(src, /getTokenBalanceRaw/);
   assert.match(src, /buildExitSwapPolicy/);
+  assert.match(src, /buildTakeProfitExitSwapPolicy/);
   assert.match(src, /attemptGatedExitSwapToSol/);
   assert.match(src, /AGENT_EXIT_FEE_SWAP/);
   assert.match(src, /const shouldSwapResidual = swapPolicy\.swapMode === 'all' \|\| swapPolicy\.allowResidualSwap/);
   assert.doesNotMatch(src, /swapToSol\(mint, rawBalance, null, swapOptions\)/);
+});
+
+test('take profit exit forces full-swap policy while claimFees stays claim-only', () => {
+  const evilPandaSrc = readFileSync(evilPandaPath, 'utf8');
+  const meteoraSrc = readFileSync(resolve(process.cwd(), 'src/solana/meteora.js'), 'utf8');
+  const exitBlockStart = evilPandaSrc.indexOf('const cfg = getConfig();');
+  const exitBlockEnd = evilPandaSrc.indexOf('if (swapPolicy.swapMode !== \'off\') {', exitBlockStart);
+  const exitPolicyBlock = evilPandaSrc.slice(exitBlockStart, exitBlockEnd);
+  const claimStart = meteoraSrc.indexOf('export async function claimFees');
+  const claimEnd = meteoraSrc.indexOf('// ─── Top Pools ───────────────────────────────────────────────────', claimStart);
+  const claimBlock = meteoraSrc.slice(claimStart, claimEnd);
+
+  assert.match(exitPolicyBlock, /normalizedExitReason === 'TAKE_PROFIT'/);
+  assert.match(exitPolicyBlock, /buildTakeProfitExitSwapPolicy/);
+  assert.match(evilPandaSrc, /swapMode:\s*'all'/);
+  assert.match(evilPandaSrc, /allowResidualSwap:\s*true/);
+  assert.match(claimBlock, /export async function claimFees/);
+  assert.match(claimBlock, /claimAllRewards\(\{/);
+  assert.doesNotMatch(claimBlock, /attemptGatedSwapToSol/);
+  assert.doesNotMatch(claimBlock, /RESIDUAL_SWAP_DONE/);
+  assert.doesNotMatch(claimBlock, /swapMode:\s*'all'/);
 });
 
 test('meteora close flow applies fee-first guarded swap and optional residual swap', () => {

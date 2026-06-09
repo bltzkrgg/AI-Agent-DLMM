@@ -37,6 +37,7 @@ prefer the explicit user request, then update this file after the change lands.
 - Strategy parser now uses global `dlmmLiquidityShape` as the default source-of-truth for `strategyType` (spot=0, bidask=2), with explicit strategy overrides still allowed.
 - Deploy preflight now reserves effective SOL budget per in-flight deploy and includes Meteora position setup cost in fail-before-touch wallet checks.
 - Removed hardcoded deploy fee buffer from `evilPanda` preflight after confirming Meteora docs do not require it.
+- Take-profit exit now uses a dedicated full-swap policy so TP behavior is consistent; manual `claimFees()` remains claim-only and non-TP exits keep their existing swap policy.
 
 ## Behavior contracts to preserve
 
@@ -64,6 +65,7 @@ Only edit other files when the change explicitly requires it.
 - Any new config keys or changes to config meaning.
 - Deploy wallet balance checks versus chain-touching quote-only init flow.
 - Hardcoded deploy fee buffer versus Meteora-required costs.
+- Take-profit swap consistency versus manual claim-only fee collection.
 
 ## Locked areas
 
@@ -112,3 +114,4 @@ Do not edit these unless the user explicitly scopes the change there.
 - 2026-06-04: Completed 5.5 DLMM anchor provenance wiring in `evilPanda`: deploy logs and position lifecycle now record whether range came from frozen intent or live fallback, plus drift/range-adjust reasons, without adding deploy gates or extra TXs.
 - 2026-06-06: Hardened `evilPanda` deploy wallet preflight to account for Meteora position setup cost and concurrent in-flight deploy reservations, so insufficient SOL fails before quote-only position init or other chain-touching deploy steps.
 - 2026-06-06: Removed the hardcoded `DEPLOY_PREFLIGHT_FEE_BUFFER_SOL` from deploy preflight after confirming it was a local safety margin, not a Meteora requirement; deploy checks now use only actual deploy, reserve, and setup costs.
+- 2026-06-09: Added a dedicated take-profit full-swap policy in `evilPanda` so TP exit consistently swaps fee/residual tokenX to SOL, while `claimFees()` stays claim-only and non-TP exit policy remains unchanged.

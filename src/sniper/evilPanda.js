@@ -2102,6 +2102,15 @@ function buildExitSwapPolicy(cfg = {}, isUrgent = false) {
   };
 }
 
+function buildTakeProfitExitSwapPolicy(cfg = {}, isEmergencyExit = false) {
+  const basePolicy = buildExitSwapPolicy(cfg, isEmergencyExit);
+  return {
+    ...basePolicy,
+    swapMode: 'all',
+    allowResidualSwap: true,
+  };
+}
+
 async function attemptGatedExitSwapToSol({
   mint,
   rawAmount,
@@ -4891,7 +4900,9 @@ export async function exitPosition(positionPubkey, reason = 'MANUAL') {
       // Ini menyamakan perilaku safeExit/exitPosition dengan close policy lain.
       let feeAutoSwapOutSol = 0;
       const cfg = getConfig();
-      const swapPolicy = buildExitSwapPolicy(cfg, isEmergencyExit);
+      const swapPolicy = normalizedExitReason === 'TAKE_PROFIT'
+        ? buildTakeProfitExitSwapPolicy(cfg, isEmergencyExit)
+        : buildExitSwapPolicy(cfg, isEmergencyExit);
       if (swapPolicy.swapMode !== 'off') {
         try {
           const postCloseTokenXRaw = await getTokenBalanceRaw(reg.tokenXMint).catch(() => '0');
