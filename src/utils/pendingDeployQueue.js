@@ -5,7 +5,7 @@ import { getMarketSnapshot } from '../market/oracle.js';
 import { checkSupertrendVeto, isSupportedQuoteToken, getQuoteTokenLabel } from '../market/meridianVeto.js';
 import { getPoolMemorySignal, recordPoolDeploy } from '../market/poolMemory.js';
 import { getRuntimeState } from '../runtime/state.js';
-import { reserveDeploySlot, releaseDeploySlot } from './deploySlotGuard.js';
+import { getDeploySlotUsage, reserveDeploySlot, releaseDeploySlot } from './deploySlotGuard.js';
 import { evaluateEntryCandleSanity } from './entryCandleSanity.js';
 
 /**
@@ -233,6 +233,10 @@ export function __resetDeployQueueHoldNotifyState() {
 
 function isSlotSaturationHoldReason(reason = '') {
   return String(reason || '').includes('SLOT_SATURATED_PROMOTION_PAUSED');
+}
+
+function isDeploySlotSaturated() {
+  return getDeploySlotUsage().available <= 0;
 }
 
 export function getLiveSnapshotReliability(snapshot = null) {
@@ -1119,6 +1123,14 @@ async function runWatcher() {
         continue;
       }
 
+      if (isDeploySlotSaturated()) {
+        console.log(
+          `[QUEUE] 🫥 Slot saturated, suppressing hold/drop noise for ${symbol} ` +
+          `pool=${getPoolAddress(pool).slice(0, 8) || 'unknown'}`
+        );
+        continue;
+      }
+
       // Log real-time monitoring per token
       console.log(`[QUEUE] ⏳ Memantau TA untuk token ${symbol} secara real-time... [${queueType}] (attempt ${entry.attempts + 1})`);
 
@@ -1205,12 +1217,14 @@ async function runWatcher() {
       if (!finalSt.ok) {
         if (finalSt.action === 'VETO') {
           removeQueueCandidate(mint, entry);
-          await safeSend(
-            `❌ <b>Deploy Queue Drop</b>\n` +
-            `<b>${symbol}</b>\n` +
-            `ST 15m: <code>${finalSt.direction || 'UNKNOWN'}</code> (<code>${finalSt.source}</code>)\n` +
-            `<i>${escapeHTML(finalSt.reason)}</i>`
-          );
+          if (!isDeploySlotSaturated()) {
+            await safeSend(
+              `❌ <b>Deploy Queue Drop</b>\n` +
+              `<b>${symbol}</b>\n` +
+              `ST 15m: <code>${finalSt.direction || 'UNKNOWN'}</code> (<code>${finalSt.source}</code>)\n` +
+              `<i>${escapeHTML(finalSt.reason)}</i>`
+            );
+          }
         } else {
           entry.nextEligibleAt = Date.now() + 15_000;
           entry.deferReason = finalSt.reason;
@@ -1230,7 +1244,7 @@ async function runWatcher() {
         entry.nextEligibleAt = Date.now() + 15_000;
         entry.deferReason = finalCandle.reason;
         console.log(`[QUEUE] ⏸️ ${symbol} HOLD sebelum deploy: ${finalCandle.reason}`);
-        if (isSlotSaturationHoldReason(finalCandle.reason)) {
+        if (isSlotSaturationHoldReason(finalCandle.reason) || isDeploySlotSaturated()) {
           continue;
         }
         const cfg = getConfig();
@@ -1375,7 +1389,7 @@ async function runWatcher() {
             entry.attempts = Math.max(0, entry.attempts - 1);
             entry.nextEligibleAt = Date.now() + holdCooldownSec * 1000;
             _queue.set(mint, entry);
-            if (holdNotice.shouldSend && !isSlotSaturationHoldReason(blockedReason)) {
+            if (holdNotice.shouldSend && !isDeploySlotSaturated()) {
               await safeSend(
                 `⏸️ <b>Deploy Queue Hold</b>\n` +
                 `<b>${symbol}</b> — <code>${blockedReason}</code>\n` +
@@ -1398,7 +1412,7 @@ async function runWatcher() {
             entry.attempts = Math.max(0, entry.attempts - 1);
             entry.nextEligibleAt = Date.now() + holdCooldownSec * 1000;
             _queue.set(mint, entry);
-            if (holdNotice.shouldSend && !isSlotSaturationHoldReason(blockedReason)) {
+            if (holdNotice.shouldSend && !isDeploySlotSaturated()) {
               await safeSend(
                 `⏸️ <b>Deploy Queue Hold</b>\n` +
                 `<b>${symbol}</b> — <code>DLMM_INVALID_INPUT</code>\n` +

@@ -1611,6 +1611,16 @@ test('deploy/drop notifications are not gated by hold dedupe helper', () => {
   assert.match(src, /Real-time Deploy Triggered!/);
 });
 
+test('slot saturated queue suppresses hold/drop noise for new candidates', () => {
+  const src = readFileSync(new URL('../src/utils/pendingDeployQueue.js', import.meta.url), 'utf8');
+  assert.match(src, /function isDeploySlotSaturated\(\)/);
+  assert.match(src, /if \(isDeploySlotSaturated\(\)\) \{/);
+  assert.match(src, /Slot saturated, suppressing hold\/drop noise/);
+  assert.match(src, /if \(isSlotSaturationHoldReason\(finalCandle\.reason\) \|\| isDeploySlotSaturated\(\)\) \{/);
+  assert.match(src, /if \(holdNotice\.shouldSend && !isDeploySlotSaturated\(\)\) \{/);
+  assert.match(src, /if \(!isDeploySlotSaturated\(\)\) \{/);
+});
+
 test('queue final ST gate uses latest live snapshot wiring', () => {
   const src = readFileSync(new URL('../src/utils/pendingDeployQueue.js', import.meta.url), 'utf8');
   assert.match(src, /ensureFinalSupertrendBullish\(\{\s*mint,\s*symbol,\s*pool,\s*meta,\s*liveSnapshot:\s*entry\.lastLiveSnapshot\s*\|\|\s*null,\s*currentPrice,\s*\}\)/s);

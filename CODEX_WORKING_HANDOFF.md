@@ -121,3 +121,4 @@ Do not edit these unless the user explicitly scopes the change there.
 - 2026-06-09: Split operator-facing TP messaging so TA scenario C is shown as `DEFENSIVE EXIT` / `Supertrend Bearish Exit`, while real profit exits keep `TAKE PROFIT` and trailing keeps `Trailing Profit Trigger`.
 - 2026-06-09: Hardened slot-saturated WATCH suppression to use normalized deploy-slot usage fields so new radar candidates stay quiet whenever deploy capacity is full.
 - 2026-06-09: Manual close accounting now records snapshot-based PnL when the bot has a fresh tracked position snapshot, includes that PnL in Telegram and briefing stats, and only leaves manual close pending when no trustworthy snapshot exists.
+- 2026-06-10: Suppressed deploy queue hold/drop noise for new candidates while deploy slots are saturated; queue watcher now stays quiet for slot-full candidates and only resumes normal hold/drop messages when capacity is available again.
