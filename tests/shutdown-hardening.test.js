@@ -51,10 +51,10 @@ test('manual close helper records manual withdrawals when called explicitly', ()
   assert.match(evilPandaSrc, /if \(feeSource === 'none' \|\| feeSource === 'fast_path'\) return false/);
   assert.match(evilPandaSrc, /function buildManualCloseAccounting/);
   assert.match(evilPandaSrc, /manual_close_reconciled_from_snapshot/);
-  assert.match(evilPandaSrc, /PnL manual close dicatat dari snapshot fee terakhir bot/);
-  assert.match(evilPandaSrc, /Fee snapshot belum tersedia; manual close dicatat sebagai pending reconcile/);
-  assert.match(evilPandaSrc, /if \(manualAccounting\) \{\n\s*appendHarvestLog\(/);
-  assert.match(evilPandaSrc, /if \(manualAccounting\) \{\n\s*recordPoolOutcome\(/);
+  assert.match(evilPandaSrc, /PnL manual close dicatat dari snapshot terakhir bot/);
+  assert.doesNotMatch(evilPandaSrc, /pending reconcile/);
+  assert.match(evilPandaSrc, /appendHarvestLog\(\{\n\s*token: tokenSymbol,\n\s*positionPubkey,/);
+  assert.match(evilPandaSrc, /recordPoolOutcome\(\{\n\s*key: reg\.poolAddress \|\| reg\.tokenXMint,/);
   assert.match(hunterSrc, /feePnlSol,/);
   assert.match(hunterSrc, /feePnlPct,/);
 });

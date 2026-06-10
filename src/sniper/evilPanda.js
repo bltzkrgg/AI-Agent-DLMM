@@ -2714,9 +2714,13 @@ function hasManualCloseAccountingSnapshot(reg = {}) {
 
 function buildManualCloseAccounting(reg = {}) {
   const deploySol = Math.max(0, safeNum(reg?.deploySol, 0));
-  const positionValueSol = Math.max(0, safeNum(reg?.currentValueSol, 0));
+  const positionValueSol = Math.max(0, safeNum(reg?.currentValueSol, reg?.positionValueSol || 0));
   const feePnlSol = Math.max(0, safeNum(reg?.feePnlSol, 0));
   const feePnlPct = Math.max(0, safeNum(reg?.feePnlPct, 0));
+  const feePnlSource = String(reg?.feePnlSource || 'snapshot');
+  const accountingStatus = reg?.feePnlAvailable === true || feePnlSol > 0
+    ? 'manual_close_reconciled_from_snapshot'
+    : 'manual_close_reconciled_from_last_status';
   // Manual close snapshot accounting is fee-only. Liquidity withdrawal value is
   // retained as metadata, but it must not become realized PnL for briefing/learning.
   const pnlTotalSol = feePnlSol;
@@ -2732,9 +2736,9 @@ function buildManualCloseAccounting(reg = {}) {
     pnlTotalPct,
     walletNetDeltaSol: null,
     rentRefundSol: null,
-    accountingStatus: 'manual_close_reconciled_from_snapshot',
-    feePnlAvailable: reg?.feePnlAvailable === true || feePnlSol > 0,
-    feePnlSource: reg?.feePnlSource || 'position_snapshot',
+    accountingStatus,
+    feePnlAvailable: reg?.feePnlAvailable === true || feePnlSol > 0 || feePnlPct > 0,
+    feePnlSource,
   };
 }
 
@@ -5321,18 +5325,14 @@ export async function markPositionManuallyClosed(positionPubkey, reason = 'MANUA
 
   const tokenSymbol = reg.tokenXMint?.slice(0, 8) || 'UNKNOWN';
   const normalizedReason = normalizeExitReason(reason);
-  const manualAccounting = hasManualCloseAccountingSnapshot(reg)
-    ? buildManualCloseAccounting(reg)
-    : null;
-  if (manualAccounting) {
-    appendHarvestLog({
-      token: tokenSymbol,
-      positionPubkey,
-      pnlPct: Number(manualAccounting?.pnlTotalPct || 0),
-      deploySol: safeNum(reg.deploySol, 0),
-      reason,
-    });
-  }
+  const manualAccounting = buildManualCloseAccounting(reg);
+  appendHarvestLog({
+    token: tokenSymbol,
+    positionPubkey,
+    pnlPct: Number(manualAccounting?.pnlTotalPct || 0),
+    deploySol: safeNum(reg.deploySol, 0),
+    reason,
+  });
   appendPositionLedger({
     positionPubkey,
     poolAddress: reg.poolAddress || '',
@@ -5352,50 +5352,48 @@ export async function markPositionManuallyClosed(positionPubkey, reason = 'MANUA
     positionValueSol: manualAccounting?.positionValueSol ?? null,
     realizedTradingPnlSol: manualAccounting?.pnlTotalSol ?? null,
     realizedTradingPnlPct: manualAccounting?.pnlTotalPct ?? null,
-    accountingStatus: manualAccounting?.accountingStatus || 'manual_close_pnl_pending',
+    accountingStatus: manualAccounting?.accountingStatus || 'manual_close_reconciled_from_last_status',
     manualCloseDetected: true,
   });
-  if (manualAccounting) {
-    recordPoolOutcome({
-      key: reg.poolAddress || reg.tokenXMint,
+  recordPoolOutcome({
+    key: reg.poolAddress || reg.tokenXMint,
+    tokenMint: reg.tokenXMint || '',
+    poolAddress: reg.poolAddress || '',
+    symbol: tokenSymbol,
+    pnlPct: Number(manualAccounting?.pnlTotalPct || 0),
+    pnlSol: Number(manualAccounting?.pnlTotalSol || 0),
+    reason: normalizedReason,
+    snapshot: { rawReason: reason },
+  });
+  recordPoolPatternOutcome({
+    positionPubkey,
+    features: reg.patternLearningEntry || {
       tokenMint: reg.tokenXMint || '',
       poolAddress: reg.poolAddress || '',
       symbol: tokenSymbol,
-      pnlPct: Number(manualAccounting?.pnlTotalPct || 0),
-      pnlSol: Number(manualAccounting?.pnlTotalSol || 0),
-      reason: normalizedReason,
-      snapshot: { rawReason: reason },
-    });
-    recordPoolPatternOutcome({
-      positionPubkey,
-      features: reg.patternLearningEntry || {
-        tokenMint: reg.tokenXMint || '',
-        poolAddress: reg.poolAddress || '',
-        symbol: tokenSymbol,
-        binStep: null,
-        tvl: null,
-        volume24h: null,
-        volumeTvlRatio: null,
-        mcap: null,
-        holderCount: null,
-        supertrend15m: 'UNKNOWN',
-        feeActiveTvlRatio: null,
-        rangeWidthBins: reg.rangeMax && reg.rangeMin ? (Number(reg.rangeMax) - Number(reg.rangeMin) + 1) : null,
-        entryActiveBin: Number.isFinite(Number(reg.entryActiveBin)) ? Number(reg.entryActiveBin) : null,
-        entryReason: 'MANUAL_CLOSE',
-      },
-      outcome: {
-        feePnlPct: manualAccounting.feePnlPct,
-        feePnlSol: manualAccounting.feePnlSol,
-        totalPnlPct: manualAccounting.pnlTotalPct,
-        pnlSol: manualAccounting.pnlTotalSol,
-        exitReason: normalizedReason,
-        rawExitReason: reason,
-        holdDurationMs: Math.max(0, Date.now() - new Date(reg.deployedAt || nowIso()).getTime()),
-      },
-      cfg: getConfig(),
-    });
-  }
+      binStep: null,
+      tvl: null,
+      volume24h: null,
+      volumeTvlRatio: null,
+      mcap: null,
+      holderCount: null,
+      supertrend15m: 'UNKNOWN',
+      feeActiveTvlRatio: null,
+      rangeWidthBins: reg.rangeMax && reg.rangeMin ? (Number(reg.rangeMax) - Number(reg.rangeMin) + 1) : null,
+      entryActiveBin: Number.isFinite(Number(reg.entryActiveBin)) ? Number(reg.entryActiveBin) : null,
+      entryReason: 'MANUAL_CLOSE',
+    },
+    outcome: {
+      feePnlPct: manualAccounting.feePnlPct,
+      feePnlSol: manualAccounting.feePnlSol,
+      totalPnlPct: manualAccounting.pnlTotalPct,
+      pnlSol: manualAccounting.pnlTotalSol,
+      exitReason: normalizedReason,
+      rawExitReason: reason,
+      holdDurationMs: Math.max(0, Date.now() - new Date(reg.deployedAt || nowIso()).getTime()),
+    },
+    cfg: getConfig(),
+  });
 
   const symbol = reg.tokenXMint?.slice(0, 8) || 'UNKNOWN';
   const pool   = reg.poolAddress?.slice(0, 8) || 'UNKNOWN';
@@ -5406,23 +5404,21 @@ export async function markPositionManuallyClosed(positionPubkey, reason = 'MANUA
     `Pool: <code>${pool}</code>\n` +
     `Alasan: <code>${reason}</code>\n` +
     (
-      manualAccounting
-        ? `Fee PnL: <code>${manualAccounting.feePnlSol.toFixed(6)} SOL / ${manualAccounting.feePnlPct > 0 ? '+' : ''}${manualAccounting.feePnlPct.toFixed(2)}%</code>\n` +
-          `Position Value: <code>${manualAccounting.positionValueSol.toFixed(4)} SOL</code>\n` +
-          `<i>PnL manual close dicatat dari snapshot fee terakhir bot.</i>`
-        : `<i>Fee snapshot belum tersedia; manual close dicatat sebagai pending reconcile.</i>`
+      `Fee PnL: <code>${manualAccounting.feePnlSol.toFixed(6)} SOL / ${manualAccounting.feePnlPct > 0 ? '+' : ''}${manualAccounting.feePnlPct.toFixed(2)}%</code>\n` +
+      `Position Value: <code>${manualAccounting.positionValueSol.toFixed(4)} SOL</code>\n` +
+      `<i>PnL manual close dicatat dari snapshot terakhir bot.</i>`
     )
   );
   console.log(`[evilPanda] Manual close recorded: ${positionPubkey.slice(0,8)} | token=${symbol} | reason=${reason}`);
   return {
     ok: true,
-    solRecovered: manualAccounting ? null : 0,
+    solRecovered: null,
     manualCloseDetected: true,
     pnlTotalSol: Number(manualAccounting?.pnlTotalSol || 0),
     pnlTotalPct: Number(manualAccounting?.pnlTotalPct || 0),
     feePnlSol: Number(manualAccounting?.feePnlSol || 0),
     feePnlPct: Number(manualAccounting?.feePnlPct || 0),
-    accountingStatus: manualAccounting?.accountingStatus || 'manual_close_pnl_pending',
+    accountingStatus: manualAccounting?.accountingStatus || 'manual_close_reconciled_from_last_status',
   };
 }
 

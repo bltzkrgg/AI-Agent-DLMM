@@ -134,7 +134,7 @@ test('briefing realized PnL uses pool pnlTotalSol and ignores liquidity withdraw
   assert.equal(stats.capitalInSol, 2);
 });
 
-test('briefing counts reconciled manual close snapshots but skips pending manual closes', () => {
+test('briefing counts reconciled manual close snapshots as final closes', () => {
   const now = new Date().toISOString();
   const stats = computeRealizedPoolPnlStats([
     {
@@ -155,21 +155,21 @@ test('briefing counts reconciled manual close snapshots but skips pending manual
     {
       closedAt: now,
       reason: 'MANUAL_WITHDRAW_DETECTED',
-      accountingStatus: 'manual_close_pnl_pending',
+      accountingStatus: 'manual_close_reconciled_from_last_status',
       manualCloseDetected: true,
       cashflow: {
         capitalInSol: 0.5,
         capitalOutSol: 0.5,
-        pnlTotalSol: 0.2,
-        pnlTotalPct: 40,
+        pnlTotalSol: 0.0,
+        pnlTotalPct: 0,
       },
     },
   ], 24);
 
-  assert.equal(stats.total, 1);
+  assert.equal(stats.total, 2);
   assert.equal(stats.wins, 1);
   assert.equal(stats.losses, 0);
   assert.equal(Number(stats.totalPnlSol.toFixed(6)), 0.004);
-  assert.equal(Number(stats.totalPnlPct.toFixed(6)), 0.8);
-  assert.equal(stats.capitalInSol, 0.5);
+  assert.equal(Number(stats.totalPnlPct.toFixed(6)), 0.4);
+  assert.equal(stats.capitalInSol, 1.0);
 });
