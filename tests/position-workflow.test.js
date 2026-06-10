@@ -218,3 +218,50 @@ test('position lifecycle state is stored alongside close records', async (t) => 
   assert.equal(closed.lifecycle_state, 'closed_pending_swap');
   assert.equal(closed.status, 'closed');
 });
+
+test('defensive Supertrend exit requires a short confirmation window', async () => {
+  const { __evaluateDefensiveExitConfirmationForTests } = await importFresh(join(repoRoot, 'src/sniper/evilPanda.js'));
+
+  const reg = {};
+  const firstBearish = __evaluateDefensiveExitConfirmationForTests({
+    reg,
+    exitDecision: { shouldExit: true, scenario: 'C', reason: 'Struktur Support Jebol (Supertrend = BEARISH)' },
+    ageMs: 10_000,
+    nowMs: 1_000,
+  });
+
+  assert.equal(firstBearish.allowExit, false);
+  assert.match(firstBearish.holdReason, /position age 10s < 30s minimum/);
+  assert.equal(reg.defensiveExitBearishSince, 1_000);
+
+  const secondBearish = __evaluateDefensiveExitConfirmationForTests({
+    reg,
+    exitDecision: { shouldExit: true, scenario: 'C', reason: 'Struktur Support Jebol (Supertrend = BEARISH)' },
+    ageMs: 35_000,
+    nowMs: 20_000,
+  });
+
+  assert.equal(secondBearish.allowExit, false);
+  assert.match(secondBearish.holdReason, /bearish confirmation 19s < 30s/);
+
+  const confirmedBearish = __evaluateDefensiveExitConfirmationForTests({
+    reg,
+    exitDecision: { shouldExit: true, scenario: 'C', reason: 'Struktur Support Jebol (Supertrend = BEARISH)' },
+    ageMs: 65_000,
+    nowMs: 32_000,
+  });
+
+  assert.equal(confirmedBearish.allowExit, true);
+  assert.equal(confirmedBearish.holdReason, null);
+
+  const recovery = __evaluateDefensiveExitConfirmationForTests({
+    reg,
+    exitDecision: { shouldExit: false, scenario: null, reason: 'Signal unavailable — HOLD' },
+    ageMs: 70_000,
+    nowMs: 40_000,
+  });
+
+  assert.equal(recovery.allowExit, false);
+  assert.equal(recovery.holdReason, null);
+  assert.equal('defensiveExitBearishSince' in reg, false);
+});

@@ -87,6 +87,10 @@ const DEPLOY_POSITION_SETUP_SOL = Math.max(0, Number(POSITION_FEE || 0.05740608)
 const DEPLOY_BUDGET_RESERVATION_TTL_MS = 5 * 60 * 1000;
 const FROZEN_INTENT_MAX_BIN_DRIFT = 4;
 const FROZEN_INTENT_MAX_AGE_MS = 180_000;
+// Defensive Supertrend exits use a short confirmation window so a fresh deploy
+// is not immediately churned by a single delayed/stale bearish TA snapshot.
+const DEFENSIVE_EXIT_MIN_POSITION_AGE_MS = 30_000;
+const DEFENSIVE_EXIT_CONFIRM_MS = 30_000;
 
 function isFiniteInteger(value) {
   return Number.isFinite(value) && Number.isSafeInteger(value);
@@ -4423,6 +4427,42 @@ function evaluateExitSignal(signal) {
   };
 }
 
+function evaluateDefensiveExitConfirmation({
+  reg = {},
+  exitDecision = null,
+  ageMs = 0,
+  nowMs = Date.now(),
+} = {}) {
+  const isBearishDefensiveExit = exitDecision?.shouldExit === true && exitDecision?.scenario === 'C';
+  if (!isBearishDefensiveExit) {
+    if (reg && typeof reg === 'object') delete reg.defensiveExitBearishSince;
+    return { allowExit: Boolean(exitDecision?.shouldExit), holdReason: null, bearishSinceMs: null };
+  }
+
+  const previousSinceMs = Number(reg?.defensiveExitBearishSince || 0);
+  const bearishSinceMs = previousSinceMs > 0 ? previousSinceMs : nowMs;
+  if (reg && typeof reg === 'object') reg.defensiveExitBearishSince = bearishSinceMs;
+  const bearishAgeMs = Math.max(0, nowMs - bearishSinceMs);
+
+  if (ageMs < DEFENSIVE_EXIT_MIN_POSITION_AGE_MS) {
+    return {
+      allowExit: false,
+      holdReason: `Defensive exit hold: position age ${Math.round(ageMs / 1000)}s < ${Math.round(DEFENSIVE_EXIT_MIN_POSITION_AGE_MS / 1000)}s minimum`,
+      bearishSinceMs,
+    };
+  }
+
+  if (bearishAgeMs < DEFENSIVE_EXIT_CONFIRM_MS) {
+    return {
+      allowExit: false,
+      holdReason: `Defensive exit hold: bearish confirmation ${Math.round(bearishAgeMs / 1000)}s < ${Math.round(DEFENSIVE_EXIT_CONFIRM_MS / 1000)}s`,
+      bearishSinceMs,
+    };
+  }
+
+  return { allowExit: true, holdReason: null, bearishSinceMs };
+}
+
 // ── 2. monitorPnL ─────────────────────────────────────────────────
 
 /**
@@ -4645,6 +4685,42 @@ export async function monitorPnL(positionPubkey) {
     const signal     = await fetchExitSignal(reg.tokenXMint);
     const exitDecision = evaluateExitSignal(signal);
     const isDefensiveTaExit = exitDecision.scenario === 'C';
+    const defensiveExitGate = evaluateDefensiveExitConfirmation({
+      reg,
+      exitDecision,
+      ageMs,
+      nowMs: Date.now(),
+    });
+
+    if (isDefensiveTaExit && !defensiveExitGate.allowExit) {
+      const reason =
+        `${defensiveExitGate.holdReason}; ${exitDecision.reason}`;
+      console.log(
+        `[evilPanda] 📊 DEFENSIVE_EXIT gated ${positionPubkey.slice(0,8)} ` +
+        `age=${Math.round(ageMs / 1000)}s reason=${reason}`
+      );
+      return {
+        action: 'HOLD',
+        currentValueSol,
+        pnlPct,
+        ...feeOnlyPnl,
+        inRange,
+        activeBinId: activeBin.binId,
+        activePrice: rawPrice,
+        entryActiveBin,
+        entryPrice,
+        rangeMin: reg.rangeMin,
+        rangeMax: reg.rangeMax,
+        taReason: reason,
+        taSignal: signal ? {
+          rsi: signal.rsi,
+          close: signal.close,
+          bbUpper: signal.bbUpper,
+          macdHist: signal.macdHist,
+          direction: signal.direction,
+        } : null,
+      };
+    }
 
     if (exitDecision.shouldExit && !isDefensiveTaExit && pnlPct < takeProfitMinNetPnlPct) {
       const reason =
@@ -5530,6 +5606,10 @@ export function __assertNoUnexpectedSolTransferInTxForTests(args = {}) {
 
 export function __evaluateFrozenEntryIntentForDeployForTests(args = {}) {
   return evaluateFrozenEntryIntentForDeploy(args);
+}
+
+export function __evaluateDefensiveExitConfirmationForTests(args = {}) {
+  return evaluateDefensiveExitConfirmation(args);
 }
 
 export { EP_CONFIG };
