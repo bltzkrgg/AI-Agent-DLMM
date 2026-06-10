@@ -49,7 +49,7 @@ test('manual close helper records manual withdrawals when called explicitly', ()
   assert.match(evilPandaSrc, /function hasManualCloseAccountingSnapshot/);
   assert.match(evilPandaSrc, /function buildManualCloseAccounting/);
   assert.match(evilPandaSrc, /manual_close_reconciled_from_snapshot/);
-  assert.match(evilPandaSrc, /PnL manual close dicatat dari snapshot posisi terakhir bot/);
+  assert.match(evilPandaSrc, /PnL manual close dicatat dari snapshot fee terakhir bot/);
   assert.match(hunterSrc, /feePnlSol,/);
   assert.match(hunterSrc, /feePnlPct,/);
 });

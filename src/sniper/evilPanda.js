@@ -2702,23 +2702,21 @@ function buildManualCloseAccounting(reg = {}) {
   const positionValueSol = Math.max(0, safeNum(reg?.currentValueSol, 0));
   const feePnlSol = Math.max(0, safeNum(reg?.feePnlSol, 0));
   const feePnlPct = Math.max(0, safeNum(reg?.feePnlPct, 0));
-  const finalAccounting = computeFinalExitAccounting({
-    deploySol,
-    positionValueSol,
-    walletNetDeltaSol: positionValueSol,
-    txFeesSol: 0,
-  });
-  const pricePnlSol = finalAccounting.realizedTradingPnlSol - feePnlSol;
+  // Manual close snapshot accounting is fee-only. Liquidity withdrawal value is
+  // retained as metadata, but it must not become realized PnL for briefing/learning.
+  const pnlTotalSol = feePnlSol;
+  const pnlTotalPct = feePnlPct;
+  const pricePnlSol = 0;
   return {
     deploySol,
     positionValueSol,
     feePnlSol,
     feePnlPct,
     pricePnlSol,
-    pnlTotalSol: finalAccounting.realizedTradingPnlSol,
-    pnlTotalPct: finalAccounting.realizedTradingPnlPct,
-    walletNetDeltaSol: finalAccounting.walletNetDeltaSol,
-    rentRefundSol: finalAccounting.rentRefundSol,
+    pnlTotalSol,
+    pnlTotalPct,
+    walletNetDeltaSol: null,
+    rentRefundSol: null,
     accountingStatus: 'manual_close_reconciled_from_snapshot',
     feePnlAvailable: reg?.feePnlAvailable === true || feePnlSol > 0,
     feePnlSource: reg?.feePnlSource || 'position_snapshot',
@@ -5289,15 +5287,14 @@ export async function markPositionManuallyClosed(positionPubkey, reason = 'MANUA
       manualAccounting
         ? `Fee PnL: <code>${manualAccounting.feePnlSol.toFixed(6)} SOL / ${manualAccounting.feePnlPct > 0 ? '+' : ''}${manualAccounting.feePnlPct.toFixed(2)}%</code>\n` +
           `Position Value: <code>${manualAccounting.positionValueSol.toFixed(4)} SOL</code>\n` +
-          `Total Exposure PnL: <code>${manualAccounting.pnlTotalPct >= 0 ? '+' : ''}${manualAccounting.pnlTotalPct.toFixed(2)}%</code>\n` +
-          `<i>PnL manual close dicatat dari snapshot posisi terakhir bot.</i>`
+          `<i>PnL manual close dicatat dari snapshot fee terakhir bot.</i>`
         : `<i>Posisi dihapus dari registry lokal dan akan direconcile jika masih ada sisa state.</i>`
     )
   );
   console.log(`[evilPanda] Manual close recorded: ${positionPubkey.slice(0,8)} | token=${symbol} | reason=${reason}`);
   return {
     ok: true,
-    solRecovered: Number(manualAccounting?.walletNetDeltaSol || 0),
+    solRecovered: manualAccounting ? null : 0,
     manualCloseDetected: true,
     pnlTotalSol: Number(manualAccounting?.pnlTotalSol || 0),
     pnlTotalPct: Number(manualAccounting?.pnlTotalPct || 0),
