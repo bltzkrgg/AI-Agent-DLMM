@@ -2694,7 +2694,12 @@ function appendHarvestLog({ token = 'UNKNOWN', positionPubkey = '', pnlPct = 0, 
 }
 
 function hasManualCloseAccountingSnapshot(reg = {}) {
-  return Number.isFinite(Number(reg?.currentValueSol));
+  const feeSource = String(reg?.feePnlSource || 'none');
+  if (reg?.feePnlAvailable === true) return true;
+  if (feeSource === 'none' || feeSource === 'fast_path') return false;
+  const feePnlSol = Math.max(0, safeNum(reg?.feePnlSol, 0));
+  const feePnlPct = Math.max(0, safeNum(reg?.feePnlPct, 0));
+  return feePnlSol > 0 || feePnlPct > 0;
 }
 
 function buildManualCloseAccounting(reg = {}) {
@@ -5288,7 +5293,7 @@ export async function markPositionManuallyClosed(positionPubkey, reason = 'MANUA
         ? `Fee PnL: <code>${manualAccounting.feePnlSol.toFixed(6)} SOL / ${manualAccounting.feePnlPct > 0 ? '+' : ''}${manualAccounting.feePnlPct.toFixed(2)}%</code>\n` +
           `Position Value: <code>${manualAccounting.positionValueSol.toFixed(4)} SOL</code>\n` +
           `<i>PnL manual close dicatat dari snapshot fee terakhir bot.</i>`
-        : `<i>Posisi dihapus dari registry lokal dan akan direconcile jika masih ada sisa state.</i>`
+        : `<i>Fee snapshot belum tersedia; manual close dicatat sebagai pending reconcile.</i>`
     )
   );
   console.log(`[evilPanda] Manual close recorded: ${positionPubkey.slice(0,8)} | token=${symbol} | reason=${reason}`);
