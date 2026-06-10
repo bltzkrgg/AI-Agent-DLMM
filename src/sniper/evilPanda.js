@@ -102,6 +102,12 @@ function toFiniteNumber(value, fallback = null) {
   return Number.isFinite(num) ? num : fallback;
 }
 
+function normalizeTrackedTrendDirection(value = '') {
+  const trend = String(value || '').toUpperCase();
+  if (trend === 'BULLISH' || trend === 'BEARISH') return trend;
+  return 'UNKNOWN';
+}
+
 function evaluateFrozenEntryIntentForDeploy({
   enabled = false,
   frozenEntryActiveBin = null,
@@ -3390,6 +3396,15 @@ export async function deployPosition(poolAddress, deployOptions = {}) {
     Number.isFinite(frozenEntryActiveBin) &&
     Number.isFinite(frozenEntryPrice) &&
     frozenEntryPrice > 0;
+  const finalTrendStamp = (deployOptions && typeof deployOptions.finalTrendStamp === 'object')
+    ? deployOptions.finalTrendStamp
+    : null;
+  const finalTrendDirection = normalizeTrackedTrendDirection(finalTrendStamp?.direction);
+  const finalTrendSource = String(finalTrendStamp?.source || 'unknown');
+  const finalTrendReason = String(finalTrendStamp?.reason || '');
+  const finalTrendAt = Number.isFinite(Number(finalTrendStamp?.checkedAt))
+    ? Number(finalTrendStamp.checkedAt)
+    : Date.now();
 
   console.log(`[evilPanda] ▶ deployPosition pool=${poolAddress.slice(0,8)} sol=${deploySol}`);
 
@@ -4199,6 +4214,10 @@ export async function deployPosition(poolAddress, deployOptions = {}) {
         entryAnchorDriftBins: finalDeployState?.finalArgsContext?.anchorDriftBins ?? anchorMetadata.anchorDriftBins,
         entryAnchorDriftPct: finalDeployState?.finalArgsContext?.anchorDriftPct ?? anchorMetadata.anchorDriftPct,
         entryAnchorReason: finalDeployState?.finalArgsContext?.anchorReason || anchorMetadata.anchorReason,
+        entryFinalSupertrend15m: finalTrendDirection,
+        entryFinalSupertrendSource: finalTrendSource,
+        entryFinalSupertrendReason: finalTrendReason,
+        entryFinalSupertrendAt: finalTrendAt,
         rangeAdjustReason: finalDeployState?.finalArgsContext?.rangeAdjustReason || null,
         hwmPct: 0,
       }, { flush: true });
@@ -4292,6 +4311,10 @@ export async function deployPosition(poolAddress, deployOptions = {}) {
       entryAnchorDriftBins: finalDeployState?.finalArgsContext?.anchorDriftBins ?? anchorMetadata.anchorDriftBins,
       entryAnchorDriftPct: finalDeployState?.finalArgsContext?.anchorDriftPct ?? anchorMetadata.anchorDriftPct,
       entryAnchorReason: finalDeployState?.finalArgsContext?.anchorReason || anchorMetadata.anchorReason,
+      entryFinalSupertrend15m: finalTrendDirection,
+      entryFinalSupertrendSource: finalTrendSource,
+      entryFinalSupertrendReason: finalTrendReason,
+      entryFinalSupertrendAt: finalTrendAt,
       rangeAdjustReason: finalDeployState?.finalArgsContext?.rangeAdjustReason || null,
       hwmPct:      0,
     }, { flush: true });
@@ -4443,6 +4466,22 @@ function evaluateDefensiveExitConfirmation({
   const bearishSinceMs = previousSinceMs > 0 ? previousSinceMs : nowMs;
   if (reg && typeof reg === 'object') reg.defensiveExitBearishSince = bearishSinceMs;
   const bearishAgeMs = Math.max(0, nowMs - bearishSinceMs);
+  const entryFinalTrend = normalizeTrackedTrendDirection(reg?.entryFinalSupertrend15m);
+  const entryFinalTrendAt = Number.isFinite(Number(reg?.entryFinalSupertrendAt))
+    ? Number(reg.entryFinalSupertrendAt)
+    : null;
+  const entryFinalTrendAgeMs = entryFinalTrendAt !== null
+    ? Math.max(0, nowMs - entryFinalTrendAt)
+    : null;
+
+  if (entryFinalTrend === 'BULLISH' && entryFinalTrendAgeMs !== null && entryFinalTrendAgeMs < DEFENSIVE_EXIT_CONFIRM_MS) {
+    return {
+      allowExit: false,
+      holdReason:
+        `Defensive exit hold: entry bullish confirmation ${Math.round(entryFinalTrendAgeMs / 1000)}s < ${Math.round(DEFENSIVE_EXIT_CONFIRM_MS / 1000)}s`,
+      bearishSinceMs,
+    };
+  }
 
   if (ageMs < DEFENSIVE_EXIT_MIN_POSITION_AGE_MS) {
     return {
@@ -5497,6 +5536,12 @@ export async function reconcileStartupPositions() {
         patternLearningEntry: row.patternLearningEntry || null,
         entryActiveBin: Number.isFinite(Number(row.entryActiveBin)) ? Number(row.entryActiveBin) : null,
         entryPrice: Number.isFinite(Number(row.entryPrice)) ? Number(row.entryPrice) : null,
+        entryFinalSupertrend15m: normalizeTrackedTrendDirection(row.entryFinalSupertrend15m),
+        entryFinalSupertrendSource: String(row.entryFinalSupertrendSource || 'unknown'),
+        entryFinalSupertrendReason: String(row.entryFinalSupertrendReason || ''),
+        entryFinalSupertrendAt: Number.isFinite(Number(row.entryFinalSupertrendAt))
+          ? Number(row.entryFinalSupertrendAt)
+          : null,
         hwmPct: safeNum(row.hwmPct, 0),
         lifecycleState: row.lifecycleState || row.lifecycle_state || 'open',
         lifecycle_state: row.lifecycle_state || row.lifecycleState || 'open',

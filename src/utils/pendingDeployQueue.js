@@ -1348,6 +1348,12 @@ async function runWatcher() {
             pool?.hasNonRefundableFees ??
             meta?.hasNonRefundableFees ??
             false,
+          finalTrendStamp: {
+            direction: finalSt.direction || 'UNKNOWN',
+            source: finalSt.source || 'unknown',
+            reason: finalSt.reason || '',
+            checkedAt: Date.now(),
+          },
           frozenEntryIntent: {
             entryActiveBin: deployIntentBin,
             entryPrice: deployIntentPrice,

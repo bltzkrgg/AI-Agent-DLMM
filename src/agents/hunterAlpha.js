@@ -2895,6 +2895,12 @@ Balas HANYA JSON valid tanpa Markdown.`;
               winner?.hasNonRefundableFees ??
               marketSnapshot?.pool?.hasNonRefundableFees ??
               false,
+            finalTrendStamp: {
+              direction: finalSt.direction || 'UNKNOWN',
+              source: finalSt.source || 'unknown',
+              reason: finalSt.reason || '',
+              checkedAt: Date.now(),
+            },
           }),
           Number(currentCfg.deployTimeoutMs || 180_000),
           'DEPLOY'

@@ -77,6 +77,21 @@ test('position runtime state avoids zero placeholder fallback for entry anchor f
   assert.match(pandaSrc, /rangeAdjustReason:\s*finalDeployState\?\..*rangeAdjustReason \|\| null/);
 });
 
+test('deploy callers propagate final Supertrend stamps into position metadata and restore them on startup', () => {
+  const hunterSrc = readSource('src/agents/hunterAlpha.js');
+  const queueSrc = readSource('src/utils/pendingDeployQueue.js');
+  const pandaSrc = readSource('src/sniper/evilPanda.js');
+
+  assert.match(hunterSrc, /finalTrendStamp:\s*\{[\s\S]*direction:\s*finalSt\.direction \|\| 'UNKNOWN'/);
+  assert.match(queueSrc, /finalTrendStamp:\s*\{[\s\S]*direction:\s*finalSt\.direction \|\| 'UNKNOWN'/);
+  assert.match(pandaSrc, /entryFinalSupertrend15m:\s*finalTrendDirection/);
+  assert.match(pandaSrc, /entryFinalSupertrendSource:\s*finalTrendSource/);
+  assert.match(pandaSrc, /entryFinalSupertrendReason:\s*finalTrendReason/);
+  assert.match(pandaSrc, /entryFinalSupertrendAt:\s*finalTrendAt/);
+  assert.match(pandaSrc, /entryFinalSupertrend15m:\s*normalizeTrackedTrendDirection\(row\.entryFinalSupertrend15m\)/);
+  assert.match(pandaSrc, /entryFinalSupertrendAt:\s*Number\.isFinite\(Number\(row\.entryFinalSupertrendAt\)\)/);
+});
+
 test('DLMM deploy logs carry anchor provenance and range adjustment observability', () => {
   const pandaSrc = readSource('src/sniper/evilPanda.js');
 

@@ -265,3 +265,32 @@ test('defensive Supertrend exit requires a short confirmation window', async () 
   assert.equal(recovery.holdReason, null);
   assert.equal('defensiveExitBearishSince' in reg, false);
 });
+
+test('defensive Supertrend exit respects fresh bullish entry confirmation before allowing scenario C', async () => {
+  const { __evaluateDefensiveExitConfirmationForTests } = await importFresh(join(repoRoot, 'src/sniper/evilPanda.js'));
+
+  const reg = {
+    entryFinalSupertrend15m: 'BULLISH',
+    entryFinalSupertrendAt: 10_000,
+  };
+
+  const freshBullishEntryHold = __evaluateDefensiveExitConfirmationForTests({
+    reg,
+    exitDecision: { shouldExit: true, scenario: 'C', reason: 'Struktur Support Jebol (Supertrend = BEARISH)' },
+    ageMs: 45_000,
+    nowMs: 25_000,
+  });
+
+  assert.equal(freshBullishEntryHold.allowExit, false);
+  assert.match(freshBullishEntryHold.holdReason, /entry bullish confirmation 15s < 30s/);
+
+  const matureBullishEntry = __evaluateDefensiveExitConfirmationForTests({
+    reg,
+    exitDecision: { shouldExit: true, scenario: 'C', reason: 'Struktur Support Jebol (Supertrend = BEARISH)' },
+    ageMs: 75_000,
+    nowMs: 56_000,
+  });
+
+  assert.equal(matureBullishEntry.allowExit, true);
+  assert.equal(matureBullishEntry.holdReason, null);
+});
