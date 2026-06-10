@@ -19,10 +19,9 @@ test('position ledger appender persists cashflow fields', () => {
   assert.match(src, /pnlTotalPct/);
 });
 
-test('exit flow writes both harvest and position ledger', () => {
+test('manual close fee-only path keeps pending cases out of harvest history', () => {
   const src = readFileSync(evilPandaPath, 'utf8');
-  assert.match(src, /appendHarvestLog\(/);
+  assert.match(src, /if \(manualAccounting\) \{\n\s*appendHarvestLog\(/);
   assert.match(src, /appendPositionLedger\(/);
-  assert.match(src, /const pnlTotalSol = solRecovered - reg\.deploySol/);
+  assert.match(src, /if \(manualAccounting\) \{\n\s*recordPoolOutcome\(/);
 });
-

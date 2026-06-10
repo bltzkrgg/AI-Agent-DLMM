@@ -5209,13 +5209,15 @@ export async function markPositionManuallyClosed(positionPubkey, reason = 'MANUA
   const manualAccounting = hasManualCloseAccountingSnapshot(reg)
     ? buildManualCloseAccounting(reg)
     : null;
-  appendHarvestLog({
-    token: tokenSymbol,
-    positionPubkey,
-    pnlPct: Number(manualAccounting?.pnlTotalPct || 0),
-    deploySol: safeNum(reg.deploySol, 0),
-    reason,
-  });
+  if (manualAccounting) {
+    appendHarvestLog({
+      token: tokenSymbol,
+      positionPubkey,
+      pnlPct: Number(manualAccounting?.pnlTotalPct || 0),
+      deploySol: safeNum(reg.deploySol, 0),
+      reason,
+    });
+  }
   appendPositionLedger({
     positionPubkey,
     poolAddress: reg.poolAddress || '',
@@ -5238,17 +5240,17 @@ export async function markPositionManuallyClosed(positionPubkey, reason = 'MANUA
     accountingStatus: manualAccounting?.accountingStatus || 'manual_close_pnl_pending',
     manualCloseDetected: true,
   });
-  recordPoolOutcome({
-    key: reg.poolAddress || reg.tokenXMint,
-    tokenMint: reg.tokenXMint || '',
-    poolAddress: reg.poolAddress || '',
-    symbol: tokenSymbol,
-    pnlPct: Number(manualAccounting?.pnlTotalPct || 0),
-    pnlSol: Number(manualAccounting?.pnlTotalSol || 0),
-    reason: normalizedReason,
-    snapshot: { rawReason: reason },
-  });
   if (manualAccounting) {
+    recordPoolOutcome({
+      key: reg.poolAddress || reg.tokenXMint,
+      tokenMint: reg.tokenXMint || '',
+      poolAddress: reg.poolAddress || '',
+      symbol: tokenSymbol,
+      pnlPct: Number(manualAccounting?.pnlTotalPct || 0),
+      pnlSol: Number(manualAccounting?.pnlTotalSol || 0),
+      reason: normalizedReason,
+      snapshot: { rawReason: reason },
+    });
     recordPoolPatternOutcome({
       positionPubkey,
       features: reg.patternLearningEntry || {
