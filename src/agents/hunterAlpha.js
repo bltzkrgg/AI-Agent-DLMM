@@ -1165,6 +1165,32 @@ function hasFeePnlData(result = {}) {
   return result?.feePnlAvailable === true || String(result?.feePnlSource || 'none') !== 'none';
 }
 
+function hasTrackedFeeSnapshot(result = {}) {
+  const feeSource = String(result?.feePnlSource || 'none');
+  if (result?.feePnlAvailable === true) return true;
+  if (feeSource === 'none' || feeSource === 'fast_path') return false;
+  const feePnlSol = Math.max(0, Number(result?.feePnlSol || 0));
+  const feePnlPct = Math.max(0, Number(result?.feePnlPct || 0));
+  return feePnlSol > 0 || feePnlPct > 0;
+}
+
+function resolveTrackedFeeSnapshot(status = {}, meta = {}) {
+  if (hasTrackedFeeSnapshot(status)) {
+    return {
+      feePnlSol: Math.max(0, Number(status?.feePnlSol || 0)),
+      feePnlPct: Math.max(0, Number(status?.feePnlPct || 0)),
+      feePnlAvailable: status?.feePnlAvailable === true,
+      feePnlSource: status?.feePnlSource || 'none',
+    };
+  }
+  return {
+    feePnlSol: Math.max(0, Number(meta?.feePnlSol || 0)),
+    feePnlPct: Math.max(0, Number(meta?.feePnlPct || 0)),
+    feePnlAvailable: meta?.feePnlAvailable === true,
+    feePnlSource: meta?.feePnlSource || 'none',
+  };
+}
+
 function formatFeePnlLine(result = {}) {
   if (!hasFeePnlData(result)) return 'Fee PnL: <code>unavailable</code>\n';
   const feePnlSol = Math.max(0, Number(result?.feePnlSol || 0));
@@ -3164,10 +3190,11 @@ async function monitorLoop(positionPubkey, symbol, poolAddress) {
       }
 
       const { action, currentValueSol, pnlPct, inRange } = status;
-      const feePnlSol = Math.max(0, Number(status?.feePnlSol || 0));
-      const feePnlPct = Math.max(0, Number(status?.feePnlPct || 0));
-      const feeSign = feePnlPct > 0 ? '+' : '';
       const meta = getPositionMeta(positionPubkey) || {};
+      const trackedFeeSnapshot = resolveTrackedFeeSnapshot(status, meta);
+      const feePnlSol = trackedFeeSnapshot.feePnlSol;
+      const feePnlPct = trackedFeeSnapshot.feePnlPct;
+      const feeSign = feePnlPct > 0 ? '+' : '';
       const deploySol = Number(meta.deploySol || 0);
       const currentLifecycle = meta.lifecycleState || meta.lifecycle_state || 'open';
       const runtimeState = getPositionRuntimeState(positionPubkey);
@@ -3226,8 +3253,8 @@ async function monitorLoop(positionPubkey, symbol, poolAddress) {
         pnlPct,
         feePnlSol,
         feePnlPct,
-        feePnlAvailable: status?.feePnlAvailable === true,
-        feePnlSource: status?.feePnlSource || 'none',
+        feePnlAvailable: trackedFeeSnapshot.feePnlAvailable,
+        feePnlSource: trackedFeeSnapshot.feePnlSource,
         inRange,
         deploySol,
         oorState: inRange ? 'IN_RANGE' : 'OUT_OF_RANGE',

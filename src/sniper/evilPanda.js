@@ -5542,6 +5542,12 @@ export async function reconcileStartupPositions() {
         entryFinalSupertrendAt: Number.isFinite(Number(row.entryFinalSupertrendAt))
           ? Number(row.entryFinalSupertrendAt)
           : null,
+        currentValueSol: safeNum(row.currentValueSol, 0),
+        pnlPct: safeNum(row.pnlPct, 0),
+        feePnlSol: Math.max(0, safeNum(row.feePnlSol, 0)),
+        feePnlPct: Math.max(0, safeNum(row.feePnlPct, 0)),
+        feePnlAvailable: row?.feePnlAvailable === true,
+        feePnlSource: String(row?.feePnlSource || 'none'),
         hwmPct: safeNum(row.hwmPct, 0),
         lifecycleState: row.lifecycleState || row.lifecycle_state || 'open',
         lifecycle_state: row.lifecycle_state || row.lifecycleState || 'open',

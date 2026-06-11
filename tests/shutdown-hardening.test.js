@@ -53,10 +53,14 @@ test('manual close helper records manual withdrawals when called explicitly', ()
   assert.match(evilPandaSrc, /manual_close_reconciled_from_snapshot/);
   assert.match(evilPandaSrc, /PnL manual close dicatat dari snapshot terakhir bot/);
   assert.doesNotMatch(evilPandaSrc, /pending reconcile/);
+  assert.match(hunterSrc, /function resolveTrackedFeeSnapshot/);
+  assert.match(hunterSrc, /if \(hasTrackedFeeSnapshot\(status\)\)/);
   assert.match(evilPandaSrc, /appendHarvestLog\(\{\n\s*token: tokenSymbol,\n\s*positionPubkey,/);
   assert.match(evilPandaSrc, /recordPoolOutcome\(\{\n\s*key: reg\.poolAddress \|\| reg\.tokenXMint,/);
   assert.match(hunterSrc, /feePnlSol,/);
   assert.match(hunterSrc, /feePnlPct,/);
+  assert.match(evilPandaSrc, /feePnlSol: Math\.max\(0, safeNum\(row\.feePnlSol, 0\)\),/);
+  assert.match(evilPandaSrc, /feePnlPct: Math\.max\(0, safeNum\(row\.feePnlPct, 0\)\),/);
 });
 
 test('jito tip injection is removed from normal runtime send paths', () => {

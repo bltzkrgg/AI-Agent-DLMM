@@ -21,7 +21,9 @@ test('position ledger appender persists cashflow fields', () => {
 
 test('manual close fee-only path keeps pending cases out of harvest history', () => {
   const src = readFileSync(evilPandaPath, 'utf8');
-  assert.match(src, /if \(manualAccounting\) \{\n\s*appendHarvestLog\(/);
+  assert.match(src, /const manualAccounting = buildManualCloseAccounting\(reg\)/);
+  assert.match(src, /appendHarvestLog\(\{\n\s*token: tokenSymbol,\n\s*positionPubkey,/);
   assert.match(src, /appendPositionLedger\(/);
-  assert.match(src, /if \(manualAccounting\) \{\n\s*recordPoolOutcome\(/);
+  assert.match(src, /recordPoolOutcome\(\{\n\s*key: reg\.poolAddress \|\| reg\.tokenXMint,/);
+  assert.match(src, /recordPoolPatternOutcome\(\{/);
 });
