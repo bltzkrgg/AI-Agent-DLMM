@@ -2121,6 +2121,36 @@ function buildTakeProfitExitSwapPolicy(cfg = {}, isEmergencyExit = false) {
   };
 }
 
+async function waitForExitTokenBalanceSettle({
+  mint,
+  baselineRaw = '0',
+  attempts = 4,
+  delayMs = 800,
+} = {}) {
+  const baseline = toSafeBigIntRaw(baselineRaw);
+  let lastRaw = String(baselineRaw || '0');
+
+  for (let i = 0; i < attempts; i++) {
+    const currentRaw = await getTokenBalanceRaw(mint).catch(() => '0');
+    lastRaw = String(currentRaw || '0');
+    const current = toSafeBigIntRaw(lastRaw);
+    if (current > baseline) {
+      return {
+        rawAmount: lastRaw,
+        settled: true,
+        attemptsUsed: i + 1,
+      };
+    }
+    if (i < attempts - 1) await sleep(delayMs);
+  }
+
+  return {
+    rawAmount: lastRaw,
+    settled: false,
+    attemptsUsed: attempts,
+  };
+}
+
 async function attemptGatedExitSwapToSol({
   mint,
   rawAmount,
@@ -2177,7 +2207,11 @@ async function attemptGatedExitSwapToSol({
         priceImpactPct: Number(swapRes.priceImpactPct || impact),
       };
     }
-    return { skipped: true, reason: `${label}_${swapRes?.reason || 'SWAP_NOT_EXECUTED'}` };
+    return {
+      skipped: true,
+      reason: `${label}_${swapRes?.reason || 'SWAP_NOT_EXECUTED'}`,
+      error: swapRes?.error || null,
+    };
   } catch (err) {
     return { skipped: true, reason: `${label}_SWAP_FAILED`, error: err.message };
   }
@@ -5063,12 +5097,20 @@ export async function exitPosition(positionPubkey, reason = 'MANUAL') {
         : buildExitSwapPolicy(cfg, isEmergencyExit);
       if (swapPolicy.swapMode !== 'off') {
         try {
-          const postCloseTokenXRaw = await getTokenBalanceRaw(reg.tokenXMint).catch(() => '0');
+          const balanceSettle = await waitForExitTokenBalanceSettle({
+            mint: reg.tokenXMint,
+            baselineRaw: preCloseTokenXRaw,
+          });
+          const postCloseTokenXRaw = balanceSettle.rawAmount;
           const preX = toSafeBigIntRaw(preCloseTokenXRaw);
           const postX = toSafeBigIntRaw(postCloseTokenXRaw);
           const feeX = toSafeBigIntRaw(estimatedFeeXRaw);
           const deltaX = postX > preX ? postX - preX : 0n;
           const feeSwapRaw = deltaX > 0n ? (feeX > 0n ? (deltaX < feeX ? deltaX : feeX) : deltaX) : 0n;
+          console.log(
+            `[evilPanda] AGENT_EXIT_SWAP_BALANCE_SETTLE settled=${balanceSettle.settled} ` +
+            `attempts=${balanceSettle.attemptsUsed} pre=${preX.toString()} post=${postX.toString()} delta=${deltaX.toString()}`,
+          );
 
           const shouldSwapFeeOnly = swapPolicy.swapMode === 'fee_only' || swapPolicy.swapMode === 'all';
           const shouldSwapResidual = swapPolicy.swapMode === 'all' || swapPolicy.allowResidualSwap;
@@ -5098,9 +5140,15 @@ export async function exitPosition(positionPubkey, reason = 'MANUAL') {
               );
             } else {
               console.log(`[evilPanda] AGENT_EXIT_FEE_SWAP_SKIP reason=${feeSwap?.reason || 'UNKNOWN'}`);
+              if (feeSwap?.error) {
+                console.warn(`[evilPanda] AGENT_EXIT_FEE_SWAP_SKIP_ERROR detail=${feeSwap.error}`);
+              }
             }
           } else if (shouldSwapFeeOnly) {
-            console.log('[evilPanda] AGENT_EXIT_FEE_SWAP_SKIP reason=NO_FEE_DELTA');
+            const skipReason = balanceSettle.settled === false
+              ? 'NO_FEE_DELTA_AFTER_SETTLE'
+              : 'NO_FEE_DELTA';
+            console.log(`[evilPanda] AGENT_EXIT_FEE_SWAP_SKIP reason=${skipReason}`);
           }
 
           if (shouldSwapResidual) {
@@ -5126,7 +5174,12 @@ export async function exitPosition(positionPubkey, reason = 'MANUAL') {
                 );
               } else if (residualSwap?.skipped) {
                 console.log(`[evilPanda] AGENT_EXIT_RESIDUAL_SWAP_SKIP reason=${residualSwap.reason || 'UNKNOWN'}`);
+                if (residualSwap?.error) {
+                  console.warn(`[evilPanda] AGENT_EXIT_RESIDUAL_SWAP_SKIP_ERROR detail=${residualSwap.error}`);
+                }
               }
+            } else {
+              console.log('[evilPanda] AGENT_EXIT_RESIDUAL_SWAP_SKIP reason=NO_RESIDUAL_BALANCE');
             }
           }
           console.log('[evilPanda] AGENT_EXIT_SWAP_STAGE_DONE');

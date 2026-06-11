@@ -306,8 +306,10 @@ test('evilPanda exit path applies fee-first auto swap with residual swap behind 
   assert.match(src, /getTokenBalanceRaw/);
   assert.match(src, /buildExitSwapPolicy/);
   assert.match(src, /buildTakeProfitExitSwapPolicy/);
+  assert.match(src, /async function waitForExitTokenBalanceSettle/);
   assert.match(src, /attemptGatedExitSwapToSol/);
   assert.match(src, /AGENT_EXIT_FEE_SWAP/);
+  assert.match(src, /AGENT_EXIT_SWAP_BALANCE_SETTLE/);
   assert.match(src, /const shouldSwapResidual = swapPolicy\.swapMode === 'all' \|\| swapPolicy\.allowResidualSwap/);
   assert.doesNotMatch(src, /swapToSol\(mint, rawBalance, null, swapOptions\)/);
 });
@@ -326,11 +328,24 @@ test('take profit exit forces full-swap policy while claimFees stays claim-only'
   assert.match(exitPolicyBlock, /buildTakeProfitExitSwapPolicy/);
   assert.match(evilPandaSrc, /swapMode:\s*'all'/);
   assert.match(evilPandaSrc, /allowResidualSwap:\s*true/);
+  assert.match(evilPandaSrc, /NO_FEE_DELTA_AFTER_SETTLE/);
+  assert.match(evilPandaSrc, /AGENT_EXIT_FEE_SWAP_SKIP_ERROR/);
+  assert.match(evilPandaSrc, /AGENT_EXIT_RESIDUAL_SWAP_SKIP_ERROR/);
   assert.match(claimBlock, /export async function claimFees/);
   assert.match(claimBlock, /claimAllRewards\(\{/);
   assert.doesNotMatch(claimBlock, /attemptGatedSwapToSol/);
   assert.doesNotMatch(claimBlock, /RESIDUAL_SWAP_DONE/);
   assert.doesNotMatch(claimBlock, /swapMode:\s*'all'/);
+});
+
+test('jupiter swap wrapper returns structured execution errors for caller observability', () => {
+  const src = readFileSync(resolve(process.cwd(), 'src/utils/jupiter.js'), 'utf8');
+  const swapToSolStart = src.indexOf('export async function swapToSol');
+  const swapToSolEnd = src.indexOf('// ── swapAllToSOL', swapToSolStart);
+  const swapToSolBlock = src.slice(swapToSolStart, swapToSolEnd);
+  assert.match(src, /reason:\s*'SWAP_EXECUTION_ERROR'/);
+  assert.match(src, /error:\s*e\.message/);
+  assert.doesNotMatch(swapToSolBlock, /return null;/);
 });
 
 test('meteora close flow applies fee-first guarded swap and optional residual swap', () => {

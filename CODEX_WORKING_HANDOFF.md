@@ -39,6 +39,7 @@ prefer the explicit user request, then update this file after the change lands.
 - Deploy preflight now reserves effective SOL budget per in-flight deploy and includes Meteora position setup cost in fail-before-touch wallet checks.
 - Removed hardcoded deploy fee buffer from `evilPanda` preflight after confirming Meteora docs do not require it.
 - Take-profit exit now uses a dedicated full-swap policy so TP behavior is consistent; manual `claimFees()` remains claim-only and non-TP exits keep their existing swap policy.
+- TP auto-swap now waits briefly for post-close token settlement and surfaces explicit swap skip/error reasons, so a failed or skipped SOL sweep is distinguishable from a true zero-delta close.
 - Manual close now reuses the latest tracked position snapshot when available to record Telegram PnL, ledger cashflow, and pool-learning outcome; unresolved cases still stay pending/manual-reconcile instead of inventing on-chain numbers.
 - Manual close now preserves the last valid fee snapshot when a position disappears on-chain and restores that snapshot after restart, so Telegram, ledger, and pool-learning keep fee PnL instead of being overwritten by the zero-value missing-position fallback.
 - Final Supertrend deploy allow path now requires short-lived canonical 15m confirmation metadata; reliable live bullish snapshots alone no longer auto-pass final deploy.
@@ -72,6 +73,7 @@ Only edit other files when the change explicitly requires it.
 - Deploy wallet balance checks versus chain-touching quote-only init flow.
 - Hardcoded deploy fee buffer versus Meteora-required costs.
 - Take-profit swap consistency versus manual claim-only fee collection.
+- Post-close TP sweep timing and swap-failure observability.
 
 ## Locked areas
 
@@ -136,3 +138,4 @@ Do not edit these unless the user explicitly scopes the change there.
 - 2026-06-11: Cleaned operator-facing exit wording in `hunterAlpha` so scenario `C` now reads `Defensive Exit Trigger` while normal and trailing profit exits remain `Take Profit Trigger` and `Trailing Profit Trigger`.
 - 2026-06-11: Hardened manual-close fee snapshot persistence so `hunterAlpha` preserves the last valid fee snapshot when `MANUAL_CLOSED` returns zeroed status, and `evilPanda` restores those fee fields from persisted active-position state after restart to keep manual-close Telegram, ledger, and pool-pattern learning accurate.
 - 2026-06-11: Standardized scanner Telegram output to the compact `SCANNER REPORT` layout with `Top 5`, slot state, action, and next scan cadence while keeping slot-saturated summary behavior intact.
+- 2026-06-11: Hardened TP auto-swap in `evilPanda` by waiting for post-close token balance settlement before sweep decisions and propagating structured Jupiter execution errors into explicit fee/residual swap skip logs, without changing claim-only or non-TP policy semantics.

@@ -82,7 +82,11 @@ export async function swapToSol(tokenMint, amount, overrideSlippageBps = null, o
     );
   } catch (e) {
     console.error(`[jupiter] swapToSol failed for ${tokenMint.slice(0, 8)}:`, e.message);
-    return null;
+    return {
+      success: false,
+      reason: 'SWAP_EXECUTION_ERROR',
+      error: e.message,
+    };
   }
 }
 
