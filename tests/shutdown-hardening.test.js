@@ -291,7 +291,7 @@ test('monitor exit policy uses trailing for take profit and TA as fallback', () 
   assert.match(hunterSrc, /DEFENSIVE EXIT/);
   assert.match(hunterSrc, /Trailing Profit Trigger/);
   assert.match(hunterSrc, /Take Profit Trigger/);
-  assert.match(hunterSrc, /Supertrend Bearish Exit/);
+  assert.match(hunterSrc, /Defensive Exit Trigger/);
   assert.match(hunterSrc, /if \(action === 'MAX_HOLD'\)/);
   assert.match(hunterSrc, /safeExit\(positionPubkey, 'MAX_HOLD_EXIT'\)/);
   assert.doesNotMatch(evilPandaSrc, /Trailing TP/);

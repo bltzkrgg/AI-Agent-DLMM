@@ -42,6 +42,7 @@ prefer the explicit user request, then update this file after the change lands.
 - Manual close now reuses the latest tracked position snapshot when available to record Telegram PnL, ledger cashflow, and pool-learning outcome; unresolved cases still stay pending/manual-reconcile instead of inventing on-chain numbers.
 - Final Supertrend deploy allow path now requires short-lived canonical 15m confirmation metadata; reliable live bullish snapshots alone no longer auto-pass final deploy.
 - Defensive bearish exit hold window now trusts only canonical bullish entry stamps; non-canonical entry trend metadata no longer delays valid bearish risk exits.
+- Operator-facing exit labels now use a cleaner `Defensive Exit Trigger` wording for TA scenario C while normal and trailing TP labels stay explicit.
 
 ## Behavior contracts to preserve
 
@@ -131,3 +132,4 @@ Do not edit these unless the user explicitly scopes the change there.
 - 2026-06-10: Final deploy Supertrend stamp is now passed from queue/hunter into `evilPanda`, persisted on the active position, restored after restart, and used to hold early defensive bearish exits until the bullish entry confirmation is no longer fresh.
 - 2026-06-11: Hardened final deploy Supertrend gate so reliable live bullish snapshots must be confirmed by canonical 15m Meridian before `ALLOW`; short-lived canonical source metadata is now cached/stamped and reused on quick retries to keep deploy timing tight while preventing live-bullish vs Meridian-bearish split decisions.
 - 2026-06-11: Tightened `evilPanda` defensive exit synchronization so the early bearish hold window only trusts canonical bullish entry stamps (`fresh_fetch` / `cache:fresh_fetch`), preventing weak/non-canonical entry trend metadata from blocking valid bearish exits while preserving the anti-churn hold for real canonical entry confirmations.
+- 2026-06-11: Cleaned operator-facing exit wording in `hunterAlpha` so scenario `C` now reads `Defensive Exit Trigger` while normal and trailing profit exits remain `Take Profit Trigger` and `Trailing Profit Trigger`.

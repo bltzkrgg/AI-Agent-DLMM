@@ -3270,7 +3270,7 @@ async function monitorLoop(positionPubkey, symbol, poolAddress) {
         const isDefensiveTaExit = exitScenario === 'C';
         const headerLabel = isDefensiveTaExit ? 'DEFENSIVE EXIT' : 'TAKE PROFIT';
         const reasonLabel = isDefensiveTaExit
-          ? 'Supertrend Bearish Exit'
+          ? 'Defensive Exit Trigger'
           : exitScenario === 'TRAILING'
             ? 'Trailing Profit Trigger'
             : 'Take Profit Trigger';
