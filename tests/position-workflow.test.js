@@ -271,6 +271,7 @@ test('defensive Supertrend exit respects fresh bullish entry confirmation before
 
   const reg = {
     entryFinalSupertrend15m: 'BULLISH',
+    entryFinalSupertrendSource: 'fresh_fetch',
     entryFinalSupertrendAt: 10_000,
   };
 
@@ -293,4 +294,24 @@ test('defensive Supertrend exit respects fresh bullish entry confirmation before
 
   assert.equal(matureBullishEntry.allowExit, true);
   assert.equal(matureBullishEntry.holdReason, null);
+});
+
+test('defensive Supertrend exit does not trust non-canonical bullish entry stamp', async () => {
+  const { __evaluateDefensiveExitConfirmationForTests } = await importFresh(join(repoRoot, 'src/sniper/evilPanda.js'));
+
+  const reg = {
+    entryFinalSupertrend15m: 'BULLISH',
+    entryFinalSupertrendSource: 'live_snapshot',
+    entryFinalSupertrendAt: 10_000,
+  };
+
+  const decision = __evaluateDefensiveExitConfirmationForTests({
+    reg,
+    exitDecision: { shouldExit: true, scenario: 'C', reason: 'Struktur Support Jebol (Supertrend = BEARISH)' },
+    ageMs: 45_000,
+    nowMs: 25_000,
+  });
+
+  assert.equal(decision.allowExit, false);
+  assert.match(decision.holdReason, /bearish confirmation 0s < 30s/);
 });

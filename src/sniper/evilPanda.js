@@ -4471,14 +4471,18 @@ function evaluateDefensiveExitConfirmation({
   if (reg && typeof reg === 'object') reg.defensiveExitBearishSince = bearishSinceMs;
   const bearishAgeMs = Math.max(0, nowMs - bearishSinceMs);
   const entryFinalTrend = normalizeTrackedTrendDirection(reg?.entryFinalSupertrend15m);
+  const entryFinalTrendSource = String(reg?.entryFinalSupertrendSource || 'unknown').toLowerCase();
   const entryFinalTrendAt = Number.isFinite(Number(reg?.entryFinalSupertrendAt))
     ? Number(reg.entryFinalSupertrendAt)
     : null;
   const entryFinalTrendAgeMs = entryFinalTrendAt !== null
     ? Math.max(0, nowMs - entryFinalTrendAt)
     : null;
+  const hasCanonicalBullishEntryStamp =
+    entryFinalTrend === 'BULLISH' &&
+    (entryFinalTrendSource === 'fresh_fetch' || entryFinalTrendSource === 'cache:fresh_fetch');
 
-  if (entryFinalTrend === 'BULLISH' && entryFinalTrendAgeMs !== null && entryFinalTrendAgeMs < DEFENSIVE_EXIT_CONFIRM_MS) {
+  if (hasCanonicalBullishEntryStamp && entryFinalTrendAgeMs !== null && entryFinalTrendAgeMs < DEFENSIVE_EXIT_CONFIRM_MS) {
     return {
       allowExit: false,
       holdReason:
