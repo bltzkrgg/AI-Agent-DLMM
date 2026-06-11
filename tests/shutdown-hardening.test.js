@@ -152,6 +152,19 @@ test('/autoscreen on and setconfig autoScreeningEnabled=true resume screening af
   assert.doesNotMatch(src, /Config disimpan, tetapi discovery\/deploy masih paused by <code>\/stop<\/code>/);
 });
 
+test('autoscreen pauses while active positions exist and resumes only when portfolio is empty', () => {
+  const src = readFileSync(indexPath, 'utf8');
+  assert.match(src, /AUTO_SCREENING_ACTIVE_POSITION_PAUSE_KEY = 'autoScreeningPausedByActivePositions'/);
+  assert.match(src, /setAutoScreeningPausedByActivePositions/);
+  assert.match(src, /isAutoScreeningPausedByActivePositions/);
+  assert.match(src, /syncAutoScreeningWithActivePositions/);
+  assert.match(src, /getActivePositionCount\(\)/);
+  assert.match(src, /policy: 'ACTIVE_POSITIONS_OPEN'/);
+  assert.match(src, /activePositionCount/);
+  assert.match(src, /stopScreeningLoop\(\);[\s\S]*return false;/);
+  assert.doesNotMatch(src, /startAutoScreeningRuntime\(chatId, \{ snapshotTopPools: true \}\)/);
+});
+
 test('evilPanda uses monolith positions with one Meteora account for the full range', () => {
   const src = readFileSync(evilPandaPath, 'utf8');
   assert.match(src, /(?:const|let) posKp = Keypair\.generate\(\)/);

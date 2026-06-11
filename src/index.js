@@ -140,6 +140,7 @@ async function sendLong(chatId, text, opts = {}) {
 const CHAT_ID = ALLOWED_ID; // bot hanya punya satu user
 const OPERATOR_DISCOVERY_PAUSED_KEY = 'operatorDiscoveryPaused';
 const AUTO_SCREENING_RUNTIME_KEY = 'autoScreeningRuntimeEnabled';
+const AUTO_SCREENING_ACTIVE_POSITION_PAUSE_KEY = 'autoScreeningPausedByActivePositions';
 
 function isDiscoveryPaused() {
   const state = getRuntimeState(OPERATOR_DISCOVERY_PAUSED_KEY, null);
@@ -163,6 +164,44 @@ function isAutoScreeningRuntimeEnabled() {
 
 function clearAutoScreeningRuntimeEnabled() {
   deleteRuntimeState(AUTO_SCREENING_RUNTIME_KEY);
+}
+
+function setAutoScreeningPausedByActivePositions(paused, reason = 'ACTIVE_POSITIONS_OPEN') {
+  if (paused) {
+    setRuntimeState(AUTO_SCREENING_ACTIVE_POSITION_PAUSE_KEY, {
+      paused: true,
+      reason,
+      pausedAt: Date.now(),
+      activePositionCount: getActivePositionCount(),
+    });
+    return;
+  }
+  deleteRuntimeState(AUTO_SCREENING_ACTIVE_POSITION_PAUSE_KEY);
+}
+
+function isAutoScreeningPausedByActivePositions() {
+  const state = getRuntimeState(AUTO_SCREENING_ACTIVE_POSITION_PAUSE_KEY, null);
+  return state === true || state?.paused === true;
+}
+
+function syncAutoScreeningWithActivePositions(source = 'autoscreen') {
+  const activePositionCount = Math.max(0, Number(getActivePositionCount() || 0));
+  if (activePositionCount > 0) {
+    if (!isAutoScreeningPausedByActivePositions()) {
+      console.log(
+        `[autoscreen] ${source}: paused because ${activePositionCount} active position(s) are still open.`
+      );
+    }
+    setAutoScreeningPausedByActivePositions(true, 'ACTIVE_POSITIONS_OPEN');
+    return { blocked: true, activePositionCount };
+  }
+
+  if (isAutoScreeningPausedByActivePositions()) {
+    console.log(`[autoscreen] ${source}: resumed because no active positions remain.`);
+    setAutoScreeningPausedByActivePositions(false);
+  }
+
+  return { blocked: false, activePositionCount: 0 };
 }
 
 function pauseDiscovery(reason = 'TELEGRAM_STOP') {
@@ -195,6 +234,10 @@ async function runSilentScan({ emitFinalReport = false, source = 'startup' } = {
   if (isDiscoveryPaused()) {
     return { blocked: true, policy: 'OPERATOR_DISCOVERY_PAUSED' };
   }
+  const activePositionGate = syncAutoScreeningWithActivePositions(source);
+  if (activePositionGate.blocked) {
+    return { blocked: true, policy: 'ACTIVE_POSITIONS_OPEN', activePositionCount: activePositionGate.activePositionCount };
+  }
   console.log(`[autoscreen] AUTOSCREEN_SCAN_TRIGGER source=${source} silent=true`);
   setNotifyMuted(true);
   try {
@@ -211,6 +254,10 @@ async function runImmediateAutoscreenScan({ source = 'manual_command', emitFinal
   if (isDiscoveryPaused()) {
     return { blocked: true, policy: 'OPERATOR_DISCOVERY_PAUSED' };
   }
+  const activePositionGate = syncAutoScreeningWithActivePositions(source);
+  if (activePositionGate.blocked) {
+    return { blocked: true, policy: 'ACTIVE_POSITIONS_OPEN', activePositionCount: activePositionGate.activePositionCount };
+  }
   if (_screeningScanInFlight) {
     console.log(`[autoscreen] immediate scan skipped source=${source}: scan in-flight`);
     return { blocked: true, policy: 'SCREENING_SCAN_IN_FLIGHT' };
@@ -226,6 +273,11 @@ async function runImmediateAutoscreenScan({ source = 'manual_command', emitFinal
 
 async function startAutoScreeningRuntime(chatId, { snapshotTopPools = false } = {}) {
   if (isDiscoveryPaused()) {
+    return false;
+  }
+  const activePositionGate = syncAutoScreeningWithActivePositions('startAutoScreeningRuntime');
+  if (activePositionGate.blocked) {
+    stopScreeningLoop();
     return false;
   }
   setDeployQueueNotifyFn(notify);
@@ -254,6 +306,11 @@ async function resumeAutoScreeningRuntime(chatId, { snapshotTopPools = false, so
   resumeDiscovery(source);
   setAutoScreeningRuntimeEnabled(true, source);
   stopScreeningLoop();
+  const activePositionGate = syncAutoScreeningWithActivePositions(source);
+  if (activePositionGate.blocked) {
+    stopAutoScreeningRuntime();
+    return false;
+  }
   await startAutoScreeningRuntime(chatId, { snapshotTopPools });
   return true;
 }
@@ -1091,6 +1148,11 @@ async function runScreeningLoop() {
     const cfg = getConfig();
     if (isDiscoveryPaused()) {
       stopScreeningLoop();
+      return;
+    }
+
+    const activePositionGate = syncAutoScreeningWithActivePositions('screening-loop');
+    if (activePositionGate.blocked) {
       return;
     }
 
