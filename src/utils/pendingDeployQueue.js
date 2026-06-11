@@ -445,19 +445,20 @@ function readLiveSnapshotTrend(liveSnapshot = null) {
 }
 
 function clearBullishSupertrendCache(meta = {}, pool = {}) {
-  const clearIfBullish = (obj, dirKey, atKey) => {
+  const clearIfBullish = (obj, dirKey, atKey, sourceKey) => {
     if (!obj || typeof obj !== 'object') return;
     const dir = String(obj?.[dirKey] || '').toUpperCase();
     if (dir === 'BULLISH') {
       delete obj[dirKey];
       delete obj[atKey];
+      delete obj[sourceKey];
     }
   };
 
-  clearIfBullish(meta, 'finalSupertrend15m', 'finalSupertrend15mAt');
-  clearIfBullish(meta, 'supertrend15m', 'supertrend15mAt');
-  clearIfBullish(pool, '_finalSupertrend15m', '_finalSupertrend15mAt');
-  clearIfBullish(pool, '_supertrend15m', '_supertrend15mAt');
+  clearIfBullish(meta, 'finalSupertrend15m', 'finalSupertrend15mAt', 'finalSupertrend15mSource');
+  clearIfBullish(meta, 'supertrend15m', 'supertrend15mAt', 'supertrend15mSource');
+  clearIfBullish(pool, '_finalSupertrend15m', '_finalSupertrend15mAt', '_finalSupertrend15mSource');
+  clearIfBullish(pool, '_supertrend15m', '_supertrend15mAt', '_supertrend15mSource');
 }
 
 function readCachedSupertrend15m(meta = {}, pool = {}) {
@@ -474,7 +475,14 @@ function readCachedSupertrend15m(meta = {}, pool = {}) {
     pool?._supertrend15mAt ||
     0
   );
-  return { direction, at };
+  const source = String(
+    meta.finalSupertrend15mSource ||
+    meta.supertrend15mSource ||
+    pool?._finalSupertrend15mSource ||
+    pool?._supertrend15mSource ||
+    'unknown'
+  );
+  return { direction, at, source };
 }
 
 export function isFreshBullishSupertrend15m(meta = {}, pool = {}, now = Date.now(), ttlMs = FINAL_ST_CACHE_TTL_MS) {
@@ -497,6 +505,12 @@ export async function getFinalSupertrendDeployDecision({
   const liveTrendState = readCanonicalLiveSnapshotTrend(liveSnapshot);
   const liveTrend = readLiveSnapshotTrend(liveSnapshot);
   const liveReliable = isReliableLiveSnapshot(liveSnapshot);
+  const cached = readCachedSupertrend15m(meta, pool);
+  const fresh = cached.at > 0 && (now - cached.at) <= ttlMs;
+  const cachedSource = String(cached.source || 'unknown');
+  const cachedCanonicalBullish = fresh &&
+    cached.direction === 'BULLISH' &&
+    (cachedSource === 'fresh_fetch' || cachedSource === 'cache:fresh_fetch');
   if (liveSnapshot && liveTrendState.conflicted === true) {
     return {
       ok: false,
@@ -520,14 +534,72 @@ export async function getFinalSupertrendDeployDecision({
       direction: 'BEARISH',
     };
   }
-  if (liveReliable && liveTrend === 'BULLISH') {
+  if (fresh && cached.direction === 'BEARISH') {
     return {
-      ok: true,
-      action: 'ALLOW',
-      reason: 'live Supertrend 15m bullish from reliable snapshot',
-      source: 'live_snapshot',
-      direction: 'BULLISH',
+      ok: false,
+      action: 'VETO',
+      reason: 'fresh cached Supertrend 15m bearish',
+      source: 'cache',
+      direction: 'BEARISH',
     };
+  }
+  if (liveReliable && liveTrend === 'BULLISH') {
+    if (cachedCanonicalBullish) {
+      return {
+        ok: true,
+        action: 'ALLOW',
+        reason: 'live Supertrend 15m bullish with fresh canonical confirmation cache',
+        source: 'cache',
+        direction: 'BULLISH',
+      };
+    }
+    if (!mint) {
+      return {
+        ok: false,
+        action: 'HOLD',
+        reason: 'missing mint for canonical Supertrend 15m confirmation',
+        source: 'unknown',
+        direction: 'UNKNOWN',
+      };
+    }
+    try {
+      const result = await checkFn(mint, currentPrice);
+      const direction = normalizeSupertrendDirection(result?.direction);
+      if (!result?.veto && direction === 'BULLISH') {
+        return {
+          ok: true,
+          action: 'ALLOW',
+          reason: `live Supertrend 15m bullish confirmed canonically: ${result.reason || 'fresh Supertrend 15m bullish'}`,
+          source: 'fresh_fetch',
+          direction: 'BULLISH',
+        };
+      }
+      if (direction === 'BEARISH' || String(result?.reason || '').toUpperCase().includes('BEARISH')) {
+        clearBullishSupertrendCache(meta, pool);
+        return {
+          ok: false,
+          action: 'VETO',
+          reason: result?.reason || 'fresh Supertrend 15m bearish',
+          source: 'fresh_fetch',
+          direction: 'BEARISH',
+        };
+      }
+      return {
+        ok: false,
+        action: 'HOLD',
+        reason: result?.reason || 'Supertrend 15m unavailable',
+        source: 'fresh_fetch',
+        direction: direction || 'UNKNOWN',
+      };
+    } catch (e) {
+      return {
+        ok: false,
+        action: 'HOLD',
+        reason: e?.message || `Supertrend 15m check failed for ${label}`,
+        source: 'unknown',
+        direction: 'UNKNOWN',
+      };
+    }
   }
   if (liveSnapshot && (!liveReliable || liveTrend !== 'BULLISH')) {
     return {
@@ -541,15 +613,9 @@ export async function getFinalSupertrendDeployDecision({
     };
   }
 
-  const cached = readCachedSupertrend15m(meta, pool);
-  const fresh = cached.at > 0 && (now - cached.at) <= ttlMs;
-
   if (fresh) {
-    if (cached.direction === 'BULLISH') {
+    if (cachedCanonicalBullish) {
       return { ok: true, action: 'ALLOW', reason: 'fresh cached Supertrend 15m bullish', source: 'cache', direction: 'BULLISH' };
-    }
-    if (cached.direction === 'BEARISH') {
-      return { ok: false, action: 'VETO', reason: 'fresh cached Supertrend 15m bearish', source: 'cache', direction: 'BEARISH' };
     }
   }
 
@@ -579,17 +645,22 @@ export async function ensureFinalSupertrendBullish(args = {}) {
   if (decision.direction === 'BULLISH' || decision.direction === 'BEARISH') {
     const stampDirection = decision.direction;
     const stampAt = Number.isFinite(Number(now)) ? Number(now) : Date.now();
+    const stampSource = decision.source === 'cache' ? 'cache:fresh_fetch' : String(decision.source || 'unknown');
     if (meta && typeof meta === 'object') {
       meta.finalSupertrend15m = stampDirection;
       meta.finalSupertrend15mAt = stampAt;
+      meta.finalSupertrend15mSource = stampSource;
       meta.supertrend15m = stampDirection;
       meta.supertrend15mAt = stampAt;
+      meta.supertrend15mSource = stampSource;
     }
     if (pool && typeof pool === 'object') {
       pool._finalSupertrend15m = stampDirection;
       pool._finalSupertrend15mAt = stampAt;
+      pool._finalSupertrend15mSource = stampSource;
       pool._supertrend15m = stampDirection;
       pool._supertrend15mAt = stampAt;
+      pool._supertrend15mSource = stampSource;
     }
   }
   const label = args.symbol || args.mint?.slice?.(0, 8) || 'UNKNOWN';

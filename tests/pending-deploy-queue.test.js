@@ -1,6 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import { checkSupertrendVeto } from '../src/market/meridianVeto.js';
 import {
@@ -25,6 +27,13 @@ import {
   aggregateClosed5mCandlesToClosedM15,
   evaluateEntryCandleSanity,
 } from '../src/utils/entryCandleSanity.js';
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const repoRoot = join(__dirname, '..');
+
+function importFresh(modulePath) {
+  return import(`${pathToFileURL(modulePath).href}?t=${Date.now()}_${Math.random()}`);
+}
 
 function makeEntryCandles({
   now = Date.now(),
@@ -490,7 +499,11 @@ test('final Supertrend deploy gate allows only fresh bullish cache', async () =>
 
   const freshBullish = await getFinalSupertrendDeployDecision({
     mint: 'Mint111111111111111111111111111111111111111',
-    meta: { supertrend15m: 'BULLISH', supertrend15mAt: now - 5_000 },
+    meta: {
+      supertrend15m: 'BULLISH',
+      supertrend15mAt: now - 5_000,
+      supertrend15mSource: 'fresh_fetch',
+    },
     now,
     checkFn: async () => { throw new Error('should not fetch fresh ST'); },
   });
@@ -560,9 +573,13 @@ test('final Supertrend deploy gate refreshes stale cache and fails closed on err
   assert.match(fetchError.reason, /network unavailable/);
 });
 
-test('final Supertrend deploy gate prioritizes reliable live snapshot over bullish cache', async () => {
+test('final Supertrend deploy gate prioritizes reliable live snapshot bearish over bullish cache', async () => {
   const now = 1_700_000_000_000;
-  const meta = { supertrend15m: 'BULLISH', supertrend15mAt: now - 5_000 };
+  const meta = {
+    supertrend15m: 'BULLISH',
+    supertrend15mAt: now - 5_000,
+    supertrend15mSource: 'fresh_fetch',
+  };
   const pool = {};
   let calls = 0;
 
@@ -590,9 +607,67 @@ test('final Supertrend deploy gate prioritizes reliable live snapshot over bulli
   assert.equal(meta.supertrend15mAt, undefined);
 });
 
+test('final Supertrend deploy gate requires canonical confirmation before allowing live bullish snapshot', async () => {
+  const now = 1_700_000_000_000;
+  let calls = 0;
+
+  const vetoed = await getFinalSupertrendDeployDecision({
+    mint: 'Mint111111111111111111111111111111111111111',
+    now,
+    liveSnapshot: {
+      dataSource: 'meteora-dlmm-ohlcv',
+      quality: { taTrend: 'BULLISH' },
+      ohlcv: { source: 'meteora-dlmm-ohlcv', historySuccess: true, priceChangeM5: 0.8 },
+      ta: { supertrend: { trend: 'BULLISH' } },
+    },
+    checkFn: async () => {
+      calls += 1;
+      return { veto: true, direction: 'BEARISH', reason: 'VETO: Trend 15m BEARISH via Meridian API' };
+    },
+  });
+
+  assert.equal(vetoed.action, 'VETO');
+  assert.equal(vetoed.source, 'fresh_fetch');
+  assert.equal(vetoed.direction, 'BEARISH');
+  assert.equal(calls, 1);
+});
+
+test('final Supertrend deploy gate reuses short canonical bullish cache for live bullish snapshot', async () => {
+  const now = 1_700_000_000_000;
+  let calls = 0;
+
+  const decision = await getFinalSupertrendDeployDecision({
+    mint: 'Mint111111111111111111111111111111111111111',
+    meta: {
+      finalSupertrend15m: 'BULLISH',
+      finalSupertrend15mAt: now - 5_000,
+      finalSupertrend15mSource: 'fresh_fetch',
+    },
+    now,
+    liveSnapshot: {
+      dataSource: 'meteora-dlmm-ohlcv',
+      quality: { taTrend: 'BULLISH' },
+      ohlcv: { source: 'meteora-dlmm-ohlcv', historySuccess: true, priceChangeM5: 0.8 },
+      ta: { supertrend: { trend: 'BULLISH' } },
+    },
+    checkFn: async () => {
+      calls += 1;
+      return { veto: false, direction: 'BULLISH', reason: 'PASS (should not run)' };
+    },
+  });
+
+  assert.equal(decision.action, 'ALLOW');
+  assert.equal(decision.source, 'cache');
+  assert.equal(calls, 0);
+});
+
 test('final Supertrend deploy gate still vetoes when live snapshot is bearish but unreliable', async () => {
   const now = 1_700_000_000_000;
-  const meta = { supertrend15m: 'BULLISH', supertrend15mAt: now - 5_000 };
+  const meta = {
+    supertrend15m: 'BULLISH',
+    supertrend15mAt: now - 5_000,
+    supertrend15mSource: 'fresh_fetch',
+  };
   const pool = {};
   let calls = 0;
 
@@ -1625,6 +1700,26 @@ test('queue final ST gate uses latest live snapshot wiring', () => {
   const src = readFileSync(new URL('../src/utils/pendingDeployQueue.js', import.meta.url), 'utf8');
   assert.match(src, /ensureFinalSupertrendBullish\(\{\s*mint,\s*symbol,\s*pool,\s*meta,\s*liveSnapshot:\s*entry\.lastLiveSnapshot\s*\|\|\s*null,\s*currentPrice,\s*\}\)/s);
   assert.match(src, /entry\?\.lastLiveSnapshot\?\.ohlcv\?\.currentPrice/);
+});
+
+test('final Supertrend stamp persists canonical source metadata', async () => {
+  const { ensureFinalSupertrendBullish } = await importFresh(join(repoRoot, 'src/utils/pendingDeployQueue.js'));
+  const meta = {};
+  const pool = {};
+
+  const decision = await ensureFinalSupertrendBullish({
+    mint: 'Mint111111111111111111111111111111111111111',
+    meta,
+    pool,
+    now: 1_700_000_000_000,
+    checkFn: async () => ({ veto: false, direction: 'BULLISH', reason: 'PASS: Trend 15m BULLISH via Meridian API' }),
+  });
+
+  assert.equal(decision.action, 'ALLOW');
+  assert.equal(meta.finalSupertrend15mSource, 'fresh_fetch');
+  assert.equal(meta.supertrend15mSource, 'fresh_fetch');
+  assert.equal(pool._finalSupertrend15mSource, 'fresh_fetch');
+  assert.equal(pool._supertrend15mSource, 'fresh_fetch');
 });
 
 test('trusted WATCH LP entries hold on non-bullish live ST even with fresh bullish cache', async () => {

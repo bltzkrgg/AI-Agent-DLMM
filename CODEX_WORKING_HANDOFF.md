@@ -40,6 +40,7 @@ prefer the explicit user request, then update this file after the change lands.
 - Removed hardcoded deploy fee buffer from `evilPanda` preflight after confirming Meteora docs do not require it.
 - Take-profit exit now uses a dedicated full-swap policy so TP behavior is consistent; manual `claimFees()` remains claim-only and non-TP exits keep their existing swap policy.
 - Manual close now reuses the latest tracked position snapshot when available to record Telegram PnL, ledger cashflow, and pool-learning outcome; unresolved cases still stay pending/manual-reconcile instead of inventing on-chain numbers.
+- Final Supertrend deploy allow path now requires short-lived canonical 15m confirmation metadata; reliable live bullish snapshots alone no longer auto-pass final deploy.
 
 ## Behavior contracts to preserve
 
@@ -127,3 +128,4 @@ Do not edit these unless the user explicitly scopes the change there.
 - 2026-06-10: Manual-close pending cases no longer write harvest/pool outcome records; only reconciled manual-close snapshots are allowed to feed harvest logging and pool-memory outcomes.
 - 2026-06-10: Defensive Supertrend exit in `evilPanda` now requires a short position-age plus bearish confirmation window before triggering scenario `C`, reducing immediate deploy-then-close churn from unsynced entry/exit trend snapshots without changing deploy gates or other exit thresholds.
 - 2026-06-10: Final deploy Supertrend stamp is now passed from queue/hunter into `evilPanda`, persisted on the active position, restored after restart, and used to hold early defensive bearish exits until the bullish entry confirmation is no longer fresh.
+- 2026-06-11: Hardened final deploy Supertrend gate so reliable live bullish snapshots must be confirmed by canonical 15m Meridian before `ALLOW`; short-lived canonical source metadata is now cached/stamped and reused on quick retries to keep deploy timing tight while preventing live-bullish vs Meridian-bearish split decisions.
