@@ -112,15 +112,6 @@ class ReportManager {
 
     const nowStr = new Date().toLocaleString('id-ID', { timeZone: 'Asia/Jakarta', dateStyle: 'full', timeStyle: 'long' });
 
-    let report = `📊 <b>VISUAL PROGRESS REPORT</b>\n`;
-    report += `📅 ${nowStr}\n`;
-    report += `================================\n`;
-    report += `🔍 <b>Total Discan:</b> ${totalScanned} token\n`;
-    report += `✅ <b>Lolos Deploy:</b> ${deployedTokens.length} token\n`;
-    report += `⏳ <b>Pantauan Real-time:</b> ${deferredTokens.length} token\n`;
-    report += `🚫 <b>Gagal/Reject:</b> ${rejectedTokens.length} token\n`;
-    report += `================================\n\n`;
-
     // Hanya kirim Top 5 ke Telegram — deployed dulu, lalu sort by gate progress
     const sortedCycle = [...this.currentCycle].sort((a, b) => {
       const aDeployed = a.finalVerdict === 'DEPLOYED' ? 1 : 0;
@@ -131,99 +122,22 @@ class ReportManager {
       return bPass - aPass;
     });
     const top5Cycle = sortedCycle.slice(0, 5);
-    if (totalScanned > 5) {
-      report += `<i>(Menampilkan 5 dari ${totalScanned} token — sisanya hanya di console log)</i>\n\n`;
-    }
-
-    const GATES = [
-      'STAGE_0_DISCOVERY',
-      'BLACKLIST_LOCAL',
-      'STAGE_1_PUBLIC',
-      'STAGE_2_GMGN',
-      'STAGE_3_JUPITER',
-      'MERIDIAN_VETO',
-      'PENDING_RETEST',
-      'FLAT_CONFIG_GATE',
-      'SCOUT_AGENT'
-    ];
-
+    const lines = [];
     top5Cycle.forEach((token, idx) => {
-      const isDeployed  = token.finalVerdict === 'DEPLOYED';
-      // Deteksi DEFERRED: ada gate yang berstatus DEFER (⏳) → bukan reject murni
-      const isDeferring = !isDeployed && Object.values(token.gates).some(s => s === 'DEFER');
-
-      const statusIcon = isDeployed ? '✅' : isDeferring ? '⏳' : '❌';
-      const statusText = isDeployed ? 'DEPLOYED' : isDeferring ? 'PENDING' : 'REJECTED';
-      
-      let passedGatesCount = 0;
-      let gateTraceStr = '';
-
-      GATES.forEach(g => {
-        const s = token.gates[g];
-        if (s === 'PASS') {
-          passedGatesCount++;
-          gateTraceStr += '✅';
-        } else if (s === 'FAIL' || s === 'REJECT') {
-          gateTraceStr += '❌';
-        } else if (s === 'DEFER') {
-          gateTraceStr += '⏳';
-        } else {
-          gateTraceStr += '⚪';
-        }
-      });
-
-      const percent = passedGatesCount / GATES.length;
-      const filledBars = Math.round(percent * 10);
-      const emptyBars = Math.max(0, 10 - filledBars);
-      const progressBar = `[${'█'.repeat(filledBars)}${'░'.repeat(emptyBars)}] ${Math.round(percent * 100)}%`;
-
-      report += `<b>${idx+1}. ${token.name}</b> — ${statusText} ${statusIcon}\n`;
-      report += `Progress: <code>${progressBar}</code>\n`;
-      report += `Gate Trace: <code>${gateTraceStr}</code>\n`;
-
-      // Tampilkan metrics efisiensi jika tersedia
-      const tvlRaw = Number(token.tvl || 0);
-      const volRaw = Number(token.vol || 0);
-      const mcap   = Number(token.mcap || 0);
-      if (tvlRaw > 0 || volRaw > 0) {
-        const effVal = tvlRaw > 0 ? volRaw / tvlRaw : 0;
-        const eff    = effVal > 1000 ? '>1000' : effVal.toFixed(2);
-        report += `Eff: <code>${eff}x</code>`;
-        if (mcap > 0) report += ` | MCap: <code>$${Math.round(mcap).toLocaleString('en-US')}</code>`;
-        report += '\n';
-      }
-
-      if (isDeployed) {
-        // Tidak ada info tambahan untuk deployed
-      } else if (isDeferring) {
-        // PENDING ⏳ — jangan tampilkan "Tahap gagal: UNKNOWN"
-        report += `Status: <i>Menunggu Konfirmasi TA (Real-time Queue)</i>\n`;
-        if (token.reason) {
-          report += `Alasan Tunda: <i>${token.reason}</i>\n`;
-        }
-      } else {
-        // REJECTED ❌ — tampilkan tahap dan alasan
-        if (!this.slotSaturatedSummaryOnly) {
-          const failedGate = this.getFirstFailedGate(token) || 'UNKNOWN';
-          const gateDetails = this.getGateDetailsText(token, failedGate);
-          const reasonText = gateDetails || token.reason || 'Tidak ada alasan spesifik';
-          report += `Tahap gagal: <code>${failedGate}</code>\n`;
-          report += `Alasan: <i>${reasonText}</i>\n`;
-        }
-      }
-      
-      if (token.details.PENDING_RETEST) {
-        report += `⏳ TA Info: <i>${token.details.PENDING_RETEST}</i>\n`;
-      }
-      report += `\n`;
+      lines.push(`${idx + 1}. ${token.name}`);
     });
 
     const cfg = getConfig();
     const nextScreenMin = cfg.intervals?.screeningIntervalMin || cfg.screeningIntervalMin || 15;
-    const agentModel = cfg.llm?.agentModel || cfg.llm_settings?.agentModel || cfg.agentModel || 'UNKNOWN';
-    report += `================================\n`;
-    report += `🤖 Model AI: <code>${agentModel}</code>\n`;
-    report += `⏱️ Next Scan: ${nextScreenMin} Menit`;
+
+    let report = `📊 SCANNER REPORT\n`;
+    report += `📅 ${nowStr}\n\n`;
+    report += `Top 5:\n`;
+    report += `${lines.join('\n')}\n\n`;
+    const slotText = this.slotSaturatedSummaryOnly ? 'FULL 1/1' : `${deferredTokens.length > 0 ? 'WATCH' : 'AVAILABLE'}`;
+    report += `Slot: ${slotText}\n`;
+    report += `Action: HOLD new entries\n`;
+    report += `Next scan: ${nextScreenMin}m`;
 
     return report;
   }

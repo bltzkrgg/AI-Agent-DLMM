@@ -3916,17 +3916,13 @@ export async function sendImmediateTopPoolsReport(chatId) {
     const agentModel = cfg.llm_settings?.agentModel || cfg.agentModel || 'UNKNOWN';
     const intervalMin = cfg.intervals?.screeningIntervalMin || cfg.screeningIntervalMin || 15;
 
-    let report = `📊 <b>VISUAL PROGRESS REPORT</b>\n`;
-    report += `📅 ${nowStr}\n`;
-    report += `================================\n`;
-    report += `🔍 <b>Total Discan:</b> ${sorted.length} pool\n`;
-    report += `✅ <b>Lolos Veto:</b> ${topPools.filter((_,idx) => lines[idx]?.includes('SCREENED')).length || '?'} pool\n`;
-    report += `<i>(Menampilkan ${screeningTopPoolsLimit} dari ${sorted.length} — sisanya di console)</i>\n`;
-    report += `================================\n\n`;
-    report += lines.join('\n\n');
-    report += `\n\n================================\n`;
-    report += `🤖 Model AI: <code>${agentModel}</code>\n`;
-    report += `⏱️ Next Scan: ${intervalMin} Menit`;
+    let report = `📊 SCANNER REPORT\n`;
+    report += `📅 ${nowStr}\n\n`;
+    report += `Top 5:\n`;
+    report += `${topPools.slice(0, 5).map((pool, idx) => `${idx + 1}. ${escapeHTML(pool.name || pool.tokenXSymbol || pool.tokenXMint?.slice(0, 8) || 'UNKNOWN')}`).join('\n')}\n\n`;
+    report += `Slot: ${isDeploySlotSaturated(getDeploySlotUsage()) ? 'FULL 1/1' : 'AVAILABLE'}\n`;
+    report += `Action: HOLD new entries\n`;
+    report += `Next scan: ${intervalMin}m`;
 
     await notify(report);
   } catch (e) {
