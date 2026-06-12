@@ -337,7 +337,9 @@ test('take profit exit forces full-swap policy while claimFees stays claim-only'
   const claimEnd = meteoraSrc.indexOf('// ─── Top Pools ───────────────────────────────────────────────────', claimStart);
   const claimBlock = meteoraSrc.slice(claimStart, claimEnd);
 
-  assert.match(exitPolicyBlock, /normalizedExitReason === 'TAKE_PROFIT'/);
+  assert.match(evilPandaSrc, /function isTakeProfitExitReason/);
+  assert.match(exitPolicyBlock, /isTakeProfitExitReason\(reason, normalizedExitReason\)/);
+  assert.match(evilPandaSrc, /return text\.startsWith\('TAKE_PROFIT'\)/);
   assert.match(exitPolicyBlock, /buildTakeProfitExitSwapPolicy/);
   assert.match(evilPandaSrc, /swapMode:\s*'all'/);
   assert.match(evilPandaSrc, /allowResidualSwap:\s*true/);

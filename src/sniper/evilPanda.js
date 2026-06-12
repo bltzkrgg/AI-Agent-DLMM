@@ -2121,6 +2121,12 @@ function buildTakeProfitExitSwapPolicy(cfg = {}, isEmergencyExit = false) {
   };
 }
 
+function isTakeProfitExitReason(reason = '', normalizedReason = '') {
+  if (normalizedReason === 'TAKE_PROFIT') return true;
+  const text = String(reason || '').trim().toUpperCase();
+  return text.startsWith('TAKE_PROFIT');
+}
+
 async function waitForExitTokenBalanceSettle({
   mint,
   baselineRaw = '0',
@@ -5092,7 +5098,7 @@ export async function exitPosition(positionPubkey, reason = 'MANUAL') {
       // Ini menyamakan perilaku safeExit/exitPosition dengan close policy lain.
       let feeAutoSwapOutSol = 0;
       const cfg = getConfig();
-      const swapPolicy = normalizedExitReason === 'TAKE_PROFIT'
+      const swapPolicy = isTakeProfitExitReason(reason, normalizedExitReason)
         ? buildTakeProfitExitSwapPolicy(cfg, isEmergencyExit)
         : buildExitSwapPolicy(cfg, isEmergencyExit);
       if (swapPolicy.swapMode !== 'off') {
