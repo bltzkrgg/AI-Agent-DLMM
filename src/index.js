@@ -692,7 +692,8 @@ bot.onText(/\/config/, (msg) => {
     `<b>📉 OOR</b>\n<pre><code>${oor}</code></pre>\n` +
     `<b>🩺 Management</b>\n<pre><code>${management}</code></pre>\n` +
     `<i>Catatan: outOfRangeWaitMinutes mengatur kapan posisi benar-benar ditutup, ` +
-    `sedangkan oorDisplayWaitMinutes hanya mengatur seberapa sering status OOR muncul di log/Telegram.</i>\n` +
+    `sedangkan oorDisplayWaitMinutes hanya mengatur seberapa sering status OOR muncul di log/Telegram. ` +
+    `Jika <code>oorWatchDisplayEnabled=false</code>, notifikasi OOR Watch disembunyikan tanpa mengubah logic close.</i>\n` +
     `<i>Edit: /setconfig ? untuk lihat key yang bisa diubah</i>`,
     { parse_mode: 'HTML' }
   );
@@ -742,6 +743,7 @@ bot.onText(/\/setconfig(?:\s+(\S+))?(?:\s+(.+))?/, async (msg, match) => {
       `/setconfig taWatchEnabled true\n` +
       `/setconfig outOfRangeWaitMinutes 45\n` +
       `/setconfig oor.displayWaitMinutes 5\n` +
+      `/setconfig oor.watchDisplayEnabled false\n` +
       `/setconfig poolImpactGuardEnabled true\n` +
       `/setconfig poolPatternLearningShadowMode true</i>`,
       { parse_mode: 'HTML' }

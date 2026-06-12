@@ -110,6 +110,7 @@ function getOutOfRangeWaitMs(cfg = getConfig()) {
 }
 
 function getDisplayedOutOfRangeWaitMs(cfg = getConfig()) {
+  if (cfg?.oorWatchDisplayEnabled === false) return 0;
   const actualMinutes = Number(cfg?.outOfRangeWaitMinutes);
   const safeMinutes = Number.isFinite(actualMinutes) && actualMinutes > 0 ? actualMinutes : 30;
   const configuredDisplay = Number(cfg?.oorDisplayWaitMinutes);
@@ -218,7 +219,7 @@ export function evaluateOutOfRangeMonitorState({
   const nextOorSince = oorSince ?? now;
   const elapsedMs = Math.max(0, now - nextOorSince);
   const alertCooldownMs = getOorAlertCooldownMs(cfg);
-  const shouldAlert = lastOorAlertAt === null || (now - lastOorAlertAt) >= alertCooldownMs;
+  const shouldAlert = alertCooldownMs > 0 && (lastOorAlertAt === null || (now - lastOorAlertAt) >= alertCooldownMs);
   const runtimePatch = {
     oorSince: nextOorSince,
     lastOorAlertAt: shouldAlert ? now : lastOorAlertAt,

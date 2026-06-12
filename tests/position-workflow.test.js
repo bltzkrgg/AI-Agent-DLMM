@@ -174,6 +174,36 @@ test('out-of-range monitor state throttles OOR watch alerts by display wait minu
   assert.match(third.notifyMessage, /OOR Watch/);
 });
 
+test('out-of-range monitor state can suppress OOR watch display while keeping exit logic', async () => {
+  const { evaluateOutOfRangeMonitorState } = await importFresh(join(repoRoot, 'src/agents/hunterAlpha.js'));
+
+  const suppressed = evaluateOutOfRangeMonitorState({
+    positionPubkey: 'pos-oor-4',
+    symbol: 'OOR4',
+    status: { inRange: false, currentValueSol: 0.5, pnlPct: -0.2 },
+    runtimeState: {},
+    cfg: { outOfRangeWaitMinutes: 30, oorWatchDisplayEnabled: false },
+    now: 0,
+  });
+
+  assert.equal(suppressed.shouldExit, false);
+  assert.equal(suppressed.notifyMessage, null);
+  assert.equal(suppressed.logMessage, null);
+
+  const expired = evaluateOutOfRangeMonitorState({
+    positionPubkey: 'pos-oor-4',
+    symbol: 'OOR4',
+    status: { inRange: false, currentValueSol: 0.5, pnlPct: -0.2 },
+    runtimeState: { oorSince: 0, lastOorAlertAt: 0 },
+    cfg: { outOfRangeWaitMinutes: 1, oorWatchDisplayEnabled: false },
+    now: 61_000,
+  });
+
+  assert.equal(expired.shouldExit, true);
+  assert.equal(expired.exitReason, 'OUT_OF_RANGE_1M');
+  assert.match(expired.notifyMessage, /OOR Timeout/);
+});
+
 test('position lifecycle state is stored alongside close records', async (t) => {
   const root = mkdtempSync(join(tmpdir(), 'dlmm-db-'));
   process.env.BOT_DB_PATH = join(root, 'test.db');

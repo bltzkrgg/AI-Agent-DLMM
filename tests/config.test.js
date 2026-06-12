@@ -25,12 +25,14 @@ test('config rejects unknown keys and merges nested signal weights safely', asyn
   assert.equal(configModule.isConfigKeySupported('deployRangeMaxBins'), true);
   assert.equal(configModule.isConfigKeySupported('dlmmLiquidityShape'), true);
   assert.equal(configModule.isConfigKeySupported('oorDisplayWaitMinutes'), true);
+  assert.equal(configModule.isConfigKeySupported('oorWatchDisplayEnabled'), true);
   assert.equal(configModule.isConfigKeySupported('closeSwapMode'), true);
   assert.equal(configModule.isConfigKeySupported('takeProfitMinNetPnlPct'), true);
   assert.equal(configModule.isConfigKeySupported('totallyUnknownKey'), false);
 
   assert.equal(configModule.resolveNestedKey('strategy.outOfRangeWaitMinutes')?.flatKey, 'outOfRangeWaitMinutes');
   assert.equal(configModule.resolveNestedKey('oor.displayWaitMinutes')?.flatKey, 'oorDisplayWaitMinutes');
+  assert.equal(configModule.resolveNestedKey('oor.watchDisplayEnabled')?.flatKey, 'oorWatchDisplayEnabled');
   assert.equal(configModule.resolveNestedKey('strategy.liquidityShape')?.flatKey, 'dlmmLiquidityShape');
   assert.equal(configModule.resolveNestedKey('strategy.shape')?.flatKey, 'dlmmLiquidityShape');
   assert.equal(configModule.resolveNestedKey('strategy.closeSwapMode')?.flatKey, 'closeSwapMode');
@@ -45,6 +47,7 @@ test('config rejects unknown keys and merges nested signal weights safely', asyn
     closeAutoSwapMinOutSol: 0.001,
     closeAutoSwapMinNetSol: 0.0005,
     closeEstimatedSwapCostSol: 0.0002,
+    oorWatchDisplayEnabled: false,
     takeProfitMinNetPnlPct: 0.15,
     totallyUnknownKey: 123,
   });
@@ -62,6 +65,7 @@ test('config rejects unknown keys and merges nested signal weights safely', asyn
   assert.equal(saved.closeAutoSwapMinOutSol, 0.001);
   assert.equal(saved.closeAutoSwapMinNetSol, 0.0005);
   assert.equal(saved.closeEstimatedSwapCostSol, 0.0002);
+  assert.equal(saved.oorWatchDisplayEnabled, false);
   assert.equal(saved.takeProfitMinNetPnlPct, 0.15);
   assert.equal('totallyUnknownKey' in saved, false);
 });
