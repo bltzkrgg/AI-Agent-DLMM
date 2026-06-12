@@ -99,6 +99,15 @@ export function extractPoolPatternFeatures({
   const supertrend15m = normalizeTrend(entrySignals.taTrend ?? pool._watchTaTrend ?? pool.taTrend);
   const entryActiveBin = safeNum(pool._entryActiveBin ?? pool.activeBinId ?? entrySignals.activeBinId, null);
   const binStep = safeNum(pool.binStep, null);
+  const gmgn = pool._screenResult?.gmgnMetrics || pool.gmgn || {};
+  const gmgnTop10Pct = safeNum(gmgn.top10Pct, null);
+  const gmgnDevHoldPct = safeNum(gmgn.devHoldPct, null);
+  const gmgnInsiderPct = safeNum(gmgn.insiderPct, null);
+  const gmgnBundlerPct = safeNum(gmgn.bundlerPct, null);
+  const gmgnTotalFeesSol = safeNum(gmgn.totalFeesSol, null);
+  const gmgnRugRatio = safeNum(gmgn.rug_ratio, null);
+  const gmgnBurnedLp = typeof gmgn.burnedLp === 'boolean' ? gmgn.burnedLp : null;
+  const gmgnZeroTax = typeof gmgn.zeroTax === 'boolean' ? gmgn.zeroTax : null;
 
   return {
     tokenMint: String(tokenMint || pool.tokenXMint || pool.mint || ''),
@@ -115,6 +124,14 @@ export function extractPoolPatternFeatures({
     rangeWidthBins,
     entryActiveBin,
     entryReason: String(entryReason || ''),
+    gmgnTop10Pct,
+    gmgnDevHoldPct,
+    gmgnInsiderPct,
+    gmgnBundlerPct,
+    gmgnTotalFeesSol,
+    gmgnRugRatio,
+    gmgnBurnedLp,
+    gmgnZeroTax,
     entryAt: nowMs(),
   };
 }
@@ -156,6 +173,24 @@ export function buildPoolPatternFingerprint(features = {}) {
     [68, 'RANGE_48_68'],
     [Number.POSITIVE_INFINITY, 'RANGE_GE_68'],
   ]);
+  const gmgnBundlerBucket = bucket(features.gmgnBundlerPct, [
+    [5, 'GMGN_BUNDLER_LT_5'],
+    [15, 'GMGN_BUNDLER_5_15'],
+    [35, 'GMGN_BUNDLER_15_35'],
+    [Number.POSITIVE_INFINITY, 'GMGN_BUNDLER_GE_35'],
+  ]);
+  const gmgnTop10Bucket = bucket(features.gmgnTop10Pct, [
+    [20, 'GMGN_TOP10_LT_20'],
+    [35, 'GMGN_TOP10_20_35'],
+    [50, 'GMGN_TOP10_35_50'],
+    [Number.POSITIVE_INFINITY, 'GMGN_TOP10_GE_50'],
+  ]);
+  const gmgnRugBucket = bucket(features.gmgnRugRatio, [
+    [10, 'GMGN_RUG_LT_10'],
+    [25, 'GMGN_RUG_10_25'],
+    [50, 'GMGN_RUG_25_50'],
+    [Number.POSITIVE_INFINITY, 'GMGN_RUG_GE_50'],
+  ]);
   const binStepBucket = Number.isFinite(Number(features.binStep)) ? `BIN_${Number(features.binStep)}` : 'BIN_UNKNOWN';
   const trendBucket = normalizeTrend(features.supertrend15m);
 
@@ -168,6 +203,9 @@ export function buildPoolPatternFingerprint(features = {}) {
     feeTvlBucket,
     trendBucket,
     rangeWidthBucket,
+    gmgnBundlerBucket,
+    gmgnTop10Bucket,
+    gmgnRugBucket,
   ];
   return {
     fingerprint: fingerprintParts.join('|'),
@@ -180,8 +218,107 @@ export function buildPoolPatternFingerprint(features = {}) {
       feeTvlBucket,
       trendBucket,
       rangeWidthBucket,
+      gmgnBundlerBucket,
+      gmgnTop10Bucket,
+      gmgnRugBucket,
     },
   };
+}
+
+export function evaluateGmgnSignalLayer(features = {}, cfg = {}) {
+  const enabled = cfg.gmgnEnabled !== false;
+  const result = {
+    enabled,
+    available: false,
+    scoreDelta: 0,
+    summary: 'GMGN_UNVERIFIED',
+    reasons: [],
+    metrics: {},
+  };
+  if (!enabled) {
+    result.summary = 'GMGN_DISABLED';
+    return result;
+  }
+
+  const top10 = safeNum(features.gmgnTop10Pct, null);
+  const devHold = safeNum(features.gmgnDevHoldPct, null);
+  const insider = safeNum(features.gmgnInsiderPct, null);
+  const bundler = safeNum(features.gmgnBundlerPct, null);
+  const totalFees = safeNum(features.gmgnTotalFeesSol, null);
+  const rug = safeNum(features.gmgnRugRatio, null);
+  const burnedLp = typeof features.gmgnBurnedLp === 'boolean' ? features.gmgnBurnedLp : null;
+  const zeroTax = typeof features.gmgnZeroTax === 'boolean' ? features.gmgnZeroTax : null;
+
+  result.metrics = {
+    top10Pct: top10,
+    devHoldPct: devHold,
+    insiderPct: insider,
+    bundlerPct: bundler,
+    totalFeesSol: totalFees,
+    rugRatio: rug,
+    burnedLp,
+    zeroTax,
+  };
+
+  const hasAnyMetric = [top10, devHold, insider, bundler, totalFees, rug].some((v) => v !== null) || burnedLp !== null || zeroTax !== null;
+  if (!hasAnyMetric) return result;
+  result.available = true;
+
+  let delta = 0;
+  if (top10 !== null) {
+    if (top10 <= 20) { delta += 6; result.reasons.push('GMGN_TOP10_TIGHT'); }
+    else if (top10 <= 35) { delta += 2; result.reasons.push('GMGN_TOP10_OK'); }
+    else if (top10 >= 50) { delta -= 8; result.reasons.push('GMGN_TOP10_HEAVY'); }
+    else { delta -= 3; result.reasons.push('GMGN_TOP10_ELEVATED'); }
+  }
+  if (devHold !== null) {
+    if (devHold <= 2) { delta += 3; result.reasons.push('GMGN_DEV_LOW'); }
+    else if (devHold >= 8) { delta -= 5; result.reasons.push('GMGN_DEV_HEAVY'); }
+  }
+  if (insider !== null) {
+    if (insider <= 1) { delta += 2; result.reasons.push('GMGN_INSIDER_LOW'); }
+    else if (insider >= 5) { delta -= 5; result.reasons.push('GMGN_INSIDER_HIGH'); }
+  }
+  if (bundler !== null) {
+    if (bundler <= 5) { delta += 4; result.reasons.push('GMGN_BUNDLER_LOW'); }
+    else if (bundler <= 15) { delta += 1; result.reasons.push('GMGN_BUNDLER_OK'); }
+    else if (bundler >= 35) { delta -= 7; result.reasons.push('GMGN_BUNDLER_HIGH'); }
+    else { delta -= 3; result.reasons.push('GMGN_BUNDLER_ELEVATED'); }
+  }
+  if (rug !== null) {
+    if (rug <= 10) { delta += 3; result.reasons.push('GMGN_RUG_LOW'); }
+    else if (rug >= 40) { delta -= 6; result.reasons.push('GMGN_RUG_HIGH'); }
+  }
+  if (totalFees !== null) {
+    if (totalFees >= Math.max(30, Number(cfg.gmgnMinTotalFeesSol) || 30)) { delta += 3; result.reasons.push('GMGN_TOTAL_FEES_STRONG'); }
+    else if (totalFees < Math.max(10, (Number(cfg.gmgnMinTotalFeesSol) || 30) * 0.5)) { delta -= 3; result.reasons.push('GMGN_TOTAL_FEES_WEAK'); }
+  }
+  if (burnedLp === true) {
+    delta += 2;
+    result.reasons.push('GMGN_BURNED_LP');
+  } else if (burnedLp === false) {
+    delta -= 4;
+    result.reasons.push('GMGN_UNBURNED_LP');
+  }
+  if (zeroTax === true) {
+    delta += 1;
+    result.reasons.push('GMGN_ZERO_TAX');
+  } else if (zeroTax === false) {
+    delta -= 2;
+    result.reasons.push('GMGN_NON_ZERO_TAX');
+  }
+
+  result.scoreDelta = Math.max(-18, Math.min(18, delta));
+  result.summary = result.scoreDelta >= 8
+    ? 'GMGN_SIGNAL_STRONG'
+    : result.scoreDelta >= 2
+      ? 'GMGN_SIGNAL_POSITIVE'
+      : result.scoreDelta <= -8
+        ? 'GMGN_SIGNAL_WEAK'
+        : result.scoreDelta < 0
+          ? 'GMGN_SIGNAL_NEGATIVE'
+          : 'GMGN_SIGNAL_NEUTRAL';
+  return result;
 }
 
 export function recordPoolPatternEntry({
@@ -309,17 +446,21 @@ export function applyPoolPatternLearningToScore({
         symbol: candidate?.symbol || pool?.tokenXSymbol || pool?.name || '',
         entryReason: candidate?.entryReason || row?.lastReason || '',
       });
+  const gmgnSignal = evaluateGmgnSignalLayer(candidateFeatures, config);
+  const gmgnAdjustedBaseScore = safeBaseScore + Number(gmgnSignal.scoreDelta || 0);
   const learningDecision = evaluatePoolPatternLearning(candidateFeatures, config);
-  const shadowScore = safeBaseScore + Number(learningDecision.delta || 0);
+  const shadowScore = gmgnAdjustedBaseScore + Number(learningDecision.delta || 0);
   const score = learningDecision.enabled && learningDecision.shadowMode === false
-    ? applyPoolPatternLearningDelta(safeBaseScore, learningDecision)
-    : safeBaseScore;
+    ? applyPoolPatternLearningDelta(gmgnAdjustedBaseScore, learningDecision)
+    : gmgnAdjustedBaseScore;
   const mode = !learningDecision.enabled ? 'disabled' : (learningDecision.shadowMode ? 'shadow' : 'active');
 
   return {
     score,
     baseScore: safeBaseScore,
+    gmgnAdjustedBaseScore,
     shadowScore,
+    gmgnSignal,
     learningDecision,
     appliedDelta: Number(learningDecision.appliedDelta || 0),
     mode,

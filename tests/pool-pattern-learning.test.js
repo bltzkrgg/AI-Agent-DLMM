@@ -50,6 +50,7 @@ test('pool pattern learning builds fingerprint safely and evaluates disabled mod
   const full = mod.buildPoolPatternFingerprint(baseFeatures());
   assert.match(full.fingerprint, /^BIN_100\|/);
   assert.equal(full.buckets.trendBucket, 'BULLISH');
+  assert.equal(full.buckets.gmgnBundlerBucket, 'UNKNOWN');
 
   const sparse = mod.buildPoolPatternFingerprint({});
   assert.match(sparse.fingerprint, /UNKNOWN/);
@@ -64,6 +65,44 @@ test('pool pattern learning builds fingerprint safely and evaluates disabled mod
   assert.equal(disabled.enabled, false);
   assert.equal(disabled.delta, 0);
   assert.equal(disabled.appliedDelta, 0);
+});
+
+test('gmgn signal layer adjusts score conservatively and stays neutral when data missing', async () => {
+  makeIsolatedEnv('dlmm-pattern-learning-gmgn-');
+  const mod = await importFresh(join(repoRoot, 'src/learn/poolPatternLearning.js'));
+
+  const neutral = mod.evaluateGmgnSignalLayer(baseFeatures(), { gmgnEnabled: true, gmgnMinTotalFeesSol: 30 });
+  assert.equal(neutral.enabled, true);
+  assert.equal(neutral.available, false);
+  assert.equal(neutral.scoreDelta, 0);
+
+  const strong = mod.evaluateGmgnSignalLayer(baseFeatures({
+    gmgnTop10Pct: 18,
+    gmgnDevHoldPct: 1.2,
+    gmgnInsiderPct: 0.2,
+    gmgnBundlerPct: 3.4,
+    gmgnTotalFeesSol: 48,
+    gmgnRugRatio: 8,
+    gmgnBurnedLp: true,
+    gmgnZeroTax: true,
+  }), { gmgnEnabled: true, gmgnMinTotalFeesSol: 30 });
+  assert.equal(strong.available, true);
+  assert.ok(strong.scoreDelta > 0);
+  assert.match(strong.summary, /GMGN_SIGNAL_(STRONG|POSITIVE)/);
+
+  const weak = mod.evaluateGmgnSignalLayer(baseFeatures({
+    gmgnTop10Pct: 57,
+    gmgnDevHoldPct: 9,
+    gmgnInsiderPct: 8,
+    gmgnBundlerPct: 41,
+    gmgnTotalFeesSol: 6,
+    gmgnRugRatio: 55,
+    gmgnBurnedLp: false,
+    gmgnZeroTax: false,
+  }), { gmgnEnabled: true, gmgnMinTotalFeesSol: 30 });
+  assert.equal(weak.available, true);
+  assert.ok(weak.scoreDelta < 0);
+  assert.match(weak.summary, /GMGN_SIGNAL_(WEAK|NEGATIVE)/);
 });
 
 test('pool pattern learning stores normalized exit reason categories', async () => {
@@ -99,8 +138,10 @@ test('pool pattern learning score wrapper keeps disabled shadow and active modes
     },
   });
   assert.equal(disabled.mode, 'disabled');
-  assert.equal(disabled.score, 74);
-  assert.equal(disabled.shadowScore, 74);
+  assert.equal(disabled.learningDecision.enabled, false);
+  assert.equal(disabled.gmgnAdjustedBaseScore, disabled.score);
+  assert.equal(disabled.shadowScore, disabled.score);
+  assert.ok(disabled.score > 74);
 
   const cfgShadow = {
     poolPatternLearningEnabled: true,
@@ -127,9 +168,11 @@ test('pool pattern learning score wrapper keeps disabled shadow and active modes
     config: cfgShadow,
   });
   assert.equal(shadow.mode, 'shadow');
-  assert.equal(shadow.score, 74);
-  assert.ok(shadow.shadowScore >= 74);
+  assert.equal(shadow.score, shadow.gmgnAdjustedBaseScore);
+  assert.ok(shadow.score > 74);
+  assert.ok(shadow.shadowScore >= shadow.score);
   assert.equal(shadow.appliedDelta, 0);
+  assert.equal(Number.isFinite(shadow.gmgnAdjustedBaseScore), true);
 
   const cfgActive = { ...cfgShadow, poolPatternLearningShadowMode: false, poolPatternLearningMaxScoreDelta: 1 };
   const active = mod.applyPoolPatternLearningToScore({
@@ -138,9 +181,9 @@ test('pool pattern learning score wrapper keeps disabled shadow and active modes
     config: cfgActive,
   });
   assert.equal(active.mode, 'active');
-  assert.ok(active.score >= 74);
-  assert.ok(active.score <= 75);
-  assert.equal(active.score, 74 + active.appliedDelta);
+  assert.ok(active.score >= shadow.score);
+  assert.ok(active.score <= shadow.score + 1);
+  assert.equal(active.score, active.gmgnAdjustedBaseScore + active.appliedDelta);
 
   const sparse = mod.applyPoolPatternLearningToScore({
     baseScore: 74,
@@ -149,6 +192,55 @@ test('pool pattern learning score wrapper keeps disabled shadow and active modes
   });
   assert.doesNotThrow(() => sparse);
   assert.equal(Number.isFinite(sparse.score), true);
+});
+
+test('gmgn signal layer shifts wrapper score before pattern learning without becoming a hard gate', async () => {
+  makeIsolatedEnv('dlmm-pattern-learning-gmgn-wrapper-');
+  const mod = await importFresh(join(repoRoot, 'src/learn/poolPatternLearning.js'));
+  const cfg = {
+    poolPatternLearningEnabled: false,
+    poolPatternLearningShadowMode: true,
+    poolPatternLearningMinSamples: 2,
+    poolPatternLearningMaxScoreDelta: 8,
+    poolPatternLearningLookbackDays: 14,
+    gmgnEnabled: true,
+    gmgnMinTotalFeesSol: 30,
+  };
+
+  const strongCandidate = baseFeatures({
+    gmgnTop10Pct: 16,
+    gmgnDevHoldPct: 1.5,
+    gmgnInsiderPct: 0.4,
+    gmgnBundlerPct: 2.1,
+    gmgnTotalFeesSol: 44,
+    gmgnRugRatio: 7,
+    gmgnBurnedLp: true,
+    gmgnZeroTax: true,
+  });
+  const weakCandidate = baseFeatures({
+    symbol: 'WEAK',
+    tokenMint: 'MintWeakSignal111',
+    gmgnTop10Pct: 61,
+    gmgnDevHoldPct: 10,
+    gmgnInsiderPct: 7,
+    gmgnBundlerPct: 48,
+    gmgnTotalFeesSol: 4,
+    gmgnRugRatio: 63,
+    gmgnBurnedLp: false,
+    gmgnZeroTax: false,
+  });
+
+  const strong = mod.applyPoolPatternLearningToScore({ baseScore: 80, candidate: strongCandidate, config: cfg });
+  const weak = mod.applyPoolPatternLearningToScore({ baseScore: 80, candidate: weakCandidate, config: cfg });
+
+  assert.equal(strong.gmgnSignal.available, true);
+  assert.equal(weak.gmgnSignal.available, true);
+  assert.equal(Number.isFinite(strong.score), true);
+  assert.equal(Number.isFinite(weak.score), true);
+  assert.notEqual(strong.gmgnAdjustedBaseScore, 80);
+  assert.notEqual(weak.gmgnAdjustedBaseScore, 80);
+  assert.equal(strong.learningDecision.enabled, false);
+  assert.equal(weak.learningDecision.enabled, false);
 });
 
 test('candidate ordering wrapper preserves disabled/shadow and reorders only in active mode', async () => {
@@ -229,7 +321,7 @@ test('candidate ordering wrapper preserves disabled/shadow and reorders only in 
   );
   assert.equal(active.mode, 'active');
   assert.equal(active.candidates.length, 3);
-  assert.equal(active.candidates[0].symbol, 'POS');
+  assert.equal(active.candidates[0].symbol, 'SPARSE');
   assert.equal(active.candidates.some((c) => c.symbol === 'NEG'), true);
   assert.equal(active.candidates.some((c) => c.symbol === 'SPARSE'), true);
 

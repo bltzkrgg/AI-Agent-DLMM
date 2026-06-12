@@ -418,7 +418,15 @@ function computeTaWatchPriorityScore({ pool = {}, entrySignals = {}, row = {}, n
       `[${tag}] ${pattern.candidateFeatures.symbol || pattern.candidateFeatures.tokenMint || 'UNKNOWN'} ` +
       `fp=${pattern.learningDecision.reasons[0] || 'NO_FP'} samples=${pattern.learningDecision.sampleCount} ` +
       `base=${pattern.baseScore.toFixed(2)} delta=${Number(pattern.learningDecision.delta || 0).toFixed(2)} ` +
-      `shadow=${pattern.shadowScore.toFixed(2)} applied=${pattern.appliedDelta.toFixed(2)} score=${finalScore.toFixed(2)}`
+      `gmgn=${Number(pattern.gmgnSignal?.scoreDelta || 0).toFixed(2)} shadow=${pattern.shadowScore.toFixed(2)} ` +
+      `applied=${pattern.appliedDelta.toFixed(2)} score=${finalScore.toFixed(2)}`
+    );
+  }
+  if (pattern.gmgnSignal?.available) {
+    console.log(
+      `[GMGN_SIGNAL_LAYER] ${pattern.candidateFeatures.symbol || pattern.candidateFeatures.tokenMint || 'UNKNOWN'} ` +
+      `summary=${pattern.gmgnSignal.summary} delta=${Number(pattern.gmgnSignal.scoreDelta || 0).toFixed(2)} ` +
+      `reasons=${(pattern.gmgnSignal.reasons || []).slice(0, 4).join('|') || 'NONE'}`
     );
   }
   return finalScore;

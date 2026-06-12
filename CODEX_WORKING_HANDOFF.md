@@ -46,6 +46,7 @@ prefer the explicit user request, then update this file after the change lands.
 - Final Supertrend deploy allow path now requires short-lived canonical 15m confirmation metadata; reliable live bullish snapshots alone no longer auto-pass final deploy.
 - Defensive bearish exit hold window now trusts only canonical bullish entry stamps; non-canonical entry trend metadata no longer delays valid bearish risk exits.
 - Operator-facing exit labels now use a cleaner `Defensive Exit Trigger` wording for TA scenario C while normal and trailing TP labels stay explicit.
+- GMGN-inspired signal layer now acts as a scoring-only overlay inside pool-pattern/watch prioritization: it shifts candidate score using existing GMGN metrics and fingerprints those metrics for learning, but does not introduce a new hard gate or config key.
 
 ## Behavior contracts to preserve
 
@@ -141,3 +142,4 @@ Do not edit these unless the user explicitly scopes the change there.
 - 2026-06-11: Standardized scanner Telegram output to the compact `SCANNER REPORT` layout with `Top 5`, slot state, action, and next scan cadence while keeping slot-saturated summary behavior intact.
 - 2026-06-11: Hardened TP auto-swap in `evilPanda` by waiting for post-close token balance settlement before sweep decisions and propagating structured Jupiter execution errors into explicit fee/residual swap skip logs, without changing claim-only or non-TP policy semantics.
 - 2026-06-12: Hardened TP-family auto-swap routing in `evilPanda` so `TAKE_PROFIT_TRAILING` and other `TAKE_PROFIT*` exit reasons now force the same full-swap policy as plain take profit, while global exit-reason normalization for analytics remains unchanged.
+- 2026-06-12: Added GMGN-inspired scoring overlay to `poolPatternLearning` and watch priority scoring in `hunterAlpha`; existing GMGN metrics now influence candidate ranking and learning fingerprints without changing stage pass/fail gates.
