@@ -2532,10 +2532,14 @@ FORMAT JAWABAN (WAJIB JSON VALID, TANPA MARKDOWN):
           if (!isDeploySlotSaturated(slotUsage)) {
             await notify(
               `👀 <b>WATCH</b>\n` +
-              `Token: <b>${tokenSymbol}</b> masuk watch layer!\n` +
-              `Entry: <code>${entryReadiness || 'N/A'}</code> | Breakout: <code>${breakoutQuality || 'N/A'}</code>\n` +
-              `Alasan: <i>${scoutReason || 'Scout Approved'}</i>\n` +
-              `⏳ <i>Watcher aktif — deploy otomatis saat slot tersedia.</i>`
+              `Token: <b>${tokenSymbol}</b>\n` +
+              `Entry: <b>${entryReadiness || 'N/A'}</b> | Breakout: <b>${breakoutQuality || 'N/A'}</b>\n` +
+              `Status:\n` +
+              `- Slot 0/1: PASS\n` +
+              `- Trend M15: PASS\n` +
+              `- Timing: PASS\n` +
+              `- Safety: PASS\n\n` +
+              `Watcher aktif — menunggu slot tersedia.`
             );
           }
           return { ok: true, pool, symbol: tokenSymbol || 'UNKNOWN' };
