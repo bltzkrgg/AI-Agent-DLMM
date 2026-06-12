@@ -3896,7 +3896,7 @@ export async function sendImmediateTopPoolsReport(chatId) {
       if (gmgnInfo.devHoldPct != null) gmgnParts.push(`Dev ${formatMaybePct(gmgnInfo.devHoldPct, 1)}`);
       if (gmgnInfo.insiderPct != null) gmgnParts.push(`Insider ${formatMaybePct(gmgnInfo.insiderPct, 1)}`);
       if (gmgnInfo.bundlerPct != null) gmgnParts.push(`Bundler ${formatMaybePct(gmgnInfo.bundlerPct, 1)}`);
-      const gmgnLine = gmgnParts.length ? `\nGMGN: ${gmgnParts.join(' | ')}` : '';
+      const signalScore = Number.isFinite(Number(pool.signalScore)) ? Math.max(0, Math.min(100, Math.round(Number(pool.signalScore)))) : null;
 
       // Simulasikan gate trace untuk laporan instan
       // STAGE_0..JUPITER = PASS (lolos discovery), MERIDIAN_VETO = hasil veto, sisanya = NOT_STARTED
@@ -3932,7 +3932,7 @@ export async function sendImmediateTopPoolsReport(chatId) {
         `Vol24h: <code>$${safeNum(volRaw,0).toLocaleString('en-US')}</code> | ` +
         `Fees24h: <code>${Number(pool.fees24h || pool.fee24h || 0) > 0 ? `◎${Number(pool.fees24h || pool.fee24h || 0).toFixed(2)}` : 'N/A'}</code>\n` +
         `Fee/TVL: <code>${feeRatio}%</code> | Bin: <code>${escapeHTML(String(binStep))}</code> | MCap: <code>$${safeNum(mcapRaw,0).toLocaleString('en-US')}</code>\n` +
-        `GMGN: <code>${gmgnParts.length ? escapeHTML(gmgnParts.join(' | ')) : 'N/A'}</code>\n` +
+        `Signal: <code>${gmgnParts.length ? escapeHTML(gmgnParts.join(' | ')) : 'N/A'}</code>${signalScore != null ? ` | LP Score: <code>${signalScore}/100</code>` : ''}\n` +
         `State: <code>${statusText}</code>${vetoPass ? '' : `\nReject: <i>${escapeHTML(vetoReason)}</i>`}`
       );
     }));

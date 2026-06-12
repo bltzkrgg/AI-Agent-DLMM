@@ -47,6 +47,7 @@ prefer the explicit user request, then update this file after the change lands.
 - Defensive bearish exit hold window now trusts only canonical bullish entry stamps; non-canonical entry trend metadata no longer delays valid bearish risk exits.
 - Operator-facing exit labels now use a cleaner `Defensive Exit Trigger` wording for TA scenario C while normal and trailing TP labels stay explicit.
 - GMGN-inspired signal layer now acts as a scoring-only overlay inside pool-pattern/watch prioritization: it shifts candidate score using existing GMGN metrics and fingerprints those metrics for learning, but does not introduce a new hard gate or config key.
+- Operator-facing scanner text now uses `Signal` + `LP Score` wording instead of raw GMGN label noise, so report output stays LP-centric while still exposing the signal overlay.
 
 ## Behavior contracts to preserve
 
@@ -143,3 +144,4 @@ Do not edit these unless the user explicitly scopes the change there.
 - 2026-06-11: Hardened TP auto-swap in `evilPanda` by waiting for post-close token balance settlement before sweep decisions and propagating structured Jupiter execution errors into explicit fee/residual swap skip logs, without changing claim-only or non-TP policy semantics.
 - 2026-06-12: Hardened TP-family auto-swap routing in `evilPanda` so `TAKE_PROFIT_TRAILING` and other `TAKE_PROFIT*` exit reasons now force the same full-swap policy as plain take profit, while global exit-reason normalization for analytics remains unchanged.
 - 2026-06-12: Added GMGN-inspired scoring overlay to `poolPatternLearning` and watch priority scoring in `hunterAlpha`; existing GMGN metrics now influence candidate ranking and learning fingerprints without changing stage pass/fail gates.
+- 2026-06-12: Refined GMGN signal overlay report text to `Signal` / `LP Score` wording in scanner output so the UI stays concise and operator-friendly without changing scoring semantics.

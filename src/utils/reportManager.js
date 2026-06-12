@@ -148,9 +148,12 @@ class ReportManager {
     if (gmgn.devHoldPct != null) gmgnParts.push(`Dev ${this._formatPct(gmgn.devHoldPct, 1)}`);
     if (gmgn.insiderPct != null) gmgnParts.push(`Insider ${this._formatPct(gmgn.insiderPct, 1)}`);
     if (gmgn.bundlerPct != null) gmgnParts.push(`Bundler ${this._formatPct(gmgn.bundlerPct, 1)}`);
-    vLines.push(`  GMGN ${gmgnParts.length > 0 ? gmgnParts.join(' | ') : 'N/A'}`);
+    vLines.push(`  Signal ${gmgnParts.length > 0 ? gmgnParts.join(' | ') : 'N/A'}`);
     if (Number.isFinite(Number(fees24h)) && Number(fees24h) > 0) {
       vLines.push(`  Fees24h ◎${Number(fees24h).toFixed(2)}`);
+    }
+    if (pool.signalScore != null && Number.isFinite(Number(pool.signalScore))) {
+      vLines.push(`  LP Score ${Math.max(0, Math.min(100, Math.round(Number(pool.signalScore))))}/100`);
     }
     vLines.push(`  ${pool.rejected ? 'Rejected' : (pool.status || 'WATCH')}`);
     return vLines.join('\n');
