@@ -45,7 +45,8 @@ test('report manager renders LP scanner brief with top pools and rejects', () =>
 
   assert.match(report, /📊 LP SCANNER BRIEF/);
   assert.match(report, /Top 5 Pools:/);
-  assert.match(report, /\[1\] CHANCE/);
+  assert.match(report, /<b>CHANCE<\/b>/);
+  assert.doesNotMatch(report, /\[\d+\] CHANCE/);
   assert.match(report, /TVL \$469\.4K \| MCap \$887\.7K \| Vol24h \$5\.6M/);
   assert.match(report, /Signal Rug 12% \| Top10 31\.4% \| Dev 6\.2% \| Insider 2\.8% \| Bundler 9\.1%/);
   assert.match(report, /LP Score 84\/100/);
@@ -74,6 +75,7 @@ test('report manager keeps working with partial pool and gmgn data', () => {
   assert.match(report, /📊 LP SCANNER BRIEF/);
   assert.match(report, /Top 5 Pools:/);
   assert.match(report, /Signal N\/A/);
+  assert.match(report, /<b>FCM<\/b>/);
   assert.match(report, /Fee\/TVL 0\.0%/);
   assert.match(report, /LP Score 52\/100/);
   assert.match(report, /Slot: AVAILABLE/);

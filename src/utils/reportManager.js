@@ -140,7 +140,7 @@ class ReportManager {
     const gmgnParts = [];
     const vLines = [];
 
-    vLines.push(`[${idx + 1}] ${name}`);
+    vLines.push(`<b>${name}</b>`);
     vLines.push(`  TVL ${this._formatUsdShort(tvl)} | MCap ${this._formatUsdShort(mcap)} | Vol24h ${this._formatUsdShort(vol24h)}`);
     vLines.push(`  Fee/TVL ${this._formatPct(feeTvl, 1)} | Bin ${binStep} | Holders ${holders}`);
     if (gmgn.rug_ratio != null) gmgnParts.push(`Rug ${this._formatPct(gmgn.rug_ratio, 0)}`);
