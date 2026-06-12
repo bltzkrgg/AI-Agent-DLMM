@@ -76,10 +76,50 @@ test('report manager keeps working with partial pool and gmgn data', () => {
   assert.match(report, /Top 5 Pools:/);
   assert.match(report, /Signal N\/A/);
   assert.match(report, /<b>FCM<\/b>/);
-  assert.match(report, /Fee\/TVL 0\.0%/);
+  assert.match(report, /Fee\/TVL N\/A/);
   assert.match(report, /LP Score 52\/100/);
   assert.match(report, /Slot: AVAILABLE/);
   assert.match(report, /Action: HOLD new entries/);
+});
+
+test('report manager renders internal feeTvlRatio field instead of falling back to N/A', () => {
+  resetReportManager();
+
+  reportManager.addToken('BOUNTYWORK', 'MintBounty');
+  reportManager.setMetrics('BOUNTYWORK', {
+    tvl: 84100,
+    vol: 201400,
+    mcap: 683900,
+    feeTvlRatio: 0.0194,
+    binStep: 100,
+    holders: 4823,
+  });
+  reportManager.setFinalVerdict('BOUNTYWORK', 'REJECT', 'bundler too high');
+
+  const report = reportManager.generateReport();
+
+  assert.match(report, /<b>BOUNTYWORK<\/b>/);
+  assert.match(report, /Fee\/TVL 1\.9%/);
+});
+
+test('report manager shows N/A when feeTvlRatio is missing, not fake zero', () => {
+  resetReportManager();
+
+  reportManager.addToken('NODATA', 'MintNoData');
+  reportManager.setMetrics('NODATA', {
+    tvl: 25000,
+    vol: 150000,
+    mcap: 510400,
+    binStep: 100,
+    fees24h: 12.5,
+    holders: 1788,
+  });
+  reportManager.setFinalVerdict('NODATA', 'REJECT', 'missing ratio');
+
+  const report = reportManager.generateReport();
+
+  assert.match(report, /Fee\/TVL N\/A/);
+  assert.match(report, /Fees24h ◎12\.50/);
 });
 
 test('slot-saturated summary mode keeps FULL 1/1 and still shows report shape', () => {

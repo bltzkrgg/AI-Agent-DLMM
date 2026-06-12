@@ -122,9 +122,18 @@ class ReportManager {
   }
 
   _formatPct(value = null, digits = 1) {
+    if (value == null || value === '') return 'N/A';
     const num = Number(value);
     if (!Number.isFinite(num)) return 'N/A';
     return `${num.toFixed(digits)}%`;
+  }
+
+  _formatRatioPct(value = null, digits = 1) {
+    if (value == null || value === '') return 'N/A';
+    const num = Number(value);
+    if (!Number.isFinite(num)) return 'N/A';
+    const pct = Math.abs(num) <= 1 ? num * 100 : num;
+    return `${pct.toFixed(digits)}%`;
   }
 
   _buildTopPoolBlock(pool = {}, idx = 0) {
@@ -133,16 +142,20 @@ class ReportManager {
     const tvl = pool.tvl ?? pool.liquidityUsd ?? pool.activeTvl ?? 0;
     const vol24h = pool.vol24h ?? pool.volume24h ?? pool.trade_volume_24h ?? pool.vol ?? 0;
     const fees24h = pool.fees24h ?? pool.fee24h ?? 0;
-    const feeTvl = pool.feeTVLRatio ?? pool.fee_tvl_ratio ?? pool.feeRatio ?? null;
+    const feeTvl = pool.feeTvlRatio ?? pool.feeTVLRatio ?? pool.fee_tvl_ratio ?? pool.feeRatio ?? null;
     const binStep = pool.binStep ?? pool.bin_step ?? 'N/A';
     const holders = pool.holders ?? pool.holderCount ?? 'N/A';
     const gmgn = pool.gmgn || {};
     const gmgnParts = [];
     const vLines = [];
 
+    if (feeTvl == null) {
+      console.log(`[ReportManager] pool ${name} missing Meteora Fee/TVL ratio; rendering N/A`);
+    }
+
     vLines.push(`<b>${name}</b>`);
     vLines.push(`  TVL ${this._formatUsdShort(tvl)} | MCap ${this._formatUsdShort(mcap)} | Vol24h ${this._formatUsdShort(vol24h)}`);
-    vLines.push(`  Fee/TVL ${this._formatPct(feeTvl, 1)} | Bin ${binStep} | Holders ${holders}`);
+    vLines.push(`  Fee/TVL ${this._formatRatioPct(feeTvl, 1)} | Bin ${binStep} | Holders ${holders}`);
     if (gmgn.rug_ratio != null) gmgnParts.push(`Rug ${this._formatPct(gmgn.rug_ratio, 0)}`);
     if (gmgn.top10Pct != null) gmgnParts.push(`Top10 ${this._formatPct(gmgn.top10Pct, 1)}`);
     if (gmgn.devHoldPct != null) gmgnParts.push(`Dev ${this._formatPct(gmgn.devHoldPct, 1)}`);

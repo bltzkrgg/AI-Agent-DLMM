@@ -84,6 +84,28 @@ function deduplicatePoolsByToken(pools, binStepPriority) {
   return result;
 }
 
+function normalizeMeteoraFeeTvlRatio(pool = {}) {
+  const canonical24h = pool?.fee_tvl_ratio?.['24h'];
+  if (canonical24h != null && Number.isFinite(Number(canonical24h))) {
+    return Number(canonical24h);
+  }
+
+  const directRatio = pool?.feeTvlRatio ?? pool?.feeActiveTvlRatio ?? pool?.feeTVLRatio ?? pool?.fee_tvl_ratio ?? pool?.feeRatio;
+  if (directRatio != null && Number.isFinite(Number(directRatio))) {
+    return Number(directRatio);
+  }
+
+  const fees24h = pool?.fees?.['24h'] ?? pool?.fees24h ?? pool?.fee24h ?? pool?.fee_24h ?? null;
+  const tvl = pool?.totalTvl ?? pool?.activeTvl ?? pool?.tvl ?? pool?.liquidityUsd ?? pool?.active_tvl ?? null;
+  const numericFees24h = Number(fees24h);
+  const numericTvl = Number(tvl);
+  if (Number.isFinite(numericFees24h) && Number.isFinite(numericTvl) && numericTvl > 0) {
+    return numericFees24h / numericTvl;
+  }
+
+  return null;
+}
+
 // ── Notify helper (diset dari index.js) ──────────────────────────
 let _notifyFn = null;
 let _notifyMuted = false;
@@ -2166,9 +2188,9 @@ export async function scanAndDeploy({ emitFinalReport = true } = {}) {
       tvl:  Number(pool.totalTvl || pool.activeTvl || 0),
       vol:  Number(pool.volume24h || pool.volume_24h || pool.trade_volume_24h || 0),
       mcap: Number(pool.mcap || 0),
-      feeTvlRatio: pool.feeActiveTvlRatio ?? pool.fee_tvl_ratio ?? pool.feeRatio ?? null,
-      binStep: pool.binStep ?? pool.bin_step ?? null,
-      fees24h: pool.fees24h ?? pool.fee24h ?? 0,
+      feeTvlRatio: normalizeMeteoraFeeTvlRatio(pool),
+      binStep: pool.binStep ?? pool.bin_step ?? pool.pool_config?.bin_step ?? null,
+      fees24h: pool.fees?.['24h'] ?? pool.fees24h ?? pool.fee24h ?? pool.fee_24h ?? 0,
       holders: pool.holders ?? pool.holderCount ?? null,
     });
     if (!isSupportedQuoteToken(pool)) {
