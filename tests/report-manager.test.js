@@ -51,7 +51,7 @@ test('report manager renders LP scanner brief with top pools and rejects', () =>
   assert.match(report, /Signal Rug 12% \| Top10 31\.4% \| Dev 6\.2% \| Insider 2\.8% \| Bundler 9\.1%/);
   assert.match(report, /LP Score 84\/100/);
   assert.match(report, /Rejected:/);
-  assert.match(report, /- KINS — stale market snapshot/);
+  assert.match(report, /<b>KINS<\/b> — stale market snapshot/);
   assert.match(report, /Slot: AVAILABLE/);
   assert.match(report, /Action: HOLD new entries/);
   assert.match(report, /Next scan: 15m/);

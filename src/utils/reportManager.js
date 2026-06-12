@@ -207,7 +207,7 @@ class ReportManager {
       report += `Rejected:\n`;
       report += `${rejectedTokens.slice(0, 5).map((t) => {
         const reason = this.getGateDetailsText(t, this.getFirstFailedGate(t)) || t.reason || this.getFirstFailedGate(t) || 'Rejected';
-        return `- ${t.name} — ${reason}`;
+        return `<b>${t.name}</b> — ${reason}`;
       }).join('\n')}\n\n`;
     }
 
