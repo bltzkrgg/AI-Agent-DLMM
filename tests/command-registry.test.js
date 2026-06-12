@@ -26,6 +26,7 @@ test('/strategy_report and /claim_fees handlers are registered', () => {
 
   assert.match(content, /bot\.onText\(\/\\\/strategy_report\//);
   assert.match(content, /bot\.onText\(\/\\\/claim_fees/);
+  assert.match(content, /AI-Agent-DLMM Strategy/);
 });
 
 test('/ca handler is registered and exposed in /start help', () => {
@@ -56,6 +57,19 @@ test('/config and startup messages expose realtime PnL interval', () => {
   assert.match(content, /realtimePnlIntervalSec/);
   assert.match(content, /Realtime PnL/);
   assert.match(content, /realtimePnlSec/);
+});
+
+test('startup and shutdown banners use the simplified AI-Agent-DLMM text', () => {
+  const indexPath = join(__dirname, '../src/index.js');
+  const content = readFileSync(indexPath, 'utf-8');
+
+  assert.match(content, /🟢 <b>AI-Agent-DLMM Activated<\/b>/);
+  assert.match(content, /Balance: <code>\$\{balance\} SOL<\/code>/);
+  assert.match(content, /Deploy Size: <code>\$\{cfg\.deployAmountSol \|\| 0\.1\} SOL<\/code>/);
+  assert.match(content, /Risk: <code>TP TA net \$\{cfg\.takeProfitMinNetPnlPct \|\| 0\}% \| SL -\$\{cfg\.stopLossPct \|\| 10\}%<\/code>/);
+  assert.match(content, /🛑 <b>AI-Agent-DLMM Shutdown<\/b>/);
+  assert.match(content, /Tidak ada posisi aktif\./);
+  assert.match(content, /✅ AI-Agent-DLMM ready\. Balance:/);
 });
 
 test('telegram cycle report labels deferred scout state as HOLD', () => {

@@ -1552,21 +1552,9 @@ export async function closePositionDLMM(poolAddress, positionAddress, pnlData = 
       shouldClaimAndClose: true,
     });
   } else {
-    if (typeof dlmmPool.closePositionIfEmpty === 'function') {
-      removeLiqTx = await dlmmPool.closePositionIfEmpty({
-        owner: wallet.publicKey,
-        position,
-      });
-    } else {
-      removeLiqTx = await dlmmPool.removeLiquidity({
-        position: positionPubkey,
-        user: wallet.publicKey,
-        fromBinId,
-        toBinId,
-        bps: new BN(10000),
-        shouldClaimAndClose: true,
-      });
-    }
+    throw new Error(
+      `CLOSE_EMPTY_POSITION_UNSUPPORTED_${positionAddress.slice(0, 8) || 'UNKNOWN'}`
+    );
   }
 
   const txList = Array.isArray(removeLiqTx) ? removeLiqTx : [removeLiqTx];
@@ -1716,10 +1704,8 @@ export async function claimFees(poolAddress, positionAddress) {
   let claimTx;
   try {
     claimTx = await dlmmPool.claimAllRewards({ owner: wallet.publicKey, positions: [position] });
-  } catch {
-    // claimAllRewards gagal → fallback ke claimAllRewardsByPosition (single position)
-    // JANGAN gunakan claimFee — method itu tidak ada di SDK ini
-    claimTx = await dlmmPool.claimAllRewardsByPosition({ owner: wallet.publicKey, position });
+  } catch (e) {
+    throw e;
   }
 
   const txList = Array.isArray(claimTx) ? claimTx : [claimTx];

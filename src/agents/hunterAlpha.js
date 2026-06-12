@@ -1981,9 +1981,9 @@ export async function runLinearLoop() {
 
     const startCfg = getConfig();
     if (!startCfg.autoScreeningEnabled) {
-      await notify('🚀 <b>Multi-Agent Scheduler aktif.</b>\n⚠️ <i>Auto-Screening OFF. Ketik <code>/autoscreen on</code> untuk mulai.</i>');
+      await notify('🟢 <b>AI-Agent-DLMM Scan Ready</b>\n⚠️ <i>Auto Screen OFF. Ketik <code>/autoscreen on</code> untuk mulai.</i>');
     } else {
-      await notify('🚀 <b>Multi-Agent Scheduler aktif.</b> 🔍 Memulai scan real-time (No Cache)...');
+      await notify('🟢 <b>AI-Agent-DLMM Scan Ready</b>\n🔍 <i>Memulai scan real-time...</i>');
     }
 
     // Loop is now managed by src/index.js multi-agent scheduler
@@ -2044,15 +2044,15 @@ export async function scanAndDeploy({ emitFinalReport = true } = {}) {
     const limit = cfg.meteoraDiscoveryLimit || 50;
 
     console.log(`[SCREEN] 🔍 SCAN — High-Fee Hunter (binStep priority: ${(cfg.binStepPriority || [200,125,100]).join('>')} )...`);
-    await notify('🔍 <b>Memulai scan real-time (No Cache)...</b>\nMengambil data, mohon tunggu.');
+    await notify('🔍 <b>AI-Agent-DLMM Scan</b>\nMengambil data, mohon tunggu.');
 
 
   const radarTransitions = await collectReadyRetestPools(cfg);
   if (radarTransitions.length > 0) {
     console.log(`[WATCH] ${radarTransitions.length} kandidat retest naik ke WATCH.`);
     await notify(
-      `👀 <b>Watch Layer Aktif</b>\n` +
-      `${radarTransitions.length} kandidat TA masuk mode watch dan menunggu slot deploy.`
+      `👀 <b>Watch Layer</b>\n` +
+      `${radarTransitions.length} kandidat TA siap watch dan menunggu slot deploy.`
     );
   }
 

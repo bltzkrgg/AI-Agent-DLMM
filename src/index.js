@@ -407,9 +407,8 @@ async function processManualCaInput(chatId, poolAddress, { source = 'TELEGRAM_CA
 bot.onText(/\/start/, (msg) => {
   if (!guard(msg)) return;
   bot.sendMessage(msg.chat.id,
-    `🤖 <b>Linear Sniper Bot</b>\n\n` +
-    `<b>Commands:</b>\n` +
-    `/start — lihat semua command\n` +
+    `🟢 <b>AI-Agent-DLMM Commands</b>\n\n` +
+    `/start — lihat command\n` +
     `/status — posisi aktif\n` +
     `/hunt — mulai loop\n` +
     `/screening — scan manual top pool\n` +
@@ -686,7 +685,7 @@ bot.onText(/\/config/, (msg) => {
   ].join('\n');
 
   bot.sendMessage(msg.chat.id,
-    `⚙️ <b>Config Aktif</b>\n\n` +
+    `⚙️ <b>AI-Agent-DLMM Config</b>\n\n` +
     `<b>💰 Finance</b>\n<pre><code>${finance}</code></pre>\n` +
     `<b>🔍 Discovery</b>\n<pre><code>${discovery}</code></pre>\n` +
     `<b>🎯 Strategy</b>\n<pre><code>${strategy}</code></pre>\n` +
@@ -1103,10 +1102,10 @@ bot.onText(/\/strategy_report/, async (msg) => {
   const chatId = msg.chat.id;
   const cfg = getConfig();
   const text =
-    `📘 <b>Strategy Report</b>\n\n` +
+    `📘 <b>AI-Agent-DLMM Strategy</b>\n\n` +
     `Strategy: <code>${cfg.activeStrategy || 'Evil Panda'}</code>\n` +
     `Deploy: <code>${cfg.deployAmountSol || 0.1} SOL</code>\n` +
-    `TP: <code>TA exit &gt;= net ${cfg.takeProfitMinNetPnlPct || 0}%</code> | SL: <code>${cfg.stopLossPct || 10}%</code>\n` +
+    `Risk: <code>TP TA net ${cfg.takeProfitMinNetPnlPct || 0}% | SL ${cfg.stopLossPct || 10}%</code>\n` +
     `Anchor: <code>DLMM active bin</code> | Source: <code>frozen/live fallback</code>\n` +
     `TA: <code>info only (RSI ref ${cfg.smartExitRsi || 90})</code>\n` +
     `Screening: <code>${cfg.autoScreeningEnabled ? 'ON' : 'OFF'}</code>`;
@@ -1236,13 +1235,13 @@ async function shutdown(signal) {
   const active = Array.isArray(getActivePositions()) ? getActivePositions() : [];
   if (active.length > 0) {
     await notify(
-      `⚠️ <b>Bot shutdown (${signal})</b>\n` +
+      `⚠️ <b>AI-Agent-DLMM Shutdown</b>\n` +
       `Menutup <code>${active.length}</code> posisi aktif sebelum exit...`
     ).catch(() => {});
     const summary = await closeAllActivePositionsForShutdown(signal, 10_000);
     if (summary.failed.length > 0) {
       await notify(
-        `⚠️ <b>Shutdown close partial</b>\n` +
+        `⚠️ <b>Shutdown Partial</b>\n` +
         `Closed: <code>${summary.closed}/${summary.total}</code>\n` +
         `Retrying failed closes once...`
       ).catch(() => {});
@@ -1251,23 +1250,23 @@ async function shutdown(signal) {
       if (retry.stillFailed.length > 0) {
         const failedStr = retry.stillFailed.map((f) => `${f.pubkey.slice(0,8)}:${f.reason || 'FAILED'}`).join(', ');
         await notify(
-          `⚠️ <b>Shutdown close final partial</b>\n` +
+          `⚠️ <b>Shutdown Final Partial</b>\n` +
           `Recovered on retry: <code>${retry.recovered}/${retry.retried}</code>\n` +
           `Still failed: <code>${failedStr}</code>\n` +
           `<i>Cek posisi on-chain untuk verifikasi final.</i>`
         ).catch(() => {});
       } else {
         await notify(
-          `✅ <b>Shutdown retry success</b>\n` +
+          `✅ <b>Shutdown Complete</b>\n` +
           `Recovered: <code>${retry.recovered}/${retry.retried}</code>\n` +
           `Semua posisi berhasil ditutup.`
         ).catch(() => {});
       }
     } else {
-      await notify(`✅ <b>Shutdown close complete</b>\nClosed: <code>${summary.closed}/${summary.total}</code>`).catch(() => {});
+      await notify(`✅ <b>Shutdown Complete</b>\nClosed: <code>${summary.closed}/${summary.total}</code>`).catch(() => {});
     }
   } else {
-    await notify(`🛑 <b>Bot shutdown (${signal})</b>\nTidak ada posisi aktif.`).catch(() => {});
+    await notify(`🛑 <b>AI-Agent-DLMM Shutdown</b>\nTidak ada posisi aktif.`).catch(() => {});
   }
 
   bot.stopPolling();
@@ -1315,24 +1314,13 @@ setTimeout(async () => {
     );
 
     await notify(
-      `🚀 <b>Linear Sniper Bot aktif</b>\n\n` +
-      `♻️ Reconcile: <code>${reconcile.restored}/${reconcile.scanned}</code>\n` +
-      `🩺 Restored Monitor: <code>${restoredMonitors}</code>\n` +
-      `👁️ Manual Close Watcher: <code>${manualCloseWatcherStarted ? 'ON' : 'ALREADY_ON'}</code>\n` +
-      `👁️ Watch Layer: <code>${cfg.taWatchEnabled === false ? 'OFF' : 'ON'}</code>\n` +
-      `🛰️ Radar Layer: <code>${cfg.pendingRetestEnabled === false ? 'OFF' : 'ON'}</code>\n` +
-      `💰 Balance: <code>${balance} SOL</code>\n` +
-      `📐 Deploy: <code>${cfg.deployAmountSol || 0.1} SOL</code>\n` +
-      `🎯 TP: <code>TA exit &gt;= net ${cfg.takeProfitMinNetPnlPct || 0}%</code> | ` +
-      `Anchor: <code>DLMM active bin</code> | Source: <code>frozen/live fallback</code>\n` +
-      `SL: <code>-${cfg.stopLossPct || 10}%</code>\n` +
-      `📡 Auto Screening: <code>${discoveryPaused ? 'PAUSED by /stop' : autoScr ? `ON (${cfg.screeningIntervalMin}m)` : 'OFF'}</code>\n` +
-      `🔁 Auto Screening Restore: <code>DISABLED_ON_BOOT</code>\n` +
-      `⚙️ Startup Scan: <code>SKIPPED_DISABLED</code>\n` +
-      `⏱ Next Auto Scan Interval: <code>${intervalMin}m</code>\n` +
-      `👀 Watch: <code>ON (${cfg.taWatchMaxPools || 10} max)</code>\n` +
-      `📊 Realtime PnL: <code>${cfg.realtimePnlIntervalSec || 15}s</code>\n\n` +
-      `Ketik /start untuk lihat command, /ca untuk kirim CA manual.`
+      `🟢 <b>AI-Agent-DLMM Activated</b>\n\n` +
+      `Balance: <code>${balance} SOL</code>\n` +
+      `Deploy Size: <code>${cfg.deployAmountSol || 0.1} SOL</code>\n` +
+      `Risk: <code>TP TA net ${cfg.takeProfitMinNetPnlPct || 0}% | SL -${cfg.stopLossPct || 10}%</code>\n` +
+      `Watch Layer: <code>${cfg.taWatchEnabled === false ? 'OFF' : 'ON'}</code> | ` +
+      `Radar: <code>${cfg.pendingRetestEnabled === false ? 'OFF' : 'ON'}</code>\n` +
+      `Auto Screen: <code>${discoveryPaused ? 'OFF by /stop' : autoScr ? `ON (${cfg.screeningIntervalMin}m)` : 'OFF'}</code>`
     );
 
     await restoreAutoScreeningOnStartup({
@@ -1342,7 +1330,7 @@ setTimeout(async () => {
       intervalMin,
     });
 
-    console.log(`✅ Linear Sniper Bot ready. Balance: ${balance} SOL`);
+    console.log(`✅ AI-Agent-DLMM ready. Balance: ${balance} SOL`);
   } catch (e) {
     console.error('Boot error:', e.message);
   }

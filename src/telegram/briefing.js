@@ -164,7 +164,7 @@ export async function generateBriefing(hoursBack = 24) {
   const period = `${hoursBack}h`;
 
   const funnel =
-    `📡 <b>Screening Funnel</b> (${period})\n` +
+    `📡 <b>Scanner Funnel</b> (${period})\n` +
     `   Diproses : <code>${dStats.total}</code>\n` +
     `   PASS     : <code>${dStats.passes}</code>\n` +
     `   VETO     : <code>${dStats.vetos}</code>\n` +
@@ -193,7 +193,7 @@ export async function generateBriefing(hoursBack = 24) {
     ).join('\n') || '   <i>-</i>');
 
   const cfgBlock =
-    `\n\n⚙️ <b>Config Aktif</b>\n` +
+    `\n\n⚙️ <b>Active Config</b>\n` +
     `   Deploy : <code>${cfg.deployAmountSol} SOL</code> ` +
     `| SL: <code>${cfg.stopLossPct}%</code> ` +
     `| TP: <code>TA exit &gt;= net ${cfg.takeProfitMinNetPnlPct || 0}%</code>\n` +
@@ -205,7 +205,7 @@ export async function generateBriefing(hoursBack = 24) {
     `| TA: <code>info only</code>`;
 
   return (
-    `📋 <b>Daily Briefing — AI-Agent-DLMM</b>\n` +
+    `📋 <b>AI-Agent-DLMM Briefing</b>\n` +
     `<i>${new Date().toLocaleString('id-ID', { timeZone: 'Asia/Jakarta' })} WIB</i>\n` +
     `─────────────────────\n` +
     funnel +

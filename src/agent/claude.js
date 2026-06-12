@@ -452,7 +452,7 @@ EXIT:
   • Take profit    : ${cfg.takeProfitFeePct}% fee PnL
   • Emergency SL   : >${cfg.stopLossPct}% price break dari range
   • Max hold       : ${cfg.maxHoldHours} jam
-  • Trailing TP    : aktif di ${cfg.trailingTriggerPct}% PnL, close jika turun ${cfg.trailingDropPct}% dari peak
+  • Take profit    : TA exit signal (RSI/BB/MACD/ST)
   • Volume alert   : jika Volume/TVL turun <15x → prep exit
   • OOR wait       : ${cfg.outOfRangeWaitMinutes} menit sebelum close OOR
 

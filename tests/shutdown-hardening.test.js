@@ -86,7 +86,7 @@ test('index starts manual close watcher during boot', () => {
   const indexSrc = readFileSync(indexPath, 'utf8');
   assert.match(indexSrc, /startManualCloseWatcher/);
   assert.match(indexSrc, /const manualCloseWatcherStarted = startManualCloseWatcher\(\)/);
-  assert.match(indexSrc, /Manual Close Watcher/);
+  assert.match(indexSrc, /AI-Agent-DLMM Activated/);
 });
 
 test('telegram exit command closes all active positions with verification summary', () => {
