@@ -148,23 +148,24 @@ class ReportManager {
     const gmgn = pool.gmgn || {};
     const gmgnParts = [];
     const vLines = [];
+    const fees24hText = Number.isFinite(Number(fees24h)) && Number(fees24h) > 0
+      ? `◎${Number(fees24h).toFixed(2)}`
+      : 'N/A';
 
     if (feeTvl == null) {
       console.log(`[ReportManager] pool ${name} missing Meteora Fee/TVL ratio; rendering N/A`);
     }
 
     vLines.push(`<b>${name}</b>`);
-    vLines.push(`  TVL ${this._formatUsdShort(tvl)} | MCap ${this._formatUsdShort(mcap)} | Vol24h ${this._formatUsdShort(vol24h)}`);
-    vLines.push(`  Fee/TVL ${this._formatRatioPct(feeTvl, 1)} | Bin ${binStep} | Holders ${holders}`);
+    vLines.push(`  TVL ${this._formatUsdShort(tvl)} | Vol24h ${this._formatUsdShort(vol24h)} | Fees24h ${fees24hText}`);
+    vLines.push(`  Fee/TVL 24h ${this._formatRatioPct(feeTvl, 1)} | Bin ${binStep} | MCap ${this._formatUsdShort(mcap)}`);
+    vLines.push(`  Holders ${holders}`);
     if (gmgn.rug_ratio != null) gmgnParts.push(`Rug ${this._formatPct(gmgn.rug_ratio, 0)}`);
     if (gmgn.top10Pct != null) gmgnParts.push(`Top10 ${this._formatPct(gmgn.top10Pct, 1)}`);
     if (gmgn.devHoldPct != null) gmgnParts.push(`Dev ${this._formatPct(gmgn.devHoldPct, 1)}`);
     if (gmgn.insiderPct != null) gmgnParts.push(`Insider ${this._formatPct(gmgn.insiderPct, 1)}`);
     if (gmgn.bundlerPct != null) gmgnParts.push(`Bundler ${this._formatPct(gmgn.bundlerPct, 1)}`);
     vLines.push(`  Signal ${gmgnParts.length > 0 ? gmgnParts.join(' | ') : 'N/A'}`);
-    if (Number.isFinite(Number(fees24h)) && Number(fees24h) > 0) {
-      vLines.push(`  Fees24h ◎${Number(fees24h).toFixed(2)}`);
-    }
     if (pool.signalScore != null && Number.isFinite(Number(pool.signalScore))) {
       vLines.push(`  LP Score ${Math.max(0, Math.min(100, Math.round(Number(pool.signalScore))))}/100`);
     }
