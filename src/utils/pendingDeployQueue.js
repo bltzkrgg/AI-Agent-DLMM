@@ -75,18 +75,16 @@ export function buildDeployTriggeredTelegramMessage({
     : `M5: <code>${formatPct(check.liveM5)}</code> (<code>${check.m5Source || 'unknown'}</code>)\n`;
 
   return (
-    `🚀 <b>Real-time Deploy Triggered!</b>\n` +
+    `🚀 <b>DEPLOY READY</b>\n` +
     `Token: <b>${symbol}</b>\n` +
-    `Pool: <code>${poolAddress.slice(0, 8)}</code>\n` +
-    `Trend: <code>${check.liveTrend || 'UNKNOWN'}</code> (<code>${check.trendSource || 'unknown'}</code>)\n` +
+    `Pool: <code>${poolAddress.slice(0, 8)}</code>\n\n` +
+    `Trend: <b>${check.liveTrend || 'UNKNOWN'}</b>\n` +
     m15Line +
     m5Line +
-    `Decision: <code>${decision}</code>\n` +
-    `BinStep: <code>${entry?.pool?.binStep || entry?.binStep || '?'}</code>\n` +
-    `Entry: <code>${entry?.meta?.entryReadiness || 'N/A'}</code> | ` +
-    `Breakout: <code>${entry?.meta?.breakoutQuality || 'N/A'}</code> | ` +
-    `Timing: <code>${entry?.meta?.entryTimingState || 'N/A'}</code>\n` +
-    `⏳ <i>Membuka posisi ${solAmount} SOL...</i>`
+    `\nEntry: <b>${entry?.meta?.entryReadiness || 'N/A'}</b> | ` +
+    `Breakout: <b>${entry?.meta?.breakoutQuality || 'N/A'}</b>\n` +
+    `Timing: <code>${entry?.meta?.entryTimingState || 'N/A'}</code>\n\n` +
+    `⏳ <i>Open position: ${solAmount} SOL</i>`
   );
 }
 

@@ -1683,7 +1683,7 @@ test('deploy/drop notifications are not gated by hold dedupe helper', () => {
   assert.match(holdSection, /isSlotSaturationHoldReason\(/);
   assert.match(src, /shouldSendDeployQueueHoldNotification\(/);
   assert.match(src, /Deploy Queue Drop/);
-  assert.match(src, /Real-time Deploy Triggered!/);
+  assert.match(src, /DEPLOY READY/);
 });
 
 test('slot saturated queue suppresses hold/drop noise for new candidates', () => {
