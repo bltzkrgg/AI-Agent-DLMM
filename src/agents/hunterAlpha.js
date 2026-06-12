@@ -2157,6 +2157,10 @@ export async function scanAndDeploy({ emitFinalReport = true } = {}) {
       tvl:  Number(pool.totalTvl || pool.activeTvl || 0),
       vol:  Number(pool.volume24h || pool.volume_24h || pool.trade_volume_24h || 0),
       mcap: Number(pool.mcap || 0),
+      feeTvlRatio: pool.feeActiveTvlRatio ?? pool.fee_tvl_ratio ?? pool.feeRatio ?? null,
+      binStep: pool.binStep ?? pool.bin_step ?? null,
+      fees24h: pool.fees24h ?? pool.fee24h ?? 0,
+      holders: pool.holders ?? pool.holderCount ?? null,
     });
     if (!isSupportedQuoteToken(pool)) {
       const quoteReason = `Unsupported quote token ${getQuoteTokenLabel(pool)}; expected SOL/WSOL`;
@@ -2234,6 +2238,10 @@ export async function scanAndDeploy({ emitFinalReport = true } = {}) {
       if (!screenResult?.eligible) {
         return { ok: false, symbol: tokenSymbol, stage: 'WATERFALL', reason: 'Not eligible' };
       }
+
+      reportManager.setMetrics(tokenSymbol || 'UNKNOWN', {
+        gmgn: screenResult?.gmgnMetrics || null,
+      });
     } catch (e) {
       reportManager.updateGate(tokenSymbol, 'STAGE_1_PUBLIC', 'FAIL', e.message);
       return { ok: false, symbol: tokenSymbol || 'UNKNOWN', stage: 'STAGE_1_PUBLIC', reason: e.message };
@@ -3828,6 +3836,7 @@ export async function sendImmediateTopPoolsReport(chatId) {
     }
 
     const screeningTopPoolsLimit = Math.max(1, Number(cfg.screeningTopPoolsLimit) || 5);
+    const slotSaturated = isDeploySlotSaturated(getDeploySlotUsage());
 
     // Sort by efficiency (Vol/TVL) — top pool configurable ke Telegram, sisanya console
     const sorted = [...rawPools].sort((a, b) => {
@@ -3872,6 +3881,15 @@ export async function sendImmediateTopPoolsReport(chatId) {
         }
       }
 
+      const gmgnInfo = pool.gmgn || {};
+      const gmgnParts = [];
+      if (gmgnInfo.rug_ratio != null) gmgnParts.push(`Rug ${formatMaybePct(gmgnInfo.rug_ratio, 0)}`);
+      if (gmgnInfo.top10Pct != null) gmgnParts.push(`Top10 ${formatMaybePct(gmgnInfo.top10Pct, 1)}`);
+      if (gmgnInfo.devHoldPct != null) gmgnParts.push(`Dev ${formatMaybePct(gmgnInfo.devHoldPct, 1)}`);
+      if (gmgnInfo.insiderPct != null) gmgnParts.push(`Insider ${formatMaybePct(gmgnInfo.insiderPct, 1)}`);
+      if (gmgnInfo.bundlerPct != null) gmgnParts.push(`Bundler ${formatMaybePct(gmgnInfo.bundlerPct, 1)}`);
+      const gmgnLine = gmgnParts.length ? `\nGMGN: ${gmgnParts.join(' | ')}` : '';
+
       // Simulasikan gate trace untuk laporan instan
       // STAGE_0..JUPITER = PASS (lolos discovery), MERIDIAN_VETO = hasil veto, sisanya = NOT_STARTED
       const gateStatuses = {
@@ -3901,26 +3919,30 @@ export async function sendImmediateTopPoolsReport(chatId) {
       const statusText  = vetoPass ? 'SCREENED ✅' : 'VETO ❌';
 
       return (
-        `<b>${i + 1}. ${escapeHTML(symbol)}</b> [${binStep}] — ${statusText}\n` +
-        `Progress: <code>${progressBar}</code>\n` +
-        `Gate Trace: <code>${gateTrace}</code>\n` +
-        `Eff: <code>${eff}x</code> | Fee/TVL: <code>${feeRatio}%</code>\n` +
+        `<b>[${i + 1}] ${escapeHTML(symbol)}</b>\n` +
         `TVL: <code>$${safeNum(tvlRaw,0).toLocaleString('en-US')}</code> | ` +
-        `Vol: <code>$${safeNum(volRaw,0).toLocaleString('en-US')}</code> | ` +
-        `MCap: <code>$${safeNum(mcapRaw,0).toLocaleString('en-US')}</code>` +
-        (vetoPass ? '' : `\nVeto: <i>${escapeHTML(vetoReason)}</i>`)
+        `Vol24h: <code>$${safeNum(volRaw,0).toLocaleString('en-US')}</code> | ` +
+        `Fees24h: <code>${Number(pool.fees24h || pool.fee24h || 0) > 0 ? `◎${Number(pool.fees24h || pool.fee24h || 0).toFixed(2)}` : 'N/A'}</code>\n` +
+        `Fee/TVL: <code>${feeRatio}%</code> | Bin: <code>${escapeHTML(String(binStep))}</code> | MCap: <code>$${safeNum(mcapRaw,0).toLocaleString('en-US')}</code>\n` +
+        `GMGN: <code>${gmgnParts.length ? escapeHTML(gmgnParts.join(' | ')) : 'N/A'}</code>\n` +
+        `State: <code>${statusText}</code>${vetoPass ? '' : `\nReject: <i>${escapeHTML(vetoReason)}</i>`}`
       );
     }));
 
     const nowStr = new Date().toLocaleString('id-ID', { timeZone: 'Asia/Jakarta', dateStyle: 'full', timeStyle: 'long' });
-    const agentModel = cfg.llm_settings?.agentModel || cfg.agentModel || 'UNKNOWN';
     const intervalMin = cfg.intervals?.screeningIntervalMin || cfg.screeningIntervalMin || 15;
 
-    let report = `📊 SCANNER REPORT\n`;
+    let report = `📊 LP SCANNER BRIEF\n`;
     report += `📅 ${nowStr}\n\n`;
-    report += `Top 5:\n`;
-    report += `${topPools.slice(0, 5).map((pool, idx) => `${idx + 1}. ${escapeHTML(pool.name || pool.tokenXSymbol || pool.tokenXMint?.slice(0, 8) || 'UNKNOWN')}`).join('\n')}\n\n`;
-    report += `Slot: ${isDeploySlotSaturated(getDeploySlotUsage()) ? 'FULL 1/1' : 'AVAILABLE'}\n`;
+    report += `Top 5 Pools:\n`;
+    report += `${lines.join('\n\n')}\n\n`;
+    report += `Rejected:\n`;
+    report += `${topPools.filter((pool) => !pool || pool.rejected).slice(0, 5).map((pool) => {
+      const name = pool?.name || pool?.tokenXSymbol || pool?.tokenXMint?.slice(0, 8) || 'UNKNOWN';
+      const reason = pool?.rejectReason || pool?.reason || 'Rejected';
+      return `- ${name} — ${reason}`;
+    }).join('\n') || '- N/A'}\n\n`;
+    report += `Slot: ${slotSaturated ? 'FULL 1/1' : 'AVAILABLE'}\n`;
     report += `Action: HOLD new entries\n`;
     report += `Next scan: ${intervalMin}m`;
 

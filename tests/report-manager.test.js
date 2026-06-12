@@ -2,48 +2,93 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import reportManager from '../src/utils/reportManager.js';
 
-test('report manager prefers gate-specific details over generic reject reason', () => {
+function resetReportManager() {
   reportManager.currentCycle = [];
   reportManager.cycleId = 0;
+  reportManager.setSlotSaturatedSummaryOnly(false);
   reportManager.newCycle();
+}
 
-  const token = reportManager.addToken('BANK', 'Mint123');
-  reportManager.updateGate('BANK', 'STAGE_0_DISCOVERY', 'PASS');
-  reportManager.updateGate('BANK', 'BLACKLIST_LOCAL', 'PASS');
-  reportManager.updateGate('BANK', 'STAGE_1_PUBLIC', 'PASS');
-  reportManager.updateGate('BANK', 'STAGE_2_GMGN', 'FAIL', 'Generic GMGN failure');
-  token.details.STAGE_2_GMGN = 'Top 10 Holders 31.42% > 30% | Dev Hold 6.20% > 5%';
-  reportManager.setFinalVerdict('BANK', 'REJECT', 'Generic GMGN failure');
+test('report manager renders LP scanner brief with top pools and rejects', () => {
+  resetReportManager();
+
+  const chance = reportManager.addToken('CHANCE', 'MintChance');
+  reportManager.setMetrics('CHANCE', {
+    tvl: 469432,
+    vol: 5621400,
+    mcap: 887670,
+    feeTvlRatio: 0.019,
+    binStep: 100,
+    fees24h: 0.83,
+    holders: 124,
+    gmgn: { rug_ratio: 12, bundlerPct: 9.1, top10Pct: 31.4, devHoldPct: 6.2, insiderPct: 2.8 },
+  });
+  reportManager.updateGate('CHANCE', 'STAGE_0_DISCOVERY', 'PASS');
+  reportManager.setFinalVerdict('CHANCE', 'DEPLOYED');
+
+  const kins = reportManager.addToken('KINS', 'MintKins');
+  reportManager.setMetrics('KINS', {
+    tvl: 9225836,
+    vol: 2841200,
+    mcap: 4123400,
+    feeTvlRatio: 0.028,
+    binStep: 125,
+    holders: 58,
+    gmgn: { rug_ratio: 4, bundlerPct: 3.7 },
+  });
+  reportManager.updateGate('KINS', 'STAGE_1_PUBLIC', 'FAIL', 'stale market snapshot');
+  reportManager.setFinalVerdict('KINS', 'REJECT', 'stale market snapshot');
+  kins.details.STAGE_1_PUBLIC = 'stale market snapshot';
 
   const report = reportManager.generateReport();
 
-  assert.match(report, /📊 SCANNER REPORT/);
-  assert.match(report, /Top 5:\n1\. BANK/);
+  assert.match(report, /📊 LP SCANNER BRIEF/);
+  assert.match(report, /Top 5 Pools:/);
+  assert.match(report, /\[1\] CHANCE/);
+  assert.match(report, /TVL \$469\.4K \| MCap \$887\.7K \| Vol24h \$5\.6M/);
+  assert.match(report, /GMGN Rug 12% \| Top10 31\.4% \| Dev 6\.2% \| Insider 2\.8% \| Bundler 9\.1%/);
+  assert.match(report, /Rejected:/);
+  assert.match(report, /- KINS — stale market snapshot/);
   assert.match(report, /Slot: AVAILABLE/);
   assert.match(report, /Action: HOLD new entries/);
   assert.match(report, /Next scan: 15m/);
 });
 
-test('slot-saturated summary mode suppresses per-token reject details but keeps header counts', () => {
-  reportManager.currentCycle = [];
-  reportManager.cycleId = 0;
-  reportManager.newCycle();
-  reportManager.setSlotSaturatedSummaryOnly(true);
+test('report manager keeps working with partial pool and gmgn data', () => {
+  resetReportManager();
 
-  const token = reportManager.addToken('KINS', 'MintKins');
-  reportManager.updateGate('KINS', 'STAGE_0_DISCOVERY', 'PASS');
-  reportManager.updateGate('KINS', 'BLACKLIST_LOCAL', 'PASS');
-  reportManager.updateGate('KINS', 'STAGE_1_PUBLIC', 'FAIL', 'stale market snapshot');
-  reportManager.setFinalVerdict('KINS', 'REJECT', 'stale market snapshot');
+  reportManager.addToken('FCM', 'MintFcm');
+  reportManager.setMetrics('FCM', {
+    tvl: 0,
+    vol: 0,
+    mcap: 0,
+    binStep: 200,
+  });
+  reportManager.setFinalVerdict('FCM', 'REJECT', 'waiting for live confirmation');
 
   const report = reportManager.generateReport();
 
-  assert.match(report, /📊 SCANNER REPORT/);
-  assert.match(report, /Top 5:\n1\. KINS/);
+  assert.match(report, /📊 LP SCANNER BRIEF/);
+  assert.match(report, /Top 5 Pools:/);
+  assert.match(report, /GMGN N\/A/);
+  assert.match(report, /Fee\/TVL 0\.0%/);
+  assert.match(report, /Slot: AVAILABLE/);
+  assert.match(report, /Action: HOLD new entries/);
+});
+
+test('slot-saturated summary mode keeps FULL 1/1 and still shows report shape', () => {
+  resetReportManager();
+  reportManager.setSlotSaturatedSummaryOnly(true);
+
+  reportManager.addToken('JUNO', 'MintJuno');
+  reportManager.setMetrics('JUNO', { tvl: 4800, vol: 28100, mcap: 2700, feeTvlRatio: 0.028, binStep: 125 });
+  reportManager.setFinalVerdict('JUNO', 'REJECT', 'bundler too high');
+
+  const report = reportManager.generateReport();
+
+  assert.match(report, /📊 LP SCANNER BRIEF/);
   assert.match(report, /Slot: FULL 1\/1/);
+  assert.match(report, /Rejected:/);
   assert.match(report, /Action: HOLD new entries/);
   assert.match(report, /Next scan: 15m/);
-  assert.doesNotMatch(report, /VISUAL PROGRESS REPORT/);
-  assert.doesNotMatch(report, /Tahap gagal:/);
-  assert.doesNotMatch(report, /Alasan:/);
 });

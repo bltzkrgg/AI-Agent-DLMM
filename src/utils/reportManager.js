@@ -44,18 +44,47 @@ class ReportManager {
       tvl: 0,
       vol: 0,
       mcap: 0,
+      feeTvlRatio: null,
+      binStep: null,
+      fees24h: null,
+      holders: null,
+      gmgn: null,
     };
     this.currentCycle.push(tokenReport);
     return tokenReport;
   }
 
   /** Set TVL/Vol/MCap metrics untuk ditampilkan di laporan */
-  setMetrics(tokenName, { tvl = 0, vol = 0, mcap = 0 } = {}) {
+  setMetrics(tokenName, {
+    tvl = 0,
+    vol = 0,
+    mcap = 0,
+    feeTvlRatio = null,
+    binStep = null,
+    fees24h = null,
+    holders = null,
+    gmgn = null,
+  } = {}) {
     const token = this.currentCycle.find(t => t.name === tokenName);
     if (!token) return;
     token.tvl  = Number(tvl)  || token.tvl;
     token.vol  = Number(vol)  || token.vol;
     token.mcap = Number(mcap) || token.mcap;
+    if (feeTvlRatio != null && Number.isFinite(Number(feeTvlRatio))) {
+      token.feeTvlRatio = Number(feeTvlRatio);
+    }
+    if (binStep != null && binStep !== '') {
+      token.binStep = binStep;
+    }
+    if (fees24h != null && Number.isFinite(Number(fees24h))) {
+      token.fees24h = Number(fees24h);
+    }
+    if (holders != null && Number.isFinite(Number(holders))) {
+      token.holders = Number(holders);
+    }
+    if (gmgn && typeof gmgn === 'object') {
+      token.gmgn = { ...(token.gmgn || {}), ...gmgn };
+    }
   }
 
   updateGate(tokenName, gateName, result, details = '') {
@@ -85,6 +114,48 @@ class ReportManager {
     if (reason) token.reason = reason;
   }
 
+  _formatUsdShort(value = 0) {
+    const num = Number(value) || 0;
+    if (num >= 1e6) return `$${(num / 1e6).toFixed(1)}M`;
+    if (num >= 1e3) return `$${(num / 1e3).toFixed(1)}K`;
+    return `$${num.toFixed(0)}`;
+  }
+
+  _formatPct(value = null, digits = 1) {
+    const num = Number(value);
+    if (!Number.isFinite(num)) return 'N/A';
+    return `${num.toFixed(digits)}%`;
+  }
+
+  _buildTopPoolBlock(pool = {}, idx = 0) {
+    const name = pool.name || pool.symbol || pool.tokenName || 'UNKNOWN';
+    const mcap = pool.mcap ?? pool.marketCap ?? 0;
+    const tvl = pool.tvl ?? pool.liquidityUsd ?? pool.activeTvl ?? 0;
+    const vol24h = pool.vol24h ?? pool.volume24h ?? pool.trade_volume_24h ?? pool.vol ?? 0;
+    const fees24h = pool.fees24h ?? pool.fee24h ?? 0;
+    const feeTvl = pool.feeTVLRatio ?? pool.fee_tvl_ratio ?? pool.feeRatio ?? null;
+    const binStep = pool.binStep ?? pool.bin_step ?? 'N/A';
+    const holders = pool.holders ?? pool.holderCount ?? 'N/A';
+    const gmgn = pool.gmgn || {};
+    const gmgnParts = [];
+    const vLines = [];
+
+    vLines.push(`[${idx + 1}] ${name}`);
+    vLines.push(`  TVL ${this._formatUsdShort(tvl)} | MCap ${this._formatUsdShort(mcap)} | Vol24h ${this._formatUsdShort(vol24h)}`);
+    vLines.push(`  Fee/TVL ${this._formatPct(feeTvl, 1)} | Bin ${binStep} | Holders ${holders}`);
+    if (gmgn.rug_ratio != null) gmgnParts.push(`Rug ${this._formatPct(gmgn.rug_ratio, 0)}`);
+    if (gmgn.top10Pct != null) gmgnParts.push(`Top10 ${this._formatPct(gmgn.top10Pct, 1)}`);
+    if (gmgn.devHoldPct != null) gmgnParts.push(`Dev ${this._formatPct(gmgn.devHoldPct, 1)}`);
+    if (gmgn.insiderPct != null) gmgnParts.push(`Insider ${this._formatPct(gmgn.insiderPct, 1)}`);
+    if (gmgn.bundlerPct != null) gmgnParts.push(`Bundler ${this._formatPct(gmgn.bundlerPct, 1)}`);
+    vLines.push(`  GMGN ${gmgnParts.length > 0 ? gmgnParts.join(' | ') : 'N/A'}`);
+    if (Number.isFinite(Number(fees24h)) && Number(fees24h) > 0) {
+      vLines.push(`  Fees24h ◎${Number(fees24h).toFixed(2)}`);
+    }
+    vLines.push(`  ${pool.rejected ? 'Rejected' : (pool.status || 'WATCH')}`);
+    return vLines.join('\n');
+  }
+
   getFirstFailedGate(token) {
     const entries = Object.entries(token.gates);
     for (const [gate, status] of entries) {
@@ -105,8 +176,6 @@ class ReportManager {
       return '🚫 Tidak ada deploy pada siklus ini.';
     }
 
-    const totalScanned    = this.currentCycle.length;
-    const deployedTokens  = this.currentCycle.filter(t => t.finalVerdict === 'DEPLOYED');
     const deferredTokens  = this.currentCycle.filter(t => t.status === 'DEFERRED' || Object.values(t.gates).some(s => s === 'DEFER'));
     const rejectedTokens  = this.currentCycle.filter(t => t.finalVerdict !== 'DEPLOYED' && t.status !== 'DEFERRED' && !Object.values(t.gates).some(s => s === 'DEFER'));
 
@@ -122,19 +191,23 @@ class ReportManager {
       return bPass - aPass;
     });
     const top5Cycle = sortedCycle.slice(0, 5);
-    const lines = [];
-    top5Cycle.forEach((token, idx) => {
-      lines.push(`${idx + 1}. ${token.name}`);
-    });
-
     const cfg = getConfig();
     const nextScreenMin = cfg.intervals?.screeningIntervalMin || cfg.screeningIntervalMin || 15;
-
-    let report = `📊 SCANNER REPORT\n`;
-    report += `📅 ${nowStr}\n\n`;
-    report += `Top 5:\n`;
-    report += `${lines.join('\n')}\n\n`;
     const slotText = this.slotSaturatedSummaryOnly ? 'FULL 1/1' : `${deferredTokens.length > 0 ? 'WATCH' : 'AVAILABLE'}`;
+
+    let report = `📊 LP SCANNER BRIEF\n`;
+    report += `📅 ${nowStr}\n\n`;
+    report += `Top 5 Pools:\n`;
+    report += `${top5Cycle.map((pool, idx) => this._buildTopPoolBlock(pool, idx)).join('\n\n')}\n\n`;
+
+    if (rejectedTokens.length > 0) {
+      report += `Rejected:\n`;
+      report += `${rejectedTokens.slice(0, 5).map((t) => {
+        const reason = this.getGateDetailsText(t, this.getFirstFailedGate(t)) || t.reason || this.getFirstFailedGate(t) || 'Rejected';
+        return `- ${t.name} — ${reason}`;
+      }).join('\n')}\n\n`;
+    }
+
     report += `Slot: ${slotText}\n`;
     report += `Action: HOLD new entries\n`;
     report += `Next scan: ${nextScreenMin}m`;
