@@ -157,8 +157,11 @@ class ReportManager {
     }
 
     vLines.push(`<b>${name}</b>`);
+    vLines.push(`<b>Meteora</b>`);
     vLines.push(`  TVL ${this._formatUsdShort(tvl)} | Vol24h ${this._formatUsdShort(vol24h)} | Fees24h ${fees24hText}`);
     vLines.push(`  Fee/TVL 24h ${this._formatRatioPct(feeTvl, 1)} | Bin ${binStep} | MCap ${this._formatUsdShort(mcap)}`);
+    vLines.push('');
+    vLines.push(`<b>GMGN</b>`);
     vLines.push(`  Holders ${holders}`);
     if (gmgn.rug_ratio != null) gmgnParts.push(`Rug ${this._formatPct(gmgn.rug_ratio, 0)}`);
     if (gmgn.top10Pct != null) gmgnParts.push(`Top10 ${this._formatPct(gmgn.top10Pct, 1)}`);
@@ -169,7 +172,7 @@ class ReportManager {
     if (pool.signalScore != null && Number.isFinite(Number(pool.signalScore))) {
       vLines.push(`  LP Score ${Math.max(0, Math.min(100, Math.round(Number(pool.signalScore))))}/100`);
     }
-    vLines.push(`  ${pool.rejected ? 'Rejected' : (pool.status || 'WATCH')}`);
+    vLines.push(`  Status : ${pool.rejected ? 'REJECTED' : (pool.status || 'WATCH')}`);
     return vLines.join('\n');
   }
 
@@ -214,11 +217,11 @@ class ReportManager {
 
     let report = `📊 LP SCANNER BRIEF\n`;
     report += `📅 ${nowStr}\n\n`;
-    report += `Top 5 Pools:\n`;
+    report += `<b>Top 5 Pools:</b>\n`;
     report += `${top5Cycle.map((pool, idx) => this._buildTopPoolBlock(pool, idx)).join('\n\n')}\n\n`;
 
     if (rejectedTokens.length > 0) {
-      report += `Rejected:\n`;
+      report += `<b>Rejected:</b>\n`;
       report += `${rejectedTokens.slice(0, 5).map((t) => {
         const reason = this.getGateDetailsText(t, this.getFirstFailedGate(t)) || t.reason || this.getFirstFailedGate(t) || 'Rejected';
         return `<b>${t.name}</b> — ${reason}`;
