@@ -257,6 +257,7 @@ test('defensive Supertrend exit requires a short confirmation window', async () 
     reg,
     exitDecision: { shouldExit: true, scenario: 'C', reason: 'Struktur Support Jebol (Supertrend = BEARISH)' },
     ageMs: 10_000,
+    outOfRangeSide: 'LOW',
     nowMs: 1_000,
   });
 
@@ -268,6 +269,7 @@ test('defensive Supertrend exit requires a short confirmation window', async () 
     reg,
     exitDecision: { shouldExit: true, scenario: 'C', reason: 'Struktur Support Jebol (Supertrend = BEARISH)' },
     ageMs: 35_000,
+    outOfRangeSide: 'LOW',
     nowMs: 20_000,
   });
 
@@ -278,6 +280,7 @@ test('defensive Supertrend exit requires a short confirmation window', async () 
     reg,
     exitDecision: { shouldExit: true, scenario: 'C', reason: 'Struktur Support Jebol (Supertrend = BEARISH)' },
     ageMs: 65_000,
+    outOfRangeSide: 'LOW',
     nowMs: 32_000,
   });
 
@@ -309,6 +312,7 @@ test('defensive Supertrend exit respects fresh bullish entry confirmation before
     reg,
     exitDecision: { shouldExit: true, scenario: 'C', reason: 'Struktur Support Jebol (Supertrend = BEARISH)' },
     ageMs: 45_000,
+    outOfRangeSide: 'LOW',
     nowMs: 25_000,
   });
 
@@ -319,11 +323,91 @@ test('defensive Supertrend exit respects fresh bullish entry confirmation before
     reg,
     exitDecision: { shouldExit: true, scenario: 'C', reason: 'Struktur Support Jebol (Supertrend = BEARISH)' },
     ageMs: 75_000,
+    outOfRangeSide: 'LOW',
     nowMs: 56_000,
   });
 
   assert.equal(matureBullishEntry.allowExit, true);
   assert.equal(matureBullishEntry.holdReason, null);
+});
+
+test('defensive Supertrend exit stays blocked while position is still in range', async () => {
+  const { __evaluateDefensiveExitConfirmationForTests } = await importFresh(join(repoRoot, 'src/sniper/evilPanda.js'));
+
+  const reg = {
+    entryFinalSupertrend15m: 'BULLISH',
+    entryFinalSupertrendSource: 'fresh_fetch',
+    entryFinalSupertrendAt: 10_000,
+  };
+
+  const decision = __evaluateDefensiveExitConfirmationForTests({
+    reg,
+    exitDecision: { shouldExit: true, scenario: 'C', reason: 'Struktur Support Jebol (Supertrend = BEARISH)' },
+    ageMs: 75_000,
+    inRange: true,
+    nowMs: 56_000,
+  });
+
+  assert.equal(decision.allowExit, false);
+  assert.match(decision.holdReason, /position still in range/i);
+});
+
+test('defensive Supertrend exit allows only out-of-range low condition', async () => {
+  const { __evaluateDefensiveExitConfirmationForTests } = await importFresh(join(repoRoot, 'src/sniper/evilPanda.js'));
+
+  const reg = {
+    entryFinalSupertrend15m: 'BULLISH',
+    entryFinalSupertrendSource: 'fresh_fetch',
+    entryFinalSupertrendAt: 10_000,
+  };
+
+  const oorLowFirst = __evaluateDefensiveExitConfirmationForTests({
+    reg,
+    exitDecision: { shouldExit: true, scenario: 'C', reason: 'Struktur Support Jebol (Supertrend = BEARISH)' },
+    ageMs: 75_000,
+    inRange: false,
+    outOfRangeSide: 'LOW',
+    nowMs: 60_000,
+  });
+
+  assert.equal(oorLowFirst.allowExit, false);
+  assert.match(oorLowFirst.holdReason, /bearish confirmation 0s < 30s/i);
+
+  const oorLowConfirmed = __evaluateDefensiveExitConfirmationForTests({
+    reg,
+    exitDecision: { shouldExit: true, scenario: 'C', reason: 'Struktur Support Jebol (Supertrend = BEARISH)' },
+    ageMs: 110_000,
+    inRange: false,
+    outOfRangeSide: 'LOW',
+    nowMs: 91_000,
+  });
+
+  assert.equal(oorLowConfirmed.allowExit, true);
+  assert.equal(oorLowConfirmed.holdReason, null);
+
+  const oorHigh = __evaluateDefensiveExitConfirmationForTests({
+    reg,
+    exitDecision: { shouldExit: true, scenario: 'C', reason: 'Struktur Support Jebol (Supertrend = BEARISH)' },
+    ageMs: 90_000,
+    inRange: false,
+    outOfRangeSide: 'HIGH',
+    nowMs: 90_000,
+  });
+
+  assert.equal(oorHigh.allowExit, false);
+  assert.match(oorHigh.holdReason, /out of range high/i);
+
+  const unknownOor = __evaluateDefensiveExitConfirmationForTests({
+    reg,
+    exitDecision: { shouldExit: true, scenario: 'C', reason: 'Struktur Support Jebol (Supertrend = BEARISH)' },
+    ageMs: 90_000,
+    inRange: false,
+    outOfRangeSide: 'UNKNOWN',
+    nowMs: 90_000,
+  });
+
+  assert.equal(unknownOor.allowExit, false);
+  assert.match(unknownOor.holdReason, /waiting confirmed out-of-range low/i);
 });
 
 test('defensive Supertrend exit does not trust non-canonical bullish entry stamp', async () => {
@@ -339,6 +423,7 @@ test('defensive Supertrend exit does not trust non-canonical bullish entry stamp
     reg,
     exitDecision: { shouldExit: true, scenario: 'C', reason: 'Struktur Support Jebol (Supertrend = BEARISH)' },
     ageMs: 45_000,
+    outOfRangeSide: 'LOW',
     nowMs: 25_000,
   });
 

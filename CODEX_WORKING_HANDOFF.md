@@ -25,6 +25,7 @@ prefer the explicit user request, then update this file after the change lands.
 - Supertrend 15m bearish must remain a hard stop for entry unless the user explicitly changes that policy.
 - Pool impact exit logic must remain a risk guard, not a generic panic rewrite.
 - TA profit exits must respect `takeProfitMinNetPnlPct`; TA defensive exits can still close for risk control.
+- Defensive TA exit scenario C must stay blocked while the position is still in range, and only becomes eligible on confirmed out-of-range-low conditions; in-range or out-of-range-high positions should keep waiting for bounce/TP or other normal exits.
 - DLMM deploy range must stay active-bin-based per Meteora, but anchor provenance and range-adjust reasons should be observable in logs/state.
 - Deploy balance checks must fail before any chain-touching deploy step when effective SOL budget is insufficient, including position setup cost and overlapping in-flight deploy reservations.
 - Deploy preflight should not use a hardcoded fee buffer; keep checks aligned to actual Meteora setup/rent costs instead.
@@ -138,6 +139,7 @@ Do not edit these unless the user explicitly scopes the change there.
 - 2026-06-10: Tightened manual-close snapshot trust so fee-only reconciliation only happens when a real fee snapshot exists; `currentValueSol` alone no longer qualifies, and missing fee snapshot now stays pending reconcile instead of showing misleading `0.000000 SOL`.
 - 2026-06-10: Manual-close pending cases no longer write harvest/pool outcome records; only reconciled manual-close snapshots are allowed to feed harvest logging and pool-memory outcomes.
 - 2026-06-10: Defensive Supertrend exit in `evilPanda` now requires a short position-age plus bearish confirmation window before triggering scenario `C`, reducing immediate deploy-then-close churn from unsynced entry/exit trend snapshots without changing deploy gates or other exit thresholds.
+- 2026-06-14: Hardened defensive Supertrend exit in `evilPanda` so scenario `C` is blocked while the position is still in range and only allowed on confirmed out-of-range-low conditions; out-of-range-high no longer counts as a defensive-exit trigger.
 - 2026-06-10: Final deploy Supertrend stamp is now passed from queue/hunter into `evilPanda`, persisted on the active position, restored after restart, and used to hold early defensive bearish exits until the bullish entry confirmation is no longer fresh.
 - 2026-06-11: Hardened final deploy Supertrend gate so reliable live bullish snapshots must be confirmed by canonical 15m Meridian before `ALLOW`; short-lived canonical source metadata is now cached/stamped and reused on quick retries to keep deploy timing tight while preventing live-bullish vs Meridian-bearish split decisions.
 - 2026-06-14: Completed 5.4 final deploy hardening in `pendingDeployQueue`: cached/canonical bullish confirmation no longer auto-allows if the latest live snapshot price has already slipped back to or below the live Supertrend 15m line; those gray-zone snapshots now HOLD and wait for a clean reclaim instead of deploying into dump-prone structure.

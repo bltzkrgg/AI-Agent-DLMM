@@ -4498,6 +4498,8 @@ function evaluateDefensiveExitConfirmation({
   reg = {},
   exitDecision = null,
   ageMs = 0,
+  inRange = false,
+  outOfRangeSide = 'UNKNOWN',
   nowMs = Date.now(),
 } = {}) {
   const isBearishDefensiveExit = exitDecision?.shouldExit === true && exitDecision?.scenario === 'C';
@@ -4510,6 +4512,27 @@ function evaluateDefensiveExitConfirmation({
   const bearishSinceMs = previousSinceMs > 0 ? previousSinceMs : nowMs;
   if (reg && typeof reg === 'object') reg.defensiveExitBearishSince = bearishSinceMs;
   const bearishAgeMs = Math.max(0, nowMs - bearishSinceMs);
+  if (inRange === true) {
+    return {
+      allowExit: false,
+      holdReason: 'Defensive exit hold: position still in range',
+      bearishSinceMs,
+    };
+  }
+  if (String(outOfRangeSide || '').toUpperCase() === 'HIGH') {
+    return {
+      allowExit: false,
+      holdReason: 'Defensive exit hold: out of range high is not a defensive-exit condition',
+      bearishSinceMs,
+    };
+  }
+  if (String(outOfRangeSide || '').toUpperCase() !== 'LOW') {
+    return {
+      allowExit: false,
+      holdReason: 'Defensive exit hold: waiting confirmed out-of-range low condition',
+      bearishSinceMs,
+    };
+  }
   const entryFinalTrend = normalizeTrackedTrendDirection(reg?.entryFinalSupertrend15m);
   const entryFinalTrendSource = String(reg?.entryFinalSupertrendSource || 'unknown').toLowerCase();
   const entryFinalTrendAt = Number.isFinite(Number(reg?.entryFinalSupertrendAt))
@@ -4635,6 +4658,13 @@ export async function monitorPnL(positionPubkey) {
     const totalXRawToSell = Math.floor((totalXUi + feeXUi) * Math.pow(10, xDec)).toString();
 
     const inRange = activeBin.binId >= reg.rangeMin && activeBin.binId <= reg.rangeMax;
+    const outOfRangeSide = inRange
+      ? 'IN_RANGE'
+      : activeBin.binId < reg.rangeMin
+        ? 'LOW'
+        : activeBin.binId > reg.rangeMax
+          ? 'HIGH'
+          : 'UNKNOWN';
     const fastValueSnapshot = await estimatePositionValueSolFromPositionData({
       positionData: pd,
       tokenXMint: reg.tokenXMint,
@@ -4776,6 +4806,8 @@ export async function monitorPnL(positionPubkey) {
       reg,
       exitDecision,
       ageMs,
+      inRange,
+      outOfRangeSide,
       nowMs: Date.now(),
     });
 
