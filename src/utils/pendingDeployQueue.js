@@ -442,6 +442,33 @@ function readLiveSnapshotTrend(liveSnapshot = null) {
   return readCanonicalLiveSnapshotTrend(liveSnapshot).trend;
 }
 
+function readLiveSupertrendLineState(liveSnapshot = null) {
+  const currentPrice = Number(
+    liveSnapshot?.ohlcv?.currentPrice ||
+    liveSnapshot?.price?.currentPrice ||
+    0
+  );
+  const supertrendValue = Number(liveSnapshot?.ta?.supertrend?.value || 0);
+  if (!(currentPrice > 0) || !(supertrendValue > 0)) {
+    return {
+      known: false,
+      currentPrice,
+      supertrendValue,
+      distancePct: null,
+      aboveLine: null,
+    };
+  }
+
+  const distancePct = ((currentPrice - supertrendValue) / supertrendValue) * 100;
+  return {
+    known: Number.isFinite(distancePct),
+    currentPrice,
+    supertrendValue,
+    distancePct,
+    aboveLine: Number.isFinite(distancePct) ? distancePct > 0 : null,
+  };
+}
+
 function clearBullishSupertrendCache(meta = {}, pool = {}) {
   const clearIfBullish = (obj, dirKey, atKey, sourceKey) => {
     if (!obj || typeof obj !== 'object') return;
@@ -503,6 +530,7 @@ export async function getFinalSupertrendDeployDecision({
   const liveTrendState = readCanonicalLiveSnapshotTrend(liveSnapshot);
   const liveTrend = readLiveSnapshotTrend(liveSnapshot);
   const liveReliable = isReliableLiveSnapshot(liveSnapshot);
+  const liveSupertrendLine = readLiveSupertrendLineState(liveSnapshot);
   const cached = readCachedSupertrend15m(meta, pool);
   const fresh = cached.at > 0 && (now - cached.at) <= ttlMs;
   const cachedSource = String(cached.source || 'unknown');
@@ -542,6 +570,15 @@ export async function getFinalSupertrendDeployDecision({
     };
   }
   if (liveReliable && liveTrend === 'BULLISH') {
+    if (liveSupertrendLine.known && liveSupertrendLine.aboveLine !== true) {
+      return {
+        ok: false,
+        action: 'HOLD',
+        reason: `live price not cleanly above Supertrend 15m line (${formatPct(liveSupertrendLine.distancePct)}); waiting reclaim`,
+        source: 'live_snapshot',
+        direction: 'BULLISH',
+      };
+    }
     if (cachedCanonicalBullish) {
       return {
         ok: true,

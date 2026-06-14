@@ -647,8 +647,8 @@ test('final Supertrend deploy gate reuses short canonical bullish cache for live
     liveSnapshot: {
       dataSource: 'meteora-dlmm-ohlcv',
       quality: { taTrend: 'BULLISH' },
-      ohlcv: { source: 'meteora-dlmm-ohlcv', historySuccess: true, priceChangeM5: 0.8 },
-      ta: { supertrend: { trend: 'BULLISH' } },
+      ohlcv: { source: 'meteora-dlmm-ohlcv', historySuccess: true, priceChangeM5: 0.8, currentPrice: 101 },
+      ta: { supertrend: { trend: 'BULLISH', value: 100 } },
     },
     checkFn: async () => {
       calls += 1;
@@ -658,6 +658,37 @@ test('final Supertrend deploy gate reuses short canonical bullish cache for live
 
   assert.equal(decision.action, 'ALLOW');
   assert.equal(decision.source, 'cache');
+  assert.equal(calls, 0);
+});
+
+test('final Supertrend deploy gate holds live bullish snapshot when price has not reclaimed above Supertrend line', async () => {
+  const now = 1_700_000_000_000;
+  let calls = 0;
+
+  const decision = await getFinalSupertrendDeployDecision({
+    mint: 'Mint111111111111111111111111111111111111111',
+    meta: {
+      finalSupertrend15m: 'BULLISH',
+      finalSupertrend15mAt: now - 5_000,
+      finalSupertrend15mSource: 'fresh_fetch',
+    },
+    now,
+    liveSnapshot: {
+      dataSource: 'meteora-dlmm-ohlcv',
+      quality: { taTrend: 'BULLISH' },
+      ohlcv: { source: 'meteora-dlmm-ohlcv', historySuccess: true, priceChangeM5: 0.8, currentPrice: 99.8 },
+      ta: { supertrend: { trend: 'BULLISH', value: 100 } },
+    },
+    checkFn: async () => {
+      calls += 1;
+      return { veto: false, direction: 'BULLISH', reason: 'PASS (should not run)' };
+    },
+  });
+
+  assert.equal(decision.action, 'HOLD');
+  assert.equal(decision.source, 'live_snapshot');
+  assert.equal(decision.direction, 'BULLISH');
+  assert.match(decision.reason, /not cleanly above supertrend 15m line/i);
   assert.equal(calls, 0);
 });
 
