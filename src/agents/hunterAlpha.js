@@ -1375,6 +1375,29 @@ function buildExitClosedNotification({ positionPubkey, exitMeta, exitResult, bal
     exitResult?.poolAddress?.slice(0, 8) ||
     positionPubkey.slice(0, 8)
   );
+  const normalizedExitTitle = String(exitMeta?.title || '').toUpperCase();
+  const normalizedExitReason = String(exitMeta?.reasonLabel || '').toUpperCase();
+  const isTakeProfitFamily = normalizedExitTitle === 'TAKE PROFIT' || normalizedExitReason.includes('PROFIT TRIGGER');
+  if (isTakeProfitFamily) {
+    const reason = escapeHTML(exitMeta.reasonLabel || 'Take Profit Trigger');
+    const compactLines = [
+      `✅ <b>Posisi Di Tutup (TAKE PROFIT)</b>`,
+      `Token : <b>${tokenLabel}</b>`,
+      `Reason: <code>${reason}</code>`,
+    ];
+    const pnlPct = Number(exitResult?.pnlTotalPct ?? exitResult?.realizedTradingPnlPct ?? exitResult?.totalPnlPct ?? exitResult?.pnlPct);
+    if (Number.isFinite(pnlPct)) {
+      const sign = pnlPct >= 0 ? '+' : '';
+      compactLines.push(`Total Exposure PnL: <code>${sign}${pnlPct.toFixed(2)}%</code>`);
+    }
+    const balanceNum = Number(balance);
+    if (Number.isFinite(balanceNum)) {
+      compactLines.push(`Balance: <code>${balanceNum} SOL</code>`);
+    } else {
+      compactLines.push(`Balance: <code>${balance} SOL</code>`);
+    }
+    return `${compactLines.join('\n')}`;
+  }
   const lines = [
     `✅ <b>Posisi Di Tutup (${exitMeta.title})</b>`,
     `Token: <b>${tokenLabel}</b>`,

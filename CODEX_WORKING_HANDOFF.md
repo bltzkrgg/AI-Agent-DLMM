@@ -170,3 +170,4 @@ Do not edit these unless the user explicitly scopes the change there.
 - 2026-06-15: Unified TP operator-facing wording with a shared helper so activation/status/briefing and exit-close banners all render the same TP threshold label, while TP exit labels keep using the shared reason metadata.
 - 2026-06-15: Normalized internal TP/trailing monitor logs in `evilPanda` to use consistent TP phrasing for gating, fallback, and hold messages without changing exit behavior.
 - 2026-06-15: Hardened TP close banner token fallback so close notifications prefer tracked symbol/metadata before falling back to position pubkey, preventing `Token` from mirroring the position id when registry label is unavailable.
+- 2026-06-15: Compact TP close banners now render the requested minimal format (`Posisi Di Tutup`, `Token :`, `Reason`, `Total Exposure PnL`, `Balance`) for TP families only, while non-TP exit families keep the richer close layout.

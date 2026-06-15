@@ -545,6 +545,7 @@ test('exit close notifications use unified display metadata for all close famili
   assert.match(hunterSrc, /buildExitTriggerNotification\(\{/);
   assert.match(hunterSrc, /buildExitClosedNotification\(\{ positionPubkey, exitMeta, exitResult, balance \}\)/);
   assert.match(hunterSrc, /Posisi Di Tutup \(\$\{exitMeta\.title\}\)/);
+  assert.match(hunterSrc, /Token : <b>\$\{tokenLabel\}<\/b>/);
   assert.match(hunterSrc, /lines\.push\(`Reason: <code>\$\{escapeHTML\(reasonLabel\)\}<\/code>`\)/);
   assert.match(hunterSrc, /Reason: <code>\$\{escapeHTML\(exitMeta\.reasonLabel\)\}<\/code>/);
   assert.match(exitReasonsSrc, /export function getExitDisplayMeta/);
