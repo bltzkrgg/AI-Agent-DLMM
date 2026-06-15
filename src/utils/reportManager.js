@@ -215,7 +215,7 @@ class ReportManager {
     const nextScreenMin = cfg.intervals?.screeningIntervalMin || cfg.screeningIntervalMin || 15;
     const slotText = this.slotSaturatedSummaryOnly ? 'FULL 1/1' : `${deferredTokens.length > 0 ? 'WATCH' : 'AVAILABLE'}`;
 
-    let report = `📊 LP SCANNER BRIEF\n`;
+    let report = `📊 AI-Agent Scanner Result\n`;
     report += `📅 ${nowStr}\n\n`;
     report += `<b>Top 5 Pools:</b>\n`;
     report += `${top5Cycle.map((pool, idx) => this._buildTopPoolBlock(pool, idx)).join('\n\n')}\n\n`;

@@ -43,7 +43,7 @@ test('report manager renders LP scanner brief with top pools and rejects', () =>
 
   const report = reportManager.generateReport();
 
-  assert.match(report, /📊 LP SCANNER BRIEF/);
+  assert.match(report, /📊 AI-Agent Scanner Result/);
   assert.match(report, /<b>Top 5 Pools:<\/b>/);
   assert.match(report, /<b>CHANCE<\/b>/);
   assert.doesNotMatch(report, /\[\d+\] CHANCE/);
@@ -76,7 +76,7 @@ test('report manager keeps working with partial pool and gmgn data', () => {
 
   const report = reportManager.generateReport();
 
-  assert.match(report, /📊 LP SCANNER BRIEF/);
+  assert.match(report, /📊 AI-Agent Scanner Result/);
   assert.match(report, /<b>Top 5 Pools:<\/b>/);
   assert.match(report, /Signal N\/A/);
   assert.match(report, /<b>FCM<\/b>/);
@@ -139,7 +139,7 @@ test('slot-saturated summary mode keeps FULL 1/1 and still shows report shape', 
 
   const report = reportManager.generateReport();
 
-  assert.match(report, /📊 LP SCANNER BRIEF/);
+  assert.match(report, /📊 AI-Agent Scanner Result/);
   assert.match(report, /Slot: FULL 1\/1/);
   assert.match(report, /<b>Rejected:<\/b>/);
   assert.match(report, /Action: HOLD new entries/);
