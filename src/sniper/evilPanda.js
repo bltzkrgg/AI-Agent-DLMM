@@ -4927,8 +4927,8 @@ export async function monitorPnL(positionPubkey) {
       const trailingDrawdownPct = reg.hwmPct - pnlPct;
       if (trailingDrawdownPct >= trailingDropPct) {
         const reason =
-          `Trailing Profit Trigger: HWM=${reg.hwmPct.toFixed(2)}% retraced ${trailingDrawdownPct.toFixed(2)}% >= ${trailingDropPct.toFixed(2)}%`;
-        console.log(`[evilPanda] 📈 TAKE_PROFIT (TRAILING) ${positionPubkey.slice(0,8)} pnl=${pnlPct.toFixed(2)}% hwm=${reg.hwmPct.toFixed(2)}% drawdown=${trailingDrawdownPct.toFixed(2)}%`);
+          `TP trigger: HWM=${reg.hwmPct.toFixed(2)}% retraced ${trailingDrawdownPct.toFixed(2)}% >= ${trailingDropPct.toFixed(2)}%`;
+        console.log(`[evilPanda] 📈 TP (TRAILING) ${positionPubkey.slice(0,8)} pnl=${pnlPct.toFixed(2)}% hwm=${reg.hwmPct.toFixed(2)}% drawdown=${trailingDrawdownPct.toFixed(2)}%`);
         return {
           action: 'TAKE_PROFIT',
           currentValueSol,
@@ -4987,8 +4987,8 @@ export async function monitorPnL(positionPubkey) {
 
     if (exitDecision.shouldExit && !isDefensiveTaExit && pnlPct < takeProfitMinNetPnlPct) {
       const reason =
-        `TA exit gated: net PnL ${pnlPct.toFixed(2)}% < min ${takeProfitMinNetPnlPct.toFixed(2)}%; ${exitDecision.reason}`;
-      console.log(`[evilPanda] 📊 TAKE_PROFIT gated ${positionPubkey.slice(0,8)} pnl=${pnlPct.toFixed(2)}% min=${takeProfitMinNetPnlPct.toFixed(2)}% reason=${exitDecision.reason}`);
+        `TP gated: net PnL ${pnlPct.toFixed(2)}% < min ${takeProfitMinNetPnlPct.toFixed(2)}%; ${exitDecision.reason}`;
+      console.log(`[evilPanda] 📊 TP gated ${positionPubkey.slice(0,8)} pnl=${pnlPct.toFixed(2)}% min=${takeProfitMinNetPnlPct.toFixed(2)}% reason=${exitDecision.reason}`);
       return {
         action: 'HOLD',
         currentValueSol,
@@ -5013,7 +5013,7 @@ export async function monitorPnL(positionPubkey) {
     }
 
     if (exitDecision.shouldExit) {
-      console.log(`[evilPanda] 📈 TAKE_PROFIT (TA_FALLBACK) ${positionPubkey.slice(0,8)} scenario=${exitDecision.scenario} pnl=${pnlPct.toFixed(2)}% reason=${exitDecision.reason}`);
+      console.log(`[evilPanda] 📈 TP (TA_FALLBACK) ${positionPubkey.slice(0,8)} scenario=${exitDecision.scenario} pnl=${pnlPct.toFixed(2)}% reason=${exitDecision.reason}`);
       return {
         action: 'TAKE_PROFIT',
         currentValueSol,
@@ -5025,7 +5025,7 @@ export async function monitorPnL(positionPubkey) {
       };
     }
 
-    console.log(`[evilPanda] 📊 ${positionPubkey.slice(0,8)} pnl=${pnlPct.toFixed(2)}% val=${currentValueSol.toFixed(4)}SOL | TA hold: ${exitDecision.reason}`);
+    console.log(`[evilPanda] 📊 ${positionPubkey.slice(0,8)} pnl=${pnlPct.toFixed(2)}% val=${currentValueSol.toFixed(4)}SOL | TP hold: ${exitDecision.reason}`);
 
     return {
       action: 'HOLD',

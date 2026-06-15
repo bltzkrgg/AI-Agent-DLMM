@@ -168,3 +168,4 @@ Do not edit these unless the user explicitly scopes the change there.
 - 2026-06-15: Hardened OOR monitor recovery in `hunterAlpha`: OOR recovered/hold decisions now trust canonical active-bin-vs-range truth when available, so stale `status.inRange` flags no longer replay false OOR recovery behavior for positions that are already back inside range.
 - 2026-06-15: Renamed scanner report header to `AI-Agent Scanner Result` while keeping the compact top-pools/rejected layout intact.
 - 2026-06-15: Unified TP operator-facing wording with a shared helper so activation/status/briefing and exit-close banners all render the same TP threshold label, while TP exit labels keep using the shared reason metadata.
+- 2026-06-15: Normalized internal TP/trailing monitor logs in `evilPanda` to use consistent TP phrasing for gating, fallback, and hold messages without changing exit behavior.

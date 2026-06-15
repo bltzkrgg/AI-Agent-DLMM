@@ -298,10 +298,10 @@ test('monitor exit policy uses trailing for take profit and TA as fallback', () 
   assert.match(evilPandaSrc, /function getConfiguredTrailingTriggerPct/);
   assert.match(evilPandaSrc, /function getConfiguredTrailingDropPct/);
   assert.match(evilPandaSrc, /action:\s*'MAX_HOLD'/);
-  assert.match(evilPandaSrc, /TAKE_PROFIT \(TRAILING\)/);
+  assert.match(evilPandaSrc, /TP \(TRAILING\)/);
   assert.match(evilPandaSrc, /const trailingEligible = trailingTriggerPct > 0 && pnlPct >= trailingTriggerPct/);
   assert.match(evilPandaSrc, /trailingDrawdownPct >= trailingDropPct/);
-  assert.match(evilPandaSrc, /TAKE_PROFIT \(TA_FALLBACK\)/);
+  assert.match(evilPandaSrc, /TP \(TA_FALLBACK\)/);
   assert.match(evilPandaSrc, /if \(exitDecision\.shouldExit\) \{/);
   assert.match(evilPandaSrc, /getConfiguredTakeProfitMinNetPnlPct/);
   assert.match(evilPandaSrc, /pnlPct < takeProfitMinNetPnlPct/);
