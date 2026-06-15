@@ -246,6 +246,20 @@ function buildOorRecoveredMessage({ symbol, positionPubkey }) {
   );
 }
 
+function resolveCanonicalMonitorInRange(status = {}) {
+  const activeBinId = Number(status?.activeBinId);
+  const rangeMin = Number(status?.rangeMin);
+  const rangeMax = Number(status?.rangeMax);
+  if (
+    Number.isFinite(activeBinId) &&
+    Number.isFinite(rangeMin) &&
+    Number.isFinite(rangeMax)
+  ) {
+    return rangeMin <= activeBinId && activeBinId <= rangeMax;
+  }
+  return status?.inRange === true;
+}
+
 export function evaluateOutOfRangeMonitorState({
   positionPubkey,
   symbol,
@@ -254,7 +268,7 @@ export function evaluateOutOfRangeMonitorState({
   cfg,
   now = Date.now(),
 } = {}) {
-  const inRange = status?.inRange === true;
+  const inRange = resolveCanonicalMonitorInRange(status);
   const waitMs = getOutOfRangeWaitMs(cfg);
   const displayWaitMs = getDisplayedOutOfRangeWaitMs(cfg);
   const oorSince = Number.isFinite(runtimeState?.oorSince) ? runtimeState.oorSince : null;
@@ -3437,6 +3451,11 @@ async function monitorLoop(positionPubkey, symbol, poolAddress) {
       }
 
       const { action, currentValueSol, pnlPct, inRange } = status;
+      const canonicalInRange = resolveCanonicalMonitorInRange(status);
+      if (status?.inRange !== canonicalInRange) {
+        status = { ...status, inRange: canonicalInRange };
+      }
+      const normalizedInRange = canonicalInRange;
       const meta = getPositionMeta(positionPubkey) || {};
       const trackedFeeSnapshot = resolveTrackedFeeSnapshot(status, meta);
       const feePnlSol = trackedFeeSnapshot.feePnlSol;
@@ -3502,9 +3521,9 @@ async function monitorLoop(positionPubkey, symbol, poolAddress) {
         feePnlPct,
         feePnlAvailable: trackedFeeSnapshot.feePnlAvailable,
         feePnlSource: trackedFeeSnapshot.feePnlSource,
-        inRange,
+        inRange: normalizedInRange,
         deploySol,
-        oorState: inRange ? 'IN_RANGE' : 'OUT_OF_RANGE',
+        oorState: normalizedInRange ? 'IN_RANGE' : 'OUT_OF_RANGE',
       };
       if (Number.isFinite(Number(meta.hwmPct))) {
         lifecycleExtra.hwmPct = Number(meta.hwmPct);
@@ -3518,6 +3537,7 @@ async function monitorLoop(positionPubkey, symbol, poolAddress) {
         ...status,
         deploySol,
         oorSince: oorState.runtimePatch?.oorSince ?? runtimeState?.oorSince ?? null,
+        inRange: normalizedInRange,
       };
       await setPositionLifecycle(positionPubkey, currentLifecycle, lifecycleExtra);
       status = nextStatus;

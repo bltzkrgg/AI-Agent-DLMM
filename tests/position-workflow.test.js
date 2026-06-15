@@ -204,6 +204,30 @@ test('out-of-range monitor state can suppress OOR watch display while keeping ex
   assert.match(expired.notifyMessage, /OOR Timeout/);
 });
 
+test('out-of-range monitor state trusts canonical active bin range over stale inRange flag', async () => {
+  const { evaluateOutOfRangeMonitorState } = await importFresh(join(repoRoot, 'src/agents/hunterAlpha.js'));
+
+  const recovered = evaluateOutOfRangeMonitorState({
+    positionPubkey: 'pos-oor-canonical',
+    symbol: 'OORC',
+    status: {
+      inRange: false,
+      activeBinId: 105,
+      rangeMin: 100,
+      rangeMax: 110,
+      currentValueSol: 0.8,
+      pnlPct: -0.5,
+    },
+    runtimeState: { oorSince: 0, lastOorAlertAt: 0 },
+    cfg: { outOfRangeWaitMinutes: 1 },
+    now: 20_000,
+  });
+
+  assert.equal(recovered.clearOorMarkers, true);
+  assert.deepEqual(recovered.runtimePatch, { oorSince: null, lastOorAlertAt: null });
+  assert.match(recovered.notifyMessage, /OOR recovered/);
+});
+
 test('position lifecycle state is stored alongside close records', async (t) => {
   const root = mkdtempSync(join(tmpdir(), 'dlmm-db-'));
   process.env.BOT_DB_PATH = join(root, 'test.db');
