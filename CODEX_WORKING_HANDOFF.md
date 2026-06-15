@@ -54,6 +54,7 @@ prefer the explicit user request, then update this file after the change lands.
 - Scanner report `Fee/TVL` must use Meteora 24h ratio as the source of truth; missing ratio now renders `N/A` instead of a fake `0.0%`.
 - Entry/watch/queue/deploy must preserve one canonical entry snapshot payload so active-position monitor/exit can read the same entry context that was used at deploy time.
 - Queue, monitor, defensive exit, and manual-close accounting must prefer `entryCanonicalSnapshot` before scattered legacy entry fields.
+- On successful deploy, `evilPanda` must upgrade `entryCanonicalSnapshot` with the final runtime entry truth actually used on-chain (`entryActiveBin`, `entryPrice`, final ST stamp, anchor/range-adjust metadata) so monitor/exit do not keep reading stale queue-era intent fields.
 
 ## Behavior contracts to preserve
 
@@ -163,3 +164,4 @@ Do not edit these unless the user explicitly scopes the change there.
 - 2026-06-15: Completed 5.4 exit notification orchestration hardening: `hunterAlpha` now routes TP, stop-loss, max-hold, pool-impact, and close-success Telegram output through shared exit notification helpers, while `evilPanda` manual-close Telegram also reuses shared exit display metadata so operator-facing exit wording stays aligned across the lifecycle without changing exit policy.
 - 2026-06-15: Completed 5.4 bin-step selector hardening in `hunterAlpha`: per-token pool selection and manual CA resolution now treat `binStepPriority` as the candidate bin-step list and choose the candidate with the strongest Meteora fee generation snapshot (`fees24h`, `fee_tvl_ratio`, `volume24h`, `tvl`) instead of fixed numeric bin-step ranking, without adding new fetches or touching entry/exit gates.
 - 2026-06-15: Completed 5.4 canonical snapshot consumer hardening: `pendingDeployQueue` now resolves frozen intent/drift checks from `entryCanonicalSnapshot` first, and `evilPanda` monitor, defensive-exit confirmation, and manual-close accounting now read entry context through one canonical snapshot reader before falling back to legacy fields.
+- 2026-06-15: Completed 5.4 runtime canonical snapshot hardening: `evilPanda` now rewrites the persisted `entryCanonicalSnapshot` at deploy/open time with the final runtime truth actually used for the position, including active bin, entry price, final Supertrend stamp, and anchor/range-adjust metadata, so later queue/monitor/exit consumers stop reading stale pre-deploy intent context.

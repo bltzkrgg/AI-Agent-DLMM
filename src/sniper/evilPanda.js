@@ -154,6 +154,71 @@ function getCanonicalEntrySnapshot(reg = {}) {
     : null;
 }
 
+function buildRuntimeCanonicalEntrySnapshot({
+  baseSnapshot = null,
+  entryActiveBin = null,
+  entryPrice = null,
+  finalTrendStamp = null,
+  anchorMetadata = null,
+  rangeAdjustReason = null,
+} = {}) {
+  const snapshot = baseSnapshot && typeof baseSnapshot === 'object'
+    ? { ...baseSnapshot }
+    : {};
+
+  if (Number.isFinite(Number(entryActiveBin))) {
+    snapshot.entryActiveBin = Number(entryActiveBin);
+  }
+  if (Number.isFinite(Number(entryPrice)) && Number(entryPrice) > 0) {
+    snapshot.entryPrice = Number(entryPrice);
+  }
+  if (finalTrendStamp && typeof finalTrendStamp === 'object') {
+    snapshot.finalTrendStamp = {
+      direction: String(finalTrendStamp.direction || 'UNKNOWN'),
+      source: String(finalTrendStamp.source || 'unknown'),
+      reason: String(finalTrendStamp.reason || ''),
+      checkedAt: Number.isFinite(Number(finalTrendStamp.checkedAt))
+        ? Number(finalTrendStamp.checkedAt)
+        : null,
+    };
+  }
+  if (anchorMetadata && typeof anchorMetadata === 'object') {
+    snapshot.runtimeAnchor = {
+      source: String(anchorMetadata.anchorSource || 'unknown'),
+      activeBinId: Number.isFinite(Number(anchorMetadata.anchorActiveBinId))
+        ? Number(anchorMetadata.anchorActiveBinId)
+        : null,
+      price: Number.isFinite(Number(anchorMetadata.anchorPrice))
+        ? Number(anchorMetadata.anchorPrice)
+        : null,
+      snapshotAt: Number.isFinite(Number(anchorMetadata.anchorSnapshotAt))
+        ? Number(anchorMetadata.anchorSnapshotAt)
+        : null,
+      driftBins: Number.isFinite(Number(anchorMetadata.anchorDriftBins))
+        ? Number(anchorMetadata.anchorDriftBins)
+        : null,
+      driftPct: Number.isFinite(Number(anchorMetadata.anchorDriftPct))
+        ? Number(anchorMetadata.anchorDriftPct)
+        : null,
+      reason: String(anchorMetadata.anchorReason || ''),
+      rangeAdjustReason: String(rangeAdjustReason || anchorMetadata.rangeAdjustReason || ''),
+    };
+  } else if (rangeAdjustReason) {
+    snapshot.runtimeAnchor = {
+      source: 'unknown',
+      activeBinId: null,
+      price: null,
+      snapshotAt: null,
+      driftBins: null,
+      driftPct: null,
+      reason: '',
+      rangeAdjustReason: String(rangeAdjustReason),
+    };
+  }
+
+  return snapshot;
+}
+
 function readCanonicalEntryContext(reg = {}) {
   const snapshot = getCanonicalEntrySnapshot(reg);
   return {
@@ -4286,6 +4351,38 @@ export async function deployPosition(poolAddress, deployOptions = {}) {
         };
       }
 
+      const runtimeCanonicalEntrySnapshot = buildRuntimeCanonicalEntrySnapshot({
+        baseSnapshot: entryCanonicalSnapshot,
+        entryActiveBin: safeNum(activeBin.binId, null),
+        entryPrice: safeNum(activeBin.pricePerToken, null),
+        finalTrendStamp: {
+          direction: finalTrendDirection,
+          source: finalTrendSource,
+          reason: finalTrendReason,
+          checkedAt: finalTrendAt,
+        },
+        anchorMetadata: {
+          anchorSource: finalDeployState?.finalArgsContext?.anchorSource || anchorMetadata.anchorSource,
+          anchorActiveBinId: finalDeployState?.finalArgsContext?.anchorActiveBinId ?? anchorMetadata.anchorActiveBinId,
+          anchorPrice: finalDeployState?.finalArgsContext?.anchorPrice ?? anchorMetadata.anchorPrice,
+          anchorSnapshotAt: finalDeployState?.finalArgsContext?.anchorSnapshotAt ?? anchorMetadata.anchorSnapshotAt,
+          anchorDriftBins: finalDeployState?.finalArgsContext?.anchorDriftBins ?? anchorMetadata.anchorDriftBins,
+          anchorDriftPct: finalDeployState?.finalArgsContext?.anchorDriftPct ?? anchorMetadata.anchorDriftPct,
+          anchorReason: finalDeployState?.finalArgsContext?.anchorReason || anchorMetadata.anchorReason,
+          rangeAdjustReason: finalDeployState?.finalArgsContext?.rangeAdjustReason || null,
+        },
+        rangeAdjustReason: finalDeployState?.finalArgsContext?.rangeAdjustReason || null,
+      });
+
+      console.log(
+        `[evilPanda] ENTRY_RUNTIME_CONTEXT pool=${poolAddress.slice(0,8)} ` +
+        `canonicalEntryBin=${runtimeCanonicalEntrySnapshot.entryActiveBin ?? 'na'} ` +
+        `canonicalEntryPrice=${Number.isFinite(Number(runtimeCanonicalEntrySnapshot.entryPrice)) ? Number(runtimeCanonicalEntrySnapshot.entryPrice).toFixed(10) : 'na'} ` +
+        `finalTrend=${runtimeCanonicalEntrySnapshot.finalTrendStamp?.direction || 'UNKNOWN'} ` +
+        `anchor=${runtimeCanonicalEntrySnapshot.runtimeAnchor?.source || 'unknown'} ` +
+        `rangeAdjust=${runtimeCanonicalEntrySnapshot.runtimeAnchor?.rangeAdjustReason || 'none'}`
+      );
+
       await setPositionLifecycle(positionPubkey, 'deploying', {
         poolAddress,
         deploySol,
@@ -4307,7 +4404,7 @@ export async function deployPosition(poolAddress, deployOptions = {}) {
         entryFinalSupertrendSource: finalTrendSource,
         entryFinalSupertrendReason: finalTrendReason,
         entryFinalSupertrendAt: finalTrendAt,
-        entryCanonicalSnapshot,
+        entryCanonicalSnapshot: runtimeCanonicalEntrySnapshot,
         rangeAdjustReason: finalDeployState?.finalArgsContext?.rangeAdjustReason || null,
         hwmPct: 0,
       }, { flush: true });
@@ -4405,7 +4502,7 @@ export async function deployPosition(poolAddress, deployOptions = {}) {
       entryFinalSupertrendSource: finalTrendSource,
       entryFinalSupertrendReason: finalTrendReason,
       entryFinalSupertrendAt: finalTrendAt,
-      entryCanonicalSnapshot,
+      entryCanonicalSnapshot: runtimeCanonicalEntrySnapshot,
       rangeAdjustReason: finalDeployState?.finalArgsContext?.rangeAdjustReason || null,
       hwmPct:      0,
     }, { flush: true });

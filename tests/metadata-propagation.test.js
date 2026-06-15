@@ -113,6 +113,19 @@ test('queue and monitor consumers prefer canonical entry snapshot over scattered
   assert.match(pandaSrc, /const entryPrice = canonicalEntry\.entryPrice/);
 });
 
+test('deploy runtime upgrades canonical entry snapshot with final runtime truth', () => {
+  const pandaSrc = readSource('src/sniper/evilPanda.js');
+
+  assert.match(pandaSrc, /function buildRuntimeCanonicalEntrySnapshot\(/);
+  assert.match(pandaSrc, /const runtimeCanonicalEntrySnapshot = buildRuntimeCanonicalEntrySnapshot\(/);
+  assert.match(pandaSrc, /entryCanonicalSnapshot:\s*runtimeCanonicalEntrySnapshot/);
+  assert.match(pandaSrc, /ENTRY_RUNTIME_CONTEXT pool=/);
+  assert.match(pandaSrc, /snapshot\.entryActiveBin = Number\(entryActiveBin\)/);
+  assert.match(pandaSrc, /snapshot\.entryPrice = Number\(entryPrice\)/);
+  assert.match(pandaSrc, /snapshot\.finalTrendStamp = \{/);
+  assert.match(pandaSrc, /snapshot\.runtimeAnchor = \{/);
+});
+
 test('DLMM deploy logs carry anchor provenance and range adjustment observability', () => {
   const pandaSrc = readSource('src/sniper/evilPanda.js');
 
