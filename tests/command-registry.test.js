@@ -66,7 +66,7 @@ test('startup and shutdown banners use the simplified AI-Agent-DLMM text', () =>
   assert.match(content, /🟢 <b>AI-Agent-DLMM Activated<\/b>/);
   assert.match(content, /Balance: <code>\$\{balance\} SOL<\/code>/);
   assert.match(content, /Deploy Size: <code>\$\{cfg\.deployAmountSol \|\| 0\.1\} SOL<\/code>/);
-  assert.match(content, /Risk: <code>TP TA net \$\{cfg\.takeProfitMinNetPnlPct \|\| 0\}% \| SL -\$\{cfg\.stopLossPct \|\| 10\}%<\/code>/);
+  assert.match(content, /formatTakeProfitRiskLabel\(cfg\.takeProfitMinNetPnlPct, cfg\.stopLossPct\)/);
   assert.match(content, /🛑 <b>AI-Agent-DLMM Shutdown<\/b>/);
   assert.match(content, /Tidak ada posisi aktif\./);
   assert.match(content, /✅ AI-Agent-DLMM ready\. Balance:/);

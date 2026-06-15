@@ -16,6 +16,7 @@ import { getActivePositionKeys, getPositionMeta } from '../sniper/evilPanda.js';
 import { getWalletBalance }       from '../solana/wallet.js';
 import { getConfig }              from '../config.js';
 import { escapeHTML }             from '../utils/safeJson.js';
+import { formatTakeProfitRiskLabel } from '../utils/exitReasons.js';
 import { existsSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -195,8 +196,7 @@ export async function generateBriefing(hoursBack = 24) {
   const cfgBlock =
     `\n\n⚙️ <b>Active Config</b>\n` +
     `   Deploy : <code>${cfg.deployAmountSol} SOL</code> ` +
-    `| SL: <code>${cfg.stopLossPct}%</code> ` +
-    `| TP: <code>TA exit &gt;= net ${cfg.takeProfitMinNetPnlPct || 0}%</code>\n` +
+    `| ${formatTakeProfitRiskLabel(cfg.takeProfitMinNetPnlPct, cfg.stopLossPct)}\n` +
     `   Anchor : <code>DLMM active bin</code> ` +
     `| Source: <code>frozen/live fallback</code>\n` +
     `   Dry Run: <code>${cfg.dryRun ? 'ON' : 'OFF'}</code> ` +

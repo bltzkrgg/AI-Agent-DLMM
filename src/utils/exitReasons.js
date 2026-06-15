@@ -145,3 +145,16 @@ export function getExitDisplayMeta(reason = '', normalizedReason = '') {
     normalizedReason: normalized || 'UNKNOWN',
   };
 }
+
+export function getTakeProfitDisplayLabel(reason = '', normalizedReason = '') {
+  const meta = getExitDisplayMeta(reason, normalizedReason);
+  return {
+    title: 'TAKE PROFIT',
+    reasonLabel: meta.reasonLabel,
+    normalizedReason: meta.normalizedReason,
+  };
+}
+
+export function formatTakeProfitRiskLabel(takeProfitMinNetPnlPct = 0, stopLossPct = 10) {
+  return `TP: <code>TA exit &gt;= net ${takeProfitMinNetPnlPct || 0}%</code> | SL: <code>-${stopLossPct || 10}%</code>`;
+}

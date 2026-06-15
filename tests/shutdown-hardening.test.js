@@ -195,9 +195,9 @@ test('operator-facing TP labels no longer describe trailing as the exit driver',
   const briefingSrc = readFileSync(resolve(process.cwd(), 'src/telegram/briefing.js'), 'utf8');
   const claudeSrc = readFileSync(resolve(process.cwd(), 'src/agent/claude.js'), 'utf8');
 
-  assert.match(indexSrc, /TP: <code>TA exit &gt;= net \$\{cfg\.takeProfitMinNetPnlPct \|\| 0\}%<\/code>/);
-  assert.match(hunterSrc, /TP: TA exit >= net \$\{currentCfg\.takeProfitMinNetPnlPct \|\| 0\}% \| SL:/);
-  assert.match(briefingSrc, /\| TP: <code>TA exit &gt;= net \$\{cfg\.takeProfitMinNetPnlPct \|\| 0\}%<\/code>/);
+  assert.match(indexSrc, /formatTakeProfitRiskLabel\(cfg\.takeProfitMinNetPnlPct, cfg\.stopLossPct\)/);
+  assert.match(hunterSrc, /formatTakeProfitRiskLabel\(currentCfg\.takeProfitMinNetPnlPct, currentCfg\.stopLossPct\)/);
+  assert.match(briefingSrc, /formatTakeProfitRiskLabel\(cfg\.takeProfitMinNetPnlPct, cfg\.stopLossPct\)/);
   assert.match(indexSrc, /Anchor: <code>DLMM active bin<\/code> \| Source: <code>frozen\/live fallback<\/code>/);
   assert.match(hunterSrc, /Anchor: DLMM active bin \| Source: frozen\/live fallback/);
   assert.match(briefingSrc, /Anchor\s*:.*DLMM active bin.*Source:.*frozen\/live fallback/s);
@@ -307,7 +307,7 @@ test('monitor exit policy uses trailing for take profit and TA as fallback', () 
   assert.match(evilPandaSrc, /pnlPct < takeProfitMinNetPnlPct/);
   assert.match(evilPandaSrc, /!isDefensiveTaExit/);
   assert.match(hunterSrc, /getExitDisplayMeta/);
-  assert.match(hunterSrc, /Posisi ditutup \(\$\{exitMeta\.title\}\)/);
+  assert.match(hunterSrc, /Posisi Di Tutup \(\$\{exitMeta\.title\}\)/);
   assert.match(hunterSrc, /function buildExitTriggerNotification/);
   assert.match(hunterSrc, /reasonLabel = ''/);
   assert.match(hunterSrc, /if \(action === 'MAX_HOLD'\)/);
@@ -544,7 +544,7 @@ test('exit close notifications use unified display metadata for all close famili
   assert.match(hunterSrc, /function buildExitClosedNotification/);
   assert.match(hunterSrc, /buildExitTriggerNotification\(\{/);
   assert.match(hunterSrc, /buildExitClosedNotification\(\{ positionPubkey, exitMeta, exitResult, balance \}\)/);
-  assert.match(hunterSrc, /Posisi ditutup \(\$\{exitMeta\.title\}\)/);
+  assert.match(hunterSrc, /Posisi Di Tutup \(\$\{exitMeta\.title\}\)/);
   assert.match(hunterSrc, /lines\.push\(`Reason: <code>\$\{escapeHTML\(reasonLabel\)\}<\/code>`\)/);
   assert.match(hunterSrc, /Reason: <code>\$\{escapeHTML\(exitMeta\.reasonLabel\)\}<\/code>/);
   assert.match(exitReasonsSrc, /export function getExitDisplayMeta/);

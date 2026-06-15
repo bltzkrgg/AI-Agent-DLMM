@@ -27,7 +27,7 @@ import { isBlacklisted }          from '../learn/tokenBlacklist.js';
 import { getRuntimeState }        from '../runtime/state.js';
 import { getPositionRuntimeState, updatePositionRuntimeState } from '../app/positionRuntimeState.js';
 import { evaluatePoolImpactGuard } from '../risk/poolImpactGuard.js';
-import { getExitDisplayMeta }     from '../utils/exitReasons.js';
+import { getExitDisplayMeta, getTakeProfitDisplayLabel, formatTakeProfitRiskLabel } from '../utils/exitReasons.js';
 import { escapeHTML, safeParseAI, fetchWithTimeout } from '../utils/safeJson.js';
 import reportManager              from '../utils/reportManager.js';
 import pendingStore               from '../utils/pendingStore.js';
@@ -1366,8 +1366,10 @@ function buildExitTriggerNotification({
 }
 
 function buildExitClosedNotification({ positionPubkey, exitMeta, exitResult, balance }) {
+  const tokenLabel = escapeHTML(_positionLabels.get(positionPubkey)?.symbol || positionPubkey.slice(0,8));
   const lines = [
-    `✅ <b>Posisi ditutup (${exitMeta.title})</b>`,
+    `✅ <b>Posisi Di Tutup (${exitMeta.title})</b>`,
+    `Token: <b>${tokenLabel}</b>`,
     `Position: <code>${positionPubkey.slice(0,8)}</code>`,
     `Reason: <code>${escapeHTML(exitMeta.reasonLabel)}</code>`,
   ];
@@ -3264,7 +3266,7 @@ Balas HANYA JSON valid tanpa Markdown.`;
           `Tahap: <code>EXECUTION_SUCCESS</code>\n` +
           `Position: <code>${positionPubkey.slice(0,8)}</code>\n` +
           `Pool: <code>${poolAddress.slice(0,8)}</code>\n` +
-          `TP: TA exit >= net ${currentCfg.takeProfitMinNetPnlPct || 0}% | SL: -${currentCfg.stopLossPct || 10}%\n\n` +
+          `${formatTakeProfitRiskLabel(currentCfg.takeProfitMinNetPnlPct, currentCfg.stopLossPct)}\n\n` +
           `Anchor: DLMM active bin | Source: frozen/live fallback\n` +
           `🔒 <i>Masuk mode monitor (Background)...</i>`
         );
@@ -3560,7 +3562,7 @@ async function monitorLoop(positionPubkey, symbol, poolAddress) {
 
       // Exit trigger
       if (action === 'TAKE_PROFIT') {
-        const exitMeta = getExitDisplayMeta(`TAKE_PROFIT_${status.exitScenario || 'TA'}`, status.exitReason || '');
+        const exitMeta = getTakeProfitDisplayLabel(`TAKE_PROFIT_${status.exitScenario || 'TA'}`, status.exitReason || '');
         await notify(buildExitTriggerNotification({
           icon: '🎉',
           title: exitMeta.title,

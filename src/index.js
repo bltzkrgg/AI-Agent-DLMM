@@ -25,6 +25,7 @@ import { generateBriefing, formatActivePositionsTelegram } from './telegram/brie
 import { readBlacklist, removeFromBlacklist }            from './learn/tokenBlacklist.js';
 import { validateRuntimeEnv }             from './runtime/env.js';
 import { safeNum, escapeHTML }            from './utils/safeJson.js';
+import { formatTakeProfitRiskLabel }      from './utils/exitReasons.js';
 import { initializeRpcManager }           from './utils/helius.js';
 import { createMessageTransport }         from './telegram/messageTransport.js';
 import { getTodayResults }                from './db/database.js';
@@ -476,7 +477,7 @@ bot.onText(/\/status/, async (msg) => {
     `${posLine}\n` +
     `Balance: <code>${balance} SOL</code>\n` +
     `Deploy Amount: <code>${cfg.deployAmountSol || 0.1} SOL</code>\n` +
-    `TP: <code>TA exit &gt;= net ${cfg.takeProfitMinNetPnlPct || 0}%</code> | SL: <code>-${cfg.stopLossPct || 10}%</code>\n` +
+    `${formatTakeProfitRiskLabel(cfg.takeProfitMinNetPnlPct, cfg.stopLossPct)}\n` +
     `Anchor: <code>DLMM active bin</code> | Source: <code>frozen/live fallback</code>\n` +
     `TA: <code>info only (RSI ref ${cfg.smartExitRsi || 90})</code>`,
     { parse_mode: 'HTML' }
@@ -1107,7 +1108,7 @@ bot.onText(/\/strategy_report/, async (msg) => {
     `📘 <b>AI-Agent-DLMM Strategy</b>\n\n` +
     `Strategy: <code>${cfg.activeStrategy || 'Evil Panda'}</code>\n` +
     `Deploy: <code>${cfg.deployAmountSol || 0.1} SOL</code>\n` +
-    `Risk: <code>TP TA net ${cfg.takeProfitMinNetPnlPct || 0}% | SL ${cfg.stopLossPct || 10}%</code>\n` +
+    `${formatTakeProfitRiskLabel(cfg.takeProfitMinNetPnlPct, cfg.stopLossPct)}\n` +
     `Anchor: <code>DLMM active bin</code> | Source: <code>frozen/live fallback</code>\n` +
     `TA: <code>info only (RSI ref ${cfg.smartExitRsi || 90})</code>\n` +
     `Screening: <code>${cfg.autoScreeningEnabled ? 'ON' : 'OFF'}</code>`;
@@ -1319,7 +1320,7 @@ setTimeout(async () => {
       `🟢 <b>AI-Agent-DLMM Activated</b>\n\n` +
       `Balance: <code>${balance} SOL</code>\n` +
       `Deploy Size: <code>${cfg.deployAmountSol || 0.1} SOL</code>\n` +
-      `Risk: <code>TP TA net ${cfg.takeProfitMinNetPnlPct || 0}% | SL -${cfg.stopLossPct || 10}%</code>\n` +
+      `${formatTakeProfitRiskLabel(cfg.takeProfitMinNetPnlPct, cfg.stopLossPct)}\n` +
       `Watch Layer: <code>${cfg.taWatchEnabled === false ? 'OFF' : 'ON'}</code> | ` +
       `Radar: <code>${cfg.pendingRetestEnabled === false ? 'OFF' : 'ON'}</code>\n` +
       `Auto Screen: <code>${discoveryPaused ? 'OFF by /stop' : autoScr ? `ON (${cfg.screeningIntervalMin}m)` : 'OFF'}</code>`
