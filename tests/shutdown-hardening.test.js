@@ -53,6 +53,8 @@ test('manual close helper records manual withdrawals when called explicitly', ()
   assert.match(evilPandaSrc, /manual_close_reconciled_from_snapshot/);
   assert.match(evilPandaSrc, /PnL manual close dicatat dari snapshot terakhir bot/);
   assert.doesNotMatch(evilPandaSrc, /pending reconcile/);
+  assert.match(evilPandaSrc, /getExitDisplayMeta\(reason, normalizedReason\)/);
+  assert.match(evilPandaSrc, /Reason: <code>\$\{exitMeta\.reasonLabel\}<\/code>/);
   assert.match(hunterSrc, /function resolveTrackedFeeSnapshot/);
   assert.match(hunterSrc, /if \(hasTrackedFeeSnapshot\(status\)\)/);
   assert.match(evilPandaSrc, /appendHarvestLog\(\{\n\s*token: tokenSymbol,\n\s*positionPubkey,/);
@@ -306,7 +308,8 @@ test('monitor exit policy uses trailing for take profit and TA as fallback', () 
   assert.match(evilPandaSrc, /!isDefensiveTaExit/);
   assert.match(hunterSrc, /getExitDisplayMeta/);
   assert.match(hunterSrc, /Posisi ditutup \(\$\{exitMeta\.title\}\)/);
-  assert.match(hunterSrc, /Reason: <code>\$\{exitMeta\.reasonLabel\}<\/code>/);
+  assert.match(hunterSrc, /function buildExitTriggerNotification/);
+  assert.match(hunterSrc, /reasonLabel = ''/);
   assert.match(hunterSrc, /if \(action === 'MAX_HOLD'\)/);
   assert.match(hunterSrc, /safeExit\(positionPubkey, 'MAX_HOLD_EXIT'\)/);
   assert.doesNotMatch(evilPandaSrc, /Trailing TP/);
@@ -523,9 +526,10 @@ test('exit telegram messages display Meteora fee-only PnL', () => {
   assert.match(evilPandaSrc, /return \{ action: 'STOP_LOSS', currentValueSol, pnlPct, \.\.\.feeOnlyPnl, inRange/);
   assert.match(evilPandaSrc, /currentValueSol, pnlPct, \.\.\.feeOnlyPnl, inRange/);
 
-  assert.match(hunterSrc, /Fee PnL: <code>\$\{feePnlSol\.toFixed\(6\)\} SOL \/ \$\{feeSign\}\$\{feePnlPct\.toFixed\(2\)\}%<\/code>/);
+  assert.match(hunterSrc, /function buildExitTriggerNotification/);
+  assert.match(hunterSrc, /Fee PnL: <code>\$\{Number\(feePnlSol\)\.toFixed\(6\)\} SOL \/ \$\{feeSign\}\$\{Number\(feePnlPct\)\.toFixed\(2\)\}%<\/code>/);
   assert.match(hunterSrc, /Fee PnL: <code>unavailable<\/code>/);
-  assert.match(hunterSrc, /Position Value: <code>\$\{currentValueSol\.toFixed\(4\)\} SOL<\/code>/);
+  assert.match(hunterSrc, /Position Value: <code>\$\{Number\(currentValueSol\)\.toFixed\(4\)\} SOL<\/code>/);
   assert.match(hunterSrc, /Total Exposure PnL: <code>/);
   assert.match(hunterSrc, /return \{ ok: true, \.\.\.exitResult \}/);
   assert.doesNotMatch(hunterSrc, /`PnL: <code>\+?\$\{pnlPct\.toFixed\(2\)\}%<\/code>\\n`/);
@@ -536,11 +540,18 @@ test('exit close notifications use unified display metadata for all close famili
   const exitReasonsSrc = readFileSync(resolve(process.cwd(), 'src/utils/exitReasons.js'), 'utf8');
 
   assert.match(hunterSrc, /getExitDisplayMeta/);
+  assert.match(hunterSrc, /function buildExitTriggerNotification/);
+  assert.match(hunterSrc, /function buildExitClosedNotification/);
+  assert.match(hunterSrc, /buildExitTriggerNotification\(\{/);
+  assert.match(hunterSrc, /buildExitClosedNotification\(\{ positionPubkey, exitMeta, exitResult, balance \}\)/);
   assert.match(hunterSrc, /Posisi ditutup \(\$\{exitMeta\.title\}\)/);
-  assert.match(hunterSrc, /Reason: <code>\$\{exitMeta\.reasonLabel\}<\/code>/);
+  assert.match(hunterSrc, /lines\.push\(`Reason: <code>\$\{escapeHTML\(reasonLabel\)\}<\/code>`\)/);
+  assert.match(hunterSrc, /Reason: <code>\$\{escapeHTML\(exitMeta\.reasonLabel\)\}<\/code>/);
   assert.match(exitReasonsSrc, /export function getExitDisplayMeta/);
   assert.match(exitReasonsSrc, /Trailing Profit Trigger/);
   assert.match(exitReasonsSrc, /Defensive Exit Trigger/);
   assert.match(exitReasonsSrc, /Stop Loss Trigger/);
   assert.match(exitReasonsSrc, /Safe Exit Trigger/);
+  assert.match(exitReasonsSrc, /Manual Close Trigger/);
+  assert.match(exitReasonsSrc, /Pool Impact Trigger/);
 });

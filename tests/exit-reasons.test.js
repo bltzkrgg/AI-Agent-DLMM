@@ -33,4 +33,16 @@ test('exit display metadata keeps operator labels consistent across exit familie
     reasonLabel: 'Stop Loss Trigger',
     normalizedReason: 'STOP_LOSS',
   });
+
+  assert.deepEqual(getExitDisplayMeta('MANUAL_WITHDRAW_DETECTED', 'MANUAL_EXIT'), {
+    title: 'MANUAL CLOSE',
+    reasonLabel: 'Manual Close Trigger',
+    normalizedReason: 'MANUAL_EXIT',
+  });
+
+  assert.deepEqual(getExitDisplayMeta('MAX_HOLD_EXIT', 'SAFE_EXIT'), {
+    title: 'MAX HOLD EXIT',
+    reasonLabel: 'Max Hold Trigger',
+    normalizedReason: 'SAFE_EXIT',
+  });
 });

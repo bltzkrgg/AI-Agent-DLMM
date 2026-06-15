@@ -56,7 +56,10 @@ export function normalizeExitReason(reason = '', context = {}) {
 export function getExitDisplayMeta(reason = '', normalizedReason = '') {
   const raw = String(reason || '').trim();
   const text = raw.toUpperCase();
-  const normalized = String(normalizedReason || normalizeExitReason(raw)).trim().toUpperCase();
+  const normalizedInput = String(normalizedReason || '').trim().toUpperCase();
+  const normalized = EXIT_REASON_CATEGORIES.includes(normalizedInput)
+    ? normalizedInput
+    : normalizeExitReason(normalizedInput || raw);
 
   if (text.includes('TAKE_PROFIT') || text.includes('TAKE PROFIT') || normalized === 'TAKE_PROFIT') {
     if (text.includes('TRAILING')) {

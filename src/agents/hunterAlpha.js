@@ -1276,6 +1276,65 @@ function formatRentRefundLine(result = {}) {
   return `Rent Refund (est): <code>${rentRefundSol.toFixed(6)} SOL</code>\n`;
 }
 
+function buildExitTriggerNotification({
+  icon = '',
+  title = 'EXIT',
+  symbol = 'UNKNOWN',
+  reasonLabel = '',
+  reasonDetail = '',
+  currentValueSol = null,
+  pnlPct = null,
+  feePnlSol = null,
+  feePnlPct = null,
+  extraLines = [],
+} = {}) {
+  const lines = [`${icon} <b>${title}</b>`, `Token: <b>${escapeHTML(symbol)}</b>`];
+  if (Number.isFinite(Number(feePnlSol)) && Number.isFinite(Number(feePnlPct))) {
+    const feeSign = Number(feePnlPct) > 0 ? '+' : '';
+    lines.push(`Fee PnL: <code>${Number(feePnlSol).toFixed(6)} SOL / ${feeSign}${Number(feePnlPct).toFixed(2)}%</code>`);
+  }
+  if (Number.isFinite(Number(currentValueSol))) {
+    lines.push(`Position Value: <code>${Number(currentValueSol).toFixed(4)} SOL</code>`);
+  }
+  if (Number.isFinite(Number(pnlPct))) {
+    const sign = Number(pnlPct) >= 0 ? '+' : '';
+    lines.push(`Total Exposure PnL: <code>${sign}${Number(pnlPct).toFixed(2)}%</code>`);
+  }
+  if (reasonLabel) {
+    lines.push(`Reason: <code>${escapeHTML(reasonLabel)}</code>`);
+  }
+  if (reasonDetail) {
+    lines.push(`Detail: <code>${escapeHTML(reasonDetail)}</code>`);
+  }
+  for (const line of extraLines) {
+    if (line) lines.push(line);
+  }
+  lines.push('', '⏳ <i>Menutup posisi...</i>');
+  return `${lines.join('\n')}`;
+}
+
+function buildExitClosedNotification({ positionPubkey, exitMeta, exitResult, balance }) {
+  const lines = [
+    `✅ <b>Posisi ditutup (${exitMeta.title})</b>`,
+    `Position: <code>${positionPubkey.slice(0,8)}</code>`,
+    `Reason: <code>${escapeHTML(exitMeta.reasonLabel)}</code>`,
+  ];
+  const feeLine = formatFeePnlLine(exitResult).trimEnd();
+  if (feeLine) lines.push(feeLine);
+  const positionValue = Number(exitResult?.positionValueSol);
+  if (Number.isFinite(positionValue)) {
+    lines.push(`Position Value: <code>${positionValue.toFixed(6)} SOL</code>`);
+  }
+  const exposureLine = formatExposurePnlLine(exitResult).trimEnd();
+  if (exposureLine) lines.push(exposureLine);
+  const walletLine = formatWalletDeltaLine(exitResult).trimEnd();
+  if (walletLine) lines.push(walletLine);
+  const rentLine = formatRentRefundLine(exitResult).trimEnd();
+  if (rentLine) lines.push(rentLine);
+  lines.push(`Balance: <code>${balance} SOL</code>`);
+  return `${lines.join('\n')}`;
+}
+
 function formatMaybePct(value, digits = 2) {
   const num = Number(value);
   return Number.isFinite(num) ? `${num.toFixed(digits)}%` : 'UNKNOWN';
@@ -3443,43 +3502,49 @@ async function monitorLoop(positionPubkey, symbol, poolAddress) {
       // Exit trigger
       if (action === 'TAKE_PROFIT') {
         const exitMeta = getExitDisplayMeta(`TAKE_PROFIT_${status.exitScenario || 'TA'}`, status.exitReason || '');
-        await notify(
-          `🎉 <b>${exitMeta.title}</b>\n` +
-          `Token: <b>${symbol}</b>\n` +
-          `Fee PnL: <code>${feePnlSol.toFixed(6)} SOL / ${feeSign}${feePnlPct.toFixed(2)}%</code>\n` +
-          `Position Value: <code>${currentValueSol.toFixed(4)} SOL</code>\n` +
-          `Total Exposure PnL: <code>${pnlPct >= 0 ? '+' : ''}${pnlPct.toFixed(2)}%</code>\n` +
-          `Reason: <code>${exitMeta.reasonLabel}</code>\n` +
-          `\n⏳ <i>Menutup posisi...</i>`
-        );
+        await notify(buildExitTriggerNotification({
+          icon: '🎉',
+          title: exitMeta.title,
+          symbol,
+          reasonLabel: exitMeta.reasonLabel,
+          currentValueSol,
+          pnlPct,
+          feePnlSol,
+          feePnlPct,
+        }));
         await safeExit(positionPubkey, `TAKE_PROFIT_${status.exitScenario || 'TA'}`);
         return;
       }
 
       if (action === 'STOP_LOSS') {
-        await notify(
-          `🛑 <b>STOP LOSS!</b>\n` +
-          `Token: <b>${symbol}</b>\n` +
-          `Fee PnL: <code>${feePnlSol.toFixed(6)} SOL / ${feeSign}${feePnlPct.toFixed(2)}%</code>\n` +
-          `Position Value: <code>${currentValueSol.toFixed(4)} SOL</code>\n` +
-          `Total Exposure PnL: <code>${pnlPct >= 0 ? '+' : ''}${pnlPct.toFixed(2)}%</code>\n` +
-          `\n` +
-          `⏳ <i>Menutup posisi...</i>`
-        );
+        const exitMeta = getExitDisplayMeta('STOP_LOSS', status.exitReason || 'STOP_LOSS');
+        await notify(buildExitTriggerNotification({
+          icon: '🛑',
+          title: exitMeta.title,
+          symbol,
+          reasonLabel: exitMeta.reasonLabel,
+          currentValueSol,
+          pnlPct,
+          feePnlSol,
+          feePnlPct,
+        }));
         await safeExit(positionPubkey, 'STOP_LOSS');
         return;
       }
 
       if (action === 'MAX_HOLD') {
-        await notify(
-          `⏰ <b>MAX HOLD EXIT!</b>\n` +
-          `Token: <b>${symbol}</b>\n` +
-          `Fee PnL: <code>${feePnlSol.toFixed(6)} SOL / ${feeSign}${feePnlPct.toFixed(2)}%</code>\n` +
-          `Position Value: <code>${currentValueSol.toFixed(4)} SOL</code>\n` +
-          `Total Exposure PnL: <code>${pnlPct >= 0 ? '+' : ''}${pnlPct.toFixed(2)}%</code>\n` +
-          (status.exitReason ? `Reason: <code>${escapeHTML(status.exitReason)}</code>\n` : '') +
-          `\n⏳ <i>Menutup posisi...</i>`
-        );
+        const exitMeta = getExitDisplayMeta('MAX_HOLD_EXIT', status.exitReason || 'MAX_HOLD_EXIT');
+        await notify(buildExitTriggerNotification({
+          icon: '⏰',
+          title: exitMeta.title,
+          symbol,
+          reasonLabel: exitMeta.reasonLabel,
+          reasonDetail: status.exitReason || '',
+          currentValueSol,
+          pnlPct,
+          feePnlSol,
+          feePnlPct,
+        }));
         await safeExit(positionPubkey, 'MAX_HOLD_EXIT');
         return;
       }
@@ -3489,15 +3554,23 @@ async function monitorLoop(positionPubkey, symbol, poolAddress) {
           const priceDrop = Number(poolImpactDecision.metrics?.priceDropPctFromEntry || 0);
           const activeBinDelta = Number(poolImpactDecision.metrics?.activeBinDeltaFromEntry || 0);
           const lowerRisk = poolImpactDecision.metrics?.isOutOfRange ? 'out of range' : 'near lower bin';
-          await notify(
-            `🐋 <b>POOL IMPACT EXIT!</b>\n` +
-            `Token: <b>${symbol}</b>\n` +
-            `Reason: <code>${escapeHTML(poolImpactDecision.reasons.join(', ') || 'pool_impact_guard')}</code>\n` +
-            `Price Drop: <code>-${priceDrop.toFixed(2)}%</code>\n` +
-            `Active Bin Δ: <code>${activeBinDelta}</code>\n` +
-            `Range Risk: <code>${lowerRisk}</code>\n` +
-            `\n⏳ <i>Menutup posisi...</i>`
-          );
+          const exitMeta = getExitDisplayMeta('POOL_IMPACT_GUARD', 'POOL_IMPACT_GUARD');
+          await notify(buildExitTriggerNotification({
+            icon: '🐋',
+            title: exitMeta.title,
+            symbol,
+            reasonLabel: exitMeta.reasonLabel,
+            reasonDetail: poolImpactDecision.reasons.join(', ') || 'pool_impact_guard',
+            currentValueSol,
+            pnlPct,
+            feePnlSol,
+            feePnlPct,
+            extraLines: [
+              `Price Drop: <code>-${priceDrop.toFixed(2)}%</code>`,
+              `Active Bin Δ: <code>${activeBinDelta}</code>`,
+              `Range Risk: <code>${escapeHTML(lowerRisk)}</code>`,
+            ],
+          }));
           await safeExit(positionPubkey, 'POOL_IMPACT_GUARD');
           return;
         }
@@ -3579,24 +3652,10 @@ async function safeExit(positionPubkey, reason) {
       return { ok: true, dryRun: true, simulated: true };
     }
     const exitMeta = getExitDisplayMeta(reason, exitResult?.exitReason || exitResult?.rawExitReason || '');
-    const positionValue = Number(exitResult?.positionValueSol);
-    const positionValueLine = Number.isFinite(positionValue)
-      ? `Position Value: <code>${positionValue.toFixed(6)} SOL</code>\n`
-      : '';
     const balance = await getWalletBalance();
     success = true;
     _manualCloseAlertState.delete(positionPubkey);
-    await notify(
-      `✅ <b>Posisi ditutup (${exitMeta.title})</b>\n` +
-      `Position: <code>${positionPubkey.slice(0,8)}</code>\n` +
-      `Reason: <code>${exitMeta.reasonLabel}</code>\n` +
-      formatFeePnlLine(exitResult) +
-      positionValueLine +
-      formatExposurePnlLine(exitResult) +
-      formatWalletDeltaLine(exitResult) +
-      formatRentRefundLine(exitResult) +
-      `Balance: <code>${balance} SOL</code>`
-    );
+    await notify(buildExitClosedNotification({ positionPubkey, exitMeta, exitResult, balance }));
     return { ok: true, ...exitResult };
   } catch (e) {
     const closeMeta = e?.closeFailureMeta && typeof e.closeFailureMeta === 'object'

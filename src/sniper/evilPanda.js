@@ -36,7 +36,7 @@ import { clearPositionRuntimeState } from '../app/positionRuntimeState.js';
 import { checkGasGuard } from '../safety/gasGuard.js';
 import { assertRangeDoesNotRequireBinArrayInit, inspectRangeBinArrayInitStatus } from '../solana/meteora.js';
 import { BIN_ARRAY_SIZE, selectRentFreeRange } from '../utils/binRangePolicy.js';
-import { normalizeExitReason } from '../utils/exitReasons.js';
+import { getExitDisplayMeta, normalizeExitReason } from '../utils/exitReasons.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const HARVEST_LOG = join(__dirname, '../../harvest.log');
@@ -5497,12 +5497,13 @@ export async function markPositionManuallyClosed(positionPubkey, reason = 'MANUA
 
   const symbol = reg.tokenXMint?.slice(0, 8) || 'UNKNOWN';
   const pool   = reg.poolAddress?.slice(0, 8) || 'UNKNOWN';
+  const exitMeta = getExitDisplayMeta(reason, normalizedReason);
   await notify(
     `ℹ️ <b>Manual close terdeteksi</b>\n` +
     `Token: <b>${symbol}</b>\n` +
     `Position: <code>${positionPubkey.slice(0, 8)}</code>\n` +
     `Pool: <code>${pool}</code>\n` +
-    `Alasan: <code>${reason}</code>\n` +
+    `Reason: <code>${exitMeta.reasonLabel}</code>\n` +
     (
       `Fee PnL: <code>${manualAccounting.feePnlSol.toFixed(6)} SOL / ${manualAccounting.feePnlPct > 0 ? '+' : ''}${manualAccounting.feePnlPct.toFixed(2)}%</code>\n` +
       `Position Value: <code>${manualAccounting.positionValueSol.toFixed(4)} SOL</code>\n` +
