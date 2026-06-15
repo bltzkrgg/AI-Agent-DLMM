@@ -154,7 +154,7 @@ test('direct search empty falls back to fresh discovery source', async () => {
   assert.match(String(out.resolutionNote || ''), /fresh pool-discovery fallback/i);
 });
 
-test('multiple pools are ranked by SOL pair + binStep priority + TVL', async () => {
+test('multiple pools choose the SOL pair candidate with the strongest fee generation', async () => {
   const out = await __resolveManualCaPoolForTests(CA, { binStepPriority: [200, 125, 100] }, {
     getPoolInfoFn: async () => { throw new Error('not a pool address'); },
     fetchWithTimeoutFn: async () => mockResponse(true, 200, {
@@ -172,6 +172,8 @@ test('multiple pools are ranked by SOL pair + binStep priority + TVL', async () 
           token_y: { address: WSOL, symbol: 'SOL' },
           dlmm_params: { bin_step: 100 },
           tvl: 10000,
+          volume_24h: 40000,
+          fees: { '24h': 900 },
         },
         {
           pool_address: 'PoolSolHighPrio1111111111111111111111111111',
@@ -179,13 +181,46 @@ test('multiple pools are ranked by SOL pair + binStep priority + TVL', async () 
           token_y: { address: WSOL, symbol: 'SOL' },
           dlmm_params: { bin_step: 200 },
           tvl: 9000,
+          volume_24h: 12000,
+          fees: { '24h': 100 },
         },
       ],
     }),
   });
 
   assert.equal(out.ok, true);
-  assert.equal(out.poolAddress, 'PoolSolHighPrio1111111111111111111111111111');
+  assert.equal(out.poolAddress, 'PoolSolLowPrio11111111111111111111111111111');
+});
+
+test('manual CA falls back to fee/TVL ratio when fees24h is missing', async () => {
+  const out = await __resolveManualCaPoolForTests(CA, { binStepPriority: [125, 100, 80] }, {
+    getPoolInfoFn: async () => { throw new Error('not a pool address'); },
+    fetchWithTimeoutFn: async () => mockResponse(true, 200, {
+      data: [
+        {
+          pool_address: 'PoolFeeRatioLow1111111111111111111111111111',
+          token_x: { address: CA, symbol: 'TRK' },
+          token_y: { address: WSOL, symbol: 'SOL' },
+          dlmm_params: { bin_step: 100 },
+          tvl: 50000,
+          fee_tvl_ratio: { '24h': 0.03 },
+          volume_24h: 25000,
+        },
+        {
+          pool_address: 'PoolFeeRatioHigh111111111111111111111111111',
+          token_x: { address: CA, symbol: 'TRK' },
+          token_y: { address: WSOL, symbol: 'SOL' },
+          dlmm_params: { bin_step: 80 },
+          tvl: 40000,
+          fee_tvl_ratio: { '24h': 0.08 },
+          volume_24h: 22000,
+        },
+      ],
+    }),
+  });
+
+  assert.equal(out.ok, true);
+  assert.equal(out.poolAddress, 'PoolFeeRatioHigh111111111111111111111111111');
 });
 
 test('candidates found but rejected include diagnostic rejection counts', async () => {

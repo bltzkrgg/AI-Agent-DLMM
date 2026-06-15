@@ -37,30 +37,71 @@ import { getDeploySlotUsage, reserveDeploySlot, releaseDeploySlot } from '../uti
 const WSOL_MINT = 'So11111111111111111111111111111111111111112';
 const DLMM_POOL_SEARCH_BASE = 'https://dlmm.datapi.meteora.ag/pools';
 const POOL_DISCOVERY_BASE = 'https://pool-discovery-api.datapi.meteora.ag/pools';
-// ── Pool selector: pilih pool terbaik per-token berdasarkan binStep priority ─────────────
+// ── Pool selector: pilih pool terbaik per-token dari kandidat bin step ────────────────────
 //
 // Input : array pool untuk satu token yang sama (tokenXMint identik)
 // Output: satu pool terpilih
 //
-// Urutan prioritas: [200, 125, 100] (fee tertinggi dulu).
-// Jika tidak ada yang cocok, ambil pool dengan binStep tertinggi yang tersedia.
-// Di antara pool dengan binStep sama, pilih yang feeActiveTvlRatio tertinggi.
+// `binStepPriority` diperlakukan sebagai daftar kandidat bin step yang diizinkan,
+// bukan ranking angka. Di antara kandidat itu, pilih pool dengan fee generation
+// paling kuat dari snapshot Meteora yang sudah ada. Ini menjaga entry path tetap
+// cepat karena tidak menambah fetch baru.
+
+function normalizePoolFees24h(pool = {}) {
+  const value = pool?.fees?.['24h'] ?? pool?.fees24h ?? pool?.fee24h ?? pool?.fee_24h ?? null;
+  const numeric = Number(value);
+  return Number.isFinite(numeric) && numeric >= 0 ? numeric : null;
+}
+
+function normalizePoolVolume24h(pool = {}) {
+  const value = pool?.volume24h ?? pool?.volume_24h ?? pool?.trade_volume_24h ?? pool?.tradeVolume24h ?? pool?.volume24hRaw ?? pool?.volume ?? pool?.v24h ?? null;
+  const numeric = Number(value);
+  return Number.isFinite(numeric) && numeric >= 0 ? numeric : 0;
+}
+
+function normalizePoolTotalTvl(pool = {}) {
+  const value = pool?.totalTvl ?? pool?.activeTvl ?? pool?.total_tvl ?? pool?.active_tvl ?? pool?.tvl ?? pool?.liquidityUsd ?? null;
+  const numeric = Number(value);
+  return Number.isFinite(numeric) && numeric >= 0 ? numeric : 0;
+}
+
+function comparePoolsByFeeGeneration(a = {}, b = {}, binStepCandidates = []) {
+  const aFees24h = normalizePoolFees24h(a);
+  const bFees24h = normalizePoolFees24h(b);
+  const aHasFees24h = aFees24h !== null;
+  const bHasFees24h = bFees24h !== null;
+  if (aHasFees24h !== bHasFees24h) return (bHasFees24h ? 1 : 0) - (aHasFees24h ? 1 : 0);
+  if (aHasFees24h && bHasFees24h && aFees24h !== bFees24h) return bFees24h - aFees24h;
+
+  const aFeeRatio = normalizeMeteoraFeeTvlRatio(a) ?? -1;
+  const bFeeRatio = normalizeMeteoraFeeTvlRatio(b) ?? -1;
+  if (aFeeRatio !== bFeeRatio) return bFeeRatio - aFeeRatio;
+
+  const aVolume24h = normalizePoolVolume24h(a);
+  const bVolume24h = normalizePoolVolume24h(b);
+  if (aVolume24h !== bVolume24h) return bVolume24h - aVolume24h;
+
+  const aTvl = normalizePoolTotalTvl(a);
+  const bTvl = normalizePoolTotalTvl(b);
+  if (aTvl !== bTvl) return bTvl - aTvl;
+
+  const aPrioIndex = binStepCandidates.indexOf(Number(a?.binStep || 0));
+  const bPrioIndex = binStepCandidates.indexOf(Number(b?.binStep || 0));
+  const aCandidateRank = aPrioIndex >= 0 ? aPrioIndex : Number.MAX_SAFE_INTEGER;
+  const bCandidateRank = bPrioIndex >= 0 ? bPrioIndex : Number.MAX_SAFE_INTEGER;
+  if (aCandidateRank !== bCandidateRank) return aCandidateRank - bCandidateRank;
+
+  return Number(b?.binStep || 0) - Number(a?.binStep || 0);
+}
 
 function selectBestPoolByBinStep(pools, binStepPriority = [200, 125, 100]) {
   if (!pools || pools.length === 0) return null;
   if (pools.length === 1) return pools[0];
-
-  // Coba satu per satu priority
-  for (const targetStep of binStepPriority) {
-    const candidates = pools.filter(p => p.binStep === targetStep);
-    if (candidates.length > 0) {
-      // Pilih fee/tvl ratio tertinggi di antara kandidat binStep ini
-      return candidates.sort((a, b) => (b.feeActiveTvlRatio || 0) - (a.feeActiveTvlRatio || 0))[0];
-    }
-  }
-
-  // Fallback: tidak ada yang cocok dengan priority list → ambil binStep tertinggi tersedia
-  return pools.sort((a, b) => b.binStep - a.binStep || (b.feeActiveTvlRatio || 0) - (a.feeActiveTvlRatio || 0))[0];
+  const candidates = pools.filter((p) => binStepPriority.includes(Number(p?.binStep || 0)));
+  const source = candidates.length > 0 ? candidates : pools;
+  return source
+    .slice()
+    .sort((a, b) => comparePoolsByFeeGeneration(a, b, binStepPriority))[0];
 }
 
 // ── Group pools by token, kemudian select best per token ─────────────────────────────
@@ -748,9 +789,8 @@ async function resolveManualCaPool(address, cfg = getConfig(), deps = {}) {
     return [...rows].sort((a, b) => {
       if (a.solPair !== b.solPair) return (b.solPair ? 1 : 0) - (a.solPair ? 1 : 0);
       if (a.supportedBinStep !== b.supportedBinStep) return (b.supportedBinStep ? 1 : 0) - (a.supportedBinStep ? 1 : 0);
-      if (a.binStepPriorityRank !== b.binStepPriorityRank) return a.binStepPriorityRank - b.binStepPriorityRank;
-      if (a.totalTvl !== b.totalTvl) return b.totalTvl - a.totalTvl;
-      if (a.volume24h !== b.volume24h) return b.volume24h - a.volume24h;
+      const feeCmp = comparePoolsByFeeGeneration(a.candidate, b.candidate, binStepPriority);
+      if (feeCmp !== 0) return feeCmp;
       if (a.hasPoolAddress !== b.hasPoolAddress) return (b.hasPoolAddress ? 1 : 0) - (a.hasPoolAddress ? 1 : 0);
       return 0;
     });
@@ -780,7 +820,6 @@ async function resolveManualCaPool(address, cfg = getConfig(), deps = {}) {
       const binStep = Number(c?.binStep || 0);
       const prioIndex = binStepPriority.indexOf(binStep);
       const supportedBinStep = prioIndex >= 0;
-      const binStepPriorityRank = prioIndex >= 0 ? prioIndex : Number.MAX_SAFE_INTEGER;
       if (!c.isDlmm) rejection.rejectedNotDlmm += 1;
       else if (!solPair) rejection.rejectedNoSolPair += 1;
       else if (!supportedBinStep) rejection.rejectedUnsupportedBinStep += 1;
@@ -789,7 +828,6 @@ async function resolveManualCaPool(address, cfg = getConfig(), deps = {}) {
         candidate: c,
         solPair,
         supportedBinStep,
-        binStepPriorityRank,
         totalTvl: Number(c?.totalTvl || c?.activeTvl || 0),
         volume24h: Number(c?.volume24h || 0),
         hasPoolAddress,
@@ -2215,7 +2253,7 @@ export async function scanAndDeploy({ emitFinalReport = true } = {}) {
 
     const limit = cfg.meteoraDiscoveryLimit || 50;
 
-    console.log(`[SCREEN] 🔍 SCAN — High-Fee Hunter (binStep priority: ${(cfg.binStepPriority || [200,125,100]).join('>')} )...`);
+    console.log(`[SCREEN] 🔍 SCAN — High-Fee Hunter (binStep candidates: ${(cfg.binStepPriority || [200,125,100]).join('/')} | select highest fee flow)...`);
     await notify('🔍 <b>AI-Agent-DLMM Scan</b>\nMengambil data, mohon tunggu.');
 
 
@@ -2230,16 +2268,17 @@ export async function scanAndDeploy({ emitFinalReport = true } = {}) {
 
   let pools = [];
   try {
-    // Ambil semua pool dari Meteora/Meridian fallback (sorted by binStep priority + fee ratio)
+    // Ambil semua pool dari Meteora/Meridian fallback.
     const rawPools = await discoverHighFeePoolsMeridian({ limit });
 
     // Deduplikasi: satu token mungkin punya beberapa pool.
-    // Pilih pool terbaik per-token berdasarkan binStep priority [200,125,100].
+    // Pilih pool terbaik per-token dari kandidat bin step yang diizinkan
+    // berdasarkan fee generation terkuat dari snapshot yang sudah ada.
     const cfg2          = getConfig();
     const binPriority   = Array.isArray(cfg2.binStepPriority) ? cfg2.binStepPriority.map(Number) : [200, 125, 100];
     pools               = deduplicatePoolsByToken(rawPools, binPriority);
 
-    console.log(`[SCREEN] ${rawPools.length} pool raw → ${pools.length} token unik setelah seleksi binStep`);
+    console.log(`[SCREEN] ${rawPools.length} pool raw → ${pools.length} token unik setelah seleksi binStep by fee flow`);
   } catch (e) {
     console.warn(`[hunter] discoverHighFeePoolsMeridian gagal: ${e.message}`);
     await sleep(60_000);
