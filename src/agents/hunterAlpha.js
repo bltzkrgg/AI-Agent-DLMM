@@ -1366,7 +1366,15 @@ function buildExitTriggerNotification({
 }
 
 function buildExitClosedNotification({ positionPubkey, exitMeta, exitResult, balance }) {
-  const tokenLabel = escapeHTML(_positionLabels.get(positionPubkey)?.symbol || positionPubkey.slice(0,8));
+  const tokenLabel = escapeHTML(
+    _positionLabels.get(positionPubkey)?.symbol ||
+    exitResult?.symbol ||
+    exitResult?.tokenSymbol ||
+    exitResult?.tokenMint?.slice(0, 8) ||
+    exitResult?.tokenXMint?.slice(0, 8) ||
+    exitResult?.poolAddress?.slice(0, 8) ||
+    positionPubkey.slice(0, 8)
+  );
   const lines = [
     `✅ <b>Posisi Di Tutup (${exitMeta.title})</b>`,
     `Token: <b>${tokenLabel}</b>`,
