@@ -304,11 +304,9 @@ test('monitor exit policy uses trailing for take profit and TA as fallback', () 
   assert.match(evilPandaSrc, /getConfiguredTakeProfitMinNetPnlPct/);
   assert.match(evilPandaSrc, /pnlPct < takeProfitMinNetPnlPct/);
   assert.match(evilPandaSrc, /!isDefensiveTaExit/);
-  assert.match(hunterSrc, /TAKE PROFIT/);
-  assert.match(hunterSrc, /DEFENSIVE EXIT/);
-  assert.match(hunterSrc, /Trailing Profit Trigger/);
-  assert.match(hunterSrc, /Take Profit Trigger/);
-  assert.match(hunterSrc, /Defensive Exit Trigger/);
+  assert.match(hunterSrc, /getExitDisplayMeta/);
+  assert.match(hunterSrc, /Posisi ditutup \(\$\{exitMeta\.title\}\)/);
+  assert.match(hunterSrc, /Reason: <code>\$\{exitMeta\.reasonLabel\}<\/code>/);
   assert.match(hunterSrc, /if \(action === 'MAX_HOLD'\)/);
   assert.match(hunterSrc, /safeExit\(positionPubkey, 'MAX_HOLD_EXIT'\)/);
   assert.doesNotMatch(evilPandaSrc, /Trailing TP/);
@@ -531,4 +529,18 @@ test('exit telegram messages display Meteora fee-only PnL', () => {
   assert.match(hunterSrc, /Total Exposure PnL: <code>/);
   assert.match(hunterSrc, /return \{ ok: true, \.\.\.exitResult \}/);
   assert.doesNotMatch(hunterSrc, /`PnL: <code>\+?\$\{pnlPct\.toFixed\(2\)\}%<\/code>\\n`/);
+});
+
+test('exit close notifications use unified display metadata for all close families', () => {
+  const hunterSrc = readFileSync(hunterPath, 'utf8');
+  const exitReasonsSrc = readFileSync(resolve(process.cwd(), 'src/utils/exitReasons.js'), 'utf8');
+
+  assert.match(hunterSrc, /getExitDisplayMeta/);
+  assert.match(hunterSrc, /Posisi ditutup \(\$\{exitMeta\.title\}\)/);
+  assert.match(hunterSrc, /Reason: <code>\$\{exitMeta\.reasonLabel\}<\/code>/);
+  assert.match(exitReasonsSrc, /export function getExitDisplayMeta/);
+  assert.match(exitReasonsSrc, /Trailing Profit Trigger/);
+  assert.match(exitReasonsSrc, /Defensive Exit Trigger/);
+  assert.match(exitReasonsSrc, /Stop Loss Trigger/);
+  assert.match(exitReasonsSrc, /Safe Exit Trigger/);
 });

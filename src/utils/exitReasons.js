@@ -52,3 +52,93 @@ export function normalizeExitReason(reason = '', context = {}) {
 
   return 'UNKNOWN';
 }
+
+export function getExitDisplayMeta(reason = '', normalizedReason = '') {
+  const raw = String(reason || '').trim();
+  const text = raw.toUpperCase();
+  const normalized = String(normalizedReason || normalizeExitReason(raw)).trim().toUpperCase();
+
+  if (text.includes('TAKE_PROFIT') || text.includes('TAKE PROFIT') || normalized === 'TAKE_PROFIT') {
+    if (text.includes('TRAILING')) {
+      return {
+        title: 'TAKE PROFIT',
+        reasonLabel: 'Trailing Profit Trigger',
+        normalizedReason: normalized || 'TAKE_PROFIT',
+      };
+    }
+
+    if (text.includes('_C') || text.includes('DEFENSIVE')) {
+      return {
+        title: 'TAKE PROFIT',
+        reasonLabel: 'Defensive Exit Trigger',
+        normalizedReason: normalized || 'TAKE_PROFIT',
+      };
+    }
+
+    return {
+      title: 'TAKE PROFIT',
+      reasonLabel: 'Take Profit Trigger',
+      normalizedReason: normalized || 'TAKE_PROFIT',
+    };
+  }
+
+  if (text.includes('STOP_LOSS') || text.includes('HARD SL') || normalized === 'STOP_LOSS') {
+    return {
+      title: 'STOP LOSS',
+      reasonLabel: 'Stop Loss Trigger',
+      normalizedReason: normalized || 'STOP_LOSS',
+    };
+  }
+
+  if (text.includes('MAX_HOLD') || text.includes('MAX HOLD')) {
+    return {
+      title: 'MAX HOLD EXIT',
+      reasonLabel: 'Max Hold Trigger',
+      normalizedReason: normalized || 'SAFE_EXIT',
+    };
+  }
+
+  if (text.includes('POOL_IMPACT_GUARD') || text.includes('POOL IMPACT')) {
+    return {
+      title: 'POOL IMPACT EXIT',
+      reasonLabel: 'Pool Impact Trigger',
+      normalizedReason: normalized || 'POOL_IMPACT_GUARD',
+    };
+  }
+
+  if (text.includes('OUT_OF_RANGE') || text === 'OOR' || text.includes(' OOR')) {
+    return {
+      title: 'OUT OF RANGE',
+      reasonLabel: 'Out of Range Trigger',
+      normalizedReason: normalized || 'OUT_OF_RANGE',
+    };
+  }
+
+  if (text.includes('MANUAL_COMMAND') || text.includes('MANUAL_EXIT') || text.includes('MANUAL_WITHDRAW')) {
+    return {
+      title: 'MANUAL CLOSE',
+      reasonLabel: 'Manual Close Trigger',
+      normalizedReason: normalized || 'MANUAL_EXIT',
+    };
+  }
+
+  if (
+    text.includes('SAFE_EXIT') ||
+    text.includes('SHUTDOWN') ||
+    text.includes('LOOP_STOPPED') ||
+    text.includes('MONITOR_ERROR') ||
+    text.includes('STATUS_ERROR')
+  ) {
+    return {
+      title: 'SAFE EXIT',
+      reasonLabel: 'Safe Exit Trigger',
+      normalizedReason: normalized || 'SAFE_EXIT',
+    };
+  }
+
+  return {
+    title: normalized || 'EXIT',
+    reasonLabel: raw || 'Exit Trigger',
+    normalizedReason: normalized || 'UNKNOWN',
+  };
+}

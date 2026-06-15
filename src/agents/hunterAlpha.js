@@ -27,6 +27,7 @@ import { isBlacklisted }          from '../learn/tokenBlacklist.js';
 import { getRuntimeState }        from '../runtime/state.js';
 import { getPositionRuntimeState, updatePositionRuntimeState } from '../app/positionRuntimeState.js';
 import { evaluatePoolImpactGuard } from '../risk/poolImpactGuard.js';
+import { getExitDisplayMeta }     from '../utils/exitReasons.js';
 import { escapeHTML, safeParseAI, fetchWithTimeout } from '../utils/safeJson.js';
 import reportManager              from '../utils/reportManager.js';
 import pendingStore               from '../utils/pendingStore.js';
@@ -3441,21 +3442,14 @@ async function monitorLoop(positionPubkey, symbol, poolAddress) {
 
       // Exit trigger
       if (action === 'TAKE_PROFIT') {
-        const exitScenario = String(status.exitScenario || '').toUpperCase();
-        const isDefensiveTaExit = exitScenario === 'C';
-        const headerLabel = isDefensiveTaExit ? 'DEFENSIVE EXIT' : 'TAKE PROFIT';
-        const reasonLabel = isDefensiveTaExit
-          ? 'Defensive Exit Trigger'
-          : exitScenario === 'TRAILING'
-            ? 'Trailing Profit Trigger'
-            : 'Take Profit Trigger';
+        const exitMeta = getExitDisplayMeta(`TAKE_PROFIT_${status.exitScenario || 'TA'}`, status.exitReason || '');
         await notify(
-          `🎉 <b>${headerLabel}</b>\n` +
+          `🎉 <b>${exitMeta.title}</b>\n` +
           `Token: <b>${symbol}</b>\n` +
           `Fee PnL: <code>${feePnlSol.toFixed(6)} SOL / ${feeSign}${feePnlPct.toFixed(2)}%</code>\n` +
           `Position Value: <code>${currentValueSol.toFixed(4)} SOL</code>\n` +
           `Total Exposure PnL: <code>${pnlPct >= 0 ? '+' : ''}${pnlPct.toFixed(2)}%</code>\n` +
-          `Reason: <code>${reasonLabel}</code>\n` +
+          `Reason: <code>${exitMeta.reasonLabel}</code>\n` +
           `\n⏳ <i>Menutup posisi...</i>`
         );
         await safeExit(positionPubkey, `TAKE_PROFIT_${status.exitScenario || 'TA'}`);
@@ -3584,6 +3578,7 @@ async function safeExit(positionPubkey, reason) {
       );
       return { ok: true, dryRun: true, simulated: true };
     }
+    const exitMeta = getExitDisplayMeta(reason, exitResult?.exitReason || exitResult?.rawExitReason || '');
     const positionValue = Number(exitResult?.positionValueSol);
     const positionValueLine = Number.isFinite(positionValue)
       ? `Position Value: <code>${positionValue.toFixed(6)} SOL</code>\n`
@@ -3592,8 +3587,9 @@ async function safeExit(positionPubkey, reason) {
     success = true;
     _manualCloseAlertState.delete(positionPubkey);
     await notify(
-      `✅ <b>Posisi ditutup (${reason})</b>\n` +
+      `✅ <b>Posisi ditutup (${exitMeta.title})</b>\n` +
       `Position: <code>${positionPubkey.slice(0,8)}</code>\n` +
+      `Reason: <code>${exitMeta.reasonLabel}</code>\n` +
       formatFeePnlLine(exitResult) +
       positionValueLine +
       formatExposurePnlLine(exitResult) +
