@@ -529,6 +529,15 @@ function addWatchPassTa(pool, reason = 'TA PASS', source = 'TA') {
   });
   const effectiveMaxPools = watchCfg.enabled ? watchCfg.maxPools : Number.MAX_SAFE_INTEGER;
   const effectiveExpiryMin = watchCfg.expiryMin;
+  const canonicalEntrySnapshot = buildCanonicalEntrySnapshot({
+    pool,
+    existing,
+    entrySignals: signals,
+    snapshotAt: resolvedSnapshotAt,
+    watchWindowSec,
+    maxDriftPct,
+    source,
+  });
 
   const row = {
     pool,
@@ -561,6 +570,7 @@ function addWatchPassTa(pool, reason = 'TA PASS', source = 'TA') {
       resolvedEntryPrice > 0 &&
       Number.isFinite(resolvedSnapshotAt) &&
       resolvedSnapshotAt > 0,
+    entryCanonicalSnapshot: canonicalEntrySnapshot,
     memoryPriorityDelta,
     memoryReason: memorySignal.reason,
     priorityScore,
@@ -1020,6 +1030,22 @@ export async function submitManualCaPool(poolAddress, { source = 'TELEGRAM_CA' }
     entryPrice: entryIntent.entryPrice,
     hasFrozenEntryIntent: entryIntent.hasFrozenEntryIntent,
     hasNonRefundableFees: pool.hasNonRefundableFees,
+    entryCanonicalSnapshot: buildCanonicalEntrySnapshot({
+      pool,
+      entrySignals,
+      snapshotAt: now,
+      watchWindowSec,
+      maxDriftPct,
+      source,
+      finalTrendStamp: manualStGate?.ok
+        ? {
+          direction: manualStGate.direction || 'UNKNOWN',
+          source: manualStGate.source || 'unknown',
+          reason: manualStGate.reason || '',
+          checkedAt: now,
+        }
+        : null,
+    }),
   };
 
   const readyForQueue = isFreshDeployMeta(queueMeta);
@@ -1370,6 +1396,60 @@ function extractEntryIntent(pool = {}, marketSnapshot = null, entrySignals = nul
     entryActiveBin,
     entryPrice,
     hasFrozenEntryIntent: Number.isFinite(entryActiveBin) && Number.isSafeInteger(entryActiveBin) && Number.isFinite(entryPrice) && entryPrice > 0,
+  };
+}
+
+function buildCanonicalEntrySnapshot({
+  pool = {},
+  existing = null,
+  entrySignals = null,
+  snapshotAt = null,
+  watchWindowSec = null,
+  maxDriftPct = null,
+  source = 'unknown',
+  finalTrendStamp = null,
+} = {}) {
+  const frozenIntent = resolveFrozenEntryIntent(pool, existing, entrySignals);
+  const resolvedSnapshotAt = Number.isFinite(Number(snapshotAt))
+    ? Number(snapshotAt)
+    : Number.isFinite(Number(existing?.snapshotAt))
+      ? Number(existing.snapshotAt)
+      : Number.isFinite(Number(frozenIntent.snapshotAt))
+        ? Number(frozenIntent.snapshotAt)
+        : Date.now();
+  return {
+    version: 'entry_canonical_v1',
+    source: String(source || 'unknown'),
+    snapshotAt: resolvedSnapshotAt,
+    snapshotPrice: existing?.snapshotPrice ?? entrySignals?.currentPrice ?? pool?._watchSnapshotPrice ?? null,
+    snapshotHigh24h: existing?.snapshotHigh24h ?? entrySignals?.high24h ?? pool?._watchSnapshotHigh24h ?? null,
+    snapshotStDistancePct: existing?.snapshotStDistancePct ?? entrySignals?.signalStDistancePct ?? pool?._watchSnapshotStDistancePct ?? null,
+    snapshotAthDistancePct: existing?.snapshotAthDistancePct ?? entrySignals?.signalAthDistancePct ?? pool?._watchSnapshotAthDistancePct ?? null,
+    snapshotM5Change: existing?.snapshotM5Change ?? entrySignals?.priceChangeM5 ?? pool?._watchSnapshotM5Change ?? null,
+    snapshotM15Change: existing?.snapshotM15Change ?? entrySignals?.priceChangeM15 ?? pool?._watchSnapshotM15Change ?? null,
+    taTrend: existing?.taTrend ?? entrySignals?.taTrend ?? pool?._watchTaTrend ?? null,
+    entryTimingState: entrySignals?.entryTimingState ?? existing?.entryTimingState ?? null,
+    entryReadiness: entrySignals?.entryReadiness ?? existing?.entryReadiness ?? null,
+    breakoutQuality: entrySignals?.breakoutQuality ?? existing?.breakoutQuality ?? null,
+    watchWindowSec: Number.isFinite(Number(watchWindowSec))
+      ? Number(watchWindowSec)
+      : Number(existing?.watchWindowSec ?? pool?._watchWindowSec ?? null),
+    maxDriftPct: Number.isFinite(Number(maxDriftPct))
+      ? Number(maxDriftPct)
+      : Number(existing?.maxDriftPct ?? pool?._watchMaxDriftPct ?? null),
+    entryActiveBin: frozenIntent.entryActiveBin,
+    entryPrice: frozenIntent.entryPrice,
+    hasFrozenEntryIntent: frozenIntent.hasFrozenEntryIntent === true,
+    finalTrendStamp: finalTrendStamp && typeof finalTrendStamp === 'object'
+      ? {
+        direction: String(finalTrendStamp.direction || 'UNKNOWN'),
+        source: String(finalTrendStamp.source || 'unknown'),
+        reason: String(finalTrendStamp.reason || ''),
+        checkedAt: Number.isFinite(Number(finalTrendStamp.checkedAt))
+          ? Number(finalTrendStamp.checkedAt)
+          : null,
+      }
+      : null,
   };
 }
 
@@ -1884,6 +1964,15 @@ async function processTaWatchQueue(cfg = getConfig()) {
           entryActiveBin: toFiniteNumber(row.entryActiveBin ?? pool._entryActiveBin ?? null, null),
           entryPrice: toFiniteNumber(row.entryPrice ?? pool._entryPrice ?? pool._entrySignals?.currentPrice ?? null, null),
           snapshotAt: toFiniteNumber(row.snapshotAt ?? pool._entryIntentSnapshotAt ?? now, now),
+        }),
+        entryCanonicalSnapshot: buildCanonicalEntrySnapshot({
+          pool,
+          existing: row,
+          entrySignals: pool._entrySignals || null,
+          snapshotAt: Number.isFinite(Number(row.snapshotAt)) ? Number(row.snapshotAt) : now,
+          watchWindowSec: row.watchWindowSec || getLpWatchWindowSec(cfg),
+          maxDriftPct: row.maxDriftPct || getLpMaxDriftPct(cfg),
+          source: row.source || 'WATCH',
         }),
       },
     });
@@ -2970,6 +3059,22 @@ Balas HANYA JSON valid tanpa Markdown.`;
               reason: finalSt.reason || '',
               checkedAt: Date.now(),
             },
+            entryCanonicalSnapshot: buildCanonicalEntrySnapshot({
+              pool: winner,
+              entrySignals: winner?._entrySignals || null,
+              snapshotAt: Number.isFinite(Number(winner?._entryIntentSnapshotAt))
+                ? Number(winner._entryIntentSnapshotAt)
+                : Date.now(),
+              watchWindowSec: getLpWatchWindowSec(currentCfg),
+              maxDriftPct: getLpMaxDriftPct(currentCfg),
+              source: 'scanAndDeploy',
+              finalTrendStamp: {
+                direction: finalSt.direction || 'UNKNOWN',
+                source: finalSt.source || 'unknown',
+                reason: finalSt.reason || '',
+                checkedAt: Date.now(),
+              },
+            }),
           }),
           Number(currentCfg.deployTimeoutMs || 180_000),
           'DEPLOY'

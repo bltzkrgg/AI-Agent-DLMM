@@ -51,6 +51,7 @@ prefer the explicit user request, then update this file after the change lands.
 - GMGN-inspired signal layer now acts as a scoring-only overlay inside pool-pattern/watch prioritization: it shifts candidate score using existing GMGN metrics and fingerprints those metrics for learning, but does not introduce a new hard gate or config key.
 - Operator-facing scanner text now uses `Signal` + `LP Score` wording instead of raw GMGN label noise, so report output stays LP-centric while still exposing the signal overlay.
 - Scanner report `Fee/TVL` must use Meteora 24h ratio as the source of truth; missing ratio now renders `N/A` instead of a fake `0.0%`.
+- Entry/watch/queue/deploy must preserve one canonical entry snapshot payload so active-position monitor/exit can read the same entry context that was used at deploy time.
 
 ## Behavior contracts to preserve
 
@@ -81,6 +82,7 @@ Only edit other files when the change explicitly requires it.
 - Take-profit swap consistency versus manual claim-only fee collection.
 - Post-close TP sweep timing and swap-failure observability.
 - Scanner report LP metrics consistency, especially Meteora `fee_tvl_ratio['24h']` versus derived/fallback values.
+- Entry metadata drift across WATCH, queue, direct deploy, and restored active positions.
 
 ## Locked areas
 
@@ -152,3 +154,4 @@ Do not edit these unless the user explicitly scopes the change there.
 - 2026-06-12: Added GMGN-inspired scoring overlay to `poolPatternLearning` and watch priority scoring in `hunterAlpha`; existing GMGN metrics now influence candidate ranking and learning fingerprints without changing stage pass/fail gates.
 - 2026-06-12: Refined GMGN signal overlay report text to `Signal` / `LP Score` wording in scanner output so the UI stays concise and operator-friendly without changing scoring semantics.
 - 2026-06-12: Hardened scanner report Fee/TVL rendering so it now prefers Meteora canonical 24h ratio, falls back to `fees24h / tvl` only when needed, and shows `N/A` instead of fake `0.0%` when ratio data is absent.
+- 2026-06-15: Completed 5.4 canonical entry snapshot wiring: `hunterAlpha` now builds a single `entryCanonicalSnapshot` payload for manual queue, WATCH promotion, and direct deploy; `pendingDeployQueue` forwards that payload into deploy calls; `evilPanda` persists/restores it on active positions so later monitor/exit logic can read the same entry context instead of reconstructing mixed snapshots.

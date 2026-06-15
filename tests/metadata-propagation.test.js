@@ -18,6 +18,7 @@ test('manual CA and watch queue propagate LP snapshot metadata into queue payloa
   assert.match(hunterSrc, /queueMeta = \{[\s\S]*entryTimingState: entrySignals\.entryTimingState/);
   assert.match(hunterSrc, /queueMeta = \{[\s\S]*snapshotPrice: pool\._watchSnapshotPrice/);
   assert.match(hunterSrc, /queueMeta = \{[\s\S]*watchWindowSec/);
+  assert.match(hunterSrc, /queueMeta = \{[\s\S]*entryCanonicalSnapshot: buildCanonicalEntrySnapshot\(/);
 });
 
 test('watch promotion preserves the same LP metadata fields for deploy queue', () => {
@@ -29,6 +30,7 @@ test('watch promotion preserves the same LP metadata fields for deploy queue', (
   assert.match(hunterSrc, /taTrend:\s*pool\._entrySignals\?\.taTrend \?\? row\.taTrend \?\? pool\._watchTaTrend/);
   assert.match(hunterSrc, /priceChangeM5:\s*pool\._entrySignals\?\.priceChangeM5 \?\? row\.priceChangeM5 \?\? row\.snapshotM5Change \?\? pool\._watchSnapshotM5Change/);
   assert.match(hunterSrc, /snapshotAt:\s*Number\.isFinite\(Number\(row\.snapshotAt\)\) \? Number\(row\.snapshotAt\) : now/);
+  assert.match(hunterSrc, /entryCanonicalSnapshot:\s*buildCanonicalEntrySnapshot\(/);
 });
 
 test('watch and deploy queue carry frozen entry intent fields through the LP path', () => {
@@ -40,6 +42,7 @@ test('watch and deploy queue carry frozen entry intent fields through the LP pat
   assert.match(hunterSrc, /hasFrozenEntryIntent:\s*entryIntent\.hasFrozenEntryIntent/);
   assert.match(hunterSrc, /entryActiveBin:\s*toFiniteNumber\(row\.entryActiveBin \?\? pool\._entryActiveBin/);
   assert.match(queueSrc, /frozenEntryIntent:\s*\{/);
+  assert.match(queueSrc, /entryCanonicalSnapshot:\s*meta\?\.entryCanonicalSnapshot/);
   assert.match(queueSrc, /enabled:\s*frozenEnabled/);
   assert.match(pandaSrc, /ENTRY_INTENT_FROZEN/);
   assert.match(pandaSrc, /skipActiveBinRefresh:\s*frozenIntentEnabled/);
@@ -84,12 +87,16 @@ test('deploy callers propagate final Supertrend stamps into position metadata an
 
   assert.match(hunterSrc, /finalTrendStamp:\s*\{[\s\S]*direction:\s*finalSt\.direction \|\| 'UNKNOWN'/);
   assert.match(queueSrc, /finalTrendStamp:\s*\{[\s\S]*direction:\s*finalSt\.direction \|\| 'UNKNOWN'/);
+  assert.match(hunterSrc, /entryCanonicalSnapshot:\s*buildCanonicalEntrySnapshot\(\{/);
+  assert.match(pandaSrc, /const entryCanonicalSnapshot = \(deployOptions && typeof deployOptions\.entryCanonicalSnapshot === 'object'\)/);
+  assert.match(pandaSrc, /entryCanonicalSnapshot,/);
   assert.match(pandaSrc, /entryFinalSupertrend15m:\s*finalTrendDirection/);
   assert.match(pandaSrc, /entryFinalSupertrendSource:\s*finalTrendSource/);
   assert.match(pandaSrc, /entryFinalSupertrendReason:\s*finalTrendReason/);
   assert.match(pandaSrc, /entryFinalSupertrendAt:\s*finalTrendAt/);
   assert.match(pandaSrc, /entryFinalSupertrend15m:\s*normalizeTrackedTrendDirection\(row\.entryFinalSupertrend15m\)/);
   assert.match(pandaSrc, /entryFinalSupertrendAt:\s*Number\.isFinite\(Number\(row\.entryFinalSupertrendAt\)\)/);
+  assert.match(pandaSrc, /entryCanonicalSnapshot:\s*row\?\.entryCanonicalSnapshot && typeof row\.entryCanonicalSnapshot === 'object'/);
 });
 
 test('DLMM deploy logs carry anchor provenance and range adjustment observability', () => {

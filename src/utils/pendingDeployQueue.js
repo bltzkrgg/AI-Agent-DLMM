@@ -1460,6 +1460,17 @@ async function runWatcher() {
             reason: finalSt.reason || '',
             checkedAt: Date.now(),
           },
+          entryCanonicalSnapshot: meta?.entryCanonicalSnapshot && typeof meta.entryCanonicalSnapshot === 'object'
+            ? {
+              ...meta.entryCanonicalSnapshot,
+              finalTrendStamp: {
+                direction: finalSt.direction || 'UNKNOWN',
+                source: finalSt.source || 'unknown',
+                reason: finalSt.reason || '',
+                checkedAt: Date.now(),
+              },
+            }
+            : null,
           frozenEntryIntent: {
             entryActiveBin: deployIntentBin,
             entryPrice: deployIntentPrice,

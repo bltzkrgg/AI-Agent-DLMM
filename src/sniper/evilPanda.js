@@ -3449,6 +3449,9 @@ export async function deployPosition(poolAddress, deployOptions = {}) {
   const finalTrendAt = Number.isFinite(Number(finalTrendStamp?.checkedAt))
     ? Number(finalTrendStamp.checkedAt)
     : Date.now();
+  const entryCanonicalSnapshot = (deployOptions && typeof deployOptions.entryCanonicalSnapshot === 'object')
+    ? deployOptions.entryCanonicalSnapshot
+    : null;
 
   console.log(`[evilPanda] ▶ deployPosition pool=${poolAddress.slice(0,8)} sol=${deploySol}`);
 
@@ -4262,6 +4265,7 @@ export async function deployPosition(poolAddress, deployOptions = {}) {
         entryFinalSupertrendSource: finalTrendSource,
         entryFinalSupertrendReason: finalTrendReason,
         entryFinalSupertrendAt: finalTrendAt,
+        entryCanonicalSnapshot,
         rangeAdjustReason: finalDeployState?.finalArgsContext?.rangeAdjustReason || null,
         hwmPct: 0,
       }, { flush: true });
@@ -4359,6 +4363,7 @@ export async function deployPosition(poolAddress, deployOptions = {}) {
       entryFinalSupertrendSource: finalTrendSource,
       entryFinalSupertrendReason: finalTrendReason,
       entryFinalSupertrendAt: finalTrendAt,
+      entryCanonicalSnapshot,
       rangeAdjustReason: finalDeployState?.finalArgsContext?.rangeAdjustReason || null,
       hwmPct:      0,
     }, { flush: true });
@@ -5633,6 +5638,10 @@ export async function reconcileStartupPositions() {
         entryFinalSupertrendAt: Number.isFinite(Number(row.entryFinalSupertrendAt))
           ? Number(row.entryFinalSupertrendAt)
           : null,
+        entryCanonicalSnapshot:
+          row?.entryCanonicalSnapshot && typeof row.entryCanonicalSnapshot === 'object'
+            ? row.entryCanonicalSnapshot
+            : null,
         currentValueSol: safeNum(row.currentValueSol, 0),
         pnlPct: safeNum(row.pnlPct, 0),
         feePnlSol: Math.max(0, safeNum(row.feePnlSol, 0)),
