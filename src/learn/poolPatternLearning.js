@@ -149,18 +149,6 @@ export function buildPoolPatternFingerprint(features = {}) {
     [5, 'VT_2_5'],
     [Number.POSITIVE_INFINITY, 'VT_GE_5'],
   ]);
-  const mcapBucket = bucket(features.mcap, [
-    [250_000, 'MCAP_LT_250K'],
-    [1_000_000, 'MCAP_250K_1M'],
-    [10_000_000, 'MCAP_1M_10M'],
-    [Number.POSITIVE_INFINITY, 'MCAP_GE_10M'],
-  ]);
-  const holderBucket = bucket(features.holderCount, [
-    [100, 'HOLD_LT_100'],
-    [500, 'HOLD_100_500'],
-    [2_000, 'HOLD_500_2K'],
-    [Number.POSITIVE_INFINITY, 'HOLD_GE_2K'],
-  ]);
   const feeTvlBucket = bucket(features.feeActiveTvlRatio, [
     [0.001, 'FEE_TVL_LT_0_1PCT'],
     [0.003, 'FEE_TVL_0_1_0_3PCT'],
@@ -168,59 +156,46 @@ export function buildPoolPatternFingerprint(features = {}) {
     [Number.POSITIVE_INFINITY, 'FEE_TVL_GE_0_7PCT'],
   ]);
   const rangeWidthBucket = bucket(features.rangeWidthBins, [
-    [24, 'RANGE_LT_24'],
-    [48, 'RANGE_24_48'],
+    [48, 'RANGE_LT_48'],
     [68, 'RANGE_48_68'],
     [Number.POSITIVE_INFINITY, 'RANGE_GE_68'],
   ]);
-  const gmgnBundlerBucket = bucket(features.gmgnBundlerPct, [
-    [5, 'GMGN_BUNDLER_LT_5'],
-    [15, 'GMGN_BUNDLER_5_15'],
-    [35, 'GMGN_BUNDLER_15_35'],
-    [Number.POSITIVE_INFINITY, 'GMGN_BUNDLER_GE_35'],
-  ]);
-  const gmgnTop10Bucket = bucket(features.gmgnTop10Pct, [
-    [20, 'GMGN_TOP10_LT_20'],
-    [35, 'GMGN_TOP10_20_35'],
-    [50, 'GMGN_TOP10_35_50'],
-    [Number.POSITIVE_INFINITY, 'GMGN_TOP10_GE_50'],
-  ]);
-  const gmgnRugBucket = bucket(features.gmgnRugRatio, [
-    [10, 'GMGN_RUG_LT_10'],
-    [25, 'GMGN_RUG_10_25'],
-    [50, 'GMGN_RUG_25_50'],
-    [Number.POSITIVE_INFINITY, 'GMGN_RUG_GE_50'],
-  ]);
+  const gmgnRiskScore = [
+    Number.isFinite(Number(features.gmgnTop10Pct)) ? Math.max(0, Math.min(3, Math.floor(Number(features.gmgnTop10Pct) / 20))) : 0,
+    Number.isFinite(Number(features.gmgnDevHoldPct)) ? Math.max(0, Math.min(2, Math.floor(Number(features.gmgnDevHoldPct) / 4))) : 0,
+    Number.isFinite(Number(features.gmgnInsiderPct)) ? Math.max(0, Math.min(2, Math.floor(Number(features.gmgnInsiderPct) / 4))) : 0,
+    Number.isFinite(Number(features.gmgnBundlerPct)) ? Math.max(0, Math.min(3, Math.floor(Number(features.gmgnBundlerPct) / 15))) : 0,
+    Number.isFinite(Number(features.gmgnRugRatio)) ? Math.max(0, Math.min(3, Math.floor(Number(features.gmgnRugRatio) / 20))) : 0,
+  ].reduce((sum, n) => sum + n, 0);
+  const gmgnRiskBucket = gmgnRiskScore <= 2
+    ? 'GMGN_RISK_LOW'
+    : gmgnRiskScore <= 5
+      ? 'GMGN_RISK_MED'
+      : gmgnRiskScore <= 8
+        ? 'GMGN_RISK_HIGH'
+        : 'GMGN_RISK_EXTREME';
   const binStepBucket = Number.isFinite(Number(features.binStep)) ? `BIN_${Number(features.binStep)}` : 'BIN_UNKNOWN';
   const trendBucket = normalizeTrend(features.supertrend15m);
 
   const fingerprintParts = [
     binStepBucket,
+    trendBucket,
     tvlBucket,
     volumeTvlBucket,
-    mcapBucket,
-    holderBucket,
     feeTvlBucket,
-    trendBucket,
+    gmgnRiskBucket,
     rangeWidthBucket,
-    gmgnBundlerBucket,
-    gmgnTop10Bucket,
-    gmgnRugBucket,
   ];
   return {
     fingerprint: fingerprintParts.join('|'),
     buckets: {
       binStepBucket,
+      trendBucket,
       tvlBucket,
       volumeTvlBucket,
-      mcapBucket,
-      holderBucket,
       feeTvlBucket,
-      trendBucket,
+      gmgnRiskBucket,
       rangeWidthBucket,
-      gmgnBundlerBucket,
-      gmgnTop10Bucket,
-      gmgnRugBucket,
     },
   };
 }

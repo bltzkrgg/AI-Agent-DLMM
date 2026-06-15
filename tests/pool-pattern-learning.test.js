@@ -50,7 +50,8 @@ test('pool pattern learning builds fingerprint safely and evaluates disabled mod
   const full = mod.buildPoolPatternFingerprint(baseFeatures());
   assert.match(full.fingerprint, /^BIN_100\|/);
   assert.equal(full.buckets.trendBucket, 'BULLISH');
-  assert.equal(full.buckets.gmgnBundlerBucket, 'UNKNOWN');
+  assert.equal(full.buckets.gmgnRiskBucket, 'GMGN_RISK_LOW');
+  assert.equal(full.fingerprint.split('|').length, 7);
 
   const sparse = mod.buildPoolPatternFingerprint({});
   assert.match(sparse.fingerprint, /UNKNOWN/);
