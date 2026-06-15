@@ -187,6 +187,49 @@ function hasValidFrozenDeployIntent({
     ageMs <= (safeMaxAgeSec * 1000);
 }
 
+function readCanonicalEntryMeta(meta = {}, fallback = {}) {
+  const snapshot = meta?.entryCanonicalSnapshot && typeof meta.entryCanonicalSnapshot === 'object'
+    ? meta.entryCanonicalSnapshot
+    : null;
+  return {
+    snapshotAt: Number.isFinite(Number(snapshot?.snapshotAt))
+      ? Number(snapshot.snapshotAt)
+      : Number.isFinite(Number(meta?.snapshotAt))
+        ? Number(meta.snapshotAt)
+        : fallback.snapshotAt ?? null,
+    snapshotPrice: Number.isFinite(Number(snapshot?.snapshotPrice))
+      ? Number(snapshot.snapshotPrice)
+      : Number.isFinite(Number(meta?.snapshotPrice))
+        ? Number(meta.snapshotPrice)
+        : fallback.snapshotPrice ?? null,
+    snapshotM5Change: Number.isFinite(Number(snapshot?.snapshotM5Change))
+      ? Number(snapshot.snapshotM5Change)
+      : Number.isFinite(Number(meta?.snapshotM5Change))
+        ? Number(meta.snapshotM5Change)
+        : fallback.snapshotM5Change ?? null,
+    watchWindowSec: Number.isFinite(Number(snapshot?.watchWindowSec))
+      ? Number(snapshot.watchWindowSec)
+      : Number.isFinite(Number(meta?.watchWindowSec))
+        ? Number(meta.watchWindowSec)
+        : fallback.watchWindowSec ?? null,
+    maxDriftPct: Number.isFinite(Number(snapshot?.maxDriftPct))
+      ? Number(snapshot.maxDriftPct)
+      : Number.isFinite(Number(meta?.maxDriftPct))
+        ? Number(meta.maxDriftPct)
+        : fallback.maxDriftPct ?? null,
+    entryActiveBin: Number.isFinite(Number(snapshot?.entryActiveBin))
+      ? Number(snapshot.entryActiveBin)
+      : Number.isFinite(Number(meta?.entryActiveBin))
+        ? Number(meta.entryActiveBin)
+        : fallback.entryActiveBin ?? null,
+    entryPrice: Number.isFinite(Number(snapshot?.entryPrice))
+      ? Number(snapshot.entryPrice)
+      : Number.isFinite(Number(meta?.entryPrice))
+        ? Number(meta.entryPrice)
+        : fallback.entryPrice ?? null,
+  };
+}
+
 function removeQueueCandidate(mint = '', entry = null) {
   _queue.delete(mint);
   clearDeployQueueHoldNotifyState({
@@ -986,6 +1029,7 @@ export function dequeueToken(mint) {
 async function evaluateDeployConditions(entry) {
   const { pool, meta } = entry;
   const cfg = getConfig();
+  const canonicalMeta = readCanonicalEntryMeta(meta, { snapshotAt: entry.enqueuedAt });
   if (!isSupportedQuotePool(pool)) {
     return {
       ok: false,
@@ -1108,12 +1152,12 @@ async function evaluateDeployConditions(entry) {
   }
 
   const watchWindowSec = lpMode
-    ? Math.max(180, Number(meta.watchWindowSec || cfg.entryFreshWatchWindowSec || 180))
-    : Math.max(5, Number(meta.watchWindowSec || cfg.entryFreshWatchWindowSec || 90));
+    ? Math.max(180, Number(canonicalMeta.watchWindowSec || cfg.entryFreshWatchWindowSec || 180))
+    : Math.max(5, Number(canonicalMeta.watchWindowSec || cfg.entryFreshWatchWindowSec || 90));
   const maxDriftPct = lpMode
-    ? Math.max(8, Number(meta.maxDriftPct || cfg.entryFreshBreakoutMaxDriftPct || 8))
-    : Math.max(0.1, Number(meta.maxDriftPct || cfg.entryFreshBreakoutMaxDriftPct || 2.5));
-  const snapshotAt = Number(meta.snapshotAt || entry.enqueuedAt || 0);
+    ? Math.max(8, Number(canonicalMeta.maxDriftPct || cfg.entryFreshBreakoutMaxDriftPct || 8))
+    : Math.max(0.1, Number(canonicalMeta.maxDriftPct || cfg.entryFreshBreakoutMaxDriftPct || 2.5));
+  const snapshotAt = Number(canonicalMeta.snapshotAt || entry.enqueuedAt || 0);
   if (snapshotAt > 0 && (Date.now() - snapshotAt) > watchWindowSec * 1000) {
     return {
       ok: false,
@@ -1151,7 +1195,7 @@ async function evaluateDeployConditions(entry) {
   }
 
   const livePrice = Number(liveSnapshot?.ohlcv?.currentPrice || liveSnapshot?.price?.currentPrice || pool?.price || 0);
-  const snapshotPrice = Number(meta.snapshotPrice || 0);
+  const snapshotPrice = Number(canonicalMeta.snapshotPrice || 0);
   if (Number.isFinite(snapshotPrice) && snapshotPrice > 0 && Number.isFinite(livePrice) && livePrice > 0) {
     const driftPct = Math.abs(((livePrice - snapshotPrice) / snapshotPrice) * 100);
     if (driftPct > maxDriftPct) {
@@ -1390,10 +1434,11 @@ async function runWatcher() {
           recentM5: check.liveM5,
         },
       });
-      const intentBin = Number.isFinite(Number(meta?.entryActiveBin)) ? Number(meta.entryActiveBin) : null;
-      const intentPrice = Number.isFinite(Number(meta?.entryPrice)) ? Number(meta.entryPrice) : null;
-      const intentSnapshotAt = Number.isFinite(Number(meta?.snapshotAt)) ? Number(meta.snapshotAt) : null;
-      const intentMaxAgeSec = Math.max(30, Number(meta?.watchWindowSec || cfg.entryFreshWatchWindowSec || 180) || 180);
+      const canonicalMeta = readCanonicalEntryMeta(meta);
+      const intentBin = Number.isFinite(Number(canonicalMeta.entryActiveBin)) ? Number(canonicalMeta.entryActiveBin) : null;
+      const intentPrice = Number.isFinite(Number(canonicalMeta.entryPrice)) ? Number(canonicalMeta.entryPrice) : null;
+      const intentSnapshotAt = Number.isFinite(Number(canonicalMeta.snapshotAt)) ? Number(canonicalMeta.snapshotAt) : null;
+      const intentMaxAgeSec = Math.max(30, Number(canonicalMeta.watchWindowSec || cfg.entryFreshWatchWindowSec || 180) || 180);
       const frozenEnabled = meta?.hasFrozenEntryIntent === true && hasValidFrozenDeployIntent({
         entryActiveBin: intentBin,
         entryPrice: intentPrice,

@@ -53,6 +53,7 @@ prefer the explicit user request, then update this file after the change lands.
 - Operator-facing scanner text now uses `Signal` + `LP Score` wording instead of raw GMGN label noise, so report output stays LP-centric while still exposing the signal overlay.
 - Scanner report `Fee/TVL` must use Meteora 24h ratio as the source of truth; missing ratio now renders `N/A` instead of a fake `0.0%`.
 - Entry/watch/queue/deploy must preserve one canonical entry snapshot payload so active-position monitor/exit can read the same entry context that was used at deploy time.
+- Queue, monitor, defensive exit, and manual-close accounting must prefer `entryCanonicalSnapshot` before scattered legacy entry fields.
 
 ## Behavior contracts to preserve
 
@@ -85,6 +86,7 @@ Only edit other files when the change explicitly requires it.
 - Scanner report LP metrics consistency, especially Meteora `fee_tvl_ratio['24h']` versus derived/fallback values.
 - Entry metadata drift across WATCH, queue, direct deploy, and restored active positions.
 - Bin-step candidate selection versus fixed bin-step ranking.
+- Mixed canonical-vs-legacy entry field reads inside queue, monitor, and manual-close consumers.
 
 ## Locked areas
 
@@ -160,3 +162,4 @@ Do not edit these unless the user explicitly scopes the change there.
 - 2026-06-15: Unified exit display metadata for close notifications: `hunterAlpha` now reads shared exit label metadata so TAKE_PROFIT, trailing, defensive, stop-loss, and manual close messages use a consistent title/reason pair without changing normalized analytics reasons.
 - 2026-06-15: Completed 5.4 exit notification orchestration hardening: `hunterAlpha` now routes TP, stop-loss, max-hold, pool-impact, and close-success Telegram output through shared exit notification helpers, while `evilPanda` manual-close Telegram also reuses shared exit display metadata so operator-facing exit wording stays aligned across the lifecycle without changing exit policy.
 - 2026-06-15: Completed 5.4 bin-step selector hardening in `hunterAlpha`: per-token pool selection and manual CA resolution now treat `binStepPriority` as the candidate bin-step list and choose the candidate with the strongest Meteora fee generation snapshot (`fees24h`, `fee_tvl_ratio`, `volume24h`, `tvl`) instead of fixed numeric bin-step ranking, without adding new fetches or touching entry/exit gates.
+- 2026-06-15: Completed 5.4 canonical snapshot consumer hardening: `pendingDeployQueue` now resolves frozen intent/drift checks from `entryCanonicalSnapshot` first, and `evilPanda` monitor, defensive-exit confirmation, and manual-close accounting now read entry context through one canonical snapshot reader before falling back to legacy fields.

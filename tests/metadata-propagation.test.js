@@ -99,6 +99,20 @@ test('deploy callers propagate final Supertrend stamps into position metadata an
   assert.match(pandaSrc, /entryCanonicalSnapshot:\s*row\?\.entryCanonicalSnapshot && typeof row\.entryCanonicalSnapshot === 'object'/);
 });
 
+test('queue and monitor consumers prefer canonical entry snapshot over scattered legacy fields', () => {
+  const queueSrc = readSource('src/utils/pendingDeployQueue.js');
+  const pandaSrc = readSource('src/sniper/evilPanda.js');
+
+  assert.match(queueSrc, /function readCanonicalEntryMeta\(meta = \{\}, fallback = \{\}\)/);
+  assert.match(queueSrc, /const canonicalMeta = readCanonicalEntryMeta\(meta, \{ snapshotAt: entry\.enqueuedAt \}\)/);
+  assert.match(queueSrc, /const intentBin = Number\.isFinite\(Number\(canonicalMeta\.entryActiveBin\)\)/);
+  assert.match(queueSrc, /const intentPrice = Number\.isFinite\(Number\(canonicalMeta\.entryPrice\)\)/);
+  assert.match(pandaSrc, /function readCanonicalEntryContext\(reg = \{\}\)/);
+  assert.match(pandaSrc, /const canonicalEntry = readCanonicalEntryContext\(reg\)/);
+  assert.match(pandaSrc, /const entryActiveBin = canonicalEntry\.entryActiveBin/);
+  assert.match(pandaSrc, /const entryPrice = canonicalEntry\.entryPrice/);
+});
+
 test('DLMM deploy logs carry anchor provenance and range adjustment observability', () => {
   const pandaSrc = readSource('src/sniper/evilPanda.js');
 

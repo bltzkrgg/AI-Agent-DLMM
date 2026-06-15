@@ -148,6 +148,44 @@ function evaluateFrozenEntryIntentForDeploy({
   return { useFrozen: true, reason: 'ok', driftBins, snapshotAgeMs, driftPct };
 }
 
+function getCanonicalEntrySnapshot(reg = {}) {
+  return reg?.entryCanonicalSnapshot && typeof reg.entryCanonicalSnapshot === 'object'
+    ? reg.entryCanonicalSnapshot
+    : null;
+}
+
+function readCanonicalEntryContext(reg = {}) {
+  const snapshot = getCanonicalEntrySnapshot(reg);
+  return {
+    entryActiveBin: Number.isFinite(Number(snapshot?.entryActiveBin))
+      ? Number(snapshot.entryActiveBin)
+      : Number.isFinite(Number(reg?.entryActiveBin))
+        ? Number(reg.entryActiveBin)
+        : null,
+    entryPrice: Number.isFinite(Number(snapshot?.entryPrice))
+      ? Number(snapshot.entryPrice)
+      : Number.isFinite(Number(reg?.entryPrice))
+        ? Number(reg.entryPrice)
+        : null,
+    entryFinalTrend: snapshot?.finalTrendStamp?.direction
+      ? normalizeTrackedTrendDirection(snapshot.finalTrendStamp.direction)
+      : normalizeTrackedTrendDirection(reg?.entryFinalSupertrend15m),
+    entryFinalTrendSource: String(
+      snapshot?.finalTrendStamp?.source ||
+      reg?.entryFinalSupertrendSource ||
+      'unknown'
+    ).toLowerCase(),
+    entryFinalTrendAt: Number.isFinite(Number(snapshot?.finalTrendStamp?.checkedAt))
+      ? Number(snapshot.finalTrendStamp.checkedAt)
+      : Number.isFinite(Number(reg?.entryFinalSupertrendAt))
+        ? Number(reg.entryFinalSupertrendAt)
+        : null,
+    snapshotAt: Number.isFinite(Number(snapshot?.snapshotAt))
+      ? Number(snapshot.snapshotAt)
+      : null,
+  };
+}
+
 function isAccountNotInitializedDlmmError(error) {
   if (!error) return false;
   const meta = extractDlmmSdkDeployErrorMeta(error);
@@ -2753,6 +2791,7 @@ function hasManualCloseAccountingSnapshot(reg = {}) {
 }
 
 function buildManualCloseAccounting(reg = {}) {
+  const canonicalEntry = readCanonicalEntryContext(reg);
   const deploySol = Math.max(0, safeNum(reg?.deploySol, 0));
   const positionValueSol = Math.max(0, safeNum(reg?.currentValueSol, reg?.positionValueSol || 0));
   const feePnlSol = Math.max(0, safeNum(reg?.feePnlSol, 0));
@@ -2779,6 +2818,9 @@ function buildManualCloseAccounting(reg = {}) {
     accountingStatus,
     feePnlAvailable: reg?.feePnlAvailable === true || feePnlSol > 0 || feePnlPct > 0,
     feePnlSource,
+    entryActiveBin: canonicalEntry.entryActiveBin,
+    entryPrice: canonicalEntry.entryPrice,
+    entrySnapshotAt: canonicalEntry.snapshotAt,
   };
 }
 
@@ -4538,11 +4580,10 @@ function evaluateDefensiveExitConfirmation({
       bearishSinceMs,
     };
   }
-  const entryFinalTrend = normalizeTrackedTrendDirection(reg?.entryFinalSupertrend15m);
-  const entryFinalTrendSource = String(reg?.entryFinalSupertrendSource || 'unknown').toLowerCase();
-  const entryFinalTrendAt = Number.isFinite(Number(reg?.entryFinalSupertrendAt))
-    ? Number(reg.entryFinalSupertrendAt)
-    : null;
+  const canonicalEntry = readCanonicalEntryContext(reg);
+  const entryFinalTrend = canonicalEntry.entryFinalTrend;
+  const entryFinalTrendSource = canonicalEntry.entryFinalTrendSource;
+  const entryFinalTrendAt = canonicalEntry.entryFinalTrendAt;
   const entryFinalTrendAgeMs = entryFinalTrendAt !== null
     ? Math.max(0, nowMs - entryFinalTrendAt)
     : null;
@@ -4743,8 +4784,9 @@ export async function monitorPnL(positionPubkey) {
     const pnlPct = reg.deploySol > 0
       ? ((currentValueSol - reg.deploySol) / reg.deploySol) * 100
       : 0;
-    const entryActiveBin = Number.isFinite(Number(reg.entryActiveBin)) ? Number(reg.entryActiveBin) : null;
-    const entryPrice = Number.isFinite(Number(reg.entryPrice)) ? Number(reg.entryPrice) : null;
+    const canonicalEntry = readCanonicalEntryContext(reg);
+    const entryActiveBin = canonicalEntry.entryActiveBin;
+    const entryPrice = canonicalEntry.entryPrice;
     const feeOnlyPnl = await calculateFeeOnlyPnl({
       feeXRaw: pd.feeX?.toString() || '0',
       feeYRaw: pd.feeY?.toString() || '0',
