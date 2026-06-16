@@ -231,6 +231,40 @@ async function notify(msg, opts = {}) {
   } catch {}
 }
 
+function buildSetconfigHelpSections() {
+  const bySection = (section) => Object.entries(SETCONFIG_WHITELIST)
+    .filter(([, m]) => m.section === section)
+    .map(([k, m]) => `  <code>${k}</code> — ${m.desc}`)
+    .join('\n');
+
+  return [
+    `⚙️ <b>/setconfig — Kunci yang Bisa Diubah</b>\n\n` +
+    `Format: <code>/setconfig [key] [value]</code>\n` +
+    `atau:   <code>/setconfig [section].[key] [value]</code>\n\n` +
+    `<b>💰 Finance:</b>\n${bySection('finance')}\n\n` +
+    `<b>🔍 Discovery:</b>\n${bySection('discovery')}\n\n` +
+    `<b>🎯 Strategy:</b>\n${bySection('strategy')}`,
+    `<b>🕯️ Entry:</b>\n${bySection('entry')}\n\n` +
+    `<b>👀 Watch:</b>\n${bySection('watch')}\n\n` +
+    `<b>📉 OOR:</b>\n${bySection('oor')}\n\n` +
+    `<b>🛡️ Pool Impact Guard:</b>\n${bySection('poolImpactGuard')}\n\n` +
+    `<b>🧠 Pool Pattern Learning:</b>\n${bySection('poolPatternLearning')}\n\n` +
+    `<i>Contoh:\n` +
+    `/setconfig deployAmountSol 1.5\n` +
+    `/setconfig minTvl 50000\n` +
+    `/setconfig strategy.liquidityShape bidask\n` +
+    `/setconfig strategy.liquidityShape spot\n` +
+    `Catatan: shape ini global, jadi sekali diubah akan dipakai semua jalur deploy berikutnya.\n` +
+    `/setconfig takeProfitMinNetPnlPct 0.1\n` +
+    `/setconfig taWatchEnabled true\n` +
+    `/setconfig outOfRangeWaitMinutes 45\n` +
+    `/setconfig oor.displayWaitMinutes 5\n` +
+    `/setconfig oor.watchDisplayEnabled false\n` +
+    `/setconfig poolImpactGuardEnabled true\n` +
+    `/setconfig poolPatternLearningShadowMode true</i>`,
+  ];
+}
+
 async function runSilentScan({ emitFinalReport = false, source = 'startup' } = {}) {
   if (isDiscoveryPaused()) {
     return { blocked: true, policy: 'OPERATOR_DISCOVERY_PAUSED' };
@@ -696,7 +730,15 @@ bot.onText(/\/config/, (msg) => {
     `sedangkan oorDisplayWaitMinutes hanya mengatur seberapa sering status OOR muncul di log/Telegram. ` +
     `Jika <code>oorWatchDisplayEnabled=false</code>, notifikasi OOR Watch disembunyikan tanpa mengubah logic close.</i>\n` +
     `<i>Edit: /setconfig ? untuk lihat key yang bisa diubah</i>`,
-    { parse_mode: 'HTML' }
+    {
+      parse_mode: 'HTML',
+      reply_markup: {
+        inline_keyboard: [
+          [{ text: 'Config', callback_data: 'show_setconfig_help' }],
+          [{ text: 'Contoh', callback_data: 'show_setconfig_examples' }],
+        ],
+      },
+    }
   );
 });
 
@@ -717,38 +759,9 @@ bot.onText(/\/setconfig(?:\s+(\S+))?(?:\s+(.+))?/, async (msg, match) => {
 
   // /setconfig ? — tampilkan help
   if (!rawKey || rawKey === '?') {
-    const bySection = (section) => Object.entries(SETCONFIG_WHITELIST)
-      .filter(([, m]) => m.section === section)
-      .map(([k, m]) => `  <code>${k}</code> — ${m.desc}`)
-      .join('\n');
-
-    bot.sendMessage(chatId,
-      `⚙️ <b>/setconfig — Kunci yang Bisa Diubah</b>\n\n` +
-      `Format: <code>/setconfig [key] [value]</code>\n` +
-      `atau:   <code>/setconfig [section].[key] [value]</code>\n\n` +
-      `<b>💰 Finance:</b>\n${bySection('finance')}\n\n` +
-      `<b>🔍 Discovery:</b>\n${bySection('discovery')}\n\n` +
-      `<b>🎯 Strategy:</b>\n${bySection('strategy')}\n\n` +
-      `<b>🕯️ Entry:</b>\n${bySection('entry')}\n\n` +
-      `<b>👀 Watch:</b>\n${bySection('watch')}\n\n` +
-      `<b>📉 OOR:</b>\n${bySection('oor')}\n\n` +
-      `<b>🛡️ Pool Impact Guard:</b>\n${bySection('poolImpactGuard')}\n\n` +
-      `<b>🧠 Pool Pattern Learning:</b>\n${bySection('poolPatternLearning')}\n\n` +
-      `<i>Contoh:\n` +
-      `/setconfig deployAmountSol 1.5\n` +
-      `/setconfig minTvl 50000\n` +
-      `/setconfig strategy.liquidityShape bidask\n` +
-      `/setconfig strategy.liquidityShape spot\n` +
-      `Catatan: shape ini global, jadi sekali diubah akan dipakai semua jalur deploy berikutnya.\n` +
-      `/setconfig takeProfitMinNetPnlPct 0.1\n` +
-      `/setconfig taWatchEnabled true\n` +
-      `/setconfig outOfRangeWaitMinutes 45\n` +
-      `/setconfig oor.displayWaitMinutes 5\n` +
-      `/setconfig oor.watchDisplayEnabled false\n` +
-      `/setconfig poolImpactGuardEnabled true\n` +
-      `/setconfig poolPatternLearningShadowMode true</i>`,
-      { parse_mode: 'HTML' }
-    );
+    for (const sectionMsg of buildSetconfigHelpSections()) {
+      await sendLong(chatId, sectionMsg, { parse_mode: 'HTML' });
+    }
     return;
   }
 
@@ -915,6 +928,36 @@ bot.onText(/\/dryrun(?:\s+(on|off))?/, (msg, match) => {
     `${enable ? '🟡' : '🔴'} <b>Dry Run: ${enable ? 'ON' : 'OFF'}</b>`,
     { parse_mode: 'HTML' }
   );
+});
+
+bot.on('callback_query', async (query) => {
+  try {
+    const chatId = query?.message?.chat?.id;
+    const data = String(query?.data || '');
+    if (!chatId || !data) return;
+
+    if (data === 'show_setconfig_help') {
+      for (const sectionMsg of buildSetconfigHelpSections()) {
+        await sendLong(chatId, sectionMsg, { parse_mode: 'HTML' });
+      }
+    } else if (data === 'show_setconfig_examples') {
+      await sendLong(chatId,
+        `🧾 <b>/setconfig Examples</b>\n\n` +
+        `<code>/setconfig deployAmountSol 1.5</code>\n` +
+        `<code>/setconfig minTvl 50000</code>\n` +
+        `<code>/setconfig strategy.liquidityShape bidask</code>\n` +
+        `<code>/setconfig takeProfitMinNetPnlPct 0.1</code>\n` +
+        `<code>/setconfig outOfRangeWaitMinutes 45</code>\n` +
+        `<code>/setconfig oor.watchDisplayEnabled false</code>`,
+        { parse_mode: 'HTML' }
+      );
+    }
+
+    await bot.answerCallbackQuery(query.id).catch(() => {});
+  } catch (e) {
+    console.warn(`[telegram] callback_query error: ${e.message}`);
+    if (query?.id) await bot.answerCallbackQuery(query.id).catch(() => {});
+  }
 });
 
 // /autoscreen on|off — Shortcut toggle autoScreeningEnabled

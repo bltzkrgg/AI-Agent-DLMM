@@ -57,6 +57,11 @@ test('/config and startup messages expose realtime PnL interval', () => {
   assert.match(content, /realtimePnlIntervalSec/);
   assert.match(content, /Realtime PnL/);
   assert.match(content, /realtimePnlSec/);
+  assert.match(content, /reply_markup:\s*\{\s*inline_keyboard:/);
+  assert.match(content, /show_setconfig_help/);
+  assert.match(content, /show_setconfig_examples/);
+  assert.match(content, /buildSetconfigHelpSections/);
+  assert.match(content, /await sendLong\(chatId, sectionMsg, \{ parse_mode: 'HTML' \}\)/);
 });
 
 test('startup and shutdown banners use the simplified AI-Agent-DLMM text', () => {
