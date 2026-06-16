@@ -1398,6 +1398,20 @@ function buildExitClosedNotification({ positionPubkey, exitMeta, exitResult, bal
     }
     return `${compactLines.join('\n')}`;
   }
+  if (normalizedExitTitle === 'OUT OF RANGE') {
+    const lines = [
+      `✅ <b>Posisi Di Tutup (OUT OF RANGE)</b>`,
+      `Token: <b>${tokenLabel}</b>`,
+      `Reason: <code>${escapeHTML(exitMeta.reasonLabel || 'Out of Range Trigger')}</code>`,
+    ];
+    const balanceNum = Number(balance);
+    if (Number.isFinite(balanceNum)) {
+      lines.push(`Balance: <code>${balanceNum} SOL</code>`);
+    } else {
+      lines.push(`Balance: <code>${balance} SOL</code>`);
+    }
+    return `${lines.join('\n')}`;
+  }
   const lines = [
     `✅ <b>Posisi Di Tutup (${exitMeta.title})</b>`,
     `Token: <b>${tokenLabel}</b>`,

@@ -556,3 +556,24 @@ test('exit close notifications use unified display metadata for all close famili
   assert.match(exitReasonsSrc, /Manual Close Trigger/);
   assert.match(exitReasonsSrc, /Pool Impact Trigger/);
 });
+
+test('out-of-range close notifications use the compact minimal layout', () => {
+  const hunterSrc = readFileSync(hunterPath, 'utf8');
+  const branchStart = hunterSrc.indexOf("if (normalizedExitTitle === 'OUT OF RANGE')");
+  const branchEnd = hunterSrc.indexOf('const lines = [', branchStart + 1);
+  const branchSrc = branchStart >= 0 && branchEnd > branchStart
+    ? hunterSrc.slice(branchStart, branchEnd + 500)
+    : hunterSrc;
+
+  assert.match(branchSrc, /normalizedExitTitle === 'OUT OF RANGE'/);
+  assert.match(branchSrc, /✅ <b>Posisi Di Tutup \(OUT OF RANGE\)<\/b>/);
+  assert.match(branchSrc, /Token: <b>\$\{tokenLabel\}<\/b>/);
+  assert.match(branchSrc, /Reason: <code>\$\{escapeHTML\(exitMeta\.reasonLabel \|\| 'Out of Range Trigger'\)\}<\/code>/);
+  assert.match(branchSrc, /Balance: <code>\$\{balanceNum\} SOL<\/code>/);
+  assert.doesNotMatch(branchSrc, /Position: <code>/);
+  assert.doesNotMatch(branchSrc, /Fee PnL:/);
+  assert.doesNotMatch(branchSrc, /Position Value:/);
+  assert.doesNotMatch(branchSrc, /Total Exposure PnL:/);
+  assert.doesNotMatch(branchSrc, /Wallet Net Delta:/);
+  assert.doesNotMatch(branchSrc, /Rent Refund/);
+});
