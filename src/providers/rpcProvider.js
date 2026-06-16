@@ -160,6 +160,7 @@ export class RpcManager {
     this.cache = new Map(); // Simple cache: {method:params} → result
     this.cacheExpiry = 5 * 60 * 1000; // 5 minutes
     this.lastProviderIndex = 0;
+    this.healthCheckTimer = null;
     this.circuitBreaker = config.circuitBreaker || null;
     this.providerFailStreakToCooldown = config.providerFailStreakToCooldown || 2;
     this.providerCooldownMs = config.providerCooldownMs || 45_000;
@@ -297,7 +298,8 @@ export class RpcManager {
    * Start periodic health checks
    */
   startHealthChecks(interval = 30000) {
-    setInterval(async () => {
+    if (this.healthCheckTimer) clearInterval(this.healthCheckTimer);
+    this.healthCheckTimer = setInterval(async () => {
       for (const provider of this.providers) {
         try {
           await provider.healthCheck();
@@ -306,6 +308,17 @@ export class RpcManager {
         }
       }
     }, interval);
+    if (typeof this.healthCheckTimer.unref === 'function') {
+      this.healthCheckTimer.unref();
+    }
+    return this.healthCheckTimer;
+  }
+
+  stopHealthChecks() {
+    if (this.healthCheckTimer) {
+      clearInterval(this.healthCheckTimer);
+      this.healthCheckTimer = null;
+    }
   }
 
   /**

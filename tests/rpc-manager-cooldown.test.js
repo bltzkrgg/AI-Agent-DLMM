@@ -1,6 +1,15 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { RpcManager } from '../src/providers/rpcProvider.js';
+import { dirname, join } from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const repoRoot = join(__dirname, '..');
+
+function importFresh(modulePath) {
+  return import(`${pathToFileURL(modulePath).href}?t=${Date.now()}_${Math.random()}`);
+}
 
 function makeStubProvider(name, fn) {
   return {
@@ -71,3 +80,24 @@ test('RpcManager returns stale cache if all providers fail after cache expiry', 
   assert.equal(callCount, 2);
 });
 
+test('helius rpc manager bootstrap uses a longer health-check cadence', async () => {
+  process.env.HELIUS_API_KEY = 'dummy-key';
+  const helius = await importFresh(join(repoRoot, 'src/utils/helius.js'));
+  helius.__resetHeliusCachesForTests();
+
+  let seenInterval = null;
+  const originalStart = RpcManager.prototype.startHealthChecks;
+
+  try {
+    RpcManager.prototype.startHealthChecks = function startHealthChecksSpy(interval) {
+      seenInterval = interval;
+    };
+
+    helius.initializeRpcManager();
+    assert.equal(seenInterval, 90_000);
+  } finally {
+    RpcManager.prototype.startHealthChecks = originalStart;
+    helius.__resetHeliusCachesForTests();
+    delete process.env.HELIUS_API_KEY;
+  }
+});

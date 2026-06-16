@@ -19,6 +19,9 @@ const BIRDEYE_BASE = 'https://public-api.birdeye.so';
 let birdeyeCooldownUntil = 0;
 const MERIDIAN_FALLBACK_TTL_MS = 45_000;
 const _meridianFallbackCache = new Map(); // key -> { at, value }
+const MARKET_SNAPSHOT_CACHE_TTL_MS = 12_000;
+const _marketSnapshotCache = new Map(); // key -> { at, value }
+const _marketSnapshotInflight = new Map(); // key -> Promise<object>
 const METEORA_OHLCV_CACHE_TTL_MS = 45_000;
 const METEORA_OHLCV_FAILURE_MIN_COOLDOWN_MS = 120_000;
 const METEORA_OHLCV_FAILURE_MAX_COOLDOWN_MS = 300_000;
@@ -36,6 +39,15 @@ function getOracleFallbackCacheKey(tokenMint = '', poolAddress = '') {
 
 function getMeteoraOhlcvCacheKey(poolAddress = '', timeframe = '5m') {
   return `${String(poolAddress || '').trim()}:${String(timeframe || '5m').trim().toLowerCase()}`;
+}
+
+function getMarketSnapshotCacheKey(tokenMint = '', poolAddress = null, options = {}) {
+  const includeEntryCandles5m = options?.includeEntryCandles5m === true ? 'entry5m:1' : 'entry5m:0';
+  return [
+    String(tokenMint || '').trim() || 'unknown',
+    String(poolAddress || '').trim() || 'nopool',
+    includeEntryCandles5m,
+  ].join('|');
 }
 
 function normalizeMeteoraOhlcvCandle(row = null) {
@@ -1160,6 +1172,17 @@ export async function getHistoryOHLCV(tokenMint) {
 // ─── Full DLMM Snapshot ──────────────────────────────────────────
 
 export async function getMarketSnapshot(tokenMint, poolAddress = null, options = {}) {
+  const cacheKey = getMarketSnapshotCacheKey(tokenMint, poolAddress, options);
+  const cached = _marketSnapshotCache.get(cacheKey);
+  if (cached && (Date.now() - cached.at) <= MARKET_SNAPSHOT_CACHE_TTL_MS) {
+    return cached.value;
+  }
+
+  if (_marketSnapshotInflight.has(cacheKey)) {
+    return _marketSnapshotInflight.get(cacheKey);
+  }
+
+  const task = (async () => {
   const caller = String(options?.from || 'unknown');
   const usingPoolAddress = Boolean(poolAddress);
   if (caller === 'deploy_queue') {
@@ -1267,6 +1290,21 @@ export async function getMarketSnapshot(tokenMint, poolAddress = null, options =
       sentiment: sentiment.sentiment,
     } : null,
   };
+  })();
+
+  _marketSnapshotInflight.set(cacheKey, task);
+  try {
+    const snapshot = await task;
+    _marketSnapshotCache.set(cacheKey, { at: Date.now(), value: snapshot });
+    return snapshot;
+  } finally {
+    _marketSnapshotInflight.delete(cacheKey);
+  }
+}
+
+export function __resetMarketSnapshotCacheForTests() {
+  _marketSnapshotCache.clear();
+  _marketSnapshotInflight.clear();
 }
 
 // ─── Helper functions (Legacy/Dummy) ─────────────────────────────

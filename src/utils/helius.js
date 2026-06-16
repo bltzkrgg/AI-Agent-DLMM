@@ -21,6 +21,16 @@
 import { fetchWithTimeout, stringify } from './safeJson.js';
 import { RpcManager } from '../providers/rpcProvider.js';
 
+const RPC_HEALTH_CHECK_INTERVAL_MS = 90_000;
+const PRIORITY_FEE_CACHE_TTL_MS = 4_000;
+const ONCHAIN_SIGNAL_CACHE_TTL_MS = 20_000;
+const ONCHAIN_SIGNAL_FAILURE_TTL_MS = 5_000;
+
+const _priorityFeeCache = new Map(); // key -> { at, value }
+const _priorityFeeInflight = new Map(); // key -> Promise<number>
+const _onChainSignalCache = new Map(); // mint -> { at, value, ok }
+const _onChainSignalInflight = new Map(); // mint -> Promise<object>
+
 // ─── URL helpers ──────────────────────────────────────────────────
 
 export function getHeliusRpcUrl() {
@@ -39,6 +49,25 @@ export function getHeliusApiBase() {
 // ─── RPC Manager (Fallback Chain) ─────────────────────────────────
 
 let _rpcManager = null;
+
+function normalizeAccountKeySet(accountKeys = []) {
+  if (!Array.isArray(accountKeys) || accountKeys.length === 0) return '';
+  return Array.from(new Set(
+    accountKeys
+      .map((key) => String(key || '').trim())
+      .filter(Boolean)
+  )).sort().join('|');
+}
+
+function getCachedValue(cache, key, ttlMs) {
+  const entry = cache.get(key);
+  if (!entry) return null;
+  if ((Date.now() - entry.at) > ttlMs) {
+    cache.delete(key);
+    return null;
+  }
+  return entry.value;
+}
 
 export function initializeRpcManager(circuitBreaker = null) {
   if (_rpcManager) return _rpcManager;
@@ -63,7 +92,7 @@ export function initializeRpcManager(circuitBreaker = null) {
 
   try {
     _rpcManager = new RpcManager(activeConfig);
-    _rpcManager.startHealthChecks(30000); // Health check every 30s
+    _rpcManager.startHealthChecks(RPC_HEALTH_CHECK_INTERVAL_MS);
     return _rpcManager;
   } catch (e) {
     console.warn('⚠️ Failed to initialize RPC manager:', e.message);
@@ -166,24 +195,41 @@ export async function getTokenActivity(tokenMint, limit = 20) {
 // Kita pakai P75 untuk balance antara kecepatan dan cost.
 
 export async function getRecommendedPriorityFee(accountKeys = []) {
+  const cacheKey = normalizeAccountKeySet(accountKeys);
+  const cached = getCachedValue(_priorityFeeCache, cacheKey, PRIORITY_FEE_CACHE_TTL_MS);
+  if (cached != null) return cached;
+
+  if (_priorityFeeInflight.has(cacheKey)) {
+    return _priorityFeeInflight.get(cacheKey);
+  }
+
+  const task = (async () => {
   try {
     // Helius enhanced getRecentPrioritizationFees — returns [{slot, prioritizationFee}]
     const fees = await heliusRpc('getRecentPrioritizationFees', [accountKeys]);
-    if (!Array.isArray(fees) || fees.length === 0) return 50000; // 0.00005 SOL default
+    if (!Array.isArray(fees) || fees.length === 0) {
+      _priorityFeeCache.set(cacheKey, { at: Date.now(), value: 50000 });
+      return 50000;
+    }
 
     const sorted = fees
       .map(f => f.prioritizationFee || 0)
       .filter(f => f > 0)
       .sort((a, b) => a - b);
 
-    if (sorted.length === 0) return 50000;
+    if (sorted.length === 0) {
+      _priorityFeeCache.set(cacheKey, { at: Date.now(), value: 50000 });
+      return 50000;
+    }
 
     // P75 — lebih tinggi dari median untuk prioritas landing (Sultan Gas Mode)
     const p75idx = Math.floor(sorted.length * 0.75);
     const p75 = sorted[Math.min(p75idx, sorted.length - 1)];
 
     // Clamp: min 10000 (0.00001 SOL), max 1_000_000 (0.001 SOL - Sultan Safety)
-    return Math.max(10000, Math.min(1000000, p75));
+    const value = Math.max(10000, Math.min(1000000, p75));
+    _priorityFeeCache.set(cacheKey, { at: Date.now(), value });
+    return value;
   } catch (err) {
     console.warn(`⚠️ [helius] Helius fee API failed, trying native fallback...`);
     try {
@@ -205,14 +251,25 @@ export async function getRecommendedPriorityFee(accountKeys = []) {
           const p75idx = Math.floor(sorted.length * 0.75);
           const p75 = sorted[Math.min(p75idx, sorted.length - 1)];
           console.log(`✅ [helius] Native fallback success: ${p75} micro-lamports`);
-          return Math.max(5000, Math.min(500000, p75));
+          const value = Math.max(5000, Math.min(500000, p75));
+          _priorityFeeCache.set(cacheKey, { at: Date.now(), value });
+          return value;
         }
       }
     } catch (fallbackErr) {
       console.warn(`❌ [helius] Native fallback also failed: ${fallbackErr.message}`);
     }
     
+    _priorityFeeCache.set(cacheKey, { at: Date.now(), value: 50000 });
     return 50000; // fallback final
+  }
+  })();
+
+  _priorityFeeInflight.set(cacheKey, task);
+  try {
+    return await task;
+  } finally {
+    _priorityFeeInflight.delete(cacheKey);
   }
 }
 
@@ -248,7 +305,22 @@ export async function getHeliusOnChainSignals(tokenMint) {
     return { available: false, reason: 'HELIUS_API_KEY not set' };
   }
 
-  try {
+  const cacheKey = String(tokenMint || '').trim();
+  const cachedEntry = _onChainSignalCache.get(cacheKey);
+  if (cachedEntry) {
+    const ttlMs = cachedEntry.ok ? ONCHAIN_SIGNAL_CACHE_TTL_MS : ONCHAIN_SIGNAL_FAILURE_TTL_MS;
+    if ((Date.now() - cachedEntry.at) <= ttlMs) {
+      return cachedEntry.value;
+    }
+    _onChainSignalCache.delete(cacheKey);
+  }
+
+  if (_onChainSignalInflight.has(cacheKey)) {
+    return _onChainSignalInflight.get(cacheKey);
+  }
+
+  const task = (async () => {
+    try {
     const [holderData, activity] = await Promise.allSettled([
       getTokenHolderData(tokenMint),
       getTokenActivity(tokenMint, 20),
@@ -257,9 +329,13 @@ export async function getHeliusOnChainSignals(tokenMint) {
     const hd   = holderData.status === 'fulfilled' ? holderData.value : null;
     const act  = activity.status  === 'fulfilled' ? activity.value  : { recentTxCount: 0 };
 
-    if (!hd) return { available: false, reason: 'Gagal fetch holder data' };
+    if (!hd) {
+      const value = { available: false, reason: 'Gagal fetch holder data' };
+      _onChainSignalCache.set(cacheKey, { at: Date.now(), value, ok: false });
+      return value;
+    }
 
-    return {
+    const value = {
       available:      true,
       recentTxCount:  act.recentTxCount,
       top10HolderPct: hd.top10HolderPct,
@@ -271,8 +347,20 @@ export async function getHeliusOnChainSignals(tokenMint) {
         ? 'Ada whale — monitor ketat, perlu exit cepat kalau ada dump'
         : 'Distribusi sehat — dump risk rendah, aman untuk LP',
     };
+    _onChainSignalCache.set(cacheKey, { at: Date.now(), value, ok: true });
+    return value;
   } catch (e) {
-    return { available: false, reason: e.message };
+    const value = { available: false, reason: e.message };
+    _onChainSignalCache.set(cacheKey, { at: Date.now(), value, ok: false });
+    return value;
+  }
+  })();
+
+  _onChainSignalInflight.set(cacheKey, task);
+  try {
+    return await task;
+  } finally {
+    _onChainSignalInflight.delete(cacheKey);
   }
 }
 
@@ -285,4 +373,12 @@ export function getRpcManager() {
 export function getRpcMetrics() {
   const manager = getRpcManager();
   return manager?.getMetrics() || { error: 'RPC manager not initialized' };
+}
+
+export function __resetHeliusCachesForTests() {
+  _priorityFeeCache.clear();
+  _priorityFeeInflight.clear();
+  _onChainSignalCache.clear();
+  _onChainSignalInflight.clear();
+  _rpcManager = null;
 }
