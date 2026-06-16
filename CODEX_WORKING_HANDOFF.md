@@ -56,6 +56,7 @@ prefer the explicit user request, then update this file after the change lands.
 - Queue, monitor, defensive exit, and manual-close accounting must prefer `entryCanonicalSnapshot` before scattered legacy entry fields.
 - On successful deploy, `evilPanda` must upgrade `entryCanonicalSnapshot` with the final runtime entry truth actually used on-chain (`entryActiveBin`, `entryPrice`, final ST stamp, anchor/range-adjust metadata) so monitor/exit do not keep reading stale queue-era intent fields.
 - Helius quota saver core must use short-lived snapshot/on-chain/priority-fee cache reuse with in-flight dedupe; this is an infrastructure optimization only and must not change entry/exit gates or disable fast-lane monitor behavior.
+- 5.4 mini is reserved for operator-facing polish and test-string alignment around reports/exits; it must not alter trading logic, gating, or lifecycle accounting.
 
 ## Behavior contracts to preserve
 
@@ -173,3 +174,5 @@ Do not edit these unless the user explicitly scopes the change there.
 - 2026-06-15: Hardened TP close banner token fallback so close notifications prefer tracked symbol/metadata before falling back to position pubkey, preventing `Token` from mirroring the position id when registry label is unavailable.
 - 2026-06-15: Compact TP close banners now render the requested minimal format (`Posisi Di Tutup`, `Token :`, `Reason`, `Total Exposure PnL`, `Balance`) for TP families only, while non-TP exit families keep the richer close layout.
 - 2026-06-16: Completed 5.4 Helius quota saver core: `oracle` now reuses identical `getMarketSnapshot()` requests via short-lived in-memory cache + in-flight dedupe, `helius` now caches on-chain signal snapshots and normalized priority-fee lookups, RPC manager health checks run less aggressively, and no entry/exit policy or fast-lane monitor semantics were changed.
+- 2026-06-16: Completed 5.4 mini polish for operator-facing text: scanner report spacing and rejected reason formatting were tightened, and report tests now assert the intended clean layout without touching trading behavior.
+- 2026-06-16: 5.4 mini also keeps exit-label wording anchored to `exitReasons` so take-profit families remain `Take Profit Trigger` / `Trailing Profit Trigger` / `Defensive Exit Trigger` consistently across report and close displays.

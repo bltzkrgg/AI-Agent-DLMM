@@ -157,6 +157,7 @@ class ReportManager {
     }
 
     vLines.push(`<b>${name}</b>`);
+    vLines.push('');
     vLines.push(`<b>Meteora</b>`);
     vLines.push(`  TVL ${this._formatUsdShort(tvl)} | Vol24h ${this._formatUsdShort(vol24h)} | Fees24h ${fees24hText}`);
     vLines.push(`  Fee/TVL 24h ${this._formatRatioPct(feeTvl, 1)} | Bin ${binStep} | MCap ${this._formatUsdShort(mcap)}`);
@@ -172,6 +173,7 @@ class ReportManager {
     if (pool.signalScore != null && Number.isFinite(Number(pool.signalScore))) {
       vLines.push(`  LP Score ${Math.max(0, Math.min(100, Math.round(Number(pool.signalScore))))}/100`);
     }
+    vLines.push('');
     vLines.push(`  Status : ${pool.rejected ? 'REJECTED' : (pool.status || 'WATCH')}`);
     return vLines.join('\n');
   }
@@ -217,14 +219,14 @@ class ReportManager {
 
     let report = `📊 AI-Agent Scanner Result\n`;
     report += `📅 ${nowStr}\n\n`;
-    report += `<b>Top 5 Pools:</b>\n`;
+    report += `<b>Top 5 Pools:</b>\n\n`;
     report += `${top5Cycle.map((pool, idx) => this._buildTopPoolBlock(pool, idx)).join('\n\n')}\n\n`;
 
     if (rejectedTokens.length > 0) {
-      report += `<b>Rejected:</b>\n`;
+      report += `<b>Rejected:</b>\n\n`;
       report += `${rejectedTokens.slice(0, 5).map((t) => {
         const reason = this.getGateDetailsText(t, this.getFirstFailedGate(t)) || t.reason || this.getFirstFailedGate(t) || 'Rejected';
-        return `<b>${t.name}</b> — ${reason}`;
+        return `<b>${t.name}</b> — <i>${reason}</i>`;
       }).join('\n')}\n\n`;
     }
 
