@@ -265,6 +265,137 @@ function buildSetconfigHelpSections() {
   ];
 }
 
+function buildSetconfigSectionMenu() {
+  return {
+    text: `⚙️ <b>AI-Agent-DLMM Config</b>\n\n` +
+      `Pilih section:\n` +
+      `[ Finance ] [ Discovery ]\n` +
+      `[ Strategy ] [ Entry ]\n` +
+      `[ Watch ]    [ OOR ]\n` +
+      `[ Pool Impact Guard ]\n` +
+      `[ Pool Pattern Learning ]\n\n` +
+      `<i>Klik section untuk lihat key dan contoh /setconfig.</i>`,
+    opts: {
+      parse_mode: 'HTML',
+      reply_markup: {
+        inline_keyboard: [
+          [
+            { text: 'Finance', callback_data: 'setconfig_section:finance' },
+            { text: 'Discovery', callback_data: 'setconfig_section:discovery' },
+          ],
+          [
+            { text: 'Strategy', callback_data: 'setconfig_section:strategy' },
+            { text: 'Entry', callback_data: 'setconfig_section:entry' },
+          ],
+          [
+            { text: 'Watch', callback_data: 'setconfig_section:watch' },
+            { text: 'OOR', callback_data: 'setconfig_section:oor' },
+          ],
+          [
+            { text: 'Pool Impact', callback_data: 'setconfig_section:poolImpactGuard' },
+          ],
+          [
+            { text: 'Pattern', callback_data: 'setconfig_section:poolPatternLearning' },
+          ],
+        ],
+      },
+    },
+  };
+}
+
+function buildSetconfigSectionDetail(section) {
+  const titleMap = {
+    finance: '💰 Finance',
+    discovery: '🔍 Discovery',
+    strategy: '🎯 Strategy',
+    entry: '🕯️ Entry',
+    watch: '👀 Watch',
+    oor: '📉 OOR',
+    poolImpactGuard: '🛡️ Pool Impact Guard',
+    poolPatternLearning: '🧠 Pool Pattern Learning',
+  };
+  const bySection = (target) => Object.entries(SETCONFIG_WHITELIST)
+    .filter(([, m]) => m.section === target)
+    .map(([k, m]) => `- <code>${k}</code> — ${m.desc}`)
+    .join('\n');
+  const examples = {
+    finance: [
+      '/setconfig deployAmountSol 1.5',
+      '/setconfig minSolToOpen 0.10',
+      '/setconfig gasReserve 0.03',
+      '/setconfig dailyLossLimitUsd 25',
+    ],
+    discovery: [
+      '/setconfig minTvl 50000',
+      '/setconfig maxTvl 5000000',
+      '/setconfig minVolume 100000',
+      '/setconfig maxMcap 1000000',
+    ],
+    strategy: [
+      '/setconfig strategy.liquidityShape bidask',
+      '/setconfig takeProfitMinNetPnlPct 0.1',
+      '/setconfig closeSwapMode all',
+      '/setconfig closeResidualSwapEnabled true',
+    ],
+    entry: [
+      '/setconfig entryDecisionMode strict',
+      '/setconfig entryCandleSanityEnabled true',
+      '/setconfig entryMinVolumeRatio 1.5',
+      '/setconfig entryM15MaxAgeSec 1800',
+    ],
+    watch: [
+      '/setconfig watchIntervalSec 30',
+      '/setconfig taWatchEnabled true',
+      '/setconfig taWatchMaxPools 10',
+      '/setconfig taWatchExpiryMin 60',
+    ],
+    oor: [
+      '/setconfig outOfRangeWaitMinutes 45',
+      '/setconfig oorDisplayWaitMinutes 5',
+      '/setconfig oorWatchDisplayEnabled false',
+    ],
+    poolImpactGuard: [
+      '/setconfig poolImpactGuardEnabled true',
+      '/setconfig poolImpactPriceDropWarnPct 5',
+      '/setconfig poolImpactPriceDropForceExitPct 15',
+      '/setconfig poolImpactLowerRangeBufferPct 15',
+    ],
+    poolPatternLearning: [
+      '/setconfig poolPatternLearningEnabled true',
+      '/setconfig poolPatternLearningShadowMode true',
+      '/setconfig poolPatternLearningMinSamples 30',
+      '/setconfig poolPatternLearningMaxScoreDelta 0.25',
+    ],
+  };
+  const label = titleMap[section] || '⚙️ Section';
+  const lines = [
+    `${label}`,
+    '',
+    'Bisa diubah:',
+    bySection(section) || '- N/A',
+    '',
+    'Contoh:',
+    ...(examples[section] || ['- N/A']).map((line) => ` ${line}`),
+  ];
+  return {
+    text: lines.join('\n'),
+    opts: {
+      parse_mode: 'HTML',
+      reply_markup: {
+        inline_keyboard: [
+          [
+            { text: 'Kembali', callback_data: 'setconfig_menu' },
+          ],
+        ],
+      },
+    },
+  };
+}
+
+function isSetconfigSection(data = '') {
+  return String(data || '').startsWith('setconfig_section:');
+}
+
 async function runSilentScan({ emitFinalReport = false, source = 'startup' } = {}) {
   if (isDiscoveryPaused()) {
     return { blocked: true, policy: 'OPERATOR_DISCOVERY_PAUSED' };
@@ -730,15 +861,7 @@ bot.onText(/\/config/, (msg) => {
     `sedangkan oorDisplayWaitMinutes hanya mengatur seberapa sering status OOR muncul di log/Telegram. ` +
     `Jika <code>oorWatchDisplayEnabled=false</code>, notifikasi OOR Watch disembunyikan tanpa mengubah logic close.</i>\n` +
     `<i>Edit: /setconfig ? untuk lihat key yang bisa diubah</i>`,
-    {
-      parse_mode: 'HTML',
-      reply_markup: {
-        inline_keyboard: [
-          [{ text: 'Config', callback_data: 'show_setconfig_help' }],
-          [{ text: 'Contoh', callback_data: 'show_setconfig_examples' }],
-        ],
-      },
-    }
+    buildSetconfigSectionMenu().opts
   );
 });
 
@@ -759,9 +882,8 @@ bot.onText(/\/setconfig(?:\s+(\S+))?(?:\s+(.+))?/, async (msg, match) => {
 
   // /setconfig ? — tampilkan help
   if (!rawKey || rawKey === '?') {
-    for (const sectionMsg of buildSetconfigHelpSections()) {
-      await sendLong(chatId, sectionMsg, { parse_mode: 'HTML' });
-    }
+    const menu = buildSetconfigSectionMenu();
+    await sendLong(chatId, menu.text, menu.opts);
     return;
   }
 
@@ -936,21 +1058,13 @@ bot.on('callback_query', async (query) => {
     const data = String(query?.data || '');
     if (!chatId || !data) return;
 
-    if (data === 'show_setconfig_help') {
-      for (const sectionMsg of buildSetconfigHelpSections()) {
-        await sendLong(chatId, sectionMsg, { parse_mode: 'HTML' });
-      }
-    } else if (data === 'show_setconfig_examples') {
-      await sendLong(chatId,
-        `🧾 <b>/setconfig Examples</b>\n\n` +
-        `<code>/setconfig deployAmountSol 1.5</code>\n` +
-        `<code>/setconfig minTvl 50000</code>\n` +
-        `<code>/setconfig strategy.liquidityShape bidask</code>\n` +
-        `<code>/setconfig takeProfitMinNetPnlPct 0.1</code>\n` +
-        `<code>/setconfig outOfRangeWaitMinutes 45</code>\n` +
-        `<code>/setconfig oor.watchDisplayEnabled false</code>`,
-        { parse_mode: 'HTML' }
-      );
+    if (data === 'setconfig_menu') {
+      const menu = buildSetconfigSectionMenu();
+      await sendLong(chatId, menu.text, menu.opts);
+    } else if (isSetconfigSection(data)) {
+      const section = data.split(':', 2)[1];
+      const detail = buildSetconfigSectionDetail(section);
+      await sendLong(chatId, detail.text, detail.opts);
     }
 
     await bot.answerCallbackQuery(query.id).catch(() => {});
