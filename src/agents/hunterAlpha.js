@@ -3038,11 +3038,6 @@ Balas HANYA JSON valid tanpa Markdown.`;
     const retryCfg = getConfig();
     const retryMin = getIdleDelayMin(retryCfg);
     console.log(`[hunter] GeneralAgent membatalkan semua kandidat. Scan ulang dalam ${retryMin} menit...`);
-    await notify(
-      `✋ <b>Tidak ada deploy kali ini</b>\n` +
-      `Semua kandidat final belum mendapat keputusan <code>DEPLOY</code> dari GeneralAgent LP.\n` +
-      `Scan ulang dalam <code>${retryMin} menit</code>.`
-    );
     await sleep(retryMin * 60 * 1000);
     return;
   }
