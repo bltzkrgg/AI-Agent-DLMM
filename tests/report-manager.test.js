@@ -45,7 +45,7 @@ test('report manager renders LP scanner brief with top pools and rejects', () =>
 
   assert.match(report, /📊 AI-Agent Scanner Result/);
   assert.match(report, /<b>Top 5 Pools:<\/b>/);
-  assert.match(report, /<b>CHANCE<\/b>/);
+  assert.match(report, /<b>1\. CHANCE<\/b>/);
   assert.match(report, /<b>Meteora<\/b>\n  TVL/);
   assert.doesNotMatch(report, /\[\d+\] CHANCE/);
   assert.match(report, /TVL \$469\.4K \| Vol24h \$5\.6M \| Fees24h ◎0\.83/);
@@ -80,7 +80,7 @@ test('report manager keeps working with partial pool and gmgn data', () => {
   assert.match(report, /📊 AI-Agent Scanner Result/);
   assert.match(report, /<b>Top 5 Pools:<\/b>/);
   assert.match(report, /Signal N\/A/);
-  assert.match(report, /<b>FCM<\/b>/);
+  assert.match(report, /<b>1\. FCM<\/b>/);
   assert.match(report, /Fee\/TVL 24h N\/A/);
   assert.match(report, /<b>Meteora<\/b>\n  TVL/);
   assert.match(report, /LP Score 52\/100/);
@@ -104,7 +104,7 @@ test('report manager renders internal feeTvlRatio field instead of falling back 
 
   const report = reportManager.generateReport();
 
-  assert.match(report, /<b>BOUNTYWORK<\/b>/);
+  assert.match(report, /<b>1\. BOUNTYWORK<\/b>/);
   assert.match(report, /Status : REJECTED/);
   assert.match(report, /Fee\/TVL 24h 1\.9%/);
 });

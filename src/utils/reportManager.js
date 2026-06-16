@@ -156,7 +156,7 @@ class ReportManager {
       console.log(`[ReportManager] pool ${name} missing Meteora Fee/TVL ratio; rendering N/A`);
     }
 
-    vLines.push(`<b>${name}</b>`);
+    vLines.push(`<b>${idx + 1}. ${name}</b>`);
     vLines.push('');
     vLines.push(`<b>Meteora</b>`);
     vLines.push(`  TVL ${this._formatUsdShort(tvl)} | Vol24h ${this._formatUsdShort(vol24h)} | Fees24h ${fees24hText}`);
