@@ -303,6 +303,75 @@ function buildSetconfigSectionMenu() {
   };
 }
 
+function buildStartCommandPanel() {
+  return {
+    text: `🟢 <b>AI-Agent-DLMM Commands</b>\n\n` +
+      `/start — lihat command\n` +
+      `/status — posisi aktif\n` +
+      `/hunt — mulai loop\n` +
+      `/screening — scan manual top pool\n` +
+      `/autoscreen — on/off auto-screening\n` +
+      `/ca — kirim CA / pool Meteora\n` +
+      `/evolve — saran config dari harvest.log\n` +
+      `/balance — saldo wallet\n` +
+      `/config — tampilkan config\n` +
+      `/setconfig — ubah config\n` +
+      `/dryrun — toggle dry run\n` +
+      `/stop — hentikan loop\n` +
+      `/exit — force exit posisi aktif`,
+    opts: {
+      parse_mode: 'HTML',
+      reply_markup: {
+        inline_keyboard: [
+          [
+            { text: '/start', callback_data: 'cmd:/start' },
+            { text: '/status', callback_data: 'cmd:/status' },
+          ],
+          [
+            { text: '/hunt', callback_data: 'cmd:/hunt' },
+            { text: '/screening', callback_data: 'cmd:/screening' },
+          ],
+          [
+            { text: '/autoscreen', callback_data: 'cmd:/autoscreen' },
+            { text: '/ca', callback_data: 'cmd:/ca' },
+          ],
+          [
+            { text: '/evolve', callback_data: 'cmd:/evolve' },
+            { text: '/balance', callback_data: 'cmd:/balance' },
+          ],
+          [
+            { text: '/config', callback_data: 'cmd:/config' },
+            { text: '/setconfig', callback_data: 'cmd:/setconfig' },
+          ],
+          [
+            { text: '/dryrun', callback_data: 'cmd:/dryrun' },
+            { text: '/stop', callback_data: 'cmd:/stop' },
+          ],
+          [
+            { text: '/exit', callback_data: 'cmd:/exit' },
+          ],
+        ],
+      },
+    },
+  };
+}
+
+function buildActivationLaunchPanel() {
+  return {
+    opts: {
+      parse_mode: 'HTML',
+      reply_markup: {
+        inline_keyboard: [
+          [
+            { text: 'Autoscreen ON', callback_data: 'cmd:/autoscreen on' },
+            { text: 'Start', callback_data: 'cmd:/start' },
+          ],
+        ],
+      },
+    },
+  };
+}
+
 function buildSetconfigSectionDetail(section) {
   const titleMap = {
     finance: '💰 Finance',
@@ -394,6 +463,33 @@ function buildSetconfigSectionDetail(section) {
 
 function isSetconfigSection(data = '') {
   return String(data || '').startsWith('setconfig_section:');
+}
+
+function isCommandShortcut(data = '') {
+  return String(data || '').startsWith('cmd:');
+}
+
+async function runCommandShortcut(chatId, commandText) {
+  const text = String(commandText || '').trim();
+  if (!chatId || !text) return false;
+  await bot.processUpdate({
+    update_id: Date.now(),
+    message: {
+      message_id: Date.now(),
+      from: {
+        id: ALLOWED_ID,
+        is_bot: false,
+        first_name: 'Operator',
+      },
+      chat: {
+        id: chatId,
+        type: 'private',
+      },
+      date: Math.floor(Date.now() / 1000),
+      text,
+    },
+  });
+  return true;
 }
 
 async function runSilentScan({ emitFinalReport = false, source = 'startup' } = {}) {
@@ -572,23 +668,8 @@ async function processManualCaInput(chatId, poolAddress, { source = 'TELEGRAM_CA
 // /start — daftar command
 bot.onText(/\/start/, (msg) => {
   if (!guard(msg)) return;
-  bot.sendMessage(msg.chat.id,
-    `🟢 <b>AI-Agent-DLMM Commands</b>\n\n` +
-    `/start — lihat command\n` +
-    `/status — posisi aktif\n` +
-    `/hunt — mulai loop\n` +
-    `/screening — scan manual top pool\n` +
-    `/autoscreen — on/off auto-screening\n` +
-    `/ca — kirim CA / pool Meteora\n` +
-    `/evolve — saran config dari harvest.log\n` +
-    `/balance — saldo wallet\n` +
-    `/config — tampilkan config\n` +
-    `/setconfig — ubah config\n` +
-    `/dryrun — toggle dry run\n` +
-    `/stop — hentikan loop\n` +
-    `/exit — force exit posisi aktif`,
-    { parse_mode: 'HTML' }
-  );
+  const panel = buildStartCommandPanel();
+  sendLong(msg.chat.id, panel.text, panel.opts);
 });
 
 // /ca <pool_address> — manual input pool Meteora ke WATCH/QUEUE
@@ -1065,6 +1146,9 @@ bot.on('callback_query', async (query) => {
       const section = data.split(':', 2)[1];
       const detail = buildSetconfigSectionDetail(section);
       await sendLong(chatId, detail.text, detail.opts);
+    } else if (isCommandShortcut(data)) {
+      const commandText = data.slice('cmd:'.length);
+      await runCommandShortcut(chatId, commandText);
     }
 
     await bot.answerCallbackQuery(query.id).catch(() => {});
@@ -1481,6 +1565,8 @@ setTimeout(async () => {
       `Watch Layer: <code>${cfg.taWatchEnabled === false ? 'OFF' : 'ON'}</code> | ` +
       `Radar: <code>${cfg.pendingRetestEnabled === false ? 'OFF' : 'ON'}</code>\n` +
       `Auto Screen: <code>${discoveryPaused ? 'OFF by /stop' : autoScr ? `ON (${cfg.screeningIntervalMin}m)` : 'OFF'}</code>`
+      ,
+      buildActivationLaunchPanel().opts
     );
 
     await restoreAutoScreeningOnStartup({

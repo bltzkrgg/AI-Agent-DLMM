@@ -69,6 +69,8 @@ test('/config and startup messages expose realtime PnL interval', () => {
   assert.match(content, /buildSetconfigSectionMenu/);
   assert.match(content, /buildSetconfigSectionDetail/);
   assert.match(content, /isSetconfigSection/);
+  assert.match(content, /isCommandShortcut/);
+  assert.match(content, /runCommandShortcut/);
   assert.match(content, /await sendLong\(chatId, menu\.text, menu\.opts\)/);
 });
 
@@ -80,6 +82,12 @@ test('startup and shutdown banners use the simplified AI-Agent-DLMM text', () =>
   assert.match(content, /Balance: <code>\$\{balance\} SOL<\/code>/);
   assert.match(content, /Deploy Size: <code>\$\{cfg\.deployAmountSol \|\| 0\.1\} SOL<\/code>/);
   assert.match(content, /formatTakeProfitRiskLabel\(cfg\.takeProfitMinNetPnlPct, cfg\.stopLossPct\)/);
+  assert.match(content, /buildActivationLaunchPanel/);
+  assert.match(content, /callback_data: 'cmd:\/autoscreen on'/);
+  assert.match(content, /callback_data: 'cmd:\/start'/);
+  assert.match(content, /buildStartCommandPanel/);
+  assert.match(content, /\/start — lihat command/);
+  assert.match(content, /\/autoscreen — on\/off auto-screening/);
   assert.match(content, /🛑 <b>AI-Agent-DLMM Shutdown<\/b>/);
   assert.match(content, /Tidak ada posisi aktif\./);
   assert.match(content, /✅ AI-Agent-DLMM ready\. Balance:/);
