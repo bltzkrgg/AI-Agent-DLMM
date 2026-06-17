@@ -96,8 +96,8 @@ test('WATCH telegram banner shows candidate status values instead of generic PAS
   assert.match(hunterSrc, /- Slot: <code>\$\{slotUsed\}\/\$\{slotMax\}<\/code> used/);
   assert.match(hunterSrc, /- Trend M15: <code>\$\{entrySignals\.taTrend \|\| 'UNKNOWN'\}<\/code>/);
   assert.match(hunterSrc, /- Timing: <code>\$\{entrySignals\.entryTimingState \|\| 'UNKNOWN'\}<\/code>/);
-  assert.match(hunterSrc, /- Safety: <code>SCOUT_PASS<\/code>/);
-  assert.match(hunterSrc, /Watcher aktif — kandidat dipantau sampai final deploy confirm\./);
+  assert.match(hunterSrc, /- Safety: <code>SCOUT_OK<\/code>/);
+  assert.match(hunterSrc, /Watcher aktif — kandidat dipantau sampai final deploy\./);
   assert.doesNotMatch(hunterSrc, /- Trend M15: PASS/);
   assert.doesNotMatch(hunterSrc, /- Timing: PASS/);
   assert.doesNotMatch(hunterSrc, /- Safety: PASS/);

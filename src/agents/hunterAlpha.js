@@ -2814,8 +2814,8 @@ FORMAT JAWABAN (WAJIB JSON VALID, TANPA MARKDOWN):
               `- Slot: <code>${slotUsed}/${slotMax}</code> used\n` +
               `- Trend M15: <code>${entrySignals.taTrend || 'UNKNOWN'}</code>\n` +
               `- Timing: <code>${entrySignals.entryTimingState || 'UNKNOWN'}</code>\n` +
-              `- Safety: <code>SCOUT_PASS</code>\n\n` +
-              `Watcher aktif — kandidat dipantau sampai final deploy confirm.`
+              `- Safety: <code>SCOUT_OK</code>\n\n` +
+              `Watcher aktif — kandidat dipantau sampai final deploy.`
             );
           }
           return { ok: true, pool, symbol: tokenSymbol || 'UNKNOWN' };
