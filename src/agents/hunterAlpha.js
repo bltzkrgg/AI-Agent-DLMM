@@ -3267,6 +3267,7 @@ Balas HANYA JSON valid tanpa Markdown.`;
         meta: { entryCanonicalSnapshot: finalCanonicalEntrySnapshot },
         pool: winner,
         liveSnapshot: finalMarketSnapshot,
+        cfg: currentCfg,
       });
       if (!proximityDecision.ok) {
         const reasonText = proximityDecision.reason || 'entry proximity unavailable; waiting fresh live price/bin snapshot';

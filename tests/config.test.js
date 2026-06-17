@@ -603,6 +603,7 @@ test('/setconfig whitelist is curated for operational keys only', async () => {
   assert.equal(keys.includes('entryCandleSanityEnabled'), true);
   assert.equal(keys.includes('entryDecisionMode'), true);
   assert.equal(keys.includes('entryMinVolumeRatio'), true);
+  assert.equal(keys.includes('entryFinalProximityMaxDriftPct'), true);
   assert.equal(keys.includes('entryCandleMaxAgeSec'), true);
   assert.equal(keys.includes('entryRequireVolumeConfirm'), true);
   assert.equal(keys.includes('entryM15MinVolumeRatio'), true);
@@ -690,6 +691,7 @@ test('setconfig help and shape alias keep spot/bidask global tuning visible', as
   assert.match(content, /\/setconfig strategy\.liquidityShape bidask/);
   assert.match(content, /\/setconfig strategy\.liquidityShape spot/);
   assert.match(content, /shape ini global, jadi sekali diubah akan dipakai semua jalur deploy berikutnya/);
+  assert.match(content, /\/setconfig entryFinalProximityMaxDriftPct 2\.5/);
 });
 
 test('nested discovery maxMcap and legacy maxMcapUsd both map to canonical maxMcap', async () => {

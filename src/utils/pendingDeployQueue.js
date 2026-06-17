@@ -26,7 +26,6 @@ const _holdNotifyDedup = new Map(); // key(candidate|reason) -> lastSentAtMs
 const _holdNotifyKeysByCandidate = new Map(); // candidate -> Set(keys)
 const SNAPSHOT_CACHE_TTL_MS = 12_000;
 const FINAL_ST_CACHE_TTL_MS = 15_000;
-const FINAL_ENTRY_PROXIMITY_MAX_DRIFT_PCT = 1.0;
 const FINAL_ENTRY_PROXIMITY_MAX_BIN_DELTA = 1;
 const OPERATOR_DISCOVERY_PAUSED_KEY = 'operatorDiscoveryPaused';
 let _snapshotCacheHits = 0;
@@ -546,8 +545,10 @@ export function getFinalEntryProximityDecision({
   meta = {},
   pool = {},
   liveSnapshot = null,
+  cfg = getConfig(),
 } = {}) {
   const canonicalMeta = readCanonicalEntryMeta(meta);
+  const maxDriftPct = Math.max(0.1, Number(cfg?.entryFinalProximityMaxDriftPct) || 2.5);
   const intentPrice = Number.isFinite(Number(canonicalMeta.entryPrice)) ? Number(canonicalMeta.entryPrice) : null;
   const intentBin = Number.isFinite(Number(canonicalMeta.entryActiveBin)) ? Number(canonicalMeta.entryActiveBin) : null;
   const live = readLiveActiveBinState(liveSnapshot, pool, meta);
@@ -559,7 +560,7 @@ export function getFinalEntryProximityDecision({
   const binDelta = Number.isFinite(intentBin) && Number.isFinite(activeBinId)
     ? Math.abs(activeBinId - intentBin)
     : null;
-  const priceExceeded = Number.isFinite(priceDriftPct) && priceDriftPct > FINAL_ENTRY_PROXIMITY_MAX_DRIFT_PCT;
+  const priceExceeded = Number.isFinite(priceDriftPct) && priceDriftPct > maxDriftPct;
   const binExceeded = Number.isFinite(binDelta) && binDelta > FINAL_ENTRY_PROXIMITY_MAX_BIN_DELTA;
   const hasComparableSignal = Number.isFinite(priceDriftPct) || Number.isFinite(binDelta);
 
@@ -598,7 +599,7 @@ export function getFinalEntryProximityDecision({
   }
 
   const detail = [];
-  if (priceExceeded) detail.push(`price drift ${formatPct(priceDriftPct)} > ${FINAL_ENTRY_PROXIMITY_MAX_DRIFT_PCT.toFixed(2)}%`);
+  if (priceExceeded) detail.push(`price drift ${formatPct(priceDriftPct)} > ${maxDriftPct.toFixed(2)}%`);
   if (binExceeded) detail.push(`active bin delta ${binDelta} > ${FINAL_ENTRY_PROXIMITY_MAX_BIN_DELTA}`);
   return {
     ok: false,

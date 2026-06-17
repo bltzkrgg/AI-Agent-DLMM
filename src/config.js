@@ -68,6 +68,7 @@ const DEFAULTS = {
   entryFreshBreakoutMinAthDistancePct: 99.25,
   entryFreshWatchWindowSec: 90,
   entryFreshBreakoutMaxDriftPct: 2.5,
+  entryFinalProximityMaxDriftPct: 2.5,
   entryCandleSanityEnabled: true,
   entryRequireGreenCandle: true,
   entryRequireVolumeConfirm: true,
@@ -328,6 +329,7 @@ const CONFIG_BOUNDS = {
   entryFreshBreakoutMinAthDistancePct: { min: 0, max: 100 },
   entryFreshWatchWindowSec: { min: 5, max: 600 },
   entryFreshBreakoutMaxDriftPct: { min: 0.1, max: 100 },
+  entryFinalProximityMaxDriftPct: { min: 0.1, max: 100 },
   entryCandleSanityEnabled: { type: 'boolean' },
   entryRequireGreenCandle: { type: 'boolean' },
   entryRequireVolumeConfirm: { type: 'boolean' },
@@ -660,6 +662,7 @@ export const SETCONFIG_WHITELIST = {
   // ── Entry Final Sanity ─────────────────────────────────────────
   entryDecisionMode:      { section: 'entry',              type: 'string',  desc: 'Mode keputusan entry: strict/lp_simple_m15' },
   entryCandleSanityEnabled:{ section: 'entry',              type: 'boolean', desc: 'Aktifkan final candle sanity gate' },
+  entryFinalProximityMaxDriftPct: { section: 'entry',      type: 'number',  desc: 'Batas drift harga final entry vs live (%)' },
   entryMinVolumeRatio:    { section: 'entry',              type: 'number',  desc: 'Rasio volume candle entry vs rata-rata' },
   entryCandleMaxAgeSec:   { section: 'entry',              type: 'number',  desc: 'Batas usia candle entry (detik)' },
   entryRequireVolumeConfirm:{ section: 'entry',            type: 'boolean', desc: 'Wajib konfirmasi volume candle entry' },

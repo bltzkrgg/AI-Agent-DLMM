@@ -78,6 +78,7 @@
   "entryFreshBreakoutMinAthDistancePct": 99.25,
   "entryFreshWatchWindowSec": 90,
   "entryFreshBreakoutMaxDriftPct": 2.5,
+  "entryFinalProximityMaxDriftPct": 2.5,
   "entryDecisionMode": "strict",
   "entryCandleSanityEnabled": true,
   "entryRequireGreenCandle": true,

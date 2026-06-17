@@ -1831,11 +1831,31 @@ test('final entry proximity holds when live drift is too wide', () => {
       ohlcv: { currentPrice: 101.5 },
       pool: { activeBinId: 123 },
     },
+    cfg: { entryFinalProximityMaxDriftPct: 1.0 },
   });
 
   assert.equal(decision.ok, false);
   assert.equal(decision.action, 'HOLD');
   assert.match(decision.reason, /entry proximity drift too wide/i);
+});
+
+test('final entry proximity respects runtime drift config', () => {
+  const decision = getFinalEntryProximityDecision({
+    meta: {
+      entryCanonicalSnapshot: {
+        entryPrice: 100,
+        entryActiveBin: 120,
+      },
+    },
+    liveSnapshot: {
+      ohlcv: { currentPrice: 101.8 },
+      pool: { activeBinId: 121 },
+    },
+    cfg: { entryFinalProximityMaxDriftPct: 2.5 },
+  });
+
+  assert.equal(decision.ok, true);
+  assert.equal(decision.action, 'ALLOW');
 });
 
 test('final entry proximity holds when live price/bin snapshot is unavailable', () => {

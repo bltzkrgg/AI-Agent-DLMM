@@ -409,6 +409,7 @@ function buildSetconfigSectionDetail(section) {
     entry: [
       '/setconfig entryDecisionMode strict',
       '/setconfig entryCandleSanityEnabled true',
+      '/setconfig entryFinalProximityMaxDriftPct 2.5',
       '/setconfig entryMinVolumeRatio 1.5',
       '/setconfig entryM15MaxAgeSec 1800',
     ],
