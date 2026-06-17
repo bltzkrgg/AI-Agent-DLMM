@@ -28,6 +28,24 @@ test('exit display metadata keeps operator labels consistent across exit familie
     normalizedReason: 'TAKE_PROFIT',
   });
 
+  assert.deepEqual(getExitDisplayMeta('TAKE_PROFIT_A', 'TAKE_PROFIT'), {
+    title: 'TAKE PROFIT',
+    reasonLabel: 'Take Profit Trigger (RSI + BB Upper)',
+    normalizedReason: 'TAKE_PROFIT',
+  });
+
+  assert.deepEqual(getExitDisplayMeta('TAKE_PROFIT_B', 'TAKE_PROFIT'), {
+    title: 'TAKE PROFIT',
+    reasonLabel: 'Take Profit Trigger (RSI + MACD)',
+    normalizedReason: 'TAKE_PROFIT',
+  });
+
+  assert.deepEqual(getExitDisplayMeta('TAKE_PROFIT_TA', 'TAKE_PROFIT'), {
+    title: 'TAKE PROFIT',
+    reasonLabel: 'Take Profit Trigger (TA Smart Exit)',
+    normalizedReason: 'TAKE_PROFIT',
+  });
+
   assert.deepEqual(getExitDisplayMeta('STOP_LOSS', 'STOP_LOSS'), {
     title: 'STOP LOSS',
     reasonLabel: 'Stop Loss Trigger',

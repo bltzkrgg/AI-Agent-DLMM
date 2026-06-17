@@ -70,6 +70,30 @@ export function getExitDisplayMeta(reason = '', normalizedReason = '') {
       };
     }
 
+    if (text.includes('_A')) {
+      return {
+        title: 'TAKE PROFIT',
+        reasonLabel: 'Take Profit Trigger (RSI + BB Upper)',
+        normalizedReason: normalized || 'TAKE_PROFIT',
+      };
+    }
+
+    if (text.includes('_B')) {
+      return {
+        title: 'TAKE PROFIT',
+        reasonLabel: 'Take Profit Trigger (RSI + MACD)',
+        normalizedReason: normalized || 'TAKE_PROFIT',
+      };
+    }
+
+    if (text.includes('_TA')) {
+      return {
+        title: 'TAKE PROFIT',
+        reasonLabel: 'Take Profit Trigger (TA Smart Exit)',
+        normalizedReason: normalized || 'TAKE_PROFIT',
+      };
+    }
+
     if (text.includes('_C') || text.includes('DEFENSIVE')) {
       return {
         title: 'TAKE PROFIT',
