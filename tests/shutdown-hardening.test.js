@@ -110,6 +110,7 @@ test('direct deploy path refreshes final market snapshot before final ST and can
   assert.match(hunterSrc, /winner\._entrySignals = finalEntrySignals/);
   assert.match(hunterSrc, /ensureFinalSupertrendBullish\(\{\s*mint: tokenMint,\s*symbol,\s*pool: winner,\s*meta: \{\},\s*liveSnapshot: finalMarketSnapshot \|\| null,\s*currentPrice: finalCurrentPrice,\s*\}\)/s);
   assert.match(hunterSrc, /ensureFinalEntryCandleSanity\(\{\s*mint: tokenMint,\s*symbol,\s*pool: winner,\s*meta: \{\},\s*liveSnapshot: finalMarketSnapshot \|\| null,\s*\}\)/s);
+  assert.match(hunterSrc, /Final snapshot: <code>\$\{escapeHTML\(String\(finalMarketSnapshot\?\.ohlcv\?\.source \|\| finalMarketSnapshot\?\.dataSource \|\| 'live'\)\)\}<\/code>/);
 });
 
 test('telegram exit command closes all active positions with verification summary', () => {

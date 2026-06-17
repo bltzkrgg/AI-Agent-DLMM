@@ -3351,6 +3351,7 @@ Balas HANYA JSON valid tanpa Markdown.`;
           `Position: <code>${positionPubkey.slice(0,8)}</code>\n` +
           `Pool: <code>${poolAddress.slice(0,8)}</code>\n` +
           `${formatTakeProfitRiskLabel(currentCfg.takeProfitMinNetPnlPct, currentCfg.stopLossPct)}\n\n` +
+          `Final snapshot: <code>${escapeHTML(String(finalMarketSnapshot?.ohlcv?.source || finalMarketSnapshot?.dataSource || 'live'))}</code>\n` +
           `Anchor: DLMM active bin | Source: frozen/live fallback\n` +
           `🔒 <i>Masuk mode monitor (Background)...</i>`
         );
