@@ -54,6 +54,7 @@ prefer the explicit user request, then update this file after the change lands.
 - Scanner report `Fee/TVL` must use Meteora 24h ratio as the source of truth; missing ratio now renders `N/A` instead of a fake `0.0%`.
 - Entry/watch/queue/deploy must preserve one canonical entry snapshot payload so active-position monitor/exit can read the same entry context that was used at deploy time.
 - Final deploy must keep entry close to the latest live DLMM state: queue deploy now rechecks canonical `entryPrice` / `entryActiveBin` against live price / active bin and HOLDS for a fresh retry when drift is already too wide.
+- Direct `scanAndDeploy()` deploy must refresh one final market snapshot immediately before final ST/candle gates and reuse that same snapshot for final gate + deploy metadata, so stale scout-time bullish snapshots cannot slip into live deploy.
 - Queue, monitor, defensive exit, and manual-close accounting must prefer `entryCanonicalSnapshot` before scattered legacy entry fields.
 - Final queue deploy proximity guard is a last-mile execution safety only; it must not change scout ranking, TA gates, or add new config knobs.
 - On successful deploy, `evilPanda` must upgrade `entryCanonicalSnapshot` with the final runtime entry truth actually used on-chain (`entryActiveBin`, `entryPrice`, final ST stamp, anchor/range-adjust metadata) so monitor/exit do not keep reading stale queue-era intent fields.
@@ -80,6 +81,7 @@ Only edit other files when the change explicitly requires it.
 ## Known sensitive areas
 
 - Entry snapshot freshness and Supertrend 15m gating.
+- Direct deploy final snapshot reuse versus stale scout snapshots.
 - WATCH promotion versus deploy queue admission.
 - OOR notification cadence.
 - Pool impact exit behavior.
@@ -189,3 +191,4 @@ Do not edit these unless the user explicitly scopes the change there.
 - 2026-06-17: 5.4 mini polish tightened the deploy-proximity HOLD Telegram text to show explicit `Reason`, `Drift`, and `Bin` fields while leaving the underlying final-entry proximity guard unchanged; the test suite now asserts that compact operator-facing wording.
 - 2026-06-17: Completed 5.4 WATCH notification hardening in `hunterAlpha`: auto-screen WATCH Telegram now shows candidate-state facts (`Slot used`, live `Trend M15`, `Timing`, `SCOUT_PASS`) instead of generic `PASS` labels, reducing operator confusion without changing scout, watch, queue, or deploy gating.
 - 2026-06-17: 5.4 mini WATCH polish now uses `SCOUT_OK` and a shorter final footer so the candidate banner reads cleaner, while still staying report-only and leaving all gate behavior unchanged.
+- 2026-06-17: Completed 5.4 direct-deploy final snapshot hardening in `hunterAlpha`: `scanAndDeploy()` now refreshes one final market snapshot just before final ST/candle checks, rewrites the winner's entry snapshot/signals from that live snapshot, and reuses the same snapshot for final gating plus deploy metadata so stale bullish scout snapshots cannot pass direct deploy.

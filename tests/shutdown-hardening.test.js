@@ -103,6 +103,15 @@ test('WATCH telegram banner shows candidate status values instead of generic PAS
   assert.doesNotMatch(hunterSrc, /- Safety: PASS/);
 });
 
+test('direct deploy path refreshes final market snapshot before final ST and candle gates', () => {
+  const hunterSrc = readFileSync(hunterPath, 'utf8');
+  assert.match(hunterSrc, /const finalMarketSnapshot = await getMarketSnapshot\(\s*tokenMint,\s*poolAddress \|\| null,\s*\{\s*from: 'scan_and_deploy_final',/s);
+  assert.match(hunterSrc, /winner\._marketSnapshot = finalMarketSnapshot/);
+  assert.match(hunterSrc, /winner\._entrySignals = finalEntrySignals/);
+  assert.match(hunterSrc, /ensureFinalSupertrendBullish\(\{\s*mint: tokenMint,\s*symbol,\s*pool: winner,\s*meta: \{\},\s*liveSnapshot: finalMarketSnapshot \|\| null,\s*currentPrice: finalCurrentPrice,\s*\}\)/s);
+  assert.match(hunterSrc, /ensureFinalEntryCandleSanity\(\{\s*mint: tokenMint,\s*symbol,\s*pool: winner,\s*meta: \{\},\s*liveSnapshot: finalMarketSnapshot \|\| null,\s*\}\)/s);
+});
+
 test('telegram exit command closes all active positions with verification summary', () => {
   const indexSrc = readFileSync(indexPath, 'utf8');
   const hunterSrc = readFileSync(hunterPath, 'utf8');

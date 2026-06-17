@@ -3128,13 +3128,52 @@ Balas HANYA JSON valid tanpa Markdown.`;
         return false;
       }
 
+      const finalIncludeEntryCandles5m = String(currentCfg.entryDecisionMode || 'strict').toLowerCase() === 'lp_simple_m15';
+      const finalMarketSnapshot = await getMarketSnapshot(
+        tokenMint,
+        poolAddress || null,
+        {
+          from: 'scan_and_deploy_final',
+          includeEntryCandles5m: finalIncludeEntryCandles5m,
+        }
+      ).catch(() => winner._marketSnapshot || null);
+      if (finalMarketSnapshot && winner && typeof winner === 'object') {
+        const finalEntrySignals = deriveBreakoutEntrySignals({
+          pool: winner,
+          marketSnapshot: finalMarketSnapshot,
+          cfg: currentCfg,
+        });
+        const finalEntryIntent = extractEntryIntent(winner, finalMarketSnapshot, finalEntrySignals);
+        const finalSnapshotAt = Date.now();
+        winner._marketSnapshot = finalMarketSnapshot;
+        winner._entrySignals = finalEntrySignals;
+        winner._watchSnapshotAt = finalSnapshotAt;
+        winner._watchSnapshotPrice = finalEntrySignals.currentPrice ?? finalMarketSnapshot?.price?.currentPrice ?? winner._watchSnapshotPrice ?? null;
+        winner._watchSnapshotHigh24h = finalEntrySignals.high24h ?? finalMarketSnapshot?.ohlcv?.high24h ?? winner._watchSnapshotHigh24h ?? null;
+        winner._watchSnapshotStDistancePct = finalEntrySignals.signalStDistancePct ?? winner._watchSnapshotStDistancePct ?? null;
+        winner._watchSnapshotAthDistancePct = finalEntrySignals.signalAthDistancePct ?? winner._watchSnapshotAthDistancePct ?? null;
+        winner._watchSnapshotM5Change = finalEntrySignals.priceChangeM5 ?? winner._watchSnapshotM5Change ?? null;
+        winner._watchSnapshotM15Change = finalEntrySignals.priceChangeM15 ?? winner._watchSnapshotM15Change ?? null;
+        winner._watchTaTrend = finalEntrySignals.taTrend ?? winner._watchTaTrend ?? null;
+        winner._entryActiveBin = finalEntryIntent.entryActiveBin;
+        winner._entryPrice = finalEntryIntent.entryPrice;
+        winner._entryIntentSnapshotAt = finalSnapshotAt;
+        winner.hasNonRefundableFees = Boolean(finalMarketSnapshot?.pool?.hasNonRefundableFees ?? winner.hasNonRefundableFees);
+      }
+      const finalCurrentPrice =
+        winner?._entrySignals?.currentPrice ??
+        finalMarketSnapshot?.ohlcv?.currentPrice ??
+        finalMarketSnapshot?.price?.currentPrice ??
+        winner?.price ??
+        winner?.pool_price ??
+        0;
       const finalSt = await ensureFinalSupertrendBullish({
         mint: tokenMint,
         symbol,
         pool: winner,
         meta: {},
-        liveSnapshot: winner._marketSnapshot || null,
-        currentPrice: winner?._entrySignals?.currentPrice || winner?.price || winner?.pool_price || 0,
+        liveSnapshot: finalMarketSnapshot || null,
+        currentPrice: finalCurrentPrice,
       });
       if (!finalSt.ok) {
         const reasonText = finalSt.reason || 'Supertrend 15m belum confirmed bullish';
@@ -3159,6 +3198,7 @@ Balas HANYA JSON valid tanpa Markdown.`;
         symbol,
         pool: winner,
         meta: {},
+        liveSnapshot: finalMarketSnapshot || null,
       });
       if (!finalCandle.ok) {
         const reasonText = finalCandle.reason || 'HOLD: entry candle sanity unavailable/stale';
