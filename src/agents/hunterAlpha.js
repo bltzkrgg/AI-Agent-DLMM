@@ -2815,7 +2815,7 @@ FORMAT JAWABAN (WAJIB JSON VALID, TANPA MARKDOWN):
               `- Trend M15: <code>${entrySignals.taTrend || 'UNKNOWN'}</code>\n` +
               `- Timing: <code>${entrySignals.entryTimingState || 'UNKNOWN'}</code>\n` +
               `- Safety: <code>SCOUT_OK</code>\n\n` +
-              `Watcher aktif — kandidat dipantau sampai final deploy.`
+              `Watcher aktif — kandidat dipantau.`
             );
           }
           return { ok: true, pool, symbol: tokenSymbol || 'UNKNOWN' };
