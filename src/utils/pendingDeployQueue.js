@@ -1574,11 +1574,13 @@ async function runWatcher() {
           cooldownMs: cooldownSec * 1000,
         });
         if (notifyDecision.shouldSend) {
+          const driftLimitPct = Math.max(0.1, Number(getConfig()?.entryFinalProximityMaxDriftPct) || 2.5);
           await safeSend(
             `⏸️ <b>Deploy Queue Hold</b>\n` +
             `<b>${symbol}</b>\n` +
             `Reason: <code>${escapeHTML(proximityDecision.reason)}</code>\n` +
             `Drift: <code>${Number.isFinite(proximityDecision.priceDriftPct) ? `${Number(proximityDecision.priceDriftPct).toFixed(2)}%` : 'na'}</code> | ` +
+            `Limit: <code>${driftLimitPct.toFixed(2)}%</code> | ` +
             `Bin: <code>${Number.isFinite(proximityDecision.binDelta) ? proximityDecision.binDelta : 'na'}</code>\n` +
             `<i>${escapeHTML(proximityDecision.reason)}</i>`
           );
