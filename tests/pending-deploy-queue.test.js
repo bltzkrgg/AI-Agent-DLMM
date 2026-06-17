@@ -1862,5 +1862,8 @@ test('deploy queue applies final entry proximity hold before deploy', () => {
   assert.match(src, /const refreshedSnapshot = await getCachedMarketSnapshot\(/);
   assert.match(src, /entry\.deferReason = proximityDecision\.reason/);
   assert.match(src, /Deploy Queue Hold/);
+  assert.match(src, /Reason: <code>\$\{escapeHTML\(proximityDecision\.reason\)\}<\/code>/);
+  assert.match(src, /Drift: <code>\$\{Number\.isFinite\(proximityDecision\.priceDriftPct\)/);
+  assert.match(src, /Bin: <code>\$\{Number\.isFinite\(proximityDecision\.binDelta\)/);
   assert.match(src, /proximity=\$\{proximityDecision\.comparedBy \|\| 'na'\}/);
 });

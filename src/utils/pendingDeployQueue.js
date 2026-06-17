@@ -1572,7 +1572,9 @@ async function runWatcher() {
           await safeSend(
             `⏸️ <b>Deploy Queue Hold</b>\n` +
             `<b>${symbol}</b>\n` +
-            `Live: <code>${escapeHTML(proximityDecision.comparedBy || 'unknown')}</code>\n` +
+            `Reason: <code>${escapeHTML(proximityDecision.reason)}</code>\n` +
+            `Drift: <code>${Number.isFinite(proximityDecision.priceDriftPct) ? `${Number(proximityDecision.priceDriftPct).toFixed(2)}%` : 'na'}</code> | ` +
+            `Bin: <code>${Number.isFinite(proximityDecision.binDelta) ? proximityDecision.binDelta : 'na'}</code>\n` +
             `<i>${escapeHTML(proximityDecision.reason)}</i>`
           );
         } else {
