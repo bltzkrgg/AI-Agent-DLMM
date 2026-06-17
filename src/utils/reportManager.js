@@ -164,7 +164,6 @@ class ReportManager {
     vLines.push('');
     vLines.push(`<b>GMGN</b>`);
     vLines.push(`  Holders ${holders}`);
-    if (gmgn.rug_ratio != null) gmgnParts.push(`Rug ${this._formatPct(gmgn.rug_ratio, 0)}`);
     if (gmgn.top10Pct != null) gmgnParts.push(`Top10 ${this._formatPct(gmgn.top10Pct, 1)}`);
     if (gmgn.devHoldPct != null) gmgnParts.push(`Dev ${this._formatPct(gmgn.devHoldPct, 1)}`);
     if (gmgn.insiderPct != null) gmgnParts.push(`Insider ${this._formatPct(gmgn.insiderPct, 1)}`);
@@ -174,7 +173,7 @@ class ReportManager {
       vLines.push(`  LP Score ${Math.max(0, Math.min(100, Math.round(Number(pool.signalScore))))}/100`);
     }
     vLines.push('');
-    vLines.push(`  Status : ${pool.rejected ? 'REJECTED' : (pool.status || 'WATCH')}`);
+    vLines.push(`  Status: ${pool.rejected ? 'REJECTED' : (pool.status || 'WATCH')}`);
     return vLines.join('\n');
   }
 
@@ -219,11 +218,11 @@ class ReportManager {
 
     let report = `📊 AI-Agent Scanner Result\n`;
     report += `📅 ${nowStr}\n\n`;
-    report += `<b>Top 5 Pools:</b>\n\n`;
+    report += `<b>Top 5 Pools</b>\n\n`;
     report += `${top5Cycle.map((pool, idx) => this._buildTopPoolBlock(pool, idx)).join('\n\n')}\n\n`;
 
     if (rejectedTokens.length > 0) {
-      report += `<b>Rejected:</b>\n\n`;
+      report += `<b>Rejected</b>\n\n`;
       report += `${rejectedTokens.slice(0, 5).map((t) => {
         const reason = this.getGateDetailsText(t, this.getFirstFailedGate(t)) || t.reason || this.getFirstFailedGate(t) || 'Rejected';
         return `<b>${t.name}</b> — <i>${reason}</i>`;
