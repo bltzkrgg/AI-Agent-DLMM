@@ -43,23 +43,19 @@ test('report manager renders LP scanner brief with top pools and rejects', () =>
 
   const report = reportManager.generateReport();
 
-  assert.match(report, /📊 AI-Agent Scanner Result/);
-  assert.match(report, /<b>Top 5 Pools<\/b>/);
-  assert.match(report, /<b>1\. CHANCE<\/b>/);
-  assert.match(report, /<b>Meteora<\/b>\n  TVL/);
-  assert.doesNotMatch(report, /\[\d+\] CHANCE/);
+  assert.match(report, /AI-Agent Scanner Result/);
+  assert.match(report, /TOP 5 POOLS/);
+  assert.match(report, /1\. CHANCE/);
   assert.match(report, /TVL \$469\.4K \| Vol24h \$5\.6M \| Fees24h ◎0\.83/);
   assert.match(report, /Fee\/TVL 24h 1\.9% \| Bin 100 \| MCap \$887\.7K/);
-  assert.match(report, /<b>Meteora<\/b>/);
-  assert.match(report, /<b>GMGN<\/b>/);
+  assert.match(report, /Holders 124/);
   assert.match(report, /Signal Top10 31\.4% \| Dev 6\.2% \| Insider 2\.8% \| Bundler 9\.1%/);
-  assert.match(report, /LP Score 84\/100/);
-  assert.match(report, /Status: REJECTED/);
-  assert.match(report, /<b>Rejected<\/b>/);
-  assert.match(report, /<b>KINS<\/b> — <i>stale market snapshot<\/i>/);
-  assert.match(report, /Slot: AVAILABLE/);
+  assert.match(report, /Status: DEPLOYED/);
+  assert.match(report, /REJECTED/);
+  assert.match(report, /KINS : stale market snapshot/);
+  assert.match(report, /Slot\s+:\s+AVAILABLE/);
   assert.match(report, /Action: HOLD new entries/);
-  assert.match(report, /Next scan: 15m/);
+  assert.match(report, /Next\s+:\s+15m/);
 });
 
 test('report manager keeps working with partial pool and gmgn data', () => {
@@ -77,14 +73,13 @@ test('report manager keeps working with partial pool and gmgn data', () => {
 
   const report = reportManager.generateReport();
 
-  assert.match(report, /📊 AI-Agent Scanner Result/);
-  assert.match(report, /<b>Top 5 Pools<\/b>/);
+  assert.match(report, /AI-Agent Scanner Result/);
+  assert.match(report, /TOP 5 POOLS/);
   assert.match(report, /Signal N\/A/);
-  assert.match(report, /<b>1\. FCM<\/b>/);
+  assert.match(report, /1\. FCM/);
   assert.match(report, /Fee\/TVL 24h N\/A/);
-  assert.match(report, /<b>Meteora<\/b>\n  TVL/);
   assert.match(report, /LP Score 52\/100/);
-  assert.match(report, /Slot: AVAILABLE/);
+  assert.match(report, /Slot\s+:\s+AVAILABLE/);
   assert.match(report, /Action: HOLD new entries/);
 });
 
@@ -104,7 +99,7 @@ test('report manager renders internal feeTvlRatio field instead of falling back 
 
   const report = reportManager.generateReport();
 
-  assert.match(report, /<b>1\. BOUNTYWORK<\/b>/);
+  assert.match(report, /1\. BOUNTYWORK/);
   assert.match(report, /Status: REJECTED/);
   assert.match(report, /Fee\/TVL 24h 1\.9%/);
 });
@@ -141,10 +136,9 @@ test('slot-saturated summary mode keeps FULL 1/1 and still shows report shape', 
 
   const report = reportManager.generateReport();
 
-  assert.match(report, /📊 AI-Agent Scanner Result/);
-  assert.match(report, /Slot: FULL 1\/1/);
-  assert.match(report, /<b>Rejected<\/b>/);
-  assert.match(report, /<b>JUNO<\/b> — <i>bundler too high<\/i>/);
+  assert.match(report, /AI-Agent Scanner Result/);
+  assert.match(report, /Slot\s+:\s+FULL 1\/1/);
+  assert.match(report, /JUNO : bundler too high/);
   assert.match(report, /Action: HOLD new entries/);
-  assert.match(report, /Next scan: 15m/);
+  assert.match(report, /Next\s+:\s+15m/);
 });

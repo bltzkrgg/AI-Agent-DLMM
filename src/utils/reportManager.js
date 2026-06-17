@@ -215,23 +215,32 @@ class ReportManager {
     const cfg = getConfig();
     const nextScreenMin = cfg.intervals?.screeningIntervalMin || cfg.screeningIntervalMin || 15;
     const slotText = this.slotSaturatedSummaryOnly ? 'FULL 1/1' : `${deferredTokens.length > 0 ? 'WATCH' : 'AVAILABLE'}`;
+    const prefixBlock = (text) => String(text || '').split('\n').map((line) => (line ? `│ ${line}` : '│')).join('\n');
+    const boxedRejected = (items = []) => {
+      const lines = items.length > 0
+        ? items.map((t) => {
+          const reason = this.getGateDetailsText(t, this.getFirstFailedGate(t)) || t.reason || this.getFirstFailedGate(t) || 'Rejected';
+          return `│ ${t.name} : ${reason}`;
+        })
+        : ['│ N/A'];
+      return lines.join('\n');
+    };
 
-    let report = `📊 AI-Agent Scanner Result\n`;
+    let report = `┌────────────────────────────────────┐\n`;
+    report += `│       AI-Agent Scanner Result      │\n`;
+    report += `└────────────────────────────────────┘\n`;
     report += `📅 ${nowStr}\n\n`;
-    report += `<b>Top 5 Pools</b>\n\n`;
-    report += `${top5Cycle.map((pool, idx) => this._buildTopPoolBlock(pool, idx)).join('\n\n')}\n\n`;
+    report += `┌─ TOP 5 POOLS ─────────────────────┐\n`;
+    report += `${top5Cycle.map((pool, idx) => prefixBlock(this._buildTopPoolBlock(pool, idx))).join('\n')}\n`;
+    report += `└────────────────────────────────────┘\n\n`;
 
-    if (rejectedTokens.length > 0) {
-      report += `<b>Rejected</b>\n\n`;
-      report += `${rejectedTokens.slice(0, 5).map((t) => {
-        const reason = this.getGateDetailsText(t, this.getFirstFailedGate(t)) || t.reason || this.getFirstFailedGate(t) || 'Rejected';
-        return `<b>${t.name}</b> — <i>${reason}</i>`;
-      }).join('\n')}\n\n`;
-    }
+    report += `┌─ REJECTED ─────────────────────────┐\n`;
+    report += `${boxedRejected(rejectedTokens.slice(0, 5))}\n`;
+    report += `└────────────────────────────────────┘\n\n`;
 
-    report += `Slot: ${slotText}\n`;
+    report += `Slot  : ${slotText}\n`;
     report += `Action: HOLD new entries\n`;
-    report += `Next scan: ${nextScreenMin}m`;
+    report += `Next  : ${nextScreenMin}m`;
 
     return report;
   }
