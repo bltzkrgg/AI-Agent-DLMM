@@ -141,39 +141,25 @@ class ReportManager {
     const mcap = pool.mcap ?? pool.marketCap ?? 0;
     const tvl = pool.tvl ?? pool.liquidityUsd ?? pool.activeTvl ?? 0;
     const vol24h = pool.vol24h ?? pool.volume24h ?? pool.trade_volume_24h ?? pool.vol ?? 0;
-    const fees24h = pool.fees24h ?? pool.fee24h ?? 0;
     const feeTvl = pool.feeTvlRatio ?? pool.feeTVLRatio ?? pool.fee_tvl_ratio ?? pool.feeRatio ?? null;
     const binStep = pool.binStep ?? pool.bin_step ?? 'N/A';
     const holders = pool.holders ?? pool.holderCount ?? 'N/A';
     const gmgn = pool.gmgn || {};
     const gmgnParts = [];
     const vLines = [];
-    const fees24hText = Number.isFinite(Number(fees24h)) && Number(fees24h) > 0
-      ? `◎${Number(fees24h).toFixed(2)}`
-      : 'N/A';
 
     if (feeTvl == null) {
       console.log(`[ReportManager] pool ${name} missing Meteora Fee/TVL ratio; rendering N/A`);
     }
 
-    vLines.push(`<b>${idx + 1}. ${name}</b>`);
+    vLines.push(`${idx + 1}. ${name} - TVL ${this._formatUsdShort(tvl)} | Vol24h ${this._formatUsdShort(vol24h)} | Fee/TVL ${this._formatRatioPct(feeTvl, 1)} | Bin ${binStep}`);
     vLines.push('');
-    vLines.push(`<b>Meteora</b>`);
-    vLines.push(`  TVL ${this._formatUsdShort(tvl)} | Vol24h ${this._formatUsdShort(vol24h)} | Fees24h ${fees24hText}`);
-    vLines.push(`  Fee/TVL 24h ${this._formatRatioPct(feeTvl, 1)} | Bin ${binStep} | MCap ${this._formatUsdShort(mcap)}`);
-    vLines.push('');
-    vLines.push(`<b>GMGN</b>`);
-    vLines.push(`  Holders ${holders}`);
     if (gmgn.top10Pct != null) gmgnParts.push(`Top10 ${this._formatPct(gmgn.top10Pct, 1)}`);
     if (gmgn.devHoldPct != null) gmgnParts.push(`Dev ${this._formatPct(gmgn.devHoldPct, 1)}`);
     if (gmgn.insiderPct != null) gmgnParts.push(`Insider ${this._formatPct(gmgn.insiderPct, 1)}`);
     if (gmgn.bundlerPct != null) gmgnParts.push(`Bundler ${this._formatPct(gmgn.bundlerPct, 1)}`);
-    vLines.push(`  Signal ${gmgnParts.length > 0 ? gmgnParts.join(' | ') : 'N/A'}`);
-    if (pool.signalScore != null && Number.isFinite(Number(pool.signalScore))) {
-      vLines.push(`  LP Score ${Math.max(0, Math.min(100, Math.round(Number(pool.signalScore))))}/100`);
-    }
-    vLines.push('');
-    vLines.push(`  Status: ${pool.rejected ? 'REJECTED' : (pool.status || 'WATCH')}`);
+    vLines.push(`   GMGN: Holders ${holders}${gmgnParts.length > 0 ? ` | ${gmgnParts.join(' | ')}` : ''}`);
+    vLines.push(`   Status: ${pool.rejected ? 'REJECTED' : (pool.status || 'WATCH')}`);
     return vLines.join('\n');
   }
 
@@ -215,21 +201,19 @@ class ReportManager {
     const cfg = getConfig();
     const nextScreenMin = cfg.intervals?.screeningIntervalMin || cfg.screeningIntervalMin || 15;
     const slotText = this.slotSaturatedSummaryOnly ? 'FULL 1/1' : `${deferredTokens.length > 0 ? 'WATCH' : 'AVAILABLE'}`;
-    let report = `╔══════════════════════════════╗\n`;
-    report += `║   AI-Agent Scanner Result    ║\n`;
-    report += `╚══════════════════════════════╝\n`;
+    let report = `📊 AI-Agent Scanner Result\n`;
     report += `📅 ${nowStr}\n\n`;
-    report += `[ TOP 5 POOLS ]\n`;
+    report += `Top 5 Pools\n\n`;
     report += `${top5Cycle.map((pool, idx) => this._buildTopPoolBlock(pool, idx)).join('\n\n')}\n\n`;
-    report += `[ REJECTED ]\n`;
+    report += `Rejected\n`;
     report += `${rejectedTokens.slice(0, 5).map((t) => {
       const reason = this.getGateDetailsText(t, this.getFirstFailedGate(t)) || t.reason || this.getFirstFailedGate(t) || 'Rejected';
-      return `- ${t.name} : ${reason}`;
+      return `- ${t.name} - ${reason}`;
     }).join('\n') || '- N/A'}\n\n`;
 
-    report += `Slot  : ${slotText}\n`;
+    report += `Slot: ${slotText}\n`;
     report += `Action: HOLD new entries\n`;
-    report += `Next  : ${nextScreenMin}m`;
+    report += `Next scan: ${nextScreenMin}m`;
 
     return report;
   }
