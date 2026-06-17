@@ -31,7 +31,7 @@ import { getExitDisplayMeta, getTakeProfitDisplayLabel, formatTakeProfitRiskLabe
 import { escapeHTML, safeParseAI, fetchWithTimeout } from '../utils/safeJson.js';
 import reportManager              from '../utils/reportManager.js';
 import pendingStore               from '../utils/pendingStore.js';
-import { enqueueForDeploy, ensureFinalEntryCandleSanity, ensureFinalSupertrendBullish, isFreshDeployMeta, startDeployQueueWatcher, setDeployQueueNotifyFn, setDeployQueueMonitorFn } from '../utils/pendingDeployQueue.js';
+import { enqueueForDeploy, ensureFinalEntryCandleSanity, ensureFinalSupertrendBullish, getDeployQueueLiveSnapshot, getFinalEntryProximityDecision, isFreshDeployMeta, isReliableLiveSnapshot, startDeployQueueWatcher, setDeployQueueNotifyFn, setDeployQueueMonitorFn } from '../utils/pendingDeployQueue.js';
 import { getDeploySlotUsage, reserveDeploySlot, releaseDeploySlot } from '../utils/deploySlotGuard.js';
 
 const WSOL_MINT = 'So11111111111111111111111111111111111111112';
@@ -3129,14 +3129,44 @@ Balas HANYA JSON valid tanpa Markdown.`;
       }
 
       const finalIncludeEntryCandles5m = String(currentCfg.entryDecisionMode || 'strict').toLowerCase() === 'lp_simple_m15';
-      const finalMarketSnapshot = await getMarketSnapshot(
+      const finalMarketSnapshot = await getDeployQueueLiveSnapshot(
         tokenMint,
         poolAddress || null,
+        symbol,
         {
-          from: 'scan_and_deploy_final',
           includeEntryCandles5m: finalIncludeEntryCandles5m,
         }
-      ).catch(() => winner._marketSnapshot || null);
+      );
+      if (!finalMarketSnapshot) {
+        const reasonText = 'Final live snapshot unavailable; waiting fresh market snapshot';
+        console.log(`[hunter] ⏸️ Final snapshot gate ${symbol}: ${reasonText}`);
+        if (winner._record) {
+          recordGate(winner._record, 'SCOUT_AGENT', 'DEFER', reasonText);
+        }
+        addPendingRetest(winner, reasonText);
+        await notify(
+          `⏸️ <b>Deploy Ditahan</b>\n` +
+          `<b>${escapeHTML(symbol)}</b> — <code>FINAL_SNAPSHOT_HOLD</code>\n` +
+          `Reason: <code>${escapeHTML(reasonText)}</code>\n` +
+          `<i>Agent menunggu snapshot Meteora/live yang benar-benar fresh.</i>`
+        );
+        return false;
+      }
+      if (!isReliableLiveSnapshot(finalMarketSnapshot)) {
+        const reasonText = 'Final live snapshot unreliable; waiting reliable live snapshot';
+        console.log(`[hunter] ⏸️ Final snapshot gate ${symbol}: ${reasonText}`);
+        if (winner._record) {
+          recordGate(winner._record, 'SCOUT_AGENT', 'DEFER', reasonText);
+        }
+        addPendingRetest(winner, reasonText);
+        await notify(
+          `⏸️ <b>Deploy Ditahan</b>\n` +
+          `<b>${escapeHTML(symbol)}</b> — <code>FINAL_SNAPSHOT_HOLD</code>\n` +
+          `Reason: <code>${escapeHTML(reasonText)}</code>\n` +
+          `Snapshot: <code>${escapeHTML(String(finalMarketSnapshot?.ohlcv?.source || finalMarketSnapshot?.dataSource || 'unknown'))}</code>`
+        );
+        return false;
+      }
       if (finalMarketSnapshot && winner && typeof winner === 'object') {
         const finalEntrySignals = deriveBreakoutEntrySignals({
           pool: winner,
@@ -3216,6 +3246,53 @@ Balas HANYA JSON valid tanpa Markdown.`;
         return false;
       }
 
+      const finalCanonicalEntrySnapshot = buildCanonicalEntrySnapshot({
+        pool: winner,
+        existing: winner?.entryCanonicalSnapshot || null,
+        entrySignals: winner?._entrySignals || null,
+        snapshotAt: Number.isFinite(Number(winner?._entryIntentSnapshotAt))
+          ? Number(winner._entryIntentSnapshotAt)
+          : Date.now(),
+        watchWindowSec: getLpWatchWindowSec(currentCfg),
+        maxDriftPct: getLpMaxDriftPct(currentCfg),
+        source: 'scanAndDeploy',
+        finalTrendStamp: {
+          direction: finalSt.direction || 'UNKNOWN',
+          source: finalSt.source || 'unknown',
+          reason: finalSt.reason || '',
+          checkedAt: Date.now(),
+        },
+      });
+      const proximityDecision = getFinalEntryProximityDecision({
+        meta: { entryCanonicalSnapshot: finalCanonicalEntrySnapshot },
+        pool: winner,
+        liveSnapshot: finalMarketSnapshot,
+      });
+      if (!proximityDecision.ok) {
+        const reasonText = proximityDecision.reason || 'entry proximity unavailable; waiting fresh live price/bin snapshot';
+        console.log(
+          `[hunter] ⏸️ Final proximity gate ${symbol}: ${reasonText} ` +
+          `intentPrice=${Number.isFinite(proximityDecision.intentPrice) ? Number(proximityDecision.intentPrice).toFixed(10) : 'na'} ` +
+          `livePrice=${Number.isFinite(proximityDecision.currentPrice) ? Number(proximityDecision.currentPrice).toFixed(10) : 'na'} ` +
+          `priceDrift=${Number.isFinite(proximityDecision.priceDriftPct) ? `${Number(proximityDecision.priceDriftPct).toFixed(2)}%` : 'na'} ` +
+          `intentBin=${Number.isFinite(proximityDecision.intentBin) ? proximityDecision.intentBin : 'na'} ` +
+          `liveBin=${Number.isFinite(proximityDecision.activeBinId) ? proximityDecision.activeBinId : 'na'} ` +
+          `binDelta=${Number.isFinite(proximityDecision.binDelta) ? proximityDecision.binDelta : 'na'}`
+        );
+        if (winner._record) {
+          recordGate(winner._record, 'SCOUT_AGENT', 'DEFER', reasonText);
+        }
+        addPendingRetest(winner, reasonText);
+        await notify(
+          `⏸️ <b>Deploy Ditahan</b>\n` +
+          `<b>${escapeHTML(symbol)}</b> — <code>FINAL_PROXIMITY_HOLD</code>\n` +
+          `Reason: <code>${escapeHTML(reasonText)}</code>\n` +
+          `Drift: <code>${Number.isFinite(proximityDecision.priceDriftPct) ? `${Number(proximityDecision.priceDriftPct).toFixed(2)}%` : 'na'}</code> | ` +
+          `Bin: <code>${Number.isFinite(proximityDecision.binDelta) ? proximityDecision.binDelta : 'na'}</code>`
+        );
+        return false;
+      }
+
       const slotReservation = reserveDeploySlot({
         owner: 'hunterAlpha.scanAndDeploy',
         mint: tokenMint,
@@ -3258,22 +3335,7 @@ Balas HANYA JSON valid tanpa Markdown.`;
               reason: finalSt.reason || '',
               checkedAt: Date.now(),
             },
-            entryCanonicalSnapshot: buildCanonicalEntrySnapshot({
-              pool: winner,
-              entrySignals: winner?._entrySignals || null,
-              snapshotAt: Number.isFinite(Number(winner?._entryIntentSnapshotAt))
-                ? Number(winner._entryIntentSnapshotAt)
-                : Date.now(),
-              watchWindowSec: getLpWatchWindowSec(currentCfg),
-              maxDriftPct: getLpMaxDriftPct(currentCfg),
-              source: 'scanAndDeploy',
-              finalTrendStamp: {
-                direction: finalSt.direction || 'UNKNOWN',
-                source: finalSt.source || 'unknown',
-                reason: finalSt.reason || '',
-                checkedAt: Date.now(),
-              },
-            }),
+            entryCanonicalSnapshot: finalCanonicalEntrySnapshot,
           }),
           Number(currentCfg.deployTimeoutMs || 180_000),
           'DEPLOY'

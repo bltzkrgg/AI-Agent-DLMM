@@ -105,12 +105,15 @@ test('WATCH telegram banner shows candidate status values instead of generic PAS
 
 test('direct deploy path refreshes final market snapshot before final ST and candle gates', () => {
   const hunterSrc = readFileSync(hunterPath, 'utf8');
-  assert.match(hunterSrc, /const finalMarketSnapshot = await getMarketSnapshot\(\s*tokenMint,\s*poolAddress \|\| null,\s*\{\s*from: 'scan_and_deploy_final',/s);
+  assert.match(hunterSrc, /const finalMarketSnapshot = await getDeployQueueLiveSnapshot\(\s*tokenMint,\s*poolAddress \|\| null,\s*symbol,\s*\{/s);
+  assert.match(hunterSrc, /Final live snapshot unavailable; waiting fresh market snapshot/);
+  assert.match(hunterSrc, /Final live snapshot unreliable; waiting reliable live snapshot/);
   assert.match(hunterSrc, /winner\._marketSnapshot = finalMarketSnapshot/);
   assert.match(hunterSrc, /winner\._entrySignals = finalEntrySignals/);
   assert.match(hunterSrc, /ensureFinalSupertrendBullish\(\{\s*mint: tokenMint,\s*symbol,\s*pool: winner,\s*meta: \{\},\s*liveSnapshot: finalMarketSnapshot \|\| null,\s*currentPrice: finalCurrentPrice,\s*\}\)/s);
   assert.match(hunterSrc, /ensureFinalEntryCandleSanity\(\{\s*mint: tokenMint,\s*symbol,\s*pool: winner,\s*meta: \{\},\s*liveSnapshot: finalMarketSnapshot \|\| null,\s*\}\)/s);
-  assert.match(hunterSrc, /Final snapshot: <code>\$\{escapeHTML\(String\(finalMarketSnapshot\?\.ohlcv\?\.source \|\| finalMarketSnapshot\?\.dataSource \|\| 'live'\)\)\}<\/code>/);
+  assert.match(hunterSrc, /const proximityDecision = getFinalEntryProximityDecision\(/);
+  assert.match(hunterSrc, /FINAL_PROXIMITY_HOLD/);
 });
 
 test('telegram exit command closes all active positions with verification summary', () => {

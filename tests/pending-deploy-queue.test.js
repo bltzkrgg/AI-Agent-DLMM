@@ -13,6 +13,7 @@ import {
   enqueueForDeploy,
   getFinalEntryCandleSanityDecision,
   getFinalEntryProximityDecision,
+  getDeployQueueLiveSnapshot,
   ensureFinalEntryCandleSanity,
   getFinalSupertrendDeployDecision,
   getQueueSize,
@@ -1866,4 +1867,8 @@ test('deploy queue applies final entry proximity hold before deploy', () => {
   assert.match(src, /Drift: <code>\$\{Number\.isFinite\(proximityDecision\.priceDriftPct\)/);
   assert.match(src, /Bin: <code>\$\{Number\.isFinite\(proximityDecision\.binDelta\)/);
   assert.match(src, /proximity=\$\{proximityDecision\.comparedBy \|\| 'na'\}/);
+});
+
+test('deploy queue live snapshot helper is exported for direct deploy reuse', () => {
+  assert.equal(typeof getDeployQueueLiveSnapshot, 'function');
 });

@@ -402,6 +402,10 @@ async function getCachedMarketSnapshot(mint, poolAddress = null, symbol = '', op
   return task;
 }
 
+export async function getDeployQueueLiveSnapshot(mint, poolAddress = null, symbol = '', options = {}) {
+  return getCachedMarketSnapshot(mint, poolAddress, symbol, options);
+}
+
 export function getSnapshotCacheStats() {
   return {
     hits: _snapshotCacheHits,
