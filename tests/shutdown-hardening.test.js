@@ -91,6 +91,18 @@ test('index starts manual close watcher during boot', () => {
   assert.match(indexSrc, /AI-Agent-DLMM Activated/);
 });
 
+test('WATCH telegram banner shows candidate status values instead of generic PASS labels', () => {
+  const hunterSrc = readFileSync(hunterPath, 'utf8');
+  assert.match(hunterSrc, /- Slot: <code>\$\{slotUsed\}\/\$\{slotMax\}<\/code> used/);
+  assert.match(hunterSrc, /- Trend M15: <code>\$\{entrySignals\.taTrend \|\| 'UNKNOWN'\}<\/code>/);
+  assert.match(hunterSrc, /- Timing: <code>\$\{entrySignals\.entryTimingState \|\| 'UNKNOWN'\}<\/code>/);
+  assert.match(hunterSrc, /- Safety: <code>SCOUT_PASS<\/code>/);
+  assert.match(hunterSrc, /Watcher aktif — kandidat dipantau sampai final deploy confirm\./);
+  assert.doesNotMatch(hunterSrc, /- Trend M15: PASS/);
+  assert.doesNotMatch(hunterSrc, /- Timing: PASS/);
+  assert.doesNotMatch(hunterSrc, /- Safety: PASS/);
+});
+
 test('telegram exit command closes all active positions with verification summary', () => {
   const indexSrc = readFileSync(indexPath, 'utf8');
   const hunterSrc = readFileSync(hunterPath, 'utf8');
@@ -512,7 +524,8 @@ test('slot-saturated watch promotion stays quiet for new radar candidates', () =
   const src = readFileSync(hunterPath, 'utf8');
   assert.match(src, /function isDeploySlotSaturated\(slotUsage = getDeploySlotUsage\(\)\)/);
   assert.match(src, /SLOT_SATURATED_PROMOTION_PAUSED/);
-  assert.match(src, /if \(!isDeploySlotSaturated\(slotUsage\)\) \{\s*await notify\(/);
+  assert.match(src, /if \(!isDeploySlotSaturated\(slotUsage\)\) \{/);
+  assert.match(src, /await notify\(\s*`👀 <b>WATCH<\/b>/);
   assert.match(src, /if \(slotSaturated\) continue;/);
   assert.match(src, /reportManager\.setSlotSaturatedSummaryOnly\(slotSaturated\)/);
 });

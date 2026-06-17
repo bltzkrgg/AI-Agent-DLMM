@@ -2802,16 +2802,20 @@ FORMAT JAWABAN (WAJIB JSON VALID, TANPA MARKDOWN):
           }
           const slotUsage = getDeploySlotUsage();
           if (!isDeploySlotSaturated(slotUsage)) {
+            const slotActive = Number(slotUsage?.active || 0);
+            const slotReserved = Number(slotUsage?.reserved || 0);
+            const slotMax = Number(slotUsage?.maxPositions || getConfig().maxPositions || 1);
+            const slotUsed = Math.max(0, slotActive + slotReserved);
             await notify(
               `👀 <b>WATCH</b>\n` +
               `Token: <b>${tokenSymbol}</b>\n` +
               `Entry: <b>${entryReadiness || 'N/A'}</b> | Breakout: <b>${breakoutQuality || 'N/A'}</b>\n` +
               `Status:\n` +
-              `- Slot 0/1: PASS\n` +
-              `- Trend M15: PASS\n` +
-              `- Timing: PASS\n` +
-              `- Safety: PASS\n\n` +
-              `Watcher aktif — menunggu slot tersedia.`
+              `- Slot: <code>${slotUsed}/${slotMax}</code> used\n` +
+              `- Trend M15: <code>${entrySignals.taTrend || 'UNKNOWN'}</code>\n` +
+              `- Timing: <code>${entrySignals.entryTimingState || 'UNKNOWN'}</code>\n` +
+              `- Safety: <code>SCOUT_PASS</code>\n\n` +
+              `Watcher aktif — kandidat dipantau sampai final deploy confirm.`
             );
           }
           return { ok: true, pool, symbol: tokenSymbol || 'UNKNOWN' };
