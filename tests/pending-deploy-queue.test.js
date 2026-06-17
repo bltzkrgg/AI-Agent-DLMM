@@ -12,6 +12,7 @@ import {
   dequeueToken,
   enqueueForDeploy,
   getFinalEntryCandleSanityDecision,
+  getFinalEntryProximityDecision,
   ensureFinalEntryCandleSanity,
   getFinalSupertrendDeployDecision,
   getQueueSize,
@@ -1796,4 +1797,70 @@ test('deploy queue freezes intent only when bin, price, and snapshot are valid',
   assert.match(src, /snapshotAt:\s*deployIntentSnapshotAt/);
   assert.match(src, /enabled:\s*frozenEnabled/);
   assert.match(src, /required:\s*false/);
+});
+
+test('final entry proximity allows near-live price and bin state', () => {
+  const decision = getFinalEntryProximityDecision({
+    meta: {
+      entryCanonicalSnapshot: {
+        entryPrice: 100,
+        entryActiveBin: 120,
+      },
+    },
+    liveSnapshot: {
+      ohlcv: { currentPrice: 100.4 },
+      pool: { activeBinId: 121 },
+    },
+  });
+
+  assert.equal(decision.ok, true);
+  assert.equal(decision.action, 'ALLOW');
+  assert.equal(decision.comparedBy, 'price+bin');
+});
+
+test('final entry proximity holds when live drift is too wide', () => {
+  const decision = getFinalEntryProximityDecision({
+    meta: {
+      entryCanonicalSnapshot: {
+        entryPrice: 100,
+        entryActiveBin: 120,
+      },
+    },
+    liveSnapshot: {
+      ohlcv: { currentPrice: 101.5 },
+      pool: { activeBinId: 123 },
+    },
+  });
+
+  assert.equal(decision.ok, false);
+  assert.equal(decision.action, 'HOLD');
+  assert.match(decision.reason, /entry proximity drift too wide/i);
+});
+
+test('final entry proximity holds when live price/bin snapshot is unavailable', () => {
+  const decision = getFinalEntryProximityDecision({
+    meta: {
+      entryCanonicalSnapshot: {
+        entryPrice: 100,
+        entryActiveBin: 120,
+      },
+    },
+    liveSnapshot: {
+      ohlcv: {},
+      pool: {},
+    },
+  });
+
+  assert.equal(decision.ok, false);
+  assert.equal(decision.action, 'HOLD');
+  assert.match(decision.reason, /entry proximity unavailable/i);
+});
+
+test('deploy queue applies final entry proximity hold before deploy', () => {
+  const src = readFileSync(new URL('../src/utils/pendingDeployQueue.js', import.meta.url), 'utf8');
+  assert.match(src, /let proximityDecision = getFinalEntryProximityDecision\(/);
+  assert.match(src, /const refreshedSnapshot = await getCachedMarketSnapshot\(/);
+  assert.match(src, /entry\.deferReason = proximityDecision\.reason/);
+  assert.match(src, /Deploy Queue Hold/);
+  assert.match(src, /proximity=\$\{proximityDecision\.comparedBy \|\| 'na'\}/);
 });

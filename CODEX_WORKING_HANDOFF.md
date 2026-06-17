@@ -53,7 +53,9 @@ prefer the explicit user request, then update this file after the change lands.
 - Operator-facing scanner text now uses `Signal` + `LP Score` wording instead of raw GMGN label noise, so report output stays LP-centric while still exposing the signal overlay.
 - Scanner report `Fee/TVL` must use Meteora 24h ratio as the source of truth; missing ratio now renders `N/A` instead of a fake `0.0%`.
 - Entry/watch/queue/deploy must preserve one canonical entry snapshot payload so active-position monitor/exit can read the same entry context that was used at deploy time.
+- Final deploy must keep entry close to the latest live DLMM state: queue deploy now rechecks canonical `entryPrice` / `entryActiveBin` against live price / active bin and HOLDS for a fresh retry when drift is already too wide.
 - Queue, monitor, defensive exit, and manual-close accounting must prefer `entryCanonicalSnapshot` before scattered legacy entry fields.
+- Final queue deploy proximity guard is a last-mile execution safety only; it must not change scout ranking, TA gates, or add new config knobs.
 - On successful deploy, `evilPanda` must upgrade `entryCanonicalSnapshot` with the final runtime entry truth actually used on-chain (`entryActiveBin`, `entryPrice`, final ST stamp, anchor/range-adjust metadata) so monitor/exit do not keep reading stale queue-era intent fields.
 - Helius quota saver core must use short-lived snapshot/on-chain/priority-fee cache reuse with in-flight dedupe; this is an infrastructure optimization only and must not change entry/exit gates or disable fast-lane monitor behavior.
 - 5.4 mini is reserved for operator-facing polish and test-string alignment around reports/exits; it must not alter trading logic, gating, or lifecycle accounting.
@@ -90,6 +92,7 @@ Only edit other files when the change explicitly requires it.
 - Entry metadata drift across WATCH, queue, direct deploy, and restored active positions.
 - Bin-step candidate selection versus fixed bin-step ranking.
 - Mixed canonical-vs-legacy entry field reads inside queue, monitor, and manual-close consumers.
+- Entry proximity drift versus live price / active bin on the deploy queue hot path.
 
 ## Locked areas
 
@@ -182,3 +185,4 @@ Do not edit these unless the user explicitly scopes the change there.
 - 2026-06-16: The `/config` Telegram panel now includes inline buttons that open the full `/setconfig` help and examples; `/setconfig ?` reuses the same helper and is sent via `sendLong()` so the help no longer trips Telegram's message-length limit.
 - 2026-06-16: `/setconfig` now opens a section menu with inline buttons for Finance, Discovery, Strategy, Entry, Watch, OOR, Pool Impact Guard, and Pool Pattern Learning; clicking a section sends that section's allowed keys plus ready-to-copy command examples, then the flow returns through a `Kembali` button.
 - 2026-06-17: Scanner report runtime and `reportManager` now use the retro box layout (`AI-Agent Scanner Result`, `[ TOP 5 POOLS ]`, `[ REJECTED ]`, and boxed footer fields) so Telegram output stays visually consistent with the chosen dashboard style.
+- 2026-06-17: Completed 5.4 final entry proximity hardening in `pendingDeployQueue`: queue deploy now compares canonical `entryPrice` / `entryActiveBin` with live price / active bin, refreshes the live snapshot once on mismatch, and HOLDS with explicit proximity reasons instead of deploying when drift is already too wide; no scout gate, config, or Meteora/oracle behavior was changed.

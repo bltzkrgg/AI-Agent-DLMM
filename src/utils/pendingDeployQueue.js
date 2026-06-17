@@ -26,6 +26,8 @@ const _holdNotifyDedup = new Map(); // key(candidate|reason) -> lastSentAtMs
 const _holdNotifyKeysByCandidate = new Map(); // candidate -> Set(keys)
 const SNAPSHOT_CACHE_TTL_MS = 12_000;
 const FINAL_ST_CACHE_TTL_MS = 15_000;
+const FINAL_ENTRY_PROXIMITY_MAX_DRIFT_PCT = 1.0;
+const FINAL_ENTRY_PROXIMITY_MAX_BIN_DELTA = 1;
 const OPERATOR_DISCOVERY_PAUSED_KEY = 'operatorDiscoveryPaused';
 let _snapshotCacheHits = 0;
 let _snapshotCacheMisses = 0;
@@ -509,6 +511,102 @@ function readLiveSupertrendLineState(liveSnapshot = null) {
     supertrendValue,
     distancePct,
     aboveLine: Number.isFinite(distancePct) ? distancePct > 0 : null,
+  };
+}
+
+function readLiveActiveBinState(liveSnapshot = null, pool = {}, meta = {}) {
+  const currentPrice = Number(
+    liveSnapshot?.ohlcv?.currentPrice ||
+    liveSnapshot?.price?.currentPrice ||
+    meta?.currentPrice ||
+    pool?.price ||
+    pool?.pool_price ||
+    0
+  );
+  const activeBinId = Number(
+    liveSnapshot?.pool?.activeBinId ??
+    liveSnapshot?.activeBinId ??
+    pool?._activeBinId ??
+    pool?.activeBinId ??
+    pool?.activeBin ??
+    meta?.activeBinId ??
+    Number.NaN
+  );
+  return {
+    currentPrice: Number.isFinite(currentPrice) && currentPrice > 0 ? currentPrice : null,
+    activeBinId: Number.isFinite(activeBinId) ? Math.trunc(activeBinId) : null,
+  };
+}
+
+export function getFinalEntryProximityDecision({
+  meta = {},
+  pool = {},
+  liveSnapshot = null,
+} = {}) {
+  const canonicalMeta = readCanonicalEntryMeta(meta);
+  const intentPrice = Number.isFinite(Number(canonicalMeta.entryPrice)) ? Number(canonicalMeta.entryPrice) : null;
+  const intentBin = Number.isFinite(Number(canonicalMeta.entryActiveBin)) ? Number(canonicalMeta.entryActiveBin) : null;
+  const live = readLiveActiveBinState(liveSnapshot, pool, meta);
+  const currentPrice = live.currentPrice;
+  const activeBinId = live.activeBinId;
+  const priceDriftPct = intentPrice > 0 && currentPrice > 0
+    ? Math.abs(((currentPrice - intentPrice) / intentPrice) * 100)
+    : null;
+  const binDelta = Number.isFinite(intentBin) && Number.isFinite(activeBinId)
+    ? Math.abs(activeBinId - intentBin)
+    : null;
+  const priceExceeded = Number.isFinite(priceDriftPct) && priceDriftPct > FINAL_ENTRY_PROXIMITY_MAX_DRIFT_PCT;
+  const binExceeded = Number.isFinite(binDelta) && binDelta > FINAL_ENTRY_PROXIMITY_MAX_BIN_DELTA;
+  const hasComparableSignal = Number.isFinite(priceDriftPct) || Number.isFinite(binDelta);
+
+  if (!hasComparableSignal) {
+    return {
+      ok: false,
+      action: 'HOLD',
+      reason: 'entry proximity unavailable; waiting fresh live price/bin snapshot',
+      currentPrice,
+      activeBinId,
+      intentPrice,
+      intentBin,
+      priceDriftPct,
+      binDelta,
+      comparedBy: 'none',
+    };
+  }
+
+  if (!priceExceeded && !binExceeded) {
+    return {
+      ok: true,
+      action: 'ALLOW',
+      reason: 'entry proximity within live drift guard',
+      currentPrice,
+      activeBinId,
+      intentPrice,
+      intentBin,
+      priceDriftPct,
+      binDelta,
+      comparedBy: Number.isFinite(priceDriftPct) && Number.isFinite(binDelta)
+        ? 'price+bin'
+        : Number.isFinite(priceDriftPct)
+          ? 'price'
+          : 'bin',
+    };
+  }
+
+  const detail = [];
+  if (priceExceeded) detail.push(`price drift ${formatPct(priceDriftPct)} > ${FINAL_ENTRY_PROXIMITY_MAX_DRIFT_PCT.toFixed(2)}%`);
+  if (binExceeded) detail.push(`active bin delta ${binDelta} > ${FINAL_ENTRY_PROXIMITY_MAX_BIN_DELTA}`);
+  return {
+    ok: false,
+    action: 'HOLD',
+    reason: `entry proximity drift too wide: ${detail.join(' | ')}`,
+    currentPrice,
+    activeBinId,
+    intentPrice,
+    intentBin,
+    priceDriftPct,
+    binDelta,
+    comparedBy: priceExceeded && binExceeded ? 'price+bin' : priceExceeded ? 'price' : 'bin',
   };
 }
 
@@ -1422,6 +1520,70 @@ async function runWatcher() {
         continue;
       }
 
+      let liveSnapshotForDeploy = entry.lastLiveSnapshot || null;
+      let proximityDecision = getFinalEntryProximityDecision({
+        meta,
+        pool,
+        liveSnapshot: liveSnapshotForDeploy,
+      });
+      if (!proximityDecision.ok) {
+        const refreshedSnapshot = await getCachedMarketSnapshot(mint, poolAddress || null, symbol, {
+          includeEntryCandles5m: false,
+        });
+        if (refreshedSnapshot && pool && typeof pool === 'object') {
+          pool._marketSnapshot = refreshedSnapshot;
+        }
+        if (refreshedSnapshot) {
+          entry.lastLiveSnapshot = refreshedSnapshot;
+          liveSnapshotForDeploy = refreshedSnapshot;
+        }
+        proximityDecision = getFinalEntryProximityDecision({
+          meta,
+          pool,
+          liveSnapshot: liveSnapshotForDeploy,
+        });
+      }
+      if (!proximityDecision.ok) {
+        entry.nextEligibleAt = Date.now() + 15_000;
+        entry.deferReason = proximityDecision.reason;
+        console.log(
+          `[QUEUE] ⏸️ ${symbol} HOLD sebelum deploy: ${proximityDecision.reason} ` +
+          `intentPrice=${Number.isFinite(proximityDecision.intentPrice) ? Number(proximityDecision.intentPrice).toFixed(10) : 'na'} ` +
+          `livePrice=${Number.isFinite(proximityDecision.currentPrice) ? Number(proximityDecision.currentPrice).toFixed(10) : 'na'} ` +
+          `priceDrift=${Number.isFinite(proximityDecision.priceDriftPct) ? `${Number(proximityDecision.priceDriftPct).toFixed(2)}%` : 'na'} ` +
+          `intentBin=${Number.isFinite(proximityDecision.intentBin) ? proximityDecision.intentBin : 'na'} ` +
+          `liveBin=${Number.isFinite(proximityDecision.activeBinId) ? proximityDecision.activeBinId : 'na'} ` +
+          `binDelta=${Number.isFinite(proximityDecision.binDelta) ? proximityDecision.binDelta : 'na'}`
+        );
+        if (isDeploySlotSaturated()) {
+          console.log('[QUEUE] Slot saturated, suppressing hold/drop noise.');
+          continue;
+        }
+        const cfg = getConfig();
+        const cooldownSec = Math.max(30, Number(cfg.deployQueueHoldNotifyCooldownSec ?? 180) || 180);
+        const notifyDecision = shouldSendDeployQueueHoldNotification({
+          poolAddress,
+          mint,
+          reason: proximityDecision.reason,
+          now: Date.now(),
+          cooldownMs: cooldownSec * 1000,
+        });
+        if (notifyDecision.shouldSend) {
+          await safeSend(
+            `⏸️ <b>Deploy Queue Hold</b>\n` +
+            `<b>${symbol}</b>\n` +
+            `Live: <code>${escapeHTML(proximityDecision.comparedBy || 'unknown')}</code>\n` +
+            `<i>${escapeHTML(proximityDecision.reason)}</i>`
+          );
+        } else {
+          console.log(
+            `[QUEUE] 🔕 Suppressed duplicate HOLD Telegram for ${symbol || mint.slice(0, 8)} ` +
+            `reason="${notifyDecision.normalizedReason}" cooldown=${cooldownSec}s`
+          );
+        }
+        continue;
+      }
+
       const cfg = getConfig();
       const solAmount = cfg.deployAmountSol || 0.1;
       recordPoolDeploy({
@@ -1452,6 +1614,9 @@ async function runWatcher() {
         `[QUEUE] 🚀 Attempting deploy for ${symbol} ` +
         `decision=${decision} trend=${check.liveTrend || 'UNKNOWN'} (${check.trendSource || 'unknown'}) ` +
         `m5=${formatPct(check.liveM5)} (${check.m5Source || 'unknown'}) ` +
+        `proximity=${proximityDecision.comparedBy || 'na'} ` +
+        `drift=${Number.isFinite(proximityDecision.priceDriftPct) ? `${Number(proximityDecision.priceDriftPct).toFixed(2)}%` : 'na'} ` +
+        `binDelta=${Number.isFinite(proximityDecision.binDelta) ? proximityDecision.binDelta : 'na'} ` +
         `intent=${frozenEnabled ? 'FROZEN' : 'LIVE'} ` +
         `intentBin=${Number.isFinite(deployIntentBin) ? deployIntentBin : 'na'} ` +
         `intentPrice=${Number.isFinite(deployIntentPrice) ? deployIntentPrice.toFixed(10) : 'na'} ` +
