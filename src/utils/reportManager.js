@@ -215,28 +215,17 @@ class ReportManager {
     const cfg = getConfig();
     const nextScreenMin = cfg.intervals?.screeningIntervalMin || cfg.screeningIntervalMin || 15;
     const slotText = this.slotSaturatedSummaryOnly ? 'FULL 1/1' : `${deferredTokens.length > 0 ? 'WATCH' : 'AVAILABLE'}`;
-    const prefixBlock = (text) => String(text || '').split('\n').map((line) => (line ? `│ ${line}` : '│')).join('\n');
-    const boxedRejected = (items = []) => {
-      const lines = items.length > 0
-        ? items.map((t) => {
-          const reason = this.getGateDetailsText(t, this.getFirstFailedGate(t)) || t.reason || this.getFirstFailedGate(t) || 'Rejected';
-          return `│ ${t.name} : ${reason}`;
-        })
-        : ['│ N/A'];
-      return lines.join('\n');
-    };
-
-    let report = `┌────────────────────────────────────┐\n`;
-    report += `│       AI-Agent Scanner Result      │\n`;
-    report += `└────────────────────────────────────┘\n`;
+    let report = `╔══════════════════════════════╗\n`;
+    report += `║   AI-Agent Scanner Result    ║\n`;
+    report += `╚══════════════════════════════╝\n`;
     report += `📅 ${nowStr}\n\n`;
-    report += `┌─ TOP 5 POOLS ─────────────────────┐\n`;
-    report += `${top5Cycle.map((pool, idx) => prefixBlock(this._buildTopPoolBlock(pool, idx))).join('\n')}\n`;
-    report += `└────────────────────────────────────┘\n\n`;
-
-    report += `┌─ REJECTED ─────────────────────────┐\n`;
-    report += `${boxedRejected(rejectedTokens.slice(0, 5))}\n`;
-    report += `└────────────────────────────────────┘\n\n`;
+    report += `[ TOP 5 POOLS ]\n`;
+    report += `${top5Cycle.map((pool, idx) => this._buildTopPoolBlock(pool, idx)).join('\n\n')}\n\n`;
+    report += `[ REJECTED ]\n`;
+    report += `${rejectedTokens.slice(0, 5).map((t) => {
+      const reason = this.getGateDetailsText(t, this.getFirstFailedGate(t)) || t.reason || this.getFirstFailedGate(t) || 'Rejected';
+      return `- ${t.name} : ${reason}`;
+    }).join('\n') || '- N/A'}\n\n`;
 
     report += `Slot  : ${slotText}\n`;
     report += `Action: HOLD new entries\n`;

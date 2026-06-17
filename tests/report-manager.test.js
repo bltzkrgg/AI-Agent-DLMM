@@ -44,7 +44,7 @@ test('report manager renders LP scanner brief with top pools and rejects', () =>
   const report = reportManager.generateReport();
 
   assert.match(report, /AI-Agent Scanner Result/);
-  assert.match(report, /TOP 5 POOLS/);
+  assert.match(report, /\[ TOP 5 POOLS \]/);
   assert.match(report, /1\. CHANCE/);
   assert.match(report, /TVL \$469\.4K \| Vol24h \$5\.6M \| Fees24h ◎0\.83/);
   assert.match(report, /Fee\/TVL 24h 1\.9% \| Bin 100 \| MCap \$887\.7K/);
@@ -53,6 +53,7 @@ test('report manager renders LP scanner brief with top pools and rejects', () =>
   assert.match(report, /Status: DEPLOYED/);
   assert.match(report, /REJECTED/);
   assert.match(report, /KINS : stale market snapshot/);
+  assert.match(report, /\[ REJECTED \]/);
   assert.match(report, /Slot\s+:\s+AVAILABLE/);
   assert.match(report, /Action: HOLD new entries/);
   assert.match(report, /Next\s+:\s+15m/);
@@ -74,7 +75,7 @@ test('report manager keeps working with partial pool and gmgn data', () => {
   const report = reportManager.generateReport();
 
   assert.match(report, /AI-Agent Scanner Result/);
-  assert.match(report, /TOP 5 POOLS/);
+  assert.match(report, /\[ TOP 5 POOLS \]/);
   assert.match(report, /Signal N\/A/);
   assert.match(report, /1\. FCM/);
   assert.match(report, /Fee\/TVL 24h N\/A/);

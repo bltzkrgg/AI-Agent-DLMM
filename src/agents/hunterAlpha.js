@@ -4228,20 +4228,18 @@ export async function sendImmediateTopPoolsReport(chatId) {
     const nowStr = new Date().toLocaleString('id-ID', { timeZone: 'Asia/Jakarta', dateStyle: 'full', timeStyle: 'long' });
     const intervalMin = cfg.intervals?.screeningIntervalMin || cfg.screeningIntervalMin || 15;
 
-    let report = `┌────────────────────────────────────┐\n`;
-    report += `│       AI-Agent Scanner Result      │\n`;
-    report += `└────────────────────────────────────┘\n`;
+    let report = `╔══════════════════════════════╗\n`;
+    report += `║   AI-Agent Scanner Result    ║\n`;
+    report += `╚══════════════════════════════╝\n`;
     report += `📅 ${nowStr}\n\n`;
-    report += `┌─ TOP 5 POOLS ─────────────────────┐\n`;
-    report += `${lines.map((line) => `│ ${line}`).join('\n')}\n`;
-    report += `└────────────────────────────────────┘\n\n`;
-    report += `┌─ REJECTED ─────────────────────────┐\n`;
-    report += `${(topPools.filter((pool) => !pool || pool.rejected).slice(0, 5).map((pool) => {
+    report += `[ TOP 5 POOLS ]\n`;
+    report += `${lines.join('\n\n')}\n\n`;
+    report += `[ REJECTED ]\n`;
+    report += `${topPools.filter((pool) => !pool || pool.rejected).slice(0, 5).map((pool) => {
       const name = pool?.name || pool?.tokenXSymbol || pool?.tokenXMint?.slice(0, 8) || 'UNKNOWN';
       const reason = pool?.rejectReason || pool?.reason || 'Rejected';
-      return `│ ${name} : ${reason}`;
-    }).join('\n') || '│ N/A')}\n`;
-    report += `└────────────────────────────────────┘\n\n`;
+      return `- ${name} : ${reason}`;
+    }).join('\n') || '- N/A'}\n\n`;
     report += `Slot  : ${slotSaturated ? 'FULL 1/1' : 'AVAILABLE'}\n`;
     report += `Action: HOLD new entries\n`;
     report += `Next  : ${intervalMin}m`;
