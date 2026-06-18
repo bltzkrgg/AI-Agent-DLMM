@@ -541,6 +541,29 @@ function readLiveActiveBinState(liveSnapshot = null, pool = {}, meta = {}) {
   };
 }
 
+function isFreshLiveSnapshot(liveSnapshot = null, meta = {}, pool = {}, cfg = getConfig()) {
+  const source = String(liveSnapshot?.ohlcv?.source || liveSnapshot?.dataSource || '').toLowerCase();
+  if (!liveSnapshot || !source) return false;
+  if (!source.includes('meteora-dlmm-ohlcv')) return false;
+
+  const snapshotAt = Number(
+    liveSnapshot?.snapshotAt ||
+    liveSnapshot?.ts ||
+    meta?.snapshotAt ||
+    pool?._watchSnapshotAt ||
+    0
+  );
+  if (!Number.isFinite(snapshotAt) || snapshotAt <= 0) return false;
+
+  const maxAgeMs = Math.max(
+    5_000,
+    Number(cfg?.entryFinalLiveSnapshotMaxAgeMs) ||
+    Number(cfg?.entryFreshWatchWindowSec) * 1000 ||
+    90_000
+  );
+  return (Date.now() - snapshotAt) <= maxAgeMs;
+}
+
 export function getFinalEntryProximityDecision({
   meta = {},
   pool = {},
@@ -554,6 +577,21 @@ export function getFinalEntryProximityDecision({
   const live = readLiveActiveBinState(liveSnapshot, pool, meta);
   const currentPrice = live.currentPrice;
   const activeBinId = live.activeBinId;
+  const freshLiveSnapshot = isFreshLiveSnapshot(liveSnapshot, canonicalMeta, pool, cfg);
+  if (!freshLiveSnapshot) {
+    return {
+      ok: false,
+      action: 'HOLD',
+      reason: 'entry proximity unavailable; waiting fresh live price/bin snapshot',
+      currentPrice,
+      activeBinId,
+      intentPrice,
+      intentBin,
+      priceDriftPct: null,
+      binDelta: null,
+      comparedBy: 'none',
+    };
+  }
   const priceDriftPct = intentPrice > 0 && currentPrice > 0
     ? Math.abs(((currentPrice - intentPrice) / intentPrice) * 100)
     : null;

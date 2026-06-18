@@ -1801,6 +1801,7 @@ test('deploy queue freezes intent only when bin, price, and snapshot are valid',
 });
 
 test('final entry proximity allows near-live price and bin state', () => {
+  const now = Date.now();
   const decision = getFinalEntryProximityDecision({
     meta: {
       entryCanonicalSnapshot: {
@@ -1809,6 +1810,8 @@ test('final entry proximity allows near-live price and bin state', () => {
       },
     },
     liveSnapshot: {
+      snapshotAt: now,
+      dataSource: 'meteora-dlmm-ohlcv',
       ohlcv: { currentPrice: 100.4 },
       pool: { activeBinId: 121 },
     },
@@ -1820,6 +1823,7 @@ test('final entry proximity allows near-live price and bin state', () => {
 });
 
 test('final entry proximity holds when live drift is too wide', () => {
+  const now = Date.now();
   const decision = getFinalEntryProximityDecision({
     meta: {
       entryCanonicalSnapshot: {
@@ -1828,6 +1832,8 @@ test('final entry proximity holds when live drift is too wide', () => {
       },
     },
     liveSnapshot: {
+      snapshotAt: now,
+      dataSource: 'meteora-dlmm-ohlcv',
       ohlcv: { currentPrice: 101.5 },
       pool: { activeBinId: 123 },
     },
@@ -1840,6 +1846,7 @@ test('final entry proximity holds when live drift is too wide', () => {
 });
 
 test('final entry proximity respects runtime drift config', () => {
+  const now = Date.now();
   const decision = getFinalEntryProximityDecision({
     meta: {
       entryCanonicalSnapshot: {
@@ -1848,6 +1855,8 @@ test('final entry proximity respects runtime drift config', () => {
       },
     },
     liveSnapshot: {
+      snapshotAt: now,
+      dataSource: 'meteora-dlmm-ohlcv',
       ohlcv: { currentPrice: 101.8 },
       pool: { activeBinId: 121 },
     },
@@ -1867,9 +1876,33 @@ test('final entry proximity holds when live price/bin snapshot is unavailable', 
       },
     },
     liveSnapshot: {
+      dataSource: 'meteora-dlmm-ohlcv',
       ohlcv: {},
       pool: {},
     },
+  });
+
+  assert.equal(decision.ok, false);
+  assert.equal(decision.action, 'HOLD');
+  assert.match(decision.reason, /entry proximity unavailable/i);
+});
+
+test('final entry proximity holds when live snapshot is stale', () => {
+  const now = Date.now();
+  const decision = getFinalEntryProximityDecision({
+    meta: {
+      entryCanonicalSnapshot: {
+        entryPrice: 100,
+        entryActiveBin: 120,
+      },
+    },
+    liveSnapshot: {
+      snapshotAt: now - 180_000,
+      dataSource: 'meteora-dlmm-ohlcv',
+      ohlcv: { currentPrice: 100.2 },
+      pool: { activeBinId: 120 },
+    },
+    cfg: { entryFreshWatchWindowSec: 30 },
   });
 
   assert.equal(decision.ok, false);
