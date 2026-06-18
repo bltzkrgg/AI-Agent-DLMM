@@ -3182,7 +3182,7 @@ Balas HANYA JSON valid tanpa Markdown.`;
         }
       );
       if (!finalMarketSnapshot) {
-        const reasonText = 'Final live snapshot unavailable; waiting fresh market snapshot';
+        const reasonText = 'Final snapshot unavailable; waiting fresh market snapshot';
         console.log(`[hunter] ⏸️ Final snapshot gate ${symbol}: ${reasonText}`);
         if (winner._record) {
           recordGate(winner._record, 'SCOUT_AGENT', 'DEFER', reasonText);
@@ -3197,7 +3197,7 @@ Balas HANYA JSON valid tanpa Markdown.`;
         return false;
       }
       if (!isReliableLiveSnapshot(finalMarketSnapshot)) {
-        const reasonText = 'Final live snapshot unreliable; waiting reliable live snapshot';
+        const reasonText = 'Final snapshot unreliable; waiting reliable live snapshot';
         console.log(`[hunter] ⏸️ Final snapshot gate ${symbol}: ${reasonText}`);
         if (winner._record) {
           recordGate(winner._record, 'SCOUT_AGENT', 'DEFER', reasonText);
@@ -3314,7 +3314,7 @@ Balas HANYA JSON valid tanpa Markdown.`;
         cfg: currentCfg,
       });
       if (!proximityDecision.ok) {
-        const reasonText = proximityDecision.reason || 'entry proximity unavailable; waiting fresh live price/bin snapshot';
+        const reasonText = proximityDecision.reason || 'Entry proximity unavailable; waiting fresh live snapshot';
         console.log(
           `[hunter] ⏸️ Final proximity gate ${symbol}: ${reasonText} ` +
           `intentPrice=${Number.isFinite(proximityDecision.intentPrice) ? Number(proximityDecision.intentPrice).toFixed(10) : 'na'} ` +

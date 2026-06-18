@@ -289,7 +289,7 @@ test('trusted WATCH-ready LP entries can prepare queue but still need final ST g
     lpMode: true,
   });
   assert.equal(fromQueue.decision, 'HOLD');
-  assert.equal(fromQueue.reason.includes('realtime M5 unknown/stale'), true);
+  assert.equal(fromQueue.reason.includes('M5 stale'), true);
 
   const liveNeutral = summarizeQueueDecision({
     meta: trustedWatchMeta,
@@ -491,7 +491,7 @@ test('queue holds when live quality trend and TA trend conflict', () => {
 
   assert.equal(decision.decision, 'HOLD');
   assert.equal(decision.trend, 'UNKNOWN');
-  assert.match(decision.reason, /live trend conflict/i);
+  assert.match(decision.reason, /trend conflict/i);
 });
 
 test('final Supertrend deploy gate allows only fresh bullish cache', async () => {
@@ -1971,5 +1971,5 @@ test('queue summary holds when queued canonical trend is conflicted', () => {
   });
 
   assert.equal(decision.decision, 'HOLD');
-  assert.match(decision.reason, /queued trend conflict/i);
+  assert.match(decision.reason, /trend conflict/i);
 });

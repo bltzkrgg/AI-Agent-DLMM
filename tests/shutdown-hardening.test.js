@@ -117,8 +117,8 @@ test('WATCH and ready queue both honor reentry discipline for same-mint post-los
 test('direct deploy path refreshes final market snapshot before final ST and candle gates', () => {
   const hunterSrc = readFileSync(hunterPath, 'utf8');
   assert.match(hunterSrc, /const finalMarketSnapshot = await getDeployQueueLiveSnapshot\(\s*tokenMint,\s*poolAddress \|\| null,\s*symbol,\s*\{/s);
-  assert.match(hunterSrc, /Final live snapshot unavailable; waiting fresh market snapshot/);
-  assert.match(hunterSrc, /Final live snapshot unreliable; waiting reliable live snapshot/);
+  assert.match(hunterSrc, /Final snapshot unavailable; waiting fresh market snapshot/);
+  assert.match(hunterSrc, /Final snapshot unreliable; waiting reliable live snapshot/);
   assert.match(hunterSrc, /winner\._marketSnapshot = finalMarketSnapshot/);
   assert.match(hunterSrc, /winner\._entrySignals = finalEntrySignals/);
   assert.match(hunterSrc, /ensureFinalSupertrendBullish\(\{\s*mint: tokenMint,\s*symbol,\s*pool: winner,\s*meta: \{\},\s*liveSnapshot: finalMarketSnapshot \|\| null,\s*currentPrice: finalCurrentPrice,\s*\}\)/s);

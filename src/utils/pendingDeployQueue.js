@@ -1033,10 +1033,10 @@ export function summarizeQueueDecision({ meta = {}, liveSnapshot = null, cfg = g
   if (lpMode) {
     if (signals.liveTrendConflicted) {
       decision = 'HOLD';
-      reason = `HOLD: live trend conflict quality=${signals.liveQualityTrend} ta=${signals.liveTaTrend}; waiting canonical confirmation`;
+      reason = 'HOLD: trend conflict; waiting canonical confirmation';
     } else if (meta.taTrendConflicted === true) {
       decision = 'HOLD';
-      reason = `HOLD: queued trend conflict quality=${meta.taTrendQualitySource || 'UNKNOWN'} ta=${meta.taTrendTaSource || 'UNKNOWN'}; waiting canonical confirmation`;
+      reason = 'HOLD: trend conflict; waiting canonical confirmation';
     } else if ((liveReliable && liveTrend === 'BEARISH') || trendBearish) {
       decision = 'DROP';
       reason = liveReliable && liveTrend === 'BEARISH'
@@ -1047,22 +1047,22 @@ export function summarizeQueueDecision({ meta = {}, liveSnapshot = null, cfg = g
       reason = 'HOLD: realtime trend/M5 unknown; waiting for fresh deploy signal';
     } else if (!lpSimpleM15Mode && m5Unknown) {
       decision = 'HOLD';
-      reason = `HOLD: realtime M5 unknown/stale (${signals.m5Source}); waiting fresh signal`;
+      reason = 'HOLD: M5 stale; waiting fresh signal';
     } else if ((!lpSimpleM15Mode || m5HardGateEnabled) && !m5FreshPositive) {
       decision = 'HOLD';
       reason = `HOLD: realtime M5 non-positive (${formatPct(signals.m5)}); waiting positive momentum`;
     } else if (trendUnknown) {
       decision = 'HOLD';
-      reason = 'HOLD: realtime trend unknown; waiting fresh live bullish trend';
+      reason = 'HOLD: trend unknown; waiting fresh bullish trend';
     } else if (!liveReliable) {
       decision = 'HOLD';
       reason = 'HOLD: live snapshot unreliable; waiting fresh reliable bullish trend';
     } else if (!trendFresh) {
       decision = 'HOLD';
-      reason = `HOLD: realtime trend stale (${signals.trendSource}); waiting fresh live trend`;
+      reason = 'HOLD: trend stale; waiting fresh live trend';
     } else if (signals.trend !== 'BULLISH') {
       decision = 'HOLD';
-      reason = `Freshness hilang: trend=${signals.trend || 'UNKNOWN'} (${signals.trendSource}) m5=${formatPct(signals.m5)} (${signals.m5Source})`;
+      reason = 'HOLD: trend not bullish; waiting fresh live trend';
     } else if (trustedLpWatch) {
       reason = `Trusted WATCH prepared (${signals.trendSource}/${signals.m5Source})`;
     }
