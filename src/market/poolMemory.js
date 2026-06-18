@@ -294,3 +294,59 @@ export function getPoolMemorySignal(input = {}, now = nowMs()) {
       : `POOL_MEMORY_DELTA_${priorityDelta}`,
   };
 }
+
+export function evaluatePoolReentryDiscipline({
+  pool = {},
+  entrySignals = {},
+  now = nowMs(),
+} = {}) {
+  const signal = getPoolMemorySignal(pool, now);
+  const memory = signal.memory || null;
+  if (!memory) {
+    return {
+      allowed: true,
+      reason: 'NO_MEMORY',
+      signal,
+    };
+  }
+
+  if (signal.cooldownActive) {
+    return {
+      allowed: false,
+      reason: signal.reason || 'POOL_MEMORY_COOLDOWN',
+      signal,
+    };
+  }
+
+  const lastOutcome = String(memory.lastOutcome || '').toUpperCase();
+  const lastDecision = String(memory.lastDecision || '').toUpperCase();
+  if (lastDecision !== 'CLOSE' || lastOutcome !== 'LOSS') {
+    return {
+      allowed: true,
+      reason: signal.reason || 'NO_RECENT_LOSS',
+      signal,
+    };
+  }
+
+  const trend = String(entrySignals.taTrend || '').toUpperCase();
+  const timing = String(entrySignals.entryTimingState || '').toUpperCase();
+  const readiness = String(entrySignals.entryReadiness || '').toUpperCase();
+  const breakout = String(entrySignals.breakoutQuality || '').toUpperCase();
+  const m15 = Number(entrySignals.priceChangeM15);
+  const isFreshHealthySetup =
+    trend === 'BULLISH' &&
+    ['LP_LIVE', 'BREAKOUT', 'ATH_BREAK'].includes(timing) &&
+    readiness === 'HIGH' &&
+    ['VALID', 'STRONG'].includes(breakout) &&
+    Number.isFinite(m15) &&
+    m15 > 0;
+
+  return {
+    allowed: isFreshHealthySetup,
+    reason: isFreshHealthySetup
+      ? 'RECENT_LOSS_RESET_BY_FRESH_MOMENTUM'
+      : `REENTRY_WAIT_AFTER_LOSS_${memory.lastPnLPct > 0 ? '+' : ''}${Number(memory.lastPnLPct || 0).toFixed(2)}%`,
+    signal,
+    memory,
+  };
+}

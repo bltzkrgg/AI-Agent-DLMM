@@ -57,6 +57,7 @@ prefer the explicit user request, then update this file after the change lands.
 - Direct `scanAndDeploy()` deploy must refresh one final market snapshot immediately before final ST/candle gates and reuse that same snapshot for final gate + deploy metadata, so stale scout-time bullish snapshots cannot slip into live deploy.
 - Queue, monitor, defensive exit, and manual-close accounting must prefer `entryCanonicalSnapshot` before scattered legacy entry fields.
 - Final queue deploy proximity guard is a last-mile execution safety only; it must not change scout ranking, TA gates, or add new config knobs.
+- Same-mint reentry after a recent losing close must stay disciplined: reuse existing pool-memory outcome state to hold weak immediate reentries, but allow fast reentry again once a fresh high-quality bullish setup is back. This should not add new RPC fetches or slow brand-new mints.
 - On successful deploy, `evilPanda` must upgrade `entryCanonicalSnapshot` with the final runtime entry truth actually used on-chain (`entryActiveBin`, `entryPrice`, final ST stamp, anchor/range-adjust metadata) so monitor/exit do not keep reading stale queue-era intent fields.
 - Helius quota saver core must use short-lived snapshot/on-chain/priority-fee cache reuse with in-flight dedupe; this is an infrastructure optimization only and must not change entry/exit gates or disable fast-lane monitor behavior.
 - 5.4 mini is reserved for operator-facing polish and test-string alignment around reports/exits; it must not alter trading logic, gating, or lifecycle accounting.
@@ -96,6 +97,7 @@ Only edit other files when the change explicitly requires it.
 - Bin-step candidate selection versus fixed bin-step ranking.
 - Mixed canonical-vs-legacy entry field reads inside queue, monitor, and manual-close consumers.
 - Entry proximity drift versus live price / active bin on the deploy queue hot path.
+- Same-mint post-loss reentry discipline versus generic pool-memory cooldown.
 
 ## Locked areas
 
@@ -198,3 +200,4 @@ Do not edit these unless the user explicitly scopes the change there.
 - 2026-06-17: 5.4 mini follow-up now shows the active proximity limit in Deploy Queue Hold Telegram text (`Drift`, `Limit`, `Bin`) so operators can see the runtime threshold that caused the hold without changing deploy behavior.
 - 2026-06-17: Added Telegram shortcut buttons for activation/start flows in `src/index.js`: activation banner now exposes `Autoscreen ON` + `Start`, and `Start` opens the command panel via callback shortcuts without changing the underlying command handlers.
 - 2026-06-18: Completed 5.4 autoscreen lifecycle fix in `src/index.js`: interval screening no longer pauses or refuses to attach just because active positions exist; `/autoscreen on` now keeps the scheduler alive across agent/manual closes, while deploy slot guards remain enforced deeper in hunter/queue logic.
+- 2026-06-18: Completed 5.4 reentry discipline hardening in `hunterAlpha` + `poolMemory`: WATCH admission and WATCH-ready promotion now reuse existing pool-memory close outcomes to hold weak same-mint post-loss reentries, while allowing fast reentry again once a fresh bullish high-readiness setup (`LP_LIVE`/`BREAKOUT`/`ATH_BREAK`, valid breakout, positive M15) has reset. No new config keys, no extra RPC fetches, and no changes to first-entry behavior for brand-new mints.

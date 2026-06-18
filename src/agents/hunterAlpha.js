@@ -16,7 +16,7 @@ import { getConfig }              from '../config.js';
 import { screenToken }            from '../market/coinfilter.js';
 import { runMeridianVeto, discoverHighFeePoolsMeridian, isSupportedQuoteToken, getQuoteTokenLabel } from '../market/meridianVeto.js';
 import { getMarketSnapshot }      from '../market/oracle.js';
-import { getPoolMemorySignal, recordPoolDecision } from '../market/poolMemory.js';
+import { evaluatePoolReentryDiscipline, getPoolMemorySignal, recordPoolDecision } from '../market/poolMemory.js';
 import { getPoolInfo }            from '../solana/meteora.js';
 import { deployPosition, monitorPnL, exitPosition, markPositionManuallyClosed, setEvilPandaNotifyFn, setPositionLifecycle, getPositionOnChainStatus, EP_CONFIG, getActivePositionKeys, getPositionMeta, reconcileZombiePositions } from '../sniper/evilPanda.js';
 import { createMessage }          from '../agent/provider.js';
@@ -543,6 +543,15 @@ function addWatchPassTa(pool, reason = 'TA PASS', source = 'TA') {
   const signals = pool?._entrySignals || {};
   if (String(signals.taTrend || '').toUpperCase() === 'BEARISH') {
     return { admitted: false, reason: 'Supertrend 15m bearish', row: null, evicted: null };
+  }
+  const reentryDecision = evaluatePoolReentryDiscipline({
+    pool,
+    entrySignals: signals,
+    now,
+  });
+  if (!reentryDecision.allowed) {
+    console.log(`[WATCH] 🧭 ${symbol} ditahan reentry discipline (${reentryDecision.reason})`);
+    return { admitted: false, reason: `Reentry discipline: ${symbol} (${reentryDecision.reason})`, row: null, evicted: null };
   }
   const memorySignal = getPoolMemorySignal(pool, now);
   if (memorySignal.cooldownActive) {
@@ -2075,6 +2084,7 @@ async function processTaWatchQueue(cfg = getConfig()) {
 
     const pool = row.pool;
     const symbol = row.symbol || getPoolSymbol(pool);
+    const watchSignals = pool?._entrySignals || {};
     const poolAddress = pool.address || pool.poolAddress || pool.pool || pool.pubkey || '';
     const tokenMint = pool.tokenXMint || pool.tokenX || pool.mint || '';
     const slotCfg = getDeploySlotUsage();
@@ -2091,6 +2101,18 @@ async function processTaWatchQueue(cfg = getConfig()) {
     if (!poolAddress || !tokenMint) {
       console.log(`[WATCH] ❌ ${symbol} dropped: pool/token mint tidak valid`);
       _taWatchQueue.delete(mint);
+      continue;
+    }
+
+    const reentryDecision = evaluatePoolReentryDiscipline({
+      pool,
+      entrySignals: watchSignals,
+      now,
+    });
+    if (!reentryDecision.allowed) {
+      row.lastReason = `Reentry discipline: ${reentryDecision.reason}`;
+      _taWatchQueue.set(mint, row);
+      console.log(`[WATCH] ⏳ ${symbol} masih ditahan: ${row.lastReason}`);
       continue;
     }
 

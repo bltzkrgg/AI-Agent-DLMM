@@ -163,6 +163,58 @@ test('pool memory signal includes lightweight lookup observability', async () =>
   assert.equal(Number.isFinite(signal.lookupMs), true);
 });
 
+test('reentry discipline blocks weak same-mint reentry after recent loss', async () => {
+  const memory = await loadPoolMemory();
+  const key = 'MintReentryLoss11111111111111111111111111111';
+
+  memory.recordPoolOutcome({
+    key,
+    tokenMint: key,
+    pnlPct: -2.4,
+    reason: 'STOP_LOSS',
+  });
+
+  const decision = memory.evaluatePoolReentryDiscipline({
+    pool: { tokenMint: key },
+    entrySignals: {
+      taTrend: 'BULLISH',
+      entryTimingState: 'LP_LIVE',
+      entryReadiness: 'HIGH',
+      breakoutQuality: 'VALID',
+      priceChangeM15: 0,
+    },
+  });
+
+  assert.equal(decision.allowed, false);
+  assert.match(decision.reason, /REENTRY_WAIT_AFTER_LOSS_/);
+});
+
+test('reentry discipline allows same-mint reentry after loss once fresh momentum is back', async () => {
+  const memory = await loadPoolMemory();
+  const key = 'MintReentryReset1111111111111111111111111111';
+
+  memory.recordPoolOutcome({
+    key,
+    tokenMint: key,
+    pnlPct: -1.8,
+    reason: 'OUT_OF_RANGE',
+  });
+
+  const decision = memory.evaluatePoolReentryDiscipline({
+    pool: { tokenMint: key },
+    entrySignals: {
+      taTrend: 'BULLISH',
+      entryTimingState: 'BREAKOUT',
+      entryReadiness: 'HIGH',
+      breakoutQuality: 'STRONG',
+      priceChangeM15: 2.6,
+    },
+  });
+
+  assert.equal(decision.allowed, true);
+  assert.equal(decision.reason, 'RECENT_LOSS_RESET_BY_FRESH_MOMENTUM');
+});
+
 test('pool memory module does not import network or LLM dependencies', () => {
   const src = readFileSync(join(repoRoot, 'src/market/poolMemory.js'), 'utf8');
   assert.doesNotMatch(src, /createMessage|getMarketSnapshot|fetchWithTimeout|fetch\(/);

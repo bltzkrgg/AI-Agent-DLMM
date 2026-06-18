@@ -103,6 +103,17 @@ test('WATCH telegram banner shows candidate status values instead of generic PAS
   assert.doesNotMatch(hunterSrc, /- Safety: PASS/);
 });
 
+test('WATCH and ready queue both honor reentry discipline for same-mint post-loss retries', () => {
+  const hunterSrc = readFileSync(hunterPath, 'utf8');
+  const poolMemorySrc = readFileSync(resolve(process.cwd(), 'src/market/poolMemory.js'), 'utf8');
+  assert.match(hunterSrc, /evaluatePoolReentryDiscipline/);
+  assert.match(hunterSrc, /Reentry discipline: \$\{symbol\}/);
+  assert.match(hunterSrc, /row\.lastReason = `Reentry discipline: \$\{reentryDecision\.reason\}`/);
+  assert.match(poolMemorySrc, /export function evaluatePoolReentryDiscipline/);
+  assert.match(poolMemorySrc, /RECENT_LOSS_RESET_BY_FRESH_MOMENTUM/);
+  assert.match(poolMemorySrc, /REENTRY_WAIT_AFTER_LOSS_/);
+});
+
 test('direct deploy path refreshes final market snapshot before final ST and candle gates', () => {
   const hunterSrc = readFileSync(hunterPath, 'utf8');
   assert.match(hunterSrc, /const finalMarketSnapshot = await getDeployQueueLiveSnapshot\(\s*tokenMint,\s*poolAddress \|\| null,\s*symbol,\s*\{/s);
