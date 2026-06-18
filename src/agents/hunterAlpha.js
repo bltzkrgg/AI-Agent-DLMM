@@ -551,7 +551,7 @@ function addWatchPassTa(pool, reason = 'TA PASS', source = 'TA') {
   });
   if (!reentryDecision.allowed) {
     console.log(`[WATCH] 🧭 ${symbol} ditahan reentry discipline (${reentryDecision.reason})`);
-    return { admitted: false, reason: `Reentry discipline: ${symbol} (${reentryDecision.reason})`, row: null, evicted: null };
+    return { admitted: false, reason: `Reentry hold: ${symbol} (${reentryDecision.reason})`, row: null, evicted: null };
   }
   const memorySignal = getPoolMemorySignal(pool, now);
   if (memorySignal.cooldownActive) {
@@ -2110,7 +2110,7 @@ async function processTaWatchQueue(cfg = getConfig()) {
       now,
     });
     if (!reentryDecision.allowed) {
-      row.lastReason = `Reentry discipline: ${reentryDecision.reason}`;
+      row.lastReason = `Reentry hold: ${reentryDecision.reason}`;
       _taWatchQueue.set(mint, row);
       console.log(`[WATCH] ⏳ ${symbol} masih ditahan: ${row.lastReason}`);
       continue;

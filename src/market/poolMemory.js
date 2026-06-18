@@ -344,7 +344,7 @@ export function evaluatePoolReentryDiscipline({
   return {
     allowed: isFreshHealthySetup,
     reason: isFreshHealthySetup
-      ? 'RECENT_LOSS_RESET_BY_FRESH_MOMENTUM'
+      ? 'REENTRY_RESET_OK'
       : `REENTRY_WAIT_AFTER_LOSS_${memory.lastPnLPct > 0 ? '+' : ''}${Number(memory.lastPnLPct || 0).toFixed(2)}%`,
     signal,
     memory,

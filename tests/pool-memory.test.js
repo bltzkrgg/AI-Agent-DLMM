@@ -212,7 +212,7 @@ test('reentry discipline allows same-mint reentry after loss once fresh momentum
   });
 
   assert.equal(decision.allowed, true);
-  assert.equal(decision.reason, 'RECENT_LOSS_RESET_BY_FRESH_MOMENTUM');
+  assert.equal(decision.reason, 'REENTRY_RESET_OK');
 });
 
 test('pool memory module does not import network or LLM dependencies', () => {

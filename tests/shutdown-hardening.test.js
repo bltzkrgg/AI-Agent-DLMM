@@ -107,10 +107,10 @@ test('WATCH and ready queue both honor reentry discipline for same-mint post-los
   const hunterSrc = readFileSync(hunterPath, 'utf8');
   const poolMemorySrc = readFileSync(resolve(process.cwd(), 'src/market/poolMemory.js'), 'utf8');
   assert.match(hunterSrc, /evaluatePoolReentryDiscipline/);
-  assert.match(hunterSrc, /Reentry discipline: \$\{symbol\}/);
-  assert.match(hunterSrc, /row\.lastReason = `Reentry discipline: \$\{reentryDecision\.reason\}`/);
+  assert.match(hunterSrc, /Reentry hold: \$\{symbol\}/);
+  assert.match(hunterSrc, /row\.lastReason = `Reentry hold: \$\{reentryDecision\.reason\}`/);
   assert.match(poolMemorySrc, /export function evaluatePoolReentryDiscipline/);
-  assert.match(poolMemorySrc, /RECENT_LOSS_RESET_BY_FRESH_MOMENTUM/);
+  assert.match(poolMemorySrc, /REENTRY_RESET_OK/);
   assert.match(poolMemorySrc, /REENTRY_WAIT_AFTER_LOSS_/);
 });
 
