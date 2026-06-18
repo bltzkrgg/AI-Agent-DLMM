@@ -179,16 +179,17 @@ test('/autoscreen on and setconfig autoScreeningEnabled=true resume screening af
   assert.doesNotMatch(src, /Config disimpan, tetapi discovery\/deploy masih paused by <code>\/stop<\/code>/);
 });
 
-test('autoscreen pauses while active positions exist and resumes only when portfolio is empty', () => {
+test('autoscreen scheduler no longer pauses just because active positions exist', () => {
   const src = readFileSync(indexPath, 'utf8');
   assert.match(src, /AUTO_SCREENING_ACTIVE_POSITION_PAUSE_KEY = 'autoScreeningPausedByActivePositions'/);
   assert.match(src, /setAutoScreeningPausedByActivePositions/);
   assert.match(src, /isAutoScreeningPausedByActivePositions/);
   assert.match(src, /syncAutoScreeningWithActivePositions/);
   assert.match(src, /getActivePositionCount\(\)/);
-  assert.match(src, /policy: 'ACTIVE_POSITIONS_OPEN'/);
-  assert.match(src, /activePositionCount/);
-  assert.match(src, /stopScreeningLoop\(\);[\s\S]*return false;/);
+  assert.doesNotMatch(src, /runImmediateAutoscreenScan[\s\S]*policy: 'ACTIVE_POSITIONS_OPEN'/);
+  assert.doesNotMatch(src, /runSilentScan[\s\S]*policy: 'ACTIVE_POSITIONS_OPEN'/);
+  assert.doesNotMatch(src, /startAutoScreeningRuntime[\s\S]*stopScreeningLoop\(\);[\s\S]*return false;/);
+  assert.doesNotMatch(src, /runScreeningLoop[\s\S]*const activePositionGate = syncAutoScreeningWithActivePositions\('screening-loop'\)/);
   assert.doesNotMatch(src, /startAutoScreeningRuntime\(chatId, \{ snapshotTopPools: true \}\)/);
 });
 

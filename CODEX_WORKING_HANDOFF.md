@@ -60,6 +60,7 @@ prefer the explicit user request, then update this file after the change lands.
 - On successful deploy, `evilPanda` must upgrade `entryCanonicalSnapshot` with the final runtime entry truth actually used on-chain (`entryActiveBin`, `entryPrice`, final ST stamp, anchor/range-adjust metadata) so monitor/exit do not keep reading stale queue-era intent fields.
 - Helius quota saver core must use short-lived snapshot/on-chain/priority-fee cache reuse with in-flight dedupe; this is an infrastructure optimization only and must not change entry/exit gates or disable fast-lane monitor behavior.
 - 5.4 mini is reserved for operator-facing polish and test-string alignment around reports/exits; it must not alter trading logic, gating, or lifecycle accounting.
+- Autoscreen scheduler must keep running on its configured interval while `autoScreeningEnabled` remains on, even if positions are opened or later closed manually; slot capacity may still block deploy decisions downstream, but it must not pause the screening cadence itself.
 
 ## Behavior contracts to preserve
 
@@ -196,3 +197,4 @@ Do not edit these unless the user explicitly scopes the change there.
 - 2026-06-17: Completed 5.4 configurable final-entry proximity drift: the final deploy proximity guard no longer uses a hardcoded `1.0%`, now reads `entryFinalProximityMaxDriftPct` from runtime config/defaults (`2.5%`), and the key is exposed through `/setconfig` in the Entry section plus example config/help text.
 - 2026-06-17: 5.4 mini follow-up now shows the active proximity limit in Deploy Queue Hold Telegram text (`Drift`, `Limit`, `Bin`) so operators can see the runtime threshold that caused the hold without changing deploy behavior.
 - 2026-06-17: Added Telegram shortcut buttons for activation/start flows in `src/index.js`: activation banner now exposes `Autoscreen ON` + `Start`, and `Start` opens the command panel via callback shortcuts without changing the underlying command handlers.
+- 2026-06-18: Completed 5.4 autoscreen lifecycle fix in `src/index.js`: interval screening no longer pauses or refuses to attach just because active positions exist; `/autoscreen on` now keeps the scheduler alive across agent/manual closes, while deploy slot guards remain enforced deeper in hunter/queue logic.
