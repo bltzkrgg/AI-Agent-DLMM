@@ -1910,6 +1910,29 @@ test('final entry proximity holds when live snapshot is stale', () => {
   assert.match(decision.reason, /entry proximity unavailable/i);
 });
 
+test('final entry proximity respects canonical watch window for LP live snapshots', () => {
+  const now = Date.now();
+  const decision = getFinalEntryProximityDecision({
+    meta: {
+      entryCanonicalSnapshot: {
+        entryPrice: 100,
+        entryActiveBin: 120,
+        watchWindowSec: 180,
+      },
+    },
+    liveSnapshot: {
+      snapshotAt: now - 120_000,
+      dataSource: 'meteora-dlmm-ohlcv',
+      ohlcv: { currentPrice: 100.3 },
+      pool: { activeBinId: 120 },
+    },
+    cfg: { entryFreshWatchWindowSec: 30 },
+  });
+
+  assert.equal(decision.ok, true);
+  assert.equal(decision.action, 'ALLOW');
+});
+
 test('deploy queue applies final entry proximity hold before deploy', () => {
   const src = readFileSync(new URL('../src/utils/pendingDeployQueue.js', import.meta.url), 'utf8');
   assert.match(src, /let proximityDecision = getFinalEntryProximityDecision\(/);
@@ -1925,4 +1948,28 @@ test('deploy queue applies final entry proximity hold before deploy', () => {
 
 test('deploy queue live snapshot helper is exported for direct deploy reuse', () => {
   assert.equal(typeof getDeployQueueLiveSnapshot, 'function');
+});
+
+test('queue summary holds when queued canonical trend is conflicted', () => {
+  const decision = summarizeQueueDecision({
+    meta: {
+      entryTimingState: 'LP_LIVE',
+      taTrend: 'UNKNOWN',
+      taTrendConflicted: true,
+      taTrendQualitySource: 'BULLISH',
+      taTrendTaSource: 'BEARISH',
+    },
+    liveSnapshot: {
+      snapshotAt: Date.now(),
+      dataSource: 'meteora-dlmm-ohlcv',
+      quality: { taTrend: 'UNKNOWN' },
+      ta: { supertrend: { trend: 'UNKNOWN' } },
+      ohlcv: { priceChangeM5: 1.2, source: 'meteora-dlmm-ohlcv', historySuccess: true },
+    },
+    cfg: { entryDecisionMode: 'lp_simple_m15' },
+    lpMode: true,
+  });
+
+  assert.equal(decision.decision, 'HOLD');
+  assert.match(decision.reason, /queued trend conflict/i);
 });

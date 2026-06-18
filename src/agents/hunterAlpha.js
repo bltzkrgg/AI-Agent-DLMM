@@ -1477,6 +1477,27 @@ function getLpMaxDriftPct(cfg = getConfig(), fallback = 2.5) {
   return isLpEntryMode(cfg) ? Math.max(8, base) : base;
 }
 
+function readCanonicalSnapshotTrend(marketSnapshot = null, vetoResult = null) {
+  const qualityTrend = String(marketSnapshot?.quality?.taTrend || '').toUpperCase();
+  const taTrend = String(marketSnapshot?.ta?.supertrend?.trend || '').toUpperCase();
+  const vetoTrend = String(vetoResult?.diagnostics?.supertrend15m || '').toUpperCase();
+  const known = new Set(['BULLISH', 'BEARISH', 'NEUTRAL']);
+
+  if (known.has(qualityTrend) && known.has(taTrend) && qualityTrend !== taTrend) {
+    return { trend: 'UNKNOWN', conflicted: true, qualityTrend, taTrend, vetoTrend };
+  }
+  if (known.has(qualityTrend)) {
+    return { trend: qualityTrend, conflicted: false, qualityTrend, taTrend, vetoTrend };
+  }
+  if (known.has(taTrend)) {
+    return { trend: taTrend, conflicted: false, qualityTrend, taTrend, vetoTrend };
+  }
+  if (known.has(vetoTrend)) {
+    return { trend: vetoTrend, conflicted: false, qualityTrend, taTrend, vetoTrend };
+  }
+  return { trend: 'UNKNOWN', conflicted: false, qualityTrend, taTrend, vetoTrend };
+}
+
 function isLPLiveTimingState(state = '') {
   return ['LP_LIVE', 'RECLAIM', 'RECLAIM_LIVE', 'BREAKOUT', 'ATH_BREAK'].includes(String(state || '').toUpperCase());
 }
@@ -1632,12 +1653,8 @@ function deriveBreakoutEntrySignals({ pool = {}, vetoResult = null, marketSnapsh
   const freshAthBreakPct = Number(cfg.entryFreshBreakoutMinAthDistancePct ?? 99.25);
   const requireVolumeConfirm = cfg.entryRequireVolumeConfirm !== false;
   const minVolRatio = Number(cfg.entryMinVolumeRatio || 1.1);
-  const taTrend = String(
-    marketSnapshot?.quality?.taTrend ||
-    marketSnapshot?.ta?.supertrend?.trend ||
-    vetoResult?.diagnostics?.supertrend15m ||
-    'UNKNOWN'
-  ).toUpperCase();
+  const canonicalTrend = readCanonicalSnapshotTrend(marketSnapshot, vetoResult);
+  const taTrend = canonicalTrend.trend;
 
   const currentPrice = Number(
     marketSnapshot?.ohlcv?.currentPrice ||
@@ -1676,7 +1693,9 @@ function deriveBreakoutEntrySignals({ pool = {}, vetoResult = null, marketSnapsh
   const hasValidVolume = !requireVolumeConfirm || (Number.isFinite(volumeRatio) && volumeRatio >= minVolRatio);
 
   let entryTimingState = 'UNKNOWN';
-  if (taTrend === 'BEARISH') {
+  if (canonicalTrend.conflicted) {
+    entryTimingState = 'NO_TREND';
+  } else if (taTrend === 'BEARISH') {
     entryTimingState = 'BEARISH_TREND';
   } else if (taTrend !== 'BULLISH') {
     entryTimingState = 'NO_TREND';
@@ -1733,6 +1752,9 @@ function deriveBreakoutEntrySignals({ pool = {}, vetoResult = null, marketSnapsh
     m5HardGateEnabled,
     deferOnM15PreviousUnknown,
     taTrend,
+    taTrendConflicted: canonicalTrend.conflicted === true,
+    taTrendQualitySource: canonicalTrend.qualityTrend || 'UNKNOWN',
+    taTrendTaSource: canonicalTrend.taTrend || 'UNKNOWN',
     currentPrice,
     supertrendValue,
     high24h,

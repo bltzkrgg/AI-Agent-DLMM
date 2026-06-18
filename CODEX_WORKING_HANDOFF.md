@@ -55,6 +55,8 @@ prefer the explicit user request, then update this file after the change lands.
 - Entry/watch/queue/deploy must preserve one canonical entry snapshot payload so active-position monitor/exit can read the same entry context that was used at deploy time.
 - Final deploy must keep entry close to the latest live DLMM state: queue deploy now rechecks canonical `entryPrice` / `entryActiveBin` against live price / active bin and HOLDS for a fresh retry when drift is already too wide.
 - Direct `scanAndDeploy()` deploy must refresh one final market snapshot immediately before final ST/candle gates and reuse that same snapshot for final gate + deploy metadata, so stale scout-time bullish snapshots cannot slip into live deploy.
+- Scout/watch/final deploy trend reads must fail closed on `quality.taTrend` vs `ta.supertrend.trend` conflicts; mixed bullish/bearish snapshot labels are not allowed to promote or deploy until canonical confirmation is clean again.
+- LP WATCH freshness and final live-snapshot freshness must stay aligned to the same canonical watch window, so `WATCH` and final deploy do not disagree just because they evaluated different snapshot-age limits.
 - Queue, monitor, defensive exit, and manual-close accounting must prefer `entryCanonicalSnapshot` before scattered legacy entry fields.
 - Final queue deploy proximity guard is a last-mile execution safety only; it must not change scout ranking, TA gates, or add new config knobs.
 - Same-mint reentry after a recent losing close must stay disciplined: reuse existing pool-memory outcome state to hold weak immediate reentries, but allow fast reentry again once a fresh high-quality bullish setup is back. This should not add new RPC fetches or slow brand-new mints.
@@ -83,6 +85,7 @@ Only edit other files when the change explicitly requires it.
 ## Known sensitive areas
 
 - Entry snapshot freshness and Supertrend 15m gating.
+- Mixed `quality.taTrend` vs `ta.supertrend.trend` snapshot conflicts across scout/watch/final deploy.
 - Direct deploy final snapshot reuse versus stale scout snapshots.
 - WATCH promotion versus deploy queue admission.
 - OOR notification cadence.
@@ -202,3 +205,4 @@ Do not edit these unless the user explicitly scopes the change there.
 - 2026-06-18: Completed 5.4 autoscreen lifecycle fix in `src/index.js`: interval screening no longer pauses or refuses to attach just because active positions exist; `/autoscreen on` now keeps the scheduler alive across agent/manual closes, while deploy slot guards remain enforced deeper in hunter/queue logic.
 - 2026-06-18: Completed 5.4 reentry discipline hardening in `hunterAlpha` + `poolMemory`: WATCH admission and WATCH-ready promotion now reuse existing pool-memory close outcomes to hold weak same-mint post-loss reentries, while allowing fast reentry again once a fresh bullish high-readiness setup (`LP_LIVE`/`BREAKOUT`/`ATH_BREAK`, valid breakout, positive M15) has reset. No new config keys, no extra RPC fetches, and no changes to first-entry behavior for brand-new mints.
 - 2026-06-18: 5.4 mini polished the reentry wording to `Reentry hold` / `REENTRY_RESET_OK`, so same-mint post-loss reentry holds read shorter and clearer in operator logs without changing the underlying gate or adding new behavior.
+- 2026-06-19: Completed 5.4 canonical trend/freshness hardening in `hunterAlpha` + `pendingDeployQueue`: scout-derived LP entry signals now fail closed when snapshot `quality.taTrend` conflicts with `ta.supertrend.trend`, queue/watch summaries hold conflicted canonical trend metadata instead of presenting it as ready, and final live-snapshot freshness now honors the canonical LP watch window so WATCH and final deploy evaluate the same snapshot-age budget.

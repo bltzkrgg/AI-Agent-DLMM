@@ -555,8 +555,18 @@ function isFreshLiveSnapshot(liveSnapshot = null, meta = {}, pool = {}, cfg = ge
   );
   if (!Number.isFinite(snapshotAt) || snapshotAt <= 0) return false;
 
+  const canonicalWatchWindowSec = Number(
+    meta?.watchWindowSec ||
+    meta?.entryCanonicalSnapshot?.watchWindowSec ||
+    pool?._watchWindowSec ||
+    0
+  );
+  const resolvedWatchWindowMs = Number.isFinite(canonicalWatchWindowSec) && canonicalWatchWindowSec > 0
+    ? canonicalWatchWindowSec * 1000
+    : 0;
   const maxAgeMs = Math.max(
     5_000,
+    resolvedWatchWindowMs,
     Number(cfg?.entryFinalLiveSnapshotMaxAgeMs) ||
     Number(cfg?.entryFreshWatchWindowSec) * 1000 ||
     90_000
@@ -1024,6 +1034,9 @@ export function summarizeQueueDecision({ meta = {}, liveSnapshot = null, cfg = g
     if (signals.liveTrendConflicted) {
       decision = 'HOLD';
       reason = `HOLD: live trend conflict quality=${signals.liveQualityTrend} ta=${signals.liveTaTrend}; waiting canonical confirmation`;
+    } else if (meta.taTrendConflicted === true) {
+      decision = 'HOLD';
+      reason = `HOLD: queued trend conflict quality=${meta.taTrendQualitySource || 'UNKNOWN'} ta=${meta.taTrendTaSource || 'UNKNOWN'}; waiting canonical confirmation`;
     } else if ((liveReliable && liveTrend === 'BEARISH') || trendBearish) {
       decision = 'DROP';
       reason = liveReliable && liveTrend === 'BEARISH'
