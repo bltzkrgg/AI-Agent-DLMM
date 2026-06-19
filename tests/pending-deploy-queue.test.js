@@ -273,6 +273,33 @@ test('queue freshness resolves live vs queued signals for LP-style chart scenari
   assert.equal(liveBearish.trend, 'BEARISH');
 });
 
+test('queue does not revive queued bullish trend when live snapshot exists but trend is unknown', () => {
+  const bullishMeta = {
+    entryTimingState: 'LP_LIVE',
+    entryReadiness: 'HIGH',
+    breakoutQuality: 'STRONG',
+    taTrend: 'BULLISH',
+    priceChangeM5: 1.5,
+  };
+
+  const decision = summarizeQueueDecision({
+    meta: bullishMeta,
+    liveSnapshot: {
+      snapshotAt: Date.now(),
+      dataSource: 'meteora-dlmm-ohlcv',
+      quality: { taTrend: 'UNKNOWN' },
+      ta: { supertrend: { trend: 'UNKNOWN' } },
+      ohlcv: { source: 'meteora-dlmm-ohlcv', historySuccess: true, priceChangeM5: 1.2 },
+    },
+    lpMode: true,
+  });
+
+  assert.equal(decision.decision, 'HOLD');
+  assert.equal(decision.trend, 'UNKNOWN');
+  assert.equal(decision.trendSource, 'unknown');
+  assert.match(decision.reason, /trend unknown/i);
+});
+
 test('trusted WATCH-ready LP entries can prepare queue but still need final ST gate', async () => {
   const trustedWatchMeta = {
     entryTimingState: 'LP_LIVE',

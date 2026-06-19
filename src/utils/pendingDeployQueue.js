@@ -430,8 +430,10 @@ function resolveQueueSignalSources({ meta = {}, liveSnapshot = null } = {}) {
   );
 
   return {
-    trend: liveTrendKnown ? liveTrendRaw : (metaTrendRaw || 'UNKNOWN'),
-    trendSource: liveTrendKnown ? 'live' : (metaTrendRaw ? 'queue' : 'unknown'),
+    // For LP final decisions, once a live snapshot exists we fail closed on live truth
+    // instead of reviving queued bullish trend from older scout/watch metadata.
+    trend: liveSnapshot ? (liveTrendKnown ? liveTrendRaw : 'UNKNOWN') : (metaTrendRaw || 'UNKNOWN'),
+    trendSource: liveSnapshot ? (liveTrendKnown ? 'live' : 'unknown') : (metaTrendRaw ? 'queue' : 'unknown'),
     m5: liveM5Known ? liveM5Raw : (Number.isFinite(metaM5Raw) && metaM5Raw !== 0 ? metaM5Raw : 0),
     m5Source: liveM5Known ? 'live' : (Number.isFinite(metaM5Raw) && metaM5Raw !== 0 ? 'queue' : 'unknown'),
     liveTrendRaw,
@@ -1267,7 +1269,7 @@ async function evaluateDeployConditions(entry) {
           poolAddressPassed: Boolean(poolAddress),
         });
       }
-      activeSignals = liveReliable ? liveSignals : queueSignals;
+      activeSignals = liveSignals;
       ({ trend: liveTrend, trendSource, m5: liveM5, m5Source, decision: freshnessDecision } = activeSignals);
 
       if (freshnessDecision !== 'DEPLOY') {
