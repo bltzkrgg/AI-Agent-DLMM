@@ -742,7 +742,7 @@ test('final Supertrend deploy gate holds live bullish snapshot when last closed 
   assert.equal(decision.action, 'HOLD');
   assert.equal(decision.source, 'live_snapshot');
   assert.equal(decision.direction, 'BULLISH');
-  assert.match(decision.reason, /last closed m15 candle has not reclaimed above supertrend 15m line/i);
+  assert.match(decision.reason, /closed m15 candle is still below supertrend 15m line/i);
   assert.equal(calls, 0);
 });
 

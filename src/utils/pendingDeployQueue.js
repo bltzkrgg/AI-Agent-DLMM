@@ -762,7 +762,7 @@ export async function getFinalSupertrendDeployDecision({
       return {
         ok: false,
         action: 'HOLD',
-        reason: 'last closed M15 reclaim above Supertrend unavailable/stale; waiting confirmation',
+        reason: 'closed M15 reclaim above Supertrend unavailable/stale; waiting confirmation',
         source: 'live_snapshot',
         direction: 'BULLISH',
       };
@@ -771,7 +771,7 @@ export async function getFinalSupertrendDeployDecision({
       return {
         ok: false,
         action: 'HOLD',
-        reason: `last closed M15 candle has not reclaimed above Supertrend 15m line (${formatPct(closedM15Reclaim.distancePct)}); waiting confirmation`,
+        reason: `closed M15 candle is still below Supertrend 15m line (${formatPct(closedM15Reclaim.distancePct)}); waiting confirmation`,
         source: 'live_snapshot',
         direction: 'BULLISH',
       };
@@ -780,7 +780,7 @@ export async function getFinalSupertrendDeployDecision({
       return {
         ok: true,
         action: 'ALLOW',
-        reason: 'live Supertrend 15m bullish with fresh canonical confirmation cache',
+        reason: 'live Supertrend 15m bullish with fresh closed-M15 reclaim confirmation cache',
         source: 'cache',
         direction: 'BULLISH',
       };
@@ -801,7 +801,7 @@ export async function getFinalSupertrendDeployDecision({
         return {
           ok: true,
           action: 'ALLOW',
-          reason: `live Supertrend 15m bullish confirmed canonically: ${result.reason || 'fresh Supertrend 15m bullish'}`,
+          reason: `live Supertrend 15m bullish with canonical reclaim confirmation: ${result.reason || 'fresh Supertrend 15m bullish'}`,
           source: 'fresh_fetch',
           direction: 'BULLISH',
         };
