@@ -2043,6 +2043,7 @@ export function startPendingTaRadarWatcher() {
           `Token: <b>${escapeHTML(symbol)}</b>\n` +
           `Entry: <code>${entrySignals.entryReadiness}</code> | Breakout: <code>${entrySignals.breakoutQuality}</code>\n` +
           `Timing: <code>${entrySignals.entryTimingState}</code>\n` +
+          `Trend: <code>${entrySignals.taTrend || 'UNKNOWN'}</code> <i>(live confirmation)</i>\n` +
           `👀 <i>Masuk watch layer sampai siap masuk queue deploy.</i>`
         );
       }
@@ -2856,7 +2857,7 @@ FORMAT JAWABAN (WAJIB JSON VALID, TANPA MARKDOWN):
               `Entry: <b>${entryReadiness || 'N/A'}</b> | Breakout: <b>${breakoutQuality || 'N/A'}</b>\n` +
               `Status:\n` +
               `- Slot: <code>${slotUsed}/${slotMax}</code> used\n` +
-              `- Trend M15: <code>${entrySignals.taTrend || 'UNKNOWN'}</code>\n` +
+              `- Trend M15: <code>${entrySignals.taTrend || 'UNKNOWN'}</code> <i>(live confirmation)</i>\n` +
               `- Timing: <code>${entrySignals.entryTimingState || 'UNKNOWN'}</code>\n` +
               `- Safety: <code>SCOUT_OK</code>\n\n` +
               `Watcher aktif — kandidat dipantau.`

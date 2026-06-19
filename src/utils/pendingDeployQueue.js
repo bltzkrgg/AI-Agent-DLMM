@@ -1055,16 +1055,16 @@ export function summarizeQueueDecision({ meta = {}, liveSnapshot = null, cfg = g
       reason = `HOLD: realtime M5 non-positive (${formatPct(signals.m5)}); waiting positive momentum`;
     } else if (trendUnknown) {
       decision = 'HOLD';
-      reason = 'HOLD: trend unknown; waiting fresh bullish trend';
+      reason = 'HOLD: live trend unknown; waiting fresh live confirmation';
     } else if (!liveReliable) {
       decision = 'HOLD';
-      reason = 'HOLD: live snapshot unreliable; waiting fresh reliable bullish trend';
+      reason = 'HOLD: live snapshot unreliable; waiting fresh reliable live confirmation';
     } else if (!trendFresh) {
       decision = 'HOLD';
       reason = 'HOLD: trend stale; waiting fresh live trend';
     } else if (signals.trend !== 'BULLISH') {
       decision = 'HOLD';
-      reason = 'HOLD: trend not bullish; waiting fresh live trend';
+      reason = 'HOLD: live trend not bullish; waiting fresh live confirmation';
     } else if (trustedLpWatch) {
       reason = `Trusted WATCH prepared (${signals.trendSource}/${signals.m5Source})`;
     }
