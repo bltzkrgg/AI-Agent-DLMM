@@ -27,6 +27,7 @@ import {
 } from '../src/utils/pendingDeployQueue.js';
 import {
   aggregateClosed5mCandlesToClosedM15,
+  evaluateClosedM15SupertrendReclaim,
   evaluateEntryCandleSanity,
 } from '../src/utils/entryCandleSanity.js';
 
@@ -639,6 +640,14 @@ test('final Supertrend deploy gate prioritizes reliable live snapshot bearish ov
 test('final Supertrend deploy gate requires canonical confirmation before allowing live bullish snapshot', async () => {
   const now = 1_700_000_000_000;
   let calls = 0;
+  const entryCandles5m = makeDerivedM15Backed5m({
+    nowSec: Math.floor(now / 1000),
+    m15Series: [
+      { open: 95, close: 97, volume: 100 },
+      { open: 97, close: 99, volume: 100 },
+      { open: 99, close: 101, volume: 100 },
+    ],
+  });
 
   const vetoed = await getFinalSupertrendDeployDecision({
     mint: 'Mint111111111111111111111111111111111111111',
@@ -646,8 +655,8 @@ test('final Supertrend deploy gate requires canonical confirmation before allowi
     liveSnapshot: {
       dataSource: 'meteora-dlmm-ohlcv',
       quality: { taTrend: 'BULLISH' },
-      ohlcv: { source: 'meteora-dlmm-ohlcv', historySuccess: true, priceChangeM5: 0.8 },
-      ta: { supertrend: { trend: 'BULLISH' } },
+      ohlcv: { source: 'meteora-dlmm-ohlcv', historySuccess: true, priceChangeM5: 0.8, currentPrice: 101.4, entryCandles5m },
+      ta: { supertrend: { trend: 'BULLISH', value: 100 } },
     },
     checkFn: async () => {
       calls += 1;
@@ -664,6 +673,14 @@ test('final Supertrend deploy gate requires canonical confirmation before allowi
 test('final Supertrend deploy gate reuses short canonical bullish cache for live bullish snapshot', async () => {
   const now = 1_700_000_000_000;
   let calls = 0;
+  const entryCandles5m = makeDerivedM15Backed5m({
+    nowSec: Math.floor(now / 1000),
+    m15Series: [
+      { open: 95, close: 97, volume: 100 },
+      { open: 97, close: 99, volume: 100 },
+      { open: 99, close: 101, volume: 100 },
+    ],
+  });
 
   const decision = await getFinalSupertrendDeployDecision({
     mint: 'Mint111111111111111111111111111111111111111',
@@ -676,7 +693,7 @@ test('final Supertrend deploy gate reuses short canonical bullish cache for live
     liveSnapshot: {
       dataSource: 'meteora-dlmm-ohlcv',
       quality: { taTrend: 'BULLISH' },
-      ohlcv: { source: 'meteora-dlmm-ohlcv', historySuccess: true, priceChangeM5: 0.8, currentPrice: 101 },
+      ohlcv: { source: 'meteora-dlmm-ohlcv', historySuccess: true, priceChangeM5: 0.8, currentPrice: 101, entryCandles5m },
       ta: { supertrend: { trend: 'BULLISH', value: 100 } },
     },
     checkFn: async () => {
@@ -690,9 +707,17 @@ test('final Supertrend deploy gate reuses short canonical bullish cache for live
   assert.equal(calls, 0);
 });
 
-test('final Supertrend deploy gate holds live bullish snapshot when price has not reclaimed above Supertrend line', async () => {
+test('final Supertrend deploy gate holds live bullish snapshot when last closed M15 has not reclaimed above Supertrend line', async () => {
   const now = 1_700_000_000_000;
   let calls = 0;
+  const entryCandles5m = makeDerivedM15Backed5m({
+    nowSec: Math.floor(now / 1000),
+    m15Series: [
+      { open: 95, close: 97, volume: 100 },
+      { open: 97, close: 99, volume: 100 },
+      { open: 100, close: 99.5, volume: 100 },
+    ],
+  });
 
   const decision = await getFinalSupertrendDeployDecision({
     mint: 'Mint111111111111111111111111111111111111111',
@@ -705,7 +730,7 @@ test('final Supertrend deploy gate holds live bullish snapshot when price has no
     liveSnapshot: {
       dataSource: 'meteora-dlmm-ohlcv',
       quality: { taTrend: 'BULLISH' },
-      ohlcv: { source: 'meteora-dlmm-ohlcv', historySuccess: true, priceChangeM5: 0.8, currentPrice: 99.8 },
+      ohlcv: { source: 'meteora-dlmm-ohlcv', historySuccess: true, priceChangeM5: 0.8, currentPrice: 101.2, entryCandles5m },
       ta: { supertrend: { trend: 'BULLISH', value: 100 } },
     },
     checkFn: async () => {
@@ -717,8 +742,51 @@ test('final Supertrend deploy gate holds live bullish snapshot when price has no
   assert.equal(decision.action, 'HOLD');
   assert.equal(decision.source, 'live_snapshot');
   assert.equal(decision.direction, 'BULLISH');
-  assert.match(decision.reason, /not cleanly above supertrend 15m line/i);
+  assert.match(decision.reason, /last closed m15 candle has not reclaimed above supertrend 15m line/i);
   assert.equal(calls, 0);
+});
+
+test('closed M15 Supertrend reclaim helper confirms only the last closed M15 close above line', () => {
+  const now = 1_700_000_000_000;
+  const confirmed = evaluateClosedM15SupertrendReclaim({
+    now,
+    supertrendValue: 100,
+    snapshot: {
+      ohlcv: {
+        source: 'meteora-dlmm-ohlcv',
+        entryCandles5m: makeDerivedM15Backed5m({
+          nowSec: Math.floor(now / 1000),
+          m15Series: [
+            { open: 95, close: 97, volume: 100 },
+            { open: 97, close: 99, volume: 100 },
+            { open: 99, close: 101, volume: 100 },
+          ],
+        }),
+      },
+    },
+  });
+  assert.equal(confirmed.known, true);
+  assert.equal(confirmed.aboveLine, true);
+
+  const rejected = evaluateClosedM15SupertrendReclaim({
+    now,
+    supertrendValue: 100,
+    snapshot: {
+      ohlcv: {
+        source: 'meteora-dlmm-ohlcv',
+        entryCandles5m: makeDerivedM15Backed5m({
+          nowSec: Math.floor(now / 1000),
+          m15Series: [
+            { open: 95, close: 97, volume: 100 },
+            { open: 97, close: 99, volume: 100 },
+            { open: 101, close: 99.5, volume: 100 },
+          ],
+        }),
+      },
+    },
+  });
+  assert.equal(rejected.known, true);
+  assert.equal(rejected.aboveLine, false);
 });
 
 test('final Supertrend deploy gate still vetoes when live snapshot is bearish but unreliable', async () => {

@@ -137,6 +137,83 @@ export function aggregateClosed5mCandlesToClosedM15(candles5m = []) {
   return aggregated;
 }
 
+export function evaluateClosedM15SupertrendReclaim({
+  snapshot = null,
+  now = Date.now(),
+  maxAgeSec = 1800,
+  supertrendValue = null,
+} = {}) {
+  const ohlcv = getOhlcv(snapshot);
+  const rawCandles = getEntryCandles5m(ohlcv);
+  const candles = rawCandles.map(normalizeCandle).filter(Boolean).sort((a, b) => a.timeMs - b.timeMs);
+  const closed5m = filterClosed5mCandles(candles, now);
+  const candlesM15 = aggregateClosed5mCandlesToClosedM15(closed5m);
+  const last = candlesM15[candlesM15.length - 1] || null;
+  const source = ohlcv?.source || snapshot?.dataSource || 'unknown';
+  const resolvedSupertrendValue = toFiniteNumber(
+    supertrendValue ??
+    snapshot?.ta?.supertrend?.value ??
+    ohlcv?.ta?.supertrend?.value,
+    null
+  );
+
+  if (!last) {
+    return {
+      known: false,
+      aboveLine: null,
+      reason: 'M15_RECLAIM_UNAVAILABLE',
+      source,
+      candle: null,
+      candlesM15,
+      ageSec: null,
+      supertrendValue: resolvedSupertrendValue,
+      distancePct: null,
+    };
+  }
+
+  const ageSec = Math.max(0, (Number(now) - Number(last.timeMs)) / 1000);
+  if (!Number.isFinite(ageSec) || ageSec > Math.max(1, Number(maxAgeSec) || 1800)) {
+    return {
+      known: false,
+      aboveLine: null,
+      reason: 'M15_RECLAIM_STALE',
+      source,
+      candle: last,
+      candlesM15,
+      ageSec,
+      supertrendValue: resolvedSupertrendValue,
+      distancePct: null,
+    };
+  }
+
+  if (!(resolvedSupertrendValue > 0)) {
+    return {
+      known: false,
+      aboveLine: null,
+      reason: 'SUPERTRAND_LINE_UNAVAILABLE',
+      source,
+      candle: last,
+      candlesM15,
+      ageSec,
+      supertrendValue: resolvedSupertrendValue,
+      distancePct: null,
+    };
+  }
+
+  const distancePct = ((Number(last.close) - resolvedSupertrendValue) / resolvedSupertrendValue) * 100;
+  return {
+    known: Number.isFinite(distancePct),
+    aboveLine: Number.isFinite(distancePct) ? distancePct > 0 : null,
+    reason: Number.isFinite(distancePct) && distancePct > 0 ? 'M15_RECLAIM_CONFIRMED' : 'M15_RECLAIM_NOT_CONFIRMED',
+    source,
+    candle: last,
+    candlesM15,
+    ageSec,
+    supertrendValue: resolvedSupertrendValue,
+    distancePct: Number.isFinite(distancePct) ? distancePct : null,
+  };
+}
+
 function evaluateLpSimpleM15Sanity({
   ohlcv = {},
   candles5m = [],

@@ -6,7 +6,7 @@ import { checkSupertrendVeto, isSupportedQuoteToken, getQuoteTokenLabel } from '
 import { getPoolMemorySignal, recordPoolDeploy } from '../market/poolMemory.js';
 import { getRuntimeState } from '../runtime/state.js';
 import { getDeploySlotUsage, reserveDeploySlot, releaseDeploySlot } from './deploySlotGuard.js';
-import { evaluateEntryCandleSanity } from './entryCandleSanity.js';
+import { evaluateClosedM15SupertrendReclaim, evaluateEntryCandleSanity } from './entryCandleSanity.js';
 
 /**
  * src/utils/pendingDeployQueue.js
@@ -492,30 +492,22 @@ function readLiveSnapshotTrend(liveSnapshot = null) {
   return readCanonicalLiveSnapshotTrend(liveSnapshot).trend;
 }
 
-function readLiveSupertrendLineState(liveSnapshot = null) {
-  const currentPrice = Number(
-    liveSnapshot?.ohlcv?.currentPrice ||
-    liveSnapshot?.price?.currentPrice ||
-    0
-  );
-  const supertrendValue = Number(liveSnapshot?.ta?.supertrend?.value || 0);
-  if (!(currentPrice > 0) || !(supertrendValue > 0)) {
-    return {
-      known: false,
-      currentPrice,
-      supertrendValue,
-      distancePct: null,
-      aboveLine: null,
-    };
-  }
-
-  const distancePct = ((currentPrice - supertrendValue) / supertrendValue) * 100;
+function readClosedM15SupertrendReclaimState(liveSnapshot = null, cfg = getConfig(), now = Date.now()) {
+  const reclaim = evaluateClosedM15SupertrendReclaim({
+    snapshot: liveSnapshot,
+    now,
+    maxAgeSec: Number(cfg.entryM15MaxAgeSec ?? 1800) || 1800,
+    supertrendValue: liveSnapshot?.ta?.supertrend?.value,
+  });
   return {
-    known: Number.isFinite(distancePct),
-    currentPrice,
-    supertrendValue,
-    distancePct,
-    aboveLine: Number.isFinite(distancePct) ? distancePct > 0 : null,
+    known: reclaim.known === true,
+    source: reclaim.source || 'unknown',
+    candle: reclaim.candle || null,
+    supertrendValue: reclaim.supertrendValue ?? null,
+    distancePct: reclaim.distancePct ?? null,
+    aboveLine: reclaim.aboveLine === true,
+    ageSec: reclaim.ageSec ?? null,
+    reason: reclaim.reason || 'M15_RECLAIM_UNAVAILABLE',
   };
 }
 
@@ -726,7 +718,7 @@ export async function getFinalSupertrendDeployDecision({
   const liveTrendState = readCanonicalLiveSnapshotTrend(liveSnapshot);
   const liveTrend = readLiveSnapshotTrend(liveSnapshot);
   const liveReliable = isReliableLiveSnapshot(liveSnapshot);
-  const liveSupertrendLine = readLiveSupertrendLineState(liveSnapshot);
+  const closedM15Reclaim = readClosedM15SupertrendReclaimState(liveSnapshot, getConfig(), now);
   const cached = readCachedSupertrend15m(meta, pool);
   const fresh = cached.at > 0 && (now - cached.at) <= ttlMs;
   const cachedSource = String(cached.source || 'unknown');
@@ -766,11 +758,20 @@ export async function getFinalSupertrendDeployDecision({
     };
   }
   if (liveReliable && liveTrend === 'BULLISH') {
-    if (liveSupertrendLine.known && liveSupertrendLine.aboveLine !== true) {
+    if (!closedM15Reclaim.known) {
       return {
         ok: false,
         action: 'HOLD',
-        reason: `live price not cleanly above Supertrend 15m line (${formatPct(liveSupertrendLine.distancePct)}); waiting reclaim`,
+        reason: 'last closed M15 reclaim above Supertrend unavailable/stale; waiting confirmation',
+        source: 'live_snapshot',
+        direction: 'BULLISH',
+      };
+    }
+    if (closedM15Reclaim.aboveLine !== true) {
+      return {
+        ok: false,
+        action: 'HOLD',
+        reason: `last closed M15 candle has not reclaimed above Supertrend 15m line (${formatPct(closedM15Reclaim.distancePct)}); waiting confirmation`,
         source: 'live_snapshot',
         direction: 'BULLISH',
       };

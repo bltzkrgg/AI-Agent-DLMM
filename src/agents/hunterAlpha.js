@@ -28,6 +28,7 @@ import { getRuntimeState }        from '../runtime/state.js';
 import { getPositionRuntimeState, updatePositionRuntimeState } from '../app/positionRuntimeState.js';
 import { evaluatePoolImpactGuard } from '../risk/poolImpactGuard.js';
 import { getExitDisplayMeta, getTakeProfitDisplayLabel, formatTakeProfitRiskLabel } from '../utils/exitReasons.js';
+import { evaluateClosedM15SupertrendReclaim } from '../utils/entryCandleSanity.js';
 import { escapeHTML, safeParseAI, fetchWithTimeout } from '../utils/safeJson.js';
 import reportManager              from '../utils/reportManager.js';
 import pendingStore               from '../utils/pendingStore.js';
@@ -1691,6 +1692,12 @@ function deriveBreakoutEntrySignals({ pool = {}, vetoResult = null, marketSnapsh
   const isFreshAthBreak = Number.isFinite(signalAthDistancePct) && signalAthDistancePct >= freshAthBreakPct;
   const isStrongAthBreak = Number.isFinite(signalAthDistancePct) && signalAthDistancePct >= Math.max(freshAthBreakPct + 0.25, 99.75);
   const hasValidVolume = !requireVolumeConfirm || (Number.isFinite(volumeRatio) && volumeRatio >= minVolRatio);
+  const closedM15Reclaim = evaluateClosedM15SupertrendReclaim({
+    snapshot: marketSnapshot,
+    now: Date.now(),
+    maxAgeSec: Number(cfg.entryM15MaxAgeSec ?? 1800) || 1800,
+    supertrendValue,
+  });
 
   let entryTimingState = 'UNKNOWN';
   if (canonicalTrend.conflicted) {
@@ -1710,6 +1717,10 @@ function deriveBreakoutEntrySignals({ pool = {}, vetoResult = null, marketSnapsh
   } else {
     const aboveSupertrend = signalStDistancePct > 0;
     if (!aboveSupertrend) {
+      entryTimingState = 'TOO_CLOSE';
+    } else if (isLpMode && closedM15Reclaim.known !== true) {
+      entryTimingState = 'UNKNOWN';
+    } else if (isLpMode && closedM15Reclaim.aboveLine !== true) {
       entryTimingState = 'TOO_CLOSE';
     } else if (isLpMode) {
       entryTimingState = 'LP_LIVE';
@@ -1765,6 +1776,10 @@ function deriveBreakoutEntrySignals({ pool = {}, vetoResult = null, marketSnapsh
     signalStDistancePct,
     signalAthDistancePct,
     volumeRatio,
+    closedM15ReclaimConfirmed: closedM15Reclaim.aboveLine === true,
+    closedM15ReclaimKnown: closedM15Reclaim.known === true,
+    closedM15ReclaimDistancePct: closedM15Reclaim.distancePct ?? null,
+    closedM15ReclaimAgeSec: closedM15Reclaim.ageSec ?? null,
     minDistancePct,
     maxDistancePct,
     breakoutMinStPct,
