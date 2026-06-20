@@ -22,7 +22,7 @@ test('README explains fast-path, slow-path, and monitor trade offs', () => {
   assert.match(source, /entryFreshWatchWindowSec.*WATCH candidates fresh enough for queue\/deploy reuse/);
   assert.match(source, /entryFreshBreakoutMaxDriftPct.*how far the breakout can drift/);
   assert.match(source, /entryM15MaxAgeSec.*maximum age allowed for the M15 sanity candle/);
-  assert.match(source, /entryM5HardGateEnabled.*adds a stricter M5 gate/);
+  assert.match(source, /entryM5HardGateEnabled.*Aktifkan hard gate M5 untuk mode entry/);
   assert.match(source, /Entry anchor freeze: candidate yang sudah masuk WATCH akan membawa `entryActiveBin`\/`entryPrice` snapshot ke queue dan deploy/);
   assert.match(source, /Live bin fallback: deploy hanya pakai bin live jika snapshot intent tidak valid/);
   assert.match(source, /If the range would require a new bin array, deploy is vetoed before position init/);

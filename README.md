@@ -88,7 +88,7 @@ Entry tuning that stays fast but avoids stale decisions:
 - `entryFreshWatchWindowSec` keeps WATCH candidates fresh enough for queue/deploy reuse without re-reading old snapshots.
 - `entryFreshBreakoutMaxDriftPct` limits how far the breakout can drift before the candidate is treated as stale.
 - `entryM15MaxAgeSec` is the maximum age allowed for the M15 sanity candle before deploy is held.
-- `entryM5HardGateEnabled` adds a stricter M5 gate when you want fewer false entries; it can be disabled in lighter mode.
+- `entryM5HardGateEnabled` Aktifkan hard gate M5 untuk mode entry kalau kamu memang mau lebih ketat; bisa dimatikan di mode ringan.
 - These keys are the main knobs if you want to stay close to the yellow-candle timing without making entry path materially slower.
 
 For OOR timing:

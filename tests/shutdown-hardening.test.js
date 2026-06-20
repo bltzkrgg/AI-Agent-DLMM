@@ -481,9 +481,9 @@ test('scout agent prompt uses DLMM LP breakout screening fields', () => {
   const src = readFileSync(hunterPath, 'utf8');
   assert.match(src, /INITIAL SCREENING FILTER FOR DLMM LIQUIDITY PROVIDER/);
   assert.match(src, /LP STYLE ENTRY/);
-  assert.match(src, /price reclaim\/bounce sehat/);
   assert.match(src, /Supertrend 15m harus bullish/);
-  assert.match(src, /Candle M5 harus hijau/);
+  assert.match(src, /Last closed M15 candle HARUS close di atas garis Supertrend/);
+  assert.match(src, /M5, volume, ATH distance, dan price-change hanya konteks tambahan, BUKAN hard gate entry/);
   assert.match(src, /TA Supertrend 15m:/);
   assert.match(src, /TA M5 Change:/);
   assert.match(src, /OKX Wash Trading:/);
@@ -500,9 +500,9 @@ test('general agent final decision prompt requires mature breakout momentum', ()
   const src = readFileSync(hunterPath, 'utf8');
   assert.match(src, /PRINCIPAL DLMM LIQUIDITY PROVIDER \(FINAL DECISION MAKER\)/);
   assert.match(src, /Kamu tidak mengejar entry dekat supertrend/);
-  assert.match(src, /harga break jauh di atas supertrend 15m bullish/);
-  assert.match(src, /Kalau bullish momentum belum terbentuk, jangan deploy/);
-  assert.match(src, /Entry = breakout matang, bukan harga yang baru menyentuh garis/);
+  assert.match(src, /Supertrend 15m bullish, closed M15 reclaim sudah valid, snapshot fresh/);
+  assert.match(src, /Kalau konfirmasi belum lengkap, jangan deploy/);
+  assert.match(src, /Entry = terkonfirmasi, bukan harga yang sudah keburu lari jauh dari snapshot/);
   assert.match(src, /High-level Summary:/);
   assert.match(src, /Meridian Gate:/);
   assert.match(src, /GMGN Total Fees:/);
