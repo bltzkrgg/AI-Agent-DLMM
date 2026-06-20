@@ -451,7 +451,7 @@ function isTrustedLpWatchMeta(meta = {}) {
   const readiness = String(meta.entryReadiness || '').toUpperCase();
   const breakoutQuality = String(meta.breakoutQuality || '').toUpperCase();
   return meta.queueTrustedWatch === true &&
-    timingState === 'LP_LIVE' &&
+    (timingState === 'LP_LIVE' || timingState === 'BREAKOUT') &&
     readiness === 'HIGH' &&
     (breakoutQuality === 'VALID' || breakoutQuality === 'STRONG');
 }
@@ -1016,17 +1016,12 @@ export async function ensureFinalEntryCandleSanity(args = {}) {
 export function summarizeQueueDecision({ meta = {}, liveSnapshot = null, cfg = getConfig(), lpMode = false } = {}) {
   const signals = resolveQueueSignalSources({ meta, liveSnapshot });
   const decisionMode = String(cfg?.entryDecisionMode || 'strict').trim().toLowerCase();
-  const lpSimpleM15Mode = decisionMode === 'lp_simple_m15';
-  const m5HardGateEnabled = cfg?.entryM5HardGateEnabled !== false;
   const timingState = String(meta.entryTimingState || '').toUpperCase();
   const trustedLpWatch = isTrustedLpWatchMeta(meta);
   const trendUnknown = signals.trend === 'UNKNOWN';
   const trendBearish = signals.trend === 'BEARISH';
   const trendFresh = signals.trendSource === 'live';
-  const m5Finite = Number.isFinite(signals.m5);
-  const m5Unknown = !m5Finite || signals.m5Source === 'unknown';
-  const m5FreshPositive = signals.m5Source === 'live' && m5Finite && signals.m5 > 0;
-  const bothUnknown = signals.trendSource === 'unknown' && signals.m5Source === 'unknown';
+  const liveTrendKnown = signals.trendSource === 'live' && signals.trend !== 'UNKNOWN';
 
   let decision = 'DEPLOY';
   let reason = '';
@@ -1045,15 +1040,6 @@ export function summarizeQueueDecision({ meta = {}, liveSnapshot = null, cfg = g
       reason = liveReliable && liveTrend === 'BEARISH'
         ? 'Supertrend 15m bearish (live_snapshot)'
         : `Supertrend 15m bearish (${signals.trendSource})`;
-    } else if (bothUnknown) {
-      decision = 'HOLD';
-      reason = 'HOLD: realtime trend/M5 unknown; waiting for fresh deploy signal';
-    } else if (!lpSimpleM15Mode && m5Unknown) {
-      decision = 'HOLD';
-      reason = 'HOLD: M5 stale; waiting fresh signal';
-    } else if ((!lpSimpleM15Mode || m5HardGateEnabled) && !m5FreshPositive) {
-      decision = 'HOLD';
-      reason = `HOLD: realtime M5 non-positive (${formatPct(signals.m5)}); waiting positive momentum`;
     } else if (trendUnknown) {
       decision = 'HOLD';
       reason = 'HOLD: live trend unknown; waiting fresh live confirmation';
@@ -1066,10 +1052,13 @@ export function summarizeQueueDecision({ meta = {}, liveSnapshot = null, cfg = g
     } else if (signals.trend !== 'BULLISH') {
       decision = 'HOLD';
       reason = 'HOLD: live trend not bullish; waiting fresh live confirmation';
+    } else if (!liveTrendKnown) {
+      decision = 'HOLD';
+      reason = 'HOLD: live trend unknown; waiting fresh live confirmation';
     } else if (trustedLpWatch) {
-      reason = `Trusted WATCH prepared (${signals.trendSource}/${signals.m5Source})`;
+      reason = `Trusted WATCH prepared (${signals.trendSource})`;
     }
-  } else if (timingState !== 'BREAKOUT' && timingState !== 'ATH_BREAK') {
+  } else if (timingState !== 'BREAKOUT') {
     decision = 'HOLD';
     reason = `Timing belum fresh: ${timingState || 'UNKNOWN'}`;
   }
@@ -1078,7 +1067,7 @@ export function summarizeQueueDecision({ meta = {}, liveSnapshot = null, cfg = g
     ...signals,
     lpMode,
     entryDecisionMode: decisionMode,
-    m5HardGateEnabled,
+    m5HardGateEnabled: cfg?.entryM5HardGateEnabled !== false,
     timingState,
     decision,
     reason,
@@ -1102,25 +1091,20 @@ export function isFreshDeployMeta(meta = {}) {
 
   if (meta.isRetest || meta.isScoutDefer) return false;
   if (lpMode) {
-    if (timingState !== 'LP_LIVE' && timingState !== 'BREAKOUT' && timingState !== 'ATH_BREAK') return false;
+    if (timingState !== 'LP_LIVE' && timingState !== 'BREAKOUT') return false;
     if (taTrend === 'BEARISH') return false;
     if (!trustedLpWatch && taTrend !== 'BULLISH') return false;
     if (trustedLpWatch && taTrend !== 'BULLISH' && !isFreshBullishSupertrend15m(meta, {}, Date.now(), FINAL_ST_CACHE_TTL_MS)) {
       return false;
     }
-  } else if (timingState !== 'BREAKOUT' && timingState !== 'ATH_BREAK') {
+  } else if (timingState !== 'BREAKOUT') {
     return false;
   }
   if (readiness !== 'HIGH') return false;
   if (breakoutQuality !== 'VALID' && breakoutQuality !== 'STRONG') return false;
   if (taTrend === 'BEARISH') return false;
   if (taTrend && taTrend !== 'BULLISH' && !trustedLpWatch) return false;
-  if (!lpMode) {
-    const freshAthBreakPct = Number(cfg.entryFreshBreakoutMinAthDistancePct ?? 99.25);
-    const breakoutMinStPct = Number(cfg.entrySupertrendBreakMinPct ?? 1.25);
-    if (Number.isFinite(signalAthDistancePct) && signalAthDistancePct < freshAthBreakPct) return false;
-    if (Number.isFinite(signalStDistancePct) && signalStDistancePct < breakoutMinStPct) return false;
-  } else if (!trustedLpWatch && Number.isFinite(signalStDistancePct) && signalStDistancePct <= 0) {
+  if (lpMode && !trustedLpWatch && Number.isFinite(signalStDistancePct) && signalStDistancePct <= 0) {
     return false;
   }
   return true;

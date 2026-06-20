@@ -139,13 +139,6 @@ test('fresh deploy meta allows breakout-valid, high-readiness entries including 
   }), true);
 
   assert.equal(isFreshDeployMeta({
-    entryTimingState: 'ATH_BREAK',
-    entryReadiness: 'HIGH',
-    breakoutQuality: 'STRONG',
-    taTrend: 'BULLISH',
-  }), true);
-
-  assert.equal(isFreshDeployMeta({
     entryTimingState: 'WAIT_FOR_PULLBACK',
     entryReadiness: 'MEDIUM',
     breakoutQuality: 'PENDING_TA',
@@ -317,7 +310,7 @@ test('trusted WATCH-ready LP entries can prepare queue but still need final ST g
     lpMode: true,
   });
   assert.equal(fromQueue.decision, 'HOLD');
-  assert.equal(fromQueue.reason.includes('M5 stale'), true);
+  assert.match(fromQueue.reason, /(live trend unknown|live snapshot unreliable)/i);
 
   const liveNeutral = summarizeQueueDecision({
     meta: trustedWatchMeta,
@@ -364,10 +357,10 @@ test('queue blocks LP deploy when trend and M5 sources are unknown', () => {
   assert.equal(decision.trendSource, 'unknown');
   assert.equal(decision.m5Source, 'unknown');
   assert.equal(decision.decision, 'HOLD');
-  assert.match(decision.reason, /realtime trend\/M5 unknown/i);
+  assert.match(decision.reason, /live trend unknown/i);
 });
 
-test('queue allows LP deploy only on fresh bullish trend + fresh positive M5', () => {
+test('queue allows LP deploy on fresh bullish live trend without M5 hard gate', () => {
   const decision = summarizeQueueDecision({
     meta: {
       entryTimingState: 'LP_LIVE',
@@ -391,7 +384,7 @@ test('queue allows LP deploy only on fresh bullish trend + fresh positive M5', (
   assert.equal(decision.decision, 'DEPLOY');
 });
 
-test('queue treats finite Meteora M5 as live source and holds when non-positive', () => {
+test('queue treats finite Meteora M5 as live source but does not block deploy on non-positive M5', () => {
   const decision = summarizeQueueDecision({
     meta: {
       entryTimingState: 'LP_LIVE',
@@ -417,8 +410,7 @@ test('queue treats finite Meteora M5 as live source and holds when non-positive'
 
   assert.equal(decision.m5Source, 'live');
   assert.equal(decision.m5, 0);
-  assert.equal(decision.decision, 'HOLD');
-  assert.match(decision.reason, /non-positive/i);
+  assert.equal(decision.decision, 'DEPLOY');
 });
 
 test('lp_simple_m15 bypasses M5 non-positive hold when hard gate disabled', () => {
@@ -449,7 +441,7 @@ test('lp_simple_m15 bypasses M5 non-positive hold when hard gate disabled', () =
   assert.equal(decision.decision, 'DEPLOY');
 });
 
-test('lp_simple_m15 keeps M5 hold when hard gate enabled', () => {
+test('lp_simple_m15 no longer reintroduces M5 hard hold even when config flag is true', () => {
   const decision = summarizeQueueDecision({
     meta: {
       entryTimingState: 'LP_LIVE',
@@ -461,7 +453,7 @@ test('lp_simple_m15 keeps M5 hold when hard gate enabled', () => {
     liveSnapshot: {
       dataSource: 'meteora-dlmm-ohlcv',
       quality: { taTrend: 'BULLISH' },
-      ohlcv: { source: 'meteora-dlmm-ohlcv' },
+      ohlcv: { source: 'meteora-dlmm-ohlcv', historySuccess: true },
     },
     cfg: {
       entryDecisionMode: 'lp_simple_m15',
@@ -473,8 +465,7 @@ test('lp_simple_m15 keeps M5 hold when hard gate enabled', () => {
 
   assert.equal(decision.m5Source, 'live');
   assert.equal(decision.m5, 0);
-  assert.equal(decision.decision, 'HOLD');
-  assert.match(decision.reason, /M5 non-positive/i);
+  assert.equal(decision.decision, 'DEPLOY');
 });
 
 test('lp_simple_m15 still blocks bearish trend', () => {
@@ -1475,13 +1466,12 @@ test('manual CA final gate does not pass generic taTrend snapshot cache', () => 
   assert.doesNotMatch(manualGateBlock, /snapshotAt: now/);
 });
 
-test('hunter scout logic keeps strict gates and supports lp_simple_m15 mode overrides', () => {
+test('hunter scout logic now uses simple LP hard gates only', () => {
   const hunterSrc = readFileSync(new URL('../src/agents/hunterAlpha.js', import.meta.url), 'utf8');
-  assert.match(hunterSrc, /const lpSimpleM15Mode = entryDecisionMode === 'lp_simple_m15';/);
-  assert.match(hunterSrc, /\(m5HardGateEnabled \|\| !lpSimpleM15Mode\) && priceChangeM5 <= 0/);
-  assert.match(hunterSrc, /deferOnM15PreviousUnknown && !Number\.isFinite\(priceChangeM15Prev\)/);
-  assert.match(hunterSrc, /Mode lp_simple_m15 aktif: M15 jadi konfirmasi utama/);
-  assert.match(hunterSrc, /Jika TA M15 Previous = UNKNOWN, JANGAN auto-DEFER/);
+  assert.match(hunterSrc, /Last closed M15 candle HARUS close di atas garis Supertrend/);
+  assert.match(hunterSrc, /M5, volume, ATH distance, dan price-change hanya konteks tambahan, BUKAN hard gate entry/);
+  assert.match(hunterSrc, /PASS hanya jika Entry Timing = "LP_LIVE" atau "BREAKOUT"/);
+  assert.match(hunterSrc, /entrySignals\.entryTimingState === 'BEARISH_TREND' \|\| entrySignals\.entryTimingState === 'NO_TREND' \|\| entrySignals\.entryTimingState === 'TOO_CLOSE' \|\| entrySignals\.entryTimingState === 'UNKNOWN'/);
 });
 
 test('lp_simple_m15 deploy report labels M15 as primary and M5 as diagnostic', () => {

@@ -1644,16 +1644,9 @@ function buildCanonicalEntrySnapshot({
 }
 
 function deriveBreakoutEntrySignals({ pool = {}, vetoResult = null, marketSnapshot = null, cfg = getConfig() } = {}) {
-  const entryGateMode = getEntryGateMode(cfg);
   const entryDecisionMode = String(cfg.entryDecisionMode || 'strict').toLowerCase();
   const lpSimpleM15Mode = entryDecisionMode === 'lp_simple_m15';
-  const m5HardGateEnabled = cfg.entryM5HardGateEnabled !== false;
-  const deferOnM15PreviousUnknown = cfg.entryDeferOnM15PreviousUnknown !== false;
   const isLpMode = isLpEntryMode(cfg);
-  const breakoutMinStPct = Number(cfg.entrySupertrendBreakMinPct ?? 1.25);
-  const freshAthBreakPct = Number(cfg.entryFreshBreakoutMinAthDistancePct ?? 99.25);
-  const requireVolumeConfirm = cfg.entryRequireVolumeConfirm !== false;
-  const minVolRatio = Number(cfg.entryMinVolumeRatio || 1.1);
   const canonicalTrend = readCanonicalSnapshotTrend(marketSnapshot, vetoResult);
   const taTrend = canonicalTrend.trend;
 
@@ -1685,13 +1678,7 @@ function deriveBreakoutEntrySignals({ pool = {}, vetoResult = null, marketSnapsh
   const signalAthDistancePct = currentPrice > 0 && high24h > 0
     ? (currentPrice / high24h) * 100
     : null;
-  const minDistancePct = Number(cfg.entrySupertrendMinDistancePct ?? 1.5);
-  const maxDistancePct = Number(cfg.entrySupertrendMaxDistancePct ?? 18);
-  const athBreakPct = Number(cfg.entryBreakoutMinAthDistancePct ?? 95);
   const volumeRatio = tvl > 0 ? volume24h / tvl : null;
-  const isFreshAthBreak = Number.isFinite(signalAthDistancePct) && signalAthDistancePct >= freshAthBreakPct;
-  const isStrongAthBreak = Number.isFinite(signalAthDistancePct) && signalAthDistancePct >= Math.max(freshAthBreakPct + 0.25, 99.75);
-  const hasValidVolume = !requireVolumeConfirm || (Number.isFinite(volumeRatio) && volumeRatio >= minVolRatio);
   const closedM15Reclaim = evaluateClosedM15SupertrendReclaim({
     snapshot: marketSnapshot,
     now: Date.now(),
@@ -1706,12 +1693,6 @@ function deriveBreakoutEntrySignals({ pool = {}, vetoResult = null, marketSnapsh
     entryTimingState = 'BEARISH_TREND';
   } else if (taTrend !== 'BULLISH') {
     entryTimingState = 'NO_TREND';
-  } else if ((m5HardGateEnabled || !lpSimpleM15Mode) && priceChangeM5 <= 0) {
-    entryTimingState = 'NO_M5';
-  } else if (requireVolumeConfirm && !hasValidVolume) {
-    entryTimingState = 'WAIT_VOLUME';
-  } else if (deferOnM15PreviousUnknown && !Number.isFinite(priceChangeM15Prev)) {
-    entryTimingState = 'M15_PREV_UNKNOWN';
   } else if (!Number.isFinite(signalStDistancePct)) {
     entryTimingState = 'UNKNOWN';
   } else {
@@ -1722,46 +1703,28 @@ function deriveBreakoutEntrySignals({ pool = {}, vetoResult = null, marketSnapsh
       entryTimingState = 'UNKNOWN';
     } else if (isLpMode && closedM15Reclaim.aboveLine !== true) {
       entryTimingState = 'TOO_CLOSE';
-    } else if (isLpMode) {
-      entryTimingState = 'LP_LIVE';
-    } else if (entryGateMode === 'lper_retest' && signalStDistancePct > maxDistancePct) {
-      entryTimingState = 'WAIT_FOR_PULLBACK';
-    } else if (signalStDistancePct < breakoutMinStPct) {
-      entryTimingState = 'TOO_CLOSE';
-    } else if (!isFreshAthBreak) {
-      entryTimingState = 'LATE_BREAKOUT';
-    } else if (isStrongAthBreak) {
-      entryTimingState = 'ATH_BREAK';
-    } else if (signalAthDistancePct != null && signalAthDistancePct >= athBreakPct) {
-      entryTimingState = 'BREAKOUT';
-    } else if (signalStDistancePct > maxDistancePct && (priceChangeM15 < 0.5 || priceChangeM5 < 0.5)) {
-      entryTimingState = 'EXTENDED';
     } else {
-      entryTimingState = 'LATE_BREAKOUT';
+      entryTimingState = isLpMode ? 'LP_LIVE' : 'BREAKOUT';
     }
   }
 
   const entryReadiness =
-    entryTimingState === 'ATH_BREAK' || entryTimingState === 'BREAKOUT' || entryTimingState === 'LP_LIVE' ? 'HIGH'
-      : entryTimingState === 'EXTENDED' ? 'MEDIUM'
+    entryTimingState === 'BREAKOUT' || entryTimingState === 'LP_LIVE' ? 'HIGH'
       : entryTimingState === 'TOO_CLOSE' ? 'LOW'
       : 'LOW';
 
   const breakoutQuality =
-    entryTimingState === 'ATH_BREAK' ? 'STRONG'
-      : entryTimingState === 'BREAKOUT' ? 'VALID'
-      : entryTimingState === 'LP_LIVE'
-        ? ((Number.isFinite(volumeRatio) && volumeRatio >= (minVolRatio * 1.5)) || priceChangeM15 >= 2 ? 'STRONG' : 'VALID')
-        : entryTimingState === 'EXTENDED' ? 'WEAK'
-        : 'WEAK';
+    entryTimingState === 'BREAKOUT' || entryTimingState === 'LP_LIVE'
+      ? 'VALID'
+      : 'WEAK';
 
   return {
     entryTimingState,
     entryReadiness,
     breakoutQuality,
     entryDecisionMode,
-    m5HardGateEnabled,
-    deferOnM15PreviousUnknown,
+    m5HardGateEnabled: cfg.entryM5HardGateEnabled !== false,
+    deferOnM15PreviousUnknown: cfg.entryDeferOnM15PreviousUnknown !== false,
     taTrend,
     taTrendConflicted: canonicalTrend.conflicted === true,
     taTrendQualitySource: canonicalTrend.qualityTrend || 'UNKNOWN',
@@ -1780,13 +1743,13 @@ function deriveBreakoutEntrySignals({ pool = {}, vetoResult = null, marketSnapsh
     closedM15ReclaimKnown: closedM15Reclaim.known === true,
     closedM15ReclaimDistancePct: closedM15Reclaim.distancePct ?? null,
     closedM15ReclaimAgeSec: closedM15Reclaim.ageSec ?? null,
-    minDistancePct,
-    maxDistancePct,
-    breakoutMinStPct,
-    freshAthBreakPct,
-    athBreakPct,
-    entryGateMode,
-    canDeploy: entryTimingState === 'ATH_BREAK' || entryTimingState === 'BREAKOUT' || entryTimingState === 'LP_LIVE',
+    minDistancePct: Number(cfg.entrySupertrendMinDistancePct ?? 1.5),
+    maxDistancePct: Number(cfg.entrySupertrendMaxDistancePct ?? 18),
+    breakoutMinStPct: Number(cfg.entrySupertrendBreakMinPct ?? 1.25),
+    freshAthBreakPct: Number(cfg.entryFreshBreakoutMinAthDistancePct ?? 99.25),
+    athBreakPct: Number(cfg.entryBreakoutMinAthDistancePct ?? 95),
+    entryGateMode: getEntryGateMode(cfg),
+    canDeploy: entryTimingState === 'BREAKOUT' || entryTimingState === 'LP_LIVE',
   };
 }
 
@@ -2657,24 +2620,14 @@ export async function scanAndDeploy({ emitFinalReport = true } = {}) {
       console.log(`[SCREEN] 🧠 LLM stage=SCOUT model=${scoutModel} (slots: ${activeCount}/${maxPositions}, booked=${winners.length}, reserved=${slotUsage.reserved})`);
       const llmPoolContext = buildLlmPoolContext({ pool, screenResult, vetoResult, marketSnapshot, bookedSlots: winners.length, entrySignals });
 
-      if (entrySignals.entryTimingState === 'BEARISH_TREND' || entrySignals.entryTimingState === 'NO_TREND' || entrySignals.entryTimingState === 'NO_M5' || entrySignals.entryTimingState === 'M15_PREV_UNKNOWN' || entrySignals.entryTimingState === 'TOO_CLOSE' || entrySignals.entryTimingState === 'WAIT_FOR_PULLBACK' || entrySignals.entryTimingState === 'WAIT_VOLUME' || entrySignals.entryTimingState === 'LATE_BREAKOUT' || entrySignals.entryTimingState === 'EXTENDED') {
+      if (entrySignals.entryTimingState === 'BEARISH_TREND' || entrySignals.entryTimingState === 'NO_TREND' || entrySignals.entryTimingState === 'TOO_CLOSE' || entrySignals.entryTimingState === 'UNKNOWN') {
         const waitReason = entrySignals.entryTimingState === 'BEARISH_TREND'
-          ? `Supertrend 15m bearish`
+          ? 'Supertrend 15m bearish'
           : entrySignals.entryTimingState === 'NO_TREND'
-          ? `Supertrend 15m belum bullish`
-          : entrySignals.entryTimingState === 'NO_M5'
-            ? `Momentum M5 belum hijau`
-            : entrySignals.entryTimingState === 'M15_PREV_UNKNOWN'
-              ? `TA M15 Previous=UNKNOWN -> DEFER Rule 4`
-            : entrySignals.entryTimingState === 'WAIT_VOLUME'
-              ? `Volume belum mengonfirmasi breakout`
-            : entrySignals.entryTimingState === 'WAIT_FOR_PULLBACK'
-              ? `Breakout sudah terlalu lewat untuk mode retest (${formatMaybePct(entrySignals.signalStDistancePct, 2)})`
-            : entrySignals.entryTimingState === 'LATE_BREAKOUT'
-                ? `Breakout sudah tidak fresh lagi (${formatMaybePct(entrySignals.signalAthDistancePct, 2)} dari high 24h)`
-              : entrySignals.entryTimingState === 'EXTENDED'
-                ? `Breakout sudah terlalu melebar dari supertrend (${formatMaybePct(entrySignals.signalStDistancePct, 2)})`
-              : `Breakout terlalu dekat ke Supertrend (${formatMaybePct(entrySignals.signalStDistancePct, 2)})`;
+            ? 'Supertrend 15m belum bullish'
+            : entrySignals.entryTimingState === 'UNKNOWN'
+              ? 'Snapshot entry belum fresh / reclaim M15 belum terkonfirmasi'
+              : `Closed M15 candle belum reclaim di atas Supertrend (${formatMaybePct(entrySignals.closedM15ReclaimDistancePct, 2)})`;
         const bearishTrend = entrySignals.entryTimingState === 'BEARISH_TREND';
         reportManager.updateGate(tokenSymbol, 'SCOUT_AGENT', bearishTrend ? 'FAIL' : 'DEFER', waitReason);
         reportManager.setFinalVerdict(tokenSymbol, bearishTrend ? 'REJECT' : 'DEFERRED', waitReason);
@@ -2686,41 +2639,8 @@ export async function scanAndDeploy({ emitFinalReport = true } = {}) {
         return { ok: false, symbol: tokenSymbol || 'UNKNOWN', stage: 'SCOUT_AGENT', reason: waitReason };
       }
 
-      const entryDecisionMode = String(cfg.entryDecisionMode || 'strict').toLowerCase();
-      const lpSimpleM15Mode = entryDecisionMode === 'lp_simple_m15';
-      const m5HardGateEnabled = cfg.entryM5HardGateEnabled !== false;
-      const deferOnM15PreviousUnknown = cfg.entryDeferOnM15PreviousUnknown !== false;
-      const modeM5Headline = (lpSimpleM15Mode && !m5HardGateEnabled)
-        ? 'Mode lp_simple_m15 aktif: M15 jadi konfirmasi utama. M5 hanya diagnostik, bukan hard blocker.'
-        : 'Candle M5 harus hijau.';
-      const modeRule2NoM5 = (lpSimpleM15Mode && !m5HardGateEnabled)
-        ? '  IF Entry Timing = "NO_M5" → JANGAN otomatis DEFER. Catat sebagai warning momentum, lanjutkan evaluasi rule lain.'
-        : '  IF Entry Timing = "NO_M5" → WAJIB DEFER. Berhenti di sini.';
-      const modeRule3 = (lpSimpleM15Mode && !m5HardGateEnabled)
-        ? `[RULE 3 — M5 DIAGNOSTIK (LP SIMPLE M15)]
-  Cek: "TA M5 Change" dari data.
-  TA M5 Change dipakai sebagai konteks tambahan, BUKAN hard gate.
-  Jangan auto-DEFER hanya karena TA M5 Change <= 0 jika rule M15/trend/freshness/safety lain sudah valid.`
-        : `[RULE 3 — ANTI-CANDLE MERAH (HARAM HUKUMNYA)]
-  Cek: "TA M5 Change" dari data.
-  IF TA M5 Change <= 0 (nol atau negatif) → WAJIB DEFER. Berhenti di sini.
-  ALASAN: Kita tidak menadah pisau jatuh. Candle M5 merah = harga SEDANG TURUN sekarang.
-  MUTLAK. Tidak ada pengecualian seberapa besar pun volume atau MCap-nya.`;
-      const modeRule4Unknown = (lpSimpleM15Mode && !deferOnM15PreviousUnknown)
-        ? '  Jika TA M15 Previous = UNKNOWN, JANGAN auto-DEFER hanya karena UNKNOWN. Tetap fail-closed jika data M15 current/trend/freshness tidak valid.'
-        : '  Jika TA M15 Previous = UNKNOWN → WAJIB DEFER.';
-      const modeRule6M5 = (lpSimpleM15Mode && !m5HardGateEnabled)
-        ? '- TA M5 Change cukup sebagai diagnostik (bukan hard gate di mode ini)'
-        : '- TA M5 Change HARUS > 0 (momentum jangka pendek masih hidup)';
-      const modeChecklistM5 = (lpSimpleM15Mode && !m5HardGateEnabled)
-        ? '  ✓ TA M5 dipakai sebagai diagnostik (bukan hard gate) → Rule 3'
-        : '  ✓ TA M5 Change > 0                              → Rule 3';
-      const modeChecklistRule4 = (lpSimpleM15Mode && !deferOnM15PreviousUnknown)
-        ? '  ✓ Rule 4 lolos (M15 previous unknown tidak auto-defer) → Rule 4'
-        : '  ✓ Bukan Dead Cat (M15 Previous check)           → Rule 4';
-
       const prompt = `[ROLE: INITIAL SCREENING FILTER FOR DLMM LIQUIDITY PROVIDER]
-[ROLE: MECHANICAL QUANT EVALUATOR — ATH SECOND BOUNCE HUNTER DLMM LP]
+[ROLE: MECHANICAL DLMM LP ENTRY EVALUATOR]
 
 Kamu BUKAN manusia trader yang menganalisis chart visual.
 Kamu adalah evaluator mekanis yang hanya membaca data JSON.
@@ -2728,15 +2648,15 @@ JANGAN menebak, mengasumsikan, atau mengisi data yang tidak ada di payload.
 
 LP STYLE ENTRY
 Supertrend 15m harus bullish.
-${modeM5Headline}
-Volume HARUS mendukung.
-Entry ideal adalah closed green reclaim / bounce sehat; price reclaim/bounce sehat di area atas yang masih hidup buat fee flow.
-Entry yang valid bukan cari breakout paling awal, tapi area yang masih bisa bolak-balik dan dipanen.
+Last closed M15 candle HARUS close di atas garis Supertrend.
+Snapshot HARUS fresh, konsisten, dan tidak konflik.
+Entry harus tetap dekat ke harga terbaru; jangan deploy dari snapshot yang sudah lari.
+M5, volume, ATH distance, dan price-change hanya konteks tambahan, BUKAN hard gate entry.
 Jika Supertrend 15m BEARISH → REJECT. Jika NEUTRAL/UNKNOWN → DEFER/HOLD, jangan deploy.
 
 MINDSET: FEE FLOW HUNTER.
 Tugasmu adalah menjaga modal tetap utuh sambil memanen fee selama market masih hidup.
-DILARANG KERAS menadah harga yang sedang runtuh (falling knife) atau memaksa entry saat struktur sudah patah.
+DILARANG KERAS memaksa entry saat struktur belum bullish atau snapshot entry sudah basi.
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 ATURAN EVALUASI MEKANIS (TERAPKAN BERURUTAN — SATU RULE GAGAL = STOP):
@@ -2750,49 +2670,19 @@ ATURAN EVALUASI MEKANIS (TERAPKAN BERURUTAN — SATU RULE GAGAL = STOP):
 
 [RULE 1 — MAKRO FILTER]
   Cek: "TA Supertrend 15m" dari data.
-  IF nilai BUKAN "BULLISH" → WAJIB REJECT. Berhenti di sini.
-  Tidak ada pengecualian untuk deploy. BEARISH = REJECT. NEUTRAL/UNKNOWN = DEFER/HOLD.
+  IF nilai = "BEARISH" → WAJIB REJECT. Berhenti di sini.
+  IF nilai BUKAN "BULLISH" → WAJIB DEFER. Berhenti di sini.
 
 [RULE 2 — LP ENTRY TIMING]
-  Cek: "Entry Timing", "Price vs Supertrend", dan "Price vs 24h High" dari data.
+  Cek: "Entry Timing" dan "Price vs Supertrend" dari data.
   IF Entry Timing = "BEARISH_TREND" → WAJIB REJECT. Berhenti di sini.
-  IF Entry Timing = "NO_TREND" → WAJIB REJECT. Berhenti di sini.
-${modeRule2NoM5}
-  IF Entry Timing = "WAIT_VOLUME" → WAJIB DEFER. Berhenti di sini.
+  IF Entry Timing = "NO_TREND" → WAJIB DEFER. Berhenti di sini.
+  IF Entry Timing = "UNKNOWN" → WAJIB DEFER. Berhenti di sini.
   IF Entry Timing = "TOO_CLOSE" → WAJIB DEFER. Berhenti di sini.
-  Entry ideal adalah closed green reclaim / bounce sehat di area atas yang masih hidup: supertrend bullish, M5 hijau, volume mendukung, dan arus fee masih bisa jalan.
+  PASS hanya jika Entry Timing = "LP_LIVE" atau "BREAKOUT".
+  Artinya harga live masih di atas Supertrend dan last closed M15 sudah reclaim di atas garis tersebut.
 
-${modeRule3}
-
-[RULE 4 — ANTI-DEAD CAT BOUNCE (WAJIB CEK HISTORIS)]
-  Cek: "TA M15 Previous" DAN "TA M15 Change" dari data.
-  IF TA M15 Previous <= -4.0% (longsor kuat) DAN TA M15 Change < 2.0% (pantulan lemah) → WAJIB DEFER.
-${modeRule4Unknown}
-  PENJELASAN: M15 Previous negatif tebal = harga baru saja longsor.
-  Pantulan M15 yang hanya kecil sesudahnya = Dead Cat, bukan tren pemulihan.
-  M5 hijau di atas fondasi yang baru saja longsor = JEBAKAN. Tunggu konfirmasi lebih lanjut.
-
-[RULE 5 — ANTI-BLOW OFF TOP (DARURAT PASAR EUFORIA)]
-  Cek: "TA M15 Change" dari data.
-  IF TA M15 Change >= 9.0% → WAJIB DEFER.
-  PENJELASAN: Kenaikan M15 ekstrem (>= 9%) adalah tanda Blow-Off Top / klimaks euforia.
-  Bensin nyaris habis. Paus besar siap take profit masif di zona ini.
-  LPer yang masuk di zona ini menjadi EXIT LIQUIDITY untuk paus. DILARANG MASUK.
-  Tunggu koreksi dan konfirmasi pemulihan sebelum entry.
-
-[RULE 6 — HEALTHY FEE FLOW ENTRY (ZONA SEHAT LP)]
-  LPer mencari zona fee flow yang SEHAT, bukan terlalu lemah dan bukan terlalu kaku.
-  Syarat PASS (semua HARUS terpenuhi):
-  - Entry Timing HARUS "LP_LIVE", "BREAKOUT", atau "ATH_BREAK"
-  - TA Supertrend 15m HARUS "BULLISH"
-  ${modeRule6M5}
-  - Volume terkonfirmasi mendukung pergerakan
-  - Breakout Quality HARUS "VALID" atau "STRONG"
-  Jika semua syarat terpenuhi → WAJIB PASS.
-  Kamu DILARANG menahan token yang sudah fee-flow valid hanya karena harga "sudah tinggi".
-  Namun jika market belum bullish, M5 merah, atau volume lemah, DEFER.
-
-[RULE 7 — SAFETY GATE (Hard Gate Keamanan)]
+[RULE 3 — SNAPSHOT / SAFETY GATE]
   Cek flag keamanan dari data. IF terdeteksi:
   - Wash trading tinggi / transaksi tidak organik       → REJECT
   - Bundling risk aktif terindikasi                     → REJECT
@@ -2803,12 +2693,10 @@ ${modeRule4Unknown}
 [CHECKLIST FINAL — PASS hanya jika SEMUA syarat ini terpenuhi]
   ✓ Slot belum penuh                              → Rule 0
   ✓ TA Supertrend 15m = BULLISH                   → Rule 1
-  ✓ Entry Timing = LP_LIVE / BREAKOUT / ATH_BREAK → Rule 2
-${modeChecklistM5}
-${modeChecklistRule4}
-  ✓ TA M15 Change < 9.0% (bukan Blow-Off Top)    → Rule 5
-  ✓ Breakout Quality = VALID / STRONG             → Rule 6
-  ✓ Tidak ada safety red flag                     → Rule 7
+  ✓ Entry Timing = LP_LIVE / BREAKOUT             → Rule 2
+  ✓ Last closed M15 reclaim di atas Supertrend    → Rule 2
+  ✓ Snapshot fresh / non-conflicted               → Rule 2
+  ✓ Tidak ada safety red flag                     → Rule 3
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 DATA POOL (JSON):
@@ -2820,7 +2708,7 @@ FORMAT JAWABAN (WAJIB JSON VALID, TANPA MARKDOWN):
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 {
   "decision": "PASS | REJECT | DEFER",
-  "reason": "Wajib sebutkan rule dan angkanya. Contoh: 'TA M15 Change=+12% -> DEFER Rule 4 (Blow Off Top)' atau 'TA M15=+4%, TA M5=+1.5% -> PASS Rule 5 (Healthy Momentum Zone)'.",
+  "reason": "Wajib sebutkan rule dan faktanya. Contoh: 'Supertrend 15m bullish + closed M15 reclaim confirmed -> PASS Rule 2' atau 'Entry Timing=UNKNOWN -> DEFER Rule 2'.",
   "safety_score": 0-100,
   "entry_readiness": "LOW | MEDIUM | HIGH",
   "breakout_quality": "WEAK | VALID | STRONG"
