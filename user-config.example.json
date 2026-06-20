@@ -28,6 +28,8 @@
   "taWatchMaxPools": 10,
   "taWatchExpiryMin": 60,
   "watchIntervalSec": 30,
+  "poolAlertsEnabled": false,
+  "poolAlertsIntervalMin": 5,
   "meteoraDiscoveryLimit": 180,
   "discoveryTimeframe": "1h",
   "discoveryCategory": "trending",

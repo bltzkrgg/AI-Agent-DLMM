@@ -26,3 +26,20 @@ test('runtime state supports collection updates and deletion', async () => {
   mod.deleteRuntimeCollectionItem('positions', 'p1');
   assert.equal(mod.getRuntimeCollectionItem('positions', 'p1'), null);
 });
+
+test('runtime state can persist seen pool alert maps', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'dlmm-runtime-state-alerts-'));
+  process.env.BOT_RUNTIME_STATE_PATH = join(root, 'runtime-state.json');
+
+  const mod = await importFresh(join(repoRoot, 'src/runtime/state.js'));
+  mod.setRuntimeState('seenPoolAlerts', {
+    poolA: { seenAt: 111, name: 'AAA' },
+    poolB: { seenAt: 222, name: 'BBB' },
+  });
+
+  const saved = mod.getRuntimeState('seenPoolAlerts', {});
+  assert.deepEqual(saved, {
+    poolA: { seenAt: 111, name: 'AAA' },
+    poolB: { seenAt: 222, name: 'BBB' },
+  });
+});

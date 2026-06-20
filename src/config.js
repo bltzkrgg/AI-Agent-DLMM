@@ -87,6 +87,8 @@ const DEFAULTS = {
   taWatchMaxPools:      10,
   taWatchExpiryMin:     60,
   watchIntervalSec:     30,
+  poolAlertsEnabled:    false,
+  poolAlertsIntervalMin: 5,
 
   // ── Intervals ────────────────────────────────────────────────────────────
   managementIntervalMin:    15,
@@ -348,6 +350,8 @@ const CONFIG_BOUNDS = {
   taWatchMaxPools:        { min: 1, max: 50 },
   taWatchExpiryMin:       { min: 5, max: 720 },
   watchIntervalSec:       { min: 15, max: 3600 },
+  poolAlertsEnabled:      { type: 'boolean' },
+  poolAlertsIntervalMin:  { min: 1, max: 60 },
   entryBreakoutMinAthDistancePct: { min: 0, max: 100 },
   okxApiKey:              { type: 'string' },
   signalWeights:          { type: 'object' },
@@ -411,6 +415,11 @@ const NESTED_SECTION_MAP = {
     maxPools:         'taWatchMaxPools',
     expiryMin:        'taWatchExpiryMin',
     watchIntervalSec: 'watchIntervalSec',
+  },
+
+  alerts: {
+    enabled: 'poolAlertsEnabled',
+    intervalMin: 'poolAlertsIntervalMin',
   },
 
   entry: {
@@ -683,6 +692,8 @@ export const SETCONFIG_WHITELIST = {
   taWatchEnabled:         { section: 'watch',              type: 'boolean', desc: 'Aktifkan sticky TA watch layer' },
   taWatchMaxPools:        { section: 'watch',              type: 'number',  desc: 'Maks kandidat yang bisa tinggal di WATCH (1–50)' },
   taWatchExpiryMin:       { section: 'watch',              type: 'number',  desc: 'Batas umur kandidat di WATCH (menit)' },
+  poolAlertsEnabled:      { section: 'alerts',             type: 'boolean', desc: 'Aktifkan watcher pool Meteora baru (discovery-only)' },
+  poolAlertsIntervalMin:  { section: 'alerts',             type: 'number',  desc: 'Interval watcher pool baru (menit, 1–60)' },
 
   // ── OOR Monitoring ───────────────────────────────────────────────
   outOfRangeWaitMinutes:  { section: 'oor',                type: 'number',  desc: 'Waktu tunggu OOR sebelum close (menit)' },
