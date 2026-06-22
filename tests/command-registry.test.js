@@ -103,3 +103,15 @@ test('telegram cycle report labels deferred scout state as HOLD', () => {
 
   assert.match(content, /DEFER\/HOLD/);
 });
+
+test('pool alerts use newest-pool feed instead of ranked discovery feed', () => {
+  const indexPath = join(__dirname, '../src/index.js');
+  const meteoraPath = join(__dirname, '../src/solana/meteora.js');
+  const indexContent = readFileSync(indexPath, 'utf-8');
+  const meteoraContent = readFileSync(meteoraPath, 'utf-8');
+
+  assert.match(indexContent, /import \{ getNewestPools \}/);
+  assert.match(indexContent, /const pools = await getNewestPools\(limit\)/);
+  assert.match(meteoraContent, /export async function getNewestPools\(limit = 150\)/);
+  assert.match(meteoraContent, /getTopPools\(cap, 'pool_created_at:desc'\)/);
+});

@@ -33,7 +33,7 @@ import { deleteRuntimeState, getRuntimeState, setRuntimeState } from './runtime/
 import { startDeployQueueWatcher, stopDeployQueueWatcher, setDeployQueueNotifyFn, setDeployQueueDeployFn, setDeployQueueMonitorFn } from './utils/pendingDeployQueue.js';
 import { deployPosition } from './sniper/evilPanda.js';
 import { sendImmediateTopPoolsReport }    from './agents/hunterAlpha.js';
-import { getDiscoveryPools }              from './solana/meteora.js';
+import { getNewestPools }                 from './solana/meteora.js';
 
 // ── PID Lock — cegah multiple instance ───────────────────────────
 const PID_FILE = new URL('../bot.pid', import.meta.url).pathname;
@@ -703,7 +703,7 @@ async function runPoolAlertsTick({ seedOnly = false, source = 'pool_alerts' } = 
   try {
     const cfg = getConfig();
     const limit = Math.max(20, Number(cfg.meteoraDiscoveryLimit) || 180);
-    const pools = await getDiscoveryPools(limit);
+    const pools = await getNewestPools(limit);
     if (!Array.isArray(pools) || pools.length === 0) return { alerted: 0, scanned: 0, seeded: seedOnly };
 
     const seen = getSeenPoolAlertsMap();

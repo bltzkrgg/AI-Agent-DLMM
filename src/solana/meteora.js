@@ -1856,6 +1856,16 @@ export async function getDiscoveryPools(limit = 150) {
   }
 }
 
+export async function getNewestPools(limit = 150) {
+  const cap = Math.max(10, Number.isFinite(Number(limit)) ? Number(limit) : 150);
+  try {
+    return await getTopPools(cap, 'pool_created_at:desc');
+  } catch (e) {
+    console.warn(`⚠️ [meteora] newest-pools primary failed, fallback to created_at feed: ${e.message}`);
+    return getTopPools(Math.max(20, Math.floor(cap / 2)), 'created_at:desc');
+  }
+}
+
 const DLMM_PROGRAM_ID = new PublicKey('LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo');
 const BINS_PER_ARRAY = 70;
 const BIN_ARRAY_RENT_SOL = 0.07;
