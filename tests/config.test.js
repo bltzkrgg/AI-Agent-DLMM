@@ -715,6 +715,7 @@ test('nested discovery maxMcap and legacy maxMcapUsd both map to canonical maxMc
   assert.equal(cfg.maxMcap, 1234567);
   assert.equal(configModule.resolveNestedKey('discovery.maxMcap')?.flatKey, 'maxMcap');
   assert.equal(configModule.resolveNestedKey('discovery.maxMcapUsd'), null);
+  assert.equal(configModule.resolveNestedKey('discovery.category')?.flatKey, 'discoveryCategory');
 
   writeFileSync(configPath, JSON.stringify({
     discovery: {
@@ -724,6 +725,22 @@ test('nested discovery maxMcap and legacy maxMcapUsd both map to canonical maxMc
   const configModuleLegacy = await importFresh(join(repoRoot, 'src/config.js'));
   cfg = configModuleLegacy.getConfig();
   assert.equal(cfg.maxMcap, 7654321);
+});
+
+test('discovery category is writable via setconfig alias and persists', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'dlmm-discovery-category-'));
+  const configPath = join(root, 'user-config.json');
+  process.env.BOT_CONFIG_PATH = configPath;
+  const configModule = await importFresh(join(repoRoot, 'src/config.js'));
+
+  assert.equal(configModule.resolveNestedKey('discovery.category')?.flatKey, 'discoveryCategory');
+  configModule.updateConfig({ discoveryCategory: 'top performers' });
+
+  const cfg = configModule.getConfig();
+  assert.equal(cfg.discoveryCategory, 'top performers');
+
+  const saved = JSON.parse(readFileSync(configPath, 'utf-8'));
+  assert.equal(saved.discoveryCategory, 'top performers');
 });
 
 test('entry capacity respects deployment stage and clamps overrides', async () => {

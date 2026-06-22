@@ -667,6 +667,7 @@ export const SETCONFIG_WHITELIST = {
   minOrganic:             { section: 'discovery',          type: 'number',  desc: 'Organic score minimum (0–100)' },
   minMcap:                { section: 'discovery',          type: 'number',  desc: 'Market Cap minimum token (USD, 0 = tidak filter)' },
   maxMcap:                { section: 'discovery',          type: 'number',  desc: 'Market Cap maksimum token (USD, 0 = tidak filter)' },
+  discoveryCategory:      { section: 'discovery',          type: 'string',  desc: 'Kategori discovery Meteora (mis. trending, top performers)' },
 
   // ── Entry Final Sanity ─────────────────────────────────────────
   entryDecisionMode:      { section: 'entry',              type: 'string',  desc: 'Mode keputusan entry: strict/lp_simple_m15' },
