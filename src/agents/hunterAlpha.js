@@ -2633,7 +2633,7 @@ export async function scanAndDeploy({ emitFinalReport = true } = {}) {
             : entrySignals.entryTimingState === 'UNKNOWN'
               ? 'Snapshot entry belum fresh / reclaim M15 belum terkonfirmasi'
               : entrySignals.entryTimingState === 'WAIT_FOR_PULLBACK'
-                ? `Closed M15 reclaim sudah cooling (${Number(entrySignals.closedM15ReclaimConsecutiveAboveLineCount || 0)} candle di atas line, state=${String(entrySignals.closedM15ReclaimTimingState || 'UNKNOWN')})`
+                ? `Closed M15 reclaim masih bullish tapi cooling (${Number(entrySignals.closedM15ReclaimConsecutiveAboveLineCount || 0)} candle di atas line, state=${String(entrySignals.closedM15ReclaimTimingState || 'UNKNOWN')})`
                 : `Closed M15 candle belum reclaim di atas Supertrend (${formatMaybePct(entrySignals.closedM15ReclaimDistancePct, 2)})`;
         const bearishTrend = entrySignals.entryTimingState === 'BEARISH_TREND';
         reportManager.updateGate(tokenSymbol, 'SCOUT_AGENT', bearishTrend ? 'FAIL' : 'DEFER', waitReason);
