@@ -1703,7 +1703,7 @@ function deriveBreakoutEntrySignals({ pool = {}, vetoResult = null, marketSnapsh
       entryTimingState = 'UNKNOWN';
     } else if (isLpMode && closedM15Reclaim.aboveLine !== true) {
       entryTimingState = 'TOO_CLOSE';
-    } else if (isLpMode && closedM15Reclaim.freshWindowOk === false) {
+    } else if (isLpMode && closedM15Reclaim.timingState === 'COOLING') {
       entryTimingState = 'WAIT_FOR_PULLBACK';
     } else {
       entryTimingState = isLpMode ? 'LP_LIVE' : 'BREAKOUT';
@@ -1747,6 +1747,7 @@ function deriveBreakoutEntrySignals({ pool = {}, vetoResult = null, marketSnapsh
     closedM15ReclaimAgeSec: closedM15Reclaim.ageSec ?? null,
     closedM15ReclaimFreshWindowOk: closedM15Reclaim.freshWindowOk ?? null,
     closedM15ReclaimConsecutiveAboveLineCount: closedM15Reclaim.consecutiveAboveLineCount ?? null,
+    closedM15ReclaimTimingState: closedM15Reclaim.timingState ?? null,
     minDistancePct: Number(cfg.entrySupertrendMinDistancePct ?? 1.5),
     maxDistancePct: Number(cfg.entrySupertrendMaxDistancePct ?? 18),
     breakoutMinStPct: Number(cfg.entrySupertrendBreakMinPct ?? 1.25),
@@ -2632,7 +2633,7 @@ export async function scanAndDeploy({ emitFinalReport = true } = {}) {
             : entrySignals.entryTimingState === 'UNKNOWN'
               ? 'Snapshot entry belum fresh / reclaim M15 belum terkonfirmasi'
               : entrySignals.entryTimingState === 'WAIT_FOR_PULLBACK'
-                ? `Closed M15 reclaim sudah telat/cooling (${Number(entrySignals.closedM15ReclaimConsecutiveAboveLineCount || 0)} candle di atas line)`
+                ? `Closed M15 reclaim sudah cooling (${Number(entrySignals.closedM15ReclaimConsecutiveAboveLineCount || 0)} candle di atas line, state=${String(entrySignals.closedM15ReclaimTimingState || 'UNKNOWN')})`
                 : `Closed M15 candle belum reclaim di atas Supertrend (${formatMaybePct(entrySignals.closedM15ReclaimDistancePct, 2)})`;
         const bearishTrend = entrySignals.entryTimingState === 'BEARISH_TREND';
         reportManager.updateGate(tokenSymbol, 'SCOUT_AGENT', bearishTrend ? 'FAIL' : 'DEFER', waitReason);

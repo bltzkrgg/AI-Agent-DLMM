@@ -509,6 +509,7 @@ function readClosedM15SupertrendReclaimState(liveSnapshot = null, cfg = getConfi
     ageSec: reclaim.ageSec ?? null,
     freshWindowOk: reclaim.freshWindowOk ?? null,
     consecutiveAboveLineCount: reclaim.consecutiveAboveLineCount ?? null,
+    timingState: reclaim.timingState ?? null,
     reason: reclaim.reason || 'M15_RECLAIM_UNAVAILABLE',
   };
 }
@@ -778,11 +779,11 @@ export async function getFinalSupertrendDeployDecision({
         direction: 'BULLISH',
       };
     }
-    if (closedM15Reclaim.freshWindowOk === false) {
+    if (closedM15Reclaim.timingState === 'COOLING') {
       return {
         ok: false,
         action: 'HOLD',
-        reason: `closed M15 reclaim already late/cooling (${Number(closedM15Reclaim.consecutiveAboveLineCount || 0)} candles above line); waiting fresher setup`,
+        reason: `closed M15 reclaim already cooling (${Number(closedM15Reclaim.consecutiveAboveLineCount || 0)} candles above line); waiting fresher setup`,
         source: 'live_snapshot',
         direction: 'BULLISH',
       };

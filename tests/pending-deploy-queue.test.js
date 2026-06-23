@@ -803,8 +803,37 @@ test('closed M15 Supertrend reclaim helper marks late reclaim when already three
   });
   assert.equal(reclaim.known, true);
   assert.equal(reclaim.aboveLine, true);
-  assert.equal(reclaim.freshWindowOk, false);
+  assert.equal(reclaim.freshWindowOk, true);
   assert.equal(reclaim.consecutiveAboveLineCount, 3);
+  assert.equal(reclaim.timingState, 'LATE_BUT_ACTIVE');
+});
+
+test('closed M15 Supertrend reclaim helper marks reclaim as cooling when already extended too far', () => {
+  const now = 1_700_000_000_000;
+  const reclaim = evaluateClosedM15SupertrendReclaim({
+    now,
+    supertrendValue: 100,
+    snapshot: {
+      ohlcv: {
+        source: 'meteora-dlmm-ohlcv',
+        entryCandles5m: makeDerivedM15Backed5m({
+          nowSec: Math.floor(now / 1000),
+          m15Series: [
+            { open: 95, close: 101, volume: 100 },
+            { open: 101, close: 104, volume: 100 },
+            { open: 104, close: 106, volume: 100 },
+            { open: 106, close: 109, volume: 100 },
+            { open: 109, close: 111, volume: 100 },
+          ],
+        }),
+      },
+    },
+  });
+  assert.equal(reclaim.known, true);
+  assert.equal(reclaim.aboveLine, true);
+  assert.equal(reclaim.freshWindowOk, false);
+  assert.equal(reclaim.consecutiveAboveLineCount, 5);
+  assert.equal(reclaim.timingState, 'COOLING');
 });
 
 test('final Supertrend deploy gate still vetoes when live snapshot is bearish but unreliable', async () => {
@@ -1145,7 +1174,7 @@ test('lp_simple_m15 entry sanity uses derived M15 candle and does not require M5
   assert.equal(Number.isFinite(decision.m15VolumeRatio), true);
 });
 
-test('lp_simple_m15 entry sanity holds when reclaim is already late/cooling', () => {
+test('lp_simple_m15 entry sanity allows late-but-active reclaim while structure is still healthy', () => {
   const now = 1_700_001_800_000;
   const nowSec = Math.floor(now / 1000);
   const candles5m = makeDerivedM15Backed5m({
@@ -1175,12 +1204,49 @@ test('lp_simple_m15 entry sanity holds when reclaim is already late/cooling', ()
     now,
   });
 
-  assert.equal(decision.ok, false);
-  assert.equal(decision.code, 'M15_RECLAIM_LATE');
-  assert.equal(decision.reason, 'HOLD: closed M15 reclaim already late/cooling');
+  assert.equal(decision.ok, true);
+  assert.equal(decision.action, 'ALLOW');
+  assert.equal(decision.m15ReclaimTimingState, 'LATE_BUT_ACTIVE');
 });
 
-test('lp_simple_m15 final gate holds when reclaim is already late/cooling', async () => {
+test('lp_simple_m15 entry sanity still holds when reclaim is already cooling', () => {
+  const now = 1_700_001_800_000;
+  const nowSec = Math.floor(now / 1000);
+  const candles5m = makeDerivedM15Backed5m({
+    nowSec,
+    m15Series: [
+      { open: 95, close: 101, volume: 100 },
+      { open: 101, close: 104, volume: 110 },
+      { open: 104, close: 106, volume: 120 },
+      { open: 106, close: 109, volume: 130 },
+      { open: 109, close: 111, volume: 140 },
+    ],
+  });
+
+  const decision = evaluateEntryCandleSanity({
+    snapshot: {
+      ohlcv: {
+        source: 'meteora-dlmm-ohlcv',
+        entryCandles5m: candles5m,
+        ta: { supertrend: { value: 100 } },
+      },
+    },
+    now,
+    cfg: {
+      entryCandleSanityEnabled: true,
+      entryDecisionMode: 'lp_simple_m15',
+      entryM15RequireGreenCandle: true,
+      entryM15RequireVolumeConfirm: false,
+      entryM15MaxAgeSec: 1800,
+    },
+  });
+
+  assert.equal(decision.ok, false);
+  assert.equal(decision.reason, 'HOLD: closed M15 reclaim already cooling');
+  assert.equal(decision.m15ReclaimTimingState, 'COOLING');
+});
+
+test('lp_simple_m15 final gate holds when reclaim is already cooling', async () => {
   const now = 1_700_001_800_000;
   const decision = await getFinalEntryCandleSanityDecision({
     mint: 'Mint111111111111111111111111111111111111111',
@@ -1204,6 +1270,8 @@ test('lp_simple_m15 final gate holds when reclaim is already late/cooling', asyn
               { open: 95, close: 101, volume: 100 },
               { open: 101, close: 104, volume: 110 },
               { open: 104, close: 106, volume: 120 },
+              { open: 106, close: 109, volume: 130 },
+              { open: 109, close: 111, volume: 140 },
             ],
           }),
         },
@@ -1213,7 +1281,7 @@ test('lp_simple_m15 final gate holds when reclaim is already late/cooling', asyn
   });
 
   assert.equal(decision.ok, false);
-  assert.equal(decision.reason, 'HOLD: closed M15 reclaim already late/cooling');
+  assert.equal(decision.reason, 'HOLD: closed M15 reclaim already cooling');
 });
 
 test('lp_simple_m15 entry sanity holds red last M15 candle with M15 wording', () => {

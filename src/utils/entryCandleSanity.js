@@ -98,6 +98,8 @@ function buildEntryCandleDiagnostics({
     m15Green: m15 ? Boolean(m15.close > m15.open) : null,
     m15ReclaimConsecutiveAboveLine: decision?.m15ReclaimConsecutiveAboveLine ?? null,
     m15ReclaimFreshWindowOk: decision?.m15ReclaimFreshWindowOk ?? null,
+    m15ReclaimTimingState: decision?.m15ReclaimTimingState ?? null,
+    m15ReclaimDistancePct: decision?.m15ReclaimDistancePct ?? null,
     m15Source: source,
     reason: decision?.reason || null,
     enough5m: Boolean(decision?.code ? !['M15_UNAVAILABLE', 'M15_STALE', 'M15_VOLUME_LOOKBACK_UNAVAILABLE'].includes(decision.code) : true),
@@ -111,6 +113,7 @@ function analyzeClosedM15ReclaimWindow(candlesM15 = [], supertrendValue = null) 
     return {
       consecutiveAboveLineCount: 0,
       freshWindowOk: null,
+      timingState: 'UNKNOWN',
     };
   }
 
@@ -122,11 +125,29 @@ function analyzeClosedM15ReclaimWindow(candlesM15 = [], supertrendValue = null) 
     consecutiveAboveLineCount += 1;
   }
 
+  const last = candlesM15[candlesM15.length - 1] || null;
+  const lastClose = toFiniteNumber(last?.close, null);
+  const lastDistancePct = resolvedSupertrendValue > 0 && Number.isFinite(lastClose)
+    ? ((lastClose - resolvedSupertrendValue) / resolvedSupertrendValue) * 100
+    : null;
+  let timingState = 'UNKNOWN';
+  if (consecutiveAboveLineCount <= 0) {
+    timingState = 'UNKNOWN';
+  } else if (consecutiveAboveLineCount <= 2) {
+    timingState = 'FRESH';
+  } else if (consecutiveAboveLineCount <= 4 && Number.isFinite(lastDistancePct) && lastDistancePct <= 8) {
+    timingState = 'LATE_BUT_ACTIVE';
+  } else {
+    timingState = 'COOLING';
+  }
+
   return {
     consecutiveAboveLineCount,
-    // Keep LP entry anchored near the initial reclaim instead of several
-    // already-closed candles later when the move may already be cooling.
-    freshWindowOk: consecutiveAboveLineCount > 0 ? consecutiveAboveLineCount <= 2 : null,
+    // Fresh is ideal, but strong bullish structure can still be tradable
+    // for a few candles while price remains close to the Supertrend base.
+    freshWindowOk: timingState === 'FRESH' || timingState === 'LATE_BUT_ACTIVE',
+    timingState,
+    distancePct: lastDistancePct,
   };
 }
 
@@ -241,6 +262,7 @@ export function evaluateClosedM15SupertrendReclaim({
     distancePct: Number.isFinite(distancePct) ? distancePct : null,
     consecutiveAboveLineCount: reclaimWindow.consecutiveAboveLineCount,
     freshWindowOk: reclaimWindow.freshWindowOk,
+    timingState: reclaimWindow.timingState,
   };
 }
 
@@ -348,7 +370,7 @@ function evaluateLpSimpleM15Sanity({
     const decision = {
       ok: false,
       action: 'HOLD',
-      reason: 'HOLD: closed M15 reclaim already late/cooling',
+      reason: 'HOLD: closed M15 reclaim already cooling',
       code: 'M15_RECLAIM_LATE',
       retryable: false,
       source,
@@ -357,6 +379,8 @@ function evaluateLpSimpleM15Sanity({
       m15CandleCount: candlesM15.length,
       m15ReclaimConsecutiveAboveLine: reclaimWindow.consecutiveAboveLineCount,
       m15ReclaimFreshWindowOk: reclaimWindow.freshWindowOk,
+      m15ReclaimTimingState: reclaimWindow.timingState,
+      m15ReclaimDistancePct: reclaimWindow.distancePct,
     };
     return {
       ...decision,
@@ -452,6 +476,8 @@ function evaluateLpSimpleM15Sanity({
     m15Pct: last.open > 0 ? Number((((last.close - last.open) / last.open) * 100).toFixed(4)) : null,
     m15ReclaimConsecutiveAboveLine: reclaimWindow.consecutiveAboveLineCount,
     m15ReclaimFreshWindowOk: reclaimWindow.freshWindowOk,
+    m15ReclaimTimingState: reclaimWindow.timingState,
+    m15ReclaimDistancePct: reclaimWindow.distancePct,
     candle: last,
     candlesM15,
   };
