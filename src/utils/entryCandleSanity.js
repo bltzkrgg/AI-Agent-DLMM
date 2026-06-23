@@ -96,10 +96,37 @@ function buildEntryCandleDiagnostics({
     m15VolumeRatio: decision?.m15VolumeRatio ?? null,
     entryM15MinVolumeRatio: Number(cfg.entryM15MinVolumeRatio ?? 0.7) || 0.7,
     m15Green: m15 ? Boolean(m15.close > m15.open) : null,
+    m15ReclaimConsecutiveAboveLine: decision?.m15ReclaimConsecutiveAboveLine ?? null,
+    m15ReclaimFreshWindowOk: decision?.m15ReclaimFreshWindowOk ?? null,
     m15Source: source,
     reason: decision?.reason || null,
     enough5m: Boolean(decision?.code ? !['M15_UNAVAILABLE', 'M15_STALE', 'M15_VOLUME_LOOKBACK_UNAVAILABLE'].includes(decision.code) : true),
     enough15m: Array.isArray(m15Candles) ? m15Candles.length >= 1 : false,
+  };
+}
+
+function analyzeClosedM15ReclaimWindow(candlesM15 = [], supertrendValue = null) {
+  const resolvedSupertrendValue = toFiniteNumber(supertrendValue, null);
+  if (!(resolvedSupertrendValue > 0) || !Array.isArray(candlesM15) || candlesM15.length === 0) {
+    return {
+      consecutiveAboveLineCount: 0,
+      freshWindowOk: null,
+    };
+  }
+
+  let consecutiveAboveLineCount = 0;
+  for (let i = candlesM15.length - 1; i >= 0; i--) {
+    const candle = candlesM15[i];
+    const close = toFiniteNumber(candle?.close, null);
+    if (!(close > resolvedSupertrendValue)) break;
+    consecutiveAboveLineCount += 1;
+  }
+
+  return {
+    consecutiveAboveLineCount,
+    // Keep LP entry anchored near the initial reclaim instead of several
+    // already-closed candles later when the move may already be cooling.
+    freshWindowOk: consecutiveAboveLineCount > 0 ? consecutiveAboveLineCount <= 2 : null,
   };
 }
 
@@ -201,6 +228,7 @@ export function evaluateClosedM15SupertrendReclaim({
   }
 
   const distancePct = ((Number(last.close) - resolvedSupertrendValue) / resolvedSupertrendValue) * 100;
+  const reclaimWindow = analyzeClosedM15ReclaimWindow(candlesM15, resolvedSupertrendValue);
   return {
     known: Number.isFinite(distancePct),
     aboveLine: Number.isFinite(distancePct) ? distancePct > 0 : null,
@@ -211,6 +239,8 @@ export function evaluateClosedM15SupertrendReclaim({
     ageSec,
     supertrendValue: resolvedSupertrendValue,
     distancePct: Number.isFinite(distancePct) ? distancePct : null,
+    consecutiveAboveLineCount: reclaimWindow.consecutiveAboveLineCount,
+    freshWindowOk: reclaimWindow.freshWindowOk,
   };
 }
 
@@ -226,6 +256,12 @@ function evaluateLpSimpleM15Sanity({
   const maxAgeSec = Math.max(1, Number(cfg.entryM15MaxAgeSec ?? 1800) || 1800);
   const mode = String(cfg.entryDecisionMode || 'strict').trim().toLowerCase();
   const source = ohlcv?.source || 'unknown';
+  const supertrendValue = toFiniteNumber(
+    ohlcv?.ta?.supertrend?.value ??
+    ohlcv?.supertrend?.value ??
+    null,
+    null
+  );
 
   if (!last) {
     const decision = {
@@ -291,6 +327,36 @@ function evaluateLpSimpleM15Sanity({
       m15AgeSec: ageSec,
       candle: last,
       m15CandleCount: candlesM15.length,
+    };
+    return {
+      ...decision,
+      diagnostics: buildEntryCandleDiagnostics({
+        mode,
+        source,
+        rawCandles: candles5m,
+        closedCandles: closed5m,
+        m15Candles: candlesM15,
+        last,
+        decision,
+        cfg,
+      }),
+    };
+  }
+
+  const reclaimWindow = analyzeClosedM15ReclaimWindow(candlesM15, supertrendValue);
+  if (reclaimWindow.freshWindowOk === false) {
+    const decision = {
+      ok: false,
+      action: 'HOLD',
+      reason: 'HOLD: closed M15 reclaim already late/cooling',
+      code: 'M15_RECLAIM_LATE',
+      retryable: false,
+      source,
+      m15AgeSec: ageSec,
+      candle: last,
+      m15CandleCount: candlesM15.length,
+      m15ReclaimConsecutiveAboveLine: reclaimWindow.consecutiveAboveLineCount,
+      m15ReclaimFreshWindowOk: reclaimWindow.freshWindowOk,
     };
     return {
       ...decision,
@@ -384,6 +450,8 @@ function evaluateLpSimpleM15Sanity({
     m15MinVolumeRatio: minRatio,
     m15CandleCount: candlesM15.length,
     m15Pct: last.open > 0 ? Number((((last.close - last.open) / last.open) * 100).toFixed(4)) : null,
+    m15ReclaimConsecutiveAboveLine: reclaimWindow.consecutiveAboveLineCount,
+    m15ReclaimFreshWindowOk: reclaimWindow.freshWindowOk,
     candle: last,
     candlesM15,
   };

@@ -1703,6 +1703,8 @@ function deriveBreakoutEntrySignals({ pool = {}, vetoResult = null, marketSnapsh
       entryTimingState = 'UNKNOWN';
     } else if (isLpMode && closedM15Reclaim.aboveLine !== true) {
       entryTimingState = 'TOO_CLOSE';
+    } else if (isLpMode && closedM15Reclaim.freshWindowOk === false) {
+      entryTimingState = 'WAIT_FOR_PULLBACK';
     } else {
       entryTimingState = isLpMode ? 'LP_LIVE' : 'BREAKOUT';
     }
@@ -1743,6 +1745,8 @@ function deriveBreakoutEntrySignals({ pool = {}, vetoResult = null, marketSnapsh
     closedM15ReclaimKnown: closedM15Reclaim.known === true,
     closedM15ReclaimDistancePct: closedM15Reclaim.distancePct ?? null,
     closedM15ReclaimAgeSec: closedM15Reclaim.ageSec ?? null,
+    closedM15ReclaimFreshWindowOk: closedM15Reclaim.freshWindowOk ?? null,
+    closedM15ReclaimConsecutiveAboveLineCount: closedM15Reclaim.consecutiveAboveLineCount ?? null,
     minDistancePct: Number(cfg.entrySupertrendMinDistancePct ?? 1.5),
     maxDistancePct: Number(cfg.entrySupertrendMaxDistancePct ?? 18),
     breakoutMinStPct: Number(cfg.entrySupertrendBreakMinPct ?? 1.25),

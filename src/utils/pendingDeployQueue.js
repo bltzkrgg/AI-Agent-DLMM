@@ -507,6 +507,8 @@ function readClosedM15SupertrendReclaimState(liveSnapshot = null, cfg = getConfi
     distancePct: reclaim.distancePct ?? null,
     aboveLine: reclaim.aboveLine === true,
     ageSec: reclaim.ageSec ?? null,
+    freshWindowOk: reclaim.freshWindowOk ?? null,
+    consecutiveAboveLineCount: reclaim.consecutiveAboveLineCount ?? null,
     reason: reclaim.reason || 'M15_RECLAIM_UNAVAILABLE',
   };
 }
@@ -772,6 +774,15 @@ export async function getFinalSupertrendDeployDecision({
         ok: false,
         action: 'HOLD',
         reason: `closed M15 candle is still below Supertrend 15m line (${formatPct(closedM15Reclaim.distancePct)}); waiting confirmation`,
+        source: 'live_snapshot',
+        direction: 'BULLISH',
+      };
+    }
+    if (closedM15Reclaim.freshWindowOk === false) {
+      return {
+        ok: false,
+        action: 'HOLD',
+        reason: `closed M15 reclaim already late/cooling (${Number(closedM15Reclaim.consecutiveAboveLineCount || 0)} candles above line); waiting fresher setup`,
         source: 'live_snapshot',
         direction: 'BULLISH',
       };

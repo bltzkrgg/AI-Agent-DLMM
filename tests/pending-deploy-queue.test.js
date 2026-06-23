@@ -758,6 +758,8 @@ test('closed M15 Supertrend reclaim helper confirms only the last closed M15 clo
   });
   assert.equal(confirmed.known, true);
   assert.equal(confirmed.aboveLine, true);
+  assert.equal(confirmed.freshWindowOk, true);
+  assert.equal(confirmed.consecutiveAboveLineCount, 1);
 
   const rejected = evaluateClosedM15SupertrendReclaim({
     now,
@@ -778,6 +780,31 @@ test('closed M15 Supertrend reclaim helper confirms only the last closed M15 clo
   });
   assert.equal(rejected.known, true);
   assert.equal(rejected.aboveLine, false);
+});
+
+test('closed M15 Supertrend reclaim helper marks late reclaim when already three closed candles above line', () => {
+  const now = 1_700_000_000_000;
+  const reclaim = evaluateClosedM15SupertrendReclaim({
+    now,
+    supertrendValue: 100,
+    snapshot: {
+      ohlcv: {
+        source: 'meteora-dlmm-ohlcv',
+        entryCandles5m: makeDerivedM15Backed5m({
+          nowSec: Math.floor(now / 1000),
+          m15Series: [
+            { open: 95, close: 101, volume: 100 },
+            { open: 101, close: 104, volume: 100 },
+            { open: 104, close: 106, volume: 100 },
+          ],
+        }),
+      },
+    },
+  });
+  assert.equal(reclaim.known, true);
+  assert.equal(reclaim.aboveLine, true);
+  assert.equal(reclaim.freshWindowOk, false);
+  assert.equal(reclaim.consecutiveAboveLineCount, 3);
 });
 
 test('final Supertrend deploy gate still vetoes when live snapshot is bearish but unreliable', async () => {
@@ -1116,6 +1143,77 @@ test('lp_simple_m15 entry sanity uses derived M15 candle and does not require M5
   assert.equal(decision.ok, true);
   assert.equal(decision.action, 'ALLOW');
   assert.equal(Number.isFinite(decision.m15VolumeRatio), true);
+});
+
+test('lp_simple_m15 entry sanity holds when reclaim is already late/cooling', () => {
+  const now = 1_700_001_800_000;
+  const nowSec = Math.floor(now / 1000);
+  const candles5m = makeDerivedM15Backed5m({
+    nowSec,
+    m15Series: [
+      { open: 95, close: 101, volume: 100 },
+      { open: 101, close: 104, volume: 110 },
+      { open: 104, close: 106, volume: 120 },
+    ],
+  });
+
+  const decision = evaluateEntryCandleSanity({
+    snapshot: {
+      ohlcv: {
+        source: 'meteora-dlmm-ohlcv',
+        entryCandles5m: candles5m,
+        ta: { supertrend: { value: 100 } },
+      },
+    },
+    cfg: {
+      entryCandleSanityEnabled: true,
+      entryDecisionMode: 'lp_simple_m15',
+      entryM15RequireGreenCandle: true,
+      entryM15RequireVolumeConfirm: false,
+      entryM15MaxAgeSec: 1800,
+    },
+    now,
+  });
+
+  assert.equal(decision.ok, false);
+  assert.equal(decision.code, 'M15_RECLAIM_LATE');
+  assert.equal(decision.reason, 'HOLD: closed M15 reclaim already late/cooling');
+});
+
+test('lp_simple_m15 final gate holds when reclaim is already late/cooling', async () => {
+  const now = 1_700_001_800_000;
+  const decision = await getFinalEntryCandleSanityDecision({
+    mint: 'Mint111111111111111111111111111111111111111',
+    symbol: 'TESTM15',
+    now,
+    cfg: {
+      entryCandleSanityEnabled: true,
+      entryDecisionMode: 'lp_simple_m15',
+      entryM15RequireGreenCandle: true,
+      entryM15RequireVolumeConfirm: false,
+      entryM15MaxAgeSec: 1800,
+    },
+    pool: {
+      _marketSnapshot: {
+        ohlcv: {
+          source: 'meteora-dlmm-ohlcv',
+          ta: { supertrend: { value: 100 } },
+          entryCandles5m: makeDerivedM15Backed5m({
+            nowSec: Math.floor(now / 1000),
+            m15Series: [
+              { open: 95, close: 101, volume: 100 },
+              { open: 101, close: 104, volume: 110 },
+              { open: 104, close: 106, volume: 120 },
+            ],
+          }),
+        },
+      },
+    },
+    snapshotFn: async () => null,
+  });
+
+  assert.equal(decision.ok, false);
+  assert.equal(decision.reason, 'HOLD: closed M15 reclaim already late/cooling');
 });
 
 test('lp_simple_m15 entry sanity holds red last M15 candle with M15 wording', () => {
