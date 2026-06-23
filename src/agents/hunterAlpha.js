@@ -2631,7 +2631,9 @@ export async function scanAndDeploy({ emitFinalReport = true } = {}) {
             ? 'Supertrend 15m belum bullish'
             : entrySignals.entryTimingState === 'UNKNOWN'
               ? 'Snapshot entry belum fresh / reclaim M15 belum terkonfirmasi'
-              : `Closed M15 candle belum reclaim di atas Supertrend (${formatMaybePct(entrySignals.closedM15ReclaimDistancePct, 2)})`;
+              : entrySignals.entryTimingState === 'WAIT_FOR_PULLBACK'
+                ? `Closed M15 reclaim sudah telat/cooling (${Number(entrySignals.closedM15ReclaimConsecutiveAboveLineCount || 0)} candle di atas line)`
+                : `Closed M15 candle belum reclaim di atas Supertrend (${formatMaybePct(entrySignals.closedM15ReclaimDistancePct, 2)})`;
         const bearishTrend = entrySignals.entryTimingState === 'BEARISH_TREND';
         reportManager.updateGate(tokenSymbol, 'SCOUT_AGENT', bearishTrend ? 'FAIL' : 'DEFER', waitReason);
         reportManager.setFinalVerdict(tokenSymbol, bearishTrend ? 'REJECT' : 'DEFERRED', waitReason);
