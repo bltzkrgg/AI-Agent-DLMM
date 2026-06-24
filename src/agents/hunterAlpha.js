@@ -1703,8 +1703,8 @@ function deriveBreakoutEntrySignals({ pool = {}, vetoResult = null, marketSnapsh
       entryTimingState = 'UNKNOWN';
     } else if (isLpMode && closedM15Reclaim.aboveLine !== true) {
       entryTimingState = 'TOO_CLOSE';
-    } else if (isLpMode && closedM15Reclaim.timingState === 'COOLING') {
-      entryTimingState = 'WAIT_FOR_PULLBACK';
+    } else if (isLpMode && closedM15Reclaim.freshWindowOk !== true) {
+      entryTimingState = 'WAIT_FOR_CONFIRMATION';
     } else {
       entryTimingState = isLpMode ? 'LP_LIVE' : 'BREAKOUT';
     }

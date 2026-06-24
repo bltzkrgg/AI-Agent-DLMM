@@ -779,11 +779,11 @@ export async function getFinalSupertrendDeployDecision({
         direction: 'BULLISH',
       };
     }
-    if (closedM15Reclaim.timingState === 'COOLING') {
+    if (closedM15Reclaim.freshWindowOk !== true) {
       return {
         ok: false,
         action: 'HOLD',
-        reason: `closed M15 reclaim already cooling (${Number(closedM15Reclaim.consecutiveAboveLineCount || 0)} candles above line); waiting fresher setup`,
+        reason: 'closed M15 reclaim needs at least 2 candles above Supertrend; waiting confirmation',
         source: 'live_snapshot',
         direction: 'BULLISH',
       };

@@ -133,19 +133,14 @@ function analyzeClosedM15ReclaimWindow(candlesM15 = [], supertrendValue = null) 
   let timingState = 'UNKNOWN';
   if (consecutiveAboveLineCount <= 0) {
     timingState = 'UNKNOWN';
-  } else if (consecutiveAboveLineCount <= 2) {
-    timingState = 'FRESH';
-  } else if (consecutiveAboveLineCount <= 4 && Number.isFinite(lastDistancePct) && lastDistancePct <= 8) {
-    timingState = 'LATE_BUT_ACTIVE';
   } else {
-    timingState = 'COOLING';
+    timingState = consecutiveAboveLineCount >= 2 ? 'CONFIRMED' : 'TOO_EARLY';
   }
 
   return {
     consecutiveAboveLineCount,
-    // Fresh is ideal, but strong bullish structure can still be tradable
-    // for a few candles while price remains close to the Supertrend base.
-    freshWindowOk: timingState === 'FRESH' || timingState === 'LATE_BUT_ACTIVE',
+    // Two or more closed M15 candles above Supertrend are enough.
+    freshWindowOk: consecutiveAboveLineCount >= 2,
     timingState,
     distancePct: lastDistancePct,
   };
@@ -370,7 +365,7 @@ function evaluateLpSimpleM15Sanity({
     const decision = {
       ok: false,
       action: 'HOLD',
-      reason: 'HOLD: closed M15 reclaim already cooling',
+      reason: 'HOLD: closed M15 reclaim needs at least 2 closed candles above Supertrend',
       code: 'M15_RECLAIM_LATE',
       retryable: false,
       source,
