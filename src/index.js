@@ -349,6 +349,7 @@ function buildSetconfigHelpSections() {
     `/setconfig alerts.intervalMin 5\n` +
     `/setconfig strategy.liquidityShape bidask\n` +
     `/setconfig strategy.liquidityShape spot\n` +
+    `/setconfig deployRangeMaxBins 50\n` +
     `Catatan: shape ini global, jadi sekali diubah akan dipakai semua jalur deploy berikutnya.\n` +
     `/setconfig takeProfitMinNetPnlPct 0.1\n` +
     `/setconfig taWatchEnabled true\n` +
@@ -513,6 +514,7 @@ function buildSetconfigSectionDetail(section) {
     ],
     strategy: [
       '/setconfig strategy.liquidityShape bidask',
+      '/setconfig deployRangeMaxBins 50',
       '/setconfig takeProfitMinNetPnlPct 0.1',
       '/setconfig closeSwapMode all',
       '/setconfig closeResidualSwapEnabled true',

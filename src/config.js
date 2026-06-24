@@ -656,6 +656,7 @@ export const SETCONFIG_WHITELIST = {
 
   // ── Strategy / DLMM Shape ───────────────────────────────────────
   dlmmLiquidityShape:     { section: 'strategy',           type: 'string',  desc: 'Shape DLMM: spot atau bidask' },
+  deployRangeMaxBins:     { section: 'strategy',           type: 'number',  desc: 'Lebar range deploy monolith (bin)' },
   takeProfitMinNetPnlPct: { section: 'strategy',           type: 'number',  desc: 'Minimum net exposure PnL untuk TA take-profit (%)' },
 
   // ── Discovery Quality ────────────────────────────────────────────
