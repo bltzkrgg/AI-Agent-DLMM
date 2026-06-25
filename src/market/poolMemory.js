@@ -11,6 +11,8 @@ const MAX_HISTORY = 12;
 const LOSS_COOLDOWN_MS = 30 * 60 * 1000;
 const RENT_COOLDOWN_FIRST_MS = 30 * 60 * 1000;
 const RENT_COOLDOWN_REPEAT_MS = 60 * 60 * 1000;
+const VOLUME_TREND_ACCEL_THRESHOLD = 0.08;
+const VOLUME_TREND_DECEL_THRESHOLD = -0.08;
 
 function nowMs() {
   return Date.now();
@@ -48,9 +50,43 @@ function compactSnapshot(snapshot = {}) {
   return {
     trend: String(snapshot.taTrend || snapshot.trend || snapshot.recentTrend || 'UNKNOWN').toUpperCase(),
     m5: Number(snapshot.priceChangeM5 ?? snapshot.recentM5 ?? 0) || 0,
+    volume24h: Number(snapshot.volume24h ?? snapshot.recentVolume24h ?? 0) || 0,
     readiness: snapshot.entryReadiness || null,
     breakout: snapshot.breakoutQuality || null,
     timing: snapshot.entryTimingState || null,
+  };
+}
+
+export function classifyVolumeTrend(currentVolume24h = 0, previousVolume24h = 0) {
+  const current = Number(currentVolume24h);
+  const previous = Number(previousVolume24h);
+  if (!Number.isFinite(current) || current <= 0 || !Number.isFinite(previous) || previous <= 0) {
+    return {
+      state: 'UNKNOWN',
+      changePct: null,
+      priorityDelta: 0,
+    };
+  }
+
+  const changePct = (current - previous) / previous;
+  if (changePct >= VOLUME_TREND_ACCEL_THRESHOLD) {
+    return {
+      state: 'ACCELERATING',
+      changePct,
+      priorityDelta: 18,
+    };
+  }
+  if (changePct <= VOLUME_TREND_DECEL_THRESHOLD) {
+    return {
+      state: 'DECELERATING',
+      changePct,
+      priorityDelta: -18,
+    };
+  }
+  return {
+    state: 'STABLE',
+    changePct,
+    priorityDelta: 0,
   };
 }
 
@@ -69,6 +105,8 @@ function buildBaseMemory(existing = {}, now = nowMs()) {
     failureCount: Number(existing?.failureCount || 0),
     recentTrend: existing?.recentTrend || 'UNKNOWN',
     recentM5: Number(existing?.recentM5 || 0),
+    recentVolume24h: Number(existing?.recentVolume24h || 0),
+    previousVolume24h: Number(existing?.previousVolume24h || 0),
     lastPnLPct: Number(existing?.lastPnLPct || 0),
     lastOutcome: existing?.lastOutcome || null,
     priorityScore: Number(existing?.priorityScore || 0),
@@ -104,6 +142,10 @@ export function recordPoolDecision({
       next.lastReason = reason;
       next.recentTrend = compact.trend;
       next.recentM5 = compact.m5;
+      if (Number.isFinite(compact.volume24h) && compact.volume24h > 0) {
+        next.previousVolume24h = Number(next.recentVolume24h || 0);
+        next.recentVolume24h = compact.volume24h;
+      }
       next.lastSnapshot = compact;
       next.lastSource = source || next.lastSource || null;
       next.updatedAt = now;
@@ -111,6 +153,43 @@ export function recordPoolDecision({
     });
   } catch (e) {
     console.warn(`[poolMemory] record decision skipped: ${e.message}`);
+    return null;
+  }
+}
+
+export function recordPoolVolumeSnapshot({
+  pool = {},
+  key = '',
+  tokenMint = '',
+  poolAddress = '',
+  symbol = '',
+  snapshot = {},
+  source = 'SCAN',
+} = {}) {
+  const memoryKey = getPoolMemoryKey(key || poolAddress || pool || tokenMint);
+  if (!memoryKey) return null;
+  const now = nowMs();
+  const compact = compactSnapshot(snapshot);
+  if (!Number.isFinite(compact.volume24h) || compact.volume24h <= 0) return null;
+
+  try {
+    return updateRuntimeCollectionItem(POOL_MEMORY_KEY, memoryKey, (existing) => {
+      const next = buildBaseMemory(existing, now);
+      next.lastSeenAt = now;
+      next.lastReason = next.lastReason || 'VOLUME_SNAPSHOT';
+      next.recentTrend = compact.trend;
+      next.recentM5 = compact.m5;
+      next.previousVolume24h = Number(next.recentVolume24h || 0);
+      next.recentVolume24h = compact.volume24h;
+      next.poolAddress = poolAddress || next.poolAddress || null;
+      next.tokenMint = tokenMint || next.tokenMint || memoryKey;
+      next.symbol = symbol || next.symbol || null;
+      next.lastSource = source || next.lastSource || null;
+      next.updatedAt = now;
+      return next;
+    });
+  } catch (e) {
+    console.warn(`[poolMemory] record volume snapshot skipped: ${e.message}`);
     return null;
   }
 }
@@ -161,6 +240,10 @@ export function recordPoolRentFailure({
       next.lastOutcome = 'RENT_BLOCKED';
       next.recentTrend = compact.trend;
       next.recentM5 = compact.m5;
+      if (Number.isFinite(compact.volume24h) && compact.volume24h > 0) {
+        next.previousVolume24h = Number(next.recentVolume24h || 0);
+        next.recentVolume24h = compact.volume24h;
+      }
       next.rentFailureCount = nextRentFailureCount;
       next.rentCooldownUntil = 0;
       next.rentLastFailedAt = now;
@@ -228,6 +311,10 @@ export function recordPoolOutcome({
       next.rentLastDetail = null;
       next.recentTrend = compact.trend;
       next.recentM5 = compact.m5;
+      if (Number.isFinite(compact.volume24h) && compact.volume24h > 0) {
+        next.previousVolume24h = Number(next.recentVolume24h || 0);
+        next.recentVolume24h = compact.volume24h;
+      }
       next.successCount = isProfit ? next.successCount + 1 : next.successCount;
       next.failureCount = isLoss ? next.failureCount + 1 : Math.max(0, next.failureCount - 1);
       next.priorityScore = Math.max(-100, Math.min(100, next.priorityScore + (isProfit ? 18 : isLoss ? -30 : 0)));
@@ -275,9 +362,10 @@ export function getPoolMemorySignal(input = {}, now = nowMs()) {
   const priorityScore = Number(memory.priorityScore || 0);
   const successCount = Number(memory.successCount || 0);
   const failureCount = Number(memory.failureCount || 0);
+  const volumeTrend = classifyVolumeTrend(memory.recentVolume24h, memory.previousVolume24h);
   const priorityDelta = cooldownActive
     ? -120
-    : Math.max(-80, Math.min(80, priorityScore + (successCount * 8) - (failureCount * 12)));
+    : Math.max(-80, Math.min(80, priorityScore + (successCount * 8) - (failureCount * 12) + Number(volumeTrend.priorityDelta || 0)));
 
   return {
     memory,
@@ -286,6 +374,7 @@ export function getPoolMemorySignal(input = {}, now = nowMs()) {
     rentCooldownActive,
     rentCooldownUntil: 0,
     priorityDelta,
+    volumeTrend,
     lookupMs,
     reason: genericCooldownActive
         ? `POOL_MEMORY_COOLDOWN_${Math.ceil((cooldownUntil - now) / 60000)}m`

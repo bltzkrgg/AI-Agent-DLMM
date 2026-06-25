@@ -16,7 +16,7 @@ import { getConfig }              from '../config.js';
 import { screenToken }            from '../market/coinfilter.js';
 import { runMeridianVeto, discoverHighFeePoolsMeridian, isSupportedQuoteToken, getQuoteTokenLabel } from '../market/meridianVeto.js';
 import { getMarketSnapshot }      from '../market/oracle.js';
-import { evaluatePoolReentryDiscipline, getPoolMemorySignal, recordPoolDecision } from '../market/poolMemory.js';
+import { classifyVolumeTrend, evaluatePoolReentryDiscipline, getPoolMemorySignal, recordPoolDecision, recordPoolVolumeSnapshot } from '../market/poolMemory.js';
 import { getPoolInfo }            from '../solana/meteora.js';
 import { deployPosition, monitorPnL, exitPosition, markPositionManuallyClosed, setEvilPandaNotifyFn, setPositionLifecycle, getPositionOnChainStatus, EP_CONFIG, getActivePositionKeys, getPositionMeta, reconcileZombiePositions } from '../sniper/evilPanda.js';
 import { createMessage }          from '../agent/provider.js';
@@ -474,6 +474,7 @@ function computeTaWatchPriorityScore({ pool = {}, entrySignals = {}, row = {}, n
   score += Math.max(0, Math.min(50, m5 * 12));
   score += Math.max(0, Math.min(35, stDistance));
   score += freshnessBonus;
+  score += Number(pool?._volumeTrendSignal?.priorityDelta || 0);
 
   if (pool?._watchSnapshotAt) score += 10;
   score += Number(row.memoryPriorityDelta || 0);
@@ -510,6 +511,28 @@ function computeTaWatchPriorityScore({ pool = {}, entrySignals = {}, row = {}, n
     );
   }
   return finalScore;
+}
+
+function buildPoolVolumeTrendSignal(pool = {}) {
+  const currentVolume24h = normalizePoolVolume24h(pool);
+  const previousVolume24h = Number(pool?._volumeTrendPrevious24h || 0);
+  const signal = classifyVolumeTrend(currentVolume24h, previousVolume24h);
+  return {
+    ...signal,
+    currentVolume24h,
+    previousVolume24h,
+  };
+}
+
+function getPoolVolumeTrendSortDelta(pool = {}) {
+  const state = String(pool?._volumeTrendSignal?.state || 'UNKNOWN').toUpperCase();
+  if (state === 'ACCELERATING') return 1;
+  if (state === 'DECELERATING') return -1;
+  return 0;
+}
+
+export function __volumeTrendSortDeltaForTests(pool = {}) {
+  return getPoolVolumeTrendSortDelta(pool);
 }
 
 function formatMemorySignal(signal = {}) {
@@ -650,6 +673,7 @@ function addWatchPassTa(pool, reason = 'TA PASS', source = 'TA') {
       ...signals,
       recentTrend: signals.taTrend,
       recentM5: signals.priceChangeM5,
+      volume24h: normalizePoolVolume24h(pool),
     },
   });
 
@@ -2060,7 +2084,7 @@ async function processTaWatchQueue(cfg = getConfig()) {
   const ready = [];
 
   const sortedEntries = [..._taWatchQueue.entries()].map(([mint, row]) => {
-    row.priorityScore = computeTaWatchPriorityScore({ pool: row.pool, entrySignals: row.pool?._entrySignals || {}, row, now });
+  row.priorityScore = computeTaWatchPriorityScore({ pool: row.pool, entrySignals: row.pool?._entrySignals || {}, row, now });
     return [mint, row];
   }).sort((a, b) => {
     const aScore = Number(a[1]?.priorityScore || 0);
@@ -2388,6 +2412,8 @@ export async function scanAndDeploy({ emitFinalReport = true } = {}) {
     // Filosofi LP: resource screening hanya untuk kandidat paling efisien.
     // Pool di luar batas ini TIDAK dievaluasi sama sekali (hemat API & waktu).
     pools = pools.sort((a, b) => {
+      const volTrendDelta = getPoolVolumeTrendSortDelta(b) - getPoolVolumeTrendSortDelta(a);
+      if (volTrendDelta !== 0) return volTrendDelta;
       const aVol = Number(a.volume24h || a.trade_volume_24h || 0);
       const bVol = Number(b.volume24h || b.trade_volume_24h || 0);
       const aTvl = Number(a.totalTvl || a.activeTvl || 0) || 1;
@@ -2454,22 +2480,33 @@ export async function scanAndDeploy({ emitFinalReport = true } = {}) {
     }
   }
 
-  const evaluatePool = async (pool) => {
-    const tokenMint   = pool.tokenXMint || pool.tokenX || pool.mint;
-    const tokenSymbol = pool.tokenXSymbol || pool.name?.split('-')[0] || '';
-    
-    const record = reportManager.addToken(tokenSymbol || 'UNKNOWN', tokenMint || '');
+    const evaluatePool = async (pool) => {
+      const tokenMint   = pool.tokenXMint || pool.tokenX || pool.mint;
+      const tokenSymbol = pool.tokenXSymbol || pool.name?.split('-')[0] || '';
+      const volumeTrendSignal = buildPoolVolumeTrendSignal(pool);
+      recordPoolVolumeSnapshot({
+        pool,
+        tokenMint,
+        symbol: tokenSymbol,
+        snapshot: {
+          volume24h: volumeTrendSignal.currentVolume24h,
+        },
+        source: 'SCAN',
+      });
+      
+      const record = reportManager.addToken(tokenSymbol || 'UNKNOWN', tokenMint || '');
     if (!CycleReport.includes(record)) CycleReport.push(record);
     // Simpan metrics LP ke report entry agar bisa ditampilkan di visual report
-    reportManager.setMetrics(tokenSymbol || 'UNKNOWN', {
-      tvl:  Number(pool.totalTvl || pool.activeTvl || 0),
-      vol:  Number(pool.volume24h || pool.volume_24h || pool.trade_volume_24h || 0),
-      mcap: Number(pool.mcap || 0),
-      feeTvlRatio: normalizeMeteoraFeeTvlRatio(pool),
-      binStep: pool.binStep ?? pool.bin_step ?? pool.pool_config?.bin_step ?? null,
-      fees24h: pool.fees?.['24h'] ?? pool.fees24h ?? pool.fee24h ?? pool.fee_24h ?? 0,
-      holders: pool.holders ?? pool.holderCount ?? null,
-    });
+      reportManager.setMetrics(tokenSymbol || 'UNKNOWN', {
+        tvl:  Number(pool.totalTvl || pool.activeTvl || 0),
+        vol:  Number(pool.volume24h || pool.volume_24h || pool.trade_volume_24h || 0),
+        mcap: Number(pool.mcap || 0),
+        feeTvlRatio: normalizeMeteoraFeeTvlRatio(pool),
+        binStep: pool.binStep ?? pool.bin_step ?? pool.pool_config?.bin_step ?? null,
+        fees24h: pool.fees?.['24h'] ?? pool.fees24h ?? pool.fee24h ?? pool.fee_24h ?? 0,
+        holders: pool.holders ?? pool.holderCount ?? null,
+        volumeTrend: volumeTrendSignal.state || 'UNKNOWN',
+      });
     if (!isSupportedQuoteToken(pool)) {
       const quoteReason = `Unsupported quote token ${getQuoteTokenLabel(pool)}; expected SOL/WSOL`;
       reportManager.updateGate(tokenSymbol, 'STAGE_0_DISCOVERY', 'FAIL', quoteReason);
@@ -2750,6 +2787,7 @@ FORMAT JAWABAN (WAJIB JSON VALID, TANPA MARKDOWN):
         pool.hasNonRefundableFees = Boolean(marketSnapshot?.pool?.hasNonRefundableFees);
         pool._llmPoolContext = llmPoolContext;
         pool._entrySignals = entrySignals;
+        pool._volumeTrendSignal = volumeTrendSignal;
         const watchResult = addWatchPassTa(pool, scoutReason || 'Scout Approved', 'SCOUT');
         if (watchResult?.admitted) {
           if (watchResult.evicted?.pool) {
