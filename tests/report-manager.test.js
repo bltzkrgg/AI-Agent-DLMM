@@ -22,6 +22,7 @@ test('report manager renders LP scanner brief with top pools and rejects', () =>
     fees24h: 0.83,
     holders: 124,
     gmgn: { rug_ratio: 12, bundlerPct: 9.1, top10Pct: 31.4, devHoldPct: 6.2, insiderPct: 2.8 },
+    volumeTrend: 'ACCELERATING',
   });
   reportManager.currentCycle.find((t) => t.name === 'CHANCE').signalScore = 84;
   reportManager.updateGate('CHANCE', 'STAGE_0_DISCOVERY', 'PASS');
@@ -48,6 +49,7 @@ test('report manager renders LP scanner brief with top pools and rejects', () =>
   assert.match(report, /1\. CHANCE/);
   assert.match(report, /1\. CHANCE - TVL \$469\.4K \| Vol24h \$5\.6M \| Fee\/TVL 1\.9% \| Bin 100/);
   assert.match(report, /GMGN: Holders 124 \| Top10 31\.4% \| Dev 6\.2% \| Insider 2\.8% \| Bundler 9\.1%/);
+  assert.match(report, /VolTrend: ACCELERATING/);
   assert.match(report, /Status: DEPLOYED/);
   assert.match(report, /Status: REJECTED/);
   assert.match(report, /KINS - stale market snapshot/);

@@ -2807,6 +2807,7 @@ FORMAT JAWABAN (WAJIB JSON VALID, TANPA MARKDOWN):
               `- Slot: <code>${slotUsed}/${slotMax}</code> used\n` +
               `- Trend M15: <code>${entrySignals.taTrend || 'UNKNOWN'}</code> <i>(live confirmation)</i>\n` +
               `- Timing: <code>${entrySignals.entryTimingState || 'UNKNOWN'}</code>\n` +
+              `- Vol Trend: <code>${volumeTrendSignal.state || 'UNKNOWN'}</code>\n` +
               `- Safety: <code>SCOUT_OK</code>\n\n` +
               `Watcher aktif — kandidat dipantau.`
             );

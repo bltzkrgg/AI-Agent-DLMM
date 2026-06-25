@@ -49,6 +49,7 @@ class ReportManager {
       fees24h: null,
       holders: null,
       gmgn: null,
+      volumeTrend: null,
     };
     this.currentCycle.push(tokenReport);
     return tokenReport;
@@ -64,6 +65,7 @@ class ReportManager {
     fees24h = null,
     holders = null,
     gmgn = null,
+    volumeTrend = null,
   } = {}) {
     const token = this.currentCycle.find(t => t.name === tokenName);
     if (!token) return;
@@ -84,6 +86,9 @@ class ReportManager {
     }
     if (gmgn && typeof gmgn === 'object') {
       token.gmgn = { ...(token.gmgn || {}), ...gmgn };
+    }
+    if (volumeTrend != null && volumeTrend !== '') {
+      token.volumeTrend = String(volumeTrend).toUpperCase();
     }
   }
 
@@ -159,6 +164,9 @@ class ReportManager {
     if (gmgn.insiderPct != null) gmgnParts.push(`Insider ${this._formatPct(gmgn.insiderPct, 1)}`);
     if (gmgn.bundlerPct != null) gmgnParts.push(`Bundler ${this._formatPct(gmgn.bundlerPct, 1)}`);
     vLines.push(`   GMGN: Holders ${holders}${gmgnParts.length > 0 ? ` | ${gmgnParts.join(' | ')}` : ''}`);
+    if (pool.volumeTrend) {
+      vLines.push(`   VolTrend: ${String(pool.volumeTrend).toUpperCase()}`);
+    }
     vLines.push(`   Status: ${pool.rejected ? 'REJECTED' : (pool.status || 'WATCH')}`);
     return vLines.join('\n');
   }
