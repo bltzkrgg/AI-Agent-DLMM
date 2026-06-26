@@ -1413,7 +1413,7 @@ function buildExitClosedNotification({ positionPubkey, exitMeta, exitResult, bal
   const normalizedExitReason = String(exitMeta?.reasonLabel || '').toUpperCase();
   const isTakeProfitFamily = normalizedExitTitle === 'TAKE PROFIT' || normalizedExitReason.includes('PROFIT TRIGGER');
   if (isTakeProfitFamily) {
-    const reason = escapeHTML(exitMeta.reasonLabel || 'Take Profit Trigger');
+    const reason = escapeHTML(exitMeta.reasonLabel || 'Trailing Profit Trigger');
     const compactLines = [
       `✅ <b>Posisi Di Tutup (TAKE PROFIT)</b>`,
       `Token : <b>${tokenLabel}</b>`,
