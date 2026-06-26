@@ -4730,8 +4730,8 @@ function evaluateDefensiveExitConfirmation({
 
 /**
  * Poll on-chain + Meridian TA sekali, tentukan action.
- * Priority: Hard SL config > MaxHold config > Trailing take-profit > TA fallback.
- * Fail-open: jika Meridian API down, TA fallback tidak dipicu.
+ * Priority: Hard SL config > MaxHold config > Trailing take-profit.
+ * TA signals may still be observed for diagnostics, but no longer close profit.
  *
  * @param {string} positionPubkey
  * @returns {Promise<PnLStatus>}
@@ -4824,7 +4824,6 @@ export async function monitorPnL(positionPubkey) {
     const maxHoldHours = getConfiguredMaxHoldHours();
     const trailingTriggerPct = getConfiguredTrailingTriggerPct();
     const trailingDropPct = getConfiguredTrailingDropPct();
-    const takeProfitMinNetPnlPct = getConfiguredTakeProfitMinNetPnlPct();
     const deployedAtMs = reg.deployedAt ? new Date(reg.deployedAt).getTime() : null;
     const ageMs = Number.isFinite(deployedAtMs) ? Math.max(0, Date.now() - deployedAtMs) : 0;
     const maxHoldMs = maxHoldHours * 60 * 60 * 1000;
@@ -4916,7 +4915,7 @@ export async function monitorPnL(positionPubkey) {
       };
     }
 
-    // ── Telemetry: trailing memakai HWM profit, lalu TA hanya jadi fallback. ─────
+    // ── Telemetry: trailing memakai HWM profit sebagai satu-satunya TP driver. ──
     if (pnlPct > reg.hwmPct) {
       reg.hwmPct = pnlPct; // update HWM in-place (Map entry adalah referensi)
       console.log(`[evilPanda] 📈 New HWM: ${reg.hwmPct.toFixed(2)}%`);
@@ -4941,91 +4940,7 @@ export async function monitorPnL(positionPubkey) {
       }
     }
 
-    // ── PRIORITAS 3B: Take Profit fallback berbasis TA ─────────────────────
-    // Fetch RSI(2) + BB + MACD dari Meridian, fail-open jika API down.
-    const signal     = await fetchExitSignal(reg.tokenXMint);
-    const exitDecision = evaluateExitSignal(signal);
-    const isDefensiveTaExit = exitDecision.scenario === 'C';
-    const defensiveExitGate = evaluateDefensiveExitConfirmation({
-      reg,
-      exitDecision,
-      ageMs,
-      inRange,
-      outOfRangeSide,
-      nowMs: Date.now(),
-    });
-
-    if (isDefensiveTaExit && !defensiveExitGate.allowExit) {
-      const reason =
-        `${defensiveExitGate.holdReason}; ${exitDecision.reason}`;
-      console.log(
-        `[evilPanda] 📊 DEFENSIVE_EXIT gated ${positionPubkey.slice(0,8)} ` +
-        `age=${Math.round(ageMs / 1000)}s reason=${reason}`
-      );
-      return {
-        action: 'HOLD',
-        currentValueSol,
-        pnlPct,
-        ...feeOnlyPnl,
-        inRange,
-        activeBinId: activeBin.binId,
-        activePrice: rawPrice,
-        entryActiveBin,
-        entryPrice,
-        rangeMin: reg.rangeMin,
-        rangeMax: reg.rangeMax,
-        taReason: reason,
-        taSignal: signal ? {
-          rsi: signal.rsi,
-          close: signal.close,
-          bbUpper: signal.bbUpper,
-          macdHist: signal.macdHist,
-          direction: signal.direction,
-        } : null,
-      };
-    }
-
-    if (exitDecision.shouldExit && !isDefensiveTaExit && pnlPct < takeProfitMinNetPnlPct) {
-      const reason =
-        `TP gated: net PnL ${pnlPct.toFixed(2)}% < min ${takeProfitMinNetPnlPct.toFixed(2)}%; ${exitDecision.reason}`;
-      console.log(`[evilPanda] 📊 TP gated ${positionPubkey.slice(0,8)} pnl=${pnlPct.toFixed(2)}% min=${takeProfitMinNetPnlPct.toFixed(2)}% reason=${exitDecision.reason}`);
-      return {
-        action: 'HOLD',
-        currentValueSol,
-        pnlPct,
-        ...feeOnlyPnl,
-        inRange,
-        activeBinId: activeBin.binId,
-        activePrice: rawPrice,
-        entryActiveBin,
-        entryPrice,
-        rangeMin: reg.rangeMin,
-        rangeMax: reg.rangeMax,
-        taReason: reason,
-        taSignal: signal ? {
-          rsi: signal.rsi,
-          close: signal.close,
-          bbUpper: signal.bbUpper,
-          macdHist: signal.macdHist,
-          direction: signal.direction,
-        } : null,
-      };
-    }
-
-    if (exitDecision.shouldExit) {
-      console.log(`[evilPanda] 📈 TP (TA_FALLBACK) ${positionPubkey.slice(0,8)} scenario=${exitDecision.scenario} pnl=${pnlPct.toFixed(2)}% reason=${exitDecision.reason}`);
-      return {
-        action: 'TAKE_PROFIT',
-        currentValueSol,
-        pnlPct,
-        ...feeOnlyPnl,
-        inRange,
-        exitScenario: exitDecision.scenario || 'TA',
-        exitReason: exitDecision.reason,
-      };
-    }
-
-    console.log(`[evilPanda] 📊 ${positionPubkey.slice(0,8)} pnl=${pnlPct.toFixed(2)}% val=${currentValueSol.toFixed(4)}SOL | TP hold: ${exitDecision.reason}`);
+    console.log(`[evilPanda] 📊 ${positionPubkey.slice(0,8)} pnl=${pnlPct.toFixed(2)}% val=${currentValueSol.toFixed(4)}SOL | TP hold: trailing not triggered`);
 
     return {
       action: 'HOLD',
@@ -5039,14 +4954,8 @@ export async function monitorPnL(positionPubkey) {
       entryPrice,
       rangeMin: reg.rangeMin,
       rangeMax: reg.rangeMax,
-      taReason: exitDecision.reason,
-      taSignal: signal ? {
-        rsi: signal.rsi,
-        close: signal.close,
-        bbUpper: signal.bbUpper,
-        macdHist: signal.macdHist,
-        direction: signal.direction,
-      } : null,
+      taReason: 'Trailing profit not triggered',
+      taSignal: null,
     };
 
   } catch (e) {

@@ -351,7 +351,9 @@ function buildSetconfigHelpSections() {
     `/setconfig strategy.liquidityShape spot\n` +
     `/setconfig deployRangeMaxBins 50\n` +
     `Catatan: shape ini global, jadi sekali diubah akan dipakai semua jalur deploy berikutnya.\n` +
-    `/setconfig takeProfitMinNetPnlPct 0.1\n` +
+    `/setconfig trailingTriggerPct 1\n` +
+    `/setconfig trailingDropPct 0.5\n` +
+    `/setconfig trailingStopPct 3\n` +
     `/setconfig taWatchEnabled true\n` +
     `/setconfig outOfRangeWaitMinutes 45\n` +
     `/setconfig oor.displayWaitMinutes 5\n` +
@@ -515,7 +517,9 @@ function buildSetconfigSectionDetail(section) {
     strategy: [
       '/setconfig strategy.liquidityShape bidask',
       '/setconfig deployRangeMaxBins 50',
-      '/setconfig takeProfitMinNetPnlPct 0.1',
+      '/setconfig trailingTriggerPct 1',
+      '/setconfig trailingDropPct 0.5',
+      '/setconfig trailingStopPct 3',
       '/setconfig closeSwapMode all',
       '/setconfig closeResidualSwapEnabled true',
     ],

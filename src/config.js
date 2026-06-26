@@ -657,7 +657,10 @@ export const SETCONFIG_WHITELIST = {
   // ── Strategy / DLMM Shape ───────────────────────────────────────
   dlmmLiquidityShape:     { section: 'strategy',           type: 'string',  desc: 'Shape DLMM: spot atau bidask' },
   deployRangeMaxBins:     { section: 'strategy',           type: 'number',  desc: 'Lebar range deploy monolith (bin)' },
-  takeProfitMinNetPnlPct: { section: 'strategy',           type: 'number',  desc: 'Minimum net exposure PnL untuk TA take-profit (%)' },
+  trailingStopPct:        { section: 'strategy',           type: 'number',  desc: 'Ambang profit awal trailing reference (%)' },
+  trailingTriggerPct:     { section: 'strategy',           type: 'number',  desc: 'Aktifkan trailing TP setelah net exposure PnL ini (%)' },
+  trailingDropPct:        { section: 'strategy',           type: 'number',  desc: 'Jarak retrace dari HWM untuk trigger TP (%)' },
+  takeProfitMinNetPnlPct: { section: 'strategy',           type: 'number',  desc: 'Legacy TA TP gate (%) — tidak dipakai saat TP trailing-only' },
 
   // ── Discovery Quality ────────────────────────────────────────────
   minTvl:                 { section: 'discovery',          type: 'number',  desc: 'TVL minimum pool (USD)' },
