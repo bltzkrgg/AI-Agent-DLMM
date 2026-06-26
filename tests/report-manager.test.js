@@ -142,3 +142,32 @@ test('slot-saturated summary mode keeps FULL 1/1 and still shows report shape', 
   assert.match(report, /Action: HOLD new entries/);
   assert.match(report, /Next scan: 15m/);
 });
+
+test('slot-saturated summary mode skips telegram send entirely', async () => {
+  resetReportManager();
+  reportManager.setSlotSaturatedSummaryOnly(true);
+  reportManager.addToken('SKIPME', 'MintSkipMe');
+  reportManager.setMetrics('SKIPME', {
+    tvl: 1000,
+    vol: 5000,
+    mcap: 2000,
+    feeTvlRatio: 0.02,
+    binStep: 100,
+  });
+  reportManager.setFinalVerdict('SKIPME', 'REJECT', 'slot full');
+
+  const originalFetch = global.fetch;
+  const calls = [];
+  global.fetch = async (...args) => {
+    calls.push(args);
+    return { ok: true };
+  };
+
+  try {
+    await reportManager.sendTelegram();
+  } finally {
+    global.fetch = originalFetch;
+  }
+
+  assert.equal(calls.length, 0);
+});

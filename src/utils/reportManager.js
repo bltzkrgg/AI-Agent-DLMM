@@ -227,6 +227,10 @@ class ReportManager {
   }
 
   async sendTelegram() {
+    if (this.slotSaturatedSummaryOnly) {
+      console.log('[ReportManager] Telegram scan report skipped: slot saturated');
+      return;
+    }
     const text = this.generateReport();
     const token = process.env.TELEGRAM_BOT_TOKEN;
     const chatId = process.env.TELEGRAM_CHAT_ID;
