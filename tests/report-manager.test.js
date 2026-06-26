@@ -46,7 +46,7 @@ test('report manager renders LP scanner brief with top pools and rejects', () =>
 
   assert.match(report, /AI-Agent Scanner Result/);
   assert.match(report, /\[ TOP 5 POOLS \]/);
-  assert.match(report, /1\) \*\*CHANCE\*\*/);
+  assert.match(report, /1\) <b>CHANCE<\/b>/);
   assert.match(report, /TVL     : \$469\.4K/);
   assert.match(report, /Vol24h  : \$5\.6M/);
   assert.match(report, /Fee\/TVL : 1\.9%/);
@@ -55,7 +55,7 @@ test('report manager renders LP scanner brief with top pools and rejects', () =>
   assert.match(report, /Status  : DEPLOYED/);
   assert.match(report, /Status  : REJECTED/);
   assert.match(report, /\[ REJECTED \]/);
-  assert.match(report, /\*\*KINS\*\* - stale market snapshot/);
+  assert.match(report, /<b>KINS<\/b> - stale market snapshot/);
   assert.match(report, /\[ STATUS \]/);
   assert.match(report, /Slot  : AVAILABLE/);
   assert.match(report, /Action: HOLD new entries/);
@@ -80,7 +80,7 @@ test('report manager keeps working with partial pool and gmgn data', () => {
   assert.match(report, /AI-Agent Scanner Result/);
   assert.match(report, /\[ TOP 5 POOLS \]/);
   assert.match(report, /GMGN    : N\/A holders/);
-  assert.match(report, /1\) \*\*FCM\*\*/);
+  assert.match(report, /1\) <b>FCM<\/b>/);
   assert.match(report, /Fee\/TVL : N\/A/);
   assert.match(report, /Status  : REJECTED/);
   assert.match(report, /Slot  : AVAILABLE/);
@@ -103,7 +103,7 @@ test('report manager renders internal feeTvlRatio field instead of falling back 
 
   const report = reportManager.generateReport();
 
-  assert.match(report, /1\) \*\*BOUNTYWORK\*\*/);
+  assert.match(report, /1\) <b>BOUNTYWORK<\/b>/);
   assert.match(report, /Status  : REJECTED/);
   assert.match(report, /Fee\/TVL : 1\.9%/);
 });
@@ -143,7 +143,7 @@ test('slot-saturated summary mode keeps FULL 1/1 and still shows report shape', 
 
   assert.match(report, /AI-Agent Scanner Result/);
   assert.match(report, /Slot  : FULL 1\/1/);
-  assert.match(report, /\*\*JUNO\*\* - bundler too high/);
+  assert.match(report, /<b>JUNO<\/b> - bundler too high/);
   assert.match(report, /Action: HOLD new entries/);
   assert.match(report, /Next  : 15m/);
 });

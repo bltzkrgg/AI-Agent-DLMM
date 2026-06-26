@@ -157,7 +157,7 @@ class ReportManager {
       console.log(`[ReportManager] pool ${name} missing Meteora Fee/TVL ratio; rendering N/A`);
     }
 
-    vLines.push(`${idx + 1}) **${name}**`);
+    vLines.push(`${idx + 1}) <b>${name}</b>`);
     vLines.push(`   TVL     : ${this._formatUsdShort(tvl)}`);
     vLines.push(`   Vol24h  : ${this._formatUsdShort(vol24h)}`);
     vLines.push(`   Fee/TVL : ${this._formatRatioPct(feeTvl, 1)}`);
@@ -217,15 +217,15 @@ class ReportManager {
     report += `║   AI-Agent Scanner Result    ║\n`;
     report += `╚══════════════════════════════╝\n`;
     report += `📅 ${nowStr}\n\n`;
-    report += `**[ TOP 5 POOLS ]**\n\n`;
+    report += `<b>[ TOP 5 POOLS ]</b>\n\n`;
     report += `${top5Cycle.map((pool, idx) => this._buildTopPoolBlock(pool, idx)).join('\n\n')}\n\n`;
-    report += `**[ REJECTED ]**\n`;
+    report += `<b>[ REJECTED ]</b>\n`;
     report += `${rejectedTokens.slice(0, 5).map((t) => {
       const reason = this.getGateDetailsText(t, this.getFirstFailedGate(t)) || t.reason || this.getFirstFailedGate(t) || 'Rejected';
-      return `- **${t.name}** - ${reason}`;
+      return `- <b>${t.name}</b> - ${reason}`;
     }).join('\n') || '- N/A'}\n\n`;
 
-    report += `**[ STATUS ]**\n`;
+    report += `<b>[ STATUS ]</b>\n`;
     report += `Slot  : ${slotText}\n`;
     report += `Action: HOLD new entries\n`;
     report += `Next  : ${nextScreenMin}m`;
