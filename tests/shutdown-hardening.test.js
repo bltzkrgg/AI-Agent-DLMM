@@ -332,14 +332,19 @@ test('monitor exit policy uses trailing as the only take profit driver', () => {
   const hunterSrc = readFileSync(hunterPath, 'utf8');
 
   assert.match(evilPandaSrc, /function getConfiguredMaxHoldHours/);
+  assert.match(evilPandaSrc, /function getConfiguredTrailingStopPct/);
   assert.match(evilPandaSrc, /function getConfiguredTrailingTriggerPct/);
   assert.match(evilPandaSrc, /function getConfiguredTrailingDropPct/);
   assert.match(evilPandaSrc, /action:\s*'MAX_HOLD'/);
-  assert.match(evilPandaSrc, /TP \(TRAILING\)/);
+  assert.match(evilPandaSrc, /TP \(PRIMARY_TRAILING_STOP\)/);
+  assert.match(evilPandaSrc, /const trailingStopPct = getConfiguredTrailingStopPct\(\)/);
+  assert.match(evilPandaSrc, /if \(trailingStopPct > 0 && pnlPct >= trailingStopPct\)/);
+  assert.match(evilPandaSrc, /Primary TP target hit/);
+  assert.match(evilPandaSrc, /TP \(FALLBACK_TRAILING\)/);
   assert.match(evilPandaSrc, /const trailingEligible = trailingTriggerPct > 0 && pnlPct >= trailingTriggerPct/);
   assert.match(evilPandaSrc, /trailingDrawdownPct >= trailingDropPct/);
-  assert.match(evilPandaSrc, /TP hold: trailing not triggered/);
-  assert.match(evilPandaSrc, /taReason: 'Trailing profit not triggered'/);
+  assert.match(evilPandaSrc, /TP hold: primary trailing target and fallback trailing not triggered/);
+  assert.match(evilPandaSrc, /taReason: 'Primary\/fallback trailing profit not triggered'/);
   assert.match(evilPandaSrc, /taSignal: null/);
   assert.doesNotMatch(evilPandaSrc, /TP \(TA_FALLBACK\)/);
   assert.doesNotMatch(evilPandaSrc, /if \(exitDecision\.shouldExit\) \{/);

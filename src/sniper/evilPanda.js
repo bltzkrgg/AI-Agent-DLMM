@@ -2797,6 +2797,12 @@ function getConfiguredTrailingTriggerPct() {
   return Number.isFinite(value) && value >= 0 ? value : 0;
 }
 
+function getConfiguredTrailingStopPct() {
+  const cfg = getConfig();
+  const value = Number(cfg.trailingStopPct);
+  return Number.isFinite(value) && value > 0 ? value : 0;
+}
+
 function getConfiguredTrailingDropPct() {
   const cfg = getConfig();
   const value = Number(cfg.trailingDropPct);
@@ -4822,6 +4828,7 @@ export async function monitorPnL(positionPubkey) {
       : 0;
     const stopLossPct = getConfiguredStopLossPct();
     const maxHoldHours = getConfiguredMaxHoldHours();
+    const trailingStopPct = getConfiguredTrailingStopPct();
     const trailingTriggerPct = getConfiguredTrailingTriggerPct();
     const trailingDropPct = getConfiguredTrailingDropPct();
     const deployedAtMs = reg.deployedAt ? new Date(reg.deployedAt).getTime() : null;
@@ -4921,13 +4928,27 @@ export async function monitorPnL(positionPubkey) {
       console.log(`[evilPanda] 📈 New HWM: ${reg.hwmPct.toFixed(2)}%`);
     }
 
+    if (trailingStopPct > 0 && pnlPct >= trailingStopPct) {
+      const reason = `Primary TP target hit: PnL=${pnlPct.toFixed(2)}% >= ${trailingStopPct.toFixed(2)}%`;
+      console.log(`[evilPanda] 📈 TP (PRIMARY_TRAILING_STOP) ${positionPubkey.slice(0,8)} pnl=${pnlPct.toFixed(2)}% target=${trailingStopPct.toFixed(2)}%`);
+      return {
+        action: 'TAKE_PROFIT',
+        currentValueSol,
+        pnlPct,
+        ...feeOnlyPnl,
+        inRange,
+        exitScenario: 'TRAILING_STOP_PCT',
+        exitReason: reason,
+      };
+    }
+
     const trailingEligible = trailingTriggerPct > 0 && pnlPct >= trailingTriggerPct;
     if (trailingEligible) {
       const trailingDrawdownPct = reg.hwmPct - pnlPct;
       if (trailingDrawdownPct >= trailingDropPct) {
         const reason =
-          `TP trigger: HWM=${reg.hwmPct.toFixed(2)}% retraced ${trailingDrawdownPct.toFixed(2)}% >= ${trailingDropPct.toFixed(2)}%`;
-        console.log(`[evilPanda] 📈 TP (TRAILING) ${positionPubkey.slice(0,8)} pnl=${pnlPct.toFixed(2)}% hwm=${reg.hwmPct.toFixed(2)}% drawdown=${trailingDrawdownPct.toFixed(2)}%`);
+          `Fallback trailing TP: HWM=${reg.hwmPct.toFixed(2)}% retraced ${trailingDrawdownPct.toFixed(2)}% >= ${trailingDropPct.toFixed(2)}%`;
+        console.log(`[evilPanda] 📈 TP (FALLBACK_TRAILING) ${positionPubkey.slice(0,8)} pnl=${pnlPct.toFixed(2)}% hwm=${reg.hwmPct.toFixed(2)}% drawdown=${trailingDrawdownPct.toFixed(2)}%`);
         return {
           action: 'TAKE_PROFIT',
           currentValueSol,
@@ -4940,7 +4961,7 @@ export async function monitorPnL(positionPubkey) {
       }
     }
 
-    console.log(`[evilPanda] 📊 ${positionPubkey.slice(0,8)} pnl=${pnlPct.toFixed(2)}% val=${currentValueSol.toFixed(4)}SOL | TP hold: trailing not triggered`);
+    console.log(`[evilPanda] 📊 ${positionPubkey.slice(0,8)} pnl=${pnlPct.toFixed(2)}% val=${currentValueSol.toFixed(4)}SOL | TP hold: primary trailing target and fallback trailing not triggered`);
 
     return {
       action: 'HOLD',
@@ -4954,7 +4975,7 @@ export async function monitorPnL(positionPubkey) {
       entryPrice,
       rangeMin: reg.rangeMin,
       rangeMax: reg.rangeMax,
-      taReason: 'Trailing profit not triggered',
+      taReason: 'Primary/fallback trailing profit not triggered',
       taSignal: null,
     };
 
