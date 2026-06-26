@@ -30,7 +30,7 @@ test('exit display metadata keeps operator labels consistent across exit familie
 
   assert.deepEqual(getExitDisplayMeta('TAKE_PROFIT_A', 'TAKE_PROFIT'), {
     title: 'TAKE PROFIT',
-    reasonLabel: 'Take Profit Trigger (RSI + BB Upper)',
+    reasonLabel: 'Take Profit Trigger',
     normalizedReason: 'TAKE_PROFIT',
   });
 

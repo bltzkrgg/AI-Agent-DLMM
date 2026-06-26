@@ -73,7 +73,7 @@ export function getExitDisplayMeta(reason = '', normalizedReason = '') {
     if (text.includes('_A')) {
       return {
         title: 'TAKE PROFIT',
-        reasonLabel: 'Take Profit Trigger (RSI + BB Upper)',
+        reasonLabel: 'Take Profit Trigger',
         normalizedReason: normalized || 'TAKE_PROFIT',
       };
     }
