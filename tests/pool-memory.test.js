@@ -212,7 +212,37 @@ test('reentry discipline allows same-mint reentry after loss once fresh momentum
   });
 
   assert.equal(decision.allowed, true);
-  assert.equal(decision.reason, 'REENTRY_RESET_OK');
+  assert.equal(decision.reason, 'POOL_MEMORY_DELTA_0');
+});
+
+test('out-of-range close does not poison pool-memory as a loss', async () => {
+  const memory = await loadPoolMemory();
+  const key = 'MintOORReset111111111111111111111111111111';
+
+  memory.recordPoolOutcome({
+    key,
+    tokenMint: key,
+    pnlPct: 0,
+    reason: 'OUT_OF_RANGE_30M',
+  });
+
+  const row = memory.getPoolMemory(key);
+  assert.equal(row.lastDecision, 'CLOSE');
+  assert.equal(row.lastOutcome, 'BREAKEVEN');
+
+  const decision = memory.evaluatePoolReentryDiscipline({
+    pool: { tokenMint: key },
+    entrySignals: {
+      taTrend: 'BULLISH',
+      entryTimingState: 'LP_LIVE',
+      entryReadiness: 'HIGH',
+      breakoutQuality: 'VALID',
+      priceChangeM15: 0,
+    },
+  });
+
+  assert.equal(decision.allowed, true);
+  assert.equal(decision.reason, 'POOL_MEMORY_DELTA_0');
 });
 
 test('pool memory module does not import network or LLM dependencies', () => {
