@@ -157,22 +157,22 @@ class ReportManager {
       console.log(`[ReportManager] pool ${name} missing Meteora Fee/TVL ratio; rendering N/A`);
     }
 
-    vLines.push(`${idx + 1}) <b>${name}</b>`);
-    vLines.push(`   TVL: ${this._formatUsdShort(tvl)} | Vol24h: ${this._formatUsdShort(vol24h)}`);
-    vLines.push(`   Fee/TVL: ${this._formatRatioPct(feeTvl, 1)} | Bin: ${binStep}`);
+    vLines.push(`<b>${idx + 1}. ${name}</b>`);
+    vLines.push(`   <b>TVL</b> ${this._formatUsdShort(tvl)} | <b>Vol24h</b> ${this._formatUsdShort(vol24h)}`);
+    vLines.push(`   <b>Fee/TVL</b> ${this._formatRatioPct(feeTvl, 1)} | <b>Bin</b> ${binStep}`);
     vLines.push('');
     if (gmgn.top10Pct != null) gmgnParts.push(`Top10 ${this._formatPct(gmgn.top10Pct, 1)}`);
     if (gmgn.devHoldPct != null) gmgnParts.push(`Dev ${this._formatPct(gmgn.devHoldPct, 1)}`);
     if (gmgn.insiderPct != null) gmgnParts.push(`Insider ${this._formatPct(gmgn.insiderPct, 1)}`);
     if (gmgn.bundlerPct != null) gmgnParts.push(`Bundler ${this._formatPct(gmgn.bundlerPct, 1)}`);
-    vLines.push(`   GMGN: ${holders} holders`);
+    vLines.push(`   <b>GMGN</b>: ${holders} holders`);
     if (gmgnParts.length > 0) {
-      vLines.push(`   GMGN: ${gmgnParts.join(' | ')}`);
+      vLines.push(`   <b>GMGN</b>: ${gmgnParts.join(' | ')}`);
     }
     if (pool.volumeTrend) {
-      vLines.push(`   VolTrend: ${String(pool.volumeTrend).toUpperCase()}`);
+      vLines.push(`   <b>VolTrend</b>: ${String(pool.volumeTrend).toUpperCase()}`);
     }
-    vLines.push(`   Status  : ${pool.rejected ? 'REJECTED' : (pool.status || 'WATCH')}`);
+    vLines.push(`   <b>Status</b>: ${pool.rejected ? 'REJECTED' : (pool.status || 'WATCH')}`);
     return vLines.join('\n');
   }
 
@@ -218,18 +218,18 @@ class ReportManager {
     report += `║   AI-Agent Scanner Result    ║\n`;
     report += `╚══════════════════════════════╝\n`;
     report += `📅 ${nowStr}\n\n`;
-    report += `<b>[ TOP 5 POOLS ]</b>\n\n`;
+    report += `<b>[ TOP 5 ]</b>\n\n`;
     report += `${top5Cycle.map((pool, idx) => this._buildTopPoolBlock(pool, idx)).join('\n\n')}\n\n`;
     report += `<b>[ REJECTED ]</b>\n`;
     report += `${rejectedTokens.slice(0, 5).map((t) => {
       const reason = this.getGateDetailsText(t, this.getFirstFailedGate(t)) || t.reason || this.getFirstFailedGate(t) || 'Rejected';
-      return `- <b>${t.name}</b> - ${reason}`;
+      return `- <b>${t.name}</b>: ${reason}`;
     }).join('\n') || '- N/A'}\n\n`;
 
     report += `<b>[ STATUS ]</b>\n`;
-    report += `Slot: ${slotText}\n`;
-    report += `Action: HOLD new entries\n`;
-    report += `Next: ${nextScreenMin}m`;
+    report += `<b>Slot:</b> ${slotText}\n`;
+    report += `<b>Action:</b> HOLD new entries\n`;
+    report += `<b>Next scan:</b> ${nextScreenMin}m`;
 
     return report;
   }
