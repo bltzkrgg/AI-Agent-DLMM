@@ -245,6 +245,43 @@ test('out-of-range close does not poison pool-memory as a loss', async () => {
   assert.equal(decision.reason, 'POOL_MEMORY_DELTA_0');
 });
 
+test('legacy out-of-range loss memory does not block reentry', async () => {
+  const memory = await loadPoolMemory();
+  const key = 'MintLegacyOOR11111111111111111111111111111';
+
+  memory.recordPoolDecision({
+    key,
+    decision: 'CLOSE',
+    reason: 'OUT_OF_RANGE_30M',
+    source: 'LEGACY_TEST',
+  });
+  memory.recordPoolOutcome({
+    key,
+    tokenMint: key,
+    pnlPct: -1.2,
+    reason: 'STOP_LOSS',
+  });
+
+  const existing = memory.getPoolMemory(key);
+  existing.lastReason = 'OUT_OF_RANGE_30M';
+  existing.lastOutcome = 'LOSS';
+  existing.lastDecision = 'CLOSE';
+
+  const decision = memory.evaluatePoolReentryDiscipline({
+    pool: { tokenMint: key },
+    entrySignals: {
+      taTrend: 'BULLISH',
+      entryTimingState: 'LP_LIVE',
+      entryReadiness: 'HIGH',
+      breakoutQuality: 'VALID',
+      priceChangeM15: 1.1,
+    },
+  });
+
+  assert.equal(decision.allowed, true);
+  assert.equal(decision.reason, 'NO_RECENT_LOSS');
+});
+
 test('pool memory module does not import network or LLM dependencies', () => {
   const src = readFileSync(join(repoRoot, 'src/market/poolMemory.js'), 'utf8');
   assert.doesNotMatch(src, /createMessage|getMarketSnapshot|fetchWithTimeout|fetch\(/);

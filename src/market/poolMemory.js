@@ -410,11 +410,22 @@ export function evaluatePoolReentryDiscipline({
 
   const lastOutcome = String(memory.lastOutcome || '').toUpperCase();
   const lastDecision = String(memory.lastDecision || '').toUpperCase();
-  if (lastDecision !== 'CLOSE' || lastOutcome !== 'LOSS') {
+  const lastReason = normalizeExitReason(memory.lastReason || '');
+  const isLegacyOorClose = lastDecision === 'CLOSE' && lastOutcome === 'LOSS' && lastReason === 'OUT_OF_RANGE';
+  if (lastDecision !== 'CLOSE' || (lastOutcome !== 'LOSS' && !isLegacyOorClose)) {
     return {
       allowed: true,
       reason: signal.reason || 'NO_RECENT_LOSS',
       signal,
+    };
+  }
+
+  if (isLegacyOorClose) {
+    return {
+      allowed: true,
+      reason: 'NO_RECENT_LOSS',
+      signal,
+      memory,
     };
   }
 
