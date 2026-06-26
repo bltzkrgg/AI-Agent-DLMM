@@ -158,16 +158,17 @@ class ReportManager {
     }
 
     vLines.push(`${idx + 1}) <b>${name}</b>`);
-    vLines.push(`   TVL     : ${this._formatUsdShort(tvl)}`);
-    vLines.push(`   Vol24h  : ${this._formatUsdShort(vol24h)}`);
-    vLines.push(`   Fee/TVL : ${this._formatRatioPct(feeTvl, 1)}`);
-    vLines.push(`   Bin     : ${binStep}`);
+    vLines.push(`   TVL: ${this._formatUsdShort(tvl)} | Vol24h: ${this._formatUsdShort(vol24h)}`);
+    vLines.push(`   Fee/TVL: ${this._formatRatioPct(feeTvl, 1)} | Bin: ${binStep}`);
     vLines.push('');
     if (gmgn.top10Pct != null) gmgnParts.push(`Top10 ${this._formatPct(gmgn.top10Pct, 1)}`);
     if (gmgn.devHoldPct != null) gmgnParts.push(`Dev ${this._formatPct(gmgn.devHoldPct, 1)}`);
     if (gmgn.insiderPct != null) gmgnParts.push(`Insider ${this._formatPct(gmgn.insiderPct, 1)}`);
     if (gmgn.bundlerPct != null) gmgnParts.push(`Bundler ${this._formatPct(gmgn.bundlerPct, 1)}`);
-    vLines.push(`   GMGN    : ${holders} holders${gmgnParts.length > 0 ? ` | ${gmgnParts.join(' | ')}` : ''}`);
+    vLines.push(`   GMGN: ${holders} holders`);
+    if (gmgnParts.length > 0) {
+      vLines.push(`   GMGN: ${gmgnParts.join(' | ')}`);
+    }
     if (pool.volumeTrend) {
       vLines.push(`   VolTrend: ${String(pool.volumeTrend).toUpperCase()}`);
     }
@@ -226,9 +227,9 @@ class ReportManager {
     }).join('\n') || '- N/A'}\n\n`;
 
     report += `<b>[ STATUS ]</b>\n`;
-    report += `Slot  : ${slotText}\n`;
+    report += `Slot: ${slotText}\n`;
     report += `Action: HOLD new entries\n`;
-    report += `Next  : ${nextScreenMin}m`;
+    report += `Next: ${nextScreenMin}m`;
 
     return report;
   }
