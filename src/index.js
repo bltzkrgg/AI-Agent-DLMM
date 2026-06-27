@@ -462,6 +462,9 @@ function buildStartCommandPanel() {
 
 function buildActivationLaunchPanel() {
   return {
+    text: `🟢 <b>AI-Agent-DLMM Activated</b>\n\n` +
+      `Discovery priority dapat diarahkan lewat <code>/setconfig discovery.category</code>.\n` +
+      `<i>Trending = activity-first. Top performers = fee-first.</i>`,
     opts: {
       parse_mode: 'HTML',
       reply_markup: {
@@ -507,6 +510,8 @@ function buildSetconfigSectionDetail(section) {
       '/setconfig maxTvl 5000000',
       '/setconfig minVolume 100000',
       '/setconfig maxMcap 1000000',
+      '/setconfig discovery.category trending',
+      '/setconfig discovery.category top performers',
     ],
     alerts: [
       '/setconfig poolAlertsEnabled true',
@@ -1144,6 +1149,13 @@ bot.onText(/\/config/, (msg) => {
     `screeningTopPoolsLimit = ${cfg.screeningTopPoolsLimit}`,
     `discoveryTimeframe    = ${cfg.discoveryTimeframe}`,
     `discoveryCategory     = ${cfg.discoveryCategory}`,
+    `discoveryPriority     = ${
+      String(cfg.discoveryCategory || '').toLowerCase() === 'trending'
+        ? 'activity-first'
+        : String(cfg.discoveryCategory || '').toLowerCase() === 'top performers'
+          ? 'fee-first'
+          : 'fee-first'
+    }`,
     `minTvl                = ${cfg.minTvl}`,
     `maxTvl                = ${cfg.maxTvl}`,
     `minVolume          = ${cfg.minVolume}`,
@@ -1865,10 +1877,17 @@ setTimeout(async () => {
       `Deploy Size: <code>${cfg.deployAmountSol || 0.1} SOL</code>\n` +
       `${formatTakeProfitRiskLabel(cfg.takeProfitMinNetPnlPct, cfg.stopLossPct)}\n` +
       `Reconcile: <code>${reconcile.restored}/${reconcile.scanned}</code>\n` +
-      `Watch Layer: <code>${cfg.taWatchEnabled === false ? 'OFF' : 'ON'}</code> | ` +
-      `Radar: <code>${cfg.pendingRetestEnabled === false ? 'OFF' : 'ON'}</code>\n` +
-      `Pool Alerts: <code>${poolAlerts ? `ON (${poolAlertsIntervalMin}m)` : 'OFF'}</code>\n` +
-      `Auto Screen: <code>${discoveryPaused ? 'OFF by /stop' : autoScr ? `ON (${cfg.screeningIntervalMin}m)` : 'OFF'}</code>`
+    `Watch Layer: <code>${cfg.taWatchEnabled === false ? 'OFF' : 'ON'}</code> | ` +
+    `Radar: <code>${cfg.pendingRetestEnabled === false ? 'OFF' : 'ON'}</code>\n` +
+    `Pool Alerts: <code>${poolAlerts ? `ON (${poolAlertsIntervalMin}m)` : 'OFF'}</code>\n` +
+    `Auto Screen: <code>${discoveryPaused ? 'OFF by /stop' : autoScr ? `ON (${cfg.screeningIntervalMin}m)` : 'OFF'}</code>\n` +
+    `Discovery Priority: <code>${
+      String(cfg.discoveryCategory || '').toLowerCase() === 'trending'
+        ? 'activity-first'
+        : String(cfg.discoveryCategory || '').toLowerCase() === 'top performers'
+          ? 'fee-first'
+          : 'fee-first'
+    }</code>`
       ,
       buildActivationLaunchPanel().opts
     );
