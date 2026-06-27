@@ -245,6 +245,23 @@ test('out-of-range close does not poison pool-memory as a loss', async () => {
   assert.equal(decision.reason, 'POOL_MEMORY_DELTA_0');
 });
 
+test('manual close unknown does not register as profit or loss', async () => {
+  const memory = await loadPoolMemory();
+  const key = 'MintManualUnknown1111111111111111111111111';
+
+  memory.recordPoolOutcome({
+    key,
+    tokenMint: key,
+    pnlPct: 0,
+    reason: 'MANUAL_WITHDRAW_DETECTED',
+  });
+
+  const row = memory.getPoolMemory(key);
+  assert.equal(row.lastOutcome, 'BREAKEVEN');
+  assert.equal(row.successCount, 0);
+  assert.equal(row.failureCount, 0);
+});
+
 test('legacy out-of-range loss memory does not block reentry', async () => {
   const memory = await loadPoolMemory();
   const key = 'MintLegacyOOR11111111111111111111111111111';

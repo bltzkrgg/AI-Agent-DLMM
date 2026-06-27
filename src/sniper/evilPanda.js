@@ -2865,29 +2865,33 @@ function buildManualCloseAccounting(reg = {}) {
   const canonicalEntry = readCanonicalEntryContext(reg);
   const deploySol = Math.max(0, safeNum(reg?.deploySol, 0));
   const positionValueSol = Math.max(0, safeNum(reg?.currentValueSol, reg?.positionValueSol || 0));
-  const feePnlSol = Math.max(0, safeNum(reg?.feePnlSol, 0));
-  const feePnlPct = Math.max(0, safeNum(reg?.feePnlPct, 0));
+  const currentValueSol = safeNum(reg?.currentValueSol, null);
+  const currentPnlPct = safeNum(reg?.pnlPct, null);
+  const feePnlSol = safeNum(reg?.feePnlSol, null);
+  const feePnlPct = safeNum(reg?.feePnlPct, null);
   const feePnlSource = String(reg?.feePnlSource || 'snapshot');
-  const accountingStatus = reg?.feePnlAvailable === true || feePnlSol > 0
+  const hasSnapshot = Number.isFinite(currentValueSol) && Number.isFinite(currentPnlPct);
+  const hasFeeSnapshot = Number.isFinite(feePnlSol) && Number.isFinite(feePnlPct);
+  const accountingStatus = hasSnapshot
     ? 'manual_close_reconciled_from_snapshot'
-    : 'manual_close_reconciled_from_last_status';
-  // Manual close snapshot accounting is fee-only. Liquidity withdrawal value is
-  // retained as metadata, but it must not become realized PnL for briefing/learning.
-  const pnlTotalSol = feePnlSol;
-  const pnlTotalPct = feePnlPct;
-  const pricePnlSol = 0;
+    : 'manual_close_pnl_unknown';
+  const pnlTotalSol = hasSnapshot ? safeNum(currentValueSol, 0) - deploySol : 0;
+  const pnlTotalPct = hasSnapshot ? safeNum(currentPnlPct, 0) : 0;
+  const pricePnlSol = hasSnapshot && Number.isFinite(feePnlSol)
+    ? pnlTotalSol - safeNum(feePnlSol, 0)
+    : 0;
   return {
     deploySol,
     positionValueSol,
-    feePnlSol,
-    feePnlPct,
+    feePnlSol: hasFeeSnapshot ? safeNum(feePnlSol, 0) : 0,
+    feePnlPct: hasFeeSnapshot ? safeNum(feePnlPct, 0) : 0,
     pricePnlSol,
     pnlTotalSol,
     pnlTotalPct,
     walletNetDeltaSol: null,
     rentRefundSol: null,
     accountingStatus,
-    feePnlAvailable: reg?.feePnlAvailable === true || feePnlSol > 0 || feePnlPct > 0,
+    feePnlAvailable: hasFeeSnapshot,
     feePnlSource,
     entryActiveBin: canonicalEntry.entryActiveBin,
     entryPrice: canonicalEntry.entryPrice,
@@ -4890,7 +4894,7 @@ export async function monitorPnL(positionPubkey) {
     const canonicalEntry = readCanonicalEntryContext(reg);
     const entryActiveBin = canonicalEntry.entryActiveBin;
     const entryPrice = canonicalEntry.entryPrice;
-    const feeOnlyPnl = await calculateFeeOnlyPnl({
+  const feeOnlyPnl = await calculateFeeOnlyPnl({
       feeXRaw: pd.feeX?.toString() || '0',
       feeYRaw: pd.feeY?.toString() || '0',
       xDec,
@@ -4900,6 +4904,13 @@ export async function monitorPnL(positionPubkey) {
       activeBinPrice: rawPrice,
       quoteFn: null,
     });
+
+    reg.currentValueSol = currentValueSol;
+    reg.pnlPct = pnlPct;
+    reg.feePnlSol = feeOnlyPnl.feePnlSol;
+    reg.feePnlPct = feeOnlyPnl.feePnlPct;
+    reg.feePnlAvailable = feeOnlyPnl.feePnlAvailable === true;
+    reg.feePnlSource = feeOnlyPnl.feePnlSource;
 
     // ── PRIORITAS 1: Hard Stop Loss ───────────────────────────────────────
     if (pnlPct <= -stopLossPct) {
@@ -5574,9 +5585,15 @@ export async function markPositionManuallyClosed(positionPubkey, reason = 'MANUA
     `Pool: <code>${pool}</code>\n` +
     `Reason: <code>${exitMeta.reasonLabel}</code>\n` +
     (
-      `Fee PnL: <code>${manualAccounting.feePnlSol.toFixed(6)} SOL / ${manualAccounting.feePnlPct > 0 ? '+' : ''}${manualAccounting.feePnlPct.toFixed(2)}%</code>\n` +
-      `Position Value: <code>${manualAccounting.positionValueSol.toFixed(4)} SOL</code>\n` +
-      `<i>PnL manual close dicatat dari snapshot terakhir bot.</i>`
+      manualAccounting.accountingStatus === 'manual_close_reconciled_from_snapshot'
+        ? `Total PnL: <code>${manualAccounting.pnlTotalSol.toFixed(6)} SOL / ${manualAccounting.pnlTotalPct > 0 ? '+' : ''}${manualAccounting.pnlTotalPct.toFixed(2)}%</code>\n` +
+          `Fee PnL: <code>${manualAccounting.feePnlSol.toFixed(6)} SOL / ${manualAccounting.feePnlPct > 0 ? '+' : ''}${manualAccounting.feePnlPct.toFixed(2)}%</code>\n` +
+          `Position Value: <code>${manualAccounting.positionValueSol.toFixed(4)} SOL</code>\n` +
+          `<i>PnL manual close direkonsiliasi dari snapshot terakhir bot.</i>`
+        : `Total PnL: <code>n/a</code>\n` +
+          `Fee PnL: <code>${manualAccounting.feePnlSol.toFixed(6)} SOL / ${manualAccounting.feePnlPct > 0 ? '+' : ''}${manualAccounting.feePnlPct.toFixed(2)}%</code>\n` +
+          `Position Value: <code>${manualAccounting.positionValueSol.toFixed(4)} SOL</code>\n` +
+          `<i>PnL manual close belum bisa direkonsiliasi; disimpan sebagai unknown.</i>`
     )
   );
   console.log(`[evilPanda] Manual close recorded: ${positionPubkey.slice(0,8)} | token=${symbol} | reason=${reason}`);

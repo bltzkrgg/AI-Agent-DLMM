@@ -51,8 +51,10 @@ test('manual close helper records manual withdrawals when called explicitly', ()
   assert.match(evilPandaSrc, /if \(feeSource === 'none' \|\| feeSource === 'fast_path'\) return false/);
   assert.match(evilPandaSrc, /function buildManualCloseAccounting/);
   assert.match(evilPandaSrc, /manual_close_reconciled_from_snapshot/);
-  assert.match(evilPandaSrc, /PnL manual close dicatat dari snapshot terakhir bot/);
-  assert.doesNotMatch(evilPandaSrc, /pending reconcile/);
+  assert.match(evilPandaSrc, /manual_close_pnl_unknown/);
+  assert.match(evilPandaSrc, /Total PnL: <code>/);
+  assert.match(evilPandaSrc, /PnL manual close direkonsiliasi dari snapshot terakhir bot/);
+  assert.match(evilPandaSrc, /PnL manual close belum bisa direkonsiliasi; disimpan sebagai unknown/);
   assert.match(evilPandaSrc, /getExitDisplayMeta\(reason, normalizedReason\)/);
   assert.match(evilPandaSrc, /Reason: <code>\$\{exitMeta\.reasonLabel\}<\/code>/);
   assert.match(hunterSrc, /function resolveTrackedFeeSnapshot/);
