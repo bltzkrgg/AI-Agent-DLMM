@@ -46,20 +46,18 @@ test('report manager renders LP scanner brief with top pools and rejects', () =>
 
   assert.match(report, /AI-Agent Scanner Result/);
   assert.match(report, /\[ TOP 5 \]/);
-  assert.match(report, /<b>1\. CHANCE<\/b>/);
-  assert.match(report, /<b>TVL<\/b> \$469\.4K \| <b>Vol24h<\/b> \$5\.6M/);
-  assert.match(report, /<b>Fee\/TVL<\/b> 1\.9% \| <b>Bin<\/b> 100/);
-  assert.match(report, /GMGN: 124 holders/);
-  assert.match(report, /GMGN: Top10 31\.4% \| Dev 6\.2% \| Insider 2\.8% \| Bundler 9\.1%/);
-  assert.match(report, /VolTrend: ACCELERATING/);
-  assert.match(report, /Status: DEPLOYED/);
-  assert.match(report, /Status: REJECTED/);
+  assert.match(report, /1\. <b>CHANCE<\/b>/);
+  assert.match(report, /TVL \$469\.4K \| Vol24h \$5\.6M/);
+  assert.match(report, /Fee\/TVL 1\.9% \| Bin 100/);
+  assert.match(report, /GMGN 124 holders \| Top10 31\.4% \| Dev 6\.2% \| Insider 2\.8% \| Bundler 9\.1% \| VolTrend ACCELERATING/);
+  assert.match(report, /Status DEPLOYED/);
+  assert.match(report, /Status REJECTED/);
   assert.match(report, /\[ REJECTED \]/);
   assert.match(report, /<b>KINS<\/b>: stale market snapshot/);
   assert.match(report, /\[ STATUS \]/);
-  assert.match(report, /<b>Slot:<\/b> AVAILABLE/);
-  assert.match(report, /<b>Action:<\/b> HOLD new entries/);
-  assert.match(report, /<b>Next scan:<\/b> 15m/);
+  assert.match(report, /<b>Slot<\/b> AVAILABLE/);
+  assert.match(report, /<b>Action<\/b> HOLD new entries/);
+  assert.match(report, /<b>Next scan<\/b> 15m/);
 });
 
 test('report manager keeps working with partial pool and gmgn data', () => {
@@ -79,12 +77,12 @@ test('report manager keeps working with partial pool and gmgn data', () => {
 
   assert.match(report, /AI-Agent Scanner Result/);
   assert.match(report, /\[ TOP 5 \]/);
-  assert.match(report, /GMGN: N\/A holders/);
-  assert.match(report, /<b>1\. FCM<\/b>/);
-  assert.match(report, /<b>Fee\/TVL<\/b> N\/A/);
-  assert.match(report, /Status: REJECTED/);
-  assert.match(report, /<b>Slot:<\/b> AVAILABLE/);
-  assert.match(report, /<b>Action:<\/b> HOLD new entries/);
+  assert.match(report, /GMGN N\/A holders/);
+  assert.match(report, /1\. <b>FCM<\/b>/);
+  assert.match(report, /Fee\/TVL N\/A/);
+  assert.match(report, /Status REJECTED/);
+  assert.match(report, /<b>Slot<\/b> AVAILABLE/);
+  assert.match(report, /<b>Action<\/b> HOLD new entries/);
 });
 
 test('report manager renders internal feeTvlRatio field instead of falling back to N/A', () => {
@@ -103,9 +101,9 @@ test('report manager renders internal feeTvlRatio field instead of falling back 
 
   const report = reportManager.generateReport();
 
-  assert.match(report, /<b>1\. BOUNTYWORK<\/b>/);
-  assert.match(report, /Status: REJECTED/);
-  assert.match(report, /<b>Fee\/TVL<\/b> 1\.9%/);
+  assert.match(report, /1\. <b>BOUNTYWORK<\/b>/);
+  assert.match(report, /Status REJECTED/);
+  assert.match(report, /Fee\/TVL 1\.9%/);
 });
 
 test('report manager shows N/A when feeTvlRatio is missing, not fake zero', () => {
@@ -124,9 +122,9 @@ test('report manager shows N/A when feeTvlRatio is missing, not fake zero', () =
 
   const report = reportManager.generateReport();
 
-  assert.match(report, /<b>TVL<\/b> \$25\.0K \| <b>Vol24h<\/b> \$150\.0K/);
-  assert.match(report, /<b>Fee\/TVL<\/b> N\/A \| <b>Bin<\/b> 100/);
-  assert.match(report, /Status: REJECTED/);
+  assert.match(report, /TVL \$25\.0K \| Vol24h \$150\.0K/);
+  assert.match(report, /Fee\/TVL N\/A \| Bin 100/);
+  assert.match(report, /Status REJECTED/);
 });
 
 test('slot-saturated summary mode keeps FULL 1/1 and still shows report shape', () => {
@@ -141,10 +139,10 @@ test('slot-saturated summary mode keeps FULL 1/1 and still shows report shape', 
   const report = reportManager.generateReport();
 
   assert.match(report, /AI-Agent Scanner Result/);
-  assert.match(report, /<b>Slot:<\/b> FULL 1\/1/);
+  assert.match(report, /<b>Slot<\/b> FULL 1\/1/);
   assert.match(report, /<b>JUNO<\/b>: bundler too high/);
-  assert.match(report, /<b>Action:<\/b> HOLD new entries/);
-  assert.match(report, /<b>Next scan:<\/b> 15m/);
+  assert.match(report, /<b>Action<\/b> HOLD new entries/);
+  assert.match(report, /<b>Next scan<\/b> 15m/);
 });
 
 test('slot-saturated summary mode skips telegram send entirely', async () => {
