@@ -222,9 +222,9 @@ class ReportManager {
     }).join('\n') || '- N/A'}\n\n`;
 
     report += `<b>[ STATUS ]</b>\n`;
-    report += `<b>Slot</b> ${slotText}\n`;
-    report += `<b>Action</b> HOLD new entries\n`;
-    report += `<b>Next scan</b> ${nextScreenMin}m`;
+    report += `<b>Slot:</b> ${slotText}\n`;
+    report += `<b>Action:</b> HOLD new entries\n`;
+    report += `<b>Next scan:</b> ${nextScreenMin}m`;
 
     return report;
   }

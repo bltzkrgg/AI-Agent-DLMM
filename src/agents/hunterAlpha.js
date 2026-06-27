@@ -2845,13 +2845,12 @@ FORMAT JAWABAN (WAJIB JSON VALID, TANPA MARKDOWN):
               `👀 <b>WATCH</b>\n` +
               `Token: <b>${tokenSymbol}</b>\n` +
               `Entry: <b>${entryReadiness || 'N/A'}</b> | Breakout: <b>${breakoutQuality || 'N/A'}</b>\n` +
-              `Status:\n` +
-              `- Slot: <code>${slotUsed}/${slotMax}</code> used\n` +
-              `- Trend M15: <code>${entrySignals.taTrend || 'UNKNOWN'}</code> <i>(live confirmation)</i>\n` +
+              `- Slot: <code>${slotUsed}/${slotMax}</code>\n` +
+              `- Trend M15: <code>${entrySignals.taTrend || 'UNKNOWN'}</code>\n` +
               `- Timing: <code>${entrySignals.entryTimingState || 'UNKNOWN'}</code>\n` +
               `- Vol Trend: <code>${volumeTrendSignal.state || 'UNKNOWN'}</code>\n` +
               `- Safety: <code>SCOUT_OK</code>\n\n` +
-              `Watcher aktif — kandidat dipantau.`
+              `Watcher aktif - kandidat dipantau.`
             );
           }
           return { ok: true, pool, symbol: tokenSymbol || 'UNKNOWN' };
@@ -2865,11 +2864,11 @@ FORMAT JAWABAN (WAJIB JSON VALID, TANPA MARKDOWN):
         console.log(`[SCREEN] ⏳ ${tokenSymbol} → pending retest (WATCH fallback: ${watchFallbackReason})`);
         if (!String(watchFallbackReason).includes('SLOT_SATURATED_PROMOTION_PAUSED')) {
           await notify(
-            `⏳ <b>KANDIDAT DITUNDA (WATCH FULL)</b>\n` +
+            `⏳ <b>KANDIDAT DITUNDA</b>\n` +
             `Token: <b>${tokenSymbol}</b>\n` +
             `Entry: <code>${entryReadiness || 'N/A'}</code> | Breakout: <code>${breakoutQuality || 'N/A'}</code>\n` +
-            `Alasan Tunda: <i>${watchFallbackReason}</i>\n` +
-            `👁️‍🗨️ <i>Radar memantau real-time sampai slot WATCH longgar.</i>`
+            `Alasan: <i>${watchFallbackReason}</i>\n` +
+            `👁️‍🗨️ <i>Radar menunggu slot WATCH tersedia.</i>`
           );
         }
         return { ok: false, symbol: tokenSymbol || 'UNKNOWN', stage: 'SCOUT_AGENT', reason: watchFallbackReason };
@@ -2886,11 +2885,11 @@ FORMAT JAWABAN (WAJIB JSON VALID, TANPA MARKDOWN):
         addPendingRetest(pool, reason);
         console.log(`[SCREEN] ⏳ ${tokenSymbol} → pending retest (Scout DEFER: ${reason})`);
         await notify(
-          `⏳ <b>KANDIDAT DITUNDA (RADAR)</b>\n` +
+          `⏳ <b>KANDIDAT DITUNDA</b>\n` +
           `Token: <b>${tokenSymbol}</b>\n` +
           `Entry: <code>${entryReadiness || 'N/A'}</code> | Breakout: <code>${breakoutQuality || 'N/A'}</code>\n` +
-          `Alasan Tunda: <i>${reason}</i>\n` +
-          `👁️‍🗨️ <i>Radar memantau real-time sampai TA konfirmasi.</i>`
+          `Alasan: <i>${reason}</i>\n` +
+          `👁️‍🗨️ <i>Radar memantau sampai konfirmasi berikutnya.</i>`
         );
       }
 
