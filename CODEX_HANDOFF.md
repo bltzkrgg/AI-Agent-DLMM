@@ -329,3 +329,9 @@ Interpretation:
 - `DexScreener` references may remain only in oracle execution TA, not discovery.
 - `closeReason` may remain in DB/pnl payloads, but zap-out emergency slippage must derive from `input.reasoning`.
 - Hunter must not contain deploy retry chunking for 69-bin transaction-size failures.
+
+## 11. Recent LP Screening Notes
+
+- Discovery ranking now prefers active fee-flow pools using a soft internal activity bias from `volume24h`, `feeTvlRatio`, `fees24h`, `swapCount24h`, and `volumeTrend`.
+- The activity bias is ranking-only; it must not become a new hard gate or add new user config.
+- Scanner and WATCH/defer Telegram copy were polished to stay compact and professional without changing behavior.
