@@ -214,12 +214,12 @@ class ReportManager {
     let report = `<b>📊 AI-Agent Scanner Result</b>\n`;
     report += `📅 ${nowStr}\n\n`;
     report += `<b>[ TOP 5 ]</b>\n\n`;
-    report += `${top5Cycle.map((pool, idx) => this._buildTopPoolBlock(pool, idx)).join('\n')}\n\n`;
+    report += `${top5Cycle.map((pool, idx) => this._buildTopPoolBlock(pool, idx)).join('\n\n')}\n\n`;
     report += `<b>[ REJECTED ]</b>\n`;
     report += `${rejectedTokens.slice(0, 4).map((t) => {
       const reason = this.getGateDetailsText(t, this.getFirstFailedGate(t)) || t.reason || this.getFirstFailedGate(t) || 'Rejected';
       return `- <b>${t.name}</b>: ${reason}`;
-    }).join('\n') || '- N/A'}\n`;
+    }).join('\n') || '- N/A'}\n\n`;
 
     report += `<b>[ STATUS ]</b>\n`;
     report += `<b>Slot</b> ${slotText}\n`;
