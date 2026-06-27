@@ -165,14 +165,14 @@ class ReportManager {
     if (gmgn.devHoldPct != null) gmgnParts.push(`Dev ${this._formatPct(gmgn.devHoldPct, 1)}`);
     if (gmgn.insiderPct != null) gmgnParts.push(`Insider ${this._formatPct(gmgn.insiderPct, 1)}`);
     if (gmgn.bundlerPct != null) gmgnParts.push(`Bundler ${this._formatPct(gmgn.bundlerPct, 1)}`);
-    vLines.push(`   <b>GMGN</b>: ${holders} holders`);
+    vLines.push(`GMGN: ${holders} holders`);
     if (gmgnParts.length > 0) {
-      vLines.push(`   <b>GMGN</b>: ${gmgnParts.join(' | ')}`);
+      vLines.push(`GMGN: ${gmgnParts.join(' | ')}`);
     }
     if (pool.volumeTrend) {
-      vLines.push(`   <b>VolTrend</b>: ${String(pool.volumeTrend).toUpperCase()}`);
+      vLines.push(`VolTrend: ${String(pool.volumeTrend).toUpperCase()}`);
     }
-    vLines.push(`   <b>Status</b>: ${pool.rejected ? 'REJECTED' : (pool.status || 'WATCH')}`);
+    vLines.push(`Status: ${pool.rejected ? 'REJECTED' : (pool.status || 'WATCH')}`);
     return vLines.join('\n');
   }
 
@@ -214,9 +214,7 @@ class ReportManager {
     const cfg = getConfig();
     const nextScreenMin = cfg.intervals?.screeningIntervalMin || cfg.screeningIntervalMin || 15;
     const slotText = this.slotSaturatedSummaryOnly ? 'FULL 1/1' : `${deferredTokens.length > 0 ? 'WATCH' : 'AVAILABLE'}`;
-    let report = `╔══════════════════════════════╗\n`;
-    report += `║   AI-Agent Scanner Result    ║\n`;
-    report += `╚══════════════════════════════╝\n`;
+    let report = `<b>📊 AI-Agent Scanner Result</b>\n`;
     report += `📅 ${nowStr}\n\n`;
     report += `<b>[ TOP 5 ]</b>\n\n`;
     report += `${top5Cycle.map((pool, idx) => this._buildTopPoolBlock(pool, idx)).join('\n\n')}\n\n`;
