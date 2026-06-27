@@ -391,6 +391,38 @@ function getDiscoveryActivityPriorityMode(category = '') {
   return 'fee_first';
 }
 
+function getDiscoveryActivityBiasScore(pool = {}) {
+  const volume24h = Number(pool?.volume24h || 0);
+  const feeRatio = Number(pool?.feeActiveTvlRatio || 0);
+  const fees24h = Number(pool?.fees24h || 0);
+  const txns24h = Number(pool?.swapCount24h || 0);
+  const tvl = Number(pool?.activeTvl || pool?.totalTvl || 0);
+  const volumeTvlRatio = tvl > 0 ? volume24h / tvl : 0;
+
+  let score = 0;
+
+  if (volume24h >= 500_000) score += 4;
+  else if (volume24h >= 150_000) score += 2;
+  else if (volume24h > 0 && volume24h < 50_000) score -= 2;
+
+  if (feeRatio >= 0.02) score += 4;
+  else if (feeRatio >= 0.01) score += 2;
+  else if (feeRatio > 0 && feeRatio < 0.005) score -= 2;
+
+  if (fees24h >= 1_000) score += 2;
+  else if (fees24h >= 300) score += 1;
+  else if (fees24h > 0 && fees24h < 100) score -= 1;
+
+  if (volumeTvlRatio >= 4) score += 2;
+  else if (volumeTvlRatio >= 2) score += 1;
+  else if (volumeTvlRatio > 0 && volumeTvlRatio < 1) score -= 2;
+
+  if (txns24h >= 1_000) score += 1;
+  else if (txns24h > 0 && txns24h < 200) score -= 1;
+
+  return score;
+}
+
 function compareDiscoveryPriority(a = {}, b = {}, {
   binStepPriority = [],
   priorityMode = 'fee_first',
@@ -409,9 +441,12 @@ function compareDiscoveryPriority(a = {}, b = {}, {
   const bTxns = Number(b?.swapCount24h || 0);
   const aTvl = Number(a?.activeTvl || a?.totalTvl || 0);
   const bTvl = Number(b?.activeTvl || b?.totalTvl || 0);
+  const aActivityBias = getDiscoveryActivityBiasScore(a);
+  const bActivityBias = getDiscoveryActivityBiasScore(b);
 
   if (priorityMode === 'trend_activity') {
     if (aVolume !== bVolume) return bVolume - aVolume;
+    if (aActivityBias !== bActivityBias) return bActivityBias - aActivityBias;
     if (aTxns !== bTxns) return bTxns - aTxns;
     if (aFeeRatio !== bFeeRatio) return bFeeRatio - aFeeRatio;
     if (aTvl !== bTvl) return bTvl - aTvl;
@@ -420,6 +455,7 @@ function compareDiscoveryPriority(a = {}, b = {}, {
 
   if (priorityMode === 'performance_activity') {
     if (aFeeRatio !== bFeeRatio) return bFeeRatio - aFeeRatio;
+    if (aActivityBias !== bActivityBias) return bActivityBias - aActivityBias;
     if (aVolume !== bVolume) return bVolume - aVolume;
     if (aTxns !== bTxns) return bTxns - aTxns;
     if (aTvl !== bTvl) return bTvl - aTvl;
@@ -427,6 +463,7 @@ function compareDiscoveryPriority(a = {}, b = {}, {
   }
 
   if (aFeeRatio !== bFeeRatio) return bFeeRatio - aFeeRatio;
+  if (aActivityBias !== bActivityBias) return bActivityBias - aActivityBias;
   if (aVolume !== bVolume) return bVolume - aVolume;
   if (aTxns !== bTxns) return bTxns - aTxns;
   if (aTvl !== bTvl) return bTvl - aTvl;
@@ -531,6 +568,7 @@ function normalizePool(p, discoverySource = 'MERIDIAN') {
     // total_tvl: dipakai oleh dominance check — seluruh TVL pool (bukan hanya active bins)
     totalTvl:          Number(p.tvl || p.total_tvl || p.active_tvl || 0),
     volume24h:         Number(p.volume24h || p.volume_24h || p.trade_volume_24h || p.tradeVolume24h || p.volume || p.v24h || 0),
+    fees24h:           Number(p.fees?.['24h'] || p.fees24h || p.fee24h || p.fee_24h || p.fee || 0),
     swapCount24h:      Number(p.swap_count || p.swapCount || p.txns24h || 0),
     mcap:              Number(p.token_x?.market_cap || p.mcap || 0),
     holders:           Number(p.base_token_holders || p.holders || 0),
@@ -549,6 +587,10 @@ function normalizePool(p, discoverySource = 'MERIDIAN') {
 
 export function __compareDiscoveryPriorityForTests(a, b, opts = {}) {
   return compareDiscoveryPriority(a, b, opts);
+}
+
+export function __getDiscoveryActivityBiasScoreForTests(pool = {}) {
+  return getDiscoveryActivityBiasScore(pool);
 }
 
 // ── Composite VETO runner ─────────────────────────────────────────

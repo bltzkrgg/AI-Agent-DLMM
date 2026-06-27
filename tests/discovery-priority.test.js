@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { __compareDiscoveryPriorityForTests } from '../src/market/meridianVeto.js';
+import { __compareDiscoveryPriorityForTests, __getDiscoveryActivityBiasScoreForTests } from '../src/market/meridianVeto.js';
 
 test('trending discovery prioritizes higher activity before fee ratio', () => {
   const activeButLowerFee = {
@@ -71,4 +71,23 @@ test('discovery priority still respects configured bin-step order first', () => 
   });
 
   assert.equal(out < 0, true);
+});
+
+test('activity bias penalizes quiet pools even when they are technically valid', () => {
+  const activePool = {
+    volume24h: 640000,
+    feeActiveTvlRatio: 0.018,
+    fees24h: 1200,
+    swapCount24h: 1400,
+    activeTvl: 120000,
+  };
+  const sleepyPool = {
+    volume24h: 38000,
+    feeActiveTvlRatio: 0.004,
+    fees24h: 62,
+    swapCount24h: 90,
+    activeTvl: 110000,
+  };
+
+  assert.equal(__getDiscoveryActivityBiasScoreForTests(activePool) > __getDiscoveryActivityBiasScoreForTests(sleepyPool), true);
 });

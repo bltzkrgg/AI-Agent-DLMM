@@ -66,6 +66,38 @@ function normalizePoolTotalTvl(pool = {}) {
   return Number.isFinite(numeric) && numeric >= 0 ? numeric : 0;
 }
 
+function getPoolActivityBiasScore(pool = {}) {
+  const volume24h = normalizePoolVolume24h(pool);
+  const feeRatio = Number(normalizeMeteoraFeeTvlRatio(pool) || 0);
+  const fees24h = Number(normalizePoolFees24h(pool) || 0);
+  const tvl = normalizePoolTotalTvl(pool);
+  const volumeTvlRatio = tvl > 0 ? volume24h / tvl : 0;
+  const trendState = String(pool?._volumeTrendSignal?.state || '').toUpperCase();
+
+  let score = 0;
+
+  if (volume24h >= 500_000) score += 4;
+  else if (volume24h >= 150_000) score += 2;
+  else if (volume24h > 0 && volume24h < 50_000) score -= 2;
+
+  if (feeRatio >= 0.02) score += 4;
+  else if (feeRatio >= 0.01) score += 2;
+  else if (feeRatio > 0 && feeRatio < 0.005) score -= 2;
+
+  if (fees24h >= 1_000) score += 2;
+  else if (fees24h >= 300) score += 1;
+  else if (fees24h > 0 && fees24h < 100) score -= 1;
+
+  if (volumeTvlRatio >= 4) score += 2;
+  else if (volumeTvlRatio >= 2) score += 1;
+  else if (volumeTvlRatio > 0 && volumeTvlRatio < 1) score -= 2;
+
+  if (trendState === 'ACCELERATING') score += 2;
+  else if (trendState === 'DECELERATING') score -= 2;
+
+  return score;
+}
+
 function comparePoolsByFeeGeneration(a = {}, b = {}, binStepCandidates = []) {
   const aFees24h = normalizePoolFees24h(a);
   const bFees24h = normalizePoolFees24h(b);
@@ -533,6 +565,10 @@ function getPoolVolumeTrendSortDelta(pool = {}) {
 
 export function __volumeTrendSortDeltaForTests(pool = {}) {
   return getPoolVolumeTrendSortDelta(pool);
+}
+
+export function __poolActivityBiasScoreForTests(pool = {}) {
+  return getPoolActivityBiasScore(pool);
 }
 
 function formatMemorySignal(signal = {}) {
@@ -2408,12 +2444,18 @@ export async function scanAndDeploy({ emitFinalReport = true } = {}) {
 
     const screeningTopPoolsLimit = Math.max(1, Number(cfg.screeningTopPoolsLimit) || 5);
 
-    // ── Sort by efficiency (Vol/TVL), evaluasi HANYA top pool configurable ───
-    // Filosofi LP: resource screening hanya untuk kandidat paling efisien.
+    // ── Sort by fee-flow activity bias, evaluasi HANYA top pool configurable ───
+    // Filosofi LP: resource screening fokus ke pool yang bukan cuma valid, tapi juga masih hidup.
     // Pool di luar batas ini TIDAK dievaluasi sama sekali (hemat API & waktu).
     pools = pools.sort((a, b) => {
+      const activityDelta = getPoolActivityBiasScore(b) - getPoolActivityBiasScore(a);
+      if (activityDelta !== 0) return activityDelta;
       const volTrendDelta = getPoolVolumeTrendSortDelta(b) - getPoolVolumeTrendSortDelta(a);
       if (volTrendDelta !== 0) return volTrendDelta;
+      const feeRatioDelta = (Number(normalizeMeteoraFeeTvlRatio(b) || 0) - Number(normalizeMeteoraFeeTvlRatio(a) || 0));
+      if (feeRatioDelta !== 0) return feeRatioDelta;
+      const feesDelta = Number(normalizePoolFees24h(b) || 0) - Number(normalizePoolFees24h(a) || 0);
+      if (feesDelta !== 0) return feesDelta;
       const aVol = Number(a.volume24h || a.trade_volume_24h || 0);
       const bVol = Number(b.volume24h || b.trade_volume_24h || 0);
       const aTvl = Number(a.totalTvl || a.activeTvl || 0) || 1;
@@ -2422,7 +2464,7 @@ export async function scanAndDeploy({ emitFinalReport = true } = {}) {
     });
 
     const scoutCandidates = pools.slice(0, screeningTopPoolsLimit);
-    console.log(`[SCREEN] 🔬 Memulai Strict Serial Screening untuk ${scoutCandidates.length} Top-${screeningTopPoolsLimit} pool (sorted by Vol/TVL efficiency)...`);
+    console.log(`[SCREEN] 🔬 Memulai Strict Serial Screening untuk ${scoutCandidates.length} Top-${screeningTopPoolsLimit} pool (sorted by activity-biased fee flow)...`);
   // Jupiter budget dibuat minimal sebesar jumlah kandidat batch ini agar
   // pool yang sudah lolos tahap awal tidak ke-defer prematur sebelum sempat diuji.
   const configuredJupiterBudget = Number(cfg.jupiterMaxChecksPerScan);

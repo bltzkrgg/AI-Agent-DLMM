@@ -65,3 +65,25 @@ test('hunter volume trend sort delta stays a ranking bias, not a deploy gate', a
   assert.doesNotMatch(source, /volumeTrendEnabled/);
   assert.doesNotMatch(source, /VOLUME_TREND.*REJECT|REJECT.*VOLUME_TREND/);
 });
+
+test('hunter activity bias prefers living fee-flow pools without becoming a hard gate', async () => {
+  const hunter = await importFresh(join(repoRoot, 'src/agents/hunterAlpha.js'));
+  const active = {
+    volume24h: 520000,
+    feeActiveTvlRatio: 0.019,
+    fees24h: 1400,
+    activeTvl: 130000,
+    _volumeTrendSignal: { state: 'ACCELERATING' },
+  };
+  const quiet = {
+    volume24h: 42000,
+    feeActiveTvlRatio: 0.004,
+    fees24h: 70,
+    activeTvl: 120000,
+    _volumeTrendSignal: { state: 'DECELERATING' },
+  };
+  const source = readFileSync(join(repoRoot, 'src/agents/hunterAlpha.js'), 'utf8');
+
+  assert.equal(hunter.__poolActivityBiasScoreForTests(active) > hunter.__poolActivityBiasScoreForTests(quiet), true);
+  assert.doesNotMatch(source, /POOL_ACTIVITY.*REJECT|REJECT.*POOL_ACTIVITY/);
+});
