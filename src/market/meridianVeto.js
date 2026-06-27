@@ -384,6 +384,55 @@ async function fetchDiscoveryPoolsFromMeridian(limit, filterStr, timeframe, cate
   return { pools, source: 'MERIDIAN_FALLBACK', reason: 'Meridian Discovery PASS' };
 }
 
+function getDiscoveryActivityPriorityMode(category = '') {
+  const normalized = String(category || '').trim().toLowerCase();
+  if (normalized === 'trending') return 'trend_activity';
+  if (normalized === 'top performers') return 'performance_activity';
+  return 'fee_first';
+}
+
+function compareDiscoveryPriority(a = {}, b = {}, {
+  binStepPriority = [],
+  priorityMode = 'fee_first',
+} = {}) {
+  const aPrio = binStepPriority.indexOf(Number(a?.binStep || 0));
+  const bPrio = binStepPriority.indexOf(Number(b?.binStep || 0));
+  const aBinRank = aPrio >= 0 ? aPrio : Number.MAX_SAFE_INTEGER;
+  const bBinRank = bPrio >= 0 ? bPrio : Number.MAX_SAFE_INTEGER;
+  if (aBinRank !== bBinRank) return aBinRank - bBinRank;
+
+  const aVolume = Number(a?.volume24h || 0);
+  const bVolume = Number(b?.volume24h || 0);
+  const aFeeRatio = Number(a?.feeActiveTvlRatio || 0);
+  const bFeeRatio = Number(b?.feeActiveTvlRatio || 0);
+  const aTxns = Number(a?.swapCount24h || 0);
+  const bTxns = Number(b?.swapCount24h || 0);
+  const aTvl = Number(a?.activeTvl || a?.totalTvl || 0);
+  const bTvl = Number(b?.activeTvl || b?.totalTvl || 0);
+
+  if (priorityMode === 'trend_activity') {
+    if (aVolume !== bVolume) return bVolume - aVolume;
+    if (aTxns !== bTxns) return bTxns - aTxns;
+    if (aFeeRatio !== bFeeRatio) return bFeeRatio - aFeeRatio;
+    if (aTvl !== bTvl) return bTvl - aTvl;
+    return 0;
+  }
+
+  if (priorityMode === 'performance_activity') {
+    if (aFeeRatio !== bFeeRatio) return bFeeRatio - aFeeRatio;
+    if (aVolume !== bVolume) return bVolume - aVolume;
+    if (aTxns !== bTxns) return bTxns - aTxns;
+    if (aTvl !== bTvl) return bTvl - aTvl;
+    return 0;
+  }
+
+  if (aFeeRatio !== bFeeRatio) return bFeeRatio - aFeeRatio;
+  if (aVolume !== bVolume) return bVolume - aVolume;
+  if (aTxns !== bTxns) return bTxns - aTxns;
+  if (aTvl !== bTvl) return bTvl - aTvl;
+  return 0;
+}
+
 /**
  * @param {{ limit?: number }} opts
  * @returns {Promise<Array>} - Array pool objects sorted by fee/tvl ratio
@@ -399,6 +448,7 @@ export async function discoverHighFeePoolsMeridian({ limit = 50 } = {}) {
   const maxTvl = Number(cfg.maxTvl) || 0;
   const timeframe = cfg.discoveryTimeframe || '1h';
   const category = cfg.discoveryCategory || '';
+  const priorityMode = getDiscoveryActivityPriorityMode(category);
 
   const minBinStep = Math.min(...binStepPriority);
   const maxBinStep = Math.max(...binStepPriority);
@@ -452,13 +502,7 @@ export async function discoverHighFeePoolsMeridian({ limit = 50 } = {}) {
       // Hanya pool dengan binStep yang ada di priority list
       return binStepPriority.includes(p.binStep);
     })
-    .sort((a, b) => {
-      // Priority sort: pertama urutkan binStep (200 > 125 > 100), lalu fee ratio
-      const aPrio = binStepPriority.indexOf(a.binStep);
-      const bPrio = binStepPriority.indexOf(b.binStep);
-      if (aPrio !== bPrio) return aPrio - bPrio; // lower index = higher priority
-      return (b.feeActiveTvlRatio || 0) - (a.feeActiveTvlRatio || 0);
-    })
+    .sort((a, b) => compareDiscoveryPriority(a, b, { binStepPriority, priorityMode }))
     .slice(0, limit);
 
   return normalized;
@@ -487,6 +531,7 @@ function normalizePool(p, discoverySource = 'MERIDIAN') {
     // total_tvl: dipakai oleh dominance check — seluruh TVL pool (bukan hanya active bins)
     totalTvl:          Number(p.tvl || p.total_tvl || p.active_tvl || 0),
     volume24h:         Number(p.volume24h || p.volume_24h || p.trade_volume_24h || p.tradeVolume24h || p.volume || p.v24h || 0),
+    swapCount24h:      Number(p.swap_count || p.swapCount || p.txns24h || 0),
     mcap:              Number(p.token_x?.market_cap || p.mcap || 0),
     holders:           Number(p.base_token_holders || p.holders || 0),
     organicScore:      Number(p.token_x?.organic_score || p.organic_score || 0),
@@ -500,6 +545,10 @@ function normalizePool(p, discoverySource = 'MERIDIAN') {
     discoverySource,
     raw:               p,
   };
+}
+
+export function __compareDiscoveryPriorityForTests(a, b, opts = {}) {
+  return compareDiscoveryPriority(a, b, opts);
 }
 
 // ── Composite VETO runner ─────────────────────────────────────────
