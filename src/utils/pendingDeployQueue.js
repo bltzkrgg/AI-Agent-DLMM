@@ -45,6 +45,16 @@ function escapeHTML(text = '') {
     .replace(/'/g, '&#39;');
 }
 
+function withTimeout(promise, ms, label = 'operation') {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`${label}_TIMEOUT_${ms}ms`)), ms);
+    Promise.resolve(promise).then(
+      (value) => { clearTimeout(timer); resolve(value); },
+      (error) => { clearTimeout(timer); reject(error); }
+    );
+  });
+}
+
 export function buildDeployTriggeredTelegramMessage({
   symbol = '',
   poolAddress = '',
@@ -1717,7 +1727,8 @@ async function runWatcher() {
           throw new Error('deployFn belum di-set ke DeployQueue — panggil setDeployQueueDeployFn() dulu.');
         }
 
-        const result = await _deployFn(poolAddress, {
+        const deployTimeoutMs = Number(cfg.deployTimeoutMs || 180_000);
+        const result = await withTimeout(_deployFn(poolAddress, {
           hasNonRefundableFees:
             pool?._marketSnapshot?.pool?.hasNonRefundableFees ??
             pool?.hasNonRefundableFees ??
@@ -1751,7 +1762,7 @@ async function runWatcher() {
             // when anchor drift makes the frozen snapshot unusable.
             required: false,
           },
-        });
+        }), deployTimeoutMs, 'DEPLOY_QUEUE');
 
         if (result && typeof result === 'object' && result.dryRun) {
           await safeSend(
@@ -1850,18 +1861,22 @@ async function runWatcher() {
         await releaseDeploySlot(reservationId).catch(() => {});
       }
 
-    } catch (tokenErr) {
-      // Token-level error: log dan lanjut ke token berikutnya, jangan crash loop
-      const sym = entry?.symbol || mint?.slice(0, 8) || 'UNKNOWN';
-      console.error(`[QUEUE] ⛔ Error saat proses ${sym}: ${tokenErr.message}`);
-      removeQueueCandidate(mint, entry); // Buang dari queue agar tidak retry tanpa batas
-      await safeSend(
-        `❌ <b>Deploy Gagal (Queue)</b>\n` +
-        `<b>${sym}</b>\n` +
-        `Error: <code>${tokenErr.message.slice(0, 200)}</code>\n` +
-        `<i>Token dikeluarkan dari queue.</i>`
-      );
-    }
+      } catch (tokenErr) {
+        // Token-level error: log dan lanjut ke token berikutnya, jangan crash loop
+        const sym = entry?.symbol || mint?.slice(0, 8) || 'UNKNOWN';
+        console.error(`[QUEUE] ⛔ Error saat proses ${sym}: ${tokenErr.message}`);
+        removeQueueCandidate(mint, entry); // Buang dari queue agar tidak retry tanpa batas
+        const isTimeout = String(tokenErr?.message || '').includes('DEPLOY_QUEUE_TIMEOUT_');
+        const timeoutNote = isTimeout
+          ? `\n<i>Deploy queue timeout. Perlu reconcile/manual check sebelum retry.</i>`
+          : '';
+        await safeSend(
+          `❌ <b>Deploy Gagal (Queue)</b>\n` +
+          `<b>${sym}</b>\n` +
+          `Error: <code>${escapeHTML(tokenErr.message).slice(0, 200)}</code>${timeoutNote}\n` +
+          `<i>Token dikeluarkan dari queue.</i>`
+        );
+      }
   }
 
   // Jadwalkan ulang watcher (15 detik — real-time monitoring)
