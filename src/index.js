@@ -33,7 +33,6 @@ import { deleteRuntimeState, getRuntimeState, setRuntimeState } from './runtime/
 import { startDeployQueueWatcher, stopDeployQueueWatcher, setDeployQueueNotifyFn, setDeployQueueDeployFn, setDeployQueueMonitorFn } from './utils/pendingDeployQueue.js';
 import { deployPosition } from './sniper/evilPanda.js';
 import { sendImmediateTopPoolsReport }    from './agents/hunterAlpha.js';
-import { getNewestPools }                 from './solana/meteora.js';
 
 // ── PID Lock — cegah multiple instance ───────────────────────────
 const PID_FILE = new URL('../bot.pid', import.meta.url).pathname;
@@ -143,10 +142,6 @@ const CHAT_ID = ALLOWED_ID; // bot hanya punya satu user
 const OPERATOR_DISCOVERY_PAUSED_KEY = 'operatorDiscoveryPaused';
 const AUTO_SCREENING_RUNTIME_KEY = 'autoScreeningRuntimeEnabled';
 const AUTO_SCREENING_ACTIVE_POSITION_PAUSE_KEY = 'autoScreeningPausedByActivePositions';
-const POOL_ALERTS_RUNTIME_KEY = 'poolAlertsRuntimeEnabled';
-const POOL_ALERTS_SEEN_KEY = 'seenPoolAlerts';
-const MAX_SEEN_POOL_ALERTS = 500;
-
 function isDiscoveryPaused() {
   const state = getRuntimeState(OPERATOR_DISCOVERY_PAUSED_KEY, null);
   return state === true || state?.paused === true;
@@ -169,95 +164,6 @@ function isAutoScreeningRuntimeEnabled() {
 
 function clearAutoScreeningRuntimeEnabled() {
   deleteRuntimeState(AUTO_SCREENING_RUNTIME_KEY);
-}
-
-function setPoolAlertsRuntimeEnabled(enabled, reason = 'OPERATOR_RESUME') {
-  setRuntimeState(POOL_ALERTS_RUNTIME_KEY, {
-    enabled: Boolean(enabled),
-    reason,
-    updatedAt: Date.now(),
-  });
-}
-
-function isPoolAlertsRuntimeEnabled() {
-  const state = getRuntimeState(POOL_ALERTS_RUNTIME_KEY, null);
-  if (state === true || state?.enabled === true) return true;
-  if (state === false || state?.enabled === false) return false;
-  return getConfig().poolAlertsEnabled === true;
-}
-
-function clearPoolAlertsRuntimeEnabled() {
-  deleteRuntimeState(POOL_ALERTS_RUNTIME_KEY);
-}
-
-function getSeenPoolAlertsMap() {
-  const raw = getRuntimeState(POOL_ALERTS_SEEN_KEY, {});
-  return raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : {};
-}
-
-function persistSeenPoolAlertsMap(next) {
-  const entries = Object.entries(next || {})
-    .filter(([key]) => Boolean(key))
-    .sort((a, b) => Number(b[1]?.seenAt || 0) - Number(a[1]?.seenAt || 0))
-    .slice(0, MAX_SEEN_POOL_ALERTS);
-  const trimmed = Object.fromEntries(entries);
-  setRuntimeState(POOL_ALERTS_SEEN_KEY, trimmed);
-  return trimmed;
-}
-
-function rememberSeenPoolAlert(pool) {
-  const address = String(pool?.address || '').trim();
-  if (!address) return;
-  const seen = getSeenPoolAlertsMap();
-  seen[address] = {
-    seenAt: Date.now(),
-    name: String(pool?.name || ''),
-  };
-  persistSeenPoolAlertsMap(seen);
-}
-
-function seedSeenPoolAlerts(pools = []) {
-  const seen = getSeenPoolAlertsMap();
-  let changed = false;
-  for (const pool of pools) {
-    const address = String(pool?.address || '').trim();
-    if (!address || seen[address]) continue;
-    seen[address] = {
-      seenAt: Date.now(),
-      name: String(pool?.name || ''),
-    };
-    changed = true;
-  }
-  if (changed) persistSeenPoolAlertsMap(seen);
-}
-
-function buildPoolAlertNotification(pool) {
-  const name = escapeHTML(String(pool?.name || 'Unknown Pool'));
-  const address = String(pool?.address || '').trim();
-  const shortAddress = escapeHTML(address ? `${address.slice(0, 8)}...${address.slice(-6)}` : 'N/A');
-  const tvlRaw = Number(pool?.tvl || pool?.liquidityRaw || 0);
-  const volumeRaw = Number(pool?.volume24hRaw || 0);
-  const feeRatioRaw = Number(pool?.feeTvlRatio || 0) * 100;
-  const binStep = Number(pool?.binStep || 0);
-  const meteoraLink = address ? `https://app.meteora.ag/dlmm/${address}` : '';
-  const fmtUsd = (value) => {
-    if (!Number.isFinite(value) || value <= 0) return 'N/A';
-    if (value >= 1_000_000) return `$${(value / 1_000_000).toFixed(2)}M`;
-    if (value >= 1_000) return `$${(value / 1_000).toFixed(1)}K`;
-    return `$${value.toFixed(0)}`;
-  };
-
-  const lines = [
-    `🆕 <b>New Meteora Pool</b>`,
-    `Name: <code>${name}</code>`,
-    `Pool: <code>${shortAddress}</code>`,
-    `TVL: <code>${fmtUsd(tvlRaw)}</code> | Vol24h: <code>${fmtUsd(volumeRaw)}</code>`,
-    `Fee/TVL: <code>${Number.isFinite(feeRatioRaw) ? `${feeRatioRaw.toFixed(2)}%` : 'N/A'}</code> | Bin: <code>${binStep || 'N/A'}</code>`,
-  ];
-  if (meteoraLink) {
-    lines.push(`Link: <a href="${meteoraLink}">Meteora Pool</a>`);
-  }
-  return lines.join('\n');
 }
 
 function setAutoScreeningPausedByActivePositions(paused, reason = 'ACTIVE_POSITIONS_OPEN') {
@@ -413,7 +319,6 @@ function buildStartCommandPanel() {
       `/hunt — mulai loop\n` +
       `/screening — scan manual top pool\n` +
       `/autoscreen — on/off auto-screening\n` +
-      `/poolalerts — on/off watcher pool baru\n` +
       `/ca — kirim CA / pool Meteora\n` +
       `/evolve — saran config dari harvest.log\n` +
       `/balance — saldo wallet\n` +
@@ -436,7 +341,6 @@ function buildStartCommandPanel() {
           ],
           [
             { text: '/autoscreen', callback_data: 'cmd:/autoscreen' },
-            { text: '/poolalerts', callback_data: 'cmd:/poolalerts' },
           ],
           [
             { text: '/ca', callback_data: 'cmd:/ca' },
@@ -470,7 +374,6 @@ function buildActivationLaunchPanel() {
       reply_markup: {
         inline_keyboard: [
           [
-            { text: 'Pool Alerts ON', callback_data: 'cmd:/poolalerts on' },
             { text: 'Autoscreen ON', callback_data: 'cmd:/autoscreen on' },
           ],
           [
@@ -486,7 +389,6 @@ function buildSetconfigSectionDetail(section) {
   const titleMap = {
     finance: '💰 Finance',
     discovery: '🔍 Discovery',
-    alerts: '🆕 Alerts',
     strategy: '🎯 Strategy',
     entry: '🕯️ Entry',
     watch: '👀 Watch',
@@ -512,12 +414,6 @@ function buildSetconfigSectionDetail(section) {
       '/setconfig maxMcap 1000000',
       '/setconfig discovery.category trending',
       '/setconfig discovery.category top performers',
-    ],
-    alerts: [
-      '/setconfig poolAlertsEnabled true',
-      '/setconfig alerts.enabled true',
-      '/setconfig poolAlertsIntervalMin 5',
-      '/setconfig alerts.intervalMin 10',
     ],
     strategy: [
       '/setconfig strategy.liquidityShape bidask',
@@ -675,129 +571,11 @@ function stopAutoScreeningRuntime() {
 }
 
 async function resumeAutoScreeningRuntime(chatId, { snapshotTopPools = false, source = 'operator_resume' } = {}) {
-  if (isPoolAlertsRuntimeEnabled()) {
-    updateConfig({ poolAlertsEnabled: false });
-    stopPoolAlertsRuntime();
-  }
   resumeDiscovery(source);
   setAutoScreeningRuntimeEnabled(true, source);
   stopScreeningLoop();
   await startAutoScreeningRuntime(chatId, { snapshotTopPools });
   return true;
-}
-
-let _poolAlertsLoopTimer = null;
-let _poolAlertsScanInFlight = false;
-
-function stopPoolAlertsLoop() {
-  if (_poolAlertsLoopTimer) {
-    clearInterval(_poolAlertsLoopTimer);
-    _poolAlertsLoopTimer = null;
-  }
-  _poolAlertsScanInFlight = false;
-}
-
-function stopPoolAlertsRuntime() {
-  stopPoolAlertsLoop();
-  clearPoolAlertsRuntimeEnabled();
-}
-
-async function runPoolAlertsTick({ seedOnly = false, source = 'pool_alerts' } = {}) {
-  if (isDiscoveryPaused()) return { blocked: true, policy: 'OPERATOR_DISCOVERY_PAUSED' };
-  if (!isPoolAlertsRuntimeEnabled()) return { blocked: true, policy: 'POOL_ALERTS_DISABLED' };
-  if (_poolAlertsScanInFlight) {
-    console.log(`[pool-alerts] skip tick source=${source}: scan in-flight`);
-    return { blocked: true, policy: 'POOL_ALERTS_SCAN_IN_FLIGHT' };
-  }
-
-  _poolAlertsScanInFlight = true;
-  try {
-    const cfg = getConfig();
-    const limit = Math.max(20, Number(cfg.meteoraDiscoveryLimit) || 180);
-    const pools = await getNewestPools(limit);
-    if (!Array.isArray(pools) || pools.length === 0) return { alerted: 0, scanned: 0, seeded: seedOnly };
-
-    const seen = getSeenPoolAlertsMap();
-    const unseen = pools.filter((pool) => {
-      const address = String(pool?.address || '').trim();
-      return address && !seen[address];
-    });
-
-    if (seedOnly) {
-      seedSeenPoolAlerts(pools);
-      console.log(`[pool-alerts] baseline seeded source=${source} pools=${pools.length}`);
-      return { alerted: 0, scanned: pools.length, seeded: true };
-    }
-
-    let alerted = 0;
-    for (const pool of unseen) {
-      await notify(buildPoolAlertNotification(pool), {
-        disable_web_page_preview: true,
-      });
-      rememberSeenPoolAlert(pool);
-      alerted += 1;
-    }
-
-    if (unseen.length === 0) {
-      seedSeenPoolAlerts(pools);
-    }
-
-    console.log(`[pool-alerts] tick source=${source} scanned=${pools.length} unseen=${unseen.length} alerted=${alerted}`);
-    return { alerted, scanned: pools.length, seeded: false };
-  } catch (e) {
-    console.error(`[pool-alerts] tick error source=${source}: ${e.message}`);
-    return { alerted: 0, error: e.message };
-  } finally {
-    _poolAlertsScanInFlight = false;
-  }
-}
-
-async function runPoolAlertsLoop() {
-  const startCfg = getConfig();
-  if (!isPoolAlertsRuntimeEnabled()) {
-    console.log('[pool-alerts] poolAlertsEnabled=false — loop tidak dijalankan.');
-    return;
-  }
-  const intervalMin = Number(startCfg.poolAlertsIntervalMin) || 5;
-  const intervalMs = intervalMin * 60 * 1000;
-
-  const tick = async () => {
-    if (isDiscoveryPaused()) {
-      stopPoolAlertsLoop();
-      return;
-    }
-    if (!isPoolAlertsRuntimeEnabled()) {
-      stopPoolAlertsLoop();
-      return;
-    }
-    await runPoolAlertsTick({ seedOnly: false, source: 'interval' });
-  };
-
-  _poolAlertsLoopTimer = setInterval(tick, intervalMs);
-  console.log(`[pool-alerts] watcher aktif — interval ${intervalMin} menit (${intervalMs / 1000}s)`);
-}
-
-async function startPoolAlertsRuntime(chatId, { source = 'operator_resume', announce = false } = {}) {
-  updateConfig({ autoScreeningEnabled: false, poolAlertsEnabled: true });
-  stopAutoScreeningRuntime();
-  resumeDiscovery(source);
-  setAutoScreeningRuntimeEnabled(false, 'POOL_ALERTS_MUTEX');
-  setPoolAlertsRuntimeEnabled(true, source);
-  stopPoolAlertsLoop();
-  await runPoolAlertsTick({ seedOnly: true, source: `${source}_baseline` });
-  await runPoolAlertsLoop();
-  if (announce) {
-    const cfg = getConfig();
-    await bot.sendMessage(
-      chatId,
-      `🆕 <b>Pool Alerts: ON</b>\n` +
-      `Mode: <code>discovery only</code>\n` +
-      `Interval: <code>${cfg.poolAlertsIntervalMin || 5}m</code>\n` +
-      `Auto Screen: <code>OFF</code>\n` +
-      `<i>Watcher hanya kirim pool Meteora baru. Tidak deploy dan tidak monitor posisi.</i>`,
-      { parse_mode: 'HTML' }
-    );
-  }
 }
 
 async function urgentNotify(msg) {
@@ -893,37 +671,6 @@ bot.onText(/\/start/, (msg) => {
   if (!guard(msg)) return;
   const panel = buildStartCommandPanel();
   sendLong(msg.chat.id, panel.text, panel.opts);
-});
-
-bot.onText(/\/poolalerts(?:\s+(on|off))?/, async (msg, match) => {
-  if (!guard(msg)) return;
-  const chatId = msg.chat.id;
-  const toggle = match[1]?.toLowerCase();
-
-  if (!toggle) {
-    const cfg = getConfig();
-    bot.sendMessage(
-      chatId,
-      `🆕 Pool Alerts: <code>${cfg.poolAlertsEnabled ? 'ON' : 'OFF'}</code>\n\n` +
-      `Gunakan <code>/poolalerts on</code> atau <code>/poolalerts off</code>`,
-      { parse_mode: 'HTML' }
-    );
-    return;
-  }
-
-  if (toggle === 'on') {
-    await startPoolAlertsRuntime(chatId, { source: 'TELEGRAM_POOL_ALERTS_ON', announce: true });
-    return;
-  }
-
-  updateConfig({ poolAlertsEnabled: false });
-  stopPoolAlertsRuntime();
-  bot.sendMessage(
-    chatId,
-    `🔕 <b>Pool Alerts: OFF</b>\n` +
-    `<i>Watcher pool baru dihentikan.</i>`,
-    { parse_mode: 'HTML' }
-  );
 });
 
 // /ca <pool_address> — manual input pool Meteora ke WATCH/QUEUE
@@ -1180,8 +927,6 @@ bot.onText(/\/config/, (msg) => {
     `atrMultiplier         = ${cfg.atrMultiplier}`,
     `dryRun                = ${cfg.dryRun}`,
     `autoScreeningEnabled  = ${cfg.autoScreeningEnabled}`,
-    `poolAlertsEnabled     = ${cfg.poolAlertsEnabled}`,
-    `poolAlertsIntervalMin = ${cfg.poolAlertsIntervalMin}`,
     `screeningIntervalMin  = ${cfg.screeningIntervalMin}`,
   ].join('\n');
   const oor = [
@@ -1313,8 +1058,6 @@ bot.onText(/\/setconfig(?:\s+(\S+))?(?:\s+(.+))?/, async (msg, match) => {
   if (flatKey === 'autoScreeningEnabled') {
     setAutoScreeningRuntimeEnabled(parsed === true, 'TELEGRAM_SETCONFIG');
     if (parsed === true) {
-      updateConfig({ poolAlertsEnabled: false });
-      stopPoolAlertsRuntime();
       const wasPaused = isDiscoveryPaused();
       const loopWasRunning = Boolean(_screeningLoopTimer);
       if (wasPaused || !loopWasRunning) {
@@ -1348,35 +1091,6 @@ bot.onText(/\/setconfig(?:\s+(\S+))?(?:\s+(.+))?/, async (msg, match) => {
         { parse_mode: 'HTML' }
       );
     }
-    return;
-  }
-
-  if (flatKey === 'poolAlertsEnabled') {
-    if (parsed === true) {
-      await startPoolAlertsRuntime(chatId, { source: 'TELEGRAM_SETCONFIG_POOL_ALERTS_ON', announce: true });
-    } else {
-      stopPoolAlertsRuntime();
-      bot.sendMessage(
-        chatId,
-        `🔕 <b>Pool Alerts: OFF</b>\n` +
-        `<i>Watcher pool baru dihentikan.</i>`,
-        { parse_mode: 'HTML' }
-      );
-    }
-    return;
-  }
-
-  if (flatKey === 'poolAlertsIntervalMin' && result.poolAlertsEnabled) {
-    stopPoolAlertsLoop();
-    await runPoolAlertsLoop();
-    bot.sendMessage(
-      chatId,
-      `✅ <b>Interval Pool Alerts diupdate!</b>\n\n` +
-      `Sebelum: <code>${before} menit</code>\n` +
-      `Sesudah: <code>${after} menit</code>\n\n` +
-      `<i>Watcher pool baru di-restart dengan interval baru.</i>`,
-      { parse_mode: 'HTML' }
-    );
     return;
   }
 
@@ -1469,10 +1183,6 @@ bot.onText(/\/autoscreen(?:\s+(on|off))?/, async (msg, match) => {
   }
 
   const enable = toggle === 'on';
-  if (enable) {
-    updateConfig({ poolAlertsEnabled: false });
-    stopPoolAlertsRuntime();
-  }
   const result = updateConfig({ autoScreeningEnabled: enable });
   const after  = result.autoScreeningEnabled;
   setAutoScreeningRuntimeEnabled(enable, 'TELEGRAM_AUTOSCREEN');
@@ -1759,19 +1469,6 @@ async function restoreAutoScreeningOnStartup({
   stopScreeningLoop();
 }
 
-async function restorePoolAlertsOnStartup({ chatId, enabled = false, discoveryPaused = false, intervalMin = 5 } = {}) {
-  if (!enabled || discoveryPaused) {
-    stopPoolAlertsRuntime();
-    return;
-  }
-  console.log(
-    `[pool-alerts][startup] restoredFromConfig=true ` +
-    `discoveryPaused=${discoveryPaused ? 'true' : 'false'} ` +
-    `intervalMin=${intervalMin}`
-  );
-  await startPoolAlertsRuntime(chatId, { source: 'STARTUP_RESTORE', announce: false });
-}
-
 // ── Graceful Shutdown ─────────────────────────────────────────────
 
 async function shutdown(signal) {
@@ -1779,7 +1476,6 @@ async function shutdown(signal) {
   setShutdownInProgress(true);
   stopLoop();
   stopScreeningLoop();
-  stopPoolAlertsLoop();
   stopPendingTaRadarWatcher();
   stopTaWatchWatcher();
   stopDeployQueueWatcher();
@@ -1853,10 +1549,8 @@ setTimeout(async () => {
     const balance = await getWalletBalance();
     const cfg     = getConfig();
     const autoScr = cfg.autoScreeningEnabled;
-    const poolAlerts = cfg.poolAlertsEnabled;
     const discoveryPaused = isDiscoveryPaused();
     const intervalMin = Number(cfg.screeningIntervalMin) || 15;
-    const poolAlertsIntervalMin = Number(cfg.poolAlertsIntervalMin) || 5;
 
     // Log startup Jupiter
     console.log(`✅ Jupiter V1 Direct — api.jup.ag/swap/v1 (fallback: lite-api.jup.ag)`);
@@ -1865,12 +1559,6 @@ setTimeout(async () => {
       `paused=${discoveryPaused ? 'true' : 'false'} ` +
       `startupScan=false intervalMin=${intervalMin}`
     );
-    console.log(
-      `[pool-alerts][startup] config.poolAlertsEnabled=${poolAlerts ? 'true' : 'false'} ` +
-      `paused=${discoveryPaused ? 'true' : 'false'} ` +
-      `intervalMin=${poolAlertsIntervalMin}`
-    );
-
     await notify(
       `🟢 <b>AI-Agent-DLMM Activated</b>\n\n` +
       `Balance: <code>${balance} SOL</code>\n` +
@@ -1879,7 +1567,6 @@ setTimeout(async () => {
       `Reconcile: <code>${reconcile.restored}/${reconcile.scanned}</code>\n` +
     `Watch Layer: <code>${cfg.taWatchEnabled === false ? 'OFF' : 'ON'}</code> | ` +
     `Radar: <code>${cfg.pendingRetestEnabled === false ? 'OFF' : 'ON'}</code>\n` +
-    `Pool Alerts: <code>${poolAlerts ? `ON (${poolAlertsIntervalMin}m)` : 'OFF'}</code>\n` +
     `Auto Screen: <code>${discoveryPaused ? 'OFF by /stop' : autoScr ? `ON (${cfg.screeningIntervalMin}m)` : 'OFF'}</code>\n` +
     `Discovery Priority: <code>${
       String(cfg.discoveryCategory || '').toLowerCase() === 'trending'
@@ -1897,12 +1584,6 @@ setTimeout(async () => {
       autoScreeningEnabled: false,
       discoveryPaused,
       intervalMin,
-    });
-    await restorePoolAlertsOnStartup({
-      chatId: CHAT_ID,
-      enabled: poolAlerts && !autoScr,
-      discoveryPaused,
-      intervalMin: poolAlertsIntervalMin,
     });
 
     console.log(`✅ AI-Agent-DLMM ready. Balance: ${balance} SOL`);

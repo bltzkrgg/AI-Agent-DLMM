@@ -38,9 +38,6 @@ test('config rejects unknown keys and merges nested signal weights safely', asyn
   assert.equal(configModule.resolveNestedKey('strategy.closeSwapMode')?.flatKey, 'closeSwapMode');
   assert.equal(configModule.resolveNestedKey('strategy.closeResidualSwapEnabled')?.flatKey, 'closeResidualSwapEnabled');
   assert.equal(configModule.resolveNestedKey('strategy.takeProfitMinNetPnlPct')?.flatKey, 'takeProfitMinNetPnlPct');
-  assert.equal(configModule.resolveNestedKey('alerts.enabled')?.flatKey, 'poolAlertsEnabled');
-  assert.equal(configModule.resolveNestedKey('alerts.intervalMin')?.flatKey, 'poolAlertsIntervalMin');
-
   configModule.updateConfig({
     signalWeights: { volume: 0.99 },
     deployRangeMaxBins: 48,
@@ -175,8 +172,6 @@ test('safer defaults stay conservative for real-capital usage', async () => {
   assert.equal(cfg.entryM15MaxAgeSec, 1800);
   assert.equal(cfg.entryM5HardGateEnabled, true);
   assert.equal(cfg.entryDeferOnM15PreviousUnknown, true);
-  assert.equal(cfg.poolAlertsEnabled, false);
-  assert.equal(cfg.poolAlertsIntervalMin, 5);
   assert.equal(cfg.deployQueueHoldNotifyCooldownSec, 180);
   assert.deepEqual(cfg.allowedBinSteps, [100, 125]);
 });
@@ -210,8 +205,6 @@ test('user-config.example includes pool pattern learning keys', () => {
   assert.equal(parsed.entryM15MaxAgeSec, 1800);
   assert.equal(parsed.entryM5HardGateEnabled, true);
   assert.equal(parsed.entryDeferOnM15PreviousUnknown, true);
-  assert.equal(parsed.poolAlertsEnabled, false);
-  assert.equal(parsed.poolAlertsIntervalMin, 5);
   assert.equal(parsed.deployQueueHoldNotifyCooldownSec, 180);
   assert.equal(parsed.monitorFastLaneEnabled, true);
   assert.equal(parsed.monitorFastLaneThrottleMs, 1200);

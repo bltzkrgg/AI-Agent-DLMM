@@ -60,7 +60,6 @@ test('/config and startup messages expose realtime PnL interval', () => {
   assert.match(content, /reply_markup:\s*\{\s*inline_keyboard:/);
   assert.match(content, /setconfig_section:finance/);
   assert.match(content, /setconfig_section:discovery/);
-  assert.match(content, /setconfig_section:alerts/);
   assert.match(content, /setconfig_section:strategy/);
   assert.match(content, /setconfig_section:entry/);
   assert.match(content, /setconfig_section:watch/);
@@ -84,17 +83,14 @@ test('startup and shutdown banners use the simplified AI-Agent-DLMM text', () =>
   assert.match(content, /Deploy Size: <code>\$\{cfg\.deployAmountSol \|\| 0\.1\} SOL<\/code>/);
   assert.match(content, /formatTakeProfitRiskLabel\(cfg\.takeProfitMinNetPnlPct, cfg\.stopLossPct\)/);
   assert.match(content, /buildActivationLaunchPanel/);
-  assert.match(content, /callback_data: 'cmd:\/poolalerts on'/);
   assert.match(content, /callback_data: 'cmd:\/autoscreen on'/);
   assert.match(content, /callback_data: 'cmd:\/start'/);
   assert.match(content, /buildStartCommandPanel/);
   assert.match(content, /\/start — lihat command/);
-  assert.match(content, /\/poolalerts — on\/off watcher pool baru/);
   assert.match(content, /\/autoscreen — on\/off auto-screening/);
   assert.match(content, /🛑 <b>AI-Agent-DLMM Shutdown<\/b>/);
   assert.match(content, /Tidak ada posisi aktif\./);
   assert.match(content, /✅ AI-Agent-DLMM ready\. Balance:/);
-  assert.match(content, /Pool Alerts: <code>\$\{poolAlerts \? `ON \(\$\{poolAlertsIntervalMin\}m\)` : 'OFF'\}<\/code>/);
 });
 
 test('telegram cycle report labels deferred scout state as HOLD', () => {
@@ -102,16 +98,4 @@ test('telegram cycle report labels deferred scout state as HOLD', () => {
   const content = readFileSync(reporterPath, 'utf-8');
 
   assert.match(content, /DEFER\/HOLD/);
-});
-
-test('pool alerts use newest-pool feed instead of ranked discovery feed', () => {
-  const indexPath = join(__dirname, '../src/index.js');
-  const meteoraPath = join(__dirname, '../src/solana/meteora.js');
-  const indexContent = readFileSync(indexPath, 'utf-8');
-  const meteoraContent = readFileSync(meteoraPath, 'utf-8');
-
-  assert.match(indexContent, /import \{ getNewestPools \}/);
-  assert.match(indexContent, /const pools = await getNewestPools\(limit\)/);
-  assert.match(meteoraContent, /export async function getNewestPools\(limit = 150\)/);
-  assert.match(meteoraContent, /getTopPools\(cap, 'pool_created_at:desc'\)/);
 });
