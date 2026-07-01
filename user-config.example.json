@@ -99,6 +99,7 @@
   "trailingStopPct": 5,
   "trailingTriggerPct": 10,
   "trailingDropPct": 3,
+  "manualTAExitEnabled": false,
   "maxHoldHours": 6,
   "outOfRangeWaitMinutes": 30,
   "oorDisplayWaitMinutes": 5,

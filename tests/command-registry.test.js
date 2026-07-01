@@ -84,10 +84,12 @@ test('startup and shutdown banners use the simplified AI-Agent-DLMM text', () =>
   assert.match(content, /formatTakeProfitRiskLabel\(cfg\.takeProfitMinNetPnlPct, cfg\.stopLossPct\)/);
   assert.match(content, /buildActivationLaunchPanel/);
   assert.match(content, /callback_data: 'cmd:\/autoscreen on'/);
+  assert.match(content, /callback_data: 'cmd:\/manualexit on'/);
   assert.match(content, /callback_data: 'cmd:\/start'/);
   assert.match(content, /buildStartCommandPanel/);
   assert.match(content, /\/start — lihat command/);
   assert.match(content, /\/autoscreen — on\/off auto-screening/);
+  assert.match(content, /\/manualexit — on\/off TA-only exit untuk posisi manual/);
   assert.match(content, /🛑 <b>AI-Agent-DLMM Shutdown<\/b>/);
   assert.match(content, /Tidak ada posisi aktif\./);
   assert.match(content, /✅ AI-Agent-DLMM ready\. Balance:/);

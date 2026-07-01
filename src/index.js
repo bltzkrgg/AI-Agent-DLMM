@@ -319,6 +319,7 @@ function buildStartCommandPanel() {
       `/hunt — mulai loop\n` +
       `/screening — scan manual top pool\n` +
       `/autoscreen — on/off auto-screening\n` +
+      `/manualexit — on/off TA-only exit untuk posisi manual\n` +
       `/ca — kirim CA / pool Meteora\n` +
       `/evolve — saran config dari harvest.log\n` +
       `/balance — saldo wallet\n` +
@@ -341,6 +342,7 @@ function buildStartCommandPanel() {
           ],
           [
             { text: '/autoscreen', callback_data: 'cmd:/autoscreen' },
+            { text: '/manualexit', callback_data: 'cmd:/manualexit' },
           ],
           [
             { text: '/ca', callback_data: 'cmd:/ca' },
@@ -373,6 +375,9 @@ function buildActivationLaunchPanel() {
       parse_mode: 'HTML',
       reply_markup: {
         inline_keyboard: [
+          [
+            { text: 'Manual TA Exit ON', callback_data: 'cmd:/manualexit on' },
+          ],
           [
             { text: 'Autoscreen ON', callback_data: 'cmd:/autoscreen on' },
           ],
@@ -725,6 +730,7 @@ bot.onText(/\/status/, async (msg) => {
     `Balance: <code>${balance} SOL</code>\n` +
     `Deploy Amount: <code>${cfg.deployAmountSol || 0.1} SOL</code>\n` +
     `${formatTakeProfitRiskLabel(cfg.takeProfitMinNetPnlPct, cfg.stopLossPct)}\n` +
+    `Manual TA Exit: <code>${cfg.manualTAExitEnabled ? 'ON' : 'OFF'}</code> <i>(manual positions only)</i>\n` +
     `Anchor: <code>DLMM active bin</code> | Source: <code>frozen/live fallback</code>\n` +
     `TA: <code>info only (RSI ref ${cfg.smartExitRsi || 90})</code>`,
     { parse_mode: 'HTML' }
@@ -916,6 +922,7 @@ bot.onText(/\/config/, (msg) => {
       `trailingTriggerPct    = ${cfg.trailingTriggerPct}`,
       `trailingDropPct       = ${cfg.trailingDropPct}`,
       `trailingStopPct       = ${cfg.trailingStopPct}`,
+      `manualTAExitEnabled   = ${cfg.manualTAExitEnabled}`,
       `dlmmLiquidityShape    = ${cfg.dlmmLiquidityShape}`,
       `deployRangeMaxBins    = ${cfg.deployRangeMaxBins}`,
       `takeProfitMinNetPnlPct = ${cfg.takeProfitMinNetPnlPct}`,
@@ -1225,6 +1232,34 @@ bot.onText(/\/autoscreen(?:\s+(on|off))?/, async (msg, match) => {
       { parse_mode: 'HTML' }
     );
   }
+});
+
+bot.onText(/\/manualexit(?:\s+(on|off))?/, async (msg, match) => {
+  if (!guard(msg)) return;
+  const chatId = msg.chat.id;
+  const toggle = match[1]?.toLowerCase();
+
+  if (!toggle) {
+    const current = getConfig().manualTAExitEnabled === true;
+    bot.sendMessage(
+      chatId,
+      `🎯 Manual TA Exit: <code>${current ? 'ON' : 'OFF'}</code>\n` +
+      `<i>Berlaku hanya untuk posisi manual dari /ca. Posisi agent tetap trailing-only.</i>\n\n` +
+      `Gunakan <code>/manualexit on</code> atau <code>/manualexit off</code>`,
+      { parse_mode: 'HTML' }
+    );
+    return;
+  }
+
+  const enable = toggle === 'on';
+  const result = updateConfig({ manualTAExitEnabled: enable });
+  const after = result.manualTAExitEnabled === true;
+  bot.sendMessage(
+    chatId,
+    `🎯 <b>Manual TA Exit: ${after ? 'ON' : 'OFF'}</b>\n` +
+    `<i>${after ? 'Posisi manual dari /ca akan memakai TA-only exit + SL tetap aktif.' : 'Posisi manual baru tidak lagi memakai TA-only exit otomatis.'}</i>`,
+    { parse_mode: 'HTML' }
+  );
 });
 
 // ── /briefing — laporan harian bot ───────────────────────────────
@@ -1564,6 +1599,7 @@ setTimeout(async () => {
       `Balance: <code>${balance} SOL</code>\n` +
       `Deploy Size: <code>${cfg.deployAmountSol || 0.1} SOL</code>\n` +
       `${formatTakeProfitRiskLabel(cfg.takeProfitMinNetPnlPct, cfg.stopLossPct)}\n` +
+      `Manual TA Exit: <code>${cfg.manualTAExitEnabled ? 'ON' : 'OFF'}</code> <i>(manual positions only)</i>\n` +
       `Reconcile: <code>${reconcile.restored}/${reconcile.scanned}</code>\n` +
     `Watch Layer: <code>${cfg.taWatchEnabled === false ? 'OFF' : 'ON'}</code> | ` +
     `Radar: <code>${cfg.pendingRetestEnabled === false ? 'OFF' : 'ON'}</code>\n` +

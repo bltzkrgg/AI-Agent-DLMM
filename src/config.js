@@ -172,6 +172,7 @@ const DEFAULTS = {
   trailingStopPct:        5.0,
   trailingTriggerPct:     10,
   trailingDropPct:        3.0,
+  manualTAExitEnabled:    false,
   maxHoldHours:           72,
   outOfRangeWaitMinutes:  30,   // Tunggu N menit OOR sebelum close
   oorDisplayWaitMinutes:  5,    // Tampilan OOR di log/notify
@@ -391,6 +392,7 @@ const NESTED_SECTION_MAP = {
     trailingStopPct:    'trailingStopPct',
     trailingTriggerPct: 'trailingTriggerPct',
     trailingDropPct:    'trailingDropPct',
+    manualTAExitEnabled:'manualTAExitEnabled',
     smartExitRsi:       'smartExitRsi',
     takeProfitMinNetPnlPct: 'takeProfitMinNetPnlPct',
     maxHoldHours:       'maxHoldHours',
@@ -651,6 +653,7 @@ export const SETCONFIG_WHITELIST = {
   trailingStopPct:        { section: 'strategy',           type: 'number',  desc: 'Ambang profit awal trailing reference (%)' },
   trailingTriggerPct:     { section: 'strategy',           type: 'number',  desc: 'Aktifkan trailing TP setelah net exposure PnL ini (%)' },
   trailingDropPct:        { section: 'strategy',           type: 'number',  desc: 'Jarak retrace dari HWM untuk trigger TP (%)' },
+  manualTAExitEnabled:    { section: 'strategy',           type: 'boolean', desc: 'Aktifkan TA-only exit untuk posisi manual (/ca)' },
   takeProfitMinNetPnlPct: { section: 'strategy',           type: 'number',  desc: 'Legacy TA TP gate (%) — tidak dipakai saat TP trailing-only' },
 
   // ── Discovery Quality ────────────────────────────────────────────

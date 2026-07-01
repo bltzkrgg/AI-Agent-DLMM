@@ -108,6 +108,18 @@ function normalizeTrackedTrendDirection(value = '') {
   return 'UNKNOWN';
 }
 
+function isManualTaExitPosition(reg = {}, cfg = getConfig()) {
+  if (!reg || typeof reg !== 'object') return false;
+  if (cfg?.manualTAExitEnabled !== true) return false;
+  const entryOrigin = String(
+    reg?.entryOrigin ||
+    reg?.entryCanonicalSnapshot?.entryOrigin ||
+    reg?.entryCanonicalSnapshot?.source ||
+    ''
+  ).toLowerCase();
+  return entryOrigin === 'manual_ca' || entryOrigin === 'telegram_ca' || entryOrigin === 'telegram_raw_ca';
+}
+
 function evaluateFrozenEntryIntentForDeploy({
   enabled = false,
   frozenEntryActiveBin = null,
@@ -4415,6 +4427,12 @@ export async function deployPosition(poolAddress, deployOptions = {}) {
         entryFinalSupertrendReason: finalTrendReason,
         entryFinalSupertrendAt: finalTrendAt,
         entryCanonicalSnapshot: runtimeCanonicalEntrySnapshot,
+        entryOrigin: String(
+          deployOptions?.entryOrigin ||
+          runtimeCanonicalEntrySnapshot?.entryOrigin ||
+          runtimeCanonicalEntrySnapshot?.source ||
+          ''
+        ),
         rangeAdjustReason: finalDeployState?.finalArgsContext?.rangeAdjustReason || null,
         hwmPct: 0,
       }, { flush: true });
@@ -4513,6 +4531,12 @@ export async function deployPosition(poolAddress, deployOptions = {}) {
       entryFinalSupertrendReason: finalTrendReason,
       entryFinalSupertrendAt: finalTrendAt,
       entryCanonicalSnapshot: runtimeCanonicalEntrySnapshot,
+      entryOrigin: String(
+        deployOptions?.entryOrigin ||
+        runtimeCanonicalEntrySnapshot?.entryOrigin ||
+        runtimeCanonicalEntrySnapshot?.source ||
+        ''
+      ),
       rangeAdjustReason: finalDeployState?.finalArgsContext?.rangeAdjustReason || null,
       hwmPct:      0,
     }, { flush: true });
@@ -4755,6 +4779,8 @@ export async function monitorPnL(positionPubkey) {
   }
 
   try {
+    const cfg = getConfig();
+    const manualTaExitEnabled = isManualTaExitPosition(reg, cfg);
     // ── On-chain: ambil nilai posisi saat ini ──────────────────────
     const connection = getConnection();
     const wallet     = getWallet();
@@ -4933,10 +4959,65 @@ export async function monitorPnL(positionPubkey) {
       };
     }
 
-    // ── Telemetry: trailing memakai HWM profit sebagai satu-satunya TP driver. ──
+    // ── Telemetry: trailing memakai HWM profit sebagai satu-satunya TP driver
+    // untuk posisi agent-managed. Posisi manual bisa memakai TA-only exit.
     if (pnlPct > reg.hwmPct) {
       reg.hwmPct = pnlPct; // update HWM in-place (Map entry adalah referensi)
       console.log(`[evilPanda] 📈 New HWM: ${reg.hwmPct.toFixed(2)}%`);
+    }
+
+    if (manualTaExitEnabled) {
+      const taSignal = await fetchExitSignal(reg.tokenXMint);
+      const exitDecision = evaluateExitSignal(taSignal);
+      const defensiveDecision = evaluateDefensiveExitConfirmation({
+        reg,
+        exitDecision,
+        ageMs,
+        inRange,
+        outOfRangeSide,
+        nowMs: Date.now(),
+      });
+      if (exitDecision.shouldExit && defensiveDecision.allowExit) {
+        const exitReasonPrefix = exitDecision.scenario === 'C'
+          ? 'TAKE_PROFIT_C'
+          : exitDecision.scenario === 'B'
+            ? 'TAKE_PROFIT_B'
+            : 'TAKE_PROFIT_A';
+        console.log(
+          `[evilPanda] 📉 TA_EXIT_MANUAL ${positionPubkey.slice(0,8)} ` +
+          `scenario=${exitDecision.scenario || 'NA'} reason=${exitDecision.reason}`
+        );
+        return {
+          action: 'TAKE_PROFIT',
+          currentValueSol,
+          pnlPct,
+          ...feeOnlyPnl,
+          inRange,
+          exitScenario: exitDecision.scenario || 'TA',
+          exitReason: `${exitReasonPrefix}: ${exitDecision.reason}`,
+        };
+      }
+      if (exitDecision.shouldExit && !defensiveDecision.allowExit) {
+        console.log(
+          `[evilPanda] ⏸️ TA_EXIT_MANUAL_HOLD ${positionPubkey.slice(0,8)} ` +
+          `${defensiveDecision.holdReason || 'defensive hold'}`
+        );
+      }
+      return {
+        action: 'HOLD',
+        currentValueSol,
+        pnlPct,
+        ...feeOnlyPnl,
+        inRange,
+        activeBinId: activeBin.binId,
+        activePrice: rawPrice,
+        entryActiveBin,
+        entryPrice,
+        rangeMin: reg.rangeMin,
+        rangeMax: reg.rangeMax,
+        taReason: defensiveDecision.holdReason || exitDecision.reason,
+        taSignal,
+      };
     }
 
     if (trailingStopPct > 0 && pnlPct >= trailingStopPct) {
@@ -5729,6 +5810,12 @@ export async function reconcileStartupPositions() {
           row?.entryCanonicalSnapshot && typeof row.entryCanonicalSnapshot === 'object'
             ? row.entryCanonicalSnapshot
             : null,
+        entryOrigin: String(
+          row?.entryOrigin ||
+          row?.entryCanonicalSnapshot?.entryOrigin ||
+          row?.entryCanonicalSnapshot?.source ||
+          ''
+        ),
         currentValueSol: safeNum(row.currentValueSol, 0),
         pnlPct: safeNum(row.pnlPct, 0),
         feePnlSol: Math.max(0, safeNum(row.feePnlSol, 0)),

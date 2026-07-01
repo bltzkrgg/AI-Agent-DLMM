@@ -1670,6 +1670,7 @@ function buildCanonicalEntrySnapshot({
   return {
     version: 'entry_canonical_v1',
     source: String(source || 'unknown'),
+    entryOrigin: String(source || 'unknown'),
     snapshotAt: resolvedSnapshotAt,
     snapshotPrice: existing?.snapshotPrice ?? entrySignals?.currentPrice ?? pool?._watchSnapshotPrice ?? null,
     snapshotHigh24h: existing?.snapshotHigh24h ?? entrySignals?.high24h ?? pool?._watchSnapshotHigh24h ?? null,
