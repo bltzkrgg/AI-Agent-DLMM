@@ -426,6 +426,7 @@ function buildSetconfigSectionDetail(section) {
       '/setconfig trailingTriggerPct 1',
       '/setconfig trailingDropPct 0.5',
       '/setconfig trailingStopPct 3',
+      '/setconfig manualTAExitEnabled true',
       '/setconfig closeSwapMode all',
       '/setconfig closeResidualSwapEnabled true',
     ],
