@@ -11,6 +11,7 @@
 
 'use strict';
 
+import DLMM from '@meteora-ag/dlmm';
 import { PublicKey } from '@solana/web3.js';
 import { getConfig }              from '../config.js';
 import { screenToken }            from '../market/coinfilter.js';
@@ -20,7 +21,7 @@ import { classifyVolumeTrend, evaluatePoolReentryDiscipline, getPoolMemorySignal
 import { getPoolInfo }            from '../solana/meteora.js';
 import { deployPosition, monitorPnL, exitPosition, markPositionManuallyClosed, setEvilPandaNotifyFn, setPositionLifecycle, getPositionOnChainStatus, EP_CONFIG, getActivePositionKeys, getPositionMeta, reconcileZombiePositions } from '../sniper/evilPanda.js';
 import { createMessage }          from '../agent/provider.js';
-import { getConnection, getWalletBalance } from '../solana/wallet.js';
+import { getConnection, getWallet, getWalletBalance } from '../solana/wallet.js';
 import { appendDecisionLog }      from '../learn/decisionLog.js';
 import { applyPoolPatternLearningToCandidates, applyPoolPatternLearningToScore, extractPoolPatternFeatures, recordPoolPatternEntry } from '../learn/poolPatternLearning.js';
 import { isBlacklisted }          from '../learn/tokenBlacklist.js';
@@ -461,6 +462,39 @@ function findManualTaExitAttachmentTarget(activePositions = [], {
       ].map((value) => String(value || '').trim()).filter(Boolean);
       return needles.some((needle) => candidates.includes(needle));
     }) || null;
+}
+
+async function findOnChainManualTaExitAttachmentTarget(poolAddress = '') {
+  const safePoolAddress = String(poolAddress || '').trim();
+  if (!safePoolAddress) return null;
+
+  const connection = getConnection();
+  const wallet = getWallet();
+  if (!connection || !wallet) return null;
+
+  try {
+    const dlmmPool = await DLMM.create(connection, new PublicKey(safePoolAddress));
+    await dlmmPool.refetchStates().catch(() => {});
+    const { userPositions } = await dlmmPool.getPositionsByUserAndLbPair(wallet.publicKey);
+    const activePositions = (Array.isArray(userPositions) ? userPositions : []).filter((p) => {
+      const pd = p?.positionData || {};
+      const totalX = Number(pd.totalXAmount?.toString() || '0');
+      const totalY = Number(pd.totalYAmount?.toString() || '0');
+      const feeX = Number(pd.feeX?.toString() || '0');
+      const feeY = Number(pd.feeY?.toString() || '0');
+      return (totalX + totalY + feeX + feeY) > 0;
+    });
+
+    if (activePositions.length === 0) return null;
+    return {
+      dlmmPool,
+      activePos: activePositions[0],
+      activePositions,
+    };
+  } catch (e) {
+    console.warn(`[MANUAL] on-chain active position lookup gagal untuk ${safePoolAddress.slice(0, 8)}: ${e.message}`);
+    return null;
+  }
 }
 
 function getPoolMint(pool = {}) {
@@ -1114,7 +1148,6 @@ export async function submitManualCaPool(poolAddress, { source = 'TELEGRAM_CA' }
     });
 
     if (attachmentTarget) {
-      spawnMonitorForRestoredPositions();
       console.log(
         `[MANUAL] 🎯 ${symbol} attached to active position ${String(attachmentTarget.pubkey || '').slice(0, 8)}`
       );
@@ -1128,6 +1161,71 @@ export async function submitManualCaPool(poolAddress, { source = 'TELEGRAM_CA' }
         activePosition: attachmentTarget,
         activePositionCount: activePositions.length,
         resolutionNote: `Manual TA Exit ON — active position attached (${String(attachmentTarget.pubkey || '').slice(0, 8)})`,
+      };
+    }
+
+    const onChain = await findOnChainManualTaExitAttachmentTarget(resolved.poolAddress || address);
+    if (onChain?.activePositions?.length > 1) {
+      const reason = 'Ada lebih dari satu posisi aktif di pool ini; tidak bisa attach otomatis.';
+      console.log(`[MANUAL] 🟠 ${symbol}: ${reason}`);
+      return {
+        ok: true,
+        status: 'AMBIGUOUS',
+        kind: resolved.kind,
+        symbol,
+        poolAddress: resolved.poolAddress || address,
+        tokenMint,
+        activePositionCount: onChain.activePositions.length,
+        reason,
+      };
+    }
+
+    if (onChain?.activePos) {
+      const positionPubkey = onChain.activePos.publicKey.toString();
+      const pd = onChain.activePos.positionData || {};
+      const recoveredTarget = await setPositionLifecycle(positionPubkey, 'open', {
+        poolAddress: resolved.poolAddress || address,
+        deploySol: Number(cfg.deployAmountSol || 0),
+        deployedAt: new Date().toISOString(),
+        tokenXMint: tokenMint,
+        tokenYMint: poolInfo.tokenYMint || poolInfo.quoteMint || '',
+        rangeMin: Number.isFinite(Number(pd.lowerBinId)) ? Number(pd.lowerBinId) : null,
+        rangeMax: Number.isFinite(Number(pd.upperBinId)) ? Number(pd.upperBinId) : null,
+        entryOrigin: 'manual_ca',
+        entryCanonicalSnapshot: {
+          version: 'entry_canonical_v1',
+          source: 'manual_ca',
+          entryOrigin: 'manual_ca',
+          snapshotAt: Date.now(),
+        },
+        pnlPct: 0,
+        feePnlSol: 0,
+        feePnlPct: 0,
+        feePnlAvailable: false,
+        feePnlSource: 'none',
+        hwmPct: 0,
+      }, { flush: true });
+      spawnMonitorForRestoredPositions();
+      console.log(
+        `[MANUAL] 🎯 ${symbol} recovered from chain and attached to ${String(positionPubkey).slice(0, 8)}`
+      );
+      return {
+        ok: true,
+        status: 'ATTACHED',
+        kind: resolved.kind,
+        symbol,
+        poolAddress: resolved.poolAddress || address,
+        tokenMint,
+        activePosition: {
+          pubkey: positionPubkey,
+          poolAddress: resolved.poolAddress || address,
+          mint: tokenMint,
+          symbol,
+          lifecycleState: recoveredTarget?.lifecycleState || 'open',
+        },
+        recoveredFromChain: true,
+        activePositionCount: onChain.activePositions.length,
+        resolutionNote: `Manual TA Exit ON — active position recovered from on-chain (${positionPubkey.slice(0, 8)})`,
       };
     }
 

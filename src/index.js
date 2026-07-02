@@ -602,27 +602,6 @@ function isLikelySolanaAddress(text = '') {
   return /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(String(text || '').trim());
 }
 
-function findManualTaExitAttachmentTarget(activePositions = [], { tokenMint = '', poolAddress = '', positionPubkey = '' } = {}) {
-  const needles = [
-    String(tokenMint || '').trim(),
-    String(poolAddress || '').trim(),
-    String(positionPubkey || '').trim(),
-  ].filter(Boolean);
-
-  if (needles.length === 0) return null;
-
-  return (Array.isArray(activePositions) ? activePositions : [])
-    .filter(Boolean)
-    .find((pos) => {
-      const candidates = [
-        pos?.pubkey,
-        pos?.poolAddress,
-        pos?.mint,
-      ].map((value) => String(value || '').trim()).filter(Boolean);
-      return needles.some((needle) => candidates.includes(needle));
-    }) || null;
-}
-
 async function processManualCaInput(chatId, poolAddress, { source = 'TELEGRAM_CA', announce = 'CA diterima' } = {}) {
   const cfg = getConfig();
   const manualTaExitEnabled = cfg.manualTAExitEnabled === true;
@@ -643,67 +622,55 @@ async function processManualCaInput(chatId, poolAddress, { source = 'TELEGRAM_CA
   );
 
   try {
-    if (manualTaExitEnabled) {
-      const active = Array.isArray(getActivePositions()) ? getActivePositions() : [];
-      const exactTarget = findManualTaExitAttachmentTarget(active, {
-        tokenMint: poolAddress,
-        poolAddress,
-      });
-      const attachmentTarget = exactTarget || (active.length === 1 ? active[0] : null);
-
-      if (attachmentTarget) {
-        spawnMonitorForRestoredPositions();
-        await bot.sendMessage(
-          chatId,
-          `🎯 <b>Manual TA Exit Attached</b>\n` +
-          `<b>${escapeHTML(attachmentTarget.symbol || attachmentTarget.mint || 'UNKNOWN')}</b>\n` +
-          `Mode: <code>MANUAL_TA_EXIT</code>\n` +
-          `Status: <code>ACTIVE_POSITION_FOUND</code>\n` +
-          `Pos: <code>${escapeHTML(String(attachmentTarget.pubkey || '').slice(0, 8) || '--------')}</code>\n` +
-          `Pool: <code>${escapeHTML(String(attachmentTarget.poolAddress || '').slice(0, 8) || '--------')}</code>\n` +
-          `State: <code>${escapeHTML(String(attachmentTarget.lifecycleState || 'OPEN').toUpperCase())}</code>\n` +
-          `<i>Bot tidak membuka entry baru. Dia langsung mengelola posisi aktif yang ada.</i>`,
-          { parse_mode: 'HTML' }
-        );
-        return {
-          ok: true,
-          status: 'ATTACHED',
-          symbol: attachmentTarget.symbol || attachmentTarget.mint || 'UNKNOWN',
-          activePosition: attachmentTarget,
-        };
-      }
-
-      if (active.length > 1) {
-        await bot.sendMessage(
-          chatId,
-          `🟠 <b>Manual TA Exit</b>\n` +
-          `<b>${escapeHTML(poolAddress.slice(0, 8) || 'UNKNOWN')}</b>\n` +
-          `Mode: <code>MANUAL_TA_EXIT</code>\n` +
-          `Status: <code>AMBIGUOUS_ACTIVE_POSITION</code>\n` +
-          `<i>Ada lebih dari satu posisi aktif dan tidak ada kecocokan pasti. Pakai /status untuk lihat posisi aktif, lalu kirim CA yang sesuai.</i>`,
-          { parse_mode: 'HTML' }
-        );
-        return { ok: true, status: 'AMBIGUOUS', reason: 'Multiple active positions without an exact match' };
-      }
-
-      await bot.sendMessage(
-        chatId,
-        `🟤 <b>Manual TA Exit</b>\n` +
-        `<b>${escapeHTML(poolAddress.slice(0, 8) || 'UNKNOWN')}</b>\n` +
-        `Mode: <code>MANUAL_TA_EXIT</code>\n` +
-        `Status: <code>NO_ACTIVE_POSITION</code>\n` +
-        `<i>Tidak ada posisi aktif yang cocok. Mode ini tidak membuka entry baru.</i>`,
-        { parse_mode: 'HTML' }
-      );
-      return { ok: true, status: 'NO_ACTIVE', reason: 'No active position matched manual TA exit mode' };
-    }
-
     const result = await submitManualCaPool(poolAddress, { source });
-    if (result?.ok) {
+    if (result?.ok && result?.status !== 'ATTACHED' && result?.status !== 'NO_ACTIVE' && result?.status !== 'AMBIGUOUS') {
       setDeployQueueNotifyFn(notify);
       setDeployQueueDeployFn(deployPosition);
       startDeployQueueWatcher();
       startTaWatchWatcher();
+    }
+
+    if (result?.status === 'ATTACHED') {
+      const attached = result.activePosition || null;
+      await bot.sendMessage(
+        chatId,
+        `🎯 <b>Manual TA Exit Attached</b>\n` +
+        `<b>${escapeHTML(result.symbol || 'UNKNOWN')}</b>\n` +
+        `Mode: <code>MANUAL_TA_EXIT</code>\n` +
+        `Status: <code>ACTIVE_POSITION_FOUND</code>\n` +
+        `Pos: <code>${escapeHTML(String(attached?.pubkey || '').slice(0, 8) || '--------')}</code>\n` +
+        `Pool: <code>${escapeHTML(String(attached?.poolAddress || result.poolAddress || '').slice(0, 8) || '--------')}</code>\n` +
+        `State: <code>${escapeHTML(String(attached?.lifecycleState || 'OPEN').toUpperCase())}</code>\n` +
+        `<i>${escapeHTML(result.resolutionNote || 'Bot langsung mengelola posisi aktif yang ada.')}</i>`,
+        { parse_mode: 'HTML' }
+      );
+      return result;
+    }
+
+    if (result?.status === 'AMBIGUOUS') {
+      await bot.sendMessage(
+        chatId,
+        `🟠 <b>Manual TA Exit</b>\n` +
+        `<b>${escapeHTML(result.symbol || poolAddress.slice(0, 8) || 'UNKNOWN')}</b>\n` +
+        `Mode: <code>MANUAL_TA_EXIT</code>\n` +
+        `Status: <code>AMBIGUOUS_ACTIVE_POSITION</code>\n` +
+        `<i>${escapeHTML(result.reason || 'Ada lebih dari satu posisi aktif dan tidak ada kecocokan pasti. Pakai /status untuk lihat posisi aktif.')}</i>`,
+        { parse_mode: 'HTML' }
+      );
+      return result;
+    }
+
+    if (result?.status === 'NO_ACTIVE') {
+      await bot.sendMessage(
+        chatId,
+        `🟤 <b>Manual TA Exit</b>\n` +
+        `<b>${escapeHTML(result.symbol || poolAddress.slice(0, 8) || 'UNKNOWN')}</b>\n` +
+        `Mode: <code>MANUAL_TA_EXIT</code>\n` +
+        `Status: <code>NO_ACTIVE_POSITION</code>\n` +
+        `<i>${escapeHTML(result.reason || 'Tidak ada posisi aktif yang cocok. Mode ini tidak membuka entry baru.')}</i>`,
+        { parse_mode: 'HTML' }
+      );
+      return result;
     }
 
     if (result?.status === 'QUEUE') {
