@@ -221,7 +221,7 @@ function resumeDiscovery(reason = 'OPERATOR_RESUME') {
 }
 
 function getPausedMessage() {
-  return `Discovery/deploy is paused by <code>/stop</code>. Use <code>/autoscreen on</code>, <code>/hunt</code>, or <code>/screening on</code> to resume.`;
+  return `Discovery/deploy is paused by <code>/stop</code>. Use <code>/autoscreen on</code>, <code>/hunt</code>, or <code>/screening on</code> to resume. Manual <code>/ca</code> can still proceed when <code>Manual TA Exit</code> is ON.`;
 }
 
 async function notify(msg, opts = {}) {
@@ -603,7 +603,9 @@ function isLikelySolanaAddress(text = '') {
 }
 
 async function processManualCaInput(chatId, poolAddress, { source = 'TELEGRAM_CA', announce = 'CA diterima' } = {}) {
-  if (isDiscoveryPaused()) {
+  const cfg = getConfig();
+  const manualTaExitEnabled = cfg.manualTAExitEnabled === true;
+  if (isDiscoveryPaused() && !manualTaExitEnabled) {
     await bot.sendMessage(chatId, `⏸️ ${getPausedMessage()}`, { parse_mode: 'HTML' });
     return;
   }
@@ -612,6 +614,7 @@ async function processManualCaInput(chatId, poolAddress, { source = 'TELEGRAM_CA
     chatId,
     `📥 <b>${escapeHTML(announce)}</b>\n` +
     `<code>${escapeHTML(poolAddress)}</code>\n` +
+    `${isDiscoveryPaused() && manualTaExitEnabled ? '<i>Discovery sedang /stop, tapi Manual TA Exit ON jadi CA manual tetap diproses.</i>\n' : ''}` +
     `<i>Bot akan cek WATCH → QUEUE → DEPLOY. HOLD = pantau dulu, DROP = buang.</i>`,
     { parse_mode: 'HTML' }
   );

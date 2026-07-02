@@ -36,6 +36,7 @@ test('/ca handler is registered and exposed in /start help', () => {
   assert.match(content, /bot\.onText\(\/\\\/ca/);
   assert.match(content, /\/ca\s+— kirim CA \/ pool Meteora/);
   assert.match(content, /HOLD = pantau dulu, DROP = buang/);
+  assert.match(content, /Manual <code>\/ca<\/code> can still proceed when <code>Manual TA Exit<\/code> is ON\./);
   assert.match(content, /bot\.on\('message'/);
 });
 
