@@ -438,6 +438,31 @@ function hasActivePoolAddress(poolAddress) {
   return listActivePositions().some((p) => p.poolAddress === poolAddress);
 }
 
+function findManualTaExitAttachmentTarget(activePositions = [], {
+  tokenMint = '',
+  poolAddress = '',
+  positionPubkey = '',
+} = {}) {
+  const needles = [
+    String(tokenMint || '').trim(),
+    String(poolAddress || '').trim(),
+    String(positionPubkey || '').trim(),
+  ].filter(Boolean);
+
+  if (needles.length === 0) return null;
+
+  return (Array.isArray(activePositions) ? activePositions : [])
+    .filter(Boolean)
+    .find((pos) => {
+      const candidates = [
+        pos?.pubkey,
+        pos?.poolAddress,
+        pos?.mint,
+      ].map((value) => String(value || '').trim()).filter(Boolean);
+      return needles.some((needle) => candidates.includes(needle));
+    }) || null;
+}
+
 function getPoolMint(pool = {}) {
   return pool.tokenXMint || pool.tokenX || pool.mint || pool.address || '';
 }
@@ -1045,6 +1070,10 @@ export async function __resolveManualCaPoolForTests(address, cfg = {}, deps = {}
   return resolveManualCaPool(address, cfg, deps);
 }
 
+export function __findManualTaExitAttachmentTargetForTests(activePositions = [], query = {}) {
+  return findManualTaExitAttachmentTarget(activePositions, query);
+}
+
 export async function submitManualCaPool(poolAddress, { source = 'TELEGRAM_CA' } = {}) {
   const cfg = getConfig();
   const address = String(poolAddress || '').trim();
@@ -1075,6 +1104,45 @@ export async function submitManualCaPool(poolAddress, { source = 'TELEGRAM_CA' }
     const reason = 'Token mint tidak tersedia dari pool Meteora';
     console.warn(`[MANUAL] ❌ ${symbol}: ${reason}`);
     return { ok: false, status: 'INVALID', symbol, reason };
+  }
+
+  if (cfg.manualTAExitEnabled === true) {
+    const activePositions = listActivePositions();
+    const attachmentTarget = findManualTaExitAttachmentTarget(activePositions, {
+      tokenMint,
+      poolAddress: resolved.poolAddress || address,
+    });
+
+    if (attachmentTarget) {
+      spawnMonitorForRestoredPositions();
+      console.log(
+        `[MANUAL] 🎯 ${symbol} attached to active position ${String(attachmentTarget.pubkey || '').slice(0, 8)}`
+      );
+      return {
+        ok: true,
+        status: 'ATTACHED',
+        kind: resolved.kind,
+        symbol,
+        poolAddress: resolved.poolAddress || address,
+        tokenMint,
+        activePosition: attachmentTarget,
+        activePositionCount: activePositions.length,
+        resolutionNote: `Manual TA Exit ON — active position attached (${String(attachmentTarget.pubkey || '').slice(0, 8)})`,
+      };
+    }
+
+    const reason = 'Tidak ada posisi aktif yang cocok; manual TA mode tidak membuka entry baru.';
+    console.log(`[MANUAL] ⏸️ ${symbol}: ${reason}`);
+    return {
+      ok: true,
+      status: 'NO_ACTIVE',
+      kind: resolved.kind,
+      symbol,
+      poolAddress: resolved.poolAddress || address,
+      tokenMint,
+      activePositionCount: activePositions.length,
+      reason,
+    };
   }
 
   if (hasActiveMint(tokenMint) || hasActivePoolAddress(resolved.poolAddress || address)) {

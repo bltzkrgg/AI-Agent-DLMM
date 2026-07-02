@@ -221,7 +221,7 @@ function resumeDiscovery(reason = 'OPERATOR_RESUME') {
 }
 
 function getPausedMessage() {
-  return `Discovery/deploy is paused by <code>/stop</code>. Use <code>/autoscreen on</code>, <code>/hunt</code>, or <code>/screening on</code> to resume. Manual <code>/ca</code> can still proceed when <code>Manual TA Exit</code> is ON.`;
+  return `Discovery/deploy is paused by <code>/stop</code>. Use <code>/autoscreen on</code>, <code>/hunt</code>, or <code>/screening on</code> to resume. Manual <code>/ca</code> still checks active positions when <code>Manual TA Exit</code> is ON.`;
 }
 
 async function notify(msg, opts = {}) {
@@ -320,7 +320,7 @@ function buildStartCommandPanel() {
       `/screening — scan manual top pool\n` +
       `/autoscreen — on/off auto-screening\n` +
       `/manualexit — on/off TA-only exit untuk posisi manual\n` +
-      `/ca — kirim CA / pool Meteora\n` +
+      `/ca — kirim CA / pool Meteora / cek posisi aktif\n` +
       `/evolve — saran config dari harvest.log\n` +
       `/balance — saldo wallet\n` +
       `/config — tampilkan config\n` +
@@ -602,6 +602,27 @@ function isLikelySolanaAddress(text = '') {
   return /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(String(text || '').trim());
 }
 
+function findManualTaExitAttachmentTarget(activePositions = [], { tokenMint = '', poolAddress = '', positionPubkey = '' } = {}) {
+  const needles = [
+    String(tokenMint || '').trim(),
+    String(poolAddress || '').trim(),
+    String(positionPubkey || '').trim(),
+  ].filter(Boolean);
+
+  if (needles.length === 0) return null;
+
+  return (Array.isArray(activePositions) ? activePositions : [])
+    .filter(Boolean)
+    .find((pos) => {
+      const candidates = [
+        pos?.pubkey,
+        pos?.poolAddress,
+        pos?.mint,
+      ].map((value) => String(value || '').trim()).filter(Boolean);
+      return needles.some((needle) => candidates.includes(needle));
+    }) || null;
+}
+
 async function processManualCaInput(chatId, poolAddress, { source = 'TELEGRAM_CA', announce = 'CA diterima' } = {}) {
   const cfg = getConfig();
   const manualTaExitEnabled = cfg.manualTAExitEnabled === true;
@@ -614,12 +635,69 @@ async function processManualCaInput(chatId, poolAddress, { source = 'TELEGRAM_CA
     chatId,
     `📥 <b>${escapeHTML(announce)}</b>\n` +
     `<code>${escapeHTML(poolAddress)}</code>\n` +
-    `${isDiscoveryPaused() && manualTaExitEnabled ? '<i>Discovery sedang /stop, tapi Manual TA Exit ON jadi CA manual tetap diproses.</i>\n' : ''}` +
-    `<i>Bot akan cek WATCH → QUEUE → DEPLOY. HOLD = pantau dulu, DROP = buang.</i>`,
+    `${isDiscoveryPaused() && manualTaExitEnabled ? '<i>Discovery sedang /stop, tapi Manual TA Exit ON tetap memproses CA untuk posisi aktif.</i>\n' : ''}` +
+    (manualTaExitEnabled
+      ? `<i>Mode manual TA: bot akan cek posisi aktif lalu attach / monitor. Bukan entry baru.</i>`
+      : `<i>Bot akan cek WATCH → QUEUE → DEPLOY. HOLD = pantau dulu, DROP = buang.</i>`),
     { parse_mode: 'HTML' }
   );
 
   try {
+    if (manualTaExitEnabled) {
+      const active = Array.isArray(getActivePositions()) ? getActivePositions() : [];
+      const exactTarget = findManualTaExitAttachmentTarget(active, {
+        tokenMint: poolAddress,
+        poolAddress,
+      });
+      const attachmentTarget = exactTarget || (active.length === 1 ? active[0] : null);
+
+      if (attachmentTarget) {
+        spawnMonitorForRestoredPositions();
+        await bot.sendMessage(
+          chatId,
+          `🎯 <b>Manual TA Exit Attached</b>\n` +
+          `<b>${escapeHTML(attachmentTarget.symbol || attachmentTarget.mint || 'UNKNOWN')}</b>\n` +
+          `Mode: <code>MANUAL_TA_EXIT</code>\n` +
+          `Status: <code>ACTIVE_POSITION_FOUND</code>\n` +
+          `Pos: <code>${escapeHTML(String(attachmentTarget.pubkey || '').slice(0, 8) || '--------')}</code>\n` +
+          `Pool: <code>${escapeHTML(String(attachmentTarget.poolAddress || '').slice(0, 8) || '--------')}</code>\n` +
+          `State: <code>${escapeHTML(String(attachmentTarget.lifecycleState || 'OPEN').toUpperCase())}</code>\n` +
+          `<i>Bot tidak membuka entry baru. Dia langsung mengelola posisi aktif yang ada.</i>`,
+          { parse_mode: 'HTML' }
+        );
+        return {
+          ok: true,
+          status: 'ATTACHED',
+          symbol: attachmentTarget.symbol || attachmentTarget.mint || 'UNKNOWN',
+          activePosition: attachmentTarget,
+        };
+      }
+
+      if (active.length > 1) {
+        await bot.sendMessage(
+          chatId,
+          `🟠 <b>Manual TA Exit</b>\n` +
+          `<b>${escapeHTML(poolAddress.slice(0, 8) || 'UNKNOWN')}</b>\n` +
+          `Mode: <code>MANUAL_TA_EXIT</code>\n` +
+          `Status: <code>AMBIGUOUS_ACTIVE_POSITION</code>\n` +
+          `<i>Ada lebih dari satu posisi aktif dan tidak ada kecocokan pasti. Pakai /status untuk lihat posisi aktif, lalu kirim CA yang sesuai.</i>`,
+          { parse_mode: 'HTML' }
+        );
+        return { ok: true, status: 'AMBIGUOUS', reason: 'Multiple active positions without an exact match' };
+      }
+
+      await bot.sendMessage(
+        chatId,
+        `🟤 <b>Manual TA Exit</b>\n` +
+        `<b>${escapeHTML(poolAddress.slice(0, 8) || 'UNKNOWN')}</b>\n` +
+        `Mode: <code>MANUAL_TA_EXIT</code>\n` +
+        `Status: <code>NO_ACTIVE_POSITION</code>\n` +
+        `<i>Tidak ada posisi aktif yang cocok. Mode ini tidak membuka entry baru.</i>`,
+        { parse_mode: 'HTML' }
+      );
+      return { ok: true, status: 'NO_ACTIVE', reason: 'No active position matched manual TA exit mode' };
+    }
+
     const result = await submitManualCaPool(poolAddress, { source });
     if (result?.ok) {
       setDeployQueueNotifyFn(notify);

@@ -34,9 +34,9 @@ test('/ca handler is registered and exposed in /start help', () => {
   const content = readFileSync(indexPath, 'utf-8');
 
   assert.match(content, /bot\.onText\(\/\\\/ca/);
-  assert.match(content, /\/ca\s+— kirim CA \/ pool Meteora/);
+  assert.match(content, /\/ca\s+— kirim CA \/ pool Meteora \/ cek posisi aktif/);
   assert.match(content, /HOLD = pantau dulu, DROP = buang/);
-  assert.match(content, /Manual <code>\/ca<\/code> can still proceed when <code>Manual TA Exit<\/code> is ON\./);
+  assert.match(content, /Manual <code>\/ca<\/code> still checks active positions when <code>Manual TA Exit<\/code> is ON\./);
   assert.match(content, /bot\.on\('message'/);
 });
 
