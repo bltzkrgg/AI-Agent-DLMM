@@ -221,7 +221,7 @@ function resumeDiscovery(reason = 'OPERATOR_RESUME') {
 }
 
 function getPausedMessage() {
-  return `Discovery/deploy is paused by <code>/stop</code>. Use <code>/autoscreen on</code>, <code>/hunt</code>, or <code>/screening on</code> to resume. Manual <code>/ca</code> still checks active positions when <code>Manual TA Exit</code> is ON.`;
+  return `Discovery/deploy is paused by <code>/stop</code>. Use <code>/autoscreen on</code>, <code>/hunt</code>, or <code>/screening on</code> to resume. Manual <code>/ca</code> stays attach-only when <code>Manual TA Exit</code> is ON.`;
 }
 
 async function notify(msg, opts = {}) {
@@ -319,7 +319,7 @@ function buildStartCommandPanel() {
       `/hunt — mulai loop\n` +
       `/screening — scan manual top pool\n` +
       `/autoscreen — on/off auto-screening\n` +
-      `/manualexit — on/off TA-only exit untuk posisi manual\n` +
+      `/manualexit — on/off TA-only exit untuk /ca manual\n` +
       `/ca — kirim CA / pool Meteora / cek posisi aktif\n` +
       `/evolve — saran config dari harvest.log\n` +
       `/balance — saldo wallet\n` +
@@ -370,7 +370,7 @@ function buildActivationLaunchPanel() {
   return {
     text: `🟢 <b>AI-Agent-DLMM Activated</b>\n\n` +
       `Discovery priority dapat diarahkan lewat <code>/setconfig discovery.category</code>.\n` +
-      `<i>Trending = activity-first. Top performers = fee-first.</i>`,
+      `<i>Trending = activity-first. Top performers = fee-first. Manual TA Exit = attach-only for /ca.</i>`,
     opts: {
       parse_mode: 'HTML',
       reply_markup: {
@@ -779,7 +779,7 @@ bot.onText(/\/status/, async (msg) => {
     `Balance: <code>${balance} SOL</code>\n` +
     `Deploy Amount: <code>${cfg.deployAmountSol || 0.1} SOL</code>\n` +
     `${formatTakeProfitRiskLabel(cfg.takeProfitMinNetPnlPct, cfg.stopLossPct)}\n` +
-    `Manual TA Exit: <code>${cfg.manualTAExitEnabled ? 'ON' : 'OFF'}</code> <i>(manual positions only)</i>\n` +
+    `Manual TA Exit: <code>${cfg.manualTAExitEnabled ? 'ON' : 'OFF'}</code> <i>(/ca manual attach-only)</i>\n` +
     `Anchor: <code>DLMM active bin</code> | Source: <code>frozen/live fallback</code>\n` +
     `TA: <code>info only (RSI ref ${cfg.smartExitRsi || 90})</code>`,
     { parse_mode: 'HTML' }
@@ -1293,7 +1293,7 @@ bot.onText(/\/manualexit(?:\s+(on|off))?/, async (msg, match) => {
     bot.sendMessage(
       chatId,
       `🎯 Manual TA Exit: <code>${current ? 'ON' : 'OFF'}</code>\n` +
-      `<i>Berlaku hanya untuk posisi manual dari /ca. Posisi agent tetap trailing-only.</i>\n\n` +
+      `<i>Berlaku hanya untuk /ca manual. Posisi agent tetap trailing-only.</i>\n\n` +
       `Gunakan <code>/manualexit on</code> atau <code>/manualexit off</code>`,
       { parse_mode: 'HTML' }
     );
@@ -1306,7 +1306,7 @@ bot.onText(/\/manualexit(?:\s+(on|off))?/, async (msg, match) => {
   bot.sendMessage(
     chatId,
     `🎯 <b>Manual TA Exit: ${after ? 'ON' : 'OFF'}</b>\n` +
-    `<i>${after ? 'Posisi manual dari /ca akan memakai TA-only exit + SL tetap aktif.' : 'Posisi manual baru tidak lagi memakai TA-only exit otomatis.'}</i>`,
+    `<i>${after ? 'Manual /ca akan attach-only; exit pakai TA + SL tetap aktif.' : 'Manual /ca kembali ke flow normal.'}</i>`,
     { parse_mode: 'HTML' }
   );
 });
@@ -1648,7 +1648,7 @@ setTimeout(async () => {
       `Balance: <code>${balance} SOL</code>\n` +
       `Deploy Size: <code>${cfg.deployAmountSol || 0.1} SOL</code>\n` +
       `${formatTakeProfitRiskLabel(cfg.takeProfitMinNetPnlPct, cfg.stopLossPct)}\n` +
-      `Manual TA Exit: <code>${cfg.manualTAExitEnabled ? 'ON' : 'OFF'}</code> <i>(manual positions only)</i>\n` +
+    `Manual TA Exit: <code>${cfg.manualTAExitEnabled ? 'ON' : 'OFF'}</code> <i>(/ca manual attach-only)</i>\n` +
       `Reconcile: <code>${reconcile.restored}/${reconcile.scanned}</code>\n` +
     `Watch Layer: <code>${cfg.taWatchEnabled === false ? 'OFF' : 'ON'}</code> | ` +
     `Radar: <code>${cfg.pendingRetestEnabled === false ? 'OFF' : 'ON'}</code>\n` +

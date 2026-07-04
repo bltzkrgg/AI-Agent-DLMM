@@ -36,7 +36,7 @@ test('/ca handler is registered and exposed in /start help', () => {
   assert.match(content, /bot\.onText\(\/\\\/ca/);
   assert.match(content, /\/ca\s+— kirim CA \/ pool Meteora \/ cek posisi aktif/);
   assert.match(content, /HOLD = pantau dulu, DROP = buang/);
-  assert.match(content, /Manual <code>\/ca<\/code> still checks active positions when <code>Manual TA Exit<\/code> is ON\./);
+  assert.match(content, /Manual <code>\/ca<\/code> stays attach-only when <code>Manual TA Exit<\/code> is ON\./);
   assert.match(content, /bot\.on\('message'/);
 });
 
@@ -90,7 +90,7 @@ test('startup and shutdown banners use the simplified AI-Agent-DLMM text', () =>
   assert.match(content, /buildStartCommandPanel/);
   assert.match(content, /\/start — lihat command/);
   assert.match(content, /\/autoscreen — on\/off auto-screening/);
-  assert.match(content, /\/manualexit — on\/off TA-only exit untuk posisi manual/);
+  assert.match(content, /\/manualexit — on\/off TA-only exit untuk \/ca manual/);
   assert.match(content, /🛑 <b>AI-Agent-DLMM Shutdown<\/b>/);
   assert.match(content, /Tidak ada posisi aktif\./);
   assert.match(content, /✅ AI-Agent-DLMM ready\. Balance:/);
