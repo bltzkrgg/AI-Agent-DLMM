@@ -190,6 +190,10 @@ test('multiple pools choose the SOL pair candidate with the strongest fee genera
 
   assert.equal(out.ok, true);
   assert.equal(out.poolAddress, 'PoolSolLowPrio11111111111111111111111111111');
+  assert.deepEqual(out.candidatePoolAddresses, [
+    'PoolSolLowPrio11111111111111111111111111111',
+    'PoolSolHighPrio1111111111111111111111111111',
+  ]);
 });
 
 test('manual CA falls back to fee/TVL ratio when fees24h is missing', async () => {

@@ -404,11 +404,19 @@ function listActivePositions() {
   return keys.map((pubkey) => {
     const meta = getPositionMeta(pubkey) || {};
     const label = _positionLabels.get(pubkey) || {};
+    const entryOrigin = String(
+      meta.entryOrigin ||
+      meta.entryCanonicalSnapshot?.entryOrigin ||
+      meta.entryCanonicalSnapshot?.source ||
+      ''
+    ).toLowerCase();
     return {
       pubkey,
       symbol: label.symbol || (meta.tokenXMint ? meta.tokenXMint.slice(0, 8) : pubkey.slice(0, 8)),
       poolAddress: meta.poolAddress || '',
       mint: meta.tokenXMint || '',
+      entryOrigin,
+      manualTaEligible: entryOrigin === 'manual_ca' || entryOrigin === 'telegram_ca' || entryOrigin === 'telegram_raw_ca',
       pnlPct: Number(meta.pnlPct),
       currentValueSol: Number(meta.currentValueSol),
       deploySol: Number(meta.deploySol),
@@ -443,6 +451,7 @@ function findManualTaExitAttachmentTarget(activePositions = [], {
   tokenMint = '',
   poolAddress = '',
   positionPubkey = '',
+  manualOnly = false,
 } = {}) {
   const needles = [
     String(tokenMint || '').trim(),
@@ -454,6 +463,7 @@ function findManualTaExitAttachmentTarget(activePositions = [], {
 
   return (Array.isArray(activePositions) ? activePositions : [])
     .filter(Boolean)
+    .filter((pos) => !manualOnly || pos?.manualTaEligible === true)
     .find((pos) => {
       const candidates = [
         pos?.pubkey,
@@ -464,37 +474,60 @@ function findManualTaExitAttachmentTarget(activePositions = [], {
     }) || null;
 }
 
-async function findOnChainManualTaExitAttachmentTarget(poolAddress = '') {
-  const safePoolAddress = String(poolAddress || '').trim();
-  if (!safePoolAddress) return null;
+async function findOnChainManualTaExitAttachmentTarget(poolAddresses = []) {
+  const safePoolAddresses = [...new Set(
+    (Array.isArray(poolAddresses) ? poolAddresses : [poolAddresses])
+      .map((value) => String(value || '').trim())
+      .filter(Boolean)
+  )];
+  if (safePoolAddresses.length === 0) return null;
 
   const connection = getConnection();
   const wallet = getWallet();
   if (!connection || !wallet) return null;
 
-  try {
-    const dlmmPool = await DLMM.create(connection, new PublicKey(safePoolAddress));
-    await dlmmPool.refetchStates().catch(() => {});
-    const { userPositions } = await dlmmPool.getPositionsByUserAndLbPair(wallet.publicKey);
-    const activePositions = (Array.isArray(userPositions) ? userPositions : []).filter((p) => {
-      const pd = p?.positionData || {};
-      const totalX = Number(pd.totalXAmount?.toString() || '0');
-      const totalY = Number(pd.totalYAmount?.toString() || '0');
-      const feeX = Number(pd.feeX?.toString() || '0');
-      const feeY = Number(pd.feeY?.toString() || '0');
-      return (totalX + totalY + feeX + feeY) > 0;
-    });
+  const aggregated = [];
+  for (const safePoolAddress of safePoolAddresses) {
+    try {
+      const dlmmPool = await DLMM.create(connection, new PublicKey(safePoolAddress));
+      await dlmmPool.refetchStates().catch(() => {});
+      const { userPositions } = await dlmmPool.getPositionsByUserAndLbPair(wallet.publicKey);
+      const activePositions = (Array.isArray(userPositions) ? userPositions : []).filter((p) => {
+        const pd = p?.positionData || {};
+        const totalX = Number(pd.totalXAmount?.toString() || '0');
+        const totalY = Number(pd.totalYAmount?.toString() || '0');
+        const feeX = Number(pd.feeX?.toString() || '0');
+        const feeY = Number(pd.feeY?.toString() || '0');
+        return (totalX + totalY + feeX + feeY) > 0;
+      });
 
-    if (activePositions.length === 0) return null;
-    return {
-      dlmmPool,
-      activePos: activePositions[0],
-      activePositions,
-    };
-  } catch (e) {
-    console.warn(`[MANUAL] on-chain active position lookup gagal untuk ${safePoolAddress.slice(0, 8)}: ${e.message}`);
-    return null;
+      for (const pos of activePositions) {
+        aggregated.push({
+          poolAddress: safePoolAddress,
+          dlmmPool,
+          activePos: pos,
+        });
+      }
+    } catch (e) {
+      console.warn(`[MANUAL] on-chain active position lookup gagal untuk ${safePoolAddress.slice(0, 8)}: ${e.message}`);
+    }
   }
+
+  if (aggregated.length === 0) return null;
+  if (aggregated.length === 1) {
+    return {
+      dlmmPool: aggregated[0].dlmmPool,
+      activePos: aggregated[0].activePos,
+      poolAddress: aggregated[0].poolAddress,
+      activePositions: [aggregated[0].activePos],
+    };
+  }
+  return {
+    dlmmPool: null,
+    activePos: null,
+    poolAddress: null,
+    activePositions: aggregated.map((item) => item.activePos),
+  };
 }
 
 function getPoolMint(pool = {}) {
@@ -1113,6 +1146,7 @@ async function resolveManualCaPool(address, cfg = getConfig(), deps = {}) {
     const accepted = rankCandidates(scored.filter((x) => x.accept));
     return {
       best: accepted[0]?.candidate || null,
+      acceptedPools: accepted.map((entry) => entry.candidate),
       rejection,
     };
   };
@@ -1176,6 +1210,9 @@ async function resolveManualCaPool(address, cfg = getConfig(), deps = {}) {
           poolInfo: bestPool,
           tokenMint,
           poolAddress: String(bestPool.address || bestPool.poolAddress || '').trim(),
+          candidatePoolAddresses: (picked.acceptedPools || [])
+            .map((pool) => String(pool?.address || pool?.poolAddress || '').trim())
+            .filter(Boolean),
           symbol,
           resolutionNote: `Token mint resolved via direct Meteora DLMM search (${picked.rejection.foundCount} candidate${picked.rejection.foundCount === 1 ? '' : 's'})`,
           discoveryCount: directRows.length,
@@ -1218,6 +1255,9 @@ async function resolveManualCaPool(address, cfg = getConfig(), deps = {}) {
           poolInfo: bestPool,
           tokenMint,
           poolAddress: String(bestPool.address || bestPool.poolAddress || '').trim(),
+          candidatePoolAddresses: (picked.acceptedPools || [])
+            .map((pool) => String(pool?.address || pool?.poolAddress || '').trim())
+            .filter(Boolean),
           symbol,
           resolutionNote: `Token mint resolved via fresh pool-discovery fallback (${picked.rejection.foundCount} candidate${picked.rejection.foundCount === 1 ? '' : 's'})`,
           discoveryCount: fallbackRows.length,
@@ -1278,6 +1318,7 @@ export async function submitManualCaPool(poolAddress, { source = 'TELEGRAM_CA' }
     const attachmentTarget = findManualTaExitAttachmentTarget(activePositions, {
       tokenMint,
       poolAddress: resolved.poolAddress || address,
+      manualOnly: true,
     });
 
     if (attachmentTarget) {
@@ -1297,9 +1338,13 @@ export async function submitManualCaPool(poolAddress, { source = 'TELEGRAM_CA' }
       };
     }
 
-    const onChain = await findOnChainManualTaExitAttachmentTarget(resolved.poolAddress || address);
+    const onChain = await findOnChainManualTaExitAttachmentTarget(
+      Array.isArray(resolved.candidatePoolAddresses) && resolved.candidatePoolAddresses.length > 0
+        ? resolved.candidatePoolAddresses
+        : [resolved.poolAddress || address]
+    );
     if (onChain?.activePositions?.length > 1) {
-      const reason = 'Ada lebih dari satu posisi aktif di pool ini; tidak bisa attach otomatis.';
+      const reason = 'Ada lebih dari satu posisi aktif yang cocok; tidak bisa attach otomatis.';
       console.log(`[MANUAL] 🟠 ${symbol}: ${reason}`);
       return {
         ok: true,
@@ -1317,7 +1362,7 @@ export async function submitManualCaPool(poolAddress, { source = 'TELEGRAM_CA' }
       const positionPubkey = onChain.activePos.publicKey.toString();
       const pd = onChain.activePos.positionData || {};
       const recoveredTarget = await setPositionLifecycle(positionPubkey, 'open', {
-        poolAddress: resolved.poolAddress || address,
+        poolAddress: onChain.poolAddress || resolved.poolAddress || address,
         deploySol: Number(cfg.deployAmountSol || 0),
         deployedAt: new Date().toISOString(),
         tokenXMint: tokenMint,
@@ -1347,11 +1392,11 @@ export async function submitManualCaPool(poolAddress, { source = 'TELEGRAM_CA' }
         status: 'ATTACHED',
         kind: resolved.kind,
         symbol,
-        poolAddress: resolved.poolAddress || address,
+        poolAddress: onChain.poolAddress || resolved.poolAddress || address,
         tokenMint,
         activePosition: {
           pubkey: positionPubkey,
-          poolAddress: resolved.poolAddress || address,
+          poolAddress: onChain.poolAddress || resolved.poolAddress || address,
           mint: tokenMint,
           symbol,
           lifecycleState: recoveredTarget?.lifecycleState || 'open',
