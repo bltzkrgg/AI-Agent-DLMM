@@ -1484,6 +1484,8 @@ export async function submitManualCaPool(poolAddress, { source = 'TELEGRAM_CA' }
     breakoutQuality: entrySignals.breakoutQuality,
     entryGateMode: entrySignals.entryGateMode,
     entryTimingState: entrySignals.entryTimingState,
+    freshBreakoutConfirmed: entrySignals.freshBreakoutConfirmed,
+    freshBreakoutState: entrySignals.freshBreakoutState,
     signalStDistancePct: entrySignals.signalStDistancePct,
     signalAthDistancePct: entrySignals.signalAthDistancePct,
     taTrend: entrySignals.taTrend,
@@ -1913,6 +1915,106 @@ function toFiniteNumber(value, fallback = null) {
   return Number.isFinite(num) ? num : fallback;
 }
 
+function getClosedM15CandlesFromSnapshot(snapshot = null) {
+  const rawCandles = Array.isArray(snapshot?.ohlcv?.entryCandles5m)
+    ? snapshot.ohlcv.entryCandles5m
+    : Array.isArray(snapshot?.ohlcv?.candles5m)
+      ? snapshot.ohlcv.candles5m
+      : [];
+  const normalized = rawCandles
+    .map((candle) => {
+      const rawTime = Number(candle?.time ?? candle?.t ?? candle?.timestamp ?? candle?.ts ?? 0);
+      const timeMs = Number.isFinite(rawTime) && rawTime > 0
+        ? (rawTime > 1e12 ? rawTime : rawTime * 1000)
+        : null;
+      const open = Number(candle?.open ?? candle?.o);
+      const high = Number(candle?.high ?? candle?.h);
+      const low = Number(candle?.low ?? candle?.l);
+      const close = Number(candle?.close ?? candle?.c);
+      const volume = Number(candle?.volume ?? candle?.v);
+      if (!Number.isFinite(timeMs) || !Number.isFinite(open) || !Number.isFinite(close) || !Number.isFinite(volume)) return null;
+      return {
+        timeMs,
+        open,
+        high: Number.isFinite(high) ? high : Math.max(open, close),
+        low: Number.isFinite(low) ? low : Math.min(open, close),
+        close,
+        volume,
+      };
+    })
+    .filter(Boolean)
+    .sort((a, b) => a.timeMs - b.timeMs);
+  if (normalized.length < 3) return [];
+
+  const nowMs = Date.now();
+  const closed5m = normalized.filter((candle) => (candle.timeMs + (5 * 60 * 1000)) <= (nowMs - 15_000));
+  if (closed5m.length < 3) return [];
+
+  const buckets = new Map();
+  for (const candle of closed5m) {
+    const bucketStartSec = Math.floor((candle.timeMs / 1000) / 900) * 900;
+    const slotSec = Math.floor((candle.timeMs / 1000) / 300) * 300;
+    if (!buckets.has(bucketStartSec)) buckets.set(bucketStartSec, new Map());
+    buckets.get(bucketStartSec).set(slotSec, candle);
+  }
+
+  const m15 = [];
+  for (const [bucketStartSec, slotMap] of Array.from(buckets.entries()).sort((a, b) => a[0] - b[0])) {
+    if (!slotMap || slotMap.size < 3) continue;
+    const group = Array.from(slotMap.values()).sort((a, b) => a.timeMs - b.timeMs).slice(0, 3);
+    if (group.length < 3) continue;
+    m15.push({
+      timeMs: bucketStartSec * 1000,
+      open: group[0].open,
+      high: Math.max(...group.map((c) => c.high)),
+      low: Math.min(...group.map((c) => c.low)),
+      close: group[group.length - 1].close,
+      volume: group.reduce((sum, c) => sum + Math.max(0, Number(c.volume) || 0), 0),
+    });
+  }
+  return m15;
+}
+
+function evaluateFreshBreakoutContext({ snapshot = null, signalAthDistancePct = null, cfg = getConfig() } = {}) {
+  const candlesM15 = getClosedM15CandlesFromSnapshot(snapshot);
+  const last = candlesM15[candlesM15.length - 1] || null;
+  const prev = candlesM15[candlesM15.length - 2] || null;
+  const lookback = candlesM15.slice(0, -1).slice(-6);
+  const recentHigh = lookback.length > 0
+    ? Math.max(...lookback.map((c) => Number(c.high) || Number(c.close) || 0))
+    : null;
+  const lastClose = Number(last?.close);
+  const prevClose = Number(prev?.close);
+  const athThresholdPct = Number(cfg.entryFreshBreakoutMinAthDistancePct ?? 99.25);
+  const nearAth = Number.isFinite(signalAthDistancePct) && signalAthDistancePct >= athThresholdPct;
+  const localHighBreak = Number.isFinite(recentHigh) && Number.isFinite(lastClose) && lastClose > recentHigh;
+  const followThrough = Number.isFinite(recentHigh) && Number.isFinite(prevClose) && prevClose > recentHigh;
+
+  let state = 'NOT_CLEAR';
+  let confirmed = false;
+  if (nearAth) {
+    state = 'ATH_BREAK';
+    confirmed = true;
+  } else if (localHighBreak && followThrough) {
+    state = 'STRONG';
+    confirmed = true;
+  } else if (localHighBreak) {
+    state = 'FRESH';
+    confirmed = true;
+  }
+
+  return {
+    confirmed,
+    state,
+    nearAth,
+    localHighBreak,
+    followThrough,
+    recentHigh: Number.isFinite(recentHigh) ? recentHigh : null,
+    lastClose: Number.isFinite(lastClose) ? lastClose : null,
+    candleCount: candlesM15.length,
+  };
+}
+
 function hasValidFrozenEntryIntent({
   entryActiveBin = null,
   entryPrice = null,
@@ -2026,6 +2128,8 @@ function buildCanonicalEntrySnapshot({
     entryTimingState: entrySignals?.entryTimingState ?? existing?.entryTimingState ?? null,
     entryReadiness: entrySignals?.entryReadiness ?? existing?.entryReadiness ?? null,
     breakoutQuality: entrySignals?.breakoutQuality ?? existing?.breakoutQuality ?? null,
+    freshBreakoutConfirmed: entrySignals?.freshBreakoutConfirmed ?? existing?.freshBreakoutConfirmed ?? null,
+    freshBreakoutState: entrySignals?.freshBreakoutState ?? existing?.freshBreakoutState ?? null,
     watchWindowSec: Number.isFinite(Number(watchWindowSec))
       ? Number(watchWindowSec)
       : Number(existing?.watchWindowSec ?? pool?._watchWindowSec ?? null),
@@ -2090,6 +2194,11 @@ function deriveBreakoutEntrySignals({ pool = {}, vetoResult = null, marketSnapsh
     maxAgeSec: Number(cfg.entryM15MaxAgeSec ?? 1800) || 1800,
     supertrendValue,
   });
+  const breakoutContext = evaluateFreshBreakoutContext({
+    snapshot: marketSnapshot,
+    signalAthDistancePct,
+    cfg,
+  });
 
   let entryTimingState = 'UNKNOWN';
   if (canonicalTrend.conflicted) {
@@ -2110,19 +2219,27 @@ function deriveBreakoutEntrySignals({ pool = {}, vetoResult = null, marketSnapsh
       entryTimingState = 'TOO_CLOSE';
     } else if (isLpMode && closedM15Reclaim.freshWindowOk !== true) {
       entryTimingState = 'WAIT_FOR_CONFIRMATION';
+    } else if (isLpMode && breakoutContext.state === 'ATH_BREAK') {
+      entryTimingState = 'ATH_BREAK';
+    } else if (isLpMode && breakoutContext.confirmed === true) {
+      entryTimingState = 'BREAKOUT';
+    } else if (isLpMode) {
+      entryTimingState = 'WAIT_FRESH_BREAKOUT';
     } else {
-      entryTimingState = isLpMode ? 'LP_LIVE' : 'BREAKOUT';
+      entryTimingState = 'BREAKOUT';
     }
   }
 
   const entryReadiness =
-    entryTimingState === 'BREAKOUT' || entryTimingState === 'LP_LIVE' ? 'HIGH'
+    entryTimingState === 'BREAKOUT' || entryTimingState === 'ATH_BREAK' ? 'HIGH'
       : entryTimingState === 'TOO_CLOSE' ? 'LOW'
       : 'LOW';
 
   const breakoutQuality =
-    entryTimingState === 'BREAKOUT' || entryTimingState === 'LP_LIVE'
-      ? 'VALID'
+    entryTimingState === 'ATH_BREAK'
+      ? 'STRONG'
+      : entryTimingState === 'BREAKOUT'
+        ? 'VALID'
       : 'WEAK';
 
   return {
@@ -2155,13 +2272,21 @@ function deriveBreakoutEntrySignals({ pool = {}, vetoResult = null, marketSnapsh
     closedM15ReclaimTimingState: closedM15Reclaim.timingState ?? null,
     closedM15ReclaimWindowState: closedM15Reclaim.windowState ?? null,
     closedM15ReclaimStaleWarning: closedM15Reclaim.staleWarning ?? null,
+    freshBreakoutConfirmed: breakoutContext.confirmed === true,
+    freshBreakoutState: breakoutContext.state,
+    freshBreakoutNearAth: breakoutContext.nearAth === true,
+    freshBreakoutLocalHigh: breakoutContext.localHighBreak === true,
+    freshBreakoutFollowThrough: breakoutContext.followThrough === true,
+    freshBreakoutRecentHigh: breakoutContext.recentHigh,
+    freshBreakoutLastClose: breakoutContext.lastClose,
+    freshBreakoutCandleCount: breakoutContext.candleCount,
     minDistancePct: Number(cfg.entrySupertrendMinDistancePct ?? 1.5),
     maxDistancePct: Number(cfg.entrySupertrendMaxDistancePct ?? 18),
     breakoutMinStPct: Number(cfg.entrySupertrendBreakMinPct ?? 1.25),
     freshAthBreakPct: Number(cfg.entryFreshBreakoutMinAthDistancePct ?? 99.25),
     athBreakPct: Number(cfg.entryBreakoutMinAthDistancePct ?? 95),
     entryGateMode: getEntryGateMode(cfg),
-    canDeploy: entryTimingState === 'BREAKOUT' || entryTimingState === 'LP_LIVE',
+    canDeploy: entryTimingState === 'BREAKOUT' || entryTimingState === 'ATH_BREAK',
   };
 }
 
@@ -2536,10 +2661,12 @@ async function processTaWatchQueue(cfg = getConfig()) {
       symbol,
       meta: {
         scoutReason: row.reason || 'WATCH Ready',
-        entryReadiness: 'HIGH',
-        breakoutQuality: 'VALID',
+        entryReadiness: pool._entrySignals?.entryReadiness ?? 'LOW',
+        breakoutQuality: pool._entrySignals?.breakoutQuality ?? 'WEAK',
         entryGateMode: 'lp_fee_flow',
-        entryTimingState: 'LP_LIVE',
+        entryTimingState: pool._entrySignals?.entryTimingState ?? 'UNKNOWN',
+        freshBreakoutConfirmed: pool._entrySignals?.freshBreakoutConfirmed ?? false,
+        freshBreakoutState: pool._entrySignals?.freshBreakoutState ?? 'NOT_CLEAR',
         queueTrustedWatch: true,
         watchSource: row.source || 'WATCH',
         watchReason: row.reason || 'WATCH Ready',
@@ -3061,7 +3188,8 @@ export async function scanAndDeploy({ emitFinalReport = true } = {}) {
         entrySignals.entryTimingState === 'NO_TREND' ||
         entrySignals.entryTimingState === 'TOO_CLOSE' ||
         entrySignals.entryTimingState === 'UNKNOWN' ||
-        entrySignals.entryTimingState === 'WAIT_FOR_CONFIRMATION'
+        entrySignals.entryTimingState === 'WAIT_FOR_CONFIRMATION' ||
+        entrySignals.entryTimingState === 'WAIT_FRESH_BREAKOUT'
       ) {
         const waitReason = entrySignals.entryTimingState === 'BEARISH_TREND'
           ? 'Supertrend 15m bearish'
@@ -3069,6 +3197,8 @@ export async function scanAndDeploy({ emitFinalReport = true } = {}) {
             ? 'Supertrend 15m belum bullish'
             : entrySignals.entryTimingState === 'UNKNOWN'
               ? 'Snapshot entry belum fresh / reclaim M15 belum terkonfirmasi'
+              : entrySignals.entryTimingState === 'WAIT_FRESH_BREAKOUT'
+                ? 'Supertrend bullish dan reclaim valid, tapi breakout fresh belum clear'
               : entrySignals.entryTimingState === 'WAIT_FOR_CONFIRMATION'
                 ? `Closed M15 reclaim baru ${Number(entrySignals.closedM15ReclaimConsecutiveAboveLineCount || 0)} candle di atas Supertrend; tunggu minimal 2 candle close`
                 : `Closed M15 candle belum reclaim di atas Supertrend (${formatMaybePct(entrySignals.closedM15ReclaimDistancePct, 2)})`;
@@ -3093,11 +3223,12 @@ JANGAN menebak, mengasumsikan, atau mengisi data yang tidak ada di payload.
 LP STYLE ENTRY
 Supertrend 15m harus bullish.
 Last closed M15 candle HARUS close di atas garis Supertrend.
-Reclaim 1-2 candle hijau close di atas Supertrend adalah window paling fresh; 3+ candle di atas line hanya warning setup mulai stale, BUKAN auto-block.
+Reclaim minimal 2 candle close di atas Supertrend adalah syarat dasar, BUKAN tiket auto-entry.
+Setelah reclaim valid, harus ada breakout fresh yang clear: local-high break baru atau near-ATH break.
 Snapshot HARUS fresh, konsisten, dan tidak konflik.
 Entry harus tetap dekat ke harga terbaru; jangan deploy dari snapshot yang sudah lari.
-M5, volume, ATH distance, dan price-change hanya konteks tambahan, BUKAN hard gate entry.
-Jika Supertrend 15m BEARISH → REJECT. Jika NEUTRAL/UNKNOWN → DEFER/HOLD, jangan deploy.
+M5, volume, dan price-change hanya konteks tambahan, BUKAN hard gate entry.
+Jika Supertrend 15m BEARISH → REJECT. Jika reclaim valid tapi breakout fresh belum clear → DEFER/HOLD.
 
 MINDSET: FEE FLOW HUNTER.
 Tugasmu adalah menjaga modal tetap utuh sambil memanen fee selama market masih hidup.
@@ -3124,8 +3255,8 @@ ATURAN EVALUASI MEKANIS (TERAPKAN BERURUTAN — SATU RULE GAGAL = STOP):
   IF Entry Timing = "NO_TREND" → WAJIB DEFER. Berhenti di sini.
   IF Entry Timing = "UNKNOWN" → WAJIB DEFER. Berhenti di sini.
   IF Entry Timing = "TOO_CLOSE" → WAJIB DEFER. Berhenti di sini.
-  PASS hanya jika Entry Timing = "LP_LIVE" atau "BREAKOUT".
-  Artinya harga live masih di atas Supertrend dan last closed M15 sudah reclaim di atas garis tersebut.
+  PASS hanya jika Entry Timing = "BREAKOUT" atau "ATH_BREAK".
+  Artinya Supertrend bullish, closed M15 reclaim valid, dan breakout fresh sudah clear.
 
 [RULE 3 — SNAPSHOT / SAFETY GATE]
   Cek flag keamanan dari data. IF terdeteksi:
@@ -3138,7 +3269,7 @@ ATURAN EVALUASI MEKANIS (TERAPKAN BERURUTAN — SATU RULE GAGAL = STOP):
 [CHECKLIST FINAL — PASS hanya jika SEMUA syarat ini terpenuhi]
   ✓ Slot belum penuh                              → Rule 0
   ✓ TA Supertrend 15m = BULLISH                   → Rule 1
-  ✓ Entry Timing = LP_LIVE / BREAKOUT             → Rule 2
+  ✓ Entry Timing = BREAKOUT / ATH_BREAK           → Rule 2
   ✓ Last closed M15 reclaim di atas Supertrend    → Rule 2
   ✓ Snapshot fresh / non-conflicted               → Rule 2
   ✓ Tidak ada safety red flag                     → Rule 3
@@ -3583,6 +3714,25 @@ Balas HANYA JSON valid tanpa Markdown.`;
         winner._entryPrice = finalEntryIntent.entryPrice;
         winner._entryIntentSnapshotAt = finalSnapshotAt;
         winner.hasNonRefundableFees = Boolean(finalMarketSnapshot?.pool?.hasNonRefundableFees ?? winner.hasNonRefundableFees);
+      }
+      const finalTimingState = String(winner?._entrySignals?.entryTimingState || 'UNKNOWN').toUpperCase();
+      const finalBreakoutConfirmed = winner?._entrySignals?.freshBreakoutConfirmed === true;
+      if (!finalBreakoutConfirmed || (finalTimingState !== 'BREAKOUT' && finalTimingState !== 'ATH_BREAK')) {
+        const reasonText = finalTimingState === 'WAIT_FRESH_BREAKOUT'
+          ? 'Supertrend bullish dan reclaim valid, tapi breakout fresh belum clear'
+          : `Final breakout belum layak (${finalTimingState})`;
+        console.log(`[hunter] ⏸️ Final breakout gate ${symbol}: ${reasonText}`);
+        if (winner._record) {
+          recordGate(winner._record, 'SCOUT_AGENT', 'DEFER', reasonText);
+        }
+        addPendingRetest(winner, reasonText);
+        await notify(
+          `⏸️ <b>Deploy Ditahan</b>\n` +
+          `<b>${escapeHTML(symbol)}</b> — <code>FINAL_BREAKOUT_HOLD</code>\n` +
+          `Timing: <code>${escapeHTML(finalTimingState)}</code>\n` +
+          `<i>${escapeHTML(reasonText)}</i>`
+        );
+        return false;
       }
       const finalCurrentPrice =
         winner?._entrySignals?.currentPrice ??

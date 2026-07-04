@@ -495,7 +495,8 @@ test('scout agent prompt uses DLMM LP breakout screening fields', () => {
   assert.match(src, /Supertrend 15m harus bullish/);
   assert.match(src, /Last closed M15 candle HARUS close di atas garis Supertrend/);
   assert.match(src, /reclaim baru \$\{Number\(entrySignals\.closedM15ReclaimConsecutiveAboveLineCount \|\| 0\)\} candle di atas Supertrend; tunggu minimal 2 candle close/);
-  assert.match(src, /M5, volume, ATH distance, dan price-change hanya konteks tambahan, BUKAN hard gate entry/);
+  assert.match(src, /M5, volume, dan price-change hanya konteks tambahan, BUKAN hard gate entry/);
+  assert.match(src, /Setelah reclaim valid, harus ada breakout fresh yang clear: local-high break baru atau near-ATH break/);
   assert.match(src, /TA Supertrend 15m:/);
   assert.match(src, /TA M5 Change:/);
   assert.match(src, /OKX Wash Trading:/);

@@ -136,6 +136,7 @@ test('fresh deploy meta allows breakout-valid, high-readiness entries including 
     entryTimingState: 'BREAKOUT',
     entryReadiness: 'HIGH',
     breakoutQuality: 'VALID',
+    freshBreakoutConfirmed: true,
     taTrend: 'BULLISH',
   }), true);
 
@@ -150,6 +151,7 @@ test('fresh deploy meta allows breakout-valid, high-readiness entries including 
     entryTimingState: 'BREAKOUT',
     entryReadiness: 'MEDIUM',
     breakoutQuality: 'VALID',
+    freshBreakoutConfirmed: true,
     taTrend: 'BULLISH',
   }), false);
 
@@ -157,41 +159,47 @@ test('fresh deploy meta allows breakout-valid, high-readiness entries including 
     entryTimingState: 'LP_LIVE',
     entryReadiness: 'HIGH',
     breakoutQuality: 'VALID',
+    freshBreakoutConfirmed: false,
     taTrend: 'BULLISH',
-  }), true);
+  }), false);
 
   assert.equal(isFreshDeployMeta({
-    entryTimingState: 'LP_LIVE',
+    entryTimingState: 'ATH_BREAK',
     entryReadiness: 'HIGH',
-    breakoutQuality: 'VALID',
+    breakoutQuality: 'STRONG',
+    freshBreakoutConfirmed: true,
     taTrend: 'BEARISH',
   }), false);
 
   assert.equal(isFreshDeployMeta({
-    entryTimingState: 'LP_LIVE',
+    entryTimingState: 'BREAKOUT',
     entryReadiness: 'HIGH',
     breakoutQuality: 'VALID',
+    freshBreakoutConfirmed: true,
     taTrend: 'NEUTRAL',
   }), false);
 
   assert.equal(isFreshDeployMeta({
-    entryTimingState: 'LP_LIVE',
+    entryTimingState: 'BREAKOUT',
     entryReadiness: 'HIGH',
     breakoutQuality: 'VALID',
+    freshBreakoutConfirmed: true,
   }), false);
 
   assert.equal(isFreshDeployMeta({
-    entryTimingState: 'LP_LIVE',
+    entryTimingState: 'BREAKOUT',
     entryReadiness: 'HIGH',
     breakoutQuality: 'VALID',
+    freshBreakoutConfirmed: true,
     taTrend: 'NEUTRAL',
     queueTrustedWatch: true,
   }), false);
 
   assert.equal(isFreshDeployMeta({
-    entryTimingState: 'LP_LIVE',
+    entryTimingState: 'BREAKOUT',
     entryReadiness: 'HIGH',
     breakoutQuality: 'VALID',
+    freshBreakoutConfirmed: true,
     taTrend: 'NEUTRAL',
     queueTrustedWatch: true,
     supertrend15m: 'BULLISH',
@@ -199,9 +207,10 @@ test('fresh deploy meta allows breakout-valid, high-readiness entries including 
   }), false);
 
   assert.equal(isFreshDeployMeta({
-    entryTimingState: 'LP_LIVE',
+    entryTimingState: 'BREAKOUT',
     entryReadiness: 'HIGH',
     breakoutQuality: 'VALID',
+    freshBreakoutConfirmed: true,
     taTrend: 'NEUTRAL',
     queueTrustedWatch: true,
     supertrend15m: 'BULLISH',
@@ -209,16 +218,18 @@ test('fresh deploy meta allows breakout-valid, high-readiness entries including 
   }), true);
 
   assert.equal(isFreshDeployMeta({
-    entryTimingState: 'LP_LIVE',
+    entryTimingState: 'BREAKOUT',
     entryReadiness: 'HIGH',
     breakoutQuality: 'VALID',
+    freshBreakoutConfirmed: false,
     queueTrustedWatch: true,
   }), false);
 
   assert.equal(isFreshDeployMeta({
-    entryTimingState: 'LP_LIVE',
+    entryTimingState: 'ATH_BREAK',
     entryReadiness: 'HIGH',
-    breakoutQuality: 'VALID',
+    breakoutQuality: 'STRONG',
+    freshBreakoutConfirmed: true,
     taTrend: 'BEARISH',
     queueTrustedWatch: true,
   }), false);
@@ -1644,13 +1655,15 @@ test('manual CA final gate does not pass generic taTrend snapshot cache', () => 
 test('hunter scout logic now uses simple LP hard gates only', () => {
   const hunterSrc = readFileSync(new URL('../src/agents/hunterAlpha.js', import.meta.url), 'utf8');
   assert.match(hunterSrc, /Last closed M15 candle HARUS close di atas garis Supertrend/);
-  assert.match(hunterSrc, /M5, volume, ATH distance, dan price-change hanya konteks tambahan, BUKAN hard gate entry/);
-  assert.match(hunterSrc, /PASS hanya jika Entry Timing = "LP_LIVE" atau "BREAKOUT"/);
+  assert.match(hunterSrc, /harus ada breakout fresh yang clear: local-high break baru atau near-ATH break/);
+  assert.match(hunterSrc, /M5, volume, dan price-change hanya konteks tambahan, BUKAN hard gate entry/);
+  assert.match(hunterSrc, /PASS hanya jika Entry Timing = "BREAKOUT" atau "ATH_BREAK"/);
   assert.match(hunterSrc, /entrySignals\.entryTimingState === 'BEARISH_TREND'/);
   assert.match(hunterSrc, /entrySignals\.entryTimingState === 'NO_TREND'/);
   assert.match(hunterSrc, /entrySignals\.entryTimingState === 'TOO_CLOSE'/);
   assert.match(hunterSrc, /entrySignals\.entryTimingState === 'UNKNOWN'/);
   assert.match(hunterSrc, /entrySignals\.entryTimingState === 'WAIT_FOR_CONFIRMATION'/);
+  assert.match(hunterSrc, /entrySignals\.entryTimingState === 'WAIT_FRESH_BREAKOUT'/);
 });
 
 test('lp_simple_m15 deploy report labels M15 as primary and M5 as diagnostic', () => {
@@ -1942,11 +1955,12 @@ test('deploy queue hold dedupe state is cleaned when candidate is removed', () =
       address: poolAddress,
       tokenYMint: 'So11111111111111111111111111111111111111112',
     }, 'TEST', {
-      entryTimingState: 'LP_LIVE',
+      entryTimingState: 'BREAKOUT',
       entryReadiness: 'HIGH',
       breakoutQuality: 'VALID',
       taTrend: 'BULLISH',
       queueTrustedWatch: true,
+      freshBreakoutConfirmed: true,
     });
     assert.equal(getQueueSize() >= 1, true);
 

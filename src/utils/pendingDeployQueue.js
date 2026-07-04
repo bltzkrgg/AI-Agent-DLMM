@@ -513,7 +513,7 @@ function isTrustedLpWatchMeta(meta = {}) {
   const readiness = String(meta.entryReadiness || '').toUpperCase();
   const breakoutQuality = String(meta.breakoutQuality || '').toUpperCase();
   return meta.queueTrustedWatch === true &&
-    (timingState === 'LP_LIVE' || timingState === 'BREAKOUT') &&
+    (timingState === 'BREAKOUT' || timingState === 'ATH_BREAK') &&
     readiness === 'HIGH' &&
     (breakoutQuality === 'VALID' || breakoutQuality === 'STRONG');
 }
@@ -1163,18 +1163,19 @@ export function isFreshDeployMeta(meta = {}) {
   const readiness = String(meta.entryReadiness || '').toUpperCase();
   const breakoutQuality = String(meta.breakoutQuality || '').toUpperCase();
   const taTrend = String(meta.taTrend || meta.liveTrend || '').toUpperCase();
-  const signalAthDistancePct = Number(meta.signalAthDistancePct);
   const signalStDistancePct = Number(meta.signalStDistancePct);
+  const freshBreakoutConfirmed = meta.freshBreakoutConfirmed === true;
   const trustedLpWatch = isTrustedLpWatchMeta(meta);
 
   if (meta.isRetest || meta.isScoutDefer) return false;
   if (lpMode) {
-    if (timingState !== 'LP_LIVE' && timingState !== 'BREAKOUT') return false;
+    if (timingState !== 'BREAKOUT' && timingState !== 'ATH_BREAK') return false;
     if (taTrend === 'BEARISH') return false;
     if (!trustedLpWatch && taTrend !== 'BULLISH') return false;
     if (trustedLpWatch && taTrend !== 'BULLISH' && !isFreshBullishSupertrend15m(meta, {}, Date.now(), FINAL_ST_CACHE_TTL_MS)) {
       return false;
     }
+    if (!freshBreakoutConfirmed) return false;
   } else if (timingState !== 'BREAKOUT') {
     return false;
   }
