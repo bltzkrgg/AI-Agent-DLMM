@@ -87,3 +87,44 @@ test('hunter activity bias prefers living fee-flow pools without becoming a hard
   assert.equal(hunter.__poolActivityBiasScoreForTests(active) > hunter.__poolActivityBiasScoreForTests(quiet), true);
   assert.doesNotMatch(source, /POOL_ACTIVITY.*REJECT|REJECT.*POOL_ACTIVITY/);
 });
+
+test('hunter screening rank uses batch percentile as ranking only, not a gate', async () => {
+  const hunter = await importFresh(join(repoRoot, 'src/agents/hunterAlpha.js'));
+  const active = {
+    address: 'PoolActive',
+    volume24h: 680000,
+    fees24h: 1600,
+    feeActiveTvlRatio: 0.021,
+    activeTvl: 140000,
+    swapCount24h: 1800,
+    priceChangePct: 62,
+  };
+  const warm = {
+    address: 'PoolWarm',
+    volume24h: 185000,
+    fees24h: 420,
+    feeActiveTvlRatio: 0.011,
+    activeTvl: 120000,
+    swapCount24h: 540,
+    priceChangePct: 18,
+  };
+  const cold = {
+    address: 'PoolCold',
+    volume24h: 24000,
+    fees24h: 55,
+    feeActiveTvlRatio: 0.003,
+    activeTvl: 125000,
+    swapCount24h: 64,
+    priceChangePct: -6,
+  };
+
+  const pools = [active, warm, cold];
+  const activeRank = hunter.__screeningRankScoreForTests(active, pools);
+  const warmRank = hunter.__screeningRankScoreForTests(warm, pools);
+  const coldRank = hunter.__screeningRankScoreForTests(cold, pools);
+
+  assert.equal(activeRank.score > warmRank.score, true);
+  assert.equal(warmRank.score > coldRank.score, true);
+  assert.equal(activeRank.activityPercentile >= warmRank.activityPercentile, true);
+  assert.equal(warmRank.activityPercentile >= coldRank.activityPercentile, true);
+});

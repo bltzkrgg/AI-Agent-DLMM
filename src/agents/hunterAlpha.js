@@ -622,12 +622,145 @@ function getPoolVolumeTrendSortDelta(pool = {}) {
   return 0;
 }
 
+function getDiscoveryMomentumScore(pool = {}) {
+  const raw = Number(
+    pool?.priceChangePct ??
+    pool?.priceChangeH1 ??
+    pool?.priceChangeM5 ??
+    pool?._momentumPct ??
+    0
+  );
+  if (!Number.isFinite(raw)) return 0;
+  if (raw >= 100) return 40;
+  if (raw >= 50) return 28;
+  if (raw >= 20) return 16;
+  if (raw >= 10) return 8;
+  if (raw >= 0) return 2;
+  if (raw > -10) return -4;
+  return -8;
+}
+
+function getScreeningRankKey(pool = {}) {
+  return String(pool?.address || pool?.poolAddress || pool?.tokenXMint || pool?.tokenMint || pool?.name || '').trim();
+}
+
+function percentileRank(value, sortedValues = []) {
+  if (!Number.isFinite(value) || sortedValues.length === 0) return null;
+  let below = 0;
+  let equal = 0;
+  for (const v of sortedValues) {
+    if (!Number.isFinite(v)) continue;
+    if (v < value) below += 1;
+    else if (v === value) equal += 1;
+  }
+  const total = sortedValues.length;
+  if (total <= 0) return null;
+  return (below + (equal / 2)) / total;
+}
+
+function buildScreeningRankContext(pools = []) {
+  const activePools = Array.isArray(pools) ? pools.filter(Boolean) : [];
+  const metricSeries = {
+    volume24h: [],
+    fees24h: [],
+    feeRatio: [],
+    volumeTvlRatio: [],
+    swapCount24h: [],
+  };
+
+  const metricsByPool = new Map();
+  for (const pool of activePools) {
+    const volume24h = normalizePoolVolume24h(pool);
+    const fees24h = Number(normalizePoolFees24h(pool) || 0);
+    const feeRatio = Number(normalizeMeteoraFeeTvlRatio(pool) || 0);
+    const tvl = normalizePoolTotalTvl(pool);
+    const volumeTvlRatio = tvl > 0 ? volume24h / tvl : 0;
+    const swapCount24h = Number(pool?.swapCount24h || pool?.txns24hRaw || pool?.txns24h || 0);
+    const momentumScore = getDiscoveryMomentumScore(pool);
+    const activityBias = getPoolActivityBiasScore(pool);
+    const volumeTrend = getPoolVolumeTrendSortDelta(pool);
+
+    if (volume24h > 0) metricSeries.volume24h.push(volume24h);
+    if (fees24h > 0) metricSeries.fees24h.push(fees24h);
+    if (feeRatio > 0) metricSeries.feeRatio.push(feeRatio);
+    if (volumeTvlRatio > 0) metricSeries.volumeTvlRatio.push(volumeTvlRatio);
+    if (swapCount24h > 0) metricSeries.swapCount24h.push(swapCount24h);
+
+    metricsByPool.set(getScreeningRankKey(pool), {
+      volume24h,
+      fees24h,
+      feeRatio,
+      volumeTvlRatio,
+      swapCount24h,
+      momentumScore,
+      activityBias,
+      volumeTrend,
+    });
+  }
+
+  for (const key of Object.keys(metricSeries)) {
+    metricSeries[key].sort((a, b) => a - b);
+  }
+
+  const scoreByPool = new Map();
+  for (const pool of activePools) {
+    const key = getScreeningRankKey(pool);
+    const metrics = metricsByPool.get(key);
+    if (!metrics) continue;
+
+    const percentiles = [];
+    const volumePct = percentileRank(metrics.volume24h, metricSeries.volume24h);
+    const feesPct = percentileRank(metrics.fees24h, metricSeries.fees24h);
+    const feeRatioPct = percentileRank(metrics.feeRatio, metricSeries.feeRatio);
+    const volumeTvlPct = percentileRank(metrics.volumeTvlRatio, metricSeries.volumeTvlRatio);
+    const swapPct = percentileRank(metrics.swapCount24h, metricSeries.swapCount24h);
+
+    if (volumePct != null) percentiles.push(volumePct);
+    if (feesPct != null) percentiles.push(feesPct);
+    if (feeRatioPct != null) percentiles.push(feeRatioPct);
+    if (volumeTvlPct != null) percentiles.push(volumeTvlPct);
+    if (swapPct != null) percentiles.push(swapPct);
+
+    const activityPercentile = percentiles.length > 0
+      ? percentiles.reduce((sum, pct) => sum + pct, 0) / percentiles.length
+      : 0;
+
+    const score =
+      Math.round(activityPercentile * 1000) +
+      (metrics.activityBias * 10) +
+      (metrics.momentumScore * 8) +
+      (metrics.volumeTrend * 6);
+
+    scoreByPool.set(key, {
+      score,
+      activityPercentile,
+      ...metrics,
+    });
+  }
+
+  return scoreByPool;
+}
+
+function getScreeningRankScore(pool = {}, rankContext = new Map()) {
+  const key = getScreeningRankKey(pool);
+  const fallback = {
+    score: (getPoolActivityBiasScore(pool) * 10) + (getDiscoveryMomentumScore(pool) * 8) + (getPoolVolumeTrendSortDelta(pool) * 6),
+    activityPercentile: 0,
+  };
+  return rankContext.get(key) || fallback;
+}
+
 export function __volumeTrendSortDeltaForTests(pool = {}) {
   return getPoolVolumeTrendSortDelta(pool);
 }
 
 export function __poolActivityBiasScoreForTests(pool = {}) {
   return getPoolActivityBiasScore(pool);
+}
+
+export function __screeningRankScoreForTests(pool = {}, pools = []) {
+  const context = buildScreeningRankContext(pools);
+  return getScreeningRankScore(pool, context);
 }
 
 function formatMemorySignal(signal = {}) {
@@ -2612,11 +2745,16 @@ export async function scanAndDeploy({ emitFinalReport = true } = {}) {
   console.log(`[SCREEN] ${pools.length} pool ditemukan. Mulai screening...`);
 
     const screeningTopPoolsLimit = Math.max(1, Number(cfg.screeningTopPoolsLimit) || 5);
+    const screeningRankContext = buildScreeningRankContext(pools);
 
     // ── Sort by fee-flow activity bias, evaluasi HANYA top pool configurable ───
     // Filosofi LP: resource screening fokus ke pool yang bukan cuma valid, tapi juga masih hidup.
     // Pool di luar batas ini TIDAK dievaluasi sama sekali (hemat API & waktu).
     pools = pools.sort((a, b) => {
+      const aRank = getScreeningRankScore(a, screeningRankContext).score;
+      const bRank = getScreeningRankScore(b, screeningRankContext).score;
+      if (aRank !== bRank) return bRank - aRank;
+
       const activityDelta = getPoolActivityBiasScore(b) - getPoolActivityBiasScore(a);
       if (activityDelta !== 0) return activityDelta;
       const volTrendDelta = getPoolVolumeTrendSortDelta(b) - getPoolVolumeTrendSortDelta(a);
@@ -4452,9 +4590,14 @@ export async function sendImmediateTopPoolsReport(chatId) {
 
     const screeningTopPoolsLimit = Math.max(1, Number(cfg.screeningTopPoolsLimit) || 5);
     const slotSaturated = isDeploySlotSaturated(getDeploySlotUsage());
+    const screeningRankContext = buildScreeningRankContext(rawPools);
 
     // Sort by efficiency (Vol/TVL) — top pool configurable ke Telegram, sisanya console
     const sorted = [...rawPools].sort((a, b) => {
+      const aRank = getScreeningRankScore(a, screeningRankContext).score;
+      const bRank = getScreeningRankScore(b, screeningRankContext).score;
+      if (aRank !== bRank) return bRank - aRank;
+
       const aVol = Number(a.volume24h || a.trade_volume_24h || 0);
       const bVol = Number(b.volume24h || b.trade_volume_24h || 0);
       const aTvl = Number(a.totalTvl || a.activeTvl || 0) || 1;
