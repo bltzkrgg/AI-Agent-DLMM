@@ -2873,15 +2873,21 @@ export async function scanAndDeploy({ emitFinalReport = true } = {}) {
       console.log(`[SCREEN] 🧠 LLM stage=SCOUT model=${scoutModel} (slots: ${activeCount}/${maxPositions}, booked=${winners.length}, reserved=${slotUsage.reserved})`);
       const llmPoolContext = buildLlmPoolContext({ pool, screenResult, vetoResult, marketSnapshot, bookedSlots: winners.length, entrySignals });
 
-      if (entrySignals.entryTimingState === 'BEARISH_TREND' || entrySignals.entryTimingState === 'NO_TREND' || entrySignals.entryTimingState === 'TOO_CLOSE' || entrySignals.entryTimingState === 'UNKNOWN') {
+      if (
+        entrySignals.entryTimingState === 'BEARISH_TREND' ||
+        entrySignals.entryTimingState === 'NO_TREND' ||
+        entrySignals.entryTimingState === 'TOO_CLOSE' ||
+        entrySignals.entryTimingState === 'UNKNOWN' ||
+        entrySignals.entryTimingState === 'WAIT_FOR_CONFIRMATION'
+      ) {
         const waitReason = entrySignals.entryTimingState === 'BEARISH_TREND'
           ? 'Supertrend 15m bearish'
           : entrySignals.entryTimingState === 'NO_TREND'
             ? 'Supertrend 15m belum bullish'
             : entrySignals.entryTimingState === 'UNKNOWN'
               ? 'Snapshot entry belum fresh / reclaim M15 belum terkonfirmasi'
-              : entrySignals.entryTimingState === 'WAIT_FOR_PULLBACK'
-                ? `Closed M15 reclaim masih bullish tapi cooling (${Number(entrySignals.closedM15ReclaimConsecutiveAboveLineCount || 0)} candle di atas line, state=${String(entrySignals.closedM15ReclaimTimingState || 'UNKNOWN')})`
+              : entrySignals.entryTimingState === 'WAIT_FOR_CONFIRMATION'
+                ? `Closed M15 reclaim baru ${Number(entrySignals.closedM15ReclaimConsecutiveAboveLineCount || 0)} candle di atas Supertrend; tunggu minimal 2 candle close`
                 : `Closed M15 candle belum reclaim di atas Supertrend (${formatMaybePct(entrySignals.closedM15ReclaimDistancePct, 2)})`;
         const bearishTrend = entrySignals.entryTimingState === 'BEARISH_TREND';
         reportManager.updateGate(tokenSymbol, 'SCOUT_AGENT', bearishTrend ? 'FAIL' : 'DEFER', waitReason);

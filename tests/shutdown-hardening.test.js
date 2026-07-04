@@ -95,11 +95,11 @@ test('index starts manual close watcher during boot', () => {
 
 test('WATCH telegram banner shows candidate status values instead of generic PASS labels', () => {
   const hunterSrc = readFileSync(hunterPath, 'utf8');
-  assert.match(hunterSrc, /- Slot: <code>\$\{slotUsed\}\/\$\{slotMax\}<\/code> used/);
+  assert.match(hunterSrc, /- Slot: <code>\$\{slotUsed\}\/\$\{slotMax\}<\/code>/);
   assert.match(hunterSrc, /- Trend M15: <code>\$\{entrySignals\.taTrend \|\| 'UNKNOWN'\}<\/code>/);
   assert.match(hunterSrc, /- Timing: <code>\$\{entrySignals\.entryTimingState \|\| 'UNKNOWN'\}<\/code>/);
   assert.match(hunterSrc, /- Safety: <code>SCOUT_OK<\/code>/);
-  assert.match(hunterSrc, /Watcher aktif — kandidat dipantau\./);
+  assert.match(hunterSrc, /Watcher aktif - kandidat dipantau\./);
   assert.doesNotMatch(hunterSrc, /- Trend M15: PASS/);
   assert.doesNotMatch(hunterSrc, /- Timing: PASS/);
   assert.doesNotMatch(hunterSrc, /- Safety: PASS/);
@@ -166,7 +166,8 @@ test('/stop pauses autonomous discovery without disabling operator commands', ()
   assert.match(indexSrc, /resumeDiscovery\('TELEGRAM_HUNT'\)/);
   assert.match(indexSrc, /resumeDiscovery\('TELEGRAM_SCREENING_ON'\)/);
   assert.match(indexSrc, /Screening is paused by <code>\/stop<\/code>/);
-  assert.match(indexSrc, /if \(isDiscoveryPaused\(\)\) \{\s*await bot\.sendMessage\(chatId, `⏸️ \$\{getPausedMessage\(\)\}`/);
+  assert.match(indexSrc, /if \(isDiscoveryPaused\(\) && !manualTaExitEnabled\)/);
+  assert.match(indexSrc, /await bot\.sendMessage\(chatId, `⏸️ \$\{getPausedMessage\(\)\}`/);
   assert.match(indexSrc, /const discoveryPaused = isDiscoveryPaused\(\)/);
   assert.match(indexSrc, /AUTOSCREEN_STARTUP_DISABLED/);
   assert.match(indexSrc, /manual_command_required/);
@@ -493,6 +494,7 @@ test('scout agent prompt uses DLMM LP breakout screening fields', () => {
   assert.match(src, /LP STYLE ENTRY/);
   assert.match(src, /Supertrend 15m harus bullish/);
   assert.match(src, /Last closed M15 candle HARUS close di atas garis Supertrend/);
+  assert.match(src, /reclaim baru \$\{Number\(entrySignals\.closedM15ReclaimConsecutiveAboveLineCount \|\| 0\)\} candle di atas Supertrend; tunggu minimal 2 candle close/);
   assert.match(src, /M5, volume, ATH distance, dan price-change hanya konteks tambahan, BUKAN hard gate entry/);
   assert.match(src, /TA Supertrend 15m:/);
   assert.match(src, /TA M5 Change:/);

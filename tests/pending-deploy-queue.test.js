@@ -1645,7 +1645,11 @@ test('hunter scout logic now uses simple LP hard gates only', () => {
   assert.match(hunterSrc, /Last closed M15 candle HARUS close di atas garis Supertrend/);
   assert.match(hunterSrc, /M5, volume, ATH distance, dan price-change hanya konteks tambahan, BUKAN hard gate entry/);
   assert.match(hunterSrc, /PASS hanya jika Entry Timing = "LP_LIVE" atau "BREAKOUT"/);
-  assert.match(hunterSrc, /entrySignals\.entryTimingState === 'BEARISH_TREND' \|\| entrySignals\.entryTimingState === 'NO_TREND' \|\| entrySignals\.entryTimingState === 'TOO_CLOSE' \|\| entrySignals\.entryTimingState === 'UNKNOWN'/);
+  assert.match(hunterSrc, /entrySignals\.entryTimingState === 'BEARISH_TREND'/);
+  assert.match(hunterSrc, /entrySignals\.entryTimingState === 'NO_TREND'/);
+  assert.match(hunterSrc, /entrySignals\.entryTimingState === 'TOO_CLOSE'/);
+  assert.match(hunterSrc, /entrySignals\.entryTimingState === 'UNKNOWN'/);
+  assert.match(hunterSrc, /entrySignals\.entryTimingState === 'WAIT_FOR_CONFIRMATION'/);
 });
 
 test('lp_simple_m15 deploy report labels M15 as primary and M5 as diagnostic', () => {
