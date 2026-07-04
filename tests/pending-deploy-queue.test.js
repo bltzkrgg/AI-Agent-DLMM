@@ -1657,6 +1657,7 @@ test('hunter scout logic now uses simple LP hard gates only', () => {
   assert.match(hunterSrc, /Last closed M15 candle HARUS close di atas garis Supertrend/);
   assert.match(hunterSrc, /harus ada breakout fresh yang clear: local-high break baru atau near-ATH break/);
   assert.match(hunterSrc, /M5, volume, dan price-change hanya konteks tambahan, BUKAN hard gate entry/);
+  assert.match(hunterSrc, /fresh breakout belum terkonfirmasi/);
   assert.match(hunterSrc, /PASS hanya jika Entry Timing = "BREAKOUT" atau "ATH_BREAK"/);
   assert.match(hunterSrc, /entrySignals\.entryTimingState === 'BEARISH_TREND'/);
   assert.match(hunterSrc, /entrySignals\.entryTimingState === 'NO_TREND'/);

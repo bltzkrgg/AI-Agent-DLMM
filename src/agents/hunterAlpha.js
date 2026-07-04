@@ -3198,7 +3198,7 @@ export async function scanAndDeploy({ emitFinalReport = true } = {}) {
             : entrySignals.entryTimingState === 'UNKNOWN'
               ? 'Snapshot entry belum fresh / reclaim M15 belum terkonfirmasi'
               : entrySignals.entryTimingState === 'WAIT_FRESH_BREAKOUT'
-                ? 'Supertrend bullish dan reclaim valid, tapi breakout fresh belum clear'
+                ? 'Reclaim valid, tapi fresh breakout belum terkonfirmasi'
               : entrySignals.entryTimingState === 'WAIT_FOR_CONFIRMATION'
                 ? `Closed M15 reclaim baru ${Number(entrySignals.closedM15ReclaimConsecutiveAboveLineCount || 0)} candle di atas Supertrend; tunggu minimal 2 candle close`
                 : `Closed M15 candle belum reclaim di atas Supertrend (${formatMaybePct(entrySignals.closedM15ReclaimDistancePct, 2)})`;
@@ -3228,7 +3228,7 @@ Setelah reclaim valid, harus ada breakout fresh yang clear: local-high break bar
 Snapshot HARUS fresh, konsisten, dan tidak konflik.
 Entry harus tetap dekat ke harga terbaru; jangan deploy dari snapshot yang sudah lari.
 M5, volume, dan price-change hanya konteks tambahan, BUKAN hard gate entry.
-Jika Supertrend 15m BEARISH → REJECT. Jika reclaim valid tapi breakout fresh belum clear → DEFER/HOLD.
+Jika Supertrend 15m BEARISH → REJECT. Jika reclaim valid tapi fresh breakout belum terkonfirmasi → DEFER/HOLD.
 
 MINDSET: FEE FLOW HUNTER.
 Tugasmu adalah menjaga modal tetap utuh sambil memanen fee selama market masih hidup.
@@ -3719,7 +3719,7 @@ Balas HANYA JSON valid tanpa Markdown.`;
       const finalBreakoutConfirmed = winner?._entrySignals?.freshBreakoutConfirmed === true;
       if (!finalBreakoutConfirmed || (finalTimingState !== 'BREAKOUT' && finalTimingState !== 'ATH_BREAK')) {
         const reasonText = finalTimingState === 'WAIT_FRESH_BREAKOUT'
-          ? 'Supertrend bullish dan reclaim valid, tapi breakout fresh belum clear'
+          ? 'Reclaim valid, tapi fresh breakout belum terkonfirmasi'
           : `Final breakout belum layak (${finalTimingState})`;
         console.log(`[hunter] ⏸️ Final breakout gate ${symbol}: ${reasonText}`);
         if (winner._record) {
