@@ -1486,6 +1486,8 @@ export async function submitManualCaPool(poolAddress, { source = 'TELEGRAM_CA' }
     entryTimingState: entrySignals.entryTimingState,
     freshBreakoutConfirmed: entrySignals.freshBreakoutConfirmed,
     freshBreakoutState: entrySignals.freshBreakoutState,
+    momentumAlive: entrySignals.momentumAlive,
+    momentumAliveReason: entrySignals.momentumAliveReason,
     signalStDistancePct: entrySignals.signalStDistancePct,
     signalAthDistancePct: entrySignals.signalAthDistancePct,
     taTrend: entrySignals.taTrend,
@@ -1906,7 +1908,7 @@ function readCanonicalSnapshotTrend(marketSnapshot = null, vetoResult = null) {
 }
 
 function isLPLiveTimingState(state = '') {
-  return ['LP_LIVE', 'RECLAIM', 'RECLAIM_LIVE', 'BREAKOUT', 'ATH_BREAK'].includes(String(state || '').toUpperCase());
+  return ['LP_LIVE', 'RECLAIM', 'RECLAIM_LIVE', 'BREAKOUT', 'ATH_BREAK', 'MOMENTUM_ALIVE'].includes(String(state || '').toUpperCase());
 }
 
 function toFiniteNumber(value, fallback = null) {
@@ -2012,6 +2014,33 @@ function evaluateFreshBreakoutContext({ snapshot = null, signalAthDistancePct = 
     recentHigh: Number.isFinite(recentHigh) ? recentHigh : null,
     lastClose: Number.isFinite(lastClose) ? lastClose : null,
     candleCount: candlesM15.length,
+  };
+}
+
+function evaluateMomentumAliveContext({
+  pool = {},
+  closedM15Reclaim = {},
+  signalStDistancePct = null,
+} = {}) {
+  const reclaimCount = Number(closedM15Reclaim?.consecutiveAboveLineCount || 0);
+  const volumeTrendState = String(pool?._volumeTrendSignal?.state || 'UNKNOWN').toUpperCase();
+  const pullbackStillBullish = Number.isFinite(signalStDistancePct) && signalStDistancePct > 0;
+  const reclaimWindowAlive = reclaimCount >= 2 && reclaimCount <= 3;
+  const volumeAlive = volumeTrendState !== 'DECELERATING';
+  const alive = pullbackStillBullish && reclaimWindowAlive && volumeAlive;
+
+  let reason = 'momentum_fading';
+  if (!pullbackStillBullish) reason = 'structure_lost_above_supertrend';
+  else if (!reclaimWindowAlive) reason = reclaimCount > 3 ? 'reclaim_too_late' : 'reclaim_not_ready';
+  else if (!volumeAlive) reason = 'volume_decelerating';
+  else reason = 'bullish_pullback_still_alive';
+
+  return {
+    alive,
+    reason,
+    reclaimCount,
+    volumeTrendState,
+    pullbackStillBullish,
   };
 }
 
@@ -2130,6 +2159,8 @@ function buildCanonicalEntrySnapshot({
     breakoutQuality: entrySignals?.breakoutQuality ?? existing?.breakoutQuality ?? null,
     freshBreakoutConfirmed: entrySignals?.freshBreakoutConfirmed ?? existing?.freshBreakoutConfirmed ?? null,
     freshBreakoutState: entrySignals?.freshBreakoutState ?? existing?.freshBreakoutState ?? null,
+    momentumAlive: entrySignals?.momentumAlive ?? existing?.momentumAlive ?? null,
+    momentumAliveReason: entrySignals?.momentumAliveReason ?? existing?.momentumAliveReason ?? null,
     watchWindowSec: Number.isFinite(Number(watchWindowSec))
       ? Number(watchWindowSec)
       : Number(existing?.watchWindowSec ?? pool?._watchWindowSec ?? null),
@@ -2199,6 +2230,11 @@ function deriveBreakoutEntrySignals({ pool = {}, vetoResult = null, marketSnapsh
     signalAthDistancePct,
     cfg,
   });
+  const momentumAliveContext = evaluateMomentumAliveContext({
+    pool,
+    closedM15Reclaim,
+    signalStDistancePct,
+  });
 
   let entryTimingState = 'UNKNOWN';
   if (canonicalTrend.conflicted) {
@@ -2223,6 +2259,8 @@ function deriveBreakoutEntrySignals({ pool = {}, vetoResult = null, marketSnapsh
       entryTimingState = 'ATH_BREAK';
     } else if (isLpMode && breakoutContext.confirmed === true) {
       entryTimingState = 'BREAKOUT';
+    } else if (isLpMode && momentumAliveContext.alive === true) {
+      entryTimingState = 'MOMENTUM_ALIVE';
     } else if (isLpMode) {
       entryTimingState = 'WAIT_FRESH_BREAKOUT';
     } else {
@@ -2231,14 +2269,14 @@ function deriveBreakoutEntrySignals({ pool = {}, vetoResult = null, marketSnapsh
   }
 
   const entryReadiness =
-    entryTimingState === 'BREAKOUT' || entryTimingState === 'ATH_BREAK' ? 'HIGH'
+    entryTimingState === 'BREAKOUT' || entryTimingState === 'ATH_BREAK' || entryTimingState === 'MOMENTUM_ALIVE' ? 'HIGH'
       : entryTimingState === 'TOO_CLOSE' ? 'LOW'
       : 'LOW';
 
   const breakoutQuality =
     entryTimingState === 'ATH_BREAK'
       ? 'STRONG'
-      : entryTimingState === 'BREAKOUT'
+      : entryTimingState === 'BREAKOUT' || entryTimingState === 'MOMENTUM_ALIVE'
         ? 'VALID'
       : 'WEAK';
 
@@ -2280,13 +2318,18 @@ function deriveBreakoutEntrySignals({ pool = {}, vetoResult = null, marketSnapsh
     freshBreakoutRecentHigh: breakoutContext.recentHigh,
     freshBreakoutLastClose: breakoutContext.lastClose,
     freshBreakoutCandleCount: breakoutContext.candleCount,
+    momentumAlive: momentumAliveContext.alive === true,
+    momentumAliveReason: momentumAliveContext.reason,
+    momentumVolumeTrendState: momentumAliveContext.volumeTrendState,
+    momentumReclaimCount: momentumAliveContext.reclaimCount,
+    momentumPullbackStillBullish: momentumAliveContext.pullbackStillBullish === true,
     minDistancePct: Number(cfg.entrySupertrendMinDistancePct ?? 1.5),
     maxDistancePct: Number(cfg.entrySupertrendMaxDistancePct ?? 18),
     breakoutMinStPct: Number(cfg.entrySupertrendBreakMinPct ?? 1.25),
     freshAthBreakPct: Number(cfg.entryFreshBreakoutMinAthDistancePct ?? 99.25),
     athBreakPct: Number(cfg.entryBreakoutMinAthDistancePct ?? 95),
     entryGateMode: getEntryGateMode(cfg),
-    canDeploy: entryTimingState === 'BREAKOUT' || entryTimingState === 'ATH_BREAK',
+    canDeploy: entryTimingState === 'BREAKOUT' || entryTimingState === 'ATH_BREAK' || entryTimingState === 'MOMENTUM_ALIVE',
   };
 }
 
@@ -2327,6 +2370,8 @@ function buildLlmPoolContext({ pool = {}, screenResult = null, vetoResult = null
     `- TA Reliable: ${formatMaybeBool(taReliable)}`,
     `- Entry Gate Mode: ${breakout.entryGateMode || 'UNKNOWN'}`,
     `- Entry Timing: ${breakout.entryTimingState || 'UNKNOWN'}`,
+    `- Momentum Alive: ${breakout.momentumAlive === true ? 'YES' : 'NO'} (${breakout.momentumAliveReason || 'unknown'})`,
+    `- Volume Trend: ${pool?._volumeTrendSignal?.state || 'UNKNOWN'}`,
     `- Price vs Supertrend: ${Number.isFinite(Number(breakout.signalStDistancePct)) ? formatMaybePct(breakout.signalStDistancePct, 2) : 'UNKNOWN'}`,
     `- Price vs 24h High: ${Number.isFinite(Number(breakout.signalAthDistancePct)) ? formatMaybePct(breakout.signalAthDistancePct, 2) : 'UNKNOWN'}`,
     `- Entry Flow Hint: ${breakout.breakoutQuality || 'UNKNOWN'}`,
@@ -2667,6 +2712,8 @@ async function processTaWatchQueue(cfg = getConfig()) {
         entryTimingState: pool._entrySignals?.entryTimingState ?? 'UNKNOWN',
         freshBreakoutConfirmed: pool._entrySignals?.freshBreakoutConfirmed ?? false,
         freshBreakoutState: pool._entrySignals?.freshBreakoutState ?? 'NOT_CLEAR',
+        momentumAlive: pool._entrySignals?.momentumAlive ?? false,
+        momentumAliveReason: pool._entrySignals?.momentumAliveReason ?? 'unknown',
         queueTrustedWatch: true,
         watchSource: row.source || 'WATCH',
         watchReason: row.reason || 'WATCH Ready',
@@ -3005,6 +3052,7 @@ export async function scanAndDeploy({ emitFinalReport = true } = {}) {
       const tokenMint   = pool.tokenXMint || pool.tokenX || pool.mint;
       const tokenSymbol = pool.tokenXSymbol || pool.name?.split('-')[0] || '';
       const volumeTrendSignal = buildPoolVolumeTrendSignal(pool);
+      pool._volumeTrendSignal = volumeTrendSignal;
       recordPoolVolumeSnapshot({
         pool,
         tokenMint,
@@ -3224,11 +3272,11 @@ LP STYLE ENTRY
 Supertrend 15m harus bullish.
 Last closed M15 candle HARUS close di atas garis Supertrend.
 Reclaim minimal 2 candle close di atas Supertrend adalah syarat dasar, BUKAN tiket auto-entry.
-Setelah reclaim valid, harus ada breakout fresh yang clear: local-high break baru atau near-ATH break.
+Setelah reclaim valid, setup boleh PASS jika ada breakout fresh yang clear ATAU momentum masih hidup saat pullback sehat di atas Supertrend.
 Snapshot HARUS fresh, konsisten, dan tidak konflik.
 Entry harus tetap dekat ke harga terbaru; jangan deploy dari snapshot yang sudah lari.
 M5, volume, dan price-change hanya konteks tambahan, BUKAN hard gate entry.
-Jika Supertrend 15m BEARISH → REJECT. Jika reclaim valid tapi fresh breakout belum terkonfirmasi → DEFER/HOLD.
+Jika Supertrend 15m BEARISH → REJECT. Jika reclaim valid tapi fresh breakout belum terkonfirmasi DAN momentum sudah mati → DEFER/HOLD.
 
 MINDSET: FEE FLOW HUNTER.
 Tugasmu adalah menjaga modal tetap utuh sambil memanen fee selama market masih hidup.
@@ -3255,8 +3303,8 @@ ATURAN EVALUASI MEKANIS (TERAPKAN BERURUTAN — SATU RULE GAGAL = STOP):
   IF Entry Timing = "NO_TREND" → WAJIB DEFER. Berhenti di sini.
   IF Entry Timing = "UNKNOWN" → WAJIB DEFER. Berhenti di sini.
   IF Entry Timing = "TOO_CLOSE" → WAJIB DEFER. Berhenti di sini.
-  PASS hanya jika Entry Timing = "BREAKOUT" atau "ATH_BREAK".
-  Artinya Supertrend bullish, closed M15 reclaim valid, dan breakout fresh sudah clear.
+  PASS hanya jika Entry Timing = "BREAKOUT" atau "ATH_BREAK" atau "MOMENTUM_ALIVE".
+  Artinya Supertrend bullish, closed M15 reclaim valid, dan setup masih layak: breakout fresh sudah clear ATAU momentum pullback masih hidup.
 
 [RULE 3 — SNAPSHOT / SAFETY GATE]
   Cek flag keamanan dari data. IF terdeteksi:
@@ -3269,7 +3317,7 @@ ATURAN EVALUASI MEKANIS (TERAPKAN BERURUTAN — SATU RULE GAGAL = STOP):
 [CHECKLIST FINAL — PASS hanya jika SEMUA syarat ini terpenuhi]
   ✓ Slot belum penuh                              → Rule 0
   ✓ TA Supertrend 15m = BULLISH                   → Rule 1
-  ✓ Entry Timing = BREAKOUT / ATH_BREAK           → Rule 2
+  ✓ Entry Timing = BREAKOUT / ATH_BREAK / MOMENTUM_ALIVE → Rule 2
   ✓ Last closed M15 reclaim di atas Supertrend    → Rule 2
   ✓ Snapshot fresh / non-conflicted               → Rule 2
   ✓ Tidak ada safety red flag                     → Rule 3
@@ -3715,9 +3763,10 @@ Balas HANYA JSON valid tanpa Markdown.`;
         winner._entryIntentSnapshotAt = finalSnapshotAt;
         winner.hasNonRefundableFees = Boolean(finalMarketSnapshot?.pool?.hasNonRefundableFees ?? winner.hasNonRefundableFees);
       }
-      const finalTimingState = String(winner?._entrySignals?.entryTimingState || 'UNKNOWN').toUpperCase();
+        const finalTimingState = String(winner?._entrySignals?.entryTimingState || 'UNKNOWN').toUpperCase();
       const finalBreakoutConfirmed = winner?._entrySignals?.freshBreakoutConfirmed === true;
-      if (!finalBreakoutConfirmed || (finalTimingState !== 'BREAKOUT' && finalTimingState !== 'ATH_BREAK')) {
+      const finalMomentumAlive = winner?._entrySignals?.momentumAlive === true;
+      if ((!finalBreakoutConfirmed && !finalMomentumAlive) || (finalTimingState !== 'BREAKOUT' && finalTimingState !== 'ATH_BREAK' && finalTimingState !== 'MOMENTUM_ALIVE')) {
         const reasonText = finalTimingState === 'WAIT_FRESH_BREAKOUT'
           ? 'Reclaim valid, tapi fresh breakout belum terkonfirmasi'
           : `Final breakout belum layak (${finalTimingState})`;

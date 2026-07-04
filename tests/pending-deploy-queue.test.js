@@ -141,6 +141,14 @@ test('fresh deploy meta allows breakout-valid, high-readiness entries including 
   }), true);
 
   assert.equal(isFreshDeployMeta({
+    entryTimingState: 'MOMENTUM_ALIVE',
+    entryReadiness: 'HIGH',
+    breakoutQuality: 'VALID',
+    momentumAlive: true,
+    taTrend: 'BULLISH',
+  }), true);
+
+  assert.equal(isFreshDeployMeta({
     entryTimingState: 'WAIT_FOR_PULLBACK',
     entryReadiness: 'MEDIUM',
     breakoutQuality: 'PENDING_TA',
@@ -1655,16 +1663,17 @@ test('manual CA final gate does not pass generic taTrend snapshot cache', () => 
 test('hunter scout logic now uses simple LP hard gates only', () => {
   const hunterSrc = readFileSync(new URL('../src/agents/hunterAlpha.js', import.meta.url), 'utf8');
   assert.match(hunterSrc, /Last closed M15 candle HARUS close di atas garis Supertrend/);
-  assert.match(hunterSrc, /harus ada breakout fresh yang clear: local-high break baru atau near-ATH break/);
+  assert.match(hunterSrc, /setup boleh PASS jika ada breakout fresh yang clear ATAU momentum masih hidup saat pullback sehat di atas Supertrend/);
   assert.match(hunterSrc, /M5, volume, dan price-change hanya konteks tambahan, BUKAN hard gate entry/);
   assert.match(hunterSrc, /fresh breakout belum terkonfirmasi/);
-  assert.match(hunterSrc, /PASS hanya jika Entry Timing = "BREAKOUT" atau "ATH_BREAK"/);
+  assert.match(hunterSrc, /PASS hanya jika Entry Timing = "BREAKOUT" atau "ATH_BREAK" atau "MOMENTUM_ALIVE"/);
   assert.match(hunterSrc, /entrySignals\.entryTimingState === 'BEARISH_TREND'/);
   assert.match(hunterSrc, /entrySignals\.entryTimingState === 'NO_TREND'/);
   assert.match(hunterSrc, /entrySignals\.entryTimingState === 'TOO_CLOSE'/);
   assert.match(hunterSrc, /entrySignals\.entryTimingState === 'UNKNOWN'/);
   assert.match(hunterSrc, /entrySignals\.entryTimingState === 'WAIT_FOR_CONFIRMATION'/);
   assert.match(hunterSrc, /entrySignals\.entryTimingState === 'WAIT_FRESH_BREAKOUT'/);
+  assert.match(hunterSrc, /entryTimingState = 'MOMENTUM_ALIVE'/);
 });
 
 test('lp_simple_m15 deploy report labels M15 as primary and M5 as diagnostic', () => {
