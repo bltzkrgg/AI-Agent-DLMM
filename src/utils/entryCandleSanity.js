@@ -99,6 +99,8 @@ function buildEntryCandleDiagnostics({
     m15ReclaimConsecutiveAboveLine: decision?.m15ReclaimConsecutiveAboveLine ?? null,
     m15ReclaimFreshWindowOk: decision?.m15ReclaimFreshWindowOk ?? null,
     m15ReclaimTimingState: decision?.m15ReclaimTimingState ?? null,
+    m15ReclaimWindowState: decision?.m15ReclaimWindowState ?? null,
+    m15ReclaimStaleWarning: decision?.m15ReclaimStaleWarning ?? null,
     m15ReclaimDistancePct: decision?.m15ReclaimDistancePct ?? null,
     m15Source: source,
     reason: decision?.reason || null,
@@ -114,6 +116,8 @@ function analyzeClosedM15ReclaimWindow(candlesM15 = [], supertrendValue = null) 
       consecutiveAboveLineCount: 0,
       freshWindowOk: null,
       timingState: 'UNKNOWN',
+      windowState: 'UNKNOWN',
+      staleWarning: null,
     };
   }
 
@@ -131,10 +135,18 @@ function analyzeClosedM15ReclaimWindow(candlesM15 = [], supertrendValue = null) 
     ? ((lastClose - resolvedSupertrendValue) / resolvedSupertrendValue) * 100
     : null;
   let timingState = 'UNKNOWN';
+  let windowState = 'UNKNOWN';
   if (consecutiveAboveLineCount <= 0) {
     timingState = 'UNKNOWN';
+  } else if (consecutiveAboveLineCount === 1) {
+    timingState = 'TOO_EARLY';
+    windowState = 'TOO_EARLY';
+  } else if (consecutiveAboveLineCount === 2) {
+    timingState = 'CONFIRMED';
+    windowState = 'FRESH_CONFIRMED';
   } else {
-    timingState = consecutiveAboveLineCount >= 2 ? 'CONFIRMED' : 'TOO_EARLY';
+    timingState = 'CONFIRMED';
+    windowState = 'STALE_CONTINUATION';
   }
 
   return {
@@ -142,6 +154,8 @@ function analyzeClosedM15ReclaimWindow(candlesM15 = [], supertrendValue = null) 
     // Two or more closed M15 candles above Supertrend are enough.
     freshWindowOk: consecutiveAboveLineCount >= 2,
     timingState,
+    windowState,
+    staleWarning: consecutiveAboveLineCount >= 3,
     distancePct: lastDistancePct,
   };
 }
@@ -258,6 +272,8 @@ export function evaluateClosedM15SupertrendReclaim({
     consecutiveAboveLineCount: reclaimWindow.consecutiveAboveLineCount,
     freshWindowOk: reclaimWindow.freshWindowOk,
     timingState: reclaimWindow.timingState,
+    windowState: reclaimWindow.windowState,
+    staleWarning: reclaimWindow.staleWarning,
   };
 }
 
@@ -375,6 +391,8 @@ function evaluateLpSimpleM15Sanity({
       m15ReclaimConsecutiveAboveLine: reclaimWindow.consecutiveAboveLineCount,
       m15ReclaimFreshWindowOk: reclaimWindow.freshWindowOk,
       m15ReclaimTimingState: reclaimWindow.timingState,
+      m15ReclaimWindowState: reclaimWindow.windowState,
+      m15ReclaimStaleWarning: reclaimWindow.staleWarning,
       m15ReclaimDistancePct: reclaimWindow.distancePct,
     };
     return {
@@ -472,6 +490,8 @@ function evaluateLpSimpleM15Sanity({
     m15ReclaimConsecutiveAboveLine: reclaimWindow.consecutiveAboveLineCount,
     m15ReclaimFreshWindowOk: reclaimWindow.freshWindowOk,
     m15ReclaimTimingState: reclaimWindow.timingState,
+    m15ReclaimWindowState: reclaimWindow.windowState,
+    m15ReclaimStaleWarning: reclaimWindow.staleWarning,
     m15ReclaimDistancePct: reclaimWindow.distancePct,
     candle: last,
     candlesM15,

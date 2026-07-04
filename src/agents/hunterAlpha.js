@@ -1975,6 +1975,8 @@ function deriveBreakoutEntrySignals({ pool = {}, vetoResult = null, marketSnapsh
     closedM15ReclaimFreshWindowOk: closedM15Reclaim.freshWindowOk ?? null,
     closedM15ReclaimConsecutiveAboveLineCount: closedM15Reclaim.consecutiveAboveLineCount ?? null,
     closedM15ReclaimTimingState: closedM15Reclaim.timingState ?? null,
+    closedM15ReclaimWindowState: closedM15Reclaim.windowState ?? null,
+    closedM15ReclaimStaleWarning: closedM15Reclaim.staleWarning ?? null,
     minDistancePct: Number(cfg.entrySupertrendMinDistancePct ?? 1.5),
     maxDistancePct: Number(cfg.entrySupertrendMaxDistancePct ?? 18),
     breakoutMinStPct: Number(cfg.entrySupertrendBreakMinPct ?? 1.25),
@@ -2902,6 +2904,7 @@ JANGAN menebak, mengasumsikan, atau mengisi data yang tidak ada di payload.
 LP STYLE ENTRY
 Supertrend 15m harus bullish.
 Last closed M15 candle HARUS close di atas garis Supertrend.
+Reclaim 1-2 candle hijau close di atas Supertrend adalah window paling fresh; 3+ candle di atas line hanya warning setup mulai stale, BUKAN auto-block.
 Snapshot HARUS fresh, konsisten, dan tidak konflik.
 Entry harus tetap dekat ke harga terbaru; jangan deploy dari snapshot yang sudah lari.
 M5, volume, ATH distance, dan price-change hanya konteks tambahan, BUKAN hard gate entry.

@@ -520,6 +520,8 @@ function readClosedM15SupertrendReclaimState(liveSnapshot = null, cfg = getConfi
     freshWindowOk: reclaim.freshWindowOk ?? null,
     consecutiveAboveLineCount: reclaim.consecutiveAboveLineCount ?? null,
     timingState: reclaim.timingState ?? null,
+    windowState: reclaim.windowState ?? null,
+    staleWarning: reclaim.staleWarning ?? null,
     reason: reclaim.reason || 'M15_RECLAIM_UNAVAILABLE',
   };
 }
@@ -1015,7 +1017,9 @@ export async function ensureFinalEntryCandleSanity(args = {}) {
         `m15Vol=${Number.isFinite(diag.m15Volume) ? Number(diag.m15Volume).toFixed(4) : 'na'} ` +
         `m15AvgVol=${Number.isFinite(diag.m15AvgVolume) ? Number(diag.m15AvgVolume).toFixed(4) : 'na'} ` +
         `m15VolRatio=${Number.isFinite(diag.m15VolumeRatio) ? Number(diag.m15VolumeRatio).toFixed(3) : 'na'} ` +
-        `m15MinRatio=${Number(diag.entryM15MinVolumeRatio ?? cfg.entryM15MinVolumeRatio ?? 0.7).toFixed(3)}`
+        `m15MinRatio=${Number(diag.entryM15MinVolumeRatio ?? cfg.entryM15MinVolumeRatio ?? 0.7).toFixed(3)} ` +
+        `reclaimState=${String(diag.m15ReclaimWindowState ?? diag.m15ReclaimTimingState ?? 'UNKNOWN')} ` +
+        `staleWarn=${diag.m15ReclaimStaleWarning === true ? 'yes' : 'no'}`
       );
     } else {
       const ageSec = Number.isFinite(decision.ageSec) ? Number(decision.ageSec).toFixed(1) : 'na';

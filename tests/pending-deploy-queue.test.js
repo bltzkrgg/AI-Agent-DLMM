@@ -808,6 +808,36 @@ test('closed M15 Supertrend reclaim helper confirms reclaim once at least two cl
   assert.equal(reclaim.freshWindowOk, true);
   assert.equal(reclaim.consecutiveAboveLineCount, 3);
   assert.equal(reclaim.timingState, 'CONFIRMED');
+  assert.equal(reclaim.windowState, 'STALE_CONTINUATION');
+  assert.equal(reclaim.staleWarning, true);
+});
+
+test('closed M15 Supertrend reclaim helper marks exactly two candles above line as fresh confirmed', () => {
+  const now = 1_700_000_000_000;
+  const reclaim = evaluateClosedM15SupertrendReclaim({
+    now,
+    supertrendValue: 100,
+    snapshot: {
+      ohlcv: {
+        source: 'meteora-dlmm-ohlcv',
+        entryCandles5m: makeDerivedM15Backed5m({
+          nowSec: Math.floor(now / 1000),
+          m15Series: [
+            { open: 95, close: 99, volume: 100 },
+            { open: 99, close: 101, volume: 110 },
+            { open: 101, close: 104, volume: 120 },
+          ],
+        }),
+      },
+    },
+  });
+  assert.equal(reclaim.known, true);
+  assert.equal(reclaim.aboveLine, true);
+  assert.equal(reclaim.freshWindowOk, true);
+  assert.equal(reclaim.consecutiveAboveLineCount, 2);
+  assert.equal(reclaim.timingState, 'CONFIRMED');
+  assert.equal(reclaim.windowState, 'FRESH_CONFIRMED');
+  assert.equal(reclaim.staleWarning, false);
 });
 
 test('final Supertrend deploy gate still vetoes when live snapshot is bearish but unreliable', async () => {
@@ -1220,6 +1250,8 @@ test('lp_simple_m15 entry sanity still allows reclaim with three closed candles 
   assert.equal(decision.action, 'ALLOW');
   assert.equal(decision.reason, 'entry M15 sanity pass');
   assert.equal(decision.m15ReclaimTimingState, 'CONFIRMED');
+  assert.equal(decision.m15ReclaimWindowState, 'STALE_CONTINUATION');
+  assert.equal(decision.m15ReclaimStaleWarning, true);
 });
 
 test('lp_simple_m15 final gate allows reclaim with three closed candles above Supertrend', async () => {
