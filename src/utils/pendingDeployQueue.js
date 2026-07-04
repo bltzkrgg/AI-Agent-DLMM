@@ -96,8 +96,8 @@ export function buildDeployTriggeredTelegramMessage({
     `\nEntry: <b>${entry?.meta?.entryReadiness || 'N/A'}</b> | ` +
     `Breakout: <b>${entry?.meta?.breakoutQuality || 'N/A'}</b>\n` +
     `Timing: <code>${entry?.meta?.entryTimingState || 'N/A'}</code>\n` +
-    (attemptId ? `Attempt: <code>${attemptId}</code>\n` : '') +
-    `\n⏳ <i>Mencoba buka posisi ${solAmount} SOL...</i>`
+    (attemptId ? `Attempt ID: <code>${attemptId}</code>\n` : '') +
+    `\n⏳ <i>Sedang membuka posisi ${solAmount} SOL...</i>`
   );
 }
 
@@ -1936,7 +1936,7 @@ async function runWatcher() {
           await safeSend(
             `⚠️ <b>Deploy Reconcile Required</b>\n` +
             `<b>${symbol}</b>\n` +
-            `Attempt: <code>${attemptId}</code>\n` +
+            `Attempt ID: <code>${attemptId}</code>\n` +
             `Pool: <code>${poolAddress.slice(0, 8)}</code>\n` +
             `<i>Hasil deploy tidak pasti. Cek posisi on-chain / wallet sebelum retry manual.</i>`
           );
@@ -1954,7 +1954,7 @@ async function runWatcher() {
         await safeSend(
           `✅ <b>Deploy Berhasil! (Queue)</b>\n` +
           `<b>${symbol}</b> — <code>DEPLOYED</code>\n` +
-          `Attempt: <code>${attemptId}</code>\n` +
+          `Attempt ID: <code>${attemptId}</code>\n` +
           (positionPubkey ? `Position: <code>${positionPubkey.slice(0, 8)}</code>\n` : '') +
           `Pool: <code>${poolAddress.slice(0, 8)}</code>\n` +
           `🔒 <i>Masuk mode monitor...</i>`
@@ -1989,7 +1989,7 @@ async function runWatcher() {
         await safeSend(
           `❌ <b>Deploy Gagal (Queue)</b>\n` +
           `<b>${sym}</b>\n` +
-          `Attempt: <code>${failedAttemptId}</code>\n` +
+          `Attempt ID: <code>${failedAttemptId}</code>\n` +
           `Error: <code>${escapeHTML(tokenErr.message).slice(0, 200)}</code>${timeoutNote}\n` +
           `<i>Token dikeluarkan dari queue.</i>`
         );

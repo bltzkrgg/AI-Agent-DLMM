@@ -1993,8 +1993,8 @@ test('deploy attempt telegram message is explicit that position is still opening
   });
 
   assert.match(line, /DEPLOY ATTEMPT/);
-  assert.match(line, /Attempt:/);
-  assert.match(line, /Mencoba buka posisi 0\.5 SOL/);
+  assert.match(line, /Attempt ID:/);
+  assert.match(line, /Sedang membuka posisi 0\.5 SOL/);
 });
 
 test('deploy/drop notifications are not gated by hold dedupe helper', () => {
