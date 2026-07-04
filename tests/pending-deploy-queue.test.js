@@ -9,6 +9,7 @@ import {
   __resetDeployQueueHoldNotifyState,
   buildDeployTriggeredTelegramMessage,
   buildUnreliableLiveSnapshotLog,
+  classifyDeployAttemptResult,
   dequeueToken,
   enqueueForDeploy,
   getFinalEntryCandleSanityDecision,
@@ -1971,6 +1972,31 @@ test('deploy queue hold dedupe state is cleaned when candidate is removed', () =
   }
 });
 
+test('classifyDeployAttemptResult fails closed on ambiguous deploy results', () => {
+  assert.equal(classifyDeployAttemptResult({ dryRun: true }).status, 'DRY_RUN');
+  assert.equal(classifyDeployAttemptResult({ blocked: true, reason: 'NOPE' }).status, 'BLOCKED');
+  assert.equal(classifyDeployAttemptResult('Pos111111111111111111111111111111111111111').status, 'SUCCESS');
+  assert.equal(classifyDeployAttemptResult({ ok: true }).status, 'UNKNOWN_RECONCILE');
+  assert.equal(classifyDeployAttemptResult(null).status, 'UNKNOWN_RECONCILE');
+  assert.equal(classifyDeployAttemptResult(undefined).status, 'UNKNOWN_RECONCILE');
+});
+
+test('deploy attempt telegram message is explicit that position is still opening', () => {
+  const line = buildDeployTriggeredTelegramMessage({
+    symbol: 'TEST',
+    attemptId: 'mint-pool-abc123',
+    poolAddress: 'Pool11111111111111111111111111111111111111',
+    check: { liveTrend: 'BULLISH', liveM5: 1.25, m5Source: 'live' },
+    entry: { meta: { entryReadiness: 'HIGH', breakoutQuality: 'VALID', entryTimingState: 'LP_LIVE' } },
+    solAmount: 0.5,
+    cfg: { entryDecisionMode: 'strict' },
+  });
+
+  assert.match(line, /DEPLOY ATTEMPT/);
+  assert.match(line, /Attempt:/);
+  assert.match(line, /Mencoba buka posisi 0\.5 SOL/);
+});
+
 test('deploy/drop notifications are not gated by hold dedupe helper', () => {
   const src = readFileSync(new URL('../src/utils/pendingDeployQueue.js', import.meta.url), 'utf8');
   const holdSectionStart = src.indexOf('if (!finalCandle.ok) {');
@@ -1979,7 +2005,10 @@ test('deploy/drop notifications are not gated by hold dedupe helper', () => {
   assert.match(holdSection, /isSlotSaturationHoldReason\(/);
   assert.match(src, /shouldSendDeployQueueHoldNotification\(/);
   assert.match(src, /Deploy Queue Drop/);
-  assert.match(src, /DEPLOY READY/);
+  assert.match(src, /DEPLOY ATTEMPT/);
+  assert.match(src, /Deploy Reconcile Required/);
+  assert.match(src, /function logDeployAttemptOutcome/);
+  assert.match(src, /status:\s*'UNKNOWN'/);
 });
 
 test('slot saturated queue suppresses hold/drop noise for new candidates', () => {

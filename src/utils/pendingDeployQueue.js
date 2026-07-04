@@ -57,6 +57,7 @@ function withTimeout(promise, ms, label = 'operation') {
 
 export function buildDeployTriggeredTelegramMessage({
   symbol = '',
+  attemptId = '',
   poolAddress = '',
   check = {},
   decision = 'DEPLOY',
@@ -86,7 +87,7 @@ export function buildDeployTriggeredTelegramMessage({
     : `M5: <code>${formatPct(check.liveM5)}</code> (<code>${check.m5Source || 'unknown'}</code>)\n`;
 
   return (
-    `🚀 <b>DEPLOY READY</b>\n` +
+    `⏳ <b>DEPLOY ATTEMPT</b>\n` +
     `Token: <b>${symbol}</b>\n` +
     `Pool: <code>${poolAddress.slice(0, 8)}</code>\n\n` +
     `Trend: <b>${check.liveTrend || 'UNKNOWN'}</b>\n` +
@@ -94,8 +95,9 @@ export function buildDeployTriggeredTelegramMessage({
     m5Line +
     `\nEntry: <b>${entry?.meta?.entryReadiness || 'N/A'}</b> | ` +
     `Breakout: <b>${entry?.meta?.breakoutQuality || 'N/A'}</b>\n` +
-    `Timing: <code>${entry?.meta?.entryTimingState || 'N/A'}</code>\n\n` +
-    `⏳ <i>Open position: ${solAmount} SOL</i>`
+    `Timing: <code>${entry?.meta?.entryTimingState || 'N/A'}</code>\n` +
+    (attemptId ? `Attempt: <code>${attemptId}</code>\n` : '') +
+    `\n⏳ <i>Mencoba buka posisi ${solAmount} SOL...</i>`
   );
 }
 
@@ -145,6 +147,56 @@ function deleteHoldNotifyKey(key = '') {
   if (known.size === 0) {
     _holdNotifyKeysByCandidate.delete(candidate);
   }
+}
+
+function buildDeployAttemptId({ mint = '', poolAddress = '', now = Date.now() } = {}) {
+  const mintShort = String(mint || 'unknown').slice(0, 4);
+  const poolShort = String(poolAddress || 'nopool').slice(0, 4);
+  const stamp = Number(now || Date.now()).toString(36).slice(-6);
+  return `${mintShort}-${poolShort}-${stamp}`;
+}
+
+export function classifyDeployAttemptResult(result) {
+  if (result && typeof result === 'object' && result.dryRun) {
+    return { status: 'DRY_RUN', ok: true, detail: result };
+  }
+  if (result && typeof result === 'object' && result.blocked) {
+    return {
+      status: 'BLOCKED',
+      ok: true,
+      detail: result,
+      reason: String(result.reason || 'DEPLOY_BLOCKED'),
+    };
+  }
+  if (typeof result === 'string' && result.trim()) {
+    return {
+      status: 'SUCCESS',
+      ok: true,
+      positionPubkey: result,
+    };
+  }
+  return {
+    status: 'UNKNOWN_RECONCILE',
+    ok: false,
+    detail: result,
+    reason: 'DEPLOY_RESULT_UNKNOWN_RECONCILE',
+  };
+}
+
+function logDeployAttemptOutcome({
+  attemptId = '',
+  status = 'UNKNOWN',
+  symbol = '',
+  poolAddress = '',
+  message = '',
+  error = false,
+} = {}) {
+  const logLine =
+    `[QUEUE] ${error ? '⛔' : 'ℹ️'} DEPLOY_ATTEMPT_${String(status || 'UNKNOWN').toUpperCase()} ` +
+    `attempt=${attemptId || 'na'} symbol=${symbol || 'UNKNOWN'} pool=${String(poolAddress || 'unknown').slice(0, 8)} ` +
+    `${message || ''}`.trim();
+  if (error) console.error(logLine);
+  else console.log(logLine);
 }
 
 function pruneHoldNotifyState({
@@ -1711,10 +1763,19 @@ async function runWatcher() {
       entry.attempts++;
       const reservationId = slotReservation.id;
       removeQueueCandidate(mint, entry); // Hapus sebelum deploy (idempoten)
+      const attemptId = buildDeployAttemptId({ mint, poolAddress });
 
       try {
+        logDeployAttemptOutcome({
+          attemptId,
+          status: 'STARTED',
+          symbol,
+          poolAddress,
+          message: `decision=${decision} amount=${solAmount}`,
+        });
         await safeSend(buildDeployTriggeredTelegramMessage({
           symbol,
+          attemptId,
           poolAddress,
           check,
           decision,
@@ -1768,7 +1829,16 @@ async function runWatcher() {
           },
         }), deployTimeoutMs, 'DEPLOY_QUEUE');
 
-        if (result && typeof result === 'object' && result.dryRun) {
+        const classifiedResult = classifyDeployAttemptResult(result);
+
+        if (classifiedResult.status === 'DRY_RUN') {
+          logDeployAttemptOutcome({
+            attemptId,
+            status: 'DRY_RUN',
+            symbol,
+            poolAddress,
+            message: 'queue deploy simulation completed',
+          });
           await safeSend(
             `🧪 <b>Dry-run (Queue Deploy)</b>\n` +
             `<b>${symbol}</b> — Simulasi selesai, tidak ada tx real.\n` +
@@ -1776,8 +1846,15 @@ async function runWatcher() {
           );
           continue;
         }
-        if (result && typeof result === 'object' && result.blocked) {
-          const blockedReason = String(result.reason || 'DEPLOY_BLOCKED');
+        if (classifiedResult.status === 'BLOCKED') {
+          const blockedReason = String(classifiedResult.reason || 'DEPLOY_BLOCKED');
+          logDeployAttemptOutcome({
+            attemptId,
+            status: 'BLOCKED',
+            symbol,
+            poolAddress,
+            message: blockedReason,
+          });
           const blockedByRent = String(result.reason || '').includes('VETO_NON_REFUNDABLE_RENT');
           const blockedByBalance = blockedReason.includes('INSUFFICIENT_SOL_BALANCE');
           const blockedByInvalidInput = blockedReason.includes('INVALID_DLMM_DEPLOY_ARGS') ||
@@ -1847,10 +1924,37 @@ async function runWatcher() {
           continue;
         }
 
-        const positionPubkey = typeof result === 'string' ? result : null;
+        if (classifiedResult.status === 'UNKNOWN_RECONCILE') {
+          logDeployAttemptOutcome({
+            attemptId,
+            status: 'UNKNOWN',
+            symbol,
+            poolAddress,
+            message: `unexpected deploy result type=${typeof result}`,
+            error: true,
+          });
+          await safeSend(
+            `⚠️ <b>Deploy Reconcile Required</b>\n` +
+            `<b>${symbol}</b>\n` +
+            `Attempt: <code>${attemptId}</code>\n` +
+            `Pool: <code>${poolAddress.slice(0, 8)}</code>\n` +
+            `<i>Hasil deploy tidak pasti. Cek posisi on-chain / wallet sebelum retry manual.</i>`
+          );
+          continue;
+        }
+
+        const positionPubkey = classifiedResult.positionPubkey || null;
+        logDeployAttemptOutcome({
+          attemptId,
+          status: 'SUCCESS',
+          symbol,
+          poolAddress,
+          message: `position=${positionPubkey ? positionPubkey.slice(0, 8) : 'unknown'}`,
+        });
         await safeSend(
           `✅ <b>Deploy Berhasil! (Queue)</b>\n` +
           `<b>${symbol}</b> — <code>DEPLOYED</code>\n` +
+          `Attempt: <code>${attemptId}</code>\n` +
           (positionPubkey ? `Position: <code>${positionPubkey.slice(0, 8)}</code>\n` : '') +
           `Pool: <code>${poolAddress.slice(0, 8)}</code>\n` +
           `🔒 <i>Masuk mode monitor...</i>`
@@ -1868,15 +1972,24 @@ async function runWatcher() {
       } catch (tokenErr) {
         // Token-level error: log dan lanjut ke token berikutnya, jangan crash loop
         const sym = entry?.symbol || mint?.slice(0, 8) || 'UNKNOWN';
-        console.error(`[QUEUE] ⛔ Error saat proses ${sym}: ${tokenErr.message}`);
-        removeQueueCandidate(mint, entry); // Buang dari queue agar tidak retry tanpa batas
         const isTimeout = String(tokenErr?.message || '').includes('DEPLOY_QUEUE_TIMEOUT_');
+        const failedAttemptId = typeof attemptId === 'string' && attemptId ? attemptId : buildDeployAttemptId({ mint, poolAddress });
+        logDeployAttemptOutcome({
+          attemptId: failedAttemptId,
+          status: isTimeout ? 'TIMEOUT' : 'FAILED',
+          symbol: sym,
+          poolAddress,
+          message: tokenErr.message,
+          error: true,
+        });
+        removeQueueCandidate(mint, entry); // Buang dari queue agar tidak retry tanpa batas
         const timeoutNote = isTimeout
           ? `\n<i>Deploy queue timeout. Perlu reconcile/manual check sebelum retry.</i>`
           : '';
         await safeSend(
           `❌ <b>Deploy Gagal (Queue)</b>\n` +
           `<b>${sym}</b>\n` +
+          `Attempt: <code>${failedAttemptId}</code>\n` +
           `Error: <code>${escapeHTML(tokenErr.message).slice(0, 200)}</code>${timeoutNote}\n` +
           `<i>Token dikeluarkan dari queue.</i>`
         );
