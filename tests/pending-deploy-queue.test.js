@@ -1663,9 +1663,9 @@ test('manual CA final gate does not pass generic taTrend snapshot cache', () => 
 test('hunter scout logic now uses simple LP hard gates only', () => {
   const hunterSrc = readFileSync(new URL('../src/agents/hunterAlpha.js', import.meta.url), 'utf8');
   assert.match(hunterSrc, /Last closed M15 candle HARUS close di atas garis Supertrend/);
-  assert.match(hunterSrc, /setup boleh PASS jika ada breakout fresh yang clear ATAU momentum masih hidup saat pullback sehat di atas Supertrend/);
+  assert.match(hunterSrc, /PASS jika breakout fresh jelas atau momentum masih hidup saat pullback sehat di atas Supertrend/);
   assert.match(hunterSrc, /M5, volume, dan price-change hanya konteks tambahan, BUKAN hard gate entry/);
-  assert.match(hunterSrc, /fresh breakout belum terkonfirmasi/);
+  assert.match(hunterSrc, /breakout fresh belum terkonfirmasi/);
   assert.match(hunterSrc, /PASS hanya jika Entry Timing = "BREAKOUT" atau "ATH_BREAK" atau "MOMENTUM_ALIVE"/);
   assert.match(hunterSrc, /entrySignals\.entryTimingState === 'BEARISH_TREND'/);
   assert.match(hunterSrc, /entrySignals\.entryTimingState === 'NO_TREND'/);

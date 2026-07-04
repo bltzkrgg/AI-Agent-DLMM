@@ -3246,7 +3246,7 @@ export async function scanAndDeploy({ emitFinalReport = true } = {}) {
             : entrySignals.entryTimingState === 'UNKNOWN'
               ? 'Snapshot entry belum fresh / reclaim M15 belum terkonfirmasi'
               : entrySignals.entryTimingState === 'WAIT_FRESH_BREAKOUT'
-                ? 'Reclaim valid, tapi fresh breakout belum terkonfirmasi'
+              ? 'Reclaim valid, breakout fresh belum terkonfirmasi'
               : entrySignals.entryTimingState === 'WAIT_FOR_CONFIRMATION'
                 ? `Closed M15 reclaim baru ${Number(entrySignals.closedM15ReclaimConsecutiveAboveLineCount || 0)} candle di atas Supertrend; tunggu minimal 2 candle close`
                 : `Closed M15 candle belum reclaim di atas Supertrend (${formatMaybePct(entrySignals.closedM15ReclaimDistancePct, 2)})`;
@@ -3272,11 +3272,11 @@ LP STYLE ENTRY
 Supertrend 15m harus bullish.
 Last closed M15 candle HARUS close di atas garis Supertrend.
 Reclaim minimal 2 candle close di atas Supertrend adalah syarat dasar, BUKAN tiket auto-entry.
-Setelah reclaim valid, setup boleh PASS jika ada breakout fresh yang clear ATAU momentum masih hidup saat pullback sehat di atas Supertrend.
+Setelah reclaim valid, PASS jika breakout fresh jelas atau momentum masih hidup saat pullback sehat di atas Supertrend.
 Snapshot HARUS fresh, konsisten, dan tidak konflik.
 Entry harus tetap dekat ke harga terbaru; jangan deploy dari snapshot yang sudah lari.
 M5, volume, dan price-change hanya konteks tambahan, BUKAN hard gate entry.
-Jika Supertrend 15m BEARISH → REJECT. Jika reclaim valid tapi fresh breakout belum terkonfirmasi DAN momentum sudah mati → DEFER/HOLD.
+Jika Supertrend 15m BEARISH → REJECT. Jika reclaim valid tapi breakout fresh belum terkonfirmasi dan momentum sudah mati → DEFER/HOLD.
 
 MINDSET: FEE FLOW HUNTER.
 Tugasmu adalah menjaga modal tetap utuh sambil memanen fee selama market masih hidup.
@@ -3768,7 +3768,7 @@ Balas HANYA JSON valid tanpa Markdown.`;
       const finalMomentumAlive = winner?._entrySignals?.momentumAlive === true;
       if ((!finalBreakoutConfirmed && !finalMomentumAlive) || (finalTimingState !== 'BREAKOUT' && finalTimingState !== 'ATH_BREAK' && finalTimingState !== 'MOMENTUM_ALIVE')) {
         const reasonText = finalTimingState === 'WAIT_FRESH_BREAKOUT'
-          ? 'Reclaim valid, tapi fresh breakout belum terkonfirmasi'
+          ? 'Reclaim valid, breakout fresh belum terkonfirmasi'
           : `Final breakout belum layak (${finalTimingState})`;
         console.log(`[hunter] ⏸️ Final breakout gate ${symbol}: ${reasonText}`);
         if (winner._record) {
