@@ -93,6 +93,17 @@ test('index starts manual close watcher during boot', () => {
   assert.match(indexSrc, /AI-Agent-DLMM Activated/);
 });
 
+test('index logs full runtime error details for uncaughtException and unhandledRejection', () => {
+  const indexSrc = readFileSync(indexPath, 'utf8');
+  assert.match(indexSrc, /function formatRuntimeErrorForLog\(reason\)/);
+  assert.match(indexSrc, /reason instanceof Error/);
+  assert.match(indexSrc, /return reason\.stack \|\|/);
+  assert.match(indexSrc, /reason\.name \|\| 'Error'/);
+  assert.match(indexSrc, /reason\.message \|\| 'unknown error'/);
+  assert.match(indexSrc, /console\.error\('❌ uncaughtException:\\n', formatRuntimeErrorForLog\(e\)\)/);
+  assert.match(indexSrc, /console\.error\('❌ unhandledRejection:\\n', formatRuntimeErrorForLog\(reason\)\)/);
+});
+
 test('WATCH telegram banner shows candidate status values instead of generic PASS labels', () => {
   const hunterSrc = readFileSync(hunterPath, 'utf8');
   assert.match(hunterSrc, /- Slot: <code>\$\{slotUsed\}\/\$\{slotMax\}<\/code>/);

@@ -598,6 +598,20 @@ function guard(msg) {
   return msg.from?.id === ALLOWED_ID;
 }
 
+function formatRuntimeErrorForLog(reason) {
+  if (reason instanceof Error) {
+    return reason.stack || `${reason.name || 'Error'}: ${reason.message || 'unknown error'}`;
+  }
+  if (reason && typeof reason === 'object') {
+    try {
+      return JSON.stringify(reason, null, 2);
+    } catch {
+      return String(reason);
+    }
+  }
+  return String(reason);
+}
+
 function isLikelySolanaAddress(text = '') {
   return /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(String(text || '').trim());
 }
@@ -1609,13 +1623,13 @@ process.on('SIGINT',  () => shutdown('SIGINT'));
 process.on('SIGTERM', () => shutdown('SIGTERM'));
 
 process.on('uncaughtException', (e) => {
-  console.error('❌ uncaughtException:', e.message);
-  notify(`⚠️ <b>Uncaught error:</b>\n<code>${escapeHTML(e.message)}</code>`).catch(() => {});
+  console.error('❌ uncaughtException:\n', formatRuntimeErrorForLog(e));
+  notify(`⚠️ <b>Uncaught error:</b>\n<code>${escapeHTML(e?.message || String(e))}</code>`).catch(() => {});
 });
 
 process.on('unhandledRejection', (reason) => {
   const msg = reason instanceof Error ? reason.message : String(reason);
-  console.error('❌ unhandledRejection:', msg);
+  console.error('❌ unhandledRejection:\n', formatRuntimeErrorForLog(reason));
   notify(`⚠️ <b>Unhandled rejection:</b>\n<code>${escapeHTML(msg)}</code>`).catch(() => {});
 });
 
