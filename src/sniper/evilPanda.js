@@ -3718,10 +3718,12 @@ export async function deployPosition(poolAddress, deployOptions = {}) {
     const cfg2 = getConfig();
     const { minOffset: deployRangeMinBinOffset, maxOffset: deployRangeMaxBinOffset, fallbackReason: rangeOffsetFallbackReason } =
       getConfiguredDeployRangeBinOffsets(cfg2);
+    const rangeMaxBins = getConfiguredDeployRangeMaxBins();
     const relativeRange = buildActiveBinRelativeDeployRange({
       activeBinId: Number(activeBin?.binId),
       minOffset: deployRangeMinBinOffset,
       maxOffset: deployRangeMaxBinOffset,
+      maxBins: rangeMaxBins,
     });
 
     let rangeMax = relativeRange.rangeMax;

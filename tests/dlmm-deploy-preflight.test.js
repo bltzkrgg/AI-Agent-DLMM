@@ -101,6 +101,12 @@ test('active-bin relative range can touch active bin for mixed liquidity', () =>
   assert.equal(deployArgs.singleSide, 'MIXED');
 });
 
+test('deployPosition declares deployRangeMaxBins before using it in active-bin range build', () => {
+  const src = readFileSync(new URL('../src/sniper/evilPanda.js', import.meta.url), 'utf8');
+  assert.match(src, /const rangeMaxBins = getConfiguredDeployRangeMaxBins\(\);/);
+  assert.match(src, /maxBins: rangeMaxBins,/);
+});
+
 test('frozen entry intent is used when snapshot fresh and drift within guard', () => {
   const now = 1_000_000;
   const out = __evaluateFrozenEntryIntentForDeployForTests({
