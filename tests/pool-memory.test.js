@@ -245,6 +245,40 @@ test('out-of-range close does not poison pool-memory as a loss', async () => {
   assert.equal(decision.reason, 'POOL_MEMORY_DELTA_0');
 });
 
+test('out-of-range high close stays neutral and is ignored by reentry memory', async () => {
+  const memory = await loadPoolMemory();
+  const key = 'MintOORHigh1111111111111111111111111111111';
+
+  memory.recordPoolOutcome({
+    key,
+    tokenMint: key,
+    pnlPct: -2.5,
+    reason: 'OUT_OF_RANGE_HIGH',
+    snapshot: { rawReason: 'OOR HIGH' },
+  });
+
+  const row = memory.getPoolMemory(key);
+  assert.equal(row.lastOutcome, 'BREAKEVEN');
+  assert.equal(row.lastReentryIgnored, true);
+  assert.equal(row.lastReentryIgnoredReason, 'OUT_OF_RANGE_HIGH');
+  assert.equal(row.failureCount, 0);
+  assert.equal(row.successCount, 0);
+
+  const decision = memory.evaluatePoolReentryDiscipline({
+    pool: { tokenMint: key },
+    entrySignals: {
+      taTrend: 'BULLISH',
+      entryTimingState: 'LP_LIVE',
+      entryReadiness: 'HIGH',
+      breakoutQuality: 'VALID',
+      priceChangeM15: 0.8,
+    },
+  });
+
+  assert.equal(decision.allowed, true);
+  assert.equal(decision.reason, 'OUT_OF_RANGE_HIGH');
+});
+
 test('manual close unknown does not register as profit or loss', async () => {
   const memory = await loadPoolMemory();
   const key = 'MintManualUnknown1111111111111111111111111';

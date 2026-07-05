@@ -58,6 +58,11 @@ function compactSnapshot(snapshot = {}) {
   };
 }
 
+function isOutOfRangeHighClose(reason = '', rawReason = '') {
+  const text = `${reason || ''} ${rawReason || ''}`.toUpperCase();
+  return /(?:OUT[_\s-]?OF[_\s-]?RANGE|OOR).*(?:HIGH)|(?:HIGH).*(?:OUT[_\s-]?OF[_\s-]?RANGE|OOR)/i.test(text);
+}
+
 export function classifyVolumeTrend(currentVolume24h = 0, previousVolume24h = 0) {
   const current = Number(currentVolume24h);
   const previous = Number(previousVolume24h);
@@ -110,6 +115,8 @@ function buildBaseMemory(existing = {}, now = nowMs()) {
     previousVolume24h: Number(existing?.previousVolume24h || 0),
     lastPnLPct: Number(existing?.lastPnLPct || 0),
     lastOutcome: existing?.lastOutcome || null,
+    lastReentryIgnored: Boolean(existing?.lastReentryIgnored),
+    lastReentryIgnoredReason: existing?.lastReentryIgnoredReason || null,
     priorityScore: Number(existing?.priorityScore || 0),
     history: Array.isArray(existing?.history) ? existing.history.slice(-MAX_HISTORY) : [],
     updatedAt: Number(existing?.updatedAt || now),
@@ -288,7 +295,9 @@ export function recordPoolOutcome({
   const memoryKey = getPoolMemoryKey(key || poolAddress || pool || tokenMint);
   if (!memoryKey) return null;
   const now = nowMs();
-  const outcome = classifyOutcome({ pnlPct, reason });
+  const rawReason = String(snapshot?.rawReason || reason || '').trim();
+  const ignoreForReentry = isOutOfRangeHighClose(reason, rawReason);
+  const outcome = ignoreForReentry ? 'BREAKEVEN' : classifyOutcome({ pnlPct, reason });
   const compact = compactSnapshot(snapshot);
 
   try {
@@ -300,6 +309,8 @@ export function recordPoolOutcome({
       next.lastDecision = 'CLOSE';
       next.lastReason = reason;
       next.lastOutcome = outcome;
+      next.lastReentryIgnored = ignoreForReentry;
+      next.lastReentryIgnoredReason = ignoreForReentry ? 'OUT_OF_RANGE_HIGH' : null;
       next.lastPnLPct = Number(pnlPct) || 0;
       next.lastPnLSol = Number(pnlSol) || 0;
       next.poolAddress = poolAddress || next.poolAddress || null;
@@ -316,10 +327,12 @@ export function recordPoolOutcome({
         next.previousVolume24h = Number(next.recentVolume24h || 0);
         next.recentVolume24h = compact.volume24h;
       }
-      next.successCount = isProfit ? next.successCount + 1 : next.successCount;
-      next.failureCount = isLoss ? next.failureCount + 1 : Math.max(0, next.failureCount - 1);
-      next.priorityScore = Math.max(-100, Math.min(100, next.priorityScore + (isProfit ? 18 : isLoss ? -30 : 0)));
-      next.cooldownUntil = isLoss && next.failureCount >= 2 ? now + LOSS_COOLDOWN_MS : next.cooldownUntil;
+      if (!ignoreForReentry) {
+        next.successCount = isProfit ? next.successCount + 1 : next.successCount;
+        next.failureCount = isLoss ? next.failureCount + 1 : Math.max(0, next.failureCount - 1);
+        next.priorityScore = Math.max(-100, Math.min(100, next.priorityScore + (isProfit ? 18 : isLoss ? -30 : 0)));
+        next.cooldownUntil = isLoss && next.failureCount >= 2 ? now + LOSS_COOLDOWN_MS : next.cooldownUntil;
+      }
       if (isProfit && next.cooldownUntil < now) next.cooldownUntil = 0;
       next.history = [
         ...next.history,
@@ -329,6 +342,8 @@ export function recordPoolOutcome({
           pnlPct: Number(pnlPct) || 0,
           pnlSol: Number(pnlSol) || 0,
           reason,
+          reentryIgnored: ignoreForReentry || undefined,
+          reentryIgnoredReason: ignoreForReentry ? 'OUT_OF_RANGE_HIGH' : undefined,
         },
       ].slice(-MAX_HISTORY);
       next.updatedAt = now;
@@ -411,6 +426,14 @@ export function evaluatePoolReentryDiscipline({
   const lastOutcome = String(memory.lastOutcome || '').toUpperCase();
   const lastDecision = String(memory.lastDecision || '').toUpperCase();
   const lastReason = normalizeExitReason(memory.lastReason || '');
+  if (memory.lastReentryIgnored === true && lastDecision === 'CLOSE' && lastReason === 'OUT_OF_RANGE') {
+    return {
+      allowed: true,
+      reason: memory.lastReentryIgnoredReason || 'OOR_HIGH_IGNORED',
+      signal,
+      memory,
+    };
+  }
   const isLegacyOorClose = lastDecision === 'CLOSE' && lastOutcome === 'LOSS' && lastReason === 'OUT_OF_RANGE';
   if (lastDecision !== 'CLOSE' || (lastOutcome !== 'LOSS' && !isLegacyOorClose)) {
     return {
