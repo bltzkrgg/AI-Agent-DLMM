@@ -95,7 +95,11 @@ export function extractPoolPatternFeatures({
   const feeRatio = safeNum(pool.feeActiveTvlRatio, null);
   const mcap = safeNum(pool.mcap, null);
   const holders = safeNum(pool.holderCount ?? pool.holders, null);
-  const rangeWidthBins = safeNum(cfg.deployRangeMaxBins, null);
+  const minOffset = safeNum(cfg.deployRangeMinBinOffset, null);
+  const maxOffset = safeNum(cfg.deployRangeMaxBinOffset, null);
+  const rangeWidthBins = Number.isFinite(minOffset) && Number.isFinite(maxOffset) && minOffset <= maxOffset
+    ? (maxOffset - minOffset + 1)
+    : null;
   const supertrend15m = normalizeTrend(entrySignals.taTrend ?? pool._watchTaTrend ?? pool.taTrend);
   const entryActiveBin = safeNum(pool._entryActiveBin ?? pool.activeBinId ?? entrySignals.activeBinId, null);
   const binStep = safeNum(pool.binStep, null);

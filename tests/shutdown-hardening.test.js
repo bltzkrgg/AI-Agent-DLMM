@@ -210,9 +210,9 @@ test('autoscreen scheduler no longer pauses just because active positions exist'
 test('evilPanda uses monolith positions with one Meteora account for the full range', () => {
   const src = readFileSync(evilPandaPath, 'utf8');
   assert.match(src, /(?:const|let) posKp = Keypair\.generate\(\)/);
-  assert.match(src, /let rangeMax = activeBin\.binId - offsetMinBins/);
-  assert.match(src, /const rangeMaxBins = getConfiguredDeployRangeMaxBins\(\)/);
-  assert.match(src, /if \(\(rangeMax - rangeMin \+ 1\) > rangeMaxBins\)/);
+  assert.match(src, /const desiredRangeMin = activeBinId \+ minOffset;/);
+  assert.match(src, /const desiredRangeMax = activeBinId \+ maxOffset;/);
+  assert.doesNotMatch(src, /getConfiguredDeployRangeMaxBins/);
   assert.match(src, /selectRentFreeRange/);
   assert.match(src, /assertRangeDoesNotRequireBinArrayInit/);
   assert.match(src, /VETO_NON_REFUNDABLE_RENT/);

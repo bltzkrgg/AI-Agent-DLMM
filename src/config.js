@@ -177,7 +177,6 @@ const DEFAULTS = {
   outOfRangeWaitMinutes:  30,   // Tunggu N menit OOR sebelum close
   oorDisplayWaitMinutes:  5,    // Tampilan OOR di log/notify
   oorWatchDisplayEnabled: true, // false = sembunyikan notifikasi OOR Watch, logic OOR tetap jalan
-  deployRangeMaxBins:     68,   // Lebar range deploy monolith
   deployRangeMinBinOffset: -60, // Offset bin bawah relatif ke active bin
   deployRangeMaxBinOffset: 0,   // Offset bin atas relatif ke active bin
   poolImpactGuardEnabled: false,
@@ -297,7 +296,6 @@ const CONFIG_BOUNDS = {
   maxHoldHours:           { min: 1,     max: 168 },
   outOfRangeWaitMinutes:  { min: 1,     max: 1440 },
   oorDisplayWaitMinutes:  { min: 1,     max: 1440 },
-  deployRangeMaxBins:     { min: 5,     max: 68 },
   deployRangeMinBinOffset:{ min: -500,  max: 500 },
   deployRangeMaxBinOffset:{ min: -500,  max: 500 },
   poolImpactGuardEnabled: { type: 'boolean' },
@@ -405,7 +403,6 @@ const NESTED_SECTION_MAP = {
   outOfRangeWaitMinutes: 'outOfRangeWaitMinutes',
   oorDisplayWaitMinutes: 'oorDisplayWaitMinutes',
   oorWatchDisplayEnabled: 'oorWatchDisplayEnabled',
-  deployRangeMaxBins: 'deployRangeMaxBins',
   },
 
   oor: {
@@ -655,7 +652,6 @@ export const SETCONFIG_WHITELIST = {
 
   // ── Strategy / DLMM Shape ───────────────────────────────────────
   dlmmLiquidityShape:     { section: 'strategy',           type: 'string',  desc: 'Shape DLMM: spot atau bidask' },
-  deployRangeMaxBins:     { section: 'strategy',           type: 'number',  desc: 'Lebar range deploy monolith (bin)' },
   deployRangeMinBinOffset:{ section: 'strategy',           type: 'number',  desc: 'Offset bin bawah relatif ke active bin' },
   deployRangeMaxBinOffset:{ section: 'strategy',           type: 'number',  desc: 'Offset bin atas relatif ke active bin (0 = active bin)' },
   trailingStopPct:        { section: 'strategy',           type: 'number',  desc: 'Ambang profit awal trailing reference (%)' },

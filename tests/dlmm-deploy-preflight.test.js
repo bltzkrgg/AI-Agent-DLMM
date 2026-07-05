@@ -63,7 +63,6 @@ test('active-bin relative range keeps top bin at active bin before side-aware ad
     activeBinId: 1000,
     minOffset: -60,
     maxOffset: 0,
-    maxBins: 68,
   });
 
   assert.equal(out.desiredRangeMin, 940);
@@ -71,23 +70,20 @@ test('active-bin relative range keeps top bin at active bin before side-aware ad
   assert.equal(out.rangeMin, 940);
   assert.equal(out.rangeMax, 1000);
   assert.equal(out.totalBins, 61);
-  assert.equal(out.widthClamped, false);
 });
 
-test('active-bin relative range preserves top bin and clamps width from below', () => {
+test('active-bin relative range preserves top bin without clamping', () => {
   const out = __buildActiveBinRelativeDeployRangeForTests({
     activeBinId: 1000,
     minOffset: -120,
     maxOffset: 0,
-    maxBins: 68,
   });
 
   assert.equal(out.desiredRangeMin, 880);
   assert.equal(out.desiredRangeMax, 1000);
   assert.equal(out.rangeMax, 1000);
-  assert.equal(out.rangeMin, 933);
-  assert.equal(out.totalBins, 68);
-  assert.equal(out.widthClamped, true);
+  assert.equal(out.rangeMin, 880);
+  assert.equal(out.totalBins, 121);
 });
 
 test('active-bin relative range can touch active bin for mixed liquidity', () => {

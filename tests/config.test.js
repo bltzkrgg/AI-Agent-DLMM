@@ -22,7 +22,6 @@ test('config rejects unknown keys and merges nested signal weights safely', asyn
 
   assert.equal(configModule.isConfigKeySupported('deployAmountSol'), true);
   assert.equal(configModule.isConfigKeySupported('autonomyMode'), true);
-  assert.equal(configModule.isConfigKeySupported('deployRangeMaxBins'), true);
   assert.equal(configModule.isConfigKeySupported('deployRangeMinBinOffset'), true);
   assert.equal(configModule.isConfigKeySupported('deployRangeMaxBinOffset'), true);
   assert.equal(configModule.isConfigKeySupported('dlmmLiquidityShape'), true);
@@ -46,7 +45,6 @@ test('config rejects unknown keys and merges nested signal weights safely', asyn
   assert.equal(configModule.resolveNestedKey('strategy.manualTAExitEnabled')?.flatKey, 'manualTAExitEnabled');
   configModule.updateConfig({
     signalWeights: { volume: 0.99 },
-    deployRangeMaxBins: 48,
     deployRangeMinBinOffset: -44,
     deployRangeMaxBinOffset: 0,
     closeSwapMode: 'all',
@@ -66,7 +64,6 @@ test('config rejects unknown keys and merges nested signal weights safely', asyn
     volume: 0.99,
     holderCount: 0.3,
   });
-  assert.equal(saved.deployRangeMaxBins, 48);
   assert.equal(saved.deployRangeMinBinOffset, -44);
   assert.equal(saved.deployRangeMaxBinOffset, 0);
   assert.equal(saved.closeSwapMode, 'all');
@@ -467,27 +464,6 @@ test('monitor fast-lane config keys are supported and persist via updateConfig',
   assert.equal(saved.monitorFastLaneFallbackPollMs, 18000);
 });
 
-test('deploy range max bins is configurable and persisted via updateConfig', async () => {
-  const root = mkdtempSync(join(tmpdir(), 'dlmm-deploy-range-config-'));
-  const configPath = join(root, 'user-config.json');
-
-  process.env.BOT_CONFIG_PATH = configPath;
-  const configModule = await importFresh(join(repoRoot, 'src/config.js'));
-
-  assert.equal(configModule.resolveNestedKey('deployRangeMaxBins')?.flatKey, 'deployRangeMaxBins');
-  assert.equal(configModule.resolveNestedKey('strategy.deployRangeMaxBins')?.flatKey, 'deployRangeMaxBins');
-
-  configModule.updateConfig({
-    deployRangeMaxBins: 40,
-  });
-
-  const cfg = configModule.getConfig();
-  assert.equal(cfg.deployRangeMaxBins, 40);
-
-  const saved = JSON.parse(readFileSync(configPath, 'utf-8'));
-  assert.equal(saved.deployRangeMaxBins, 40);
-});
-
 test('deploy range active-bin offsets are configurable and persisted via updateConfig', async () => {
   const root = mkdtempSync(join(tmpdir(), 'dlmm-deploy-offset-config-'));
   const configPath = join(root, 'user-config.json');
@@ -636,7 +612,6 @@ test('/setconfig whitelist is curated for operational keys only', async () => {
   assert.equal(keys.includes('minTvl'), true);
   assert.equal(keys.includes('maxMcap'), true);
   assert.equal(keys.includes('dlmmLiquidityShape'), true);
-  assert.equal(keys.includes('deployRangeMaxBins'), true);
   assert.equal(keys.includes('deployRangeMinBinOffset'), true);
   assert.equal(keys.includes('deployRangeMaxBinOffset'), true);
   assert.equal(keys.includes('watchIntervalSec'), true);

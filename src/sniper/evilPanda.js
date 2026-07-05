@@ -2827,13 +2827,6 @@ function getConfiguredTakeProfitMinNetPnlPct() {
   return Number.isFinite(value) && value >= 0 ? value : 0;
 }
 
-function getConfiguredDeployRangeMaxBins() {
-  const cfg = getConfig();
-  const value = Number(cfg.deployRangeMaxBins);
-  if (Number.isFinite(value) && value >= 5) return Math.min(68, Math.floor(value));
-  return 68;
-}
-
 function getConfiguredDeployRangeBinOffsets(cfg = getConfig()) {
   const rawMin = Number(cfg.deployRangeMinBinOffset);
   const rawMax = Number(cfg.deployRangeMaxBinOffset);
@@ -2857,7 +2850,6 @@ function buildActiveBinRelativeDeployRange({
   activeBinId,
   minOffset,
   maxOffset,
-  maxBins,
 } = {}) {
   if (!isFiniteInteger(activeBinId)) {
     throw buildInvalidDlmmArgsError(`activeBinId must be finite integer (got ${String(activeBinId)})`);
@@ -2868,22 +2860,11 @@ function buildActiveBinRelativeDeployRange({
 
   const desiredRangeMin = activeBinId + minOffset;
   const desiredRangeMax = activeBinId + maxOffset;
-  let rangeMin = desiredRangeMin;
-  let rangeMax = desiredRangeMax;
-  const safeMaxBins = Number.isFinite(Number(maxBins)) ? Math.max(2, Math.floor(Number(maxBins))) : 68;
-  const desiredWidth = rangeMax - rangeMin + 1;
+  const rangeMin = desiredRangeMin;
+  const rangeMax = desiredRangeMax;
 
   if (!isFiniteInteger(rangeMin) || !isFiniteInteger(rangeMax) || rangeMin > rangeMax) {
     throw buildInvalidDlmmArgsError(`active-bin relative range invalid [${String(rangeMin)},${String(rangeMax)}]`);
-  }
-
-  let widthClamped = false;
-  if (desiredWidth > safeMaxBins) {
-    rangeMin = rangeMax - (safeMaxBins - 1);
-    widthClamped = true;
-  }
-  if (rangeMin > rangeMax) {
-    rangeMin = rangeMax - 2;
   }
 
   return {
@@ -2892,7 +2873,6 @@ function buildActiveBinRelativeDeployRange({
     rangeMin,
     rangeMax,
     totalBins: rangeMax - rangeMin + 1,
-    widthClamped,
   };
 }
 
@@ -3738,12 +3718,10 @@ export async function deployPosition(poolAddress, deployOptions = {}) {
     const cfg2 = getConfig();
     const { minOffset: deployRangeMinBinOffset, maxOffset: deployRangeMaxBinOffset, fallbackReason: rangeOffsetFallbackReason } =
       getConfiguredDeployRangeBinOffsets(cfg2);
-    const rangeMaxBins = getConfiguredDeployRangeMaxBins();
     const relativeRange = buildActiveBinRelativeDeployRange({
       activeBinId: Number(activeBin?.binId),
       minOffset: deployRangeMinBinOffset,
       maxOffset: deployRangeMaxBinOffset,
-      maxBins: rangeMaxBins,
     });
 
     let rangeMax = relativeRange.rangeMax;
@@ -3806,8 +3784,7 @@ export async function deployPosition(poolAddress, deployOptions = {}) {
       `[evilPanda] DLMM_RANGE_ACTIVE_BIN pool=${poolAddress.slice(0,8)} ` +
       `active=${activeBin.binId} offsets=[${deployRangeMinBinOffset},${deployRangeMaxBinOffset}] ` +
       `desired=[${relativeRange.desiredRangeMin},${relativeRange.desiredRangeMax}] final=[${rangeMin},${rangeMax}] ` +
-      `bins=${totalBins}/${rangeMaxBins}` +
-      (relativeRange.widthClamped ? ' widthClamped=true' : '') +
+      `bins=${totalBins}` +
       (rangeOffsetFallbackReason ? ` fallback=${rangeOffsetFallbackReason}` : '')
     );
 

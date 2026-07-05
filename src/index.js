@@ -255,7 +255,6 @@ function buildSetconfigHelpSections() {
     `/setconfig alerts.intervalMin 5\n` +
     `/setconfig strategy.liquidityShape bidask\n` +
     `/setconfig strategy.liquidityShape spot\n` +
-    `/setconfig deployRangeMaxBins 50\n` +
     `Catatan: shape ini global, jadi sekali diubah akan dipakai semua jalur deploy berikutnya.\n` +
     `/setconfig trailingTriggerPct 1\n` +
     `/setconfig trailingDropPct 0.5\n` +
@@ -422,7 +421,6 @@ function buildSetconfigSectionDetail(section) {
     ],
     strategy: [
       '/setconfig strategy.liquidityShape bidask',
-      '/setconfig deployRangeMaxBins 50',
       '/setconfig deployRangeMinBinOffset -60',
       '/setconfig deployRangeMaxBinOffset 0',
       '/setconfig trailingTriggerPct 1',
@@ -975,7 +973,6 @@ bot.onText(/\/config/, (msg) => {
       `trailingStopPct       = ${cfg.trailingStopPct}`,
       `manualTAExitEnabled   = ${cfg.manualTAExitEnabled}`,
       `dlmmLiquidityShape    = ${cfg.dlmmLiquidityShape}`,
-      `deployRangeMaxBins    = ${cfg.deployRangeMaxBins}`,
       `deployRangeMinBinOffset = ${cfg.deployRangeMinBinOffset}`,
       `deployRangeMaxBinOffset = ${cfg.deployRangeMaxBinOffset}`,
       `takeProfitMinNetPnlPct = ${cfg.takeProfitMinNetPnlPct}`,
