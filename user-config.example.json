@@ -104,6 +104,8 @@
   "outOfRangeWaitMinutes": 30,
   "oorDisplayWaitMinutes": 5,
   "deployRangeMaxBins": 68,
+  "deployRangeMinBinOffset": -60,
+  "deployRangeMaxBinOffset": 0,
   "maxDailyPriorityFeeSol": 0.2,
   "activeStrategy": "Evil Panda",
   "smartExitRsi": 90,

@@ -23,6 +23,8 @@ test('config rejects unknown keys and merges nested signal weights safely', asyn
   assert.equal(configModule.isConfigKeySupported('deployAmountSol'), true);
   assert.equal(configModule.isConfigKeySupported('autonomyMode'), true);
   assert.equal(configModule.isConfigKeySupported('deployRangeMaxBins'), true);
+  assert.equal(configModule.isConfigKeySupported('deployRangeMinBinOffset'), true);
+  assert.equal(configModule.isConfigKeySupported('deployRangeMaxBinOffset'), true);
   assert.equal(configModule.isConfigKeySupported('dlmmLiquidityShape'), true);
   assert.equal(configModule.isConfigKeySupported('oorDisplayWaitMinutes'), true);
   assert.equal(configModule.isConfigKeySupported('oorWatchDisplayEnabled'), true);
@@ -36,6 +38,8 @@ test('config rejects unknown keys and merges nested signal weights safely', asyn
   assert.equal(configModule.resolveNestedKey('oor.watchDisplayEnabled')?.flatKey, 'oorWatchDisplayEnabled');
   assert.equal(configModule.resolveNestedKey('strategy.liquidityShape')?.flatKey, 'dlmmLiquidityShape');
   assert.equal(configModule.resolveNestedKey('strategy.shape')?.flatKey, 'dlmmLiquidityShape');
+  assert.equal(configModule.resolveNestedKey('strategy.deployRangeMinBinOffset')?.flatKey, 'deployRangeMinBinOffset');
+  assert.equal(configModule.resolveNestedKey('strategy.deployRangeMaxBinOffset')?.flatKey, 'deployRangeMaxBinOffset');
   assert.equal(configModule.resolveNestedKey('strategy.closeSwapMode')?.flatKey, 'closeSwapMode');
   assert.equal(configModule.resolveNestedKey('strategy.closeResidualSwapEnabled')?.flatKey, 'closeResidualSwapEnabled');
   assert.equal(configModule.resolveNestedKey('strategy.takeProfitMinNetPnlPct')?.flatKey, 'takeProfitMinNetPnlPct');
@@ -43,6 +47,8 @@ test('config rejects unknown keys and merges nested signal weights safely', asyn
   configModule.updateConfig({
     signalWeights: { volume: 0.99 },
     deployRangeMaxBins: 48,
+    deployRangeMinBinOffset: -44,
+    deployRangeMaxBinOffset: 0,
     closeSwapMode: 'all',
     closeResidualSwapEnabled: true,
     closeAutoSwapMinOutSol: 0.001,
@@ -61,6 +67,8 @@ test('config rejects unknown keys and merges nested signal weights safely', asyn
     holderCount: 0.3,
   });
   assert.equal(saved.deployRangeMaxBins, 48);
+  assert.equal(saved.deployRangeMinBinOffset, -44);
+  assert.equal(saved.deployRangeMaxBinOffset, 0);
   assert.equal(saved.closeSwapMode, 'all');
   assert.equal(saved.closeResidualSwapEnabled, true);
   assert.equal(saved.closeAutoSwapMinOutSol, 0.001);
@@ -176,6 +184,8 @@ test('safer defaults stay conservative for real-capital usage', async () => {
   assert.equal(cfg.entryM5HardGateEnabled, true);
   assert.equal(cfg.entryDeferOnM15PreviousUnknown, true);
   assert.equal(cfg.deployQueueHoldNotifyCooldownSec, 180);
+  assert.equal(cfg.deployRangeMinBinOffset, -60);
+  assert.equal(cfg.deployRangeMaxBinOffset, 0);
   assert.deepEqual(cfg.allowedBinSteps, [100, 125]);
 });
 
@@ -210,6 +220,8 @@ test('user-config.example includes pool pattern learning keys', () => {
   assert.equal(parsed.entryM5HardGateEnabled, true);
   assert.equal(parsed.entryDeferOnM15PreviousUnknown, true);
   assert.equal(parsed.deployQueueHoldNotifyCooldownSec, 180);
+  assert.equal(parsed.deployRangeMinBinOffset, -60);
+  assert.equal(parsed.deployRangeMaxBinOffset, 0);
   assert.equal(parsed.monitorFastLaneEnabled, true);
   assert.equal(parsed.monitorFastLaneThrottleMs, 1200);
   assert.equal(parsed.monitorFastLaneFallbackPollMs, 12000);
@@ -476,6 +488,32 @@ test('deploy range max bins is configurable and persisted via updateConfig', asy
   assert.equal(saved.deployRangeMaxBins, 40);
 });
 
+test('deploy range active-bin offsets are configurable and persisted via updateConfig', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'dlmm-deploy-offset-config-'));
+  const configPath = join(root, 'user-config.json');
+
+  process.env.BOT_CONFIG_PATH = configPath;
+  const configModule = await importFresh(join(repoRoot, 'src/config.js'));
+
+  assert.equal(configModule.resolveNestedKey('deployRangeMinBinOffset')?.flatKey, 'deployRangeMinBinOffset');
+  assert.equal(configModule.resolveNestedKey('deployRangeMaxBinOffset')?.flatKey, 'deployRangeMaxBinOffset');
+  assert.equal(configModule.resolveNestedKey('strategy.deployRangeMinBinOffset')?.flatKey, 'deployRangeMinBinOffset');
+  assert.equal(configModule.resolveNestedKey('strategy.deployRangeMaxBinOffset')?.flatKey, 'deployRangeMaxBinOffset');
+
+  configModule.updateConfig({
+    deployRangeMinBinOffset: -72,
+    deployRangeMaxBinOffset: 0,
+  });
+
+  const cfg = configModule.getConfig();
+  assert.equal(cfg.deployRangeMinBinOffset, -72);
+  assert.equal(cfg.deployRangeMaxBinOffset, 0);
+
+  const saved = JSON.parse(readFileSync(configPath, 'utf-8'));
+  assert.equal(saved.deployRangeMinBinOffset, -72);
+  assert.equal(saved.deployRangeMaxBinOffset, 0);
+});
+
 test('OOR display wait minutes is configurable and persists independently from close wait', async () => {
   const root = mkdtempSync(join(tmpdir(), 'dlmm-oor-display-config-'));
   const configPath = join(root, 'user-config.json');
@@ -599,6 +637,8 @@ test('/setconfig whitelist is curated for operational keys only', async () => {
   assert.equal(keys.includes('maxMcap'), true);
   assert.equal(keys.includes('dlmmLiquidityShape'), true);
   assert.equal(keys.includes('deployRangeMaxBins'), true);
+  assert.equal(keys.includes('deployRangeMinBinOffset'), true);
+  assert.equal(keys.includes('deployRangeMaxBinOffset'), true);
   assert.equal(keys.includes('watchIntervalSec'), true);
   assert.equal(keys.includes('outOfRangeWaitMinutes'), true);
   assert.equal(keys.includes('poolImpactGuardEnabled'), true);

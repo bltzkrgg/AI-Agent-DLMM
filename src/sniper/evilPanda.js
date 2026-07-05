@@ -2834,6 +2834,68 @@ function getConfiguredDeployRangeMaxBins() {
   return 68;
 }
 
+function getConfiguredDeployRangeBinOffsets(cfg = getConfig()) {
+  const rawMin = Number(cfg.deployRangeMinBinOffset);
+  const rawMax = Number(cfg.deployRangeMaxBinOffset);
+  const minOffset = Number.isFinite(rawMin) ? Math.max(-500, Math.min(500, Math.floor(rawMin))) : -60;
+  const maxOffset = Number.isFinite(rawMax) ? Math.max(-500, Math.min(500, Math.floor(rawMax))) : 0;
+  if (minOffset > maxOffset) {
+    return {
+      minOffset: -60,
+      maxOffset: 0,
+      fallbackReason: `invalid_offset_order_${minOffset}_${maxOffset}`,
+    };
+  }
+  return {
+    minOffset,
+    maxOffset,
+    fallbackReason: null,
+  };
+}
+
+function buildActiveBinRelativeDeployRange({
+  activeBinId,
+  minOffset,
+  maxOffset,
+  maxBins,
+} = {}) {
+  if (!isFiniteInteger(activeBinId)) {
+    throw buildInvalidDlmmArgsError(`activeBinId must be finite integer (got ${String(activeBinId)})`);
+  }
+  if (!isFiniteInteger(minOffset) || !isFiniteInteger(maxOffset)) {
+    throw buildInvalidDlmmArgsError(`deployRange offsets must be finite integers (got ${String(minOffset)}/${String(maxOffset)})`);
+  }
+
+  const desiredRangeMin = activeBinId + minOffset;
+  const desiredRangeMax = activeBinId + maxOffset;
+  let rangeMin = desiredRangeMin;
+  let rangeMax = desiredRangeMax;
+  const safeMaxBins = Number.isFinite(Number(maxBins)) ? Math.max(2, Math.floor(Number(maxBins))) : 68;
+  const desiredWidth = rangeMax - rangeMin + 1;
+
+  if (!isFiniteInteger(rangeMin) || !isFiniteInteger(rangeMax) || rangeMin > rangeMax) {
+    throw buildInvalidDlmmArgsError(`active-bin relative range invalid [${String(rangeMin)},${String(rangeMax)}]`);
+  }
+
+  let widthClamped = false;
+  if (desiredWidth > safeMaxBins) {
+    rangeMin = rangeMax - (safeMaxBins - 1);
+    widthClamped = true;
+  }
+  if (rangeMin > rangeMax) {
+    rangeMin = rangeMax - 2;
+  }
+
+  return {
+    desiredRangeMin,
+    desiredRangeMax,
+    rangeMin,
+    rangeMax,
+    totalBins: rangeMax - rangeMin + 1,
+    widthClamped,
+  };
+}
+
 function escapeHTML(text = '') {
   return String(text)
     .replace(/&/g, '&amp;')
@@ -3673,33 +3735,27 @@ export async function deployPosition(poolAddress, deployOptions = {}) {
       throw new Error(`[evilPanda] Pool ${poolAddress.slice(0,8)} bukan SOL pair — Evil Panda hanya mendukung TOKEN/SOL`);
     }
 
-    const binStepInt   = parseInt(binStep);
-    const exactLogBinFactor = Math.log(1 + binStepInt / 10000);
-    const offsetMinBins = Math.round(
-      Math.abs(Math.log(1 - EP_CONFIG.OFFSET_MIN_PCT / 100) / exactLogBinFactor)
-    ) || 0;
-    const offsetMaxBins = Math.round(
-      Math.abs(Math.log(1 - EP_CONFIG.OFFSET_MAX_PCT / 100) / exactLogBinFactor)
-    );
-
-    let rangeMax = activeBin.binId - offsetMinBins;
-    let rangeMin = activeBin.binId - offsetMaxBins;
+    const cfg2 = getConfig();
+    const { minOffset: deployRangeMinBinOffset, maxOffset: deployRangeMaxBinOffset, fallbackReason: rangeOffsetFallbackReason } =
+      getConfiguredDeployRangeBinOffsets(cfg2);
     const rangeMaxBins = getConfiguredDeployRangeMaxBins();
+    const relativeRange = buildActiveBinRelativeDeployRange({
+      activeBinId: Number(activeBin?.binId),
+      minOffset: deployRangeMinBinOffset,
+      maxOffset: deployRangeMaxBinOffset,
+      maxBins: rangeMaxBins,
+    });
+
+    let rangeMax = relativeRange.rangeMax;
+    let rangeMin = relativeRange.rangeMin;
     let rentCheckedRangeMin = null;
     let rentCheckedRangeMax = null;
-
-    if ((rangeMax - rangeMin + 1) > rangeMaxBins) {
-      rangeMin = rangeMax - (rangeMaxBins - 1);
-    }
-    if (rangeMin > rangeMax)        rangeMin = rangeMax - 2;
 
     const totalBins = rangeMax - rangeMin + 1;
     const microLamports = await getPriorityFee();
     const { Keypair } = await import('@solana/web3.js');
     let posKp = Keypair.generate();
     let positionPubkey = posKp.publicKey.toString();
-
-    const cfg2          = getConfig();
     const slippageBps   = Number(cfg2.slippageBps) || 250;
     const slippagePct   = slippageBps / 100;
     const totalLamports = Math.floor(deploySol * 1e9);
@@ -3745,6 +3801,15 @@ export async function deployPosition(poolAddress, deployOptions = {}) {
         `range=[${rangeMin},${rangeMax}] active=${activeBin.binId}`
       );
     }
+
+    console.log(
+      `[evilPanda] DLMM_RANGE_ACTIVE_BIN pool=${poolAddress.slice(0,8)} ` +
+      `active=${activeBin.binId} offsets=[${deployRangeMinBinOffset},${deployRangeMaxBinOffset}] ` +
+      `desired=[${relativeRange.desiredRangeMin},${relativeRange.desiredRangeMax}] final=[${rangeMin},${rangeMax}] ` +
+      `bins=${totalBins}/${rangeMaxBins}` +
+      (relativeRange.widthClamped ? ' widthClamped=true' : '') +
+      (rangeOffsetFallbackReason ? ` fallback=${rangeOffsetFallbackReason}` : '')
+    );
 
     console.log(
       `[evilPanda] DLMM_SHAPE_RUNTIME pool=${poolAddress.slice(0,8)} ` +
@@ -5915,6 +5980,10 @@ export async function __guardDlmmCostBeforeSendForTests(args = {}) {
 
 export function __deriveSpotBidAskSeedPlanForTests(args = {}) {
   return deriveSpotBidAskSeedPlan(args);
+}
+
+export function __buildActiveBinRelativeDeployRangeForTests(args = {}) {
+  return buildActiveBinRelativeDeployRange(args);
 }
 
 export function __getDlmmStrategyTypeFromConfigForTests(args = {}) {

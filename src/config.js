@@ -178,6 +178,8 @@ const DEFAULTS = {
   oorDisplayWaitMinutes:  5,    // Tampilan OOR di log/notify
   oorWatchDisplayEnabled: true, // false = sembunyikan notifikasi OOR Watch, logic OOR tetap jalan
   deployRangeMaxBins:     68,   // Lebar range deploy monolith
+  deployRangeMinBinOffset: -60, // Offset bin bawah relatif ke active bin
+  deployRangeMaxBinOffset: 0,   // Offset bin atas relatif ke active bin
   poolImpactGuardEnabled: false,
   poolImpactCheckIntervalMs: 3000,
   poolImpactPriceDropWarnPct: 2.5,
@@ -296,6 +298,8 @@ const CONFIG_BOUNDS = {
   outOfRangeWaitMinutes:  { min: 1,     max: 1440 },
   oorDisplayWaitMinutes:  { min: 1,     max: 1440 },
   deployRangeMaxBins:     { min: 5,     max: 68 },
+  deployRangeMinBinOffset:{ min: -500,  max: 500 },
+  deployRangeMaxBinOffset:{ min: -500,  max: 500 },
   poolImpactGuardEnabled: { type: 'boolean' },
   poolImpactCheckIntervalMs: { min: 1000, max: 60000 },
   poolImpactPriceDropWarnPct: { min: 0.1, max: 50 },
@@ -396,6 +400,8 @@ const NESTED_SECTION_MAP = {
     smartExitRsi:       'smartExitRsi',
     takeProfitMinNetPnlPct: 'takeProfitMinNetPnlPct',
     maxHoldHours:       'maxHoldHours',
+    deployRangeMinBinOffset: 'deployRangeMinBinOffset',
+    deployRangeMaxBinOffset: 'deployRangeMaxBinOffset',
   outOfRangeWaitMinutes: 'outOfRangeWaitMinutes',
   oorDisplayWaitMinutes: 'oorDisplayWaitMinutes',
   oorWatchDisplayEnabled: 'oorWatchDisplayEnabled',
@@ -650,6 +656,8 @@ export const SETCONFIG_WHITELIST = {
   // ── Strategy / DLMM Shape ───────────────────────────────────────
   dlmmLiquidityShape:     { section: 'strategy',           type: 'string',  desc: 'Shape DLMM: spot atau bidask' },
   deployRangeMaxBins:     { section: 'strategy',           type: 'number',  desc: 'Lebar range deploy monolith (bin)' },
+  deployRangeMinBinOffset:{ section: 'strategy',           type: 'number',  desc: 'Offset bin bawah relatif ke active bin' },
+  deployRangeMaxBinOffset:{ section: 'strategy',           type: 'number',  desc: 'Offset bin atas relatif ke active bin (0 = active bin)' },
   trailingStopPct:        { section: 'strategy',           type: 'number',  desc: 'Ambang profit awal trailing reference (%)' },
   trailingTriggerPct:     { section: 'strategy',           type: 'number',  desc: 'Aktifkan trailing TP setelah net exposure PnL ini (%)' },
   trailingDropPct:        { section: 'strategy',           type: 'number',  desc: 'Jarak retrace dari HWM untuk trigger TP (%)' },
@@ -852,6 +860,23 @@ export function updateConfig(updates) {
   if (rejected.length > 0) {
     console.warn('⚠️ Config updates rejected:', rejected.join(', '));
   }
+
+  const nextConfig = { ...getConfig(), ...validated };
+  const nextMinBinOffset = Number(nextConfig.deployRangeMinBinOffset);
+  const nextMaxBinOffset = Number(nextConfig.deployRangeMaxBinOffset);
+  if (
+    Number.isFinite(nextMinBinOffset) &&
+    Number.isFinite(nextMaxBinOffset) &&
+    nextMinBinOffset > nextMaxBinOffset
+  ) {
+    console.warn(
+      '⚠️ Config updates rejected:',
+      `deployRangeMinBinOffset/deployRangeMaxBinOffset invalid (${nextMinBinOffset} > ${nextMaxBinOffset})`
+    );
+    delete validated.deployRangeMinBinOffset;
+    delete validated.deployRangeMaxBinOffset;
+  }
+
   if (Object.keys(validated).length === 0) return getConfig();
 
   // Baca file asli (nested atau flat), merge flat updates di root

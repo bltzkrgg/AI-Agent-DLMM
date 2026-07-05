@@ -25,6 +25,7 @@ import {
   __extractRequiredSignerPubkeysForTests,
   __inspectTxForBinArrayInitForTests,
   __guardDlmmCostBeforeSendForTests,
+  __buildActiveBinRelativeDeployRangeForTests,
   __deriveSpotBidAskSeedPlanForTests,
   __getDlmmStrategyTypeFromConfigForTests,
   __evaluateDeployWalletFundsForTests,
@@ -55,6 +56,53 @@ test('single-side quote including active bin is adjusted below active bin', () =
   assert.equal(out.adjustedBelowActive, true);
   assert.equal(out.rangeMax, 999);
   assert.equal(out.rangeMin, 989);
+});
+
+test('active-bin relative range keeps top bin at active bin before side-aware adjustment', () => {
+  const out = __buildActiveBinRelativeDeployRangeForTests({
+    activeBinId: 1000,
+    minOffset: -60,
+    maxOffset: 0,
+    maxBins: 68,
+  });
+
+  assert.equal(out.desiredRangeMin, 940);
+  assert.equal(out.desiredRangeMax, 1000);
+  assert.equal(out.rangeMin, 940);
+  assert.equal(out.rangeMax, 1000);
+  assert.equal(out.totalBins, 61);
+  assert.equal(out.widthClamped, false);
+});
+
+test('active-bin relative range preserves top bin and clamps width from below', () => {
+  const out = __buildActiveBinRelativeDeployRangeForTests({
+    activeBinId: 1000,
+    minOffset: -120,
+    maxOffset: 0,
+    maxBins: 68,
+  });
+
+  assert.equal(out.desiredRangeMin, 880);
+  assert.equal(out.desiredRangeMax, 1000);
+  assert.equal(out.rangeMax, 1000);
+  assert.equal(out.rangeMin, 933);
+  assert.equal(out.totalBins, 68);
+  assert.equal(out.widthClamped, true);
+});
+
+test('active-bin relative range can touch active bin for mixed liquidity', () => {
+  const deployArgs = buildDlmmDeployStrategyArgs({
+    activeBinId: 1000,
+    rangeMin: 940,
+    rangeMax: 1000,
+    amountXBn: new BN('1'),
+    amountYBn: new BN('500000000'),
+  });
+
+  assert.equal(deployArgs.rangeMin, 940);
+  assert.equal(deployArgs.rangeMax, 1000);
+  assert.equal(deployArgs.adjustedBelowActive, false);
+  assert.equal(deployArgs.singleSide, 'MIXED');
 });
 
 test('frozen entry intent is used when snapshot fresh and drift within guard', () => {

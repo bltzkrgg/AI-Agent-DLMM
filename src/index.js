@@ -423,6 +423,8 @@ function buildSetconfigSectionDetail(section) {
     strategy: [
       '/setconfig strategy.liquidityShape bidask',
       '/setconfig deployRangeMaxBins 50',
+      '/setconfig deployRangeMinBinOffset -60',
+      '/setconfig deployRangeMaxBinOffset 0',
       '/setconfig trailingTriggerPct 1',
       '/setconfig trailingDropPct 0.5',
       '/setconfig trailingStopPct 3',
@@ -974,6 +976,8 @@ bot.onText(/\/config/, (msg) => {
       `manualTAExitEnabled   = ${cfg.manualTAExitEnabled}`,
       `dlmmLiquidityShape    = ${cfg.dlmmLiquidityShape}`,
       `deployRangeMaxBins    = ${cfg.deployRangeMaxBins}`,
+      `deployRangeMinBinOffset = ${cfg.deployRangeMinBinOffset}`,
+      `deployRangeMaxBinOffset = ${cfg.deployRangeMaxBinOffset}`,
       `takeProfitMinNetPnlPct = ${cfg.takeProfitMinNetPnlPct}`,
       `taWatchEnabled        = ${cfg.taWatchEnabled}`,
     `taWatchMaxPools       = ${cfg.taWatchMaxPools}`,
