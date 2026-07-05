@@ -1521,6 +1521,7 @@ async function runWatcher() {
 
       const check = await evaluateDeployConditions(entry);
       const decision = String(check.decision || (check.ok ? 'DEPLOY' : 'HOLD')).toUpperCase();
+      const poolAddress = getPoolAddress(pool);
 
       if (!check.ok) {
         console.log(
@@ -1549,7 +1550,6 @@ async function runWatcher() {
       }
 
       // Resolusi pool address — cek semua field yang mungkin dipakai Meteora API
-      const poolAddress = getPoolAddress(pool);
       if (!poolAddress) {
         console.warn(`[QUEUE] ⚠️ Pool address tidak ditemukan untuk ${symbol} — fields: ${JSON.stringify(Object.keys(pool))}`);
         removeQueueCandidate(mint, entry);

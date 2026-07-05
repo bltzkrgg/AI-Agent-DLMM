@@ -1845,6 +1845,12 @@ test('queue snapshot path passes poolAddress to market snapshot resolver', () =>
   assert.match(src, /getCachedMarketSnapshot\(mint, poolAddress \|\| null, entry\.symbol \|\| '', \{ includeEntryCandles5m: true \}\)/);
 });
 
+test('deploy queue keeps poolAddress in token scope so catch path can report it', () => {
+  const src = readFileSync(new URL('../src/utils/pendingDeployQueue.js', import.meta.url), 'utf8');
+  assert.match(src, /const poolAddress = getPoolAddress\(pool\);/);
+  assert.match(src, /const failedAttemptId = typeof attemptId === 'string' && attemptId \? attemptId : buildDeployAttemptId\(\{ mint, poolAddress \}\);/);
+});
+
 test('deploy queue hold notification dedupe suppresses same candidate + same reason within cooldown', () => {
   __resetDeployQueueHoldNotifyState();
   const now = 1_700_000_000_000;
