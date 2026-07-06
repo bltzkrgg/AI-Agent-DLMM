@@ -1498,6 +1498,8 @@ async function runWatcher() {
         continue;
       }
 
+      const poolAddress = getPoolAddress(pool);
+
       if (isDeploySlotSaturated()) {
         console.log(
           `[QUEUE] 🫥 Slot saturated, suppressing hold/drop noise for ${symbol} ` +
@@ -1521,7 +1523,6 @@ async function runWatcher() {
 
       const check = await evaluateDeployConditions(entry);
       const decision = String(check.decision || (check.ok ? 'DEPLOY' : 'HOLD')).toUpperCase();
-      const poolAddress = getPoolAddress(pool);
 
       if (!check.ok) {
         console.log(
@@ -1979,12 +1980,15 @@ async function runWatcher() {
         // Token-level error: log dan lanjut ke token berikutnya, jangan crash loop
         const sym = entry?.symbol || mint?.slice(0, 8) || 'UNKNOWN';
         const isTimeout = String(tokenErr?.message || '').includes('DEPLOY_QUEUE_TIMEOUT_');
-        const failedAttemptId = typeof attemptId === 'string' && attemptId ? attemptId : buildDeployAttemptId({ mint, poolAddress });
+        const failedPoolAddress = getPoolAddress(pool) || poolAddress || '';
+        const failedAttemptId = typeof attemptId === 'string' && attemptId
+          ? attemptId
+          : buildDeployAttemptId({ mint, poolAddress: failedPoolAddress });
         logDeployAttemptOutcome({
           attemptId: failedAttemptId,
           status: isTimeout ? 'TIMEOUT' : 'FAILED',
           symbol: sym,
-          poolAddress,
+          poolAddress: failedPoolAddress,
           message: tokenErr.message,
           error: true,
         });

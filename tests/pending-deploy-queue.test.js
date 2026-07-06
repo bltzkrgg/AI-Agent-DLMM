@@ -1847,8 +1847,13 @@ test('queue snapshot path passes poolAddress to market snapshot resolver', () =>
 
 test('deploy queue keeps poolAddress in token scope so catch path can report it', () => {
   const src = readFileSync(new URL('../src/utils/pendingDeployQueue.js', import.meta.url), 'utf8');
-  assert.match(src, /const poolAddress = getPoolAddress\(pool\);/);
-  assert.match(src, /const failedAttemptId = typeof attemptId === 'string' && attemptId \? attemptId : buildDeployAttemptId\(\{ mint, poolAddress \}\);/);
+  const poolDecl = src.indexOf('const poolAddress = getPoolAddress(pool);');
+  const evalCall = src.indexOf('const check = await evaluateDeployConditions(entry);');
+  assert.ok(poolDecl >= 0, 'poolAddress declaration missing');
+  assert.ok(evalCall >= 0, 'evaluateDeployConditions call missing');
+  assert.ok(poolDecl < evalCall, 'poolAddress must be declared before evaluateDeployConditions can throw');
+  assert.match(src, /const failedPoolAddress = getPoolAddress\(pool\) \|\| poolAddress \|\| '';/);
+  assert.match(src, /buildDeployAttemptId\(\{ mint, poolAddress: failedPoolAddress \}\)/);
 });
 
 test('deploy queue hold notification dedupe suppresses same candidate + same reason within cooldown', () => {
