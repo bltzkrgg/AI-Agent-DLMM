@@ -2007,11 +2007,14 @@ async function runWatcher() {
         const timeoutNote = isTimeout
           ? `\n<i>Deploy queue timeout. Perlu reconcile/manual check sebelum retry.</i>`
           : '';
+        const failureStatus = isTimeout ? 'TIMEOUT' : 'FAILED';
         await safeSend(
           `❌ <b>Deploy Gagal (Queue)</b>\n` +
           `<b>${sym}</b>\n` +
           `Attempt ID: <code>${failedAttemptId}</code>\n` +
-          `Error: <code>${escapeHTML(tokenErr.message).slice(0, 200)}</code>${timeoutNote}\n` +
+          `Status: <code>${failureStatus}</code>\n` +
+          `Pool: <code>${String(failedPoolAddress || 'unknown').slice(0, 8)}</code>\n` +
+          `Reason: <code>${escapeHTML(tokenErr.message).slice(0, 200)}</code>${timeoutNote}\n` +
           `<i>Token dikeluarkan dari queue.</i>`
         );
       }
