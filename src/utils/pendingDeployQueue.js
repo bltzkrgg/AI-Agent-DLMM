@@ -1485,12 +1485,21 @@ async function runWatcher() {
   const entries = Array.from(_queue.entries());
 
   for (const [mint, entry] of entries) {
+    const tokenScope = {
+      symbol: entry?.symbol || mint?.slice(0, 8) || 'UNKNOWN',
+      pool: entry?.pool || null,
+      poolAddress: getPoolAddress(entry?.pool) || '',
+      attemptId: '',
+    };
+
     // Outer try-catch: satu token gagal tidak boleh crash loop keseluruhan
     try {
       // Re-check: mungkin sudah dihapus oleh caller lain
       if (!_queue.has(mint)) continue;
 
       const { symbol, pool, meta } = entry;
+      tokenScope.symbol = symbol || tokenScope.symbol;
+      tokenScope.pool = pool || tokenScope.pool;
       const isRetest = meta?.isRetest || meta?.isScoutDefer;
       const queueType = isRetest ? 'RETEST' : 'DEPLOY';
       const deferUntil = Number(entry.nextEligibleAt || 0);
@@ -1499,6 +1508,7 @@ async function runWatcher() {
       }
 
       const poolAddress = getPoolAddress(pool);
+      tokenScope.poolAddress = poolAddress || tokenScope.poolAddress;
 
       if (isDeploySlotSaturated()) {
         console.log(
@@ -1771,6 +1781,7 @@ async function runWatcher() {
       const reservationId = slotReservation.id;
       removeQueueCandidate(mint, entry); // Hapus sebelum deploy (idempoten)
       const attemptId = buildDeployAttemptId({ mint, poolAddress });
+      tokenScope.attemptId = attemptId;
 
       try {
         logDeployAttemptOutcome({
@@ -1978,11 +1989,11 @@ async function runWatcher() {
 
       } catch (tokenErr) {
         // Token-level error: log dan lanjut ke token berikutnya, jangan crash loop
-        const sym = entry?.symbol || mint?.slice(0, 8) || 'UNKNOWN';
+        const sym = tokenScope.symbol || entry?.symbol || mint?.slice(0, 8) || 'UNKNOWN';
         const isTimeout = String(tokenErr?.message || '').includes('DEPLOY_QUEUE_TIMEOUT_');
-        const failedPoolAddress = getPoolAddress(pool) || poolAddress || '';
-        const failedAttemptId = typeof attemptId === 'string' && attemptId
-          ? attemptId
+        const failedPoolAddress = tokenScope.poolAddress || getPoolAddress(tokenScope.pool) || '';
+        const failedAttemptId = typeof tokenScope.attemptId === 'string' && tokenScope.attemptId
+          ? tokenScope.attemptId
           : buildDeployAttemptId({ mint, poolAddress: failedPoolAddress });
         logDeployAttemptOutcome({
           attemptId: failedAttemptId,

@@ -1845,15 +1845,25 @@ test('queue snapshot path passes poolAddress to market snapshot resolver', () =>
   assert.match(src, /getCachedMarketSnapshot\(mint, poolAddress \|\| null, entry\.symbol \|\| '', \{ includeEntryCandles5m: true \}\)/);
 });
 
-test('deploy queue keeps poolAddress in token scope so catch path can report it', () => {
+test('deploy queue keeps token failure context in outer scope so catch path cannot crash', () => {
   const src = readFileSync(new URL('../src/utils/pendingDeployQueue.js', import.meta.url), 'utf8');
-  const poolDecl = src.indexOf('const poolAddress = getPoolAddress(pool);');
-  const evalCall = src.indexOf('const check = await evaluateDeployConditions(entry);');
+  const runWatcherSrc = src.slice(
+    src.indexOf('async function runWatcher() {'),
+    src.indexOf('export function startDeployQueueWatcher()')
+  );
+  const scopeDecl = runWatcherSrc.indexOf('const tokenScope = {');
+  const poolDecl = runWatcherSrc.indexOf('const poolAddress = getPoolAddress(pool);');
+  const evalCall = runWatcherSrc.indexOf('const check = await evaluateDeployConditions(entry);');
+  assert.ok(scopeDecl >= 0, 'tokenScope declaration missing');
   assert.ok(poolDecl >= 0, 'poolAddress declaration missing');
   assert.ok(evalCall >= 0, 'evaluateDeployConditions call missing');
+  assert.ok(scopeDecl < poolDecl, 'tokenScope must be declared before poolAddress resolution');
   assert.ok(poolDecl < evalCall, 'poolAddress must be declared before evaluateDeployConditions can throw');
-  assert.match(src, /const failedPoolAddress = getPoolAddress\(pool\) \|\| poolAddress \|\| '';/);
-  assert.match(src, /buildDeployAttemptId\(\{ mint, poolAddress: failedPoolAddress \}\)/);
+  assert.match(runWatcherSrc, /poolAddress: getPoolAddress\(entry\?\.pool\) \|\| ''/);
+  assert.match(runWatcherSrc, /tokenScope\.poolAddress = poolAddress \|\| tokenScope\.poolAddress;/);
+  assert.match(runWatcherSrc, /tokenScope\.attemptId = attemptId;/);
+  assert.match(runWatcherSrc, /const failedPoolAddress = tokenScope\.poolAddress \|\| getPoolAddress\(tokenScope\.pool\) \|\| '';/);
+  assert.match(runWatcherSrc, /const failedAttemptId = typeof tokenScope\.attemptId === 'string' && tokenScope\.attemptId/);
 });
 
 test('deploy queue hold notification dedupe suppresses same candidate + same reason within cooldown', () => {
