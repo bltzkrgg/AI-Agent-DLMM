@@ -4054,6 +4054,10 @@ Balas HANYA JSON valid tanpa Markdown.`;
       console.log('[hunter] Final cycle report disenyapkan untuk first-run autoscreen.');
       return;
     }
+    if (isDeploySlotSaturated(getDeploySlotUsage())) {
+      console.log('[hunter] Final cycle report disenyapkan karena slot penuh.');
+      return;
+    }
     try {
       const report = generateFinalCycleReport(CycleReport);
       if (_notifyMuted) {

@@ -554,6 +554,12 @@ test('/autoscreen uses single final scan report flow', () => {
   assert.doesNotMatch(src, /global\.screeningInterval/);
 });
 
+test('final scan report is suppressed when deploy slots are saturated', () => {
+  const src = readFileSync(hunterPath, 'utf8');
+  assert.match(src, /if \(isDeploySlotSaturated\(getDeploySlotUsage\(\)\)\) \{/);
+  assert.match(src, /Final cycle report disenyapkan karena slot penuh/);
+});
+
 test('active position analyst prompt holds through healthy bullish momentum', () => {
   const src = readFileSync(analystPath, 'utf8');
   assert.match(src, /ACTIVE POSITION YIELD MANAGER FOR DLMM/);
