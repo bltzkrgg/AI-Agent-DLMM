@@ -103,6 +103,9 @@ test('active-bin relative range can touch active bin for mixed liquidity', () =>
 
 test('deployPosition declares deployRangeMaxBins before using it in active-bin range build', () => {
   const src = readFileSync(new URL('../src/sniper/evilPanda.js', import.meta.url), 'utf8');
+  assert.match(src, /function getConfiguredDeployRangeMaxBins\(cfg = getConfig\(\)\)/);
+  assert.match(src, /const \{ minOffset, maxOffset \} = getConfiguredDeployRangeBinOffsets\(cfg\);/);
+  assert.match(src, /return Math\.max\(1, \(maxOffset - minOffset\) \+ 1\);/);
   assert.match(src, /const rangeMaxBins = getConfiguredDeployRangeMaxBins\(\);/);
   assert.match(src, /maxBins: rangeMaxBins,/);
 });
