@@ -554,6 +554,13 @@ test('/autoscreen uses single final scan report flow', () => {
   assert.doesNotMatch(src, /global\.screeningInterval/);
 });
 
+test('instant scan report includes freshness labels for auditability', () => {
+  const src = readFileSync(hunterPath, 'utf8');
+  assert.match(src, /Freshness: <code>\$\{escapeHTML\(String\(pool\?._screeningRank\?\.freshnessState \|\| 'UNKNOWN'\)\.toUpperCase\(\)\)\}<\/code>/);
+  assert.match(src, /freshnessPriorityDelta/);
+  assert.match(src, /activityPercentile/);
+});
+
 test('final scan report is suppressed when deploy slots are saturated', () => {
   const src = readFileSync(hunterPath, 'utf8');
   assert.match(src, /if \(isDeploySlotSaturated\(getDeploySlotUsage\(\)\)\) \{/);

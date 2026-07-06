@@ -3129,6 +3129,9 @@ export async function scanAndDeploy({ emitFinalReport = true } = {}) {
         fees24h: pool.fees?.['24h'] ?? pool.fees24h ?? pool.fee24h ?? pool.fee_24h ?? 0,
         holders: pool.holders ?? pool.holderCount ?? null,
         volumeTrend: volumeTrendSignal.state || 'UNKNOWN',
+        freshnessState: pool?._screeningRank?.freshnessState || 'UNKNOWN',
+        freshnessPriorityDelta: pool?._screeningRank?.freshnessPriorityDelta ?? null,
+        activityPercentile: pool?._screeningRank?.activityPercentile ?? null,
       });
     if (!isSupportedQuoteToken(pool)) {
       const quoteReason = `Unsupported quote token ${getQuoteTokenLabel(pool)}; expected SOL/WSOL`;
@@ -4990,6 +4993,9 @@ export async function sendImmediateTopPoolsReport(chatId) {
         `Fees24h: <code>${Number(pool.fees24h || pool.fee24h || 0) > 0 ? `◎${Number(pool.fees24h || pool.fee24h || 0).toFixed(2)}` : 'N/A'}</code>\n` +
         `Fee/TVL: <code>${feeRatio}%</code> | Bin: <code>${escapeHTML(String(binStep))}</code> | MCap: <code>$${safeNum(mcapRaw,0).toLocaleString('en-US')}</code>\n` +
         `Signal: <code>${gmgnParts.length ? escapeHTML(gmgnParts.join(' | ')) : 'N/A'}</code>${signalScore != null ? ` | LP Score: <code>${signalScore}/100</code>` : ''}\n` +
+        `Freshness: <code>${escapeHTML(String(pool?._screeningRank?.freshnessState || 'UNKNOWN').toUpperCase())}</code>` +
+        `${Number.isFinite(Number(pool?._screeningRank?.freshnessPriorityDelta)) ? ` | Rank: <code>${Number(pool._screeningRank.freshnessPriorityDelta) >= 0 ? '+' : ''}${Number(pool._screeningRank.freshnessPriorityDelta)}</code>` : ''}` +
+        `${Number.isFinite(Number(pool?._screeningRank?.activityPercentile)) ? ` | Activity Pctl: <code>${Math.round(Number(pool._screeningRank.activityPercentile) * 100)}%</code>` : ''}\n` +
         `State: <code>${statusText}</code>${vetoPass ? '' : `\nReject: <i>${escapeHTML(vetoReason)}</i>`}`
       );
     }));

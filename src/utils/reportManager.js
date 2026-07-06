@@ -52,6 +52,9 @@ class ReportManager {
       holders: null,
       gmgn: null,
       volumeTrend: null,
+      freshnessState: null,
+      freshnessPriorityDelta: null,
+      activityPercentile: null,
     };
     this.currentCycle.push(tokenReport);
     return tokenReport;
@@ -68,6 +71,9 @@ class ReportManager {
     holders = null,
     gmgn = null,
     volumeTrend = null,
+    freshnessState = null,
+    freshnessPriorityDelta = null,
+    activityPercentile = null,
   } = {}) {
     const token = this.currentCycle.find(t => t.name === tokenName);
     if (!token) return;
@@ -91,6 +97,15 @@ class ReportManager {
     }
     if (volumeTrend != null && volumeTrend !== '') {
       token.volumeTrend = String(volumeTrend).toUpperCase();
+    }
+    if (freshnessState != null && freshnessState !== '') {
+      token.freshnessState = String(freshnessState).toUpperCase();
+    }
+    if (freshnessPriorityDelta != null && Number.isFinite(Number(freshnessPriorityDelta))) {
+      token.freshnessPriorityDelta = Number(freshnessPriorityDelta);
+    }
+    if (activityPercentile != null && Number.isFinite(Number(activityPercentile))) {
+      token.activityPercentile = Number(activityPercentile);
     }
   }
 
@@ -170,6 +185,18 @@ class ReportManager {
     if (gmgnParts.length > 0) gmgnLine.push(gmgnParts.join(' | '));
     const volumeTrend = String(pool.volumeTrend || '').toUpperCase();
     if (volumeTrend && volumeTrend !== 'UNKNOWN') gmgnLine.push(`VolTrend ${volumeTrend}`);
+    const freshnessState = String(pool.freshnessState || '').toUpperCase();
+    if (freshnessState) {
+      const freshnessParts = [`Freshness ${freshnessState}`];
+      if (Number.isFinite(Number(pool.freshnessPriorityDelta))) {
+        const delta = Number(pool.freshnessPriorityDelta);
+        freshnessParts.push(`Rank ${delta >= 0 ? '+' : ''}${delta}`);
+      }
+      if (Number.isFinite(Number(pool.activityPercentile))) {
+        freshnessParts.push(`Activity Pctl ${Math.round(Number(pool.activityPercentile) * 100)}%`);
+      }
+      gmgnLine.push(freshnessParts.join(' | '));
+    }
     vLines.push(gmgnLine.join(' | '));
     vLines.push(`Status ${pool.rejected ? 'REJECTED' : (pool.status || 'WATCH')}`);
     return vLines.join('\n');

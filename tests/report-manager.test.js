@@ -23,6 +23,9 @@ test('report manager renders LP scanner brief with top pools and rejects', () =>
     holders: 124,
     gmgn: { rug_ratio: 12, bundlerPct: 9.1, top10Pct: 31.4, devHoldPct: 6.2, insiderPct: 2.8 },
     volumeTrend: 'ACCELERATING',
+    freshnessState: 'ACTIVE',
+    freshnessPriorityDelta: 90,
+    activityPercentile: 0.82,
   });
   reportManager.currentCycle.find((t) => t.name === 'CHANCE').signalScore = 84;
   reportManager.updateGate('CHANCE', 'STAGE_0_DISCOVERY', 'PASS');
@@ -50,6 +53,7 @@ test('report manager renders LP scanner brief with top pools and rejects', () =>
   assert.match(report, /TVL \$469\.4K \| Vol24h \$5\.6M/);
   assert.match(report, /Fee\/TVL 1\.9% \| Bin 100/);
   assert.match(report, /GMGN 124 holders \| Top10 31\.4% \| Dev 6\.2% \| Insider 2\.8% \| Bundler 9\.1% \| VolTrend ACCELERATING/);
+  assert.match(report, /Freshness ACTIVE \| Rank \+90 \| Activity Pctl 82%/);
   assert.match(report, /Status DEPLOYED/);
   assert.match(report, /Status REJECTED/);
   assert.match(report, /\[ REJECTED \]/);
