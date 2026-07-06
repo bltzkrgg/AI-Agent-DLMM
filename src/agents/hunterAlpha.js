@@ -599,6 +599,7 @@ function computeTaWatchPriorityScore({ pool = {}, entrySignals = {}, row = {}, n
   score += Math.max(0, Math.min(35, stDistance));
   score += freshnessBonus;
   score += Number(pool?._volumeTrendSignal?.priorityDelta || 0);
+  score += Number(pool?._screeningRank?.freshnessPriorityDelta || 0);
 
   if (pool?._watchSnapshotAt) score += 10;
   score += Number(row.memoryPriorityDelta || 0);
@@ -653,6 +654,23 @@ function getPoolVolumeTrendSortDelta(pool = {}) {
   if (state === 'ACCELERATING') return 1;
   if (state === 'DECELERATING') return -1;
   return 0;
+}
+
+function classifyScreeningFreshness({
+  activityPercentile = 0,
+  activityBias = 0,
+  volumeTrend = 0,
+  volume24h = 0,
+  fees24h = 0,
+} = {}) {
+  const livingFlow = volume24h >= 150_000 || fees24h >= 300;
+  if (activityPercentile >= 0.70 && activityBias >= 3 && volumeTrend >= 0 && livingFlow) {
+    return { state: 'ACTIVE', priorityDelta: 90 };
+  }
+  if (activityPercentile >= 0.35 && activityBias >= 0 && volumeTrend >= -1) {
+    return { state: 'WARM', priorityDelta: 25 };
+  }
+  return { state: 'STALE', priorityDelta: -35 };
 }
 
 function getDiscoveryMomentumScore(pool = {}) {
@@ -757,9 +775,17 @@ function buildScreeningRankContext(pools = []) {
     const activityPercentile = percentiles.length > 0
       ? percentiles.reduce((sum, pct) => sum + pct, 0) / percentiles.length
       : 0;
+    const freshness = classifyScreeningFreshness({
+      activityPercentile,
+      activityBias: metrics.activityBias,
+      volumeTrend: metrics.volumeTrend,
+      volume24h: metrics.volume24h,
+      fees24h: metrics.fees24h,
+    });
 
     const score =
       Math.round(activityPercentile * 1000) +
+      freshness.priorityDelta +
       (metrics.activityBias * 10) +
       (metrics.momentumScore * 8) +
       (metrics.volumeTrend * 6);
@@ -767,6 +793,8 @@ function buildScreeningRankContext(pools = []) {
     scoreByPool.set(key, {
       score,
       activityPercentile,
+      freshnessState: freshness.state,
+      freshnessPriorityDelta: freshness.priorityDelta,
       ...metrics,
     });
   }
@@ -776,11 +804,30 @@ function buildScreeningRankContext(pools = []) {
 
 function getScreeningRankScore(pool = {}, rankContext = new Map()) {
   const key = getScreeningRankKey(pool);
-  const fallback = {
-    score: (getPoolActivityBiasScore(pool) * 10) + (getDiscoveryMomentumScore(pool) * 8) + (getPoolVolumeTrendSortDelta(pool) * 6),
+  const fallbackFreshness = classifyScreeningFreshness({
     activityPercentile: 0,
+    activityBias: getPoolActivityBiasScore(pool),
+    volumeTrend: getPoolVolumeTrendSortDelta(pool),
+    volume24h: normalizePoolVolume24h(pool),
+    fees24h: Number(normalizePoolFees24h(pool) || 0),
+  });
+  const fallback = {
+    score:
+      fallbackFreshness.priorityDelta +
+      (getPoolActivityBiasScore(pool) * 10) +
+      (getDiscoveryMomentumScore(pool) * 8) +
+      (getPoolVolumeTrendSortDelta(pool) * 6),
+    activityPercentile: 0,
+    freshnessState: fallbackFreshness.state,
+    freshnessPriorityDelta: fallbackFreshness.priorityDelta,
   };
   return rankContext.get(key) || fallback;
+}
+
+function annotatePoolScreeningRank(pool = {}, rankContext = new Map()) {
+  const rank = getScreeningRankScore(pool, rankContext);
+  pool._screeningRank = rank;
+  return rank;
 }
 
 export function __volumeTrendSortDeltaForTests(pool = {}) {
@@ -794,6 +841,10 @@ export function __poolActivityBiasScoreForTests(pool = {}) {
 export function __screeningRankScoreForTests(pool = {}, pools = []) {
   const context = buildScreeningRankContext(pools);
   return getScreeningRankScore(pool, context);
+}
+
+export function __classifyScreeningFreshnessForTests(input = {}) {
+  return classifyScreeningFreshness(input);
 }
 
 function formatMemorySignal(signal = {}) {
@@ -2965,6 +3016,7 @@ export async function scanAndDeploy({ emitFinalReport = true } = {}) {
 
     const screeningTopPoolsLimit = Math.max(1, Number(cfg.screeningTopPoolsLimit) || 5);
     const screeningRankContext = buildScreeningRankContext(pools);
+    pools.forEach((pool) => annotatePoolScreeningRank(pool, screeningRankContext));
 
     // ── Sort by fee-flow activity bias, evaluasi HANYA top pool configurable ───
     // Filosofi LP: resource screening fokus ke pool yang bukan cuma valid, tapi juga masih hidup.
@@ -4841,6 +4893,7 @@ export async function sendImmediateTopPoolsReport(chatId) {
     const screeningTopPoolsLimit = Math.max(1, Number(cfg.screeningTopPoolsLimit) || 5);
     const slotSaturated = isDeploySlotSaturated(getDeploySlotUsage());
     const screeningRankContext = buildScreeningRankContext(rawPools);
+    rawPools.forEach((pool) => annotatePoolScreeningRank(pool, screeningRankContext));
 
     // Sort by efficiency (Vol/TVL) — top pool configurable ke Telegram, sisanya console
     const sorted = [...rawPools].sort((a, b) => {

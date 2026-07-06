@@ -127,4 +127,43 @@ test('hunter screening rank uses batch percentile as ranking only, not a gate', 
   assert.equal(warmRank.score > coldRank.score, true);
   assert.equal(activeRank.activityPercentile >= warmRank.activityPercentile, true);
   assert.equal(warmRank.activityPercentile >= coldRank.activityPercentile, true);
+  assert.equal(activeRank.freshnessState, 'ACTIVE');
+  assert.equal(warmRank.freshnessState, 'WARM');
+  assert.equal(coldRank.freshnessState, 'STALE');
+  assert.equal(activeRank.freshnessPriorityDelta > warmRank.freshnessPriorityDelta, true);
+  assert.equal(warmRank.freshnessPriorityDelta > coldRank.freshnessPriorityDelta, true);
+});
+
+test('screening freshness classifier stays a soft priority layer', async () => {
+  const hunter = await importFresh(join(repoRoot, 'src/agents/hunterAlpha.js'));
+  const source = readFileSync(join(repoRoot, 'src/agents/hunterAlpha.js'), 'utf8');
+
+  const active = hunter.__classifyScreeningFreshnessForTests({
+    activityPercentile: 0.82,
+    activityBias: 5,
+    volumeTrend: 1,
+    volume24h: 300000,
+    fees24h: 900,
+  });
+  const warm = hunter.__classifyScreeningFreshnessForTests({
+    activityPercentile: 0.42,
+    activityBias: 1,
+    volumeTrend: 0,
+    volume24h: 80000,
+    fees24h: 120,
+  });
+  const stale = hunter.__classifyScreeningFreshnessForTests({
+    activityPercentile: 0.12,
+    activityBias: -3,
+    volumeTrend: -1,
+    volume24h: 22000,
+    fees24h: 40,
+  });
+
+  assert.equal(active.state, 'ACTIVE');
+  assert.equal(warm.state, 'WARM');
+  assert.equal(stale.state, 'STALE');
+  assert.equal(active.priorityDelta > warm.priorityDelta, true);
+  assert.equal(warm.priorityDelta > stale.priorityDelta, true);
+  assert.doesNotMatch(source, /SCREENING_FRESHNESS.*REJECT|REJECT.*SCREENING_FRESHNESS/);
 });
