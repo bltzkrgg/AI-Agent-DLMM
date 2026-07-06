@@ -2846,6 +2846,11 @@ function getConfiguredDeployRangeBinOffsets(cfg = getConfig()) {
   };
 }
 
+function getConfiguredDeployRangeMaxBins(cfg = getConfig()) {
+  const { minOffset, maxOffset } = getConfiguredDeployRangeBinOffsets(cfg);
+  return Math.max(1, (maxOffset - minOffset) + 1);
+}
+
 function buildActiveBinRelativeDeployRange({
   activeBinId,
   minOffset,
