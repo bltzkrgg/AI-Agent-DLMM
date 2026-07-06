@@ -223,7 +223,9 @@ test('evilPanda uses monolith positions with one Meteora account for the full ra
   assert.match(src, /(?:const|let) posKp = Keypair\.generate\(\)/);
   assert.match(src, /const desiredRangeMin = activeBinId \+ minOffset;/);
   assert.match(src, /const desiredRangeMax = activeBinId \+ maxOffset;/);
-  assert.doesNotMatch(src, /getConfiguredDeployRangeMaxBins/);
+  assert.match(src, /function getConfiguredDeployRangeMaxBins\(cfg = getConfig\(\)\)/);
+  assert.match(src, /const \{ minOffset, maxOffset \} = getConfiguredDeployRangeBinOffsets\(cfg\);/);
+  assert.match(src, /return Math\.max\(1, \(maxOffset - minOffset\) \+ 1\);/);
   assert.match(src, /selectRentFreeRange/);
   assert.match(src, /assertRangeDoesNotRequireBinArrayInit/);
   assert.match(src, /VETO_NON_REFUNDABLE_RENT/);

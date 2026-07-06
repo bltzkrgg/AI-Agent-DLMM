@@ -55,9 +55,9 @@ test('report manager renders LP scanner brief with top pools and rejects', () =>
   assert.match(report, /\[ REJECTED \]/);
   assert.match(report, /<b>KINS<\/b>: stale market snapshot/);
   assert.match(report, /\[ STATUS \]/);
-  assert.match(report, /<b>Slot<\/b> AVAILABLE/);
-  assert.match(report, /<b>Action<\/b> HOLD new entries/);
-  assert.match(report, /<b>Next scan<\/b> 15m/);
+  assert.match(report, /<b>Slot:<\/b> AVAILABLE/);
+  assert.match(report, /<b>Action:<\/b> HOLD new entries/);
+  assert.match(report, /<b>Next scan:<\/b> 15m/);
 });
 
 test('report manager keeps working with partial pool and gmgn data', () => {
@@ -81,8 +81,8 @@ test('report manager keeps working with partial pool and gmgn data', () => {
   assert.match(report, /1\. <b>FCM<\/b>/);
   assert.match(report, /Fee\/TVL N\/A/);
   assert.match(report, /Status REJECTED/);
-  assert.match(report, /<b>Slot<\/b> AVAILABLE/);
-  assert.match(report, /<b>Action<\/b> HOLD new entries/);
+  assert.match(report, /<b>Slot:<\/b> AVAILABLE/);
+  assert.match(report, /<b>Action:<\/b> HOLD new entries/);
 });
 
 test('report manager renders internal feeTvlRatio field instead of falling back to N/A', () => {
@@ -139,10 +139,10 @@ test('slot-saturated summary mode keeps FULL 1/1 and still shows report shape', 
   const report = reportManager.generateReport();
 
   assert.match(report, /AI-Agent Scanner Result/);
-  assert.match(report, /<b>Slot<\/b> FULL 1\/1/);
+  assert.match(report, /<b>Slot:<\/b> FULL 1\/1/);
   assert.match(report, /<b>JUNO<\/b>: bundler too high/);
-  assert.match(report, /<b>Action<\/b> HOLD new entries/);
-  assert.match(report, /<b>Next scan<\/b> 15m/);
+  assert.match(report, /<b>Action:<\/b> HOLD new entries/);
+  assert.match(report, /<b>Next scan:<\/b> 15m/);
 });
 
 test('slot-saturated summary mode skips telegram send entirely', async () => {
@@ -157,6 +157,30 @@ test('slot-saturated summary mode skips telegram send entirely', async () => {
     binStep: 100,
   });
   reportManager.setFinalVerdict('SKIPME', 'REJECT', 'slot full');
+
+  const originalFetch = global.fetch;
+  const calls = [];
+  global.fetch = async (...args) => {
+    calls.push(args);
+    return { ok: true };
+  };
+
+  try {
+    await reportManager.sendTelegram();
+  } finally {
+    global.fetch = originalFetch;
+  }
+
+  assert.equal(calls.length, 0);
+});
+
+test('slot-saturated summary mode survives newCycle when preserved', async () => {
+  resetReportManager();
+  reportManager.setSlotSaturatedSummaryOnly(true);
+  reportManager.newCycle({ preserveSlotSaturatedSummaryOnly: true });
+
+  reportManager.addToken('STAYQUIET', 'MintStayQuiet');
+  reportManager.setFinalVerdict('STAYQUIET', 'REJECT', 'slot full');
 
   const originalFetch = global.fetch;
   const calls = [];

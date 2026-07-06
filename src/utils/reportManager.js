@@ -7,10 +7,12 @@ class ReportManager {
     this.slotSaturatedSummaryOnly = false;
   }
 
-  newCycle() {
+  newCycle({ preserveSlotSaturatedSummaryOnly = false } = {}) {
     this.currentCycle = [];
     this.cycleId++;
-    this.slotSaturatedSummaryOnly = false;
+    if (!preserveSlotSaturatedSummaryOnly) {
+      this.slotSaturatedSummaryOnly = false;
+    }
     console.log(`📋 [ReportManager] Memulai siklus baru #${this.cycleId}`);
   }
 

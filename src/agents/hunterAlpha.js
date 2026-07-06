@@ -3004,7 +3004,9 @@ export async function scanAndDeploy({ emitFinalReport = true } = {}) {
   };
 
   let winners = [];
-  reportManager.newCycle();
+  const slotUsageAtCycleStart = getDeploySlotUsage();
+  reportManager.setSlotSaturatedSummaryOnly(isDeploySlotSaturated(slotUsageAtCycleStart));
+  reportManager.newCycle({ preserveSlotSaturatedSummaryOnly: true });
 
   // ── Guard flag lokal (bukan _running global yang hanya true di LinearLoop) ──
   // scanAndDeploy() harus bisa berjalan independen dari runLinearLoop.
@@ -4850,6 +4852,10 @@ export async function sendImmediateTopPoolsReport(chatId) {
     });
 
     const topPools = sorted.slice(0, screeningTopPoolsLimit);
+    if (slotSaturated) {
+      console.log('[hunter][instant-scan] Telegram scan report skipped: slot saturated');
+      return;
+    }
     sorted.slice(screeningTopPoolsLimit).forEach((p, i) =>
       console.log(`[hunter][instant-scan] #${i + screeningTopPoolsLimit + 1} ${p.name || p.tokenXMint?.slice(0,8)} — console only`)
     );
