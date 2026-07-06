@@ -63,6 +63,12 @@ function isOutOfRangeHighClose(reason = '', rawReason = '') {
   return /(?:OUT[_\s-]?OF[_\s-]?RANGE|OOR).*(?:HIGH)|(?:HIGH).*(?:OUT[_\s-]?OF[_\s-]?RANGE|OOR)/i.test(text);
 }
 
+function isNeutralReentryResetReason(reason = '', rawReason = '') {
+  const normalized = normalizeExitReason(reason || rawReason || '');
+  if (normalized === 'OUT_OF_RANGE') return true;
+  return isOutOfRangeHighClose(reason, rawReason);
+}
+
 export function classifyVolumeTrend(currentVolume24h = 0, previousVolume24h = 0) {
   const current = Number(currentVolume24h);
   const previous = Number(previousVolume24h);
@@ -297,6 +303,7 @@ export function recordPoolOutcome({
   const now = nowMs();
   const rawReason = String(snapshot?.rawReason || reason || '').trim();
   const ignoreForReentry = isOutOfRangeHighClose(reason, rawReason);
+  const resetReentryState = isNeutralReentryResetReason(reason, rawReason);
   const outcome = ignoreForReentry ? 'BREAKEVEN' : classifyOutcome({ pnlPct, reason });
   const compact = compactSnapshot(snapshot);
 
@@ -326,6 +333,11 @@ export function recordPoolOutcome({
       if (Number.isFinite(compact.volume24h) && compact.volume24h > 0) {
         next.previousVolume24h = Number(next.recentVolume24h || 0);
         next.recentVolume24h = compact.volume24h;
+      }
+      if (resetReentryState) {
+        next.failureCount = 0;
+        next.cooldownUntil = 0;
+        next.priorityScore = Math.max(0, Number(next.priorityScore || 0));
       }
       if (!ignoreForReentry) {
         next.successCount = isProfit ? next.successCount + 1 : next.successCount;

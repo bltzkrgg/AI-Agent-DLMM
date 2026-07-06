@@ -279,6 +279,48 @@ test('out-of-range high close stays neutral and is ignored by reentry memory', a
   assert.equal(decision.reason, 'OUT_OF_RANGE_HIGH');
 });
 
+test('out-of-range close clears prior loss cooldown so reentry state stays neutral', async () => {
+  const memory = await loadPoolMemory();
+  const key = 'MintOORCooldownReset1111111111111111111111111';
+
+  memory.recordPoolOutcome({ key, tokenMint: key, pnlPct: -4, reason: 'STOP_LOSS' });
+  memory.recordPoolOutcome({ key, tokenMint: key, pnlPct: -3, reason: 'STOP_LOSS' });
+
+  let row = memory.getPoolMemory(key);
+  assert.equal(row.failureCount, 2);
+  assert.equal(row.cooldownUntil > Date.now(), true);
+
+  memory.recordPoolOutcome({
+    key,
+    tokenMint: key,
+    pnlPct: -0.4,
+    reason: 'OUT_OF_RANGE_30M',
+    snapshot: { rawReason: 'OUT_OF_RANGE_30M' },
+  });
+
+  row = memory.getPoolMemory(key);
+  assert.equal(row.lastOutcome, 'BREAKEVEN');
+  assert.equal(row.failureCount, 0);
+  assert.equal(row.cooldownUntil, 0);
+
+  const signal = memory.getPoolMemorySignal(key);
+  assert.equal(signal.cooldownActive, false);
+
+  const decision = memory.evaluatePoolReentryDiscipline({
+    pool: { tokenMint: key },
+    entrySignals: {
+      taTrend: 'BULLISH',
+      entryTimingState: 'LP_LIVE',
+      entryReadiness: 'HIGH',
+      breakoutQuality: 'VALID',
+      priceChangeM15: 0.7,
+    },
+  });
+
+  assert.equal(decision.allowed, true);
+  assert.equal(decision.reason, 'POOL_MEMORY_DELTA_0');
+});
+
 test('manual close unknown does not register as profit or loss', async () => {
   const memory = await loadPoolMemory();
   const key = 'MintManualUnknown1111111111111111111111111';
