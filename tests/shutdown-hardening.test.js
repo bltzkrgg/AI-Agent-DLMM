@@ -343,7 +343,7 @@ test('evilPanda treats trailing-profit exits as non-emergency fee path', () => {
   assert.doesNotMatch(src, /STOP_LOSS\|SCENARIO_C\|SUPPORT\|TRAILING\|BEARISH\|PANIC\|OUT_OF_RANGE/);
 });
 
-test('monitor exit policy uses trailing as the only take profit driver', () => {
+test('monitor exit policy keeps trailing primary and adds bearish defensive TA fallback for agent-managed positions', () => {
   const evilPandaSrc = readFileSync(evilPandaPath, 'utf8');
   const hunterSrc = readFileSync(hunterPath, 'utf8');
 
@@ -351,6 +351,10 @@ test('monitor exit policy uses trailing as the only take profit driver', () => {
   assert.match(evilPandaSrc, /function getConfiguredTrailingStopPct/);
   assert.match(evilPandaSrc, /function getConfiguredTrailingTriggerPct/);
   assert.match(evilPandaSrc, /function getConfiguredTrailingDropPct/);
+  assert.match(evilPandaSrc, /function evaluateAgentDefensiveTaExit/);
+  assert.match(evilPandaSrc, /Defensive TA inactive: Supertrend=/);
+  assert.match(evilPandaSrc, /Bearish ST \+ RSI\(2\)=/);
+  assert.match(evilPandaSrc, /Bearish ST active but TA confirmation not met/);
   assert.match(evilPandaSrc, /action:\s*'MAX_HOLD'/);
   assert.match(evilPandaSrc, /TP \(PRIMARY_TRAILING_STOP\)/);
   assert.match(evilPandaSrc, /const trailingStopPct = getConfiguredTrailingStopPct\(\)/);
@@ -359,14 +363,16 @@ test('monitor exit policy uses trailing as the only take profit driver', () => {
   assert.match(evilPandaSrc, /TP \(FALLBACK_TRAILING\)/);
   assert.match(evilPandaSrc, /const trailingEligible = trailingTriggerPct > 0 && pnlPct >= trailingTriggerPct/);
   assert.match(evilPandaSrc, /trailingDrawdownPct >= trailingDropPct/);
-  assert.match(evilPandaSrc, /TP hold: primary trailing target and fallback trailing not triggered/);
-  assert.match(evilPandaSrc, /taReason: 'Primary\/fallback trailing profit not triggered'/);
-  assert.match(evilPandaSrc, /taSignal: null/);
-  assert.doesNotMatch(evilPandaSrc, /TP \(TA_FALLBACK\)/);
-  assert.doesNotMatch(evilPandaSrc, /if \(exitDecision\.shouldExit\) \{/);
+  assert.match(evilPandaSrc, /const agentDefensiveSignal = await fetchExitSignal\(reg\.tokenXMint\)/);
+  assert.match(evilPandaSrc, /const agentDefensiveDecision = evaluateAgentDefensiveTaExit\(agentDefensiveSignal, \{ ageMs \}\)/);
+  assert.match(evilPandaSrc, /TA_EXIT_AGENT/);
+  assert.match(evilPandaSrc, /exitScenario: `DEFENSIVE_\$\{agentDefensiveDecision\.scenario \|\| 'TA'\}`/);
+  assert.match(evilPandaSrc, /exitReason: `TAKE_PROFIT_C: \$\{agentDefensiveDecision\.reason\}`/);
+  assert.match(evilPandaSrc, /TP hold: primary trailing target, fallback trailing, and defensive TA not triggered/);
+  assert.match(evilPandaSrc, /taReason: agentDefensiveDecision\.reason \|\| 'Primary\/fallback trailing profit not triggered'/);
+  assert.match(evilPandaSrc, /taSignal: agentDefensiveSignal/);
   assert.doesNotMatch(evilPandaSrc, /const takeProfitMinNetPnlPct = getConfiguredTakeProfitMinNetPnlPct\(\)/);
   assert.doesNotMatch(evilPandaSrc, /pnlPct < takeProfitMinNetPnlPct/);
-  assert.doesNotMatch(evilPandaSrc, /!isDefensiveTaExit/);
   assert.match(hunterSrc, /getExitDisplayMeta/);
   assert.match(hunterSrc, /Posisi Di Tutup \(\$\{exitMeta\.title\}\)/);
   assert.match(hunterSrc, /function buildExitTriggerNotification/);

@@ -4721,6 +4721,54 @@ function evaluateExitSignal(signal) {
   };
 }
 
+function evaluateAgentDefensiveTaExit(signal, { ageMs = 0 } = {}) {
+  if (!signal) {
+    return { shouldExit: false, scenario: null, reason: 'Signal unavailable — HOLD' };
+  }
+
+  const { rsi, close, bbUpper, macdHist, direction } = signal;
+  if (String(direction || '').toLowerCase() !== 'bearish') {
+    return {
+      shouldExit: false,
+      scenario: null,
+      reason: `Defensive TA inactive: Supertrend=${String(direction || 'unknown').toUpperCase()}`,
+    };
+  }
+
+  if (ageMs < DEFENSIVE_EXIT_MIN_POSITION_AGE_MS) {
+    return {
+      shouldExit: false,
+      scenario: null,
+      reason: `Defensive TA armed but position age ${Math.round(ageMs / 1000)}s < ${Math.round(DEFENSIVE_EXIT_MIN_POSITION_AGE_MS / 1000)}s minimum`,
+    };
+  }
+
+  const threshold = getConfiguredSmartExitRsi();
+  const rsiOverbought = rsi != null && rsi >= threshold;
+
+  if (rsiOverbought && close != null && bbUpper != null && close >= bbUpper) {
+    return {
+      shouldExit: true,
+      scenario: 'A',
+      reason: `Bearish ST + RSI(2)=${rsi?.toFixed(1)}≥${threshold} + Close=${close?.toFixed(6)}≥BB_Upper=${bbUpper?.toFixed(6)}`,
+    };
+  }
+
+  if (rsiOverbought && macdHist != null && macdHist > 0) {
+    return {
+      shouldExit: true,
+      scenario: 'B',
+      reason: `Bearish ST + RSI(2)=${rsi?.toFixed(1)}≥${threshold} + MACD_hist=${macdHist?.toFixed(6)}>0`,
+    };
+  }
+
+  return {
+    shouldExit: false,
+    scenario: null,
+    reason: `Bearish ST active but TA confirmation not met (RSI=${rsi?.toFixed(1) ?? 'n/a'})`,
+  };
+}
+
 function evaluateDefensiveExitConfirmation({
   reg = {},
   exitDecision = null,
@@ -4814,7 +4862,8 @@ function evaluateDefensiveExitConfirmation({
 /**
  * Poll on-chain + Meridian TA sekali, tentukan action.
  * Priority: Hard SL config > MaxHold config > Trailing take-profit.
- * TA signals may still be observed for diagnostics, but no longer close profit.
+ * Agent-managed positions stay trailing-first, but can arm a defensive TA exit
+ * after Supertrend 15m turns bearish and deterministic TA confirmation appears.
  *
  * @param {string} positionPubkey
  * @returns {Promise<PnLStatus>}
@@ -5102,7 +5151,25 @@ export async function monitorPnL(positionPubkey) {
       }
     }
 
-    console.log(`[evilPanda] 📊 ${positionPubkey.slice(0,8)} pnl=${pnlPct.toFixed(2)}% val=${currentValueSol.toFixed(4)}SOL | TP hold: primary trailing target and fallback trailing not triggered`);
+    const agentDefensiveSignal = await fetchExitSignal(reg.tokenXMint);
+    const agentDefensiveDecision = evaluateAgentDefensiveTaExit(agentDefensiveSignal, { ageMs });
+    if (agentDefensiveDecision.shouldExit) {
+      console.log(
+        `[evilPanda] 📉 TA_EXIT_AGENT ${positionPubkey.slice(0,8)} ` +
+        `scenario=${agentDefensiveDecision.scenario || 'NA'} reason=${agentDefensiveDecision.reason}`
+      );
+      return {
+        action: 'TAKE_PROFIT',
+        currentValueSol,
+        pnlPct,
+        ...feeOnlyPnl,
+        inRange,
+        exitScenario: `DEFENSIVE_${agentDefensiveDecision.scenario || 'TA'}`,
+        exitReason: `TAKE_PROFIT_C: ${agentDefensiveDecision.reason}`,
+      };
+    }
+
+    console.log(`[evilPanda] 📊 ${positionPubkey.slice(0,8)} pnl=${pnlPct.toFixed(2)}% val=${currentValueSol.toFixed(4)}SOL | TP hold: primary trailing target, fallback trailing, and defensive TA not triggered`);
 
     return {
       action: 'HOLD',
@@ -5116,8 +5183,8 @@ export async function monitorPnL(positionPubkey) {
       entryPrice,
       rangeMin: reg.rangeMin,
       rangeMax: reg.rangeMax,
-      taReason: 'Primary/fallback trailing profit not triggered',
-      taSignal: null,
+      taReason: agentDefensiveDecision.reason || 'Primary/fallback trailing profit not triggered',
+      taSignal: agentDefensiveSignal,
     };
 
   } catch (e) {
