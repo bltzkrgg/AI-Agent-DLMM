@@ -29,6 +29,7 @@ test('config rejects unknown keys and merges nested signal weights safely', asyn
   assert.equal(configModule.isConfigKeySupported('oorWatchDisplayEnabled'), true);
   assert.equal(configModule.isConfigKeySupported('closeSwapMode'), true);
   assert.equal(configModule.isConfigKeySupported('takeProfitMinNetPnlPct'), true);
+  assert.equal(configModule.isConfigKeySupported('smartExitRsi'), true);
   assert.equal(configModule.isConfigKeySupported('manualTAExitEnabled'), true);
   assert.equal(configModule.isConfigKeySupported('totallyUnknownKey'), false);
 
@@ -42,6 +43,7 @@ test('config rejects unknown keys and merges nested signal weights safely', asyn
   assert.equal(configModule.resolveNestedKey('strategy.closeSwapMode')?.flatKey, 'closeSwapMode');
   assert.equal(configModule.resolveNestedKey('strategy.closeResidualSwapEnabled')?.flatKey, 'closeResidualSwapEnabled');
   assert.equal(configModule.resolveNestedKey('strategy.takeProfitMinNetPnlPct')?.flatKey, 'takeProfitMinNetPnlPct');
+  assert.equal(configModule.resolveNestedKey('strategy.smartExitRsi')?.flatKey, 'smartExitRsi');
   assert.equal(configModule.resolveNestedKey('strategy.manualTAExitEnabled')?.flatKey, 'manualTAExitEnabled');
   configModule.updateConfig({
     signalWeights: { volume: 0.99 },

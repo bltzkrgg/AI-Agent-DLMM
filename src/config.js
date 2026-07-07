@@ -657,6 +657,7 @@ export const SETCONFIG_WHITELIST = {
   trailingStopPct:        { section: 'strategy',           type: 'number',  desc: 'Ambang profit awal trailing reference (%)' },
   trailingTriggerPct:     { section: 'strategy',           type: 'number',  desc: 'Aktifkan trailing TP setelah net exposure PnL ini (%)' },
   trailingDropPct:        { section: 'strategy',           type: 'number',  desc: 'Jarak retrace dari HWM untuk trigger TP (%)' },
+  smartExitRsi:           { section: 'strategy',           type: 'number',  desc: 'RSI(2) threshold untuk defensive TA exit' },
   manualTAExitEnabled:    { section: 'strategy',           type: 'boolean', desc: 'Aktifkan TA-only exit untuk posisi manual (/ca)' },
   takeProfitMinNetPnlPct: { section: 'strategy',           type: 'number',  desc: 'Legacy TA TP gate (%) — tidak dipakai pada TP trailing/defensive saat ini' },
 
