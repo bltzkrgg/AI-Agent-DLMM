@@ -247,6 +247,7 @@ test('operator-facing TP labels no longer describe trailing as the exit driver',
   const hunterSrc = readFileSync(hunterPath, 'utf8');
   const briefingSrc = readFileSync(resolve(process.cwd(), 'src/telegram/briefing.js'), 'utf8');
   const claudeSrc = readFileSync(resolve(process.cwd(), 'src/agent/claude.js'), 'utf8');
+  const configSrc = readFileSync(resolve(process.cwd(), 'src/config.js'), 'utf8');
 
   assert.match(indexSrc, /formatTakeProfitRiskLabel\(cfg\.takeProfitMinNetPnlPct, cfg\.stopLossPct\)/);
   assert.match(hunterSrc, /formatTakeProfitRiskLabel\(currentCfg\.takeProfitMinNetPnlPct, currentCfg\.stopLossPct\)/);
@@ -254,10 +255,16 @@ test('operator-facing TP labels no longer describe trailing as the exit driver',
   assert.match(indexSrc, /Anchor: <code>DLMM active bin<\/code> \| Source: <code>frozen\/live fallback<\/code>/);
   assert.match(hunterSrc, /Anchor: DLMM active bin \| Source: frozen\/live fallback/);
   assert.match(briefingSrc, /Anchor\s*:.*DLMM active bin.*Source:.*frozen\/live fallback/s);
+  assert.match(indexSrc, /TA: <code>defensive bearish \(RSI ref \$\{cfg\.smartExitRsi \|\| 90\}\)<\/code>/);
+  assert.match(briefingSrc, /\| TA: <code>defensive bearish<\/code>/);
+  assert.match(indexSrc, /Posisi agent tetap auto-manage dengan trailing utama \+ defensive TA saat bearish\./);
+  assert.match(configSrc, /Legacy TA TP gate \(%\) — tidak dipakai pada TP trailing\/defensive saat ini/);
   assert.doesNotMatch(indexSrc, /TP: <code>Trail /);
   assert.doesNotMatch(hunterSrc, /TP: trail /);
   assert.doesNotMatch(briefingSrc, /Trail: <code>/);
   assert.doesNotMatch(claudeSrc, /Trailing TP/);
+  assert.doesNotMatch(indexSrc, /TA: <code>info only/);
+  assert.doesNotMatch(briefingSrc, /\| TA: <code>info only<\/code>/);
 });
 
 test('blocked deploy results are handled by hunter and queue callers', () => {

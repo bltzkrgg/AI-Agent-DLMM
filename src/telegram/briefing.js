@@ -202,7 +202,7 @@ export async function generateBriefing(hoursBack = 24) {
     `   Dry Run: <code>${cfg.dryRun ? 'ON' : 'OFF'}</code> ` +
     `| ATR Guard: <code>${cfg.atrGuardEnabled ? 'ON' : 'OFF'}</code>\n` +
     `   Realtime PnL: <code>${cfg.realtimePnlIntervalSec || 15}s</code> ` +
-    `| TA: <code>info only</code>`;
+    `| TA: <code>defensive bearish</code>`;
 
   return (
     `📋 <b>AI-Agent-DLMM Briefing</b>\n` +

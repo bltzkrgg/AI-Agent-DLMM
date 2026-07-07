@@ -795,7 +795,7 @@ bot.onText(/\/status/, async (msg) => {
     `${formatTakeProfitRiskLabel(cfg.takeProfitMinNetPnlPct, cfg.stopLossPct)}\n` +
     `Manual TA Exit: <code>${cfg.manualTAExitEnabled ? 'ON' : 'OFF'}</code> <i>(/ca manual attach-only)</i>\n` +
     `Anchor: <code>DLMM active bin</code> | Source: <code>frozen/live fallback</code>\n` +
-    `TA: <code>info only (RSI ref ${cfg.smartExitRsi || 90})</code>`,
+    `TA: <code>defensive bearish (RSI ref ${cfg.smartExitRsi || 90})</code>`,
     { parse_mode: 'HTML' }
   );
 });
@@ -1308,7 +1308,7 @@ bot.onText(/\/manualexit(?:\s+(on|off))?/, async (msg, match) => {
     bot.sendMessage(
       chatId,
       `🎯 Manual TA Exit: <code>${current ? 'ON' : 'OFF'}</code>\n` +
-      `<i>Berlaku hanya untuk /ca manual. Posisi agent tetap trailing-only.</i>\n\n` +
+      `<i>Berlaku hanya untuk /ca manual. Posisi agent tetap auto-manage dengan trailing utama + defensive TA saat bearish.</i>\n\n` +
       `Gunakan <code>/manualexit on</code> atau <code>/manualexit off</code>`,
       { parse_mode: 'HTML' }
     );
@@ -1458,7 +1458,7 @@ bot.onText(/\/strategy_report/, async (msg) => {
     `Deploy: <code>${cfg.deployAmountSol || 0.1} SOL</code>\n` +
     `${formatTakeProfitRiskLabel(cfg.takeProfitMinNetPnlPct, cfg.stopLossPct)}\n` +
     `Anchor: <code>DLMM active bin</code> | Source: <code>frozen/live fallback</code>\n` +
-    `TA: <code>info only (RSI ref ${cfg.smartExitRsi || 90})</code>\n` +
+    `TA: <code>defensive bearish (RSI ref ${cfg.smartExitRsi || 90})</code>\n` +
     `Screening: <code>${cfg.autoScreeningEnabled ? 'ON' : 'OFF'}</code>`;
   await sendLong(chatId, text);
 });

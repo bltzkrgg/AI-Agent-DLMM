@@ -658,7 +658,7 @@ export const SETCONFIG_WHITELIST = {
   trailingTriggerPct:     { section: 'strategy',           type: 'number',  desc: 'Aktifkan trailing TP setelah net exposure PnL ini (%)' },
   trailingDropPct:        { section: 'strategy',           type: 'number',  desc: 'Jarak retrace dari HWM untuk trigger TP (%)' },
   manualTAExitEnabled:    { section: 'strategy',           type: 'boolean', desc: 'Aktifkan TA-only exit untuk posisi manual (/ca)' },
-  takeProfitMinNetPnlPct: { section: 'strategy',           type: 'number',  desc: 'Legacy TA TP gate (%) — tidak dipakai saat TP trailing-only' },
+  takeProfitMinNetPnlPct: { section: 'strategy',           type: 'number',  desc: 'Legacy TA TP gate (%) — tidak dipakai pada TP trailing/defensive saat ini' },
 
   // ── Discovery Quality ────────────────────────────────────────────
   minTvl:                 { section: 'discovery',          type: 'number',  desc: 'TVL minimum pool (USD)' },

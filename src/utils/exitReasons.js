@@ -181,5 +181,5 @@ export function getTakeProfitDisplayLabel(reason = '', normalizedReason = '') {
 
 export function formatTakeProfitRiskLabel(takeProfitMinNetPnlPct = 0, stopLossPct = 10) {
   void takeProfitMinNetPnlPct;
-  return `TP: <code>trailing-only</code> | SL: <code>-${stopLossPct || 10}%</code>`;
+  return `TP: <code>trailing-first</code> | SL: <code>-${stopLossPct || 10}%</code>`;
 }
