@@ -212,7 +212,7 @@ test('reentry discipline allows same-mint reentry after loss once fresh momentum
   });
 
   assert.equal(decision.allowed, true);
-  assert.equal(decision.reason, 'POOL_MEMORY_DELTA_0');
+  assert.equal(decision.reason, 'OOR_NEUTRAL_RESET');
 });
 
 test('out-of-range close does not poison pool-memory as a loss', async () => {
@@ -242,7 +242,7 @@ test('out-of-range close does not poison pool-memory as a loss', async () => {
   });
 
   assert.equal(decision.allowed, true);
-  assert.equal(decision.reason, 'POOL_MEMORY_DELTA_0');
+  assert.equal(decision.reason, 'OOR_NEUTRAL_RESET');
 });
 
 test('out-of-range high close stays neutral and is ignored by reentry memory', async () => {
@@ -276,7 +276,7 @@ test('out-of-range high close stays neutral and is ignored by reentry memory', a
   });
 
   assert.equal(decision.allowed, true);
-  assert.equal(decision.reason, 'OUT_OF_RANGE_HIGH');
+  assert.equal(decision.reason, 'OOR_NEUTRAL_RESET_HIGH');
 });
 
 test('out-of-range close clears prior loss cooldown so reentry state stays neutral', async () => {
@@ -318,7 +318,7 @@ test('out-of-range close clears prior loss cooldown so reentry state stays neutr
   });
 
   assert.equal(decision.allowed, true);
-  assert.equal(decision.reason, 'POOL_MEMORY_DELTA_0');
+  assert.equal(decision.reason, 'OOR_NEUTRAL_RESET');
 });
 
 test('manual close unknown does not register as profit or loss', async () => {
@@ -372,7 +372,7 @@ test('legacy out-of-range loss memory does not block reentry', async () => {
   });
 
   assert.equal(decision.allowed, true);
-  assert.equal(decision.reason, 'NO_RECENT_LOSS');
+  assert.equal(decision.reason, 'OOR_NEUTRAL_RESET_LEGACY');
 });
 
 test('pool memory module does not import network or LLM dependencies', () => {

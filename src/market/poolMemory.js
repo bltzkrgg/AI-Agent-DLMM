@@ -441,26 +441,25 @@ export function evaluatePoolReentryDiscipline({
   if (memory.lastReentryIgnored === true && lastDecision === 'CLOSE' && lastReason === 'OUT_OF_RANGE') {
     return {
       allowed: true,
-      reason: memory.lastReentryIgnoredReason || 'OOR_HIGH_IGNORED',
+      reason: 'OOR_NEUTRAL_RESET_HIGH',
       signal,
       memory,
     };
   }
   const isLegacyOorClose = lastDecision === 'CLOSE' && lastOutcome === 'LOSS' && lastReason === 'OUT_OF_RANGE';
+  if (lastDecision === 'CLOSE' && lastReason === 'OUT_OF_RANGE') {
+    return {
+      allowed: true,
+      reason: isLegacyOorClose ? 'OOR_NEUTRAL_RESET_LEGACY' : 'OOR_NEUTRAL_RESET',
+      signal,
+      memory,
+    };
+  }
   if (lastDecision !== 'CLOSE' || (lastOutcome !== 'LOSS' && !isLegacyOorClose)) {
     return {
       allowed: true,
       reason: signal.reason || 'NO_RECENT_LOSS',
       signal,
-    };
-  }
-
-  if (isLegacyOorClose) {
-    return {
-      allowed: true,
-      reason: 'NO_RECENT_LOSS',
-      signal,
-      memory,
     };
   }
 
