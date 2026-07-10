@@ -2272,6 +2272,48 @@ async function waitForExitTokenBalanceSettle({
   };
 }
 
+async function auditExitResidualTokenBalances({
+  mints = [],
+  attempts = 3,
+  delayMs = 600,
+} = {}) {
+  const candidates = mints.filter((mint, index, arr) => {
+    const normalizedMint = String(mint || '');
+    if (!normalizedMint || normalizedMint === WSOL_MINT) return false;
+    return arr.findIndex((candidate) => String(candidate || '') === normalizedMint) === index;
+  });
+  const balances = [];
+
+  for (const mint of candidates) {
+    let rawAmount = '0';
+    let readOk = false;
+    let error = null;
+
+    for (let i = 0; i < attempts; i++) {
+      try {
+        rawAmount = String(await getTokenBalanceRaw(mint) || '0');
+        readOk = true;
+        error = null;
+        if (!isValidPositiveIntegerString(rawAmount)) break;
+      } catch (err) {
+        readOk = false;
+        error = err?.message || String(err);
+      }
+      if (i < attempts - 1) await sleep(delayMs);
+    }
+
+    balances.push({
+      mint: String(mint),
+      rawAmount,
+      hasResidual: readOk && isValidPositiveIntegerString(rawAmount),
+      readOk,
+      error,
+    });
+  }
+
+  return balances;
+}
+
 async function attemptGatedExitSwapToSol({
   mint,
   rawAmount,
@@ -5411,6 +5453,11 @@ export async function exitPosition(positionPubkey, reason = 'MANUAL') {
       // 3. Auto-swap jalur agent: full-sweep for zap_out semantics, residual guarded by policy.
       // Ini menyamakan perilaku safeExit/exitPosition dengan close policy lain.
       let feeAutoSwapOutSol = 0;
+      let residualSwapOutSol = 0;
+      let feeSwapStatus = 'not_attempted';
+      let residualSwapStatus = 'not_attempted';
+      let swapFailureReason = null;
+      let residualTokenBalances = [];
       const cfg = getConfig();
       const swapPolicy = isTakeProfitExitReason(reason, normalizedExitReason)
         ? buildTakeProfitExitSwapPolicy(cfg, isEmergencyExit)
@@ -5453,13 +5500,16 @@ export async function exitPosition(positionPubkey, reason = 'MANUAL') {
               label: 'AGENT_EXIT_FEE_SWAP',
             });
             if (feeSwap?.success) {
+              feeSwapStatus = 'success';
               feeAutoSwapOutSol = Number(feeSwap.outSol || 0);
               if (feeSwap.txHash) removeSignatures.push(feeSwap.txHash);
               console.log(
                 `[evilPanda] AGENT_EXIT_FEE_SWAP_DONE out=${feeAutoSwapOutSol.toFixed(6)} SOL impact=${Number(feeSwap.priceImpactPct || 0).toFixed(2)}%`,
               );
             } else {
-              console.log(`[evilPanda] AGENT_EXIT_FEE_SWAP_SKIP reason=${feeSwap?.reason || 'UNKNOWN'}`);
+              feeSwapStatus = 'skipped';
+              swapFailureReason = feeSwap?.reason || 'AGENT_EXIT_FEE_SWAP_UNKNOWN';
+              console.log(`[evilPanda] AGENT_EXIT_FEE_SWAP_SKIP reason=${swapFailureReason}`);
               if (feeSwap?.error) {
                 console.warn(`[evilPanda] AGENT_EXIT_FEE_SWAP_SKIP_ERROR detail=${feeSwap.error}`);
               }
@@ -5468,6 +5518,7 @@ export async function exitPosition(positionPubkey, reason = 'MANUAL') {
             const skipReason = balanceSettle.settled === false
               ? 'NO_FEE_DELTA_AFTER_SETTLE'
               : 'NO_FEE_DELTA';
+            feeSwapStatus = 'no_balance';
             console.log(`[evilPanda] AGENT_EXIT_FEE_SWAP_SKIP reason=${skipReason}`);
           }
 
@@ -5479,6 +5530,7 @@ export async function exitPosition(positionPubkey, reason = 'MANUAL') {
 
           if (shouldSwapResidual) {
             let residualSwapsDone = 0;
+            residualSwapStatus = 'no_balance';
             for (const residualMint of residualMintCandidates) {
               const residualRaw = await getTokenBalanceRaw(residualMint).catch(() => '0');
               if (!isValidPositiveIntegerString(residualRaw)) {
@@ -5498,13 +5550,17 @@ export async function exitPosition(positionPubkey, reason = 'MANUAL') {
                 estimatedCostSol: swapPolicy.estimatedCostSol,
                 label: 'AGENT_EXIT_RESIDUAL_SWAP',
               });
-              if (residualSwap?.success && residualSwap.txHash) {
+              if (residualSwap?.success) {
                 residualSwapsDone++;
-                removeSignatures.push(residualSwap.txHash);
+                residualSwapStatus = 'success';
+                residualSwapOutSol += Number(residualSwap.outSol || 0);
+                if (residualSwap.txHash) removeSignatures.push(residualSwap.txHash);
                 console.log(
                   `[evilPanda] AGENT_EXIT_RESIDUAL_SWAP_DONE mint=${String(residualMint).slice(0, 8)} out=${Number(residualSwap.outSol || 0).toFixed(6)} SOL impact=${Number(residualSwap.priceImpactPct || 0).toFixed(2)}%`,
                 );
               } else if (residualSwap?.skipped) {
+                residualSwapStatus = 'skipped';
+                swapFailureReason = residualSwap.reason || swapFailureReason || 'AGENT_EXIT_RESIDUAL_SWAP_UNKNOWN';
                 console.log(`[evilPanda] AGENT_EXIT_RESIDUAL_SWAP_SKIP mint=${String(residualMint).slice(0, 8)} reason=${residualSwap.reason || 'UNKNOWN'}`);
                 if (residualSwap?.error) {
                   console.warn(`[evilPanda] AGENT_EXIT_RESIDUAL_SWAP_SKIP_ERROR detail=${residualSwap.error}`);
@@ -5517,9 +5573,38 @@ export async function exitPosition(positionPubkey, reason = 'MANUAL') {
           }
           console.log('[evilPanda] AGENT_EXIT_SWAP_STAGE_DONE mode=TP_FULL_SWEEP');
         } catch (swapErr) {
+          feeSwapStatus = feeSwapStatus === 'not_attempted' ? 'failed' : feeSwapStatus;
+          residualSwapStatus = residualSwapStatus === 'not_attempted' ? 'failed' : residualSwapStatus;
+          swapFailureReason = swapErr?.message || 'AGENT_EXIT_SWAP_ERROR';
           console.warn(`[evilPanda] AGENT_EXIT_SWAP_ERROR: ${swapErr.message}`);
         }
+      } else {
+        feeSwapStatus = 'disabled';
+        residualSwapStatus = 'disabled';
       }
+
+      residualTokenBalances = await auditExitResidualTokenBalances({
+        mints: [reg.tokenXMint, reg.tokenYMint],
+      });
+      const residualAuditFailed = residualTokenBalances.some((item) => item.readOk !== true);
+      const hasResidualTokens = residualTokenBalances.some((item) => item.hasResidual === true);
+      const swapCompletionStatus = swapPolicy.swapMode === 'off'
+        ? (residualAuditFailed ? 'unverified' : (hasResidualTokens ? 'partial' : 'disabled'))
+        : (residualAuditFailed ? 'unverified' : (hasResidualTokens ? 'partial' : 'full'));
+      if (swapCompletionStatus !== 'full' && !swapFailureReason) {
+        swapFailureReason = residualAuditFailed
+          ? 'RESIDUAL_BALANCE_AUDIT_FAILED'
+          : 'RESIDUAL_TOKEN_BALANCE_REMAINS';
+      }
+      console.log(
+        `[evilPanda] AGENT_EXIT_SWAP_AUDIT status=${swapCompletionStatus} ` +
+        `fee=${feeSwapStatus} residual=${residualSwapStatus} ` +
+        `balances=${JSON.stringify(residualTokenBalances.map(({ mint, rawAmount, readOk }) => ({
+          mint: mint.slice(0, 8),
+          rawAmount,
+          readOk,
+        })))} reason=${swapFailureReason || 'none'}`,
+      );
 
       const postExitWalletLamports = await connection.getBalance(wallet.publicKey);
       const walletNetDeltaSol = (postExitWalletLamports - preExitWalletLamports) / 1e9;
@@ -5583,6 +5668,12 @@ export async function exitPosition(positionPubkey, reason = 'MANUAL') {
         realizedTradingPnlPct: finalAccounting.realizedTradingPnlPct,
         accountingStatus: finalAccounting.accountingStatus,
         normalizedReason,
+        swapCompletionStatus,
+        swapFailureReason,
+        feeSwapStatus,
+        residualSwapStatus,
+        residualSwapOutSol,
+        residualTokenBalances,
       });
       recordPoolOutcome({
         key: reg.poolAddress || reg.tokenXMint,
@@ -5646,8 +5737,13 @@ export async function exitPosition(positionPubkey, reason = 'MANUAL') {
         realizedTradingPnlPct: finalAccounting.realizedTradingPnlPct,
         accountingStatus: finalAccounting.accountingStatus,
         positionValueSource: preClosePositionValueSource,
-        residualSwapOutSol: 0,
+        residualSwapOutSol,
         feeAutoSwapOutSol,
+        feeSwapStatus,
+        residualSwapStatus,
+        swapCompletionStatus,
+        swapFailureReason,
+        residualTokenBalances,
         tpFullSweep: isTakeProfitExitReason(reason, normalizedExitReason),
         feePnlSol,
         feePnlPct: estimatedFeePct,

@@ -1797,6 +1797,44 @@ function formatRentRefundLine(result = {}) {
   return `Rent Refund (est): <code>${rentRefundSol.toFixed(6)} SOL</code>\n`;
 }
 
+function formatAutoSwapStatusLine(result = {}) {
+  const completion = String(result?.swapCompletionStatus || '').trim().toLowerCase();
+  const feeStatus = String(result?.feeSwapStatus || '').trim().toLowerCase();
+  const residualStatus = String(result?.residualSwapStatus || '').trim().toLowerCase();
+  const reason = String(result?.swapFailureReason || '').trim();
+
+  if (!completion && !feeStatus && !residualStatus) return '';
+
+  const completionLabel = completion === 'full'
+    ? 'FULL_SWEEP'
+    : completion === 'partial'
+      ? 'PARTIAL'
+      : completion === 'unverified'
+        ? 'UNVERIFIED'
+        : completion === 'disabled'
+          ? 'DISABLED'
+          : 'ATTEMPTED';
+  const feeLabel = feeStatus ? feeStatus.toUpperCase() : 'UNKNOWN';
+  const residualLabel = residualStatus ? residualStatus.toUpperCase() : 'UNKNOWN';
+  const suffix = reason ? ` (${escapeHTML(reason)})` : '';
+  return `Auto Swap: <code>${completionLabel}</code> | Fee: <code>${feeLabel}</code> | Residual: <code>${residualLabel}</code>${suffix}\n`;
+}
+
+function formatResidualBalanceLines(result = {}) {
+  const balances = Array.isArray(result?.residualTokenBalances)
+    ? result.residualTokenBalances
+    : [];
+  return balances
+    .filter((item) => item && (item.hasResidual === true || item.readOk !== true))
+    .map((item) => {
+      const mint = String(item?.mint || '').slice(0, 8) || 'UNKNOWN';
+      if (item?.readOk !== true) {
+        return `Residual Audit: <code>${mint}</code> unreadable`;
+      }
+      return `Residual Token: <code>${mint}</code> raw=<code>${String(item?.rawAmount || '0')}</code>`;
+    });
+}
+
 function buildExitTriggerNotification({
   icon = '',
   title = 'EXIT',
@@ -1865,6 +1903,11 @@ function buildExitClosedNotification({ positionPubkey, exitMeta, exitResult, bal
     } else {
       compactLines.push(`Balance: <code>${balance} SOL</code>`);
     }
+    const autoSwapLine = formatAutoSwapStatusLine(exitResult).trimEnd();
+    if (autoSwapLine) compactLines.push(autoSwapLine);
+    for (const line of formatResidualBalanceLines(exitResult)) {
+      compactLines.push(line);
+    }
     return `${compactLines.join('\n')}`;
   }
   if (normalizedExitTitle === 'OUT OF RANGE') {
@@ -1899,6 +1942,11 @@ function buildExitClosedNotification({ positionPubkey, exitMeta, exitResult, bal
   if (walletLine) lines.push(walletLine);
   const rentLine = formatRentRefundLine(exitResult).trimEnd();
   if (rentLine) lines.push(rentLine);
+  const autoSwapLine = formatAutoSwapStatusLine(exitResult).trimEnd();
+  if (autoSwapLine) lines.push(autoSwapLine);
+  for (const line of formatResidualBalanceLines(exitResult)) {
+    lines.push(line);
+  }
   lines.push(`Balance: <code>${balance} SOL</code>`);
   return `${lines.join('\n')}`;
 }
