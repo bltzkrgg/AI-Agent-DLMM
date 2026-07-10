@@ -398,7 +398,9 @@ test('evilPanda exit path applies fee-first auto swap with residual swap behind 
   assert.match(src, /attemptGatedExitSwapToSol/);
   assert.match(src, /AGENT_EXIT_FEE_SWAP/);
   assert.match(src, /AGENT_EXIT_SWAP_BALANCE_SETTLE/);
+  assert.match(src, /const residualMintCandidates = \[reg\.tokenXMint, reg\.tokenYMint\]/);
   assert.match(src, /const shouldSwapResidual = swapPolicy\.swapMode === 'all' \|\| swapPolicy\.allowResidualSwap/);
+  assert.match(src, /AGENT_EXIT_SWAP_STAGE_DONE mode=TP_FULL_SWEEP/);
   assert.doesNotMatch(src, /swapToSol\(mint, rawBalance, null, swapOptions\)/);
 });
 
@@ -421,6 +423,7 @@ test('take profit exit forces full-swap policy while claimFees stays claim-only'
   assert.match(evilPandaSrc, /NO_FEE_DELTA_AFTER_SETTLE/);
   assert.match(evilPandaSrc, /AGENT_EXIT_FEE_SWAP_SKIP_ERROR/);
   assert.match(evilPandaSrc, /AGENT_EXIT_RESIDUAL_SWAP_SKIP_ERROR/);
+  assert.match(evilPandaSrc, /tpFullSweep: isTakeProfitExitReason\(reason, normalizedExitReason\)/);
   assert.match(claimBlock, /export async function claimFees/);
   assert.match(claimBlock, /claimAllRewards\(\{/);
   assert.doesNotMatch(claimBlock, /attemptGatedSwapToSol/);

@@ -5471,12 +5471,23 @@ export async function exitPosition(positionPubkey, reason = 'MANUAL') {
             console.log(`[evilPanda] AGENT_EXIT_FEE_SWAP_SKIP reason=${skipReason}`);
           }
 
+          const residualMintCandidates = [reg.tokenXMint, reg.tokenYMint].filter((mint, index, arr) => {
+            const normalizedMint = String(mint || '');
+            if (!normalizedMint || normalizedMint === WSOL_MINT) return false;
+            return arr.findIndex((candidate) => String(candidate || '') === normalizedMint) === index;
+          });
+
           if (shouldSwapResidual) {
-            const postFeeSwapTokenXRaw = await getTokenBalanceRaw(reg.tokenXMint).catch(() => '0');
-            if (isValidPositiveIntegerString(postFeeSwapTokenXRaw)) {
+            let residualSwapsDone = 0;
+            for (const residualMint of residualMintCandidates) {
+              const residualRaw = await getTokenBalanceRaw(residualMint).catch(() => '0');
+              if (!isValidPositiveIntegerString(residualRaw)) {
+                console.log(`[evilPanda] AGENT_EXIT_RESIDUAL_SWAP_SKIP reason=NO_RESIDUAL_BALANCE mint=${String(residualMint).slice(0, 8)}`);
+                continue;
+              }
               const residualSwap = await attemptGatedExitSwapToSol({
-                mint: reg.tokenXMint,
-                rawAmount: postFeeSwapTokenXRaw,
+                mint: residualMint,
+                rawAmount: residualRaw,
                 slippageBps: effectiveSlippageBps,
                 isUrgent: isEmergencyExit,
                 isEmergencyExit,
@@ -5488,21 +5499,23 @@ export async function exitPosition(positionPubkey, reason = 'MANUAL') {
                 label: 'AGENT_EXIT_RESIDUAL_SWAP',
               });
               if (residualSwap?.success && residualSwap.txHash) {
+                residualSwapsDone++;
                 removeSignatures.push(residualSwap.txHash);
                 console.log(
-                  `[evilPanda] AGENT_EXIT_RESIDUAL_SWAP_DONE out=${Number(residualSwap.outSol || 0).toFixed(6)} SOL impact=${Number(residualSwap.priceImpactPct || 0).toFixed(2)}%`,
+                  `[evilPanda] AGENT_EXIT_RESIDUAL_SWAP_DONE mint=${String(residualMint).slice(0, 8)} out=${Number(residualSwap.outSol || 0).toFixed(6)} SOL impact=${Number(residualSwap.priceImpactPct || 0).toFixed(2)}%`,
                 );
               } else if (residualSwap?.skipped) {
-                console.log(`[evilPanda] AGENT_EXIT_RESIDUAL_SWAP_SKIP reason=${residualSwap.reason || 'UNKNOWN'}`);
+                console.log(`[evilPanda] AGENT_EXIT_RESIDUAL_SWAP_SKIP mint=${String(residualMint).slice(0, 8)} reason=${residualSwap.reason || 'UNKNOWN'}`);
                 if (residualSwap?.error) {
                   console.warn(`[evilPanda] AGENT_EXIT_RESIDUAL_SWAP_SKIP_ERROR detail=${residualSwap.error}`);
                 }
               }
-            } else {
+            }
+            if (residualSwapsDone === 0) {
               console.log('[evilPanda] AGENT_EXIT_RESIDUAL_SWAP_SKIP reason=NO_RESIDUAL_BALANCE');
             }
           }
-          console.log('[evilPanda] AGENT_EXIT_SWAP_STAGE_DONE');
+          console.log('[evilPanda] AGENT_EXIT_SWAP_STAGE_DONE mode=TP_FULL_SWEEP');
         } catch (swapErr) {
           console.warn(`[evilPanda] AGENT_EXIT_SWAP_ERROR: ${swapErr.message}`);
         }
@@ -5635,6 +5648,7 @@ export async function exitPosition(positionPubkey, reason = 'MANUAL') {
         positionValueSource: preClosePositionValueSource,
         residualSwapOutSol: 0,
         feeAutoSwapOutSol,
+        tpFullSweep: isTakeProfitExitReason(reason, normalizedExitReason),
         feePnlSol,
         feePnlPct: estimatedFeePct,
         feePnlSource: estimatedFeeSource,
