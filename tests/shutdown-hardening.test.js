@@ -395,12 +395,18 @@ test('evilPanda exit path applies fee-first auto swap with residual swap behind 
   assert.match(src, /buildExitSwapPolicy/);
   assert.match(src, /buildTakeProfitExitSwapPolicy/);
   assert.match(src, /async function waitForExitTokenBalanceSettle/);
+  assert.match(src, /async function auditExitResidualTokenBalances/);
   assert.match(src, /attemptGatedExitSwapToSol/);
   assert.match(src, /AGENT_EXIT_FEE_SWAP/);
   assert.match(src, /AGENT_EXIT_SWAP_BALANCE_SETTLE/);
   assert.match(src, /const residualMintCandidates = \[reg\.tokenXMint, reg\.tokenYMint\]/);
   assert.match(src, /const shouldSwapResidual = swapPolicy\.swapMode === 'all' \|\| swapPolicy\.allowResidualSwap/);
   assert.match(src, /AGENT_EXIT_SWAP_STAGE_DONE mode=TP_FULL_SWEEP/);
+  assert.match(src, /swapCompletionStatus/);
+  assert.match(src, /feeSwapStatus/);
+  assert.match(src, /residualSwapStatus/);
+  assert.match(src, /residualTokenBalances/);
+  assert.match(src, /residualSwapOutSol/);
   assert.doesNotMatch(src, /swapToSol\(mint, rawBalance, null, swapOptions\)/);
 });
 
@@ -649,6 +655,8 @@ test('exit close notifications use unified display metadata for all close famili
   assert.match(hunterSrc, /getExitDisplayMeta/);
   assert.match(hunterSrc, /function buildExitTriggerNotification/);
   assert.match(hunterSrc, /function buildExitClosedNotification/);
+  assert.match(hunterSrc, /function formatAutoSwapStatusLine/);
+  assert.match(hunterSrc, /function formatResidualBalanceLines/);
   assert.match(hunterSrc, /buildExitTriggerNotification\(\{/);
   assert.match(hunterSrc, /buildExitClosedNotification\(\{ positionPubkey, exitMeta, exitResult, balance \}\)/);
   assert.match(hunterSrc, /Posisi Di Tutup \(\$\{exitMeta\.title\}\)/);
@@ -656,6 +664,8 @@ test('exit close notifications use unified display metadata for all close famili
   assert.match(hunterSrc, /lines\.push\(`Reason: <code>\$\{escapeHTML\(reasonLabel\)\}<\/code>`\)/);
   assert.match(hunterSrc, /escapeHTML\(exitMeta\.reasonLabel \|\| 'Trailing Profit Trigger'\)/);
   assert.match(hunterSrc, /Reason: <code>\$\{escapeHTML\(exitMeta\.reasonLabel\)\}<\/code>/);
+  assert.match(hunterSrc, /Auto Swap: <code>\$\{completionLabel\}<\/code> \| Fee: <code>\$\{feeLabel\}<\/code> \| Residual: <code>\$\{residualLabel\}<\/code>/);
+  assert.match(hunterSrc, /Residual Token: <code>/);
   assert.match(exitReasonsSrc, /export function getExitDisplayMeta/);
   assert.match(exitReasonsSrc, /Trailing Profit Trigger/);
   assert.match(exitReasonsSrc, /Defensive Exit Trigger/);
