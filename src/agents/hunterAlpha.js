@@ -3754,7 +3754,7 @@ Balas HANYA JSON valid tanpa Markdown.`;
     `${candidateListStr}\n\n` +
     (
       singleSlotMode
-        ? `Mode 1 slot: 1 winner dipilih untuk deploy${standbyCandidates.length > 0 ? `, ${standbyCandidates.length} kandidat standby.` : '.'}`
+        ? `Mode 1 slot: 1 kandidat terbaik dipilih untuk deploy${standbyCandidates.length > 0 ? `, ${standbyCandidates.length} kandidat standby.` : '.'}`
         : `Mengeksekusi kandidat yang tersedia...`
     )
   );

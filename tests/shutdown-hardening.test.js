@@ -615,7 +615,7 @@ test('single-slot deploy mode selects one winner and leaves runners-up on standb
   assert.match(src, /const selectedWinner = singleSlotMode/);
   assert.match(src, /const deployCandidates = singleSlotMode/);
   assert.match(src, /const standbyCandidates = singleSlotMode/);
-  assert.match(src, /Mode 1 slot: 1 winner dipilih untuk deploy/);
+  assert.match(src, /Mode 1 slot: 1 kandidat terbaik dipilih untuk deploy/);
   assert.match(src, /for \(const winner of deployCandidates\)/);
   assert.match(src, /if \(singleSlotMode\) \{\s*break;\s*\}/);
   assert.doesNotMatch(src, /for \(const winner of eligibleWinners\)/);
