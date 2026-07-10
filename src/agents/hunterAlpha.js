@@ -3686,6 +3686,7 @@ Balas HANYA JSON valid tanpa Markdown.`;
   const maxPositions = usage0.maxPositions;
   const activePositionsCount = usage0.active + usage0.reserved;
   let availableSlots = usage0.available;
+  const singleSlotMode = maxPositions <= 1;
 
   if (availableSlots <= 0) {
     console.log(`[hunter] ⚠️ Kapasitas penuh (Max ${maxPositions}). Bot standby memantau exit...`);
@@ -3718,6 +3719,24 @@ Balas HANYA JSON valid tanpa Markdown.`;
   }
 
 
+  const selectedWinner = singleSlotMode
+    ? (
+      eligibleWinners.find((candidate) => {
+        const candidatePool = String(candidate.address || candidate.pool_address || candidate.pool || '');
+        const candidateMint = String(candidate.tokenXMint || candidate.tokenX || candidate.mint || candidatePool);
+        const finalPool = String(finalWinner.address || finalWinner.pool_address || finalWinner.pool || '');
+        const finalMint = String(finalWinner.tokenXMint || finalWinner.tokenX || finalWinner.mint || finalPool);
+        return candidatePool === finalPool || candidateMint === finalMint;
+      }) || eligibleWinners[0]
+    )
+    : null;
+  const deployCandidates = singleSlotMode
+    ? (selectedWinner ? [selectedWinner] : eligibleWinners.slice(0, 1))
+    : eligibleWinners.slice(0, availableSlots);
+  const standbyCandidates = singleSlotMode
+    ? eligibleWinners.filter((candidate) => candidate !== deployCandidates[0])
+    : eligibleWinners.slice(deployCandidates.length);
+
   const candidateListStr = eligibleWinners.map((p, i) => {
     const sym   = p.name || p.tokenXMint?.slice(0, 8) || 'UNKNOWN';
     const ratio = ((p.feeActiveTvlRatio || 0) * 100).toFixed(2);
@@ -3733,12 +3752,15 @@ Balas HANYA JSON valid tanpa Markdown.`;
   await notify(
     `🎯 <b>Top ${eligibleWinners.length} Kandidat Tersedia (Deduplicated)</b>\n\n` +
     `${candidateListStr}\n\n` +
-    `Mengeksekusi kandidat yang tersedia...`
+    (
+      singleSlotMode
+        ? `Mode 1 slot: 1 winner dipilih untuk deploy${standbyCandidates.length > 0 ? `, ${standbyCandidates.length} kandidat standby.` : '.'}`
+        : `Mengeksekusi kandidat yang tersedia...`
+    )
   );
 
   // 3. Iterative Deployment
-  for (const winner of eligibleWinners) {
-    if (availableSlots <= 0) break;
+  for (const winner of deployCandidates) {
 
     const deployed = await withDeployLock(async () => {
       const currentCfg = getConfig();
@@ -4100,6 +4122,9 @@ Balas HANYA JSON valid tanpa Markdown.`;
         availableSlots--;
       }
       await new Promise(r => setTimeout(r, 3000));
+      if (singleSlotMode) {
+        break;
+      }
     }
   } catch (error) {
     console.error(`[hunter] scanAndDeploy critical error:`, error.message);

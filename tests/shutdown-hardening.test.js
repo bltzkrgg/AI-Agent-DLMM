@@ -609,6 +609,18 @@ test('slot-saturated watch promotion stays quiet for new radar candidates', () =
   assert.match(src, /reportManager\.setSlotSaturatedSummaryOnly\(slotSaturated\)/);
 });
 
+test('single-slot deploy mode selects one winner and leaves runners-up on standby', () => {
+  const src = readFileSync(hunterPath, 'utf8');
+  assert.match(src, /const singleSlotMode = maxPositions <= 1;/);
+  assert.match(src, /const selectedWinner = singleSlotMode/);
+  assert.match(src, /const deployCandidates = singleSlotMode/);
+  assert.match(src, /const standbyCandidates = singleSlotMode/);
+  assert.match(src, /Mode 1 slot: 1 winner dipilih untuk deploy/);
+  assert.match(src, /for \(const winner of deployCandidates\)/);
+  assert.match(src, /if \(singleSlotMode\) \{\s*break;\s*\}/);
+  assert.doesNotMatch(src, /for \(const winner of eligibleWinners\)/);
+});
+
 test('exit telegram messages display Meteora fee-only PnL', () => {
   const hunterSrc = readFileSync(hunterPath, 'utf8');
   const evilPandaSrc = readFileSync(evilPandaPath, 'utf8');
