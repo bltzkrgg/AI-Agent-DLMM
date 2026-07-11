@@ -5076,7 +5076,7 @@ export async function monitorPnL(positionPubkey) {
       }
       if (invalidRegistryStatus.manualWithdrawn) {
         console.log(
-          `[evilPanda] ℹ️ Manual close terdeteksi via invalid registry fallback: ${positionPubkey.slice(0,8)} ` +
+          `[evilPanda] ℹ️ Manual close terdeteksi via registry recovery: ${positionPubkey.slice(0,8)} ` +
           `reason=${invalidRegistryStatus.reason}`
         );
         return {

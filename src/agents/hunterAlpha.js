@@ -2556,7 +2556,7 @@ export function startManualCloseWatcher() {
           const fallbackReason = String(e?.positionStatusReason || '');
           if (e?.manualWithdrawn === true && fallbackReason) {
             console.warn(
-              `[hunter] Manual close watcher fallback ${pos.pubkey.slice(0,8)} reason=${fallbackReason}`
+              `[hunter] Manual close watcher recovered stale registry ${pos.pubkey.slice(0,8)} reason=${fallbackReason}`
             );
             await markPositionManuallyClosed(pos.pubkey, `MANUAL_WITHDRAW_DETECTED_${fallbackReason}`);
             _positionLabels.delete(pos.pubkey);
