@@ -45,7 +45,7 @@ import {
 } from '../src/sniper/evilPanda.js';
 import { StrategyType } from '@meteora-ag/dlmm';
 
-test('single-side quote including active bin is adjusted below active bin', () => {
+test('single-side quote including active bin keeps the top edge on the active bin', () => {
   const out = buildDlmmDeployStrategyArgs({
     activeBinId: 1000,
     rangeMin: 990,
@@ -54,9 +54,24 @@ test('single-side quote including active bin is adjusted below active bin', () =
     amountYBn: new BN('500000000'),
   });
 
+  assert.equal(out.adjustedBelowActive, false);
+  assert.equal(out.rangeMax, 1000);
+  assert.equal(out.rangeMin, 990);
+});
+
+test('single-side quote above active bin is clamped back to the active edge', () => {
+  const out = buildDlmmDeployStrategyArgs({
+    activeBinId: 1000,
+    rangeMin: 990,
+    rangeMax: 1002,
+    amountXBn: new BN('0'),
+    amountYBn: new BN('500000000'),
+  });
+
   assert.equal(out.adjustedBelowActive, true);
-  assert.equal(out.rangeMax, 999);
-  assert.equal(out.rangeMin, 989);
+  assert.equal(out.rangeMax, 1000);
+  assert.equal(out.rangeMin, 988);
+  assert.equal(out.adjustmentReason, 'clamp_to_active_quote_only');
 });
 
 test('active-bin relative range keeps top bin at active bin before side-aware adjustment', () => {
@@ -317,7 +332,7 @@ test('final args preflight rejects non-finite activeBin and inverted range befor
   );
 });
 
-test('final args preflight rejects zero amount and invalid single-side active bin relation', () => {
+test('final args preflight rejects zero amount and quote-only ranges above the active bin', () => {
   assert.throws(
     () => assertDlmmFinalSdkArgs({
       deployArgs: {
@@ -340,11 +355,11 @@ test('final args preflight rejects zero amount and invalid single-side active bi
       deployArgs: {
         activeBinId: 1000,
         rangeMin: 995,
-        rangeMax: 1000,
+        rangeMax: 1001,
         amountXBn: new BN('0'),
         amountYBn: new BN('1'),
       },
-      sdkStrategy: { minBinId: 995, maxBinId: 1000, strategyType: 0 },
+      sdkStrategy: { minBinId: 995, maxBinId: 1001, strategyType: 0 },
       xMint: 'Mint111111111111111111111111111111111111111',
       yMint: 'So11111111111111111111111111111111111111112',
       poolAddress: 'Pool11111111111111111111111111111111111111',
@@ -421,7 +436,7 @@ test('pure quote-only final deploy selects one-side weight SDK path', () => {
   const quoteOnly = buildDlmmDeployStrategyArgs({
     activeBinId: 1000,
     rangeMin: 980,
-    rangeMax: 999,
+    rangeMax: 1000,
     amountXBn: new BN('0'),
     amountYBn: new BN('100'),
   });
@@ -773,7 +788,7 @@ test('wrapped SDK errors keep simulation/account wording when anchor signals are
   assert.match(String(wrapped?.message || ''), /"anchorErrorCode":3012/);
 });
 
-test('final SDK strategy is built from adjusted deployArgs range, not original unsafe range', () => {
+test('final SDK strategy preserves quote-only active-edge range when it is already valid', () => {
   const activeBinId = 1000;
   const originalRangeMin = 932;
   const originalRangeMax = 1000;
@@ -788,8 +803,9 @@ test('final SDK strategy is built from adjusted deployArgs range, not original u
   const strategy = buildDlmmSdkStrategyFromDeployArgs(deployArgs);
   assert.equal(strategy.maxBinId, deployArgs.rangeMax);
   assert.equal(strategy.minBinId, deployArgs.rangeMin);
-  assert.ok(strategy.maxBinId < activeBinId);
-  assert.notEqual(strategy.maxBinId, originalRangeMax);
+  assert.ok(strategy.maxBinId <= activeBinId);
+  assert.equal(strategy.maxBinId, activeBinId);
+  assert.equal(strategy.maxBinId, originalRangeMax);
 });
 
 test('deploy args are rebuilt from refreshed active bin before final strategy', () => {
@@ -1478,7 +1494,7 @@ test('final rent guard re-checks when preflight changed range and keeps unchange
     poolAddress: '11111111111111111111111111111111',
     tokenXMint: 'Mint111111111111111111111111111111111111111',
     checkedRangeMin: 932,
-    checkedRangeMax: 1000,
+    checkedRangeMax: 999,
     rangeMaxBins: 100,
     activeBinId: 1000,
     deployArgs,
@@ -1524,7 +1540,7 @@ test('final rent guard can adapt unsafe final range and return safe deployArgs',
     poolAddress: '11111111111111111111111111111111',
     tokenXMint: 'Mint111111111111111111111111111111111111111',
     checkedRangeMin: 932,
-    checkedRangeMax: 1000,
+    checkedRangeMax: 999,
     rangeMaxBins: 100,
     activeBinId: 1000,
     deployArgs,
@@ -1562,7 +1578,7 @@ test('final rent guard vetoes when no safe final range exists and does not call 
     poolAddress: '11111111111111111111111111111111',
     tokenXMint: 'Mint111111111111111111111111111111111111111',
     checkedRangeMin: 932,
-    checkedRangeMax: 1000,
+    checkedRangeMax: 999,
     rangeMaxBins: 100,
     activeBinId: 1000,
     deployArgs,

@@ -597,10 +597,12 @@ function enforceDlmmSideRangeInvariants({
     throw buildInvalidDlmmArgsError(`range width invalid (${String(rangeWidth)})`);
   }
 
-  if (side === 'QUOTE_ONLY' && safeMax >= activeBinId) {
-    safeMax = activeBinId - 1;
+  if (side === 'QUOTE_ONLY' && safeMax > activeBinId) {
+    // Manual Meteora single-sided SOL can keep the top edge on the active bin.
+    // We only clamp ranges that overshoot above active, while preserving width.
+    safeMax = activeBinId;
     safeMin = safeMax - (rangeWidth - 1);
-    adjustmentReason = 'shift_below_active_quote_only';
+    adjustmentReason = 'clamp_to_active_quote_only';
     adjustedBelowActive = true;
   } else if (side === 'BASE_ONLY' && safeMin <= activeBinId) {
     safeMin = activeBinId + 1;
@@ -612,8 +614,8 @@ function enforceDlmmSideRangeInvariants({
   if (!isFiniteInteger(safeMin) || !isFiniteInteger(safeMax) || safeMin > safeMax) {
     throw buildInvalidDlmmArgsError(`single-side range adjustment invalid [${String(safeMin)},${String(safeMax)}]`);
   }
-  if (side === 'QUOTE_ONLY' && safeMax >= activeBinId) {
-    throw buildInvalidDlmmArgsError('single-side quote final range must be below active bin');
+  if (side === 'QUOTE_ONLY' && safeMax > activeBinId) {
+    throw buildInvalidDlmmArgsError('single-side quote final range must not exceed active bin');
   }
   if (side === 'BASE_ONLY' && safeMin <= activeBinId) {
     throw buildInvalidDlmmArgsError('single-side tokenX final range must be above active bin');
@@ -1550,7 +1552,7 @@ export function selectDlmmSdkPathForDeployArgs(deployArgs = {}) {
     side === 'QUOTE_ONLY' &&
     isFiniteInteger(activeBinId) &&
     isFiniteInteger(rangeMax) &&
-    rangeMax < activeBinId;
+    rangeMax <= activeBinId;
   return isStrictQuoteOnly
     ? DLMM_SDK_PATH_WEIGHT_QUOTE_ONLY
     : DLMM_SDK_PATH_STRATEGY;
