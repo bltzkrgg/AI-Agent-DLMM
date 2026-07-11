@@ -33,6 +33,7 @@ prefer the explicit user request, then update this file after the change lands.
 
 ## Recently completed changes
 
+- 2026-07-11: Hardened quote-only partial deploy cleanup in `src/sniper/evilPanda.js` so empty positions now attempt on-chain `dlmmPool.closePosition(...)` before local unlock; cleanup no longer treats an empty local state as if the account was already closed.
 - Slot-saturated WATCH promotion is paused for new candidates.
 - Slot saturation checks now use the normalized deploy slot helper shape (`maxPositions` / `active` / `reserved` / `available`) so WATCH/radar suppression stays aligned with the actual slot guard.
 - Slot-saturated queue hold notifications are suppressed.

@@ -1689,7 +1689,7 @@ test('quote-only add-liquidity failure marks partial deploy marker phase', async
   __setQuoteOnlyDeployMarkerForTests(positionKeypair.publicKey.toString(), null);
 });
 
-test('partial quote-only cleanup unlocks local state for empty position and avoids manual classification', async () => {
+test('partial quote-only cleanup closes empty on-chain position before unlocking local state', async () => {
   const positionKeypair = Keypair.generate();
   const positionPubkey = positionKeypair.publicKey.toString();
   const poolAddress = 'Pool11111111111111111111111111111111111111';
@@ -1710,9 +1710,33 @@ test('partial quote-only cleanup unlocks local state for empty position and avoi
     ttlMs: 120000,
   });
 
-  const connection = {};
   const wallet = { publicKey: Keypair.generate().publicKey };
-  const dlmmPool = {};
+  const closeTx = {
+    instructions: [],
+  };
+  let closePositionCalled = false;
+  let sendTransactionCalled = false;
+  const connection = {
+    sendTransaction: async (tx, signers) => {
+      sendTransactionCalled = true;
+      assert.equal(tx, closeTx);
+      assert.equal(signers.length, 1);
+      assert.equal(signers[0], wallet);
+      return 'sig-close';
+    },
+    getSignatureStatus: async (sig) => {
+      assert.equal(sig, 'sig-close');
+      return { value: { confirmationStatus: 'confirmed', err: null } };
+    },
+  };
+  const dlmmPool = {
+    closePosition: async ({ owner, position }) => {
+      closePositionCalled = true;
+      assert.equal(owner, wallet.publicKey);
+      assert.equal(position.toString(), positionPubkey);
+      return closeTx;
+    },
+  };
 
   const cleanup = await __handleQuoteOnlyPartialDeployFailureForTests({
     connection,
@@ -1722,20 +1746,94 @@ test('partial quote-only cleanup unlocks local state for empty position and avoi
     positionPubkey,
     error: new Error('add failed'),
     getFreshPositionFn: async () => ({
-      activePos: null,
+      activePos: {
+        publicKey: positionKeypair.publicKey,
+        positionData: {
+          totalXAmount: { toString: () => '0' },
+          totalYAmount: { toString: () => '0' },
+          feeX: { toString: () => '0' },
+          feeY: { toString: () => '0' },
+        },
+      },
     }),
     verifyClosedFn: async () => true,
   });
 
   assert.equal(cleanup?.hasLiquidity, false);
+  assert.equal(cleanup?.cleaned, true);
+  assert.equal(cleanup?.closeAttempted, true);
+  assert.equal(cleanup?.closeConfirmed, true);
+  assert.equal(closePositionCalled, true);
+  assert.equal(sendTransactionCalled, true);
   assert.equal(getPositionMeta(positionPubkey), null);
   const marker = __getQuoteOnlyDeployMarkerForTests(positionPubkey);
   assert.equal(marker?.phase, 'ADD_LIQUIDITY_FAILED');
-  assert.equal(marker?.cleanupStatus, 'POSITION_NOT_FOUND');
+  assert.equal(marker?.cleanupStatus, 'CLOSED_EMPTY_POSITION');
   assert.equal(getPositionMeta(positionPubkey), null);
   const status = await getPositionOnChainStatus(positionPubkey);
   assert.equal(status.reason, 'BOT_DEPLOY_PARTIAL_EMPTY_POSITION');
   assert.equal(status.manualWithdrawn, false);
+
+  __setQuoteOnlyDeployMarkerForTests(positionPubkey, null);
+});
+
+test('partial quote-only cleanup does not unlock when empty-position close cannot be confirmed', async () => {
+  const positionKeypair = Keypair.generate();
+  const positionPubkey = positionKeypair.publicKey.toString();
+  const poolAddress = 'Pool11111111111111111111111111111111111111';
+
+  await setPositionLifecycle(positionPubkey, 'deploying', {
+    poolAddress,
+    deploySol: 0.1,
+    tokenXMint: 'Mint111111111111111111111111111111111111111',
+    tokenYMint: 'So11111111111111111111111111111111111111112',
+    rangeMin: 980,
+    rangeMax: 999,
+  }, { flush: true });
+  __setQuoteOnlyDeployMarkerForTests(positionPubkey, {
+    poolAddress,
+    tokenXMint: 'Mint111111111111111111111111111111111111111',
+    phase: 'ADD_LIQUIDITY_FAILED',
+    source: 'BOT_QUOTE_ONLY_POSITION_FIRST',
+    ttlMs: 120000,
+  });
+
+  let closePositionCalled = false;
+  const cleanup = await __handleQuoteOnlyPartialDeployFailureForTests({
+    connection: {
+      sendTransaction: async () => 'sig-close',
+      getSignatureStatus: async () => ({ value: { confirmationStatus: 'confirmed', err: null } }),
+    },
+    wallet: { publicKey: Keypair.generate().publicKey },
+    dlmmPool: {
+      closePosition: async () => {
+        closePositionCalled = true;
+        return { instructions: [], sign() {} };
+      },
+    },
+    poolAddress,
+    positionPubkey,
+    error: new Error('add failed'),
+    getFreshPositionFn: async () => ({
+      activePos: {
+        publicKey: positionKeypair.publicKey,
+        positionData: {
+          totalXAmount: { toString: () => '1' },
+          totalYAmount: { toString: () => '0' },
+          feeX: { toString: () => '0' },
+          feeY: { toString: () => '0' },
+        },
+      },
+    }),
+    verifyClosedFn: async () => false,
+  });
+
+  assert.equal(cleanup?.hasLiquidity, true);
+  assert.equal(cleanup?.reason, 'HAS_LIQUIDITY');
+  assert.equal(closePositionCalled, false);
+  assert.notEqual(getPositionMeta(positionPubkey), null);
+  const marker = __getQuoteOnlyDeployMarkerForTests(positionPubkey);
+  assert.equal(marker?.phase, 'ADD_LIQUIDITY_FAILED');
 
   __setQuoteOnlyDeployMarkerForTests(positionPubkey, null);
 });

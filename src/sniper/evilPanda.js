@@ -2717,6 +2717,29 @@ async function cleanupQuoteOnlyPartialEmptyPosition({
     return { cleaned: false, skipped: true, reason: 'HAS_LIQUIDITY', hasLiquidity: true };
   }
 
+  let closeSignatures = [];
+  try {
+    const closeTxOrTxs = await dlmmPool.closePosition({
+      owner: wallet.publicKey,
+      position: new PublicKey(safePositionPubkey),
+    });
+    closeSignatures = await sendCloseEmptyPositionTxs(connection, wallet, closeTxOrTxs, microLamports);
+  } catch (err) {
+    console.warn(
+      `[evilPanda] QUOTE_ONLY_EMPTY_POSITION_CLOSE_FAILED pool=${String(poolAddress || '').slice(0,8)} ` +
+      `position=${safePositionPubkey.slice(0,8)} reason=${String(err?.message || 'unknown')}`
+    );
+    return {
+      cleaned: false,
+      skipped: true,
+      reason: `CLOSE_EMPTY_POSITION_FAILED:${String(err?.message || 'unknown')}`,
+      hasLiquidity: false,
+      closeAttempted: true,
+      closeConfirmed: false,
+      closeSignatures,
+    };
+  }
+
   const verifyFn = typeof verifyClosedFn === 'function'
     ? verifyClosedFn
     : verifyPositionClosedOnChain;
@@ -2734,6 +2757,9 @@ async function cleanupQuoteOnlyPartialEmptyPosition({
       skipped: true,
       reason: 'CLOSE_NOT_CONFIRMED',
       hasLiquidity: false,
+      closeAttempted: true,
+      closeConfirmed: false,
+      closeSignatures,
     };
   }
 
@@ -2741,7 +2767,15 @@ async function cleanupQuoteOnlyPartialEmptyPosition({
     `[evilPanda] QUOTE_ONLY_EMPTY_POSITION_CLEANUP_OK pool=${String(poolAddress || '').slice(0,8)} ` +
     `position=${safePositionPubkey.slice(0,8)} verified=ON_CHAIN`
   );
-  return { cleaned: true, skipped: false, reason: 'CLOSED_EMPTY_POSITION', hasLiquidity: false };
+  return {
+    cleaned: true,
+    skipped: false,
+    reason: 'CLOSED_EMPTY_POSITION',
+    hasLiquidity: false,
+    closeAttempted: true,
+    closeConfirmed: true,
+    closeSignatures,
+  };
 }
 
 async function handleQuoteOnlyPartialDeployFailure({
@@ -2769,7 +2803,7 @@ async function handleQuoteOnlyPartialDeployFailure({
     verifyClosedFn,
   });
 
-  if (!cleanup?.hasLiquidity) {
+  if (cleanup?.cleaned === true || cleanup?.reason === 'POSITION_NOT_FOUND') {
     await unlockFailedEmptyDeployPosition(positionPubkey, {
       reason: 'BOT_DEPLOY_PARTIAL_EMPTY_POSITION',
       cleanupStatus: cleanup?.reason || null,
@@ -3492,6 +3526,20 @@ async function sendExitTx(connection, wallet, tx, microLamports) {
 
   await pollTxConfirm(connection, sig, 90_000);
   return sig;
+}
+
+async function sendCloseEmptyPositionTxs(connection, wallet, txOrTxs, microLamports) {
+  const txList = Array.isArray(txOrTxs) ? txOrTxs : [txOrTxs];
+  const sigs = [];
+  for (const tx of txList) {
+    if (!tx) continue;
+    const sig = await sendExitTx(connection, wallet, tx, microLamports);
+    sigs.push(sig);
+  }
+  if (sigs.length === 0) {
+    throw new Error('CLOSE_EMPTY_POSITION_EMPTY_TX_LIST');
+  }
+  return sigs;
 }
 
 async function getFreshActivePosition(connection, wallet, poolAddress, positionPubkey) {
