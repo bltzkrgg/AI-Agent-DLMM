@@ -276,7 +276,9 @@ test('blocked deploy results are handled by hunter and queue callers', () => {
   assert.match(hunterSrc, /Deploy Ditolak/);
   assert.match(hunterSrc, /recordGate\(winner\._record, 'SCOUT_AGENT', 'DEFER'/);
   assert.match(queueSrc, /result && typeof result === 'object' && result\.blocked/);
-  assert.match(queueSrc, /Deploy Ditolak \(Queue\)/);
+  assert.match(queueSrc, /buildDeployFinalOutcomeTelegramMessage\(/);
+  assert.match(queueSrc, /FINAL_DEPLOY_BLOCKED/);
+  assert.match(queueSrc, /unwrap dan close manual dulu/);
   assert.match(queueSrc, /Adjust range gagal untuk pool\/range ini\. Pool lain tetap normal\./);
   assert.doesNotMatch(queueSrc, /Queue menghormati veto non-refundable rent/);
 });

@@ -8,6 +8,7 @@ import { checkSupertrendVeto } from '../src/market/meridianVeto.js';
 import {
   __resetDeployQueueHoldNotifyState,
   buildDeployTriggeredTelegramMessage,
+  buildDeployFinalOutcomeTelegramMessage,
   buildUnreliableLiveSnapshotLog,
   classifyDeployAttemptResult,
   dequeueToken,
@@ -2042,6 +2043,51 @@ test('deploy attempt telegram message is explicit that position is still opening
   assert.match(line, /Sedang membuka posisi 0\.5 SOL/);
 });
 
+test('final deploy outcome messages are explicit for stale hold, success, blocked, and reconcile', () => {
+  const holdMsg = buildDeployFinalOutcomeTelegramMessage({
+    symbol: 'TEST',
+    attemptId: 'mint-pool-abc123',
+    poolAddress: 'Pool11111111111111111111111111111111111111',
+    outcome: 'HOLD',
+    reason: 'Final snapshot unavailable; waiting fresh market snapshot',
+  });
+  assert.match(holdMsg, /FINAL_DEPLOY_HOLD/);
+  assert.match(holdMsg, /final snapshot not fresh/i);
+  assert.match(holdMsg, /Snapshot final belum layak/i);
+
+  const successMsg = buildDeployFinalOutcomeTelegramMessage({
+    symbol: 'TEST',
+    attemptId: 'mint-pool-abc123',
+    poolAddress: 'Pool11111111111111111111111111111111111111',
+    outcome: 'SUCCESS',
+    positionPubkey: 'Pos111111111111111111111111111111111111111',
+  });
+  assert.match(successMsg, /final deploy success/i);
+  assert.match(successMsg, /DEPLOYED/);
+  assert.match(successMsg, /Masuk mode monitor/i);
+
+  const blockedMsg = buildDeployFinalOutcomeTelegramMessage({
+    symbol: 'TEST',
+    attemptId: 'mint-pool-abc123',
+    poolAddress: 'Pool11111111111111111111111111111111111111',
+    outcome: 'BLOCKED',
+    reason: 'VETO_NON_REFUNDABLE_RENT',
+    detail: 'rent guard veto',
+  });
+  assert.match(blockedMsg, /FINAL_DEPLOY_BLOCKED/);
+  assert.match(blockedMsg, /unwrap dan close manual/i);
+
+  const reconcileMsg = buildDeployFinalOutcomeTelegramMessage({
+    symbol: 'TEST',
+    attemptId: 'mint-pool-abc123',
+    poolAddress: 'Pool11111111111111111111111111111111111111',
+    outcome: 'RECONCILE',
+    reason: 'DEPLOY_RESULT_UNKNOWN_RECONCILE',
+  });
+  assert.match(reconcileMsg, /FINAL_DEPLOY_RECONCILE/);
+  assert.match(reconcileMsg, /Cek on-chain sebelum retry manual/i);
+});
+
 test('deploy/drop notifications are not gated by hold dedupe helper', () => {
   const src = readFileSync(new URL('../src/utils/pendingDeployQueue.js', import.meta.url), 'utf8');
   const holdSectionStart = src.indexOf('if (!finalCandle.ok) {');
@@ -2277,11 +2323,11 @@ test('deploy queue applies final entry proximity hold before deploy', () => {
   assert.match(src, /bypassCache:\s*true/);
   assert.match(src, /let proximityDecision = getFinalEntryProximityDecision\(/);
   assert.match(src, /entry\.deferReason = proximityDecision\.reason/);
-  assert.match(src, /Deploy Queue Hold/);
-  assert.match(src, /Reason: <code>\$\{escapeHTML\(proximityDecision\.reason\)\}<\/code>/);
-  assert.match(src, /Drift: <code>\$\{Number\.isFinite\(proximityDecision\.priceDriftPct\)/);
+  assert.match(src, /buildDeployFinalOutcomeTelegramMessage\(/);
+  assert.match(src, /FINAL_DEPLOY_HOLD/);
+  assert.match(src, /final snapshot not fresh/);
+  assert.match(src, /final drift guard hit/);
   assert.match(src, /Limit: <code>\$\{driftLimitPct\.toFixed\(2\)\}%<\/code>/);
-  assert.match(src, /Bin: <code>\$\{Number\.isFinite\(proximityDecision\.binDelta\)/);
   assert.match(src, /proximity=\$\{proximityDecision\.comparedBy \|\| 'na'\}/);
 });
 

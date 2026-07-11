@@ -101,6 +101,107 @@ export function buildDeployTriggeredTelegramMessage({
   );
 }
 
+function summarizeFinalDeployReason({
+  outcome = 'SUCCESS',
+  reason = '',
+  proximityDecision = null,
+} = {}) {
+  const rawReason = String(reason || '').trim();
+  const lowerReason = rawReason.toLowerCase();
+  if (outcome === 'HOLD') {
+    if (lowerReason.includes('fresh live price/bin snapshot') || lowerReason.includes('snapshot not fresh') || lowerReason.includes('unreliable') || lowerReason.includes('unavailable')) {
+      return 'final snapshot not fresh';
+    }
+    if (lowerReason.includes('drift too wide')) {
+      return 'final drift too wide';
+    }
+    if (lowerReason.includes('entry proximity unavailable')) {
+      return 'final snapshot not fresh';
+    }
+    if (Number.isFinite(Number(proximityDecision?.priceDriftPct)) || Number.isFinite(Number(proximityDecision?.binDelta))) {
+      const drift = Number.isFinite(Number(proximityDecision?.priceDriftPct))
+        ? `${Number(proximityDecision.priceDriftPct).toFixed(2)}%`
+        : 'na';
+      const bin = Number.isFinite(Number(proximityDecision?.binDelta))
+        ? String(proximityDecision.binDelta)
+        : 'na';
+      return `final drift guard hit (drift=${drift}, bin=${bin})`;
+    }
+    return rawReason || 'final deploy hold';
+  }
+
+  if (outcome === 'BLOCKED') {
+    if (lowerReason.includes('invalid_dlmm_deploy_args')) return 'final deploy blocked by invalid DLMM args';
+    if (lowerReason.includes('veto_non_refundable_rent')) return 'final deploy blocked by non-refundable rent';
+    return rawReason || 'final deploy blocked';
+  }
+
+  if (outcome === 'RECONCILE') {
+    return rawReason || 'final deploy result needs reconcile';
+  }
+
+  return rawReason || 'final deploy success';
+}
+
+export function buildDeployFinalOutcomeTelegramMessage({
+  symbol = '',
+  attemptId = '',
+  poolAddress = '',
+  outcome = 'SUCCESS',
+  reason = '',
+  detail = '',
+  proximityDecision = null,
+  positionPubkey = '',
+} = {}) {
+  const normalizedOutcome = String(outcome || 'SUCCESS').toUpperCase();
+  const statusCode = normalizedOutcome === 'HOLD'
+    ? 'FINAL_DEPLOY_HOLD'
+    : normalizedOutcome === 'BLOCKED'
+      ? 'FINAL_DEPLOY_BLOCKED'
+      : normalizedOutcome === 'RECONCILE'
+        ? 'FINAL_DEPLOY_RECONCILE'
+        : 'FINAL_DEPLOY_SUCCESS';
+  const headline = normalizedOutcome === 'HOLD'
+    ? '⏸️ <b>Deploy Ditahan</b>'
+    : normalizedOutcome === 'BLOCKED'
+      ? '⛔ <b>Deploy Diblokir</b>'
+      : normalizedOutcome === 'RECONCILE'
+        ? '⚠️ <b>Deploy Reconcile Required</b>'
+        : '✅ <b>Deploy Selesai</b>';
+  const statusLine = normalizedOutcome === 'SUCCESS'
+    ? `Status: <code>DEPLOYED</code>\n`
+    : `Status: <code>${statusCode}</code>\n`;
+  const reasonText = summarizeFinalDeployReason({ outcome: normalizedOutcome, reason, proximityDecision });
+  const driftLine = normalizedOutcome === 'HOLD' && proximityDecision
+    ? `Drift: <code>${Number.isFinite(Number(proximityDecision.priceDriftPct)) ? `${Number(proximityDecision.priceDriftPct).toFixed(2)}%` : 'na'}</code> | ` +
+      `Bin: <code>${Number.isFinite(Number(proximityDecision.binDelta)) ? proximityDecision.binDelta : 'na'}</code>\n`
+    : '';
+  const detailLine = detail
+    ? `Detail: <code>${escapeHTML(String(detail).slice(0, 240))}</code>\n`
+    : '';
+  const manualActionLine = normalizedOutcome === 'BLOCKED'
+    ? `<i>Deploy tidak tuntas. Jika sempat ada posisi parsial, unwrap dan close manual dulu.</i>`
+    : normalizedOutcome === 'RECONCILE'
+      ? `<i>Hasil deploy belum pasti. Cek on-chain sebelum retry manual.</i>`
+      : normalizedOutcome === 'HOLD'
+        ? `<i>Snapshot final belum layak. Agent tidak membuka posisi.</i>`
+        : `<i>Masuk mode monitor...</i>`;
+
+  return (
+    `${headline}\n` +
+    `<b>${escapeHTML(symbol)}</b>` +
+    (normalizedOutcome === 'SUCCESS' ? ' — <code>DEPLOYED</code>' : ` — <code>${statusCode}</code>`) + '\n' +
+    (attemptId ? `Attempt ID: <code>${attemptId}</code>\n` : '') +
+    `Pool: <code>${poolAddress.slice(0, 8)}</code>\n` +
+    statusLine +
+    (positionPubkey ? `Position: <code>${positionPubkey.slice(0, 8)}</code>\n` : '') +
+    (normalizedOutcome === 'HOLD' ? `Reason: <code>${escapeHTML(reasonText)}</code>\n` : `Reason: <code>${escapeHTML(reasonText)}</code>\n`) +
+    driftLine +
+    detailLine +
+    manualActionLine
+  );
+}
+
 export function setDeployQueueNotifyFn(fn) { _notifyFn  = fn; }
 export function setDeployQueueDeployFn(fn) { _deployFn  = fn; }
 export function setDeployQueueMonitorFn(fn) { _monitorFn = fn; }
@@ -1616,10 +1717,13 @@ async function runWatcher() {
         });
         if (notifyDecision.shouldSend) {
           await safeSend(
-            `⏸️ <b>Deploy Queue Hold</b>\n` +
-            `<b>${symbol}</b>\n` +
-            `Reason: <code>Final snapshot unavailable; waiting fresh market snapshot</code>\n` +
-            `<i>Agent menunggu snapshot Meteora/live yang benar-benar fresh.</i>`
+            buildDeployFinalOutcomeTelegramMessage({
+              symbol,
+              attemptId,
+              poolAddress,
+              outcome: 'HOLD',
+              reason: 'Final snapshot unavailable; waiting fresh market snapshot',
+            })
           );
         }
         continue;
@@ -1643,10 +1747,13 @@ async function runWatcher() {
         });
         if (notifyDecision.shouldSend) {
           await safeSend(
-            `⏸️ <b>Deploy Queue Hold</b>\n` +
-            `<b>${symbol}</b>\n` +
-            `Reason: <code>Final snapshot unreliable; waiting reliable live snapshot</code>\n` +
-            `<i>Snapshot Meteora/live belum reliable untuk final deploy.</i>`
+            buildDeployFinalOutcomeTelegramMessage({
+              symbol,
+              attemptId,
+              poolAddress,
+              outcome: 'HOLD',
+              reason: 'Final snapshot unreliable; waiting reliable live snapshot',
+            })
           );
         }
         continue;
@@ -1688,6 +1795,25 @@ async function runWatcher() {
           entry.nextEligibleAt = Date.now() + 15_000;
           entry.deferReason = finalSt.reason;
           console.log(`[QUEUE] ⏸️ ${symbol} HOLD sebelum deploy: ${finalSt.reason}`);
+          const cfg = getConfig();
+          const cooldownSec = Math.max(30, Number(cfg.deployQueueHoldNotifyCooldownSec ?? 180) || 180);
+          const notifyDecision = shouldSendDeployQueueHoldNotification({
+            poolAddress,
+            mint,
+            reason: finalSt.reason,
+            now: Date.now(),
+            cooldownMs: cooldownSec * 1000,
+          });
+          if (notifyDecision.shouldSend && !isDeploySlotSaturated()) {
+            await safeSend(
+              buildDeployFinalOutcomeTelegramMessage({
+                symbol,
+                poolAddress,
+                outcome: 'HOLD',
+                reason: finalSt.reason,
+              })
+            );
+          }
         }
         continue;
       }
@@ -1722,10 +1848,13 @@ async function runWatcher() {
           );
         } else {
           await safeSend(
-            `⏸️ <b>Deploy Queue Hold</b>\n` +
-            `<b>${symbol}</b>\n` +
-            `Candle: <code>${escapeHTML(finalCandle.source || 'unknown')}</code>\n` +
-            `<i>${escapeHTML(finalCandle.reason)}</i>`
+            buildDeployFinalOutcomeTelegramMessage({
+              symbol,
+              poolAddress,
+              outcome: 'HOLD',
+              reason: finalCandle.reason,
+              detail: `Candle: ${finalCandle.source || 'unknown'}`,
+            })
           );
         }
         continue;
@@ -1766,13 +1895,15 @@ async function runWatcher() {
         if (notifyDecision.shouldSend) {
           const driftLimitPct = Math.max(0.1, Number(getConfig()?.entryFinalProximityMaxDriftPct) || 2.5);
           await safeSend(
-            `⏸️ <b>Deploy Queue Hold</b>\n` +
-            `<b>${symbol}</b>\n` +
-            `Reason: <code>${escapeHTML(proximityDecision.reason)}</code>\n` +
-            `Drift: <code>${Number.isFinite(proximityDecision.priceDriftPct) ? `${Number(proximityDecision.priceDriftPct).toFixed(2)}%` : 'na'}</code> | ` +
-            `Limit: <code>${driftLimitPct.toFixed(2)}%</code> | ` +
-            `Bin: <code>${Number.isFinite(proximityDecision.binDelta) ? proximityDecision.binDelta : 'na'}</code>\n` +
-            `<i>${escapeHTML(proximityDecision.reason)}</i>`
+            buildDeployFinalOutcomeTelegramMessage({
+              symbol,
+              attemptId,
+              poolAddress,
+              outcome: 'HOLD',
+              reason: proximityDecision.reason,
+              proximityDecision,
+            }) +
+            `\nLimit: <code>${driftLimitPct.toFixed(2)}%</code>`
           );
         } else {
           console.log(
@@ -1983,18 +2114,24 @@ async function runWatcher() {
             continue;
           }
           await safeSend(
-            `${blockedByRent ? '⛔ <b>Deploy Ditolak (Queue)</b>' : '⛔ <b>Deploy Ditolak (Queue)</b>'}\n` +
-            `<b>${symbol}</b> — <code>${blockedReason}</code>\n` +
-          `Pool: <code>${poolAddress.slice(0, 8)}</code>\n` +
-          (
-            Number.isFinite(Number(result.rangeMin)) && Number.isFinite(Number(result.rangeMax))
-              ? `Range: <code>${result.rangeMin}-${result.rangeMax}</code> (max ${result.rangeMaxBins ?? 'n/a'} bin)\n`
-              : ''
-          ) +
-          (result.detail ? `Detail: <code>${escapeHTML(String(result.detail).slice(0, 240))}</code>\n` : '') +
-          (blockedByRent
-              ? `<i>Adjust range gagal untuk pool/range ini. Pool lain tetap normal.</i>`
-              : `<i>Queue menghormati veto deploy.</i>`)
+            buildDeployFinalOutcomeTelegramMessage({
+              symbol,
+              attemptId,
+              poolAddress,
+              outcome: 'BLOCKED',
+              reason: blockedReason,
+              detail: result.detail || '',
+            }) +
+            (
+              Number.isFinite(Number(result.rangeMin)) && Number.isFinite(Number(result.rangeMax))
+                ? `\nRange: <code>${result.rangeMin}-${result.rangeMax}</code> (max ${result.rangeMaxBins ?? 'n/a'} bin)`
+                : ''
+            ) +
+            (
+              blockedByRent
+                ? `\n<i>Adjust range gagal untuk pool/range ini. Pool lain tetap normal.</i>`
+                : `\n<i>Queue menghormati veto deploy.</i>`
+            )
           );
           continue;
         }
@@ -2009,11 +2146,13 @@ async function runWatcher() {
             error: true,
           });
           await safeSend(
-            `⚠️ <b>Deploy Reconcile Required</b>\n` +
-            `<b>${symbol}</b>\n` +
-            `Attempt ID: <code>${attemptId}</code>\n` +
-            `Pool: <code>${poolAddress.slice(0, 8)}</code>\n` +
-            `<i>Hasil deploy tidak pasti. Cek posisi on-chain / wallet sebelum retry manual.</i>`
+            buildDeployFinalOutcomeTelegramMessage({
+              symbol,
+              attemptId,
+              poolAddress,
+              outcome: 'RECONCILE',
+              reason: 'DEPLOY_RESULT_UNKNOWN_RECONCILE',
+            })
           );
           continue;
         }
@@ -2027,12 +2166,13 @@ async function runWatcher() {
           message: `position=${positionPubkey ? positionPubkey.slice(0, 8) : 'unknown'}`,
         });
         await safeSend(
-          `✅ <b>Deploy Berhasil! (Queue)</b>\n` +
-          `<b>${symbol}</b> — <code>DEPLOYED</code>\n` +
-          `Attempt ID: <code>${attemptId}</code>\n` +
-          (positionPubkey ? `Position: <code>${positionPubkey.slice(0, 8)}</code>\n` : '') +
-          `Pool: <code>${poolAddress.slice(0, 8)}</code>\n` +
-          `🔒 <i>Masuk mode monitor...</i>`
+          buildDeployFinalOutcomeTelegramMessage({
+            symbol,
+            attemptId,
+            poolAddress,
+            outcome: 'SUCCESS',
+            positionPubkey: positionPubkey || '',
+          })
         );
 
         if (positionPubkey && _monitorFn) {
