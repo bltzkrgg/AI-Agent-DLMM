@@ -3554,6 +3554,72 @@ async function sendCloseEmptyPositionTxs(connection, wallet, txOrTxs, microLampo
   return sigs;
 }
 
+function isValidPublicKeyString(value = '') {
+  const text = String(value || '').trim();
+  if (!text) return false;
+  try {
+    new PublicKey(text);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function getPositionAccountExists(connection, positionPubkey = '') {
+  if (!connection || !isValidPublicKeyString(positionPubkey)) return null;
+  try {
+    const accountInfo = await connection.getAccountInfo(new PublicKey(positionPubkey));
+    return accountInfo !== null;
+  } catch {
+    return null;
+  }
+}
+
+async function resolveInvalidTrackedPositionStatus({
+  connection,
+  positionPubkey = '',
+  poolAddress = '',
+  marker = null,
+} = {}) {
+  if (isValidPublicKeyString(poolAddress)) return null;
+
+  const poolIssue = String(poolAddress || '').trim()
+    ? 'POSITION_REGISTRY_POOL_INVALID'
+    : 'POSITION_REGISTRY_POOL_MISSING';
+  const accountExists = await getPositionAccountExists(connection, positionPubkey);
+
+  if (marker && isBotQuoteOnlyPartialMarker(marker) && accountExists === false) {
+    return {
+      tracked: true,
+      exists: false,
+      hasLiquidity: false,
+      manualWithdrawn: false,
+      reason: 'BOT_DEPLOY_PARTIAL_EMPTY_POSITION',
+      registryIssue: poolIssue,
+    };
+  }
+
+  if (accountExists === false) {
+    return {
+      tracked: true,
+      exists: false,
+      hasLiquidity: false,
+      manualWithdrawn: true,
+      reason: poolIssue,
+      registryIssue: poolIssue,
+    };
+  }
+
+  return {
+    tracked: true,
+    exists: accountExists === true,
+    hasLiquidity: false,
+    manualWithdrawn: false,
+    reason: poolIssue,
+    registryIssue: poolIssue,
+  };
+}
+
 async function getFreshActivePosition(connection, wallet, poolAddress, positionPubkey) {
   const dlmmPool = await DLMM.create(connection, new PublicKey(poolAddress));
   await dlmmPool.refetchStates().catch(() => {});
@@ -4981,10 +5047,65 @@ export async function monitorPnL(positionPubkey) {
   try {
     const cfg = getConfig();
     const manualTaExitEnabled = isManualTaExitPosition(reg, cfg);
-    // ── On-chain: ambil nilai posisi saat ini ──────────────────────
     const connection = getConnection();
     const wallet     = getWallet();
-    const dlmmPool   = await DLMM.create(connection, new PublicKey(reg.poolAddress));
+    const marker = getQuoteOnlyDeployMarker(positionPubkey);
+    const invalidRegistryStatus = await resolveInvalidTrackedPositionStatus({
+      connection,
+      positionPubkey,
+      poolAddress: reg?.poolAddress || '',
+      marker,
+    });
+    if (invalidRegistryStatus) {
+      if (invalidRegistryStatus.reason === 'BOT_DEPLOY_PARTIAL_EMPTY_POSITION') {
+        await unlockFailedEmptyDeployPosition(positionPubkey, {
+          reason: 'BOT_DEPLOY_PARTIAL_EMPTY_POSITION',
+          cleanupStatus: invalidRegistryStatus.registryIssue || invalidRegistryStatus.reason,
+        });
+        return {
+          action: 'HOLD',
+          currentValueSol: 0,
+          pnlPct: 0,
+          feePnlSol: 0,
+          feePnlPct: 0,
+          feePnlSource: 'none',
+          feePnlAvailable: false,
+          inRange: false,
+          note: 'BOT_DEPLOY_PARTIAL_EMPTY_POSITION',
+        };
+      }
+      if (invalidRegistryStatus.manualWithdrawn) {
+        console.log(
+          `[evilPanda] ℹ️ Manual close terdeteksi via invalid registry fallback: ${positionPubkey.slice(0,8)} ` +
+          `reason=${invalidRegistryStatus.reason}`
+        );
+        return {
+          action: 'MANUAL_CLOSED',
+          currentValueSol: 0,
+          pnlPct: 0,
+          feePnlSol: 0,
+          feePnlPct: 0,
+          feePnlSource: 'none',
+          feePnlAvailable: false,
+          inRange: false,
+          note: invalidRegistryStatus.reason,
+        };
+      }
+      return {
+        action: 'ERROR',
+        currentValueSol: 0,
+        pnlPct: 0,
+        feePnlSol: 0,
+        feePnlPct: 0,
+        feePnlSource: 'none',
+        feePnlAvailable: false,
+        inRange: false,
+        error: invalidRegistryStatus.reason,
+      };
+    }
+    const safePoolAddress = String(reg?.poolAddress || '').trim();
+    // ── On-chain: ambil nilai posisi saat ini ──────────────────────
+    const dlmmPool   = await DLMM.create(connection, new PublicKey(safePoolAddress));
     const activeBin  = await dlmmPool.getActiveBin();
 
     const { userPositions } = await dlmmPool.getPositionsByUserAndLbPair(wallet.publicKey);
@@ -5312,7 +5433,15 @@ export async function getPositionOnChainStatus(positionPubkey) {
 
   const connection = getConnection();
   const wallet = getWallet();
-  const dlmmPool = await DLMM.create(connection, new PublicKey(reg.poolAddress));
+  const invalidRegistryStatus = await resolveInvalidTrackedPositionStatus({
+    connection,
+    positionPubkey,
+    poolAddress: reg?.poolAddress || '',
+    marker,
+  });
+  if (invalidRegistryStatus) return invalidRegistryStatus;
+  const safePoolAddress = String(reg?.poolAddress || '').trim();
+  const dlmmPool = await DLMM.create(connection, new PublicKey(safePoolAddress));
   const { userPositions } = await dlmmPool.getPositionsByUserAndLbPair(wallet.publicKey);
   const activePos = userPositions.find(p => p.publicKey.toString() === positionPubkey);
 
@@ -6136,6 +6265,18 @@ export function getPositionMeta(positionPubkey) {
   return _activePositions.get(positionPubkey) || null;
 }
 
+export function __setActivePositionMetaForTests(positionPubkey, meta = null) {
+  const pubkey = String(positionPubkey || '');
+  if (!pubkey) return;
+  if (meta === null) {
+    _activePositions.delete(pubkey);
+    return;
+  }
+  _activePositions.set(pubkey, {
+    ...(meta && typeof meta === 'object' ? meta : {}),
+  });
+}
+
 export function __setQuoteOnlyDeployMarkerForTests(positionPubkey, marker = null) {
   const pubkey = String(positionPubkey || '');
   if (!pubkey) return;
@@ -6225,6 +6366,10 @@ export function __evaluateFrozenEntryIntentForDeployForTests(args = {}) {
 
 export function __evaluateDefensiveExitConfirmationForTests(args = {}) {
   return evaluateDefensiveExitConfirmation(args);
+}
+
+export async function __resolveInvalidTrackedPositionStatusForTests(args = {}) {
+  return resolveInvalidTrackedPositionStatus(args);
 }
 
 export { EP_CONFIG };

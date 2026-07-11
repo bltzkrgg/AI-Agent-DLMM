@@ -204,6 +204,108 @@ test('out-of-range monitor state can suppress OOR watch display while keeping ex
   assert.match(expired.notifyMessage, /OOR Timeout/);
 });
 
+test('invalid tracked pool registry falls back to manual withdrawn when position account is gone', async () => {
+  const {
+    __resolveInvalidTrackedPositionStatusForTests,
+    __setActivePositionMetaForTests,
+    __setQuoteOnlyDeployMarkerForTests,
+  } = await importFresh(join(repoRoot, 'src/sniper/evilPanda.js'));
+
+  const positionPubkey = '11111111111111111111111111111111';
+  __setActivePositionMetaForTests(positionPubkey, {
+    poolAddress: '',
+    tokenXMint: 'MintInvalid111111111111111111111111111111111',
+    deploySol: 0.6,
+    lifecycleState: 'open',
+  });
+
+  const status = await __resolveInvalidTrackedPositionStatusForTests({
+    connection: {
+      getAccountInfo: async () => null,
+    },
+    positionPubkey,
+    poolAddress: '',
+    marker: null,
+  });
+
+  assert.equal(status?.tracked, true);
+  assert.equal(status?.manualWithdrawn, true);
+  assert.equal(status?.reason, 'POSITION_REGISTRY_POOL_MISSING');
+
+  __setActivePositionMetaForTests(positionPubkey, null);
+  __setQuoteOnlyDeployMarkerForTests(positionPubkey, null);
+});
+
+test('invalid tracked pool registry preserves quote-only partial marker semantics', async () => {
+  const {
+    __resolveInvalidTrackedPositionStatusForTests,
+    __setActivePositionMetaForTests,
+    __setQuoteOnlyDeployMarkerForTests,
+    __getQuoteOnlyDeployMarkerForTests,
+  } = await importFresh(join(repoRoot, 'src/sniper/evilPanda.js'));
+
+  const positionPubkey = '11111111111111111111111111111111';
+  __setActivePositionMetaForTests(positionPubkey, {
+    poolAddress: '',
+    tokenXMint: 'MintPartial111111111111111111111111111111111',
+    deploySol: 0.6,
+    lifecycleState: 'deploying',
+  });
+  __setQuoteOnlyDeployMarkerForTests(positionPubkey, {
+    poolAddress: '',
+    tokenXMint: 'MintPartial111111111111111111111111111111111',
+    phase: 'ADD_LIQUIDITY_FAILED',
+    source: 'BOT_QUOTE_ONLY_POSITION_FIRST',
+    ttlMs: 120000,
+  });
+
+  const marker = __getQuoteOnlyDeployMarkerForTests(positionPubkey);
+  const status = await __resolveInvalidTrackedPositionStatusForTests({
+    connection: {
+      getAccountInfo: async () => null,
+    },
+    positionPubkey,
+    poolAddress: '',
+    marker,
+  });
+
+  assert.equal(status?.manualWithdrawn, false);
+  assert.equal(status?.reason, 'BOT_DEPLOY_PARTIAL_EMPTY_POSITION');
+  assert.equal(status?.registryIssue, 'POSITION_REGISTRY_POOL_MISSING');
+
+  __setActivePositionMetaForTests(positionPubkey, null);
+  __setQuoteOnlyDeployMarkerForTests(positionPubkey, null);
+});
+
+test('manual close cleanup releases slot after stale tracked position is reconciled', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'dlmm-manual-close-slot-'));
+  process.env.BOT_RUNTIME_STATE_PATH = join(root, 'runtime-state.json');
+
+  const {
+    getActivePositionCount,
+    markPositionManuallyClosed,
+    setPositionLifecycle,
+  } = await importFresh(join(repoRoot, 'src/sniper/evilPanda.js'));
+
+  const positionPubkey = '11111111111111111111111111111111';
+  await setPositionLifecycle(positionPubkey, 'open', {
+    poolAddress: '',
+    tokenXMint: 'MintSlot11111111111111111111111111111111111',
+    tokenYMint: 'So11111111111111111111111111111111111111112',
+    deploySol: 0.6,
+    currentValueSol: 0.6,
+    feePnlSol: 0.0001,
+    feePnlPct: 0.01,
+    feePnlAvailable: true,
+  }, { flush: true });
+
+  assert.equal(getActivePositionCount(), 1);
+
+  await markPositionManuallyClosed(positionPubkey, 'MANUAL_WITHDRAW_DETECTED_POSITION_REGISTRY_POOL_MISSING');
+
+  assert.equal(getActivePositionCount(), 0);
+});
+
 test('out-of-range monitor state trusts canonical active bin range over stale inRange flag', async () => {
   const { evaluateOutOfRangeMonitorState } = await importFresh(join(repoRoot, 'src/agents/hunterAlpha.js'));
 

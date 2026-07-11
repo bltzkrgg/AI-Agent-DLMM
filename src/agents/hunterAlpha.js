@@ -2553,6 +2553,15 @@ export function startManualCloseWatcher() {
             _positionLabels.delete(pos.pubkey);
           }
         } catch (e) {
+          const fallbackReason = String(e?.positionStatusReason || '');
+          if (e?.manualWithdrawn === true && fallbackReason) {
+            console.warn(
+              `[hunter] Manual close watcher fallback ${pos.pubkey.slice(0,8)} reason=${fallbackReason}`
+            );
+            await markPositionManuallyClosed(pos.pubkey, `MANUAL_WITHDRAW_DETECTED_${fallbackReason}`);
+            _positionLabels.delete(pos.pubkey);
+            continue;
+          }
           console.warn(`[hunter] Manual close watcher skip ${pos.pubkey.slice(0,8)}: ${e.message}`);
         }
       }
