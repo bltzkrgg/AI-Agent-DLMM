@@ -4439,7 +4439,8 @@ async function monitorLoop(positionPubkey, symbol, poolAddress) {
       }
 
       if (action === 'MANUAL_CLOSED') {
-        await markPositionManuallyClosed(positionPubkey, 'MANUAL_WITHDRAW_DETECTED');
+        const manualCloseReason = String(status?.note || status?.reason || 'MANUAL_WITHDRAW_DETECTED').trim() || 'MANUAL_WITHDRAW_DETECTED';
+        await markPositionManuallyClosed(positionPubkey, manualCloseReason);
         _positionLabels.delete(positionPubkey);
         return;
       }

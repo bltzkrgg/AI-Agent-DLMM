@@ -42,6 +42,7 @@ test('manual close helper records manual withdrawals when called explicitly', ()
   assert.match(evilPandaSrc, /Manual close terdeteksi/);
   assert.match(evilPandaSrc, /console\.log\(`\[evilPanda\] ℹ️ Manual close realtime:/);
   assert.match(hunterSrc, /action === 'MANUAL_CLOSED'/);
+  assert.match(hunterSrc, /const manualCloseReason = String\(status\?\.note \|\| status\?\.reason \|\| 'MANUAL_WITHDRAW_DETECTED'\)\.trim\(\) \|\| 'MANUAL_WITHDRAW_DETECTED'/);
   assert.doesNotMatch(hunterSrc, /Manual close terdeteksi/);
   assert.match(hunterSrc, /MANUAL_CLOSE_TELEGRAM_SENT/);
   assert.match(hunterSrc, /shouldAlertManualClose/);
