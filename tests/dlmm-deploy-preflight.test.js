@@ -34,6 +34,7 @@ import {
   filterKnownTransactionSigners,
   getPositionMeta,
   getPositionOnChainStatus,
+  setEvilPandaNotifyFn,
   setPositionLifecycle,
   extractDlmmSdkDeployErrorMeta,
   isDlmmSdkInvalidArgumentsError,
@@ -1836,6 +1837,71 @@ test('partial quote-only cleanup does not unlock when empty-position close canno
   assert.equal(marker?.phase, 'ADD_LIQUIDITY_FAILED');
 
   __setQuoteOnlyDeployMarkerForTests(positionPubkey, null);
+});
+
+test('partial quote-only cleanup emits manual-close notification when deploy fails to finish', async () => {
+  const positionKeypair = Keypair.generate();
+  const positionPubkey = positionKeypair.publicKey.toString();
+  const poolAddress = 'Pool11111111111111111111111111111111111111';
+  const wallet = { publicKey: Keypair.generate().publicKey };
+  const messages = [];
+
+  setEvilPandaNotifyFn(async (msg) => {
+    messages.push(String(msg || ''));
+  });
+
+  await setPositionLifecycle(positionPubkey, 'deploying', {
+    poolAddress,
+    deploySol: 0.1,
+    tokenXMint: 'Mint111111111111111111111111111111111111111',
+    tokenYMint: 'So11111111111111111111111111111111111111112',
+    rangeMin: 980,
+    rangeMax: 999,
+  }, { flush: true });
+  __setQuoteOnlyDeployMarkerForTests(positionPubkey, {
+    poolAddress,
+    tokenXMint: 'Mint111111111111111111111111111111111111111',
+    phase: 'ADD_LIQUIDITY_FAILED',
+    source: 'BOT_QUOTE_ONLY_POSITION_FIRST',
+    ttlMs: 120000,
+  });
+
+  const cleanup = await __handleQuoteOnlyPartialDeployFailureForTests({
+    connection: {
+      sendTransaction: async () => 'sig-close',
+      getSignatureStatus: async () => ({ value: { confirmationStatus: 'confirmed', err: null } }),
+    },
+    wallet,
+    dlmmPool: {
+      closePosition: async () => ({
+        instructions: [],
+        sign() {},
+      }),
+    },
+    poolAddress,
+    positionPubkey,
+    error: new Error('add failed'),
+    getFreshPositionFn: async () => ({
+      activePos: {
+        publicKey: positionKeypair.publicKey,
+        positionData: {
+          totalXAmount: { toString: () => '0' },
+          totalYAmount: { toString: () => '0' },
+          feeX: { toString: () => '0' },
+          feeY: { toString: () => '0' },
+        },
+      },
+    }),
+    verifyClosedFn: async () => false,
+  });
+
+  assert.equal(cleanup?.reason, 'CLOSE_NOT_CONFIRMED');
+  assert.ok(messages.length > 0);
+  assert.match(messages[0], /Deploy gagal tuntas/);
+  assert.match(messages[0], /unwrap, lalu close manual di Meteora/);
+
+  __setQuoteOnlyDeployMarkerForTests(positionPubkey, null);
+  setEvilPandaNotifyFn(null);
 });
 
 test('quote-only send fail path keeps marker partial, cleanup unlocks lock, and avoids manual classification', async () => {

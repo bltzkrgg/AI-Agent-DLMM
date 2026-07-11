@@ -2791,6 +2791,7 @@ async function handleQuoteOnlyPartialDeployFailure({
 } = {}) {
   const marker = getQuoteOnlyDeployMarker(positionPubkey);
   if (!isBotQuoteOnlyPartialMarker(marker)) return null;
+  const safePositionPubkey = String(positionPubkey || '');
   const cleanup = await cleanupQuoteOnlyPartialEmptyPosition({
     connection,
     wallet,
@@ -2802,6 +2803,22 @@ async function handleQuoteOnlyPartialDeployFailure({
     getFreshPositionFn,
     verifyClosedFn,
   });
+
+  const manualActionRequired = cleanup?.cleaned !== true;
+  const tokenLabel = String(marker?.tokenXMint || poolAddress || 'unknown').slice(0, 8) || 'UNKNOWN';
+  const poolLabel = String(poolAddress || marker?.poolAddress || 'unknown').slice(0, 8) || 'UNKNOWN';
+  await notify(
+    `⚠️ <b>Deploy gagal tuntas</b>\n` +
+    `Token: <b>${escapeHTML(tokenLabel)}</b>\n` +
+    `Position: <code>${safePositionPubkey.slice(0,8)}</code>\n` +
+    `Pool: <code>${escapeHTML(poolLabel)}</code>\n` +
+    `Cleanup: <code>${escapeHTML(cleanup?.reason || 'UNKNOWN')}</code>\n` +
+    (
+      manualActionRequired
+        ? `<b>Action:</b> <i>cek wallet, unwrap, lalu close manual di Meteora.</i>`
+        : `<b>Action:</b> <i>cleanup otomatis sudah mencoba menutup posisi kosong.</i>`
+    )
+  );
 
   if (cleanup?.cleaned === true || cleanup?.reason === 'POSITION_NOT_FOUND') {
     await unlockFailedEmptyDeployPosition(positionPubkey, {
@@ -2816,6 +2833,7 @@ async function handleQuoteOnlyPartialDeployFailure({
       botDeployPartialCleanup: cleanup?.reason || 'UNKNOWN',
       cleanupHasLiquidity: cleanup?.hasLiquidity === true,
       cleanupSkipped: cleanup?.skipped === true,
+      manualActionRequired,
     };
   }
   return cleanup;
