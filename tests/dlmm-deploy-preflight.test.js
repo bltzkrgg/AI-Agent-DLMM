@@ -962,6 +962,47 @@ test('first SDK invalid args triggers activeBin refetch and deployArgs rebuild',
   assert.equal(out.deployArgs.rangeMax, 1014);
 });
 
+test('quote-only final refresh keeps valid active-edge range and sdk path after bin drift', async () => {
+  const initial = buildDlmmDeployStrategyArgs({
+    activeBinId: 1000,
+    rangeMin: 995,
+    rangeMax: 1000,
+    amountXBn: new BN('0'),
+    amountYBn: new BN('1000'),
+  });
+
+  const out = await prepareFinalDlmmDeployAttemptState({
+    dlmmPool: {},
+    poolAddress: 'Pool11111111111111111111111111111111111111',
+    xMint: 'Mint111111111111111111111111111111111111111',
+    yMint: 'So11111111111111111111111111111111111111112',
+    deployArgs: initial,
+    currentRentGuard: { ok: true, deployArgs: initial, guard: 'UNCHANGED_RANGE_PASS' },
+    hasNonRefundableFees: false,
+    checkedRangeMin: initial.rangeMin,
+    checkedRangeMax: initial.rangeMax,
+    initialActiveBinId: 1000,
+    refetchStatesFn: async () => {},
+    getActiveBinFn: async () => ({ binId: 998 }),
+  });
+
+  assert.equal(out.ok, true);
+  assert.equal(out.deployArgs.activeBinId, 998);
+  assert.equal(out.deployArgs.rangeMin, 993);
+  assert.equal(out.deployArgs.rangeMax, 998);
+  assert.equal(out.deployArgs.rangeMax <= out.deployArgs.activeBinId, true);
+  assert.equal(out.deployArgs.adjustmentReason, 'clamp_to_active_quote_only');
+  assert.equal(selectDlmmSdkPathForDeployArgs(out.deployArgs), 'weight_quote_only');
+  const sdkStrategy = buildDlmmSdkStrategyFromDeployArgs(out.deployArgs);
+  assert.doesNotThrow(() => assertDlmmFinalSdkArgs({
+    poolAddress: 'Pool11111111111111111111111111111111111111',
+    xMint: 'Mint111111111111111111111111111111111111111',
+    yMint: 'So11111111111111111111111111111111111111112',
+    deployArgs: out.deployArgs,
+    sdkStrategy,
+  }));
+});
+
 test('retry SDK call uses refreshed deployArgs and re-runs preflight/rent guard', async () => {
   const calls = [];
   let ensureCalls = 0;

@@ -2251,6 +2251,45 @@ test('final entry proximity respects runtime drift config', () => {
   assert.equal(decision.action, 'ALLOW');
 });
 
+test('final entry proximity race regression only allows fresh near-live snapshots', () => {
+  const now = Date.now();
+  const baseMeta = {
+    entryCanonicalSnapshot: {
+      entryPrice: 100,
+      entryActiveBin: 120,
+    },
+  };
+  const nearLiveSnapshot = {
+    dataSource: 'meteora-dlmm-ohlcv',
+    ohlcv: { currentPrice: 100.3 },
+    pool: { activeBinId: 121 },
+  };
+
+  const staleDecision = getFinalEntryProximityDecision({
+    meta: baseMeta,
+    liveSnapshot: {
+      ...nearLiveSnapshot,
+      snapshotAt: now - 180_000,
+    },
+    cfg: { entryFreshWatchWindowSec: 30 },
+  });
+  assert.equal(staleDecision.ok, false);
+  assert.equal(staleDecision.action, 'HOLD');
+  assert.match(staleDecision.reason, /fresh live price\/bin snapshot/i);
+
+  const freshDecision = getFinalEntryProximityDecision({
+    meta: baseMeta,
+    liveSnapshot: {
+      ...nearLiveSnapshot,
+      snapshotAt: now,
+    },
+    cfg: { entryFreshWatchWindowSec: 30 },
+  });
+  assert.equal(freshDecision.ok, true);
+  assert.equal(freshDecision.action, 'ALLOW');
+  assert.equal(freshDecision.comparedBy, 'price+bin');
+});
+
 test('final entry proximity holds when live price/bin snapshot is unavailable', () => {
   const decision = getFinalEntryProximityDecision({
     meta: {
