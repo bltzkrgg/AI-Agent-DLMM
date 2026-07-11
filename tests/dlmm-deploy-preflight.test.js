@@ -161,6 +161,26 @@ test('frozen entry intent falls back when active-bin drift too large', () => {
   assert.equal(out.snapshotAgeMs, 60_000);
 });
 
+test('frozen entry intent falls back when price drift exceeds guard even if active-bin drift is small', () => {
+  const now = 1_000_000;
+  const out = __evaluateFrozenEntryIntentForDeployForTests({
+    enabled: true,
+    frozenEntryActiveBin: 100,
+    frozenEntryPrice: 1.00,
+    frozenSnapshotAt: now - 45_000,
+    liveActiveBinId: 101,
+    livePrice: 1.06,
+    maxDriftPct: 3,
+    nowMs: now,
+  });
+
+  assert.equal(out.useFrozen, false);
+  assert.equal(out.reason, 'price_drift_too_large');
+  assert.equal(out.driftBins, 1);
+  assert.equal(out.snapshotAgeMs, 45_000);
+  assert.equal(Math.round(Number(out.driftPct) * 1000) / 1000, 6.000);
+});
+
 test('frozen entry intent falls back when active-bin drift is too large even if price drift is small', () => {
   const now = 1_000_000;
   const out = __evaluateFrozenEntryIntentForDeployForTests({
@@ -180,6 +200,15 @@ test('frozen entry intent falls back when active-bin drift is too large even if 
   assert.equal(out.driftBins, 9);
   assert.equal(out.snapshotAgeMs, 45_000);
   assert.equal(Math.round(Number(out.driftPct) * 1000) / 1000, 2.000);
+});
+
+test('deployPosition performs a final live sync guard before building range', () => {
+  const src = readFileSync(new URL('../src/sniper/evilPanda.js', import.meta.url), 'utf8');
+  assert.match(src, /ENTRY_FINAL_SYNC_UNAVAILABLE/);
+  assert.match(src, /ENTRY_FINAL_SYNC_UNSAFE/);
+  assert.match(src, /ENTRY_FINAL_SYNC_OK/);
+  assert.match(src, /const finalSyncMaxDriftPct = Math\.max\(/);
+  assert.match(src, /const finalSyncedActiveBin = await dlmmPool\.getActiveBin\(\);/);
 });
 
 test('required frozen intent blocks deploy when intent payload is invalid', () => {

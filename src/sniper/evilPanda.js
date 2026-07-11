@@ -154,8 +154,14 @@ function evaluateFrozenEntryIntentForDeploy({
   const driftPct = Number.isFinite(livePriceNum) && livePriceNum > 0 && Number.isFinite(frozenPriceNum) && frozenPriceNum > 0
     ? Math.abs(((livePriceNum - frozenPriceNum) / frozenPriceNum) * 100)
     : null;
+  const safeMaxDriftPct = Number.isFinite(Number(maxDriftPct)) && Number(maxDriftPct) > 0
+    ? Math.max(0.1, Number(maxDriftPct))
+    : null;
   if (driftBins > FROZEN_INTENT_MAX_BIN_DRIFT) {
     return { useFrozen: false, reason: 'active_bin_drift_too_large', driftBins, snapshotAgeMs, driftPct };
+  }
+  if (safeMaxDriftPct !== null && Number.isFinite(driftPct) && driftPct > safeMaxDriftPct) {
+    return { useFrozen: false, reason: 'price_drift_too_large', driftBins, snapshotAgeMs, driftPct };
   }
   return { useFrozen: true, reason: 'ok', driftBins, snapshotAgeMs, driftPct };
 }
@@ -3876,6 +3882,65 @@ export async function deployPosition(poolAddress, deployOptions = {}) {
         `ageMs=${Number.isFinite(frozenIntentDecision?.snapshotAgeMs) ? Number(frozenIntentDecision.snapshotAgeMs) : 'na'}`
       );
     }
+    const finalSyncMaxDriftPct = Math.max(
+      0.1,
+      Number(cfg?.entryFinalProximityMaxDriftPct) ||
+      Number(frozenIntent?.maxDriftPct) ||
+      Number(cfg?.entryFreshBreakoutMaxDriftPct) ||
+      2.5
+    );
+    await dlmmPool.refetchStates();
+    const finalSyncedActiveBin = await dlmmPool.getActiveBin();
+    if (!isFiniteInteger(Number(finalSyncedActiveBin?.binId)) || !Number.isFinite(Number(finalSyncedActiveBin?.pricePerToken)) || Number(finalSyncedActiveBin?.pricePerToken) <= 0) {
+      const reason = 'ENTRY_FINAL_SYNC_UNAVAILABLE: final active bin/price unavailable before range build';
+      console.warn(`[evilPanda] DEPLOY_BLOCK_FINAL_SYNC_UNAVAILABLE pool=${poolAddress.slice(0,8)} ${reason}`);
+      return {
+        blocked: true,
+        reason: 'ENTRY_FINAL_SYNC_UNAVAILABLE',
+        detail: reason,
+      };
+    }
+    const finalSyncDecision = evaluateFrozenEntryIntentForDeploy({
+      enabled: true,
+      frozenEntryActiveBin: Number(activeBin?.binId),
+      frozenEntryPrice: Number(activeBin?.pricePerToken),
+      frozenSnapshotAt: Date.now(),
+      liveActiveBinId: Number(finalSyncedActiveBin?.binId),
+      livePrice: Number(finalSyncedActiveBin?.pricePerToken),
+      binStep: Number(dlmmPool?.lbPair?.binStep || 0),
+      maxDriftPct: finalSyncMaxDriftPct,
+      nowMs: Date.now(),
+    });
+    if (!finalSyncDecision.useFrozen) {
+      const reason = `ENTRY_FINAL_SYNC_UNSAFE: ${finalSyncDecision.reason || 'unknown'} ` +
+        `driftBins=${Number.isFinite(finalSyncDecision?.driftBins) ? Number(finalSyncDecision.driftBins) : 'na'} ` +
+        `driftPct=${Number.isFinite(finalSyncDecision?.driftPct) ? Number(finalSyncDecision.driftPct).toFixed(3) : 'na'} ` +
+        `limitPct=${finalSyncMaxDriftPct.toFixed(3)}`;
+      console.warn(`[evilPanda] DEPLOY_BLOCK_FINAL_SYNC_UNSAFE pool=${poolAddress.slice(0,8)} ${reason}`);
+      return {
+        blocked: true,
+        reason: 'ENTRY_FINAL_SYNC_UNSAFE',
+        detail: reason,
+      };
+    }
+    if (!shouldUseFrozenIntent) {
+      activeBin = finalSyncedActiveBin;
+      anchorMetadata.anchorSource = 'live_sync';
+      anchorMetadata.anchorActiveBinId = Number(finalSyncedActiveBin.binId);
+      anchorMetadata.anchorPrice = Number(finalSyncedActiveBin.pricePerToken);
+    }
+    anchorMetadata.anchorDriftBins = Number.isFinite(finalSyncDecision?.driftBins) ? Number(finalSyncDecision.driftBins) : anchorMetadata.anchorDriftBins;
+    anchorMetadata.anchorDriftPct = Number.isFinite(finalSyncDecision?.driftPct) ? Number(finalSyncDecision.driftPct) : anchorMetadata.anchorDriftPct;
+    anchorMetadata.anchorReason = shouldUseFrozenIntent ? 'frozen_entry_intent_final_sync_ok' : 'live_final_sync_ok';
+    console.log(
+      `[evilPanda] ENTRY_FINAL_SYNC_OK pool=${poolAddress.slice(0,8)} ` +
+      `anchorBin=${Number(activeBin?.binId)} liveBin=${Number(finalSyncedActiveBin?.binId)} ` +
+      `anchorPrice=${Number.isFinite(Number(activeBin?.pricePerToken)) ? Number(activeBin.pricePerToken).toFixed(10) : 'na'} ` +
+      `livePrice=${Number.isFinite(Number(finalSyncedActiveBin?.pricePerToken)) ? Number(finalSyncedActiveBin.pricePerToken).toFixed(10) : 'na'} ` +
+      `driftBins=${Number.isFinite(finalSyncDecision?.driftBins) ? Number(finalSyncDecision.driftBins) : 'na'} ` +
+      `driftPct=${Number.isFinite(finalSyncDecision?.driftPct) ? Number(finalSyncDecision.driftPct).toFixed(3) : 'na'} ` +
+      `limitPct=${finalSyncMaxDriftPct.toFixed(3)} source=${anchorMetadata.anchorSource}`
+    );
     const binStep   = dlmmPool.lbPair.binStep;
 
     const xMint = dlmmPool.tokenX.publicKey.toString();
