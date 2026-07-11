@@ -417,29 +417,32 @@ function logUnreliableLiveSnapshot({
 async function getCachedMarketSnapshot(mint, poolAddress = null, symbol = '', options = {}) {
   if (!mint) return null;
   const includeEntryCandles5m = options?.includeEntryCandles5m === true;
+  const bypassCache = options?.bypassCache === true;
   const key = getSnapshotCacheKey(mint, poolAddress || '', { includeEntryCandles5m });
   const now = Date.now();
-  const cached = _snapshotCache.get(key);
-  if (cached && (now - cached.at) <= SNAPSHOT_CACHE_TTL_MS) {
-    _snapshotCacheHits += 1;
-    console.log(
-      `[QUEUE] 🧠 Snapshot cache hit ${symbol || mint.slice(0, 8)} ` +
-      `pool=${(poolAddress || '').slice(0, 8) || 'none'} ` +
-      `entry5m=${includeEntryCandles5m ? 'yes' : 'no'} ` +
-      `hits=${_snapshotCacheHits} misses=${_snapshotCacheMisses}`
-    );
-    return cached.snapshot;
-  }
+  if (!bypassCache) {
+    const cached = _snapshotCache.get(key);
+    if (cached && (now - cached.at) <= SNAPSHOT_CACHE_TTL_MS) {
+      _snapshotCacheHits += 1;
+      console.log(
+        `[QUEUE] 🧠 Snapshot cache hit ${symbol || mint.slice(0, 8)} ` +
+        `pool=${(poolAddress || '').slice(0, 8) || 'none'} ` +
+        `entry5m=${includeEntryCandles5m ? 'yes' : 'no'} ` +
+        `hits=${_snapshotCacheHits} misses=${_snapshotCacheMisses}`
+      );
+      return cached.snapshot;
+    }
 
-  if (_snapshotInflight.has(key)) {
-    _snapshotCacheHits += 1;
-    console.log(
-      `[QUEUE] 🧠 Snapshot inflight reuse ${symbol || mint.slice(0, 8)} ` +
-      `pool=${(poolAddress || '').slice(0, 8) || 'none'} ` +
-      `entry5m=${includeEntryCandles5m ? 'yes' : 'no'} ` +
-      `hits=${_snapshotCacheHits} misses=${_snapshotCacheMisses}`
-    );
-    return _snapshotInflight.get(key);
+    if (_snapshotInflight.has(key)) {
+      _snapshotCacheHits += 1;
+      console.log(
+        `[QUEUE] 🧠 Snapshot inflight reuse ${symbol || mint.slice(0, 8)} ` +
+        `pool=${(poolAddress || '').slice(0, 8) || 'none'} ` +
+        `entry5m=${includeEntryCandles5m ? 'yes' : 'no'} ` +
+        `hits=${_snapshotCacheHits} misses=${_snapshotCacheMisses}`
+      );
+      return _snapshotInflight.get(key);
+    }
   }
 
   _snapshotCacheMisses += 1;
@@ -447,11 +450,13 @@ async function getCachedMarketSnapshot(mint, poolAddress = null, symbol = '', op
     `[QUEUE] 🧠 Snapshot cache miss ${symbol || mint.slice(0, 8)} ` +
     `pool=${(poolAddress || '').slice(0, 8) || 'none'} poolAddressPassed=${poolAddress ? 'yes' : 'no'} ` +
     `entry5m=${includeEntryCandles5m ? 'yes' : 'no'} ` +
+    `mode=${bypassCache ? 'bypass' : 'cache'} ` +
     `hits=${_snapshotCacheHits} misses=${_snapshotCacheMisses}`
   );
   const task = getMarketSnapshot(mint, poolAddress || null, {
     from: includeEntryCandles5m ? 'entry_candle_sanity' : 'deploy_queue',
     includeEntryCandles5m,
+    bypassCache,
   })
     .catch(() => null)
     .then((snapshot) => {
@@ -1583,9 +1588,77 @@ async function runWatcher() {
         continue;
       }
 
+      const finalLiveSnapshot = await getDeployQueueLiveSnapshot(
+        mint,
+        poolAddress || null,
+        symbol,
+        {
+          includeEntryCandles5m: false,
+          bypassCache: true,
+        }
+      );
+      if (!finalLiveSnapshot) {
+        entry.nextEligibleAt = Date.now() + 15_000;
+        entry.deferReason = 'Final snapshot unavailable; waiting fresh market snapshot';
+        console.log(`[QUEUE] ⏸️ ${symbol} HOLD sebelum deploy: Final snapshot unavailable; waiting fresh market snapshot`);
+        if (isDeploySlotSaturated()) {
+          console.log('[QUEUE] Slot saturated, suppressing hold/drop noise.');
+          continue;
+        }
+        const cfg = getConfig();
+        const cooldownSec = Math.max(30, Number(cfg.deployQueueHoldNotifyCooldownSec ?? 180) || 180);
+        const notifyDecision = shouldSendDeployQueueHoldNotification({
+          poolAddress,
+          mint,
+          reason: 'Final snapshot unavailable; waiting fresh market snapshot',
+          now: Date.now(),
+          cooldownMs: cooldownSec * 1000,
+        });
+        if (notifyDecision.shouldSend) {
+          await safeSend(
+            `⏸️ <b>Deploy Queue Hold</b>\n` +
+            `<b>${symbol}</b>\n` +
+            `Reason: <code>Final snapshot unavailable; waiting fresh market snapshot</code>\n` +
+            `<i>Agent menunggu snapshot Meteora/live yang benar-benar fresh.</i>`
+          );
+        }
+        continue;
+      }
+      if (!isReliableLiveSnapshot(finalLiveSnapshot)) {
+        entry.nextEligibleAt = Date.now() + 15_000;
+        entry.deferReason = 'Final snapshot unreliable; waiting reliable live snapshot';
+        console.log(`[QUEUE] ⏸️ ${symbol} HOLD sebelum deploy: Final snapshot unreliable; waiting reliable live snapshot`);
+        if (isDeploySlotSaturated()) {
+          console.log('[QUEUE] Slot saturated, suppressing hold/drop noise.');
+          continue;
+        }
+        const cfg = getConfig();
+        const cooldownSec = Math.max(30, Number(cfg.deployQueueHoldNotifyCooldownSec ?? 180) || 180);
+        const notifyDecision = shouldSendDeployQueueHoldNotification({
+          poolAddress,
+          mint,
+          reason: 'Final snapshot unreliable; waiting reliable live snapshot',
+          now: Date.now(),
+          cooldownMs: cooldownSec * 1000,
+        });
+        if (notifyDecision.shouldSend) {
+          await safeSend(
+            `⏸️ <b>Deploy Queue Hold</b>\n` +
+            `<b>${symbol}</b>\n` +
+            `Reason: <code>Final snapshot unreliable; waiting reliable live snapshot</code>\n` +
+            `<i>Snapshot Meteora/live belum reliable untuk final deploy.</i>`
+          );
+        }
+        continue;
+      }
+      if (pool && typeof pool === 'object') {
+        pool._marketSnapshot = finalLiveSnapshot;
+      }
+      entry.lastLiveSnapshot = finalLiveSnapshot;
+
       const currentPrice = Number(
-        entry?.lastLiveSnapshot?.ohlcv?.currentPrice ||
-        entry?.lastLiveSnapshot?.price?.currentPrice ||
+        finalLiveSnapshot?.ohlcv?.currentPrice ||
+        finalLiveSnapshot?.price?.currentPrice ||
         pool?._entrySignals?.currentPrice ||
         meta?.currentPrice ||
         pool?.price ||
@@ -1597,7 +1670,7 @@ async function runWatcher() {
         symbol,
         pool,
         meta,
-        liveSnapshot: entry.lastLiveSnapshot || null,
+        liveSnapshot: finalLiveSnapshot,
         currentPrice,
       });
       if (!finalSt.ok) {
@@ -1624,7 +1697,7 @@ async function runWatcher() {
         symbol,
         pool,
         meta,
-        liveSnapshot: entry.lastLiveSnapshot || null,
+        liveSnapshot: finalLiveSnapshot,
       });
       if (!finalCandle.ok) {
         entry.nextEligibleAt = Date.now() + 15_000;
@@ -1659,28 +1732,12 @@ async function runWatcher() {
       }
 
       let liveSnapshotForDeploy = entry.lastLiveSnapshot || null;
+      liveSnapshotForDeploy = finalLiveSnapshot;
       let proximityDecision = getFinalEntryProximityDecision({
         meta,
         pool,
         liveSnapshot: liveSnapshotForDeploy,
       });
-      if (!proximityDecision.ok) {
-        const refreshedSnapshot = await getCachedMarketSnapshot(mint, poolAddress || null, symbol, {
-          includeEntryCandles5m: false,
-        });
-        if (refreshedSnapshot && pool && typeof pool === 'object') {
-          pool._marketSnapshot = refreshedSnapshot;
-        }
-        if (refreshedSnapshot) {
-          entry.lastLiveSnapshot = refreshedSnapshot;
-          liveSnapshotForDeploy = refreshedSnapshot;
-        }
-        proximityDecision = getFinalEntryProximityDecision({
-          meta,
-          pool,
-          liveSnapshot: liveSnapshotForDeploy,
-        });
-      }
       if (!proximityDecision.ok) {
         entry.nextEligibleAt = Date.now() + 15_000;
         entry.deferReason = proximityDecision.reason;

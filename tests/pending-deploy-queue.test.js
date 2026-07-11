@@ -2068,8 +2068,9 @@ test('slot saturated queue suppresses hold/drop noise for new candidates', () =>
 
 test('queue final ST gate uses latest live snapshot wiring', () => {
   const src = readFileSync(new URL('../src/utils/pendingDeployQueue.js', import.meta.url), 'utf8');
-  assert.match(src, /ensureFinalSupertrendBullish\(\{\s*mint,\s*symbol,\s*pool,\s*meta,\s*liveSnapshot:\s*entry\.lastLiveSnapshot\s*\|\|\s*null,\s*currentPrice,\s*\}\)/s);
-  assert.match(src, /entry\?\.lastLiveSnapshot\?\.ohlcv\?\.currentPrice/);
+  assert.match(src, /const finalLiveSnapshot = await getDeployQueueLiveSnapshot\(/);
+  assert.match(src, /ensureFinalSupertrendBullish\(\{\s*mint,\s*symbol,\s*pool,\s*meta,\s*liveSnapshot:\s*finalLiveSnapshot,\s*currentPrice,\s*\}\)/s);
+  assert.match(src, /finalLiveSnapshot\?\.ohlcv\?\.currentPrice/);
 });
 
 test('final Supertrend stamp persists canonical source metadata', async () => {
@@ -2272,8 +2273,9 @@ test('final entry proximity respects canonical watch window for LP live snapshot
 
 test('deploy queue applies final entry proximity hold before deploy', () => {
   const src = readFileSync(new URL('../src/utils/pendingDeployQueue.js', import.meta.url), 'utf8');
+  assert.match(src, /const finalLiveSnapshot = await getDeployQueueLiveSnapshot\(/);
+  assert.match(src, /bypassCache:\s*true/);
   assert.match(src, /let proximityDecision = getFinalEntryProximityDecision\(/);
-  assert.match(src, /const refreshedSnapshot = await getCachedMarketSnapshot\(/);
   assert.match(src, /entry\.deferReason = proximityDecision\.reason/);
   assert.match(src, /Deploy Queue Hold/);
   assert.match(src, /Reason: <code>\$\{escapeHTML\(proximityDecision\.reason\)\}<\/code>/);

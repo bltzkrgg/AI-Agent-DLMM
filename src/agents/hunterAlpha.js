@@ -3844,6 +3844,7 @@ Balas HANYA JSON valid tanpa Markdown.`;
         symbol,
         {
           includeEntryCandles5m: finalIncludeEntryCandles5m,
+          bypassCache: true,
         }
       );
       if (!finalMarketSnapshot) {

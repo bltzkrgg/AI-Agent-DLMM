@@ -33,6 +33,7 @@ prefer the explicit user request, then update this file after the change lands.
 
 ## Recently completed changes
 
+- 2026-07-11: Completed patch plan point 1 for final deploy freshness: `pendingDeployQueue` and direct deploy paths now bypass the snapshot cache only in the final deploy stage (`bypassCache: true`), while screening keeps the existing cache/inflight reuse path; `tests/pending-deploy-queue.test.js`, `tests/shutdown-hardening.test.js`, and `tests/dlmm-deploy-preflight.test.js` now pin the fresh final-stage wiring.
 - 2026-07-11: Completed patch plan point 3 in `hunterAlpha`: the manual-close monitor path now preserves `status.note` / `status.reason` when it records `MANUAL_CLOSED`, instead of always collapsing to the generic manual-withdraw string; `tests/shutdown-hardening.test.js` now pins the dispatch shape so manual-close labels stay context-rich without changing the close policy.
 - 2026-07-11: Completed patch plan point 1 in `src/sniper/evilPanda.js`: deploy now performs one final live DLMM sync before range build, blocks deploy when final active-bin/price is unavailable or already drifted too far from the chosen entry anchor, and records explicit `ENTRY_FINAL_SYNC_*` operator logs; `tests/dlmm-deploy-preflight.test.js` now covers both price-drift rejection and final-sync guard presence.
 - 2026-07-11: Added explicit Telegram alert for quote-only partial deploy failures in `src/sniper/evilPanda.js`; failed-together deploy attempts now say whether cleanup succeeded or whether the user still needs to unwrap/close manual in Meteora.
