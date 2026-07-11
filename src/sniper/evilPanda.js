@@ -2804,7 +2804,6 @@ async function handleQuoteOnlyPartialDeployFailure({
     verifyClosedFn,
   });
 
-  const manualActionRequired = cleanup?.cleaned !== true;
   const tokenLabel = String(marker?.tokenXMint || poolAddress || 'unknown').slice(0, 8) || 'UNKNOWN';
   const poolLabel = String(poolAddress || marker?.poolAddress || 'unknown').slice(0, 8) || 'UNKNOWN';
   await notify(
@@ -2813,11 +2812,7 @@ async function handleQuoteOnlyPartialDeployFailure({
     `Position: <code>${safePositionPubkey.slice(0,8)}</code>\n` +
     `Pool: <code>${escapeHTML(poolLabel)}</code>\n` +
     `Cleanup: <code>${escapeHTML(cleanup?.reason || 'UNKNOWN')}</code>\n` +
-    (
-      manualActionRequired
-        ? `<b>Action:</b> <i>cek wallet, unwrap, lalu close manual di Meteora.</i>`
-        : `<b>Action:</b> <i>cleanup otomatis sudah mencoba menutup posisi kosong.</i>`
-    )
+    `<b>Action:</b> <i>cek wallet, unwrap, lalu close manual di Meteora.</i>`
   );
 
   if (cleanup?.cleaned === true || cleanup?.reason === 'POSITION_NOT_FOUND') {
@@ -2833,7 +2828,6 @@ async function handleQuoteOnlyPartialDeployFailure({
       botDeployPartialCleanup: cleanup?.reason || 'UNKNOWN',
       cleanupHasLiquidity: cleanup?.hasLiquidity === true,
       cleanupSkipped: cleanup?.skipped === true,
-      manualActionRequired,
     };
   }
   return cleanup;
