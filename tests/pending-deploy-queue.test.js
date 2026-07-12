@@ -2164,15 +2164,41 @@ test('final deploy outcome messages are explicit for stale hold, success, blocke
 test('deploy/drop notifications are not gated by hold dedupe helper', () => {
   const src = readFileSync(new URL('../src/utils/pendingDeployQueue.js', import.meta.url), 'utf8');
   const holdSectionStart = src.indexOf('if (!finalCandle.ok) {');
-  const holdSectionEnd = src.indexOf('continue;', holdSectionStart);
+  const holdSectionEnd = src.indexOf('let liveSnapshotForDeploy = entry.lastLiveSnapshot || null;', holdSectionStart);
   const holdSection = src.slice(holdSectionStart, holdSectionEnd);
   assert.match(holdSection, /isSlotSaturationHoldReason\(/);
+  assert.match(holdSection, /logSilentFinalDeployHold\(/);
+  assert.doesNotMatch(holdSection, /buildDeployFinalOutcomeTelegramMessage\(/);
   assert.match(src, /shouldSendDeployQueueHoldNotification\(/);
   assert.match(src, /Deploy Queue Drop/);
   assert.match(src, /DEPLOY ATTEMPT/);
   assert.match(src, /Deploy Reconcile Required/);
   assert.match(src, /function logDeployAttemptOutcome/);
   assert.match(src, /status:\s*'UNKNOWN'/);
+});
+
+test('pre-attempt final deploy holds stay silent until a real deploy attempt starts', () => {
+  const src = readFileSync(new URL('../src/utils/pendingDeployQueue.js', import.meta.url), 'utf8');
+  const finalSnapshotSection = src.slice(
+    src.indexOf('if (!finalLiveSnapshot) {'),
+    src.indexOf('if (!isReliableLiveSnapshot(finalLiveSnapshot)) {')
+  );
+  const finalStHoldSection = src.slice(
+    src.indexOf('if (!finalSt.ok) {'),
+    src.indexOf('const finalCandle = await ensureFinalEntryCandleSanity({')
+  );
+  const proximityHoldSection = src.slice(
+    src.indexOf('if (!proximityDecision.ok) {'),
+    src.indexOf('const cfg = getConfig();', src.indexOf('if (!proximityDecision.ok) {'))
+  );
+
+  assert.match(src, /function logSilentFinalDeployHold\(/);
+  assert.match(finalSnapshotSection, /logSilentFinalDeployHold\(/);
+  assert.doesNotMatch(finalSnapshotSection, /safeSend\(/);
+  assert.match(finalStHoldSection, /logSilentFinalDeployHold\(/);
+  assert.doesNotMatch(finalStHoldSection, /buildDeployFinalOutcomeTelegramMessage\(/);
+  assert.match(proximityHoldSection, /logSilentFinalDeployHold\(/);
+  assert.doesNotMatch(proximityHoldSection, /Limit: <code>/);
 });
 
 test('slot saturated queue suppresses hold/drop noise for new candidates', () => {
@@ -2490,11 +2516,8 @@ test('deploy queue applies final entry proximity hold before deploy', () => {
   assert.match(src, /bypassCache:\s*true/);
   assert.match(src, /let proximityDecision = getFinalEntryProximityDecision\(/);
   assert.match(src, /entry\.deferReason = proximityDecision\.reason/);
-  assert.match(src, /buildDeployFinalOutcomeTelegramMessage\(/);
-  assert.match(src, /FINAL_DEPLOY_HOLD/);
-  assert.match(src, /final snapshot not fresh/);
-  assert.match(src, /final drift guard hit/);
-  assert.match(src, /Limit: <code>\$\{driftLimitPct\.toFixed\(2\)\}%<\/code>/);
+  assert.match(src, /logSilentFinalDeployHold\(/);
+  assert.doesNotMatch(src.slice(src.indexOf('if (!proximityDecision.ok) {'), src.indexOf('const cfg = getConfig();', src.indexOf('if (!proximityDecision.ok) {'))), /buildDeployFinalOutcomeTelegramMessage\(/);
   assert.match(src, /proximity=\$\{proximityDecision\.comparedBy \|\| 'na'\}/);
 });
 

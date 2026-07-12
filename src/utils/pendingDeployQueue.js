@@ -223,6 +223,20 @@ async function safeSend(msg) {
   }
 }
 
+function logSilentFinalDeployHold({
+  symbol = '',
+  mint = '',
+  poolAddress = '',
+  reason = '',
+  stage = 'final_gate',
+} = {}) {
+  console.log(
+    `[QUEUE] 🔕 Silent final HOLD ${symbol || mint?.slice?.(0, 8) || 'UNKNOWN'} ` +
+    `stage=${stage} pool=${String(poolAddress || 'unknown').slice(0, 8) || 'unknown'} ` +
+    `reason=${reason || 'unknown'}`
+  );
+}
+
 function getSnapshotCacheKey(mint = '', poolAddress = '', options = {}) {
   const entry5mSuffix = options?.includeEntryCandles5m === true ? ':entry5m' : '';
   return `${mint || 'unknown'}:${poolAddress || 'nopool'}${entry5mSuffix}`;
@@ -1780,30 +1794,20 @@ async function runWatcher() {
         entry.nextEligibleAt = Date.now() + 15_000;
         entry.deferReason = 'Final snapshot unavailable; waiting fresh market snapshot';
         console.log(`[QUEUE] ⏸️ ${symbol} HOLD sebelum deploy: Final snapshot unavailable; waiting fresh market snapshot`);
-        if (isDeploySlotSaturated()) {
-          console.log('[QUEUE] Slot saturated, suppressing hold/drop noise.');
-          continue;
-        }
-        const cfg = getConfig();
-        const cooldownSec = Math.max(30, Number(cfg.deployQueueHoldNotifyCooldownSec ?? 180) || 180);
-        const notifyDecision = shouldSendDeployQueueHoldNotification({
+        logSilentFinalDeployHold({
+          symbol,
+          mint,
+          poolAddress,
+          reason: 'Final snapshot unavailable; waiting fresh market snapshot',
+          stage: 'final_snapshot_unavailable',
+        });
+        shouldSendDeployQueueHoldNotification({
           poolAddress,
           mint,
           reason: 'Final snapshot unavailable; waiting fresh market snapshot',
           now: Date.now(),
-          cooldownMs: cooldownSec * 1000,
+          cooldownMs: Math.max(30, Number(getConfig().deployQueueHoldNotifyCooldownSec ?? 180) || 180) * 1000,
         });
-        if (notifyDecision.shouldSend) {
-          await safeSend(
-            buildDeployFinalOutcomeTelegramMessage({
-              symbol,
-              attemptId,
-              poolAddress,
-              outcome: 'HOLD',
-              reason: 'Final snapshot unavailable; waiting fresh market snapshot',
-            })
-          );
-        }
         continue;
       }
       if (!isReliableLiveSnapshot(finalLiveSnapshot)) {
@@ -1812,30 +1816,20 @@ async function runWatcher() {
           entry.nextEligibleAt = Date.now() + 15_000;
           entry.deferReason = 'Final snapshot unreliable; waiting reliable live snapshot';
           console.log(`[QUEUE] ⏸️ ${symbol} HOLD sebelum deploy: Final snapshot unreliable; waiting reliable live snapshot`);
-          if (isDeploySlotSaturated()) {
-            console.log('[QUEUE] Slot saturated, suppressing hold/drop noise.');
-            continue;
-          }
-          const cfg = getConfig();
-          const cooldownSec = Math.max(30, Number(cfg.deployQueueHoldNotifyCooldownSec ?? 180) || 180);
-          const notifyDecision = shouldSendDeployQueueHoldNotification({
+          logSilentFinalDeployHold({
+            symbol,
+            mint,
+            poolAddress,
+            reason: 'Final snapshot unreliable; waiting reliable live snapshot',
+            stage: 'final_snapshot_unreliable',
+          });
+          shouldSendDeployQueueHoldNotification({
             poolAddress,
             mint,
             reason: 'Final snapshot unreliable; waiting reliable live snapshot',
             now: Date.now(),
-            cooldownMs: cooldownSec * 1000,
+            cooldownMs: Math.max(30, Number(getConfig().deployQueueHoldNotifyCooldownSec ?? 180) || 180) * 1000,
           });
-          if (notifyDecision.shouldSend) {
-            await safeSend(
-              buildDeployFinalOutcomeTelegramMessage({
-                symbol,
-                attemptId,
-                poolAddress,
-                outcome: 'HOLD',
-                reason: 'Final snapshot unreliable; waiting reliable live snapshot',
-              })
-            );
-          }
           continue;
         }
         console.log(
@@ -1880,25 +1874,20 @@ async function runWatcher() {
           entry.nextEligibleAt = Date.now() + 15_000;
           entry.deferReason = finalSt.reason;
           console.log(`[QUEUE] ⏸️ ${symbol} HOLD sebelum deploy: ${finalSt.reason}`);
-          const cfg = getConfig();
-          const cooldownSec = Math.max(30, Number(cfg.deployQueueHoldNotifyCooldownSec ?? 180) || 180);
-          const notifyDecision = shouldSendDeployQueueHoldNotification({
+          logSilentFinalDeployHold({
+            symbol,
+            mint,
+            poolAddress,
+            reason: finalSt.reason,
+            stage: 'final_supertrend_hold',
+          });
+          shouldSendDeployQueueHoldNotification({
             poolAddress,
             mint,
             reason: finalSt.reason,
             now: Date.now(),
-            cooldownMs: cooldownSec * 1000,
+            cooldownMs: Math.max(30, Number(getConfig().deployQueueHoldNotifyCooldownSec ?? 180) || 180) * 1000,
           });
-          if (notifyDecision.shouldSend && !isDeploySlotSaturated()) {
-            await safeSend(
-              buildDeployFinalOutcomeTelegramMessage({
-                symbol,
-                poolAddress,
-                outcome: 'HOLD',
-                reason: finalSt.reason,
-              })
-            );
-          }
         }
         continue;
       }
@@ -1917,31 +1906,20 @@ async function runWatcher() {
         if (isSlotSaturationHoldReason(finalCandle.reason) || isDeploySlotSaturated()) {
           continue;
         }
-        const cfg = getConfig();
-        const cooldownSec = Math.max(30, Number(cfg.deployQueueHoldNotifyCooldownSec ?? 180) || 180);
-        const notifyDecision = shouldSendDeployQueueHoldNotification({
+        logSilentFinalDeployHold({
+          symbol,
+          mint,
+          poolAddress,
+          reason: finalCandle.reason,
+          stage: 'final_candle_hold',
+        });
+        shouldSendDeployQueueHoldNotification({
           poolAddress,
           mint,
           reason: finalCandle.reason,
           now: Date.now(),
-          cooldownMs: cooldownSec * 1000,
+          cooldownMs: Math.max(30, Number(getConfig().deployQueueHoldNotifyCooldownSec ?? 180) || 180) * 1000,
         });
-        if (!notifyDecision.shouldSend) {
-          console.log(
-            `[QUEUE] 🔕 Suppressed duplicate HOLD Telegram for ${symbol || mint.slice(0, 8)} ` +
-            `reason="${notifyDecision.normalizedReason}" cooldown=${cooldownSec}s`
-          );
-        } else {
-          await safeSend(
-            buildDeployFinalOutcomeTelegramMessage({
-              symbol,
-              poolAddress,
-              outcome: 'HOLD',
-              reason: finalCandle.reason,
-              detail: `Candle: ${finalCandle.source || 'unknown'}`,
-            })
-          );
-        }
         continue;
       }
 
@@ -1964,38 +1942,20 @@ async function runWatcher() {
           `liveBin=${Number.isFinite(proximityDecision.activeBinId) ? proximityDecision.activeBinId : 'na'} ` +
           `binDelta=${Number.isFinite(proximityDecision.binDelta) ? proximityDecision.binDelta : 'na'}`
         );
-        if (isDeploySlotSaturated()) {
-          console.log('[QUEUE] Slot saturated, suppressing hold/drop noise.');
-          continue;
-        }
-        const cfg = getConfig();
-        const cooldownSec = Math.max(30, Number(cfg.deployQueueHoldNotifyCooldownSec ?? 180) || 180);
-        const notifyDecision = shouldSendDeployQueueHoldNotification({
+        logSilentFinalDeployHold({
+          symbol,
+          mint,
+          poolAddress,
+          reason: proximityDecision.reason,
+          stage: 'final_proximity_hold',
+        });
+        shouldSendDeployQueueHoldNotification({
           poolAddress,
           mint,
           reason: proximityDecision.reason,
           now: Date.now(),
-          cooldownMs: cooldownSec * 1000,
+          cooldownMs: Math.max(30, Number(getConfig().deployQueueHoldNotifyCooldownSec ?? 180) || 180) * 1000,
         });
-        if (notifyDecision.shouldSend) {
-          const driftLimitPct = Math.max(0.1, Number(getConfig()?.entryFinalProximityMaxDriftPct) || 2.5);
-          await safeSend(
-            buildDeployFinalOutcomeTelegramMessage({
-              symbol,
-              attemptId,
-              poolAddress,
-              outcome: 'HOLD',
-              reason: proximityDecision.reason,
-              proximityDecision,
-            }) +
-            `\nLimit: <code>${driftLimitPct.toFixed(2)}%</code>`
-          );
-        } else {
-          console.log(
-            `[QUEUE] 🔕 Suppressed duplicate HOLD Telegram for ${symbol || mint.slice(0, 8)} ` +
-            `reason="${notifyDecision.normalizedReason}" cooldown=${cooldownSec}s`
-          );
-        }
         continue;
       }
 
