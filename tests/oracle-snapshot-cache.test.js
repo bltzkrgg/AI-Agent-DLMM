@@ -284,6 +284,8 @@ test('market snapshot timing-only mode skips Helius soft signals and bypassCache
     });
 
     assert.equal(first?.onChain, null);
+    assert.equal(first?.snapshotMode, 'timing-only');
+    assert.equal(first?.includeOnChainSignals, false);
     assert.deepEqual(second, first);
     assert.equal(rpcCalls, 0);
     assert.equal(ohlcvCalls, 1);
@@ -305,6 +307,8 @@ test('market snapshot timing-only mode skips Helius soft signals and bypassCache
     });
 
     assert.equal(fullSignals?.onChain?.available, true);
+    assert.equal(fullSignals?.snapshotMode, 'full-context');
+    assert.equal(fullSignals?.includeOnChainSignals, true);
     assert.equal(rpcCalls, 3);
     assert.equal(fetchCalls > 0, true);
   } finally {

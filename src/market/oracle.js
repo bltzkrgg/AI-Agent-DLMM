@@ -1181,6 +1181,7 @@ export async function getMarketSnapshot(tokenMint, poolAddress = null, options =
   const cacheKey = getMarketSnapshotCacheKey(tokenMint, poolAddress, options);
   const bypassCache = options?.bypassCache === true;
   const includeOnChainSignals = options?.includeOnChainSignals !== false;
+  const snapshotMode = includeOnChainSignals ? 'full-context' : 'timing-only';
   if (!bypassCache) {
     const cached = _marketSnapshotCache.get(cacheKey);
     if (cached && (Date.now() - cached.at) <= MARKET_SNAPSHOT_CACHE_TTL_MS) {
@@ -1200,6 +1201,7 @@ export async function getMarketSnapshot(tokenMint, poolAddress = null, options =
       `[oracle] getMarketSnapshot queue token=${tokenMint?.slice?.(0, 8) || 'unknown'} ` +
       `pool=${poolAddress ? String(poolAddress).slice(0, 8) : 'none'} poolAddressUsed=${usingPoolAddress ? 'yes' : 'no'}`
     );
+    console.log(`[oracle] getMarketSnapshot queue mode=${snapshotMode} bypassCache=${bypassCache ? 'yes' : 'no'}`);
   }
   const [ohlcvR, poolR, onChainR, sentimentR, smartMoneyR, jupiterPriceR, meteoraPriceR] = await Promise.allSettled([
     getOHLCV(tokenMint, poolAddress, {
@@ -1275,6 +1277,8 @@ export async function getMarketSnapshot(tokenMint, poolAddress = null, options =
   return {
     tokenMint, poolAddress,
     timestamp: new Date().toISOString(),
+    snapshotMode,
+    includeOnChainSignals,
     ohlcv, pool: pool ? { ...pool, mcap: sentiment?.fdv || 0 } : null, onChain, sentiment,
     smartMoney,
     healthScore,
