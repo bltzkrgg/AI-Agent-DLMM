@@ -1801,13 +1801,6 @@ async function runWatcher() {
           reason: 'Final snapshot unavailable; waiting fresh market snapshot',
           stage: 'final_snapshot_unavailable',
         });
-        shouldSendDeployQueueHoldNotification({
-          poolAddress,
-          mint,
-          reason: 'Final snapshot unavailable; waiting fresh market snapshot',
-          now: Date.now(),
-          cooldownMs: Math.max(30, Number(getConfig().deployQueueHoldNotifyCooldownSec ?? 180) || 180) * 1000,
-        });
         continue;
       }
       if (!isReliableLiveSnapshot(finalLiveSnapshot)) {
@@ -1822,13 +1815,6 @@ async function runWatcher() {
             poolAddress,
             reason: 'Final snapshot unreliable; waiting reliable live snapshot',
             stage: 'final_snapshot_unreliable',
-          });
-          shouldSendDeployQueueHoldNotification({
-            poolAddress,
-            mint,
-            reason: 'Final snapshot unreliable; waiting reliable live snapshot',
-            now: Date.now(),
-            cooldownMs: Math.max(30, Number(getConfig().deployQueueHoldNotifyCooldownSec ?? 180) || 180) * 1000,
           });
           continue;
         }
@@ -1881,13 +1867,6 @@ async function runWatcher() {
             reason: finalSt.reason,
             stage: 'final_supertrend_hold',
           });
-          shouldSendDeployQueueHoldNotification({
-            poolAddress,
-            mint,
-            reason: finalSt.reason,
-            now: Date.now(),
-            cooldownMs: Math.max(30, Number(getConfig().deployQueueHoldNotifyCooldownSec ?? 180) || 180) * 1000,
-          });
         }
         continue;
       }
@@ -1912,13 +1891,6 @@ async function runWatcher() {
           poolAddress,
           reason: finalCandle.reason,
           stage: 'final_candle_hold',
-        });
-        shouldSendDeployQueueHoldNotification({
-          poolAddress,
-          mint,
-          reason: finalCandle.reason,
-          now: Date.now(),
-          cooldownMs: Math.max(30, Number(getConfig().deployQueueHoldNotifyCooldownSec ?? 180) || 180) * 1000,
         });
         continue;
       }
@@ -1948,13 +1920,6 @@ async function runWatcher() {
           poolAddress,
           reason: proximityDecision.reason,
           stage: 'final_proximity_hold',
-        });
-        shouldSendDeployQueueHoldNotification({
-          poolAddress,
-          mint,
-          reason: proximityDecision.reason,
-          now: Date.now(),
-          cooldownMs: Math.max(30, Number(getConfig().deployQueueHoldNotifyCooldownSec ?? 180) || 180) * 1000,
         });
         continue;
       }

@@ -2195,10 +2195,13 @@ test('pre-attempt final deploy holds stay silent until a real deploy attempt sta
   assert.match(src, /function logSilentFinalDeployHold\(/);
   assert.match(finalSnapshotSection, /logSilentFinalDeployHold\(/);
   assert.doesNotMatch(finalSnapshotSection, /safeSend\(/);
+  assert.doesNotMatch(finalSnapshotSection, /shouldSendDeployQueueHoldNotification\(/);
   assert.match(finalStHoldSection, /logSilentFinalDeployHold\(/);
   assert.doesNotMatch(finalStHoldSection, /buildDeployFinalOutcomeTelegramMessage\(/);
+  assert.doesNotMatch(finalStHoldSection, /shouldSendDeployQueueHoldNotification\(/);
   assert.match(proximityHoldSection, /logSilentFinalDeployHold\(/);
   assert.doesNotMatch(proximityHoldSection, /Limit: <code>/);
+  assert.doesNotMatch(proximityHoldSection, /shouldSendDeployQueueHoldNotification\(/);
 });
 
 test('slot saturated queue suppresses hold/drop noise for new candidates', () => {
