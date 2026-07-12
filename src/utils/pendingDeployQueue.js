@@ -109,13 +109,19 @@ function summarizeFinalDeployReason({
   const rawReason = String(reason || '').trim();
   const lowerReason = rawReason.toLowerCase();
   if (outcome === 'HOLD') {
-    if (lowerReason.includes('fresh live price/bin snapshot') || lowerReason.includes('snapshot not fresh') || lowerReason.includes('unreliable') || lowerReason.includes('unavailable')) {
-      return 'final snapshot not fresh';
+    if (lowerReason.includes('final snapshot unavailable') || lowerReason.includes('waiting fresh market snapshot')) {
+      return 'final snapshot unavailable';
+    }
+    if (lowerReason.includes('final snapshot unreliable') || lowerReason.includes('waiting reliable live snapshot')) {
+      return 'final snapshot unreliable';
+    }
+    if (lowerReason.includes('fresh live price/bin snapshot') || lowerReason.includes('entry proximity unavailable')) {
+      return 'final live price/bin unavailable';
     }
     if (lowerReason.includes('drift too wide')) {
       return 'final drift too wide';
     }
-    if (lowerReason.includes('entry proximity unavailable')) {
+    if (lowerReason.includes('snapshot not fresh')) {
       return 'final snapshot not fresh';
     }
     if (Number.isFinite(Number(proximityDecision?.priceDriftPct)) || Number.isFinite(Number(proximityDecision?.binDelta))) {

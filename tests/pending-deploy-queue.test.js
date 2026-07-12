@@ -649,6 +649,52 @@ test('final Supertrend deploy gate prioritizes reliable live snapshot bearish ov
   assert.equal(meta.supertrend15mAt, undefined);
 });
 
+test('final Supertrend deploy gate can continue when history is incomplete but live price/bin is usable', async () => {
+  const now = Date.now();
+  let calls = 0;
+  const entryCandles5m = makeDerivedM15Backed5m({
+    nowSec: Math.floor(now / 1000),
+    m15Series: [
+      { open: 98, close: 100, volume: 100 },
+      { open: 100, close: 102, volume: 110 },
+      { open: 102, close: 104, volume: 120 },
+    ],
+  });
+
+  const decision = await getFinalSupertrendDeployDecision({
+    mint: 'Mint111111111111111111111111111111111111111',
+    meta: {
+      entryCanonicalSnapshot: {
+        entryPrice: 104,
+        entryActiveBin: 120,
+      },
+    },
+    now,
+    liveSnapshot: {
+      snapshotAt: now,
+      dataSource: 'meteora-dlmm-ohlcv',
+      quality: { taTrend: 'BULLISH' },
+      ohlcv: {
+        source: 'meteora-dlmm-ohlcv',
+        historySuccess: false,
+        currentPrice: 104,
+        entryCandles5m,
+      },
+      pool: { activeBinId: 120 },
+      ta: { supertrend: { trend: 'BULLISH', value: 100 } },
+    },
+    checkFn: async () => {
+      calls += 1;
+      return { veto: false, direction: 'BULLISH', reason: 'PASS: Trend 15m BULLISH via Meridian API' };
+    },
+  });
+
+  assert.equal(calls, 1);
+  assert.equal(decision.action, 'ALLOW');
+  assert.equal(decision.source, 'fresh_fetch');
+  assert.match(decision.reason, /bullish/i);
+});
+
 test('final Supertrend deploy gate requires canonical confirmation before allowing live bullish snapshot', async () => {
   const now = 1_700_000_000_000;
   let calls = 0;
@@ -2052,8 +2098,35 @@ test('final deploy outcome messages are explicit for stale hold, success, blocke
     reason: 'Final snapshot unavailable; waiting fresh market snapshot',
   });
   assert.match(holdMsg, /FINAL_DEPLOY_HOLD/);
-  assert.match(holdMsg, /final snapshot not fresh/i);
+  assert.match(holdMsg, /final snapshot unavailable/i);
   assert.match(holdMsg, /Snapshot final belum layak/i);
+
+  const unreliableMsg = buildDeployFinalOutcomeTelegramMessage({
+    symbol: 'TEST',
+    attemptId: 'mint-pool-abc123',
+    poolAddress: 'Pool11111111111111111111111111111111111111',
+    outcome: 'HOLD',
+    reason: 'Final snapshot unreliable; waiting reliable live snapshot',
+  });
+  assert.match(unreliableMsg, /final snapshot unreliable/i);
+
+  const proximityMsg = buildDeployFinalOutcomeTelegramMessage({
+    symbol: 'TEST',
+    attemptId: 'mint-pool-abc123',
+    poolAddress: 'Pool11111111111111111111111111111111111111',
+    outcome: 'HOLD',
+    reason: 'entry proximity unavailable; waiting fresh live price/bin snapshot',
+  });
+  assert.match(proximityMsg, /final live price\/bin unavailable/i);
+
+  const driftMsg = buildDeployFinalOutcomeTelegramMessage({
+    symbol: 'TEST',
+    attemptId: 'mint-pool-abc123',
+    poolAddress: 'Pool11111111111111111111111111111111111111',
+    outcome: 'HOLD',
+    reason: 'entry proximity drift too wide: upper price drift 3.20% > 2.50%',
+  });
+  assert.match(driftMsg, /final drift too wide/i);
 
   const successMsg = buildDeployFinalOutcomeTelegramMessage({
     symbol: 'TEST',
