@@ -133,6 +133,8 @@ test('market snapshot cache reuses identical requests within the same ttl window
     const second = await oracle.getMarketSnapshot('MintSnapshot111', 'PoolSnapshot111', { includeEntryCandles5m: true });
 
     assert.equal(Boolean(first?.quality), true);
+    assert.equal(Number.isFinite(Number(first?.snapshotAt)), true);
+    assert.equal(typeof first?.timestamp, 'string');
     assert.deepEqual(second, first);
     assert.equal(fetchCalls > 0, true);
     const afterSecond = fetchCalls;

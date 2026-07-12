@@ -1276,6 +1276,7 @@ export async function getMarketSnapshot(tokenMint, poolAddress = null, options =
 
   return {
     tokenMint, poolAddress,
+    snapshotAt: Date.now(),
     timestamp: new Date().toISOString(),
     snapshotMode,
     includeOnChainSignals,

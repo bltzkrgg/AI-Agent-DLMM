@@ -444,6 +444,19 @@ function isDeploySlotSaturated() {
   return getDeploySlotUsage().available <= 0;
 }
 
+function readLiveSnapshotAtMs(liveSnapshot = null, meta = {}, pool = {}) {
+  const rawSnapshotAt = liveSnapshot?.snapshotAt ??
+    liveSnapshot?.ts ??
+    liveSnapshot?.timestamp ??
+    meta?.snapshotAt ??
+    pool?._watchSnapshotAt ??
+    null;
+  const numericSnapshotAt = Number(rawSnapshotAt);
+  if (Number.isFinite(numericSnapshotAt) && numericSnapshotAt > 0) return numericSnapshotAt;
+  const parsedSnapshotAt = Date.parse(String(rawSnapshotAt || ''));
+  return Number.isFinite(parsedSnapshotAt) && parsedSnapshotAt > 0 ? parsedSnapshotAt : 0;
+}
+
 export function getLiveSnapshotReliability(snapshot = null) {
   if (!snapshot) return { reliable: false, reason: 'SNAPSHOT_NULL' };
   const source = String(snapshot.dataSource || snapshot.ohlcv?.source || '').toLowerCase();
@@ -714,13 +727,7 @@ function isFreshLiveSnapshot(liveSnapshot = null, meta = {}, pool = {}, cfg = ge
   if (!liveSnapshot || !source) return false;
   if (!source.includes('meteora-dlmm-ohlcv')) return false;
 
-  const snapshotAt = Number(
-    liveSnapshot?.snapshotAt ||
-    liveSnapshot?.ts ||
-    meta?.snapshotAt ||
-    pool?._watchSnapshotAt ||
-    0
-  );
+  const snapshotAt = readLiveSnapshotAtMs(liveSnapshot, meta, pool);
   if (!Number.isFinite(snapshotAt) || snapshotAt <= 0) return false;
 
   const canonicalWatchWindowSec = Number(
@@ -740,6 +747,19 @@ function isFreshLiveSnapshot(liveSnapshot = null, meta = {}, pool = {}, cfg = ge
     90_000
   );
   return (Date.now() - snapshotAt) <= maxAgeMs;
+}
+
+function getLiveUpsideTolerance(liveSnapshot = null, maxDriftPct = 2.5) {
+  const liveTrend = readLiveSnapshotTrend(liveSnapshot);
+  const liveM5 = Number(liveSnapshot?.ohlcv?.priceChangeM5 ?? 0);
+  const bullishFastMove = liveTrend === 'BULLISH' && Number.isFinite(liveM5) && liveM5 >= 1.25;
+  return {
+    bullishFastMove,
+    liveTrend,
+    liveM5,
+    allowedUpperPriceDriftPct: bullishFastMove ? (maxDriftPct + 0.75) : maxDriftPct,
+    allowedUpperBinDelta: bullishFastMove ? (FINAL_ENTRY_PROXIMITY_MAX_BIN_DELTA + 1) : FINAL_ENTRY_PROXIMITY_MAX_BIN_DELTA,
+  };
 }
 
 export function getFinalEntryProximityDecision({
@@ -770,14 +790,26 @@ export function getFinalEntryProximityDecision({
       comparedBy: 'none',
     };
   }
-  const priceDriftPct = intentPrice > 0 && currentPrice > 0
-    ? Math.abs(((currentPrice - intentPrice) / intentPrice) * 100)
+  const signedPriceDriftPct = intentPrice > 0 && currentPrice > 0
+    ? ((currentPrice - intentPrice) / intentPrice) * 100
     : null;
-  const binDelta = Number.isFinite(intentBin) && Number.isFinite(activeBinId)
-    ? Math.abs(activeBinId - intentBin)
+  const priceDriftPct = Number.isFinite(signedPriceDriftPct)
+    ? Math.abs(signedPriceDriftPct)
     : null;
+  const signedBinDelta = Number.isFinite(intentBin) && Number.isFinite(activeBinId)
+    ? (activeBinId - intentBin)
+    : null;
+  const binDelta = Number.isFinite(signedBinDelta) ? Math.abs(signedBinDelta) : null;
+  const tolerance = getLiveUpsideTolerance(liveSnapshot, maxDriftPct);
   const priceExceeded = Number.isFinite(priceDriftPct) && priceDriftPct > maxDriftPct;
-  const binExceeded = Number.isFinite(binDelta) && binDelta > FINAL_ENTRY_PROXIMITY_MAX_BIN_DELTA;
+  const directionalPriceExceeded = Number.isFinite(signedPriceDriftPct) && (
+    signedPriceDriftPct < (-1 * maxDriftPct) ||
+    signedPriceDriftPct > tolerance.allowedUpperPriceDriftPct
+  );
+  const directionalBinExceeded = Number.isFinite(signedBinDelta) && (
+    signedBinDelta < (-1 * FINAL_ENTRY_PROXIMITY_MAX_BIN_DELTA) ||
+    signedBinDelta > tolerance.allowedUpperBinDelta
+  );
   const hasComparableSignal = Number.isFinite(priceDriftPct) || Number.isFinite(binDelta);
 
   if (!hasComparableSignal) {
@@ -795,7 +827,7 @@ export function getFinalEntryProximityDecision({
     };
   }
 
-  if (!priceExceeded && !binExceeded) {
+  if (!directionalPriceExceeded && !directionalBinExceeded) {
     return {
       ok: true,
       action: 'ALLOW',
@@ -805,7 +837,12 @@ export function getFinalEntryProximityDecision({
       intentPrice,
       intentBin,
       priceDriftPct,
+      signedPriceDriftPct,
       binDelta,
+      signedBinDelta,
+      allowedUpperPriceDriftPct: tolerance.allowedUpperPriceDriftPct,
+      allowedUpperBinDelta: tolerance.allowedUpperBinDelta,
+      bullishFastMoveTolerance: tolerance.bullishFastMove,
       comparedBy: Number.isFinite(priceDriftPct) && Number.isFinite(binDelta)
         ? 'price+bin'
         : Number.isFinite(priceDriftPct)
@@ -815,8 +852,20 @@ export function getFinalEntryProximityDecision({
   }
 
   const detail = [];
-  if (priceExceeded) detail.push(`price drift ${formatPct(priceDriftPct)} > ${maxDriftPct.toFixed(2)}%`);
-  if (binExceeded) detail.push(`active bin delta ${binDelta} > ${FINAL_ENTRY_PROXIMITY_MAX_BIN_DELTA}`);
+  if (directionalPriceExceeded) {
+    if (Number.isFinite(signedPriceDriftPct) && signedPriceDriftPct > 0) {
+      detail.push(`upper price drift ${formatPct(priceDriftPct)} > ${tolerance.allowedUpperPriceDriftPct.toFixed(2)}%`);
+    } else {
+      detail.push(`lower price drift ${formatPct(priceDriftPct)} > ${maxDriftPct.toFixed(2)}%`);
+    }
+  }
+  if (directionalBinExceeded) {
+    if (Number.isFinite(signedBinDelta) && signedBinDelta > 0) {
+      detail.push(`upper active bin delta ${binDelta} > ${tolerance.allowedUpperBinDelta}`);
+    } else {
+      detail.push(`lower active bin delta ${binDelta} > ${FINAL_ENTRY_PROXIMITY_MAX_BIN_DELTA}`);
+    }
+  }
   return {
     ok: false,
     action: 'HOLD',
@@ -826,8 +875,13 @@ export function getFinalEntryProximityDecision({
     intentPrice,
     intentBin,
     priceDriftPct,
+    signedPriceDriftPct,
     binDelta,
-    comparedBy: priceExceeded && binExceeded ? 'price+bin' : priceExceeded ? 'price' : 'bin',
+    signedBinDelta,
+    allowedUpperPriceDriftPct: tolerance.allowedUpperPriceDriftPct,
+    allowedUpperBinDelta: tolerance.allowedUpperBinDelta,
+    bullishFastMoveTolerance: tolerance.bullishFastMove,
+    comparedBy: directionalPriceExceeded && directionalBinExceeded ? 'price+bin' : directionalPriceExceeded ? 'price' : 'bin',
   };
 }
 
