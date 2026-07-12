@@ -43,10 +43,12 @@ function getMeteoraOhlcvCacheKey(poolAddress = '', timeframe = '5m') {
 
 function getMarketSnapshotCacheKey(tokenMint = '', poolAddress = null, options = {}) {
   const includeEntryCandles5m = options?.includeEntryCandles5m === true ? 'entry5m:1' : 'entry5m:0';
+  const includeOnChainSignals = options?.includeOnChainSignals === false ? 'onchain:0' : 'onchain:1';
   return [
     String(tokenMint || '').trim() || 'unknown',
     String(poolAddress || '').trim() || 'nopool',
     includeEntryCandles5m,
+    includeOnChainSignals,
   ].join('|');
 }
 
@@ -109,17 +111,20 @@ function getMeteoraFailureCooldownMs(failCount = 1) {
   return Math.min(METEORA_OHLCV_FAILURE_MAX_COOLDOWN_MS, METEORA_OHLCV_FAILURE_MIN_COOLDOWN_MS * step);
 }
 
-async function fetchMeteoraDlmmOhlcv5m(poolAddress = '') {
+async function fetchMeteoraDlmmOhlcv5m(poolAddress = '', options = {}) {
   const timeframe = '5m';
+  const bypassCache = options?.bypassCache === true;
   const key = getMeteoraOhlcvCacheKey(poolAddress, timeframe);
   const now = Date.now();
-  const cached = _meteoraOhlcvCache.get(key);
-  if (cached && (now - cached.at) <= METEORA_OHLCV_CACHE_TTL_MS) {
-    return { candles: cached.candles, timeframe, trace: 'cache_hit', cacheHit: true, request: cached.request || null };
+  if (!bypassCache) {
+    const cached = _meteoraOhlcvCache.get(key);
+    if (cached && (now - cached.at) <= METEORA_OHLCV_CACHE_TTL_MS) {
+      return { candles: cached.candles, timeframe, trace: 'cache_hit', cacheHit: true, request: cached.request || null };
+    }
   }
 
   const failureState = _meteoraOhlcvFailureState.get(key);
-  if (failureState && Number(failureState.cooldownUntil || 0) > now) {
+  if (!bypassCache && failureState && Number(failureState.cooldownUntil || 0) > now) {
     return {
       candles: null,
       timeframe,
@@ -186,7 +191,7 @@ async function fetchMeteoraDlmmOhlcv5m(poolAddress = '') {
 
 async function buildOHLCVFromMeteoraDlmm(tokenMint, poolAddress = '', options = {}) {
   if (!poolAddress) return null;
-  const fetched = await fetchMeteoraDlmmOhlcv5m(poolAddress);
+  const fetched = await fetchMeteoraDlmmOhlcv5m(poolAddress, options);
   if (!Array.isArray(fetched?.candles)) {
     return fetched?.blockedByCooldown
       ? { source: 'unknown', historySuccess: false, trace: fetched.trace, providerTrace: { meteoraDlmm: fetched.trace || 'cooldown' } }
@@ -373,9 +378,10 @@ function buildMergedMeridianFallback({
 
 export async function getOHLCV(tokenMint, poolAddress = null, options = {}) {
   const includeEntryCandles5m = options?.includeEntryCandles5m === true;
+  const bypassCache = options?.bypassCache === true;
   const cfg = getConfig();
   if (poolAddress) {
-    const meteoraDlmm = await buildOHLCVFromMeteoraDlmm(tokenMint, poolAddress, { includeEntryCandles5m });
+    const meteoraDlmm = await buildOHLCVFromMeteoraDlmm(tokenMint, poolAddress, { includeEntryCandles5m, bypassCache });
     if (meteoraDlmm?.source === 'meteora-dlmm-ohlcv') {
       return meteoraDlmm;
     }
@@ -1173,13 +1179,17 @@ export async function getHistoryOHLCV(tokenMint) {
 
 export async function getMarketSnapshot(tokenMint, poolAddress = null, options = {}) {
   const cacheKey = getMarketSnapshotCacheKey(tokenMint, poolAddress, options);
-  const cached = _marketSnapshotCache.get(cacheKey);
-  if (cached && (Date.now() - cached.at) <= MARKET_SNAPSHOT_CACHE_TTL_MS) {
-    return cached.value;
-  }
+  const bypassCache = options?.bypassCache === true;
+  const includeOnChainSignals = options?.includeOnChainSignals !== false;
+  if (!bypassCache) {
+    const cached = _marketSnapshotCache.get(cacheKey);
+    if (cached && (Date.now() - cached.at) <= MARKET_SNAPSHOT_CACHE_TTL_MS) {
+      return cached.value;
+    }
 
-  if (_marketSnapshotInflight.has(cacheKey)) {
-    return _marketSnapshotInflight.get(cacheKey);
+    if (_marketSnapshotInflight.has(cacheKey)) {
+      return _marketSnapshotInflight.get(cacheKey);
+    }
   }
 
   const task = (async () => {
@@ -1192,9 +1202,12 @@ export async function getMarketSnapshot(tokenMint, poolAddress = null, options =
     );
   }
   const [ohlcvR, poolR, onChainR, sentimentR, smartMoneyR, jupiterPriceR, meteoraPriceR] = await Promise.allSettled([
-    getOHLCV(tokenMint, poolAddress, { includeEntryCandles5m: options?.includeEntryCandles5m === true }),
+    getOHLCV(tokenMint, poolAddress, {
+      includeEntryCandles5m: options?.includeEntryCandles5m === true,
+      bypassCache,
+    }),
     poolAddress ? getDLMMPoolData(poolAddress) : Promise.resolve(null),
-    getOnChainSignals(tokenMint),
+    includeOnChainSignals ? getOnChainSignals(tokenMint) : Promise.resolve(null),
     getSentiment(tokenMint),
     poolAddress
       ? fetchWithTimeout(`${METEORA_DATAPI}/pools/${poolAddress}/top-lpers`, {}, 5000)
@@ -1292,13 +1305,17 @@ export async function getMarketSnapshot(tokenMint, poolAddress = null, options =
   };
   })();
 
-  _marketSnapshotInflight.set(cacheKey, task);
+  if (!bypassCache) {
+    _marketSnapshotInflight.set(cacheKey, task);
+  }
   try {
     const snapshot = await task;
     _marketSnapshotCache.set(cacheKey, { at: Date.now(), value: snapshot });
     return snapshot;
   } finally {
-    _marketSnapshotInflight.delete(cacheKey);
+    if (!bypassCache) {
+      _marketSnapshotInflight.delete(cacheKey);
+    }
   }
 }
 

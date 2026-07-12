@@ -1484,6 +1484,7 @@ export async function submitManualCaPool(poolAddress, { source = 'TELEGRAM_CA' }
     {
       from: 'manual_ca',
       includeEntryCandles5m: String(cfg.entryDecisionMode || 'strict').toLowerCase() === 'lp_simple_m15',
+      includeOnChainSignals: false,
     }
   ).catch(() => null);
   const entrySignals = deriveBreakoutEntrySignals({ pool: poolInfo, marketSnapshot, cfg });
@@ -1643,6 +1644,7 @@ async function collectReadyRetestPools(cfg = getConfig()) {
         {
           from: 'retest_collect',
           includeEntryCandles5m: String(cfg.entryDecisionMode || 'strict').toLowerCase() === 'lp_simple_m15',
+          includeOnChainSignals: false,
         }
       ).catch(() => null);
       const entrySignals = deriveBreakoutEntrySignals({ pool: row.pool, vetoResult: veto, marketSnapshot, cfg });
@@ -2627,6 +2629,7 @@ async function processPendingTaRadar(cfg = getConfig()) {
         {
           from: 'ta_radar',
           includeEntryCandles5m: String(cfg.entryDecisionMode || 'strict').toLowerCase() === 'lp_simple_m15',
+          includeOnChainSignals: false,
         }
       ).catch(() => null);
       const entrySignals = deriveBreakoutEntrySignals({ pool: row.pool, vetoResult: veto, marketSnapshot, cfg });
@@ -3317,6 +3320,7 @@ export async function scanAndDeploy({ emitFinalReport = true } = {}) {
         {
           from: 'scout_eval',
           includeEntryCandles5m: String(cfg.entryDecisionMode || 'strict').toLowerCase() === 'lp_simple_m15',
+          includeOnChainSignals: false,
         }
       );
     } catch (e) {

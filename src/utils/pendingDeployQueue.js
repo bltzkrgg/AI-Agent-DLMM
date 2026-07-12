@@ -557,6 +557,7 @@ async function getCachedMarketSnapshot(mint, poolAddress = null, symbol = '', op
   const task = getMarketSnapshot(mint, poolAddress || null, {
     from: includeEntryCandles5m ? 'entry_candle_sanity' : 'deploy_queue',
     includeEntryCandles5m,
+    includeOnChainSignals: false,
     bypassCache,
   })
     .catch(() => null)
