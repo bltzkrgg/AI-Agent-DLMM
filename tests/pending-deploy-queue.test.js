@@ -2251,6 +2251,61 @@ test('final entry proximity respects runtime drift config', () => {
   assert.equal(decision.action, 'ALLOW');
 });
 
+test('final entry proximity gives only bullish upside tolerance on fast moves', () => {
+  const now = Date.now();
+  const bullishDecision = getFinalEntryProximityDecision({
+    meta: {
+      entryCanonicalSnapshot: {
+        entryPrice: 100,
+        entryActiveBin: 120,
+      },
+    },
+    liveSnapshot: {
+      snapshotAt: now,
+      dataSource: 'meteora-dlmm-ohlcv',
+      ta: { supertrend: { trend: 'BULLISH' } },
+      ohlcv: {
+        source: 'meteora-dlmm-ohlcv',
+        historySuccess: true,
+        priceChangeM5: 1.3,
+        currentPrice: 103.2,
+      },
+      pool: { activeBinId: 122 },
+    },
+  });
+
+  assert.equal(bullishDecision.ok, true);
+  assert.equal(bullishDecision.action, 'ALLOW');
+  assert.equal(bullishDecision.bullishFastMoveTolerance, true);
+  assert.equal(bullishDecision.allowedUpperBinDelta, 2);
+  assert.equal(bullishDecision.allowedUpperPriceDriftPct, 3.25);
+
+  const downsideDecision = getFinalEntryProximityDecision({
+    meta: {
+      entryCanonicalSnapshot: {
+        entryPrice: 100,
+        entryActiveBin: 120,
+      },
+    },
+    liveSnapshot: {
+      snapshotAt: now,
+      dataSource: 'meteora-dlmm-ohlcv',
+      ta: { supertrend: { trend: 'BULLISH' } },
+      ohlcv: {
+        source: 'meteora-dlmm-ohlcv',
+        historySuccess: true,
+        priceChangeM5: 1.3,
+        currentPrice: 97,
+      },
+      pool: { activeBinId: 118 },
+    },
+  });
+
+  assert.equal(downsideDecision.ok, false);
+  assert.equal(downsideDecision.action, 'HOLD');
+  assert.match(downsideDecision.reason, /lower price drift|lower active bin delta/i);
+});
+
 test('final entry proximity race regression only allows fresh near-live snapshots', () => {
   const now = Date.now();
   const baseMeta = {
