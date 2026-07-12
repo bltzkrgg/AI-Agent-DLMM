@@ -482,6 +482,15 @@ export function isReliableLiveSnapshot(snapshot = null) {
   return getLiveSnapshotReliability(snapshot).reliable;
 }
 
+function isUsableLiveExecutionSnapshot(snapshot = null, meta = {}, pool = {}, cfg = getConfig()) {
+  const source = String(snapshot?.ohlcv?.source || snapshot?.dataSource || '').toLowerCase();
+  if (!snapshot || !source.includes('meteora-dlmm-ohlcv')) return false;
+  if (!isFreshLiveSnapshot(snapshot, meta, pool, cfg)) return false;
+  const live = readLiveActiveBinState(snapshot, pool, meta);
+  return Number.isFinite(Number(live.currentPrice)) && Number(live.currentPrice) > 0 &&
+    Number.isFinite(Number(live.activeBinId));
+}
+
 export function buildUnreliableLiveSnapshotLog({
   symbol = '',
   mint = '',
@@ -946,6 +955,7 @@ export async function getFinalSupertrendDeployDecision({
   const liveTrendState = readCanonicalLiveSnapshotTrend(liveSnapshot);
   const liveTrend = readLiveSnapshotTrend(liveSnapshot);
   const liveReliable = isReliableLiveSnapshot(liveSnapshot);
+  const liveExecutionUsable = isUsableLiveExecutionSnapshot(liveSnapshot, meta, pool, getConfig());
   const closedM15Reclaim = readClosedM15SupertrendReclaimState(liveSnapshot, getConfig(), now);
   const cached = readCachedSupertrend15m(meta, pool);
   const fresh = cached.at > 0 && (now - cached.at) <= ttlMs;
@@ -1070,13 +1080,20 @@ export async function getFinalSupertrendDeployDecision({
       };
     }
   }
-  if (liveSnapshot && (!liveReliable || liveTrend !== 'BULLISH')) {
+  if (liveSnapshot && liveReliable !== true && liveExecutionUsable !== true) {
     return {
       ok: false,
       action: 'HOLD',
-      reason: !liveReliable
-        ? 'live Supertrend 15m snapshot unreliable; waiting fresh reliable bullish snapshot'
-        : `live Supertrend 15m not bullish (${liveTrend || 'UNKNOWN'}); waiting bullish confirmation`,
+      reason: 'live Supertrend 15m snapshot unreliable; waiting fresh reliable bullish snapshot',
+      source: 'live_snapshot',
+      direction: liveTrend || 'UNKNOWN',
+    };
+  }
+  if (liveSnapshot && liveReliable === true && liveTrend !== 'BULLISH') {
+    return {
+      ok: false,
+      action: 'HOLD',
+      reason: `live Supertrend 15m not bullish (${liveTrend || 'UNKNOWN'}); waiting bullish confirmation`,
       source: 'live_snapshot',
       direction: liveTrend || 'UNKNOWN',
     };
@@ -1784,34 +1801,41 @@ async function runWatcher() {
         continue;
       }
       if (!isReliableLiveSnapshot(finalLiveSnapshot)) {
-        entry.nextEligibleAt = Date.now() + 15_000;
-        entry.deferReason = 'Final snapshot unreliable; waiting reliable live snapshot';
-        console.log(`[QUEUE] ⏸️ ${symbol} HOLD sebelum deploy: Final snapshot unreliable; waiting reliable live snapshot`);
-        if (isDeploySlotSaturated()) {
-          console.log('[QUEUE] Slot saturated, suppressing hold/drop noise.');
+        const executionUsable = isUsableLiveExecutionSnapshot(finalLiveSnapshot, meta, pool, getConfig());
+        if (!executionUsable) {
+          entry.nextEligibleAt = Date.now() + 15_000;
+          entry.deferReason = 'Final snapshot unreliable; waiting reliable live snapshot';
+          console.log(`[QUEUE] ⏸️ ${symbol} HOLD sebelum deploy: Final snapshot unreliable; waiting reliable live snapshot`);
+          if (isDeploySlotSaturated()) {
+            console.log('[QUEUE] Slot saturated, suppressing hold/drop noise.');
+            continue;
+          }
+          const cfg = getConfig();
+          const cooldownSec = Math.max(30, Number(cfg.deployQueueHoldNotifyCooldownSec ?? 180) || 180);
+          const notifyDecision = shouldSendDeployQueueHoldNotification({
+            poolAddress,
+            mint,
+            reason: 'Final snapshot unreliable; waiting reliable live snapshot',
+            now: Date.now(),
+            cooldownMs: cooldownSec * 1000,
+          });
+          if (notifyDecision.shouldSend) {
+            await safeSend(
+              buildDeployFinalOutcomeTelegramMessage({
+                symbol,
+                attemptId,
+                poolAddress,
+                outcome: 'HOLD',
+                reason: 'Final snapshot unreliable; waiting reliable live snapshot',
+              })
+            );
+          }
           continue;
         }
-        const cfg = getConfig();
-        const cooldownSec = Math.max(30, Number(cfg.deployQueueHoldNotifyCooldownSec ?? 180) || 180);
-        const notifyDecision = shouldSendDeployQueueHoldNotification({
-          poolAddress,
-          mint,
-          reason: 'Final snapshot unreliable; waiting reliable live snapshot',
-          now: Date.now(),
-          cooldownMs: cooldownSec * 1000,
-        });
-        if (notifyDecision.shouldSend) {
-          await safeSend(
-            buildDeployFinalOutcomeTelegramMessage({
-              symbol,
-              attemptId,
-              poolAddress,
-              outcome: 'HOLD',
-              reason: 'Final snapshot unreliable; waiting reliable live snapshot',
-            })
-          );
-        }
-        continue;
+        console.log(
+          `[QUEUE] ⚠️ ${symbol} live snapshot unreliable for trend history but usable for final execution price/bin; ` +
+          `continuing with canonical ST check and proximity guard`
+        );
       }
       if (pool && typeof pool === 'object') {
         pool._marketSnapshot = finalLiveSnapshot;
