@@ -729,6 +729,7 @@ function readClosedM15SupertrendReclaimState(liveSnapshot = null, cfg = getConfi
 
 function readLiveActiveBinState(liveSnapshot = null, pool = {}, meta = {}) {
   const currentPrice = Number(
+    liveSnapshot?.ohlcv?.liveSpotPrice ||
     liveSnapshot?.ohlcv?.currentPrice ||
     liveSnapshot?.price?.currentPrice ||
     meta?.currentPrice ||

@@ -202,6 +202,10 @@ async function buildOHLCVFromMeteoraDlmm(tokenMint, poolAddress = '', options = 
   const rawCandles = fetched.candles.slice().sort((a, b) => a.time - b.time);
   const closed5m = rawCandles.filter((c) => (Number(c.time) + METEORA_OHLCV_CANDLE_SEC) <= (nowSec - METEORA_OHLCV_CLOSE_BUFFER_SEC));
   const droppedOpenCandle = rawCandles.length > closed5m.length;
+  const openCandle = droppedOpenCandle ? rawCandles[rawCandles.length - 1] : null;
+  const liveSpotPrice = openCandle && Number.isFinite(openCandle.close) && openCandle.close > 0
+    ? safeNum(openCandle.close)
+    : null;
   const last5m = closed5m[closed5m.length - 1] || null;
   if (!last5m) {
     return {
@@ -269,6 +273,7 @@ async function buildOHLCVFromMeteoraDlmm(tokenMint, poolAddress = '', options = 
     timeframe: '5m',
     source: 'meteora-dlmm-ohlcv',
     currentPrice: safeNum(last5m.close),
+    liveSpotPrice,
     atrPct: Number.isFinite(st?.atr) && last5m.close > 0 ? Number(((st.atr / last5m.close) * 100).toFixed(3)) : null,
     priceChangeM5,
     priceChangeH1,
@@ -589,6 +594,10 @@ async function buildOHLCVFromDexScreener(tokenMint, pairContext = null, options 
     if (mapped.length < 10) return null;
 
     const closedCandles = mapped.slice(0, -1);
+    const openCandleDex = mapped[mapped.length - 1] || null;
+    const liveSpotPrice = openCandleDex && Number.isFinite(openCandleDex.close) && openCandleDex.close > 0
+      ? safeNum(openCandleDex.close)
+      : null;
     if (closedCandles.length < 10) return null;
     if (isCandleSeriesStale(closedCandles, staleThreshold)) {
       console.warn('[oracle] DexScreener OHLCV stale — falling back');
@@ -631,6 +640,7 @@ async function buildOHLCVFromDexScreener(tokenMint, pairContext = null, options 
       timeframe: '15m',
       source: 'dexscreener-ohlcv',
       currentPrice: safeNum(last.close),
+      liveSpotPrice,
       atrPct: Number.isFinite(st?.atr) && last.close > 0 ? Number(((st.atr / last.close) * 100).toFixed(3)) : null,
       priceChangeM5,
       priceChangeH1,
