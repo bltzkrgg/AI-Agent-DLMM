@@ -198,7 +198,15 @@ class ReportManager {
       gmgnLine.push(freshnessParts.join(' | '));
     }
     vLines.push(gmgnLine.join(' | '));
-    vLines.push(`Status ${pool.rejected ? 'REJECTED' : (pool.status || 'WATCH')}`);
+    const isRejected = pool.rejected || pool.status === 'REJECTED';
+    if (isRejected) {
+      const firstFailedGate = this.getFirstFailedGate(pool);
+      const rejectionDetail = this.getGateDetailsText(pool, firstFailedGate) || pool.reason || firstFailedGate || '';
+      const rejectionText = rejectionDetail ? `REJECTED — ${rejectionDetail}` : 'REJECTED';
+      vLines.push(`Status ${rejectionText}`);
+    } else {
+      vLines.push(`Status ${pool.status || 'WATCH'}`);
+    }
     return vLines.join('\n');
   }
 
