@@ -55,9 +55,7 @@ test('report manager renders LP scanner brief with top pools and rejects', () =>
   assert.match(report, /GMGN 124 holders \| Top10 31\.4% \| Dev 6\.2% \| Insider 2\.8% \| Bundler 9\.1% \| VolTrend ACCELERATING/);
   assert.match(report, /Freshness ACTIVE \| Rank \+90 \| Activity Pctl 82%/);
   assert.match(report, /Status DEPLOYED/);
-  assert.match(report, /Status REJECTED/);
-  assert.match(report, /\[ REJECTED \]/);
-  assert.match(report, /<b>KINS<\/b>: stale market snapshot/);
+  assert.match(report, /Status REJECTED — stale market snapshot/);
   assert.match(report, /\[ STATUS \]/);
   assert.match(report, /<b>Slot:<\/b> AVAILABLE/);
   assert.match(report, /<b>Action:<\/b> HOLD new entries/);
@@ -144,7 +142,7 @@ test('slot-saturated summary mode keeps FULL 1/1 and still shows report shape', 
 
   assert.match(report, /AI-Agent Scanner Result/);
   assert.match(report, /<b>Slot:<\/b> FULL 1\/1/);
-  assert.match(report, /<b>JUNO<\/b>: bundler too high/);
+  assert.match(report, /Status REJECTED — bundler too high/);
   assert.match(report, /<b>Action:<\/b> HOLD new entries/);
   assert.match(report, /<b>Next scan:<\/b> 15m/);
 });
