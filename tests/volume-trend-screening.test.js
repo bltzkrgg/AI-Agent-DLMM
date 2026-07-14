@@ -88,6 +88,32 @@ test('hunter activity bias prefers living fee-flow pools without becoming a hard
   assert.doesNotMatch(source, /POOL_ACTIVITY.*REJECT|REJECT.*POOL_ACTIVITY/);
 });
 
+test('hunter pool selector prefers living flow over dry higher fee ratio pool', async () => {
+  const hunter = await importFresh(join(repoRoot, 'src/agents/hunterAlpha.js'));
+  const activeSpike = {
+    volume24h: 910000,
+    feeActiveTvlRatio: 0.018,
+    fees24h: 1200,
+    activeTvl: 135000,
+    swapCount24h: 1700,
+    _volumeTrendSignal: { state: 'ACCELERATING' },
+  };
+  const dryHigherRatio = {
+    volume24h: 68000,
+    feeActiveTvlRatio: 0.033,
+    fees24h: 65,
+    activeTvl: 21000,
+    swapCount24h: 105,
+    _volumeTrendSignal: { state: 'DECELERATING' },
+  };
+
+  assert.equal(hunter.__poolLivingFlowScoreForTests(activeSpike) > hunter.__poolLivingFlowScoreForTests(dryHigherRatio), true);
+  assert.equal(
+    hunter.__comparePoolsByFeeGenerationForTests(activeSpike, dryHigherRatio, [200, 125, 100]) < 0,
+    true,
+  );
+});
+
 test('hunter screening rank uses batch percentile as ranking only, not a gate', async () => {
   const hunter = await importFresh(join(repoRoot, 'src/agents/hunterAlpha.js'));
   const active = {

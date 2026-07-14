@@ -99,7 +99,59 @@ function getPoolActivityBiasScore(pool = {}) {
   return score;
 }
 
+function getPoolLivingFlowScore(pool = {}) {
+  const volume24h = normalizePoolVolume24h(pool);
+  const feeRatio = Number(normalizeMeteoraFeeTvlRatio(pool) || 0);
+  const fees24h = Number(normalizePoolFees24h(pool) || 0);
+  const tvl = normalizePoolTotalTvl(pool);
+  const volumeTvlRatio = tvl > 0 ? volume24h / tvl : 0;
+  const trendState = String(pool?._volumeTrendSignal?.state || '').toUpperCase();
+  const txns24h = Number(pool?.swapCount24h || pool?.txns24hRaw || pool?.txns24h || 0);
+
+  let score = 0;
+
+  if (volume24h >= 900_000) score += 10;
+  else if (volume24h >= 500_000) score += 7;
+  else if (volume24h >= 200_000) score += 4;
+  else if (volume24h > 0 && volume24h < 60_000) score -= 5;
+
+  if (fees24h >= 1_000) score += 5;
+  else if (fees24h >= 300) score += 3;
+  else if (fees24h > 0 && fees24h < 100) score -= 3;
+
+  if (txns24h >= 1_500) score += 4;
+  else if (txns24h >= 700) score += 2;
+  else if (txns24h > 0 && txns24h < 200) score -= 3;
+
+  if (volumeTvlRatio >= 4) score += 3;
+  else if (volumeTvlRatio >= 2) score += 1;
+  else if (volumeTvlRatio > 0 && volumeTvlRatio < 1) score -= 2;
+
+  if (feeRatio >= 0.01) score += 2;
+  else if (feeRatio > 0 && feeRatio < 0.003) score -= 2;
+
+  if (trendState === 'ACCELERATING') score += 3;
+  else if (trendState === 'DECELERATING') score -= 3;
+
+  if (volume24h >= 500_000 && fees24h >= 300 && txns24h >= 500) score += 5;
+  if (volume24h >= 200_000 && (fees24h <= 0 || txns24h <= 0)) score -= 4;
+
+  return score;
+}
+
 function comparePoolsByFeeGeneration(a = {}, b = {}, binStepCandidates = []) {
+  const aLivingFlow = getPoolLivingFlowScore(a);
+  const bLivingFlow = getPoolLivingFlowScore(b);
+  if (aLivingFlow !== bLivingFlow) return bLivingFlow - aLivingFlow;
+
+  const aVolume24h = normalizePoolVolume24h(a);
+  const bVolume24h = normalizePoolVolume24h(b);
+  if (aVolume24h !== bVolume24h) return bVolume24h - aVolume24h;
+
+  const aTxns24h = Number(a?.swapCount24h || a?.txns24hRaw || a?.txns24h || 0);
+  const bTxns24h = Number(b?.swapCount24h || b?.txns24hRaw || b?.txns24h || 0);
+  if (aTxns24h !== bTxns24h) return bTxns24h - aTxns24h;
+
   const aFees24h = normalizePoolFees24h(a);
   const bFees24h = normalizePoolFees24h(b);
   const aHasFees24h = aFees24h !== null;
@@ -110,10 +162,6 @@ function comparePoolsByFeeGeneration(a = {}, b = {}, binStepCandidates = []) {
   const aFeeRatio = normalizeMeteoraFeeTvlRatio(a) ?? -1;
   const bFeeRatio = normalizeMeteoraFeeTvlRatio(b) ?? -1;
   if (aFeeRatio !== bFeeRatio) return bFeeRatio - aFeeRatio;
-
-  const aVolume24h = normalizePoolVolume24h(a);
-  const bVolume24h = normalizePoolVolume24h(b);
-  if (aVolume24h !== bVolume24h) return bVolume24h - aVolume24h;
 
   const aTvl = normalizePoolTotalTvl(a);
   const bTvl = normalizePoolTotalTvl(b);
@@ -836,6 +884,14 @@ export function __volumeTrendSortDeltaForTests(pool = {}) {
 
 export function __poolActivityBiasScoreForTests(pool = {}) {
   return getPoolActivityBiasScore(pool);
+}
+
+export function __poolLivingFlowScoreForTests(pool = {}) {
+  return getPoolLivingFlowScore(pool);
+}
+
+export function __comparePoolsByFeeGenerationForTests(a = {}, b = {}, binStepCandidates = []) {
+  return comparePoolsByFeeGeneration(a, b, binStepCandidates);
 }
 
 export function __screeningRankScoreForTests(pool = {}, pools = []) {

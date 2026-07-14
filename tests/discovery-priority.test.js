@@ -1,7 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { __compareDiscoveryPriorityForTests, __getDiscoveryActivityBiasScoreForTests } from '../src/market/meridianVeto.js';
+import {
+  __compareDiscoveryPriorityForTests,
+  __getDiscoveryActivityBiasScoreForTests,
+  __getDiscoveryLivingFlowScoreForTests,
+} from '../src/market/meridianVeto.js';
 
 test('trending discovery prioritizes higher activity before fee ratio', () => {
   const activeButLowerFee = {
@@ -27,28 +31,30 @@ test('trending discovery prioritizes higher activity before fee ratio', () => {
   assert.equal(out < 0, true);
 });
 
-test('top performers discovery keeps fee efficiency ahead, then activity', () => {
-  const strongerPerformance = {
+test('top performers discovery still prefers living flow before raw fee ratio', () => {
+  const higherFeeButLessAlive = {
     binStep: 100,
     volume24h: 250000,
     swapCount24h: 300,
     feeActiveTvlRatio: 0.045,
     activeTvl: 40000,
+    fees24h: 180,
   };
-  const weakerPerformanceButBusier = {
+  const busierAndAlive = {
     binStep: 100,
     volume24h: 800000,
     swapCount24h: 1500,
     feeActiveTvlRatio: 0.022,
     activeTvl: 42000,
+    fees24h: 1100,
   };
 
-  const out = __compareDiscoveryPriorityForTests(strongerPerformance, weakerPerformanceButBusier, {
+  const out = __compareDiscoveryPriorityForTests(higherFeeButLessAlive, busierAndAlive, {
     binStepPriority: [200, 125, 100],
     priorityMode: 'performance_activity',
   });
 
-  assert.equal(out < 0, true);
+  assert.equal(out > 0, true);
 });
 
 test('discovery priority still respects configured bin-step order first', () => {
@@ -90,4 +96,53 @@ test('activity bias penalizes quiet pools even when they are technically valid',
   };
 
   assert.equal(__getDiscoveryActivityBiasScoreForTests(activePool) > __getDiscoveryActivityBiasScoreForTests(sleepyPool), true);
+});
+
+test('default discovery prefers active spike with real fee flow over dry higher fee ratio pool', () => {
+  const activeSpike = {
+    binStep: 100,
+    volume24h: 980000,
+    fees24h: 1450,
+    swapCount24h: 1850,
+    feeActiveTvlRatio: 0.019,
+    activeTvl: 155000,
+  };
+  const dryHigherRatio = {
+    binStep: 100,
+    volume24h: 92000,
+    fees24h: 72,
+    swapCount24h: 108,
+    feeActiveTvlRatio: 0.034,
+    activeTvl: 18000,
+  };
+
+  const out = __compareDiscoveryPriorityForTests(activeSpike, dryHigherRatio, {
+    binStepPriority: [200, 125, 100],
+    priorityMode: 'fee_first',
+  });
+
+  assert.equal(__getDiscoveryLivingFlowScoreForTests(activeSpike) > __getDiscoveryLivingFlowScoreForTests(dryHigherRatio), true);
+  assert.equal(out < 0, true);
+});
+
+test('discovery living-flow score penalizes volume spikes without supporting fee flow', () => {
+  const supportedSpike = {
+    volume24h: 760000,
+    fees24h: 820,
+    swapCount24h: 1220,
+    feeActiveTvlRatio: 0.016,
+    activeTvl: 110000,
+  };
+  const hollowSpike = {
+    volume24h: 760000,
+    fees24h: 0,
+    swapCount24h: 0,
+    feeActiveTvlRatio: 0.028,
+    activeTvl: 90000,
+  };
+
+  assert.equal(
+    __getDiscoveryLivingFlowScoreForTests(supportedSpike) > __getDiscoveryLivingFlowScoreForTests(hollowSpike),
+    true,
+  );
 });

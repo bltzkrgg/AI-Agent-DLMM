@@ -423,6 +423,42 @@ function getDiscoveryActivityBiasScore(pool = {}) {
   return score;
 }
 
+function getDiscoveryLivingFlowScore(pool = {}) {
+  const volume24h = Number(pool?.volume24h || 0);
+  const feeRatio = Number(pool?.feeActiveTvlRatio || 0);
+  const fees24h = Number(pool?.fees24h || 0);
+  const txns24h = Number(pool?.swapCount24h || 0);
+  const tvl = Number(pool?.activeTvl || pool?.totalTvl || 0);
+  const volumeTvlRatio = tvl > 0 ? volume24h / tvl : 0;
+
+  let score = 0;
+
+  if (volume24h >= 900_000) score += 10;
+  else if (volume24h >= 500_000) score += 7;
+  else if (volume24h >= 200_000) score += 4;
+  else if (volume24h > 0 && volume24h < 60_000) score -= 5;
+
+  if (fees24h >= 1_000) score += 5;
+  else if (fees24h >= 300) score += 3;
+  else if (fees24h > 0 && fees24h < 100) score -= 3;
+
+  if (txns24h >= 1_500) score += 4;
+  else if (txns24h >= 700) score += 2;
+  else if (txns24h > 0 && txns24h < 200) score -= 3;
+
+  if (volumeTvlRatio >= 4) score += 3;
+  else if (volumeTvlRatio >= 2) score += 1;
+  else if (volumeTvlRatio > 0 && volumeTvlRatio < 1) score -= 2;
+
+  if (feeRatio >= 0.01) score += 2;
+  else if (feeRatio > 0 && feeRatio < 0.003) score -= 2;
+
+  if (volume24h >= 500_000 && fees24h >= 300 && txns24h >= 500) score += 5;
+  if (volume24h >= 200_000 && (fees24h <= 0 || txns24h <= 0)) score -= 4;
+
+  return score;
+}
+
 function compareDiscoveryPriority(a = {}, b = {}, {
   binStepPriority = [],
   priorityMode = 'fee_first',
@@ -443,8 +479,11 @@ function compareDiscoveryPriority(a = {}, b = {}, {
   const bTvl = Number(b?.activeTvl || b?.totalTvl || 0);
   const aActivityBias = getDiscoveryActivityBiasScore(a);
   const bActivityBias = getDiscoveryActivityBiasScore(b);
+  const aLivingFlow = getDiscoveryLivingFlowScore(a);
+  const bLivingFlow = getDiscoveryLivingFlowScore(b);
 
   if (priorityMode === 'trend_activity') {
+    if (aLivingFlow !== bLivingFlow) return bLivingFlow - aLivingFlow;
     if (aVolume !== bVolume) return bVolume - aVolume;
     if (aActivityBias !== bActivityBias) return bActivityBias - aActivityBias;
     if (aTxns !== bTxns) return bTxns - aTxns;
@@ -454,18 +493,20 @@ function compareDiscoveryPriority(a = {}, b = {}, {
   }
 
   if (priorityMode === 'performance_activity') {
-    if (aFeeRatio !== bFeeRatio) return bFeeRatio - aFeeRatio;
+    if (aLivingFlow !== bLivingFlow) return bLivingFlow - aLivingFlow;
     if (aActivityBias !== bActivityBias) return bActivityBias - aActivityBias;
+    if (aFeeRatio !== bFeeRatio) return bFeeRatio - aFeeRatio;
     if (aVolume !== bVolume) return bVolume - aVolume;
     if (aTxns !== bTxns) return bTxns - aTxns;
     if (aTvl !== bTvl) return bTvl - aTvl;
     return 0;
   }
 
-  if (aFeeRatio !== bFeeRatio) return bFeeRatio - aFeeRatio;
+  if (aLivingFlow !== bLivingFlow) return bLivingFlow - aLivingFlow;
   if (aActivityBias !== bActivityBias) return bActivityBias - aActivityBias;
   if (aVolume !== bVolume) return bVolume - aVolume;
   if (aTxns !== bTxns) return bTxns - aTxns;
+  if (aFeeRatio !== bFeeRatio) return bFeeRatio - aFeeRatio;
   if (aTvl !== bTvl) return bTvl - aTvl;
   return 0;
 }
@@ -591,6 +632,10 @@ export function __compareDiscoveryPriorityForTests(a, b, opts = {}) {
 
 export function __getDiscoveryActivityBiasScoreForTests(pool = {}) {
   return getDiscoveryActivityBiasScore(pool);
+}
+
+export function __getDiscoveryLivingFlowScoreForTests(pool = {}) {
+  return getDiscoveryLivingFlowScore(pool);
 }
 
 // ── Composite VETO runner ─────────────────────────────────────────
