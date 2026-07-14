@@ -767,6 +767,105 @@ test('final Supertrend deploy gate reuses short canonical bullish cache for live
   assert.equal(calls, 0);
 });
 
+test('final Supertrend deploy gate allows trusted LP watch on usable bullish snapshot even when reclaim is not fully confirmed', async () => {
+  const now = 1_700_000_000_000;
+  let calls = 0;
+  const entryCandles5m = makeDerivedM15Backed5m({
+    nowSec: Math.floor(now / 1000),
+    m15Series: [
+      { open: 95, close: 97, volume: 100 },
+      { open: 97, close: 99, volume: 100 },
+      { open: 99, close: 101, volume: 100 },
+    ],
+  });
+
+  const decision = await getFinalSupertrendDeployDecision({
+    mint: 'Mint111111111111111111111111111111111111111',
+    meta: {
+      queueTrustedWatch: true,
+      entryTimingState: 'ATH_BREAK',
+      entryReadiness: 'HIGH',
+      breakoutQuality: 'STRONG',
+      taTrend: 'BULLISH',
+      entryCanonicalSnapshot: {
+        entryPrice: 101,
+        entryActiveBin: 120,
+      },
+    },
+    now,
+    liveSnapshot: {
+      snapshotAt: now,
+      dataSource: 'meteora-dlmm-ohlcv',
+      quality: { taTrend: 'BULLISH' },
+      ohlcv: {
+        source: 'meteora-dlmm-ohlcv',
+        historySuccess: true,
+        currentPrice: 101,
+        priceChangeM5: 1.0,
+        entryCandles5m,
+      },
+      pool: { activeBinId: 120 },
+      ta: { supertrend: { trend: 'BULLISH', value: 100 } },
+    },
+    checkFn: async () => {
+      calls += 1;
+      return { veto: false, direction: 'BULLISH', reason: 'PASS (should not run)' };
+    },
+  });
+
+  assert.equal(decision.action, 'ALLOW');
+  assert.equal(decision.source, 'live_snapshot');
+  assert.match(decision.reason, /trusted watch live supertrend 15m bullish/i);
+  assert.equal(calls, 0);
+});
+
+test('final Supertrend deploy gate still holds non-trusted LP candidate when reclaim is not fully confirmed', async () => {
+  const now = 1_700_000_000_000;
+  let calls = 0;
+  const entryCandles5m = makeDerivedM15Backed5m({
+    nowSec: Math.floor(now / 1000),
+    m15Series: [
+      { open: 95, close: 97, volume: 100 },
+      { open: 97, close: 99, volume: 100 },
+      { open: 99, close: 101, volume: 100 },
+    ],
+  });
+
+  const decision = await getFinalSupertrendDeployDecision({
+    mint: 'Mint111111111111111111111111111111111111111',
+    meta: {
+      entryCanonicalSnapshot: {
+        entryPrice: 101,
+        entryActiveBin: 120,
+      },
+    },
+    now,
+    liveSnapshot: {
+      snapshotAt: now,
+      dataSource: 'meteora-dlmm-ohlcv',
+      quality: { taTrend: 'BULLISH' },
+      ohlcv: {
+        source: 'meteora-dlmm-ohlcv',
+        historySuccess: true,
+        currentPrice: 101,
+        priceChangeM5: 1.0,
+        entryCandles5m,
+      },
+      pool: { activeBinId: 120 },
+      ta: { supertrend: { trend: 'BULLISH', value: 100 } },
+    },
+    checkFn: async () => {
+      calls += 1;
+      return { veto: false, direction: 'BULLISH', reason: 'PASS (should not run)' };
+    },
+  });
+
+  assert.equal(decision.action, 'HOLD');
+  assert.equal(decision.source, 'live_snapshot');
+  assert.equal(decision.reason, 'closed M15 reclaim needs at least 2 candles above Supertrend; waiting confirmation');
+  assert.equal(calls, 0);
+});
+
 test('final Supertrend deploy gate holds live bullish snapshot when last closed M15 has not reclaimed above Supertrend line', async () => {
   const now = 1_700_000_000_000;
   let calls = 0;

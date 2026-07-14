@@ -505,7 +505,7 @@ export function isReliableLiveSnapshot(snapshot = null) {
   return getLiveSnapshotReliability(snapshot).reliable;
 }
 
-function isUsableLiveExecutionSnapshot(snapshot = null, meta = {}, pool = {}, cfg = getConfig()) {
+function isUsableLiveExecutionSnapshot(snapshot = null, meta = {}, pool = {}, cfg = getConfig(), now = Date.now()) {
   const source = String(snapshot?.ohlcv?.source || snapshot?.dataSource || '').toLowerCase();
   if (!snapshot || !source.includes('meteora-dlmm-ohlcv')) return false;
   const live = readLiveActiveBinState(snapshot, pool, meta);
@@ -532,7 +532,7 @@ function isUsableLiveExecutionSnapshot(snapshot = null, meta = {}, pool = {}, cf
     90_000
   );
   const executionMaxAgeMs = Math.max(strictMaxAgeMs, 180_000);
-  return (Date.now() - snapshotAt) <= executionMaxAgeMs;
+  return (now - snapshotAt) <= executionMaxAgeMs;
 }
 
 export function buildUnreliableLiveSnapshotLog({
@@ -776,7 +776,7 @@ function readLiveActiveBinState(liveSnapshot = null, pool = {}, meta = {}) {
   };
 }
 
-function isFreshLiveSnapshot(liveSnapshot = null, meta = {}, pool = {}, cfg = getConfig()) {
+function isFreshLiveSnapshot(liveSnapshot = null, meta = {}, pool = {}, cfg = getConfig(), now = Date.now()) {
   const source = String(liveSnapshot?.ohlcv?.source || liveSnapshot?.dataSource || '').toLowerCase();
   if (!liveSnapshot || !source) return false;
   if (!source.includes('meteora-dlmm-ohlcv')) return false;
@@ -800,7 +800,7 @@ function isFreshLiveSnapshot(liveSnapshot = null, meta = {}, pool = {}, cfg = ge
     Number(cfg?.entryFreshWatchWindowSec) * 1000 ||
     90_000
   );
-  return (Date.now() - snapshotAt) <= maxAgeMs;
+  return (now - snapshotAt) <= maxAgeMs;
 }
 
 function getLiveUpsideTolerance(liveSnapshot = null, maxDriftPct = 2.5) {
@@ -821,6 +821,7 @@ export function getFinalEntryProximityDecision({
   pool = {},
   liveSnapshot = null,
   cfg = getConfig(),
+  now = Date.now(),
 } = {}) {
   const canonicalMeta = readCanonicalEntryMeta(meta);
   const trustedLpWatch = isTrustedLpWatchMeta(meta);
@@ -830,8 +831,8 @@ export function getFinalEntryProximityDecision({
   const live = readLiveActiveBinState(liveSnapshot, pool, meta);
   const currentPrice = live.currentPrice;
   const activeBinId = live.activeBinId;
-  const freshLiveSnapshot = isFreshLiveSnapshot(liveSnapshot, canonicalMeta, pool, cfg);
-  const executionUsableSnapshot = isUsableLiveExecutionSnapshot(liveSnapshot, canonicalMeta, pool, cfg);
+  const freshLiveSnapshot = isFreshLiveSnapshot(liveSnapshot, canonicalMeta, pool, cfg, now);
+  const executionUsableSnapshot = isUsableLiveExecutionSnapshot(liveSnapshot, canonicalMeta, pool, cfg, now);
   if (!freshLiveSnapshot) {
     if (!trustedLpWatch || !executionUsableSnapshot) {
       return {
@@ -1035,8 +1036,9 @@ export async function getFinalSupertrendDeployDecision({
   const liveTrendState = readCanonicalLiveSnapshotTrend(liveSnapshot);
   const liveTrend = readLiveSnapshotTrend(liveSnapshot);
   const liveReliable = isReliableLiveSnapshot(liveSnapshot);
-  const liveExecutionUsable = isUsableLiveExecutionSnapshot(liveSnapshot, meta, pool, getConfig());
+  const liveExecutionUsable = isUsableLiveExecutionSnapshot(liveSnapshot, meta, pool, getConfig(), now);
   const closedM15Reclaim = readClosedM15SupertrendReclaimState(liveSnapshot, getConfig(), now);
+  const trustedLpWatch = isTrustedLpWatchMeta(meta);
   const cached = readCachedSupertrend15m(meta, pool);
   const fresh = cached.at > 0 && (now - cached.at) <= ttlMs;
   const cachedSource = String(cached.source || 'unknown');
@@ -1077,6 +1079,15 @@ export async function getFinalSupertrendDeployDecision({
   }
   if (liveReliable && liveTrend === 'BULLISH') {
     if (!closedM15Reclaim.known) {
+      if (trustedLpWatch && liveExecutionUsable) {
+        return {
+          ok: true,
+          action: 'ALLOW',
+          reason: 'trusted watch live Supertrend 15m bullish; closed M15 reclaim unavailable but execution snapshot is usable',
+          source: 'live_snapshot',
+          direction: 'BULLISH',
+        };
+      }
       return {
         ok: false,
         action: 'HOLD',
@@ -1095,6 +1106,15 @@ export async function getFinalSupertrendDeployDecision({
       };
     }
     if (closedM15Reclaim.freshWindowOk !== true) {
+      if (trustedLpWatch && liveExecutionUsable) {
+        return {
+          ok: true,
+          action: 'ALLOW',
+          reason: 'trusted watch live Supertrend 15m bullish; closed M15 reclaim not fully confirmed but execution snapshot is usable',
+          source: 'live_snapshot',
+          direction: 'BULLISH',
+        };
+      }
       return {
         ok: false,
         action: 'HOLD',
@@ -1864,7 +1884,7 @@ async function runWatcher() {
         continue;
       }
       if (!isReliableLiveSnapshot(finalLiveSnapshot)) {
-        const executionUsable = isUsableLiveExecutionSnapshot(finalLiveSnapshot, meta, pool, getConfig());
+        const executionUsable = isUsableLiveExecutionSnapshot(finalLiveSnapshot, meta, pool, getConfig(), Date.now());
         if (!executionUsable) {
           entry.nextEligibleAt = Date.now() + 15_000;
           entry.deferReason = 'Final snapshot unreliable; waiting reliable live snapshot';
@@ -1937,6 +1957,7 @@ async function runWatcher() {
         meta,
         pool,
         liveSnapshot: liveSnapshotForDeploy,
+        now: Date.now(),
       });
       if (!proximityDecision.ok) {
         entry.nextEligibleAt = Date.now() + 15_000;
