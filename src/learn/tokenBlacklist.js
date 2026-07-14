@@ -79,6 +79,8 @@ export function addToBlacklist(mint, {
 
 export function isBlacklisted(mint) {
   if (!mint) return false;
+  // Cek allowlist dulu — unblock override blacklist lokal
+  if (isUnblocked(mint)) return false;
   const data  = readBlacklistRaw();
   const entry = data[mint];
   if (!entry) return false;
@@ -92,6 +94,7 @@ export function isBlacklisted(mint) {
   }
   return true;
 }
+
 
 // ── getBlacklistEntry ─────────────────────────────────────────────
 
@@ -124,3 +127,87 @@ export function removeFromBlacklist(mint) {
   }
   return false;
 }
+
+// ══════════════════════════════════════════════════════════════════
+// ALLOWLIST (UNBLOCK) — token-level exception untuk blacklist lokal
+// ══════════════════════════════════════════════════════════════════
+// Format unblock.json:
+// {
+//   "MintAddress123...": {
+//     "token": "bcat",
+//     "operator": "manual_telegram",
+//     "note": "potensi recovery",
+//     "unblockedAt": "2026-07-14T00:00:00.000Z"
+//   }
+// }
+// PENTING: unblock hanya berlaku untuk blacklist lokal.
+// Gate GMGN, Meridian, FlatConfig, dll. tetap berjalan normal.
+
+const UNBLOCK_FILE = join(__dirname, '../../unblock.json');
+
+function readUnblockRaw() {
+  if (!existsSync(UNBLOCK_FILE)) return {};
+  try {
+    return JSON.parse(readFileSync(UNBLOCK_FILE, 'utf-8'));
+  } catch {
+    return {};
+  }
+}
+
+function writeUnblockRaw(data) {
+  try {
+    writeFileSync(UNBLOCK_FILE, JSON.stringify(data, null, 2), 'utf8');
+  } catch (e) {
+    console.warn(`[unblock] write error: ${e.message}`);
+  }
+}
+
+// ── addToUnblocklist ──────────────────────────────────────────────
+
+export function addToUnblocklist(mint, {
+  token    = 'UNKNOWN',
+  operator = 'manual_telegram',
+  note     = '',
+} = {}) {
+  if (!mint || typeof mint !== 'string') return false;
+  const data = readUnblockRaw();
+  data[mint] = {
+    token,
+    operator,
+    note:        String(note).slice(0, 200),
+    unblockedAt: new Date().toISOString(),
+  };
+  writeUnblockRaw(data);
+  console.log(`[unblock] 🔓 ${token} (${mint.slice(0, 8)}) di-unblock — note: ${note || '-'}`);
+  return true;
+}
+
+// ── isUnblocked ───────────────────────────────────────────────────
+
+export function isUnblocked(mint) {
+  if (!mint) return false;
+  const data = readUnblockRaw();
+  return Boolean(data[mint]);
+}
+
+// ── readUnblocklist ───────────────────────────────────────────────
+
+export function readUnblocklist() {
+  const data = readUnblockRaw();
+  return Object.entries(data)
+    .map(([mint, e]) => ({ mint, ...e }))
+    .sort((a, b) => new Date(b.unblockedAt) - new Date(a.unblockedAt));
+}
+
+// ── removeFromUnblocklist ─────────────────────────────────────────
+
+export function removeFromUnblocklist(mint) {
+  const data = readUnblockRaw();
+  if (data[mint]) {
+    delete data[mint];
+    writeUnblockRaw(data);
+    return true;
+  }
+  return false;
+}
+

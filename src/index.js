@@ -22,7 +22,7 @@ import { runLinearLoop, stopLoop, setNotifyFn, setNotifyMuted, isRunning, getCur
 import { getActivePositionCount, reconcileStartupPositions, EP_CONFIG } from './sniper/evilPanda.js';
 import { analyzePerformance, formatEvolutionReport }     from './learn/statelessEvolve.js';
 import { generateBriefing, formatActivePositionsTelegram } from './telegram/briefing.js';
-import { readBlacklist, removeFromBlacklist }            from './learn/tokenBlacklist.js';
+import { readBlacklist, removeFromBlacklist, addToBlacklist, addToUnblocklist, isUnblocked, readUnblocklist, removeFromUnblocklist } from './learn/tokenBlacklist.js';
 import { validateRuntimeEnv }             from './runtime/env.js';
 import { safeNum, escapeHTML }            from './utils/safeJson.js';
 import { formatTakeProfitRiskLabel }      from './utils/exitReasons.js';
@@ -277,7 +277,8 @@ function buildSetconfigSectionMenu() {
       `[ Entry ] [ Watch ]\n` +
       `[ OOR ]\n` +
       `[ Pool Impact Guard ]\n` +
-      `[ Pool Pattern Learning ]\n\n` +
+      `[ Pool Pattern Learning ]\n` +
+      `[ Blocklist ]\n\n` +
       `<i>Klik section untuk lihat key dan contoh /setconfig.</i>`,
     opts: {
       parse_mode: 'HTML',
@@ -304,6 +305,10 @@ function buildSetconfigSectionMenu() {
           [
             { text: 'Pattern', callback_data: 'setconfig_section:poolPatternLearning' },
           ],
+          [
+            { text: '🚫 Block Token', callback_data: 'cmd:/block' },
+            { text: '🔓 Unblock Token', callback_data: 'cmd:/unblock' },
+          ],
         ],
       },
     },
@@ -324,6 +329,8 @@ function buildStartCommandPanel() {
       `/balance — saldo wallet\n` +
       `/config — tampilkan config\n` +
       `/setconfig — ubah config\n` +
+      `/block — block token manual\n` +
+      `/unblock — unblock token dari blacklist\n` +
       `/dryrun — toggle dry run\n` +
       `/stop — hentikan loop\n` +
       `/exit — force exit posisi aktif`,
@@ -351,6 +358,10 @@ function buildStartCommandPanel() {
           [
             { text: '/config', callback_data: 'cmd:/config' },
             { text: '/setconfig', callback_data: 'cmd:/setconfig' },
+          ],
+          [
+            { text: '/block', callback_data: 'cmd:/block' },
+            { text: '/unblock', callback_data: 'cmd:/unblock' },
           ],
           [
             { text: '/dryrun', callback_data: 'cmd:/dryrun' },
@@ -1381,6 +1392,139 @@ bot.onText(/\/blacklist(?:\s+(rm)\s+(\S+))?/, async (msg, match) => {
     `🚫 <b>Token Blacklist</b> (${list.length} total)\n\n` +
     lines.join('\n\n') +
     `\n\n<i>Hapus: /blacklist rm &lt;mint&gt;</i>`,
+    { parse_mode: 'HTML' }
+  );
+});
+
+// ── /unblock — kelola allowlist exception untuk blacklist lokal ───
+// /unblock <ca>        → unblock token (bypass BLACKLIST_LOCAL gate)
+// /unblock off <ca>    → cabut exception, token kembali diblokir
+// /unblock list        → lihat semua token yang sedang di-unblock
+
+bot.onText(/\/unblock(?:\s+(off|list))?(?:\s+(\S+))?(?:\s+(.+))?/, async (msg, match) => {
+  if (!guard(msg)) return;
+  const chatId   = msg.chat.id;
+  const sub      = match[1]?.toLowerCase();
+  const ca       = match[2]?.trim();
+  const note     = match[3]?.trim() || '';
+
+  // /unblock list
+  if (sub === 'list') {
+    const list = readUnblocklist();
+    if (list.length === 0) {
+      bot.sendMessage(chatId, '✅ Tidak ada token yang sedang di-unblock.', { parse_mode: 'HTML' });
+      return;
+    }
+    const lines = list.slice(0, 10).map((e, i) => {
+      const ts = new Date(e.unblockedAt).toLocaleDateString('id-ID');
+      return `${i + 1}. <b>${escapeHTML(e.token)}</b> <code>${(e.mint || '').slice(0, 8)}</code>\n   Unblocked: ${ts}${e.note ? ` · ${escapeHTML(e.note)}` : ''}`;
+    });
+    await sendLong(chatId,
+      `🔓 <b>Unblock Allowlist</b> (${list.length} aktif)\n\n` +
+      lines.join('\n\n') +
+      `\n\n<i>Cabut: /unblock off &lt;ca&gt;</i>`,
+      { parse_mode: 'HTML' }
+    );
+    return;
+  }
+
+  // /unblock off <ca>
+  if (sub === 'off' && ca) {
+    const ok = removeFromUnblocklist(ca);
+    bot.sendMessage(chatId,
+      ok
+        ? `✅ <code>${escapeHTML(ca.slice(0, 8))}</code> dicabut dari allowlist. Token kembali diblokir.`
+        : `⚠️ <code>${escapeHTML(ca.slice(0, 8))}</code> tidak ditemukan di allowlist.`,
+      { parse_mode: 'HTML' }
+    );
+    return;
+  }
+
+  // /unblock <ca> [note]
+  if (ca) {
+    const alreadyUnblocked = isUnblocked(ca);
+    addToUnblocklist(ca, { operator: 'manual_telegram', note });
+    bot.sendMessage(chatId,
+      `🔓 <b>Token di-unblock</b>\n` +
+      `<code>${escapeHTML(ca.slice(0, 8))}</code>\n` +
+      `Akan lolos <code>BLACKLIST_LOCAL</code> gate di scan berikutnya.` +
+      (note ? `\nNote: <i>${escapeHTML(note)}</i>` : '') +
+      (alreadyUnblocked ? `\n\n<i>ℹ️ Token ini sudah di allowlist sebelumnya — entry diperbarui.</i>` : ''),
+      { parse_mode: 'HTML' }
+    );
+    return;
+  }
+
+  // Usage hint
+  bot.sendMessage(chatId,
+    `🔓 <b>/unblock — Kelola Allowlist</b>\n\n` +
+    `<code>/unblock &lt;ca&gt;</code> — unblock token\n` +
+    `<code>/unblock &lt;ca&gt; &lt;note&gt;</code> — unblock + tambah catatan\n` +
+    `<code>/unblock off &lt;ca&gt;</code> — cabut exception\n` +
+    `<code>/unblock list</code> — lihat semua yang di-unblock\n\n` +
+    `<i>⚠️ Unblock hanya bypass BLACKLIST_LOCAL. Gate GMGN, Meridian, dan FlatConfig tetap aktif.</i>`,
+    { parse_mode: 'HTML' }
+  );
+});
+
+// ── /block — block token secara manual dari Telegram ─────────────
+// /block <ca> [note]   → block manual, expires 7 hari
+// /block list          → lihat manual blocks
+
+bot.onText(/\/block(?:\s+(list))?(?:\s+(\S+))?(?:\s+(.+))?/, async (msg, match) => {
+  if (!guard(msg)) return;
+  const chatId = msg.chat.id;
+  const sub    = match[1]?.toLowerCase();
+  const ca     = match[2]?.trim();
+  const note   = match[3]?.trim() || '';
+
+  // /block list
+  if (sub === 'list') {
+    const all = readBlacklist();
+    const manual = all.filter(e => e.reason === 'MANUAL_BLOCK');
+    if (manual.length === 0) {
+      bot.sendMessage(chatId, '✅ Tidak ada manual block aktif.', { parse_mode: 'HTML' });
+      return;
+    }
+    const lines = manual.slice(0, 10).map((e, i) => {
+      const exp = e.expires
+        ? `exp ${new Date(e.expires).toLocaleDateString('id-ID')}`
+        : 'permanent';
+      return `${i + 1}. <b>${escapeHTML(e.token || '?')}</b> <code>${(e.mint || '').slice(0, 8)}</code>\n   ${exp}${e.note ? ` · ${escapeHTML(e.note)}` : ''}`;
+    });
+    await sendLong(chatId,
+      `🚫 <b>Manual Block List</b> (${manual.length} aktif)\n\n` +
+      lines.join('\n\n') +
+      `\n\n<i>Hapus: /blacklist rm &lt;ca&gt;</i>`,
+      { parse_mode: 'HTML' }
+    );
+    return;
+  }
+
+  // /block <ca> [note]
+  if (ca) {
+    addToBlacklist(ca, { token: ca.slice(0, 8), reason: 'MANUAL_BLOCK', note, permanent: false });
+    // Jika token ada di allowlist, cabut dulu agar block efektif
+    const wasUnblocked = isUnblocked(ca);
+    if (wasUnblocked) removeFromUnblocklist(ca);
+    bot.sendMessage(chatId,
+      `🚫 <b>Token diblokir manual</b>\n` +
+      `<code>${escapeHTML(ca.slice(0, 8))}</code>\n` +
+      `Reason: MANUAL_BLOCK · Expires: 7 hari` +
+      (note ? `\nNote: <i>${escapeHTML(note)}</i>` : '') +
+      (wasUnblocked ? `\n\n<i>ℹ️ Token ini ada di allowlist — allowlist dicabut otomatis.</i>` : ''),
+      { parse_mode: 'HTML' }
+    );
+    return;
+  }
+
+  // Usage hint
+  bot.sendMessage(chatId,
+    `🚫 <b>/block — Block Token Manual</b>\n\n` +
+    `<code>/block &lt;ca&gt;</code> — block token (expires 7 hari)\n` +
+    `<code>/block &lt;ca&gt; &lt;note&gt;</code> — block + tambah catatan\n` +
+    `<code>/block list</code> — lihat semua manual block\n\n` +
+    `<i>Hapus block: /blacklist rm &lt;ca&gt;</i>`,
     { parse_mode: 'HTML' }
   );
 });
