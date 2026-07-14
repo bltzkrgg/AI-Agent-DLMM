@@ -124,6 +124,9 @@ function summarizeFinalDeployReason({
     if (lowerReason.includes('snapshot not fresh')) {
       return 'final snapshot not fresh';
     }
+    if (lowerReason.includes('trusted execution snapshot')) {
+      return 'final trusted execution snapshot';
+    }
     if (Number.isFinite(Number(proximityDecision?.priceDriftPct)) || Number.isFinite(Number(proximityDecision?.binDelta))) {
       const drift = Number.isFinite(Number(proximityDecision?.priceDriftPct))
         ? `${Number(proximityDecision.priceDriftPct).toFixed(2)}%`
@@ -190,7 +193,7 @@ export function buildDeployFinalOutcomeTelegramMessage({
     : normalizedOutcome === 'RECONCILE'
       ? `<i>Hasil deploy belum pasti. Cek on-chain sebelum retry manual.</i>`
       : normalizedOutcome === 'HOLD'
-        ? `<i>Snapshot final belum layak. Agent tidak membuka posisi.</i>`
+        ? `<i>Final snapshot belum layak. Agent menahan deploy.</i>`
         : `<i>Masuk mode monitor...</i>`;
 
   return (

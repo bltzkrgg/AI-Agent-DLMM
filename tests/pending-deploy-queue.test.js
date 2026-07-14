@@ -2106,7 +2106,7 @@ test('final deploy outcome messages are explicit for stale hold, success, blocke
   });
   assert.match(holdMsg, /FINAL_DEPLOY_HOLD/);
   assert.match(holdMsg, /final snapshot unavailable/i);
-  assert.match(holdMsg, /Snapshot final belum layak/i);
+  assert.match(holdMsg, /Final snapshot belum layak/i);
 
   const unreliableMsg = buildDeployFinalOutcomeTelegramMessage({
     symbol: 'TEST',
@@ -2125,6 +2125,7 @@ test('final deploy outcome messages are explicit for stale hold, success, blocke
     reason: 'entry proximity unavailable; waiting fresh live price/bin snapshot',
   });
   assert.match(proximityMsg, /final live price\/bin unavailable/i);
+  assert.match(proximityMsg, /Final snapshot belum layak/i);
 
   const driftMsg = buildDeployFinalOutcomeTelegramMessage({
     symbol: 'TEST',
@@ -2134,6 +2135,15 @@ test('final deploy outcome messages are explicit for stale hold, success, blocke
     reason: 'entry proximity drift too wide: upper price drift 3.20% > 2.50%',
   });
   assert.match(driftMsg, /final drift too wide/i);
+
+  const trustedMsg = buildDeployFinalOutcomeTelegramMessage({
+    symbol: 'TEST',
+    attemptId: 'mint-pool-abc123',
+    poolAddress: 'Pool11111111111111111111111111111111111111',
+    outcome: 'HOLD',
+    reason: 'entry proximity within live drift guard on trusted execution snapshot',
+  });
+  assert.match(trustedMsg, /final trusted execution snapshot/i);
 
   const successMsg = buildDeployFinalOutcomeTelegramMessage({
     symbol: 'TEST',
