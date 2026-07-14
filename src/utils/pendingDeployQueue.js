@@ -125,7 +125,7 @@ function summarizeFinalDeployReason({
       return 'final snapshot not fresh';
     }
     if (lowerReason.includes('trusted execution snapshot')) {
-      return 'final trusted execution snapshot';
+      return 'final trusted watch execution snapshot';
     }
     if (Number.isFinite(Number(proximityDecision?.priceDriftPct)) || Number.isFinite(Number(proximityDecision?.binDelta))) {
       const drift = Number.isFinite(Number(proximityDecision?.priceDriftPct))
@@ -898,7 +898,7 @@ export function getFinalEntryProximityDecision({
       action: 'ALLOW',
       reason: freshLiveSnapshot
         ? 'entry proximity within live drift guard'
-        : 'entry proximity within live drift guard on trusted execution snapshot',
+        : 'entry proximity within live drift guard on trusted watch execution snapshot',
       currentPrice,
       activeBinId,
       intentPrice,

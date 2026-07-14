@@ -2242,7 +2242,7 @@ test('final deploy outcome messages are explicit for stale hold, success, blocke
     outcome: 'HOLD',
     reason: 'entry proximity within live drift guard on trusted execution snapshot',
   });
-  assert.match(trustedMsg, /final trusted execution snapshot/i);
+  assert.match(trustedMsg, /final trusted watch execution snapshot/i);
 
   const successMsg = buildDeployFinalOutcomeTelegramMessage({
     symbol: 'TEST',
@@ -2597,7 +2597,7 @@ test('final entry proximity allows trusted LP watch on mildly stale but usable e
   assert.equal(decision.action, 'ALLOW');
   assert.equal(decision.freshLiveSnapshot, false);
   assert.equal(decision.snapshotUsableForExecution, true);
-  assert.match(decision.reason, /trusted execution snapshot/i);
+  assert.match(decision.reason, /trusted watch execution snapshot/i);
 });
 
 test('final entry proximity holds when live price/bin snapshot is unavailable', () => {
