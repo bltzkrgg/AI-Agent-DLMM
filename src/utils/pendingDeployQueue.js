@@ -505,10 +505,31 @@ export function isReliableLiveSnapshot(snapshot = null) {
 function isUsableLiveExecutionSnapshot(snapshot = null, meta = {}, pool = {}, cfg = getConfig()) {
   const source = String(snapshot?.ohlcv?.source || snapshot?.dataSource || '').toLowerCase();
   if (!snapshot || !source.includes('meteora-dlmm-ohlcv')) return false;
-  if (!isFreshLiveSnapshot(snapshot, meta, pool, cfg)) return false;
   const live = readLiveActiveBinState(snapshot, pool, meta);
-  return Number.isFinite(Number(live.currentPrice)) && Number(live.currentPrice) > 0 &&
-    Number.isFinite(Number(live.activeBinId));
+  if (!(Number.isFinite(Number(live.currentPrice)) && Number(live.currentPrice) > 0 &&
+    Number.isFinite(Number(live.activeBinId)))) {
+    return false;
+  }
+  const snapshotAt = readLiveSnapshotAtMs(snapshot, meta, pool);
+  if (!Number.isFinite(snapshotAt) || snapshotAt <= 0) return false;
+  const canonicalWatchWindowSec = Number(
+    meta?.watchWindowSec ||
+    meta?.entryCanonicalSnapshot?.watchWindowSec ||
+    pool?._watchWindowSec ||
+    0
+  );
+  const resolvedWatchWindowMs = Number.isFinite(canonicalWatchWindowSec) && canonicalWatchWindowSec > 0
+    ? canonicalWatchWindowSec * 1000
+    : 0;
+  const strictMaxAgeMs = Math.max(
+    5_000,
+    resolvedWatchWindowMs,
+    Number(cfg?.entryFinalLiveSnapshotMaxAgeMs) ||
+    Number(cfg?.entryFreshWatchWindowSec) * 1000 ||
+    90_000
+  );
+  const executionMaxAgeMs = Math.max(strictMaxAgeMs, 180_000);
+  return (Date.now() - snapshotAt) <= executionMaxAgeMs;
 }
 
 export function buildUnreliableLiveSnapshotLog({
@@ -799,6 +820,7 @@ export function getFinalEntryProximityDecision({
   cfg = getConfig(),
 } = {}) {
   const canonicalMeta = readCanonicalEntryMeta(meta);
+  const trustedLpWatch = isTrustedLpWatchMeta(meta);
   const maxDriftPct = Math.max(0.1, Number(cfg?.entryFinalProximityMaxDriftPct) || 2.5);
   const intentPrice = Number.isFinite(Number(canonicalMeta.entryPrice)) ? Number(canonicalMeta.entryPrice) : null;
   const intentBin = Number.isFinite(Number(canonicalMeta.entryActiveBin)) ? Number(canonicalMeta.entryActiveBin) : null;
@@ -806,19 +828,27 @@ export function getFinalEntryProximityDecision({
   const currentPrice = live.currentPrice;
   const activeBinId = live.activeBinId;
   const freshLiveSnapshot = isFreshLiveSnapshot(liveSnapshot, canonicalMeta, pool, cfg);
+  const executionUsableSnapshot = isUsableLiveExecutionSnapshot(liveSnapshot, canonicalMeta, pool, cfg);
   if (!freshLiveSnapshot) {
-    return {
-      ok: false,
-      action: 'HOLD',
-      reason: 'entry proximity unavailable; waiting fresh live price/bin snapshot',
-      currentPrice,
-      activeBinId,
-      intentPrice,
-      intentBin,
-      priceDriftPct: null,
-      binDelta: null,
-      comparedBy: 'none',
-    };
+    if (!trustedLpWatch || !executionUsableSnapshot) {
+      return {
+        ok: false,
+        action: 'HOLD',
+        reason: 'entry proximity unavailable; waiting fresh live price/bin snapshot',
+        currentPrice,
+        activeBinId,
+        intentPrice,
+        intentBin,
+        priceDriftPct: null,
+        binDelta: null,
+        comparedBy: 'none',
+        snapshotUsableForExecution: executionUsableSnapshot,
+        freshLiveSnapshot,
+      };
+    }
+  }
+  if (!freshLiveSnapshot && trustedLpWatch && executionUsableSnapshot) {
+    // Allow trusted LP watch to continue on mildly stale-but-usable execution snapshots.
   }
   const signedPriceDriftPct = intentPrice > 0 && currentPrice > 0
     ? ((currentPrice - intentPrice) / intentPrice) * 100
@@ -831,7 +861,6 @@ export function getFinalEntryProximityDecision({
     : null;
   const binDelta = Number.isFinite(signedBinDelta) ? Math.abs(signedBinDelta) : null;
   const tolerance = getLiveUpsideTolerance(liveSnapshot, maxDriftPct);
-  const priceExceeded = Number.isFinite(priceDriftPct) && priceDriftPct > maxDriftPct;
   const directionalPriceExceeded = Number.isFinite(signedPriceDriftPct) && (
     signedPriceDriftPct < (-1 * maxDriftPct) ||
     signedPriceDriftPct > tolerance.allowedUpperPriceDriftPct
@@ -854,6 +883,8 @@ export function getFinalEntryProximityDecision({
       priceDriftPct,
       binDelta,
       comparedBy: 'none',
+      snapshotUsableForExecution: executionUsableSnapshot,
+      freshLiveSnapshot,
     };
   }
 
@@ -861,7 +892,9 @@ export function getFinalEntryProximityDecision({
     return {
       ok: true,
       action: 'ALLOW',
-      reason: 'entry proximity within live drift guard',
+      reason: freshLiveSnapshot
+        ? 'entry proximity within live drift guard'
+        : 'entry proximity within live drift guard on trusted execution snapshot',
       currentPrice,
       activeBinId,
       intentPrice,
@@ -873,6 +906,8 @@ export function getFinalEntryProximityDecision({
       allowedUpperPriceDriftPct: tolerance.allowedUpperPriceDriftPct,
       allowedUpperBinDelta: tolerance.allowedUpperBinDelta,
       bullishFastMoveTolerance: tolerance.bullishFastMove,
+      snapshotUsableForExecution: executionUsableSnapshot,
+      freshLiveSnapshot,
       comparedBy: Number.isFinite(priceDriftPct) && Number.isFinite(binDelta)
         ? 'price+bin'
         : Number.isFinite(priceDriftPct)
@@ -911,8 +946,29 @@ export function getFinalEntryProximityDecision({
     allowedUpperPriceDriftPct: tolerance.allowedUpperPriceDriftPct,
     allowedUpperBinDelta: tolerance.allowedUpperBinDelta,
     bullishFastMoveTolerance: tolerance.bullishFastMove,
+    snapshotUsableForExecution: executionUsableSnapshot,
+    freshLiveSnapshot,
     comparedBy: directionalPriceExceeded && directionalBinExceeded ? 'price+bin' : directionalPriceExceeded ? 'price' : 'bin',
   };
+}
+
+function shouldBypassTrustedLpCandleHold({
+  meta = {},
+  decision = {},
+  finalSt = {},
+  proximityDecision = {},
+} = {}) {
+  if (!isTrustedLpWatchMeta(meta)) return false;
+  if (!decision || decision.ok) return false;
+  if (finalSt?.ok !== true || String(finalSt?.direction || '').toUpperCase() !== 'BULLISH') return false;
+  if (proximityDecision?.ok !== true) return false;
+  if (proximityDecision?.snapshotUsableForExecution !== true) return false;
+
+  const code = String(decision.code || '').toUpperCase();
+  return code === 'STALE' ||
+    code === 'M15_STALE' ||
+    code === 'VOLUME_LOOKBACK_UNAVAILABLE' ||
+    code === 'M15_VOLUME_LOOKBACK_UNAVAILABLE';
 }
 
 function clearBullishSupertrendCache(meta = {}, pool = {}) {
@@ -1872,30 +1928,6 @@ async function runWatcher() {
         continue;
       }
 
-      const finalCandle = await ensureFinalEntryCandleSanity({
-        mint,
-        symbol,
-        pool,
-        meta,
-        liveSnapshot: finalLiveSnapshot,
-      });
-      if (!finalCandle.ok) {
-        entry.nextEligibleAt = Date.now() + 15_000;
-        entry.deferReason = finalCandle.reason;
-        console.log(`[QUEUE] ⏸️ ${symbol} HOLD sebelum deploy: ${finalCandle.reason}`);
-        if (isSlotSaturationHoldReason(finalCandle.reason) || isDeploySlotSaturated()) {
-          continue;
-        }
-        logSilentFinalDeployHold({
-          symbol,
-          mint,
-          poolAddress,
-          reason: finalCandle.reason,
-          stage: 'final_candle_hold',
-        });
-        continue;
-      }
-
       let liveSnapshotForDeploy = entry.lastLiveSnapshot || null;
       liveSnapshotForDeploy = finalLiveSnapshot;
       let proximityDecision = getFinalEntryProximityDecision({
@@ -1923,6 +1955,42 @@ async function runWatcher() {
           stage: 'final_proximity_hold',
         });
         continue;
+      }
+
+      const finalCandle = await ensureFinalEntryCandleSanity({
+        mint,
+        symbol,
+        pool,
+        meta,
+        liveSnapshot: finalLiveSnapshot,
+      });
+      if (!finalCandle.ok) {
+        if (shouldBypassTrustedLpCandleHold({
+          meta,
+          decision: finalCandle,
+          finalSt,
+          proximityDecision,
+        })) {
+          console.log(
+            `[QUEUE] ⚠️ ${symbol} bypass final candle HOLD for trusted LP watch ` +
+            `reason=${finalCandle.reason} proximity=${proximityDecision.comparedBy || 'na'}`
+          );
+        } else {
+          entry.nextEligibleAt = Date.now() + 15_000;
+          entry.deferReason = finalCandle.reason;
+          console.log(`[QUEUE] ⏸️ ${symbol} HOLD sebelum deploy: ${finalCandle.reason}`);
+          if (isSlotSaturationHoldReason(finalCandle.reason) || isDeploySlotSaturated()) {
+            continue;
+          }
+          logSilentFinalDeployHold({
+            symbol,
+            mint,
+            poolAddress,
+            reason: finalCandle.reason,
+            stage: 'final_candle_hold',
+          });
+          continue;
+        }
       }
 
       const cfg = getConfig();

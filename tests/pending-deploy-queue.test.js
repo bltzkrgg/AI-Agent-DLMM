@@ -1093,6 +1093,13 @@ test('final entry candle sanity uses cfg entryCandleMaxAgeSec for stale hold', a
   assert.equal(lenient.ok, true);
 });
 
+test('trusted LP watch stale candle bypass is explicitly wired in final deploy flow', () => {
+  const src = readFileSync(join(repoRoot, 'src/utils/pendingDeployQueue.js'), 'utf8');
+  assert.match(src, /function shouldBypassTrustedLpCandleHold\(/);
+  assert.match(src, /if \(shouldBypassTrustedLpCandleHold\(\{/);
+  assert.match(src, /bypass final candle HOLD for trusted LP watch/);
+});
+
 test('final entry candle sanity uses cfg entryMinVolumeRatio and can skip volume confirm', async () => {
   const now = 1_700_000_000_000;
   const pool = {
@@ -2163,12 +2170,19 @@ test('final deploy outcome messages are explicit for stale hold, success, blocke
 
 test('deploy/drop notifications are not gated by hold dedupe helper', () => {
   const src = readFileSync(new URL('../src/utils/pendingDeployQueue.js', import.meta.url), 'utf8');
-  const holdSectionStart = src.indexOf('if (!finalCandle.ok) {');
-  const holdSectionEnd = src.indexOf('let liveSnapshotForDeploy = entry.lastLiveSnapshot || null;', holdSectionStart);
-  const holdSection = src.slice(holdSectionStart, holdSectionEnd);
-  assert.match(holdSection, /isSlotSaturationHoldReason\(/);
-  assert.match(holdSection, /logSilentFinalDeployHold\(/);
-  assert.doesNotMatch(holdSection, /buildDeployFinalOutcomeTelegramMessage\(/);
+  const candleHoldStart = src.indexOf('if (!finalCandle.ok) {');
+  const candleHoldEnd = src.indexOf('const cfg = getConfig();', candleHoldStart);
+  const candleHoldSection = src.slice(candleHoldStart, candleHoldEnd);
+  assert.match(candleHoldSection, /isSlotSaturationHoldReason\(/);
+  assert.match(candleHoldSection, /logSilentFinalDeployHold\(/);
+  assert.doesNotMatch(candleHoldSection, /buildDeployFinalOutcomeTelegramMessage\(/);
+
+  const proximityHoldStart = src.indexOf('if (!proximityDecision.ok) {');
+  const proximityHoldEnd = src.indexOf('const finalCandle = await ensureFinalEntryCandleSanity\({', proximityHoldStart);
+  const proximityHoldSection = src.slice(proximityHoldStart, proximityHoldEnd);
+  assert.match(proximityHoldSection, /logSilentFinalDeployHold\(/);
+  assert.doesNotMatch(proximityHoldSection, /buildDeployFinalOutcomeTelegramMessage\(/);
+
   assert.match(src, /shouldSendDeployQueueHoldNotification\(/);
   assert.match(src, /Deploy Queue Drop/);
   assert.match(src, /DEPLOY ATTEMPT/);
@@ -2447,6 +2461,36 @@ test('final entry proximity race regression only allows fresh near-live snapshot
   assert.equal(freshDecision.comparedBy, 'price+bin');
 });
 
+test('final entry proximity allows trusted LP watch on mildly stale but usable execution snapshot', () => {
+  const now = Date.now();
+  const decision = getFinalEntryProximityDecision({
+    meta: {
+      queueTrustedWatch: true,
+      entryTimingState: 'BREAKOUT',
+      entryReadiness: 'HIGH',
+      breakoutQuality: 'VALID',
+      entryCanonicalSnapshot: {
+        entryPrice: 100,
+        entryActiveBin: 120,
+      },
+    },
+    liveSnapshot: {
+      snapshotAt: now - 120_000,
+      dataSource: 'meteora-dlmm-ohlcv',
+      ohlcv: { currentPrice: 100.25, source: 'meteora-dlmm-ohlcv' },
+      pool: { activeBinId: 121 },
+      ta: { supertrend: { trend: 'BULLISH' } },
+    },
+    cfg: { entryFreshWatchWindowSec: 30 },
+  });
+
+  assert.equal(decision.ok, true);
+  assert.equal(decision.action, 'ALLOW');
+  assert.equal(decision.freshLiveSnapshot, false);
+  assert.equal(decision.snapshotUsableForExecution, true);
+  assert.match(decision.reason, /trusted execution snapshot/i);
+});
+
 test('final entry proximity holds when live price/bin snapshot is unavailable', () => {
   const decision = getFinalEntryProximityDecision({
     meta: {
@@ -2488,6 +2532,30 @@ test('final entry proximity holds when live snapshot is stale', () => {
   assert.equal(decision.ok, false);
   assert.equal(decision.action, 'HOLD');
   assert.match(decision.reason, /entry proximity unavailable/i);
+});
+
+test('final entry proximity keeps non-trusted stale execution snapshot on HOLD', () => {
+  const now = Date.now();
+  const decision = getFinalEntryProximityDecision({
+    meta: {
+      entryCanonicalSnapshot: {
+        entryPrice: 100,
+        entryActiveBin: 120,
+      },
+    },
+    liveSnapshot: {
+      snapshotAt: now - 120_000,
+      dataSource: 'meteora-dlmm-ohlcv',
+      ohlcv: { currentPrice: 100.2, source: 'meteora-dlmm-ohlcv' },
+      pool: { activeBinId: 120 },
+    },
+    cfg: { entryFreshWatchWindowSec: 30 },
+  });
+
+  assert.equal(decision.ok, false);
+  assert.equal(decision.action, 'HOLD');
+  assert.equal(decision.snapshotUsableForExecution, true);
+  assert.match(decision.reason, /fresh live price\/bin snapshot/i);
 });
 
 test('final entry proximity respects canonical watch window for LP live snapshots', () => {
