@@ -2348,6 +2348,7 @@ function deriveBreakoutEntrySignals({ pool = {}, vetoResult = null, marketSnapsh
   const taTrend = canonicalTrend.trend;
 
   const currentPrice = Number(
+    marketSnapshot?.ohlcv?.liveSpotPrice ||
     marketSnapshot?.ohlcv?.currentPrice ||
     marketSnapshot?.price?.currentPrice ||
     pool?.price ||
@@ -3981,6 +3982,7 @@ Balas HANYA JSON valid tanpa Markdown.`;
         return false;
       }
       const finalCurrentPrice =
+        finalMarketSnapshot?.ohlcv?.liveSpotPrice ??
         winner?._entrySignals?.currentPrice ??
         finalMarketSnapshot?.ohlcv?.currentPrice ??
         finalMarketSnapshot?.price?.currentPrice ??

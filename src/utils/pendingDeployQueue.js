@@ -727,6 +727,29 @@ function readLiveSnapshotTrend(liveSnapshot = null) {
   return readCanonicalLiveSnapshotTrend(liveSnapshot).trend;
 }
 
+function readLiveSupertrendSafetyState(liveSnapshot = null, currentPrice = 0) {
+  const liveSpotPrice = Number(
+    liveSnapshot?.ohlcv?.liveSpotPrice ||
+    currentPrice ||
+    liveSnapshot?.ohlcv?.currentPrice ||
+    liveSnapshot?.price?.currentPrice ||
+    0
+  );
+  const supertrendValue = Number(
+    liveSnapshot?.ta?.supertrend?.value ??
+    liveSnapshot?.ohlcv?.ta?.supertrend?.value ??
+    0
+  );
+  const distancePct = liveSpotPrice > 0 && supertrendValue > 0
+    ? ((liveSpotPrice - supertrendValue) / supertrendValue) * 100
+    : null;
+  return {
+    liveSpotPrice: Number.isFinite(liveSpotPrice) && liveSpotPrice > 0 ? liveSpotPrice : null,
+    supertrendValue: Number.isFinite(supertrendValue) && supertrendValue > 0 ? supertrendValue : null,
+    distancePct: Number.isFinite(distancePct) ? distancePct : null,
+  };
+}
+
 function readClosedM15SupertrendReclaimState(liveSnapshot = null, cfg = getConfig(), now = Date.now()) {
   const reclaim = evaluateClosedM15SupertrendReclaim({
     snapshot: liveSnapshot,
@@ -834,25 +857,20 @@ export function getFinalEntryProximityDecision({
   const freshLiveSnapshot = isFreshLiveSnapshot(liveSnapshot, canonicalMeta, pool, cfg, now);
   const executionUsableSnapshot = isUsableLiveExecutionSnapshot(liveSnapshot, canonicalMeta, pool, cfg, now);
   if (!freshLiveSnapshot) {
-    if (!trustedLpWatch || !executionUsableSnapshot) {
-      return {
-        ok: false,
-        action: 'HOLD',
-        reason: 'entry proximity unavailable; waiting fresh live price/bin snapshot',
-        currentPrice,
-        activeBinId,
-        intentPrice,
-        intentBin,
-        priceDriftPct: null,
-        binDelta: null,
-        comparedBy: 'none',
-        snapshotUsableForExecution: executionUsableSnapshot,
-        freshLiveSnapshot,
-      };
-    }
-  }
-  if (!freshLiveSnapshot && trustedLpWatch && executionUsableSnapshot) {
-    // Allow trusted LP watch to continue on mildly stale-but-usable execution snapshots.
+    return {
+      ok: false,
+      action: 'HOLD',
+      reason: 'entry proximity unavailable; waiting fresh live price/bin snapshot',
+      currentPrice,
+      activeBinId,
+      intentPrice,
+      intentBin,
+      priceDriftPct: null,
+      binDelta: null,
+      comparedBy: 'none',
+      snapshotUsableForExecution: executionUsableSnapshot,
+      freshLiveSnapshot,
+    };
   }
   const signedPriceDriftPct = intentPrice > 0 && currentPrice > 0
     ? ((currentPrice - intentPrice) / intentPrice) * 100
@@ -935,10 +953,18 @@ export function getFinalEntryProximityDecision({
       detail.push(`lower active bin delta ${binDelta} > ${FINAL_ENTRY_PROXIMITY_MAX_BIN_DELTA}`);
     }
   }
+  const canResyncIntent = trustedLpWatch &&
+    freshLiveSnapshot &&
+    executionUsableSnapshot &&
+    Number.isFinite(currentPrice) &&
+    currentPrice > 0 &&
+    Number.isSafeInteger(activeBinId);
   return {
     ok: false,
-    action: 'HOLD',
-    reason: `entry proximity drift too wide: ${detail.join(' | ')}`,
+    action: canResyncIntent ? 'RESYNC' : 'HOLD',
+    reason: canResyncIntent
+      ? `entry intent drifted; resync to final live price/bin: ${detail.join(' | ')}`
+      : `entry proximity drift too wide: ${detail.join(' | ')}`,
     currentPrice,
     activeBinId,
     intentPrice,
@@ -956,23 +982,36 @@ export function getFinalEntryProximityDecision({
   };
 }
 
-function shouldBypassTrustedLpCandleHold({
+export function applyFinalEntryIntentResync({
   meta = {},
-  decision = {},
-  finalSt = {},
   proximityDecision = {},
+  now = Date.now(),
 } = {}) {
-  if (!isTrustedLpWatchMeta(meta)) return false;
-  if (!decision || decision.ok) return false;
-  if (finalSt?.ok !== true || String(finalSt?.direction || '').toUpperCase() !== 'BULLISH') return false;
-  if (proximityDecision?.ok !== true) return false;
-  if (proximityDecision?.snapshotUsableForExecution !== true) return false;
-
-  const code = String(decision.code || '').toUpperCase();
-  return code === 'STALE' ||
-    code === 'M15_STALE' ||
-    code === 'VOLUME_LOOKBACK_UNAVAILABLE' ||
-    code === 'M15_VOLUME_LOOKBACK_UNAVAILABLE';
+  if (String(proximityDecision?.action || '').toUpperCase() !== 'RESYNC') return false;
+  const entryPrice = Number(proximityDecision?.currentPrice);
+  const entryActiveBin = Number(proximityDecision?.activeBinId);
+  if (!(Number.isFinite(entryPrice) && entryPrice > 0 && Number.isSafeInteger(entryActiveBin))) {
+    return false;
+  }
+  const existing = meta?.entryCanonicalSnapshot && typeof meta.entryCanonicalSnapshot === 'object'
+    ? meta.entryCanonicalSnapshot
+    : {};
+  meta.entryCanonicalSnapshot = {
+    ...existing,
+    source: 'final_live_resync',
+    entryOrigin: existing.entryOrigin || existing.source || 'final_live_resync',
+    snapshotAt: now,
+    snapshotPrice: entryPrice,
+    entryPrice,
+    entryActiveBin,
+    hasFrozenEntryIntent: true,
+  };
+  meta.snapshotAt = now;
+  meta.snapshotPrice = entryPrice;
+  meta.entryPrice = entryPrice;
+  meta.entryActiveBin = entryActiveBin;
+  meta.hasFrozenEntryIntent = true;
+  return true;
 }
 
 function clearBullishSupertrendCache(meta = {}, pool = {}) {
@@ -1038,7 +1077,7 @@ export async function getFinalSupertrendDeployDecision({
   const liveReliable = isReliableLiveSnapshot(liveSnapshot);
   const liveExecutionUsable = isUsableLiveExecutionSnapshot(liveSnapshot, meta, pool, getConfig(), now);
   const closedM15Reclaim = readClosedM15SupertrendReclaimState(liveSnapshot, getConfig(), now);
-  const trustedLpWatch = isTrustedLpWatchMeta(meta);
+  const liveSafety = readLiveSupertrendSafetyState(liveSnapshot, currentPrice);
   const cached = readCachedSupertrend15m(meta, pool);
   const fresh = cached.at > 0 && (now - cached.at) <= ttlMs;
   const cachedSource = String(cached.source || 'unknown');
@@ -1077,17 +1116,37 @@ export async function getFinalSupertrendDeployDecision({
       direction: 'BEARISH',
     };
   }
+  if (liveSnapshot && liveTrend === 'BULLISH') {
+    if (!(liveSafety.supertrendValue > 0)) {
+      return {
+        ok: false,
+        action: 'HOLD',
+        reason: 'live Supertrend 15m line unavailable; waiting complete final snapshot',
+        source: 'live_snapshot',
+        direction: 'BULLISH',
+      };
+    }
+    if (!(liveSafety.liveSpotPrice > 0)) {
+      return {
+        ok: false,
+        action: 'HOLD',
+        reason: 'live spot price unavailable for final Supertrend safety check',
+        source: 'live_snapshot',
+        direction: 'BULLISH',
+      };
+    }
+    if (liveSafety.liveSpotPrice <= liveSafety.supertrendValue) {
+      return {
+        ok: false,
+        action: 'HOLD',
+        reason: `live spot price is below Supertrend 15m line (${formatPct(liveSafety.distancePct)}); waiting bullish reclaim`,
+        source: 'live_snapshot',
+        direction: 'BULLISH',
+      };
+    }
+  }
   if (liveReliable && liveTrend === 'BULLISH') {
     if (!closedM15Reclaim.known) {
-      if (trustedLpWatch && liveExecutionUsable) {
-        return {
-          ok: true,
-          action: 'ALLOW',
-          reason: 'trusted watch live Supertrend 15m bullish; closed M15 reclaim unavailable but execution snapshot is usable',
-          source: 'live_snapshot',
-          direction: 'BULLISH',
-        };
-      }
       return {
         ok: false,
         action: 'HOLD',
@@ -1106,15 +1165,6 @@ export async function getFinalSupertrendDeployDecision({
       };
     }
     if (closedM15Reclaim.freshWindowOk !== true) {
-      if (trustedLpWatch && liveExecutionUsable) {
-        return {
-          ok: true,
-          action: 'ALLOW',
-          reason: 'trusted watch live Supertrend 15m bullish; closed M15 reclaim not fully confirmed but execution snapshot is usable',
-          source: 'live_snapshot',
-          direction: 'BULLISH',
-        };
-      }
       return {
         ok: false,
         action: 'HOLD',
@@ -1866,7 +1916,7 @@ async function runWatcher() {
         poolAddress || null,
         symbol,
         {
-          includeEntryCandles5m: false,
+          includeEntryCandles5m: true,
           bypassCache: true,
         }
       );
@@ -1909,6 +1959,7 @@ async function runWatcher() {
       entry.lastLiveSnapshot = finalLiveSnapshot;
 
       const currentPrice = Number(
+        finalLiveSnapshot?.ohlcv?.liveSpotPrice ||
         finalLiveSnapshot?.ohlcv?.currentPrice ||
         finalLiveSnapshot?.price?.currentPrice ||
         pool?._entrySignals?.currentPrice ||
@@ -1959,6 +2010,32 @@ async function runWatcher() {
         liveSnapshot: liveSnapshotForDeploy,
         now: Date.now(),
       });
+      if (!proximityDecision.ok && proximityDecision.action === 'RESYNC') {
+        const resyncAt = Date.now();
+        const resynced = applyFinalEntryIntentResync({
+          meta,
+          proximityDecision,
+          now: resyncAt,
+        });
+        if (resynced) {
+          pool._entryActiveBin = Number(proximityDecision.activeBinId);
+          pool._entryPrice = Number(proximityDecision.currentPrice);
+          pool._entryIntentSnapshotAt = resyncAt;
+          console.log(
+            `[QUEUE] 🔄 FINAL_ENTRY_RESYNC ${symbol} ` +
+            `intentBin=${Number.isFinite(proximityDecision.intentBin) ? proximityDecision.intentBin : 'na'} ` +
+            `liveBin=${proximityDecision.activeBinId} ` +
+            `intentPrice=${Number.isFinite(proximityDecision.intentPrice) ? Number(proximityDecision.intentPrice).toFixed(10) : 'na'} ` +
+            `livePrice=${Number(proximityDecision.currentPrice).toFixed(10)}`
+          );
+          proximityDecision = getFinalEntryProximityDecision({
+            meta,
+            pool,
+            liveSnapshot: liveSnapshotForDeploy,
+            now: resyncAt,
+          });
+        }
+      }
       if (!proximityDecision.ok) {
         entry.nextEligibleAt = Date.now() + 15_000;
         entry.deferReason = proximityDecision.reason;
@@ -1989,32 +2066,20 @@ async function runWatcher() {
         liveSnapshot: finalLiveSnapshot,
       });
       if (!finalCandle.ok) {
-        if (shouldBypassTrustedLpCandleHold({
-          meta,
-          decision: finalCandle,
-          finalSt,
-          proximityDecision,
-        })) {
-          console.log(
-            `[QUEUE] ⚠️ ${symbol} bypass final candle HOLD for trusted LP watch ` +
-            `reason=${finalCandle.reason} proximity=${proximityDecision.comparedBy || 'na'}`
-          );
-        } else {
-          entry.nextEligibleAt = Date.now() + 15_000;
-          entry.deferReason = finalCandle.reason;
-          console.log(`[QUEUE] ⏸️ ${symbol} HOLD sebelum deploy: ${finalCandle.reason}`);
-          if (isSlotSaturationHoldReason(finalCandle.reason) || isDeploySlotSaturated()) {
-            continue;
-          }
-          logSilentFinalDeployHold({
-            symbol,
-            mint,
-            poolAddress,
-            reason: finalCandle.reason,
-            stage: 'final_candle_hold',
-          });
+        entry.nextEligibleAt = Date.now() + 15_000;
+        entry.deferReason = finalCandle.reason;
+        console.log(`[QUEUE] ⏸️ ${symbol} HOLD sebelum deploy: ${finalCandle.reason}`);
+        if (isSlotSaturationHoldReason(finalCandle.reason) || isDeploySlotSaturated()) {
           continue;
         }
+        logSilentFinalDeployHold({
+          symbol,
+          mint,
+          poolAddress,
+          reason: finalCandle.reason,
+          stage: 'final_candle_hold',
+        });
+        continue;
       }
 
       const cfg = getConfig();

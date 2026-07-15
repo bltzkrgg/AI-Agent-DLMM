@@ -7,6 +7,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { checkSupertrendVeto } from '../src/market/meridianVeto.js';
 import {
   __resetDeployQueueHoldNotifyState,
+  applyFinalEntryIntentResync,
   buildDeployTriggeredTelegramMessage,
   buildDeployFinalOutcomeTelegramMessage,
   buildUnreliableLiveSnapshotLog,
@@ -767,7 +768,7 @@ test('final Supertrend deploy gate reuses short canonical bullish cache for live
   assert.equal(calls, 0);
 });
 
-test('final Supertrend deploy gate allows trusted LP watch on usable bullish snapshot even when reclaim is not fully confirmed', async () => {
+test('final Supertrend deploy gate does not let trusted LP watch bypass incomplete reclaim', async () => {
   const now = 1_700_000_000_000;
   let calls = 0;
   const entryCandles5m = makeDerivedM15Backed5m({
@@ -813,9 +814,41 @@ test('final Supertrend deploy gate allows trusted LP watch on usable bullish sna
     },
   });
 
-  assert.equal(decision.action, 'ALLOW');
+  assert.equal(decision.action, 'HOLD');
   assert.equal(decision.source, 'live_snapshot');
-  assert.match(decision.reason, /trusted watch live supertrend 15m bullish/i);
+  assert.equal(decision.reason, 'closed M15 reclaim needs at least 2 candles above Supertrend; waiting confirmation');
+  assert.equal(calls, 0);
+});
+
+test('final Supertrend deploy gate holds bullish metadata when live spot is below the ST line', async () => {
+  const now = 1_700_000_000_000;
+  let calls = 0;
+  const decision = await getFinalSupertrendDeployDecision({
+    mint: 'Mint111111111111111111111111111111111111111',
+    now,
+    liveSnapshot: {
+      snapshotAt: now,
+      dataSource: 'meteora-dlmm-ohlcv',
+      quality: { taTrend: 'BULLISH' },
+      ohlcv: {
+        source: 'meteora-dlmm-ohlcv',
+        historySuccess: true,
+        currentPrice: 105,
+        liveSpotPrice: 90,
+      },
+      pool: { activeBinId: 120 },
+      ta: { supertrend: { trend: 'BULLISH', value: 100 } },
+    },
+    currentPrice: 105,
+    checkFn: async () => {
+      calls += 1;
+      return { veto: false, direction: 'BULLISH', reason: 'PASS (should not run)' };
+    },
+  });
+
+  assert.equal(decision.action, 'HOLD');
+  assert.equal(decision.source, 'live_snapshot');
+  assert.match(decision.reason, /live spot price is below Supertrend 15m line/i);
   assert.equal(calls, 0);
 });
 
@@ -1192,11 +1225,11 @@ test('final entry candle sanity uses cfg entryCandleMaxAgeSec for stale hold', a
   assert.equal(lenient.ok, true);
 });
 
-test('trusted LP watch stale candle bypass is explicitly wired in final deploy flow', () => {
+test('trusted LP watch cannot bypass final candle gate', () => {
   const src = readFileSync(join(repoRoot, 'src/utils/pendingDeployQueue.js'), 'utf8');
-  assert.match(src, /function shouldBypassTrustedLpCandleHold\(/);
-  assert.match(src, /if \(shouldBypassTrustedLpCandleHold\(\{/);
-  assert.match(src, /bypass final candle HOLD for trusted LP watch/);
+  assert.doesNotMatch(src, /function shouldBypassTrustedLpCandleHold\(/);
+  assert.doesNotMatch(src, /bypass final candle HOLD for trusted LP watch/);
+  assert.match(src, /includeEntryCandles5m:\s*true,\s*bypassCache:\s*true/s);
 });
 
 test('final entry candle sanity uses cfg entryMinVolumeRatio and can skip volume confirm', async () => {
@@ -2570,7 +2603,7 @@ test('final entry proximity race regression only allows fresh near-live snapshot
   assert.equal(freshDecision.comparedBy, 'price+bin');
 });
 
-test('final entry proximity allows trusted LP watch on mildly stale but usable execution snapshot', () => {
+test('final entry proximity keeps trusted LP watch on HOLD when the final snapshot is stale', () => {
   const now = Date.now();
   const decision = getFinalEntryProximityDecision({
     meta: {
@@ -2593,11 +2626,58 @@ test('final entry proximity allows trusted LP watch on mildly stale but usable e
     cfg: { entryFreshWatchWindowSec: 30 },
   });
 
-  assert.equal(decision.ok, true);
-  assert.equal(decision.action, 'ALLOW');
+  assert.equal(decision.ok, false);
+  assert.equal(decision.action, 'HOLD');
   assert.equal(decision.freshLiveSnapshot, false);
   assert.equal(decision.snapshotUsableForExecution, true);
-  assert.match(decision.reason, /trusted watch execution snapshot/i);
+  assert.match(decision.reason, /fresh live price\/bin snapshot/i);
+});
+
+test('final entry proximity requests live intent resync for trusted watch drift', () => {
+  const now = Date.now();
+  const meta = {
+    queueTrustedWatch: true,
+    entryTimingState: 'BREAKOUT',
+    entryReadiness: 'HIGH',
+    breakoutQuality: 'VALID',
+    entryCanonicalSnapshot: {
+      entryPrice: 100,
+      entryActiveBin: 120,
+      snapshotAt: now - 10_000,
+    },
+  };
+  const liveSnapshot = {
+    snapshotAt: now,
+    dataSource: 'meteora-dlmm-ohlcv',
+    ohlcv: {
+      source: 'meteora-dlmm-ohlcv',
+      currentPrice: 108,
+      liveSpotPrice: 108,
+    },
+    pool: { activeBinId: 128 },
+  };
+
+  const resyncDecision = getFinalEntryProximityDecision({
+    meta,
+    liveSnapshot,
+    cfg: { entryFinalProximityMaxDriftPct: 2.5 },
+    now,
+  });
+  assert.equal(resyncDecision.ok, false);
+  assert.equal(resyncDecision.action, 'RESYNC');
+  assert.equal(applyFinalEntryIntentResync({ meta, proximityDecision: resyncDecision, now }), true);
+  assert.equal(meta.entryCanonicalSnapshot.entryPrice, 108);
+  assert.equal(meta.entryCanonicalSnapshot.entryActiveBin, 128);
+  assert.equal(meta.entryCanonicalSnapshot.source, 'final_live_resync');
+
+  const afterResync = getFinalEntryProximityDecision({
+    meta,
+    liveSnapshot,
+    cfg: { entryFinalProximityMaxDriftPct: 2.5 },
+    now,
+  });
+  assert.equal(afterResync.ok, true);
+  assert.equal(afterResync.action, 'ALLOW');
 });
 
 test('final entry proximity holds when live price/bin snapshot is unavailable', () => {
@@ -2695,6 +2775,9 @@ test('deploy queue applies final entry proximity hold before deploy', () => {
   assert.match(src, /const finalLiveSnapshot = await getDeployQueueLiveSnapshot\(/);
   assert.match(src, /bypassCache:\s*true/);
   assert.match(src, /let proximityDecision = getFinalEntryProximityDecision\(/);
+  assert.match(src, /proximityDecision\.action === 'RESYNC'/);
+  assert.match(src, /applyFinalEntryIntentResync\(\{/);
+  assert.match(src, /FINAL_ENTRY_RESYNC/);
   assert.match(src, /entry\.deferReason = proximityDecision\.reason/);
   assert.match(src, /logSilentFinalDeployHold\(/);
   assert.doesNotMatch(src.slice(src.indexOf('if (!proximityDecision.ok) {'), src.indexOf('const cfg = getConfig();', src.indexOf('if (!proximityDecision.ok) {'))), /buildDeployFinalOutcomeTelegramMessage\(/);
