@@ -29,6 +29,7 @@ import { getRuntimeState }        from '../runtime/state.js';
 import { getPositionRuntimeState, updatePositionRuntimeState } from '../app/positionRuntimeState.js';
 import { evaluatePoolImpactGuard } from '../risk/poolImpactGuard.js';
 import { getExitDisplayMeta, getTakeProfitDisplayLabel, formatTakeProfitRiskLabel } from '../utils/exitReasons.js';
+import { buildClosedPositionReport } from '../utils/exitReport.js';
 import { evaluateClosedM15SupertrendReclaim } from '../utils/entryCandleSanity.js';
 import { escapeHTML, safeParseAI, fetchWithTimeout } from '../utils/safeJson.js';
 import reportManager              from '../utils/reportManager.js';
@@ -460,7 +461,7 @@ function listActivePositions() {
     ).toLowerCase();
     return {
       pubkey,
-      symbol: label.symbol || (meta.tokenXMint ? meta.tokenXMint.slice(0, 8) : pubkey.slice(0, 8)),
+      symbol: label.symbol || meta.symbol || (meta.tokenXMint ? meta.tokenXMint.slice(0, 8) : pubkey.slice(0, 8)),
       poolAddress: meta.poolAddress || '',
       mint: meta.tokenXMint || '',
       entryOrigin,
@@ -1943,30 +1944,39 @@ function buildExitClosedNotification({ positionPubkey, exitMeta, exitResult, bal
   const normalizedExitTitle = String(exitMeta?.title || '').toUpperCase();
   const normalizedExitReason = String(exitMeta?.reasonLabel || '').toUpperCase();
   const isTakeProfitFamily = normalizedExitTitle === 'TAKE PROFIT' || normalizedExitReason.includes('PROFIT TRIGGER');
-  if (isTakeProfitFamily) {
-    const reason = escapeHTML(exitMeta.reasonLabel || 'Trailing Profit Trigger');
-    const compactLines = [
-      `✅ <b>Posisi Di Tutup (TAKE PROFIT)</b>`,
-      `Token : <b>${tokenLabel}</b>`,
-      `Reason: <code>${reason}</code>`,
-    ];
-    const pnlPct = Number(exitResult?.pnlTotalPct ?? exitResult?.realizedTradingPnlPct ?? exitResult?.totalPnlPct ?? exitResult?.pnlPct);
-    if (Number.isFinite(pnlPct)) {
-      const sign = pnlPct >= 0 ? '+' : '';
-      compactLines.push(`Total Exposure PnL: <code>${sign}${pnlPct.toFixed(2)}%</code>`);
-    }
-    const balanceNum = Number(balance);
-    if (Number.isFinite(balanceNum)) {
-      compactLines.push(`Balance: <code>${balanceNum} SOL</code>`);
-    } else {
-      compactLines.push(`Balance: <code>${balance} SOL</code>`);
-    }
+  const isUnifiedPerformanceClose =
+    isTakeProfitFamily ||
+    normalizedExitTitle === 'STOP LOSS' ||
+    normalizedExitTitle === 'MANUAL CLOSE';
+  if (isUnifiedPerformanceClose) {
+    const exitLabel = normalizedExitTitle === 'STOP LOSS'
+      ? 'Stop Loss'
+      : normalizedExitTitle === 'MANUAL CLOSE'
+        ? 'Manual Close'
+        : normalizedExitReason.includes('TRAILING')
+          ? 'Trailing Profit'
+          : 'Take Profit';
+    const extraLines = [];
+    const swapCompletion = String(exitResult?.swapCompletionStatus || '').trim().toLowerCase();
     const autoSwapLine = formatAutoSwapStatusLine(exitResult).trimEnd();
-    if (autoSwapLine) compactLines.push(autoSwapLine);
-    for (const line of formatResidualBalanceLines(exitResult)) {
-      compactLines.push(line);
+    if (autoSwapLine && swapCompletion && swapCompletion !== 'full') {
+      extraLines.push(autoSwapLine);
     }
-    return `${compactLines.join('\n')}`;
+    extraLines.push(...formatResidualBalanceLines(exitResult));
+    return buildClosedPositionReport({
+      tokenLabel,
+      pnlSol: exitResult?.pnlTotalSol ?? exitResult?.realizedTradingPnlSol,
+      pnlPct: exitResult?.pnlTotalPct ?? exitResult?.realizedTradingPnlPct,
+      feesSol: hasFeePnlData(exitResult) ? exitResult?.feePnlSol : null,
+      depositSol: exitResult?.deploySol,
+      takeHomeSol: exitResult?.positionValueSol,
+      exitLabel,
+      openedAt: exitResult?.openedAt,
+      closedAt: exitResult?.closedAt,
+      inRange: exitResult?.inRangeAtClose,
+      rangeLabel: 'Range at Close',
+      extraLines,
+    });
   }
   if (normalizedExitTitle === 'OUT OF RANGE') {
     const lines = [
@@ -4195,6 +4205,7 @@ Balas HANYA JSON valid tanpa Markdown.`;
         });
         await setPositionLifecycle(positionPubkey, 'open', {
           patternLearningEntry: learningFeatures,
+          symbol,
         });
         _positionLabels.set(positionPubkey, { symbol });
         await notify(
@@ -4280,6 +4291,7 @@ async function monitorLoop(positionPubkey, symbol, poolAddress) {
     return;
   }
   _monitoredPositions.add(positionPubkey);
+  _positionLabels.set(positionPubkey, { symbol });
   console.log(`[hunter] 🔒 MONITOR lock: ${positionPubkey.slice(0,8)} | RealtimePnL interval=${Math.round(getRealtimePnlIntervalMs() / 1000)}s`);
   let consecutiveErrors = 0;
   const connection = getConnection();
@@ -4464,6 +4476,7 @@ async function monitorLoop(positionPubkey, symbol, poolAddress) {
         await updatePositionRuntimeState(positionPubkey, oorState.runtimePatch);
       }
       const lifecycleExtra = {
+        symbol,
         currentValueSol,
         pnlPct,
         feePnlSol,

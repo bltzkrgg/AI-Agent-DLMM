@@ -36,7 +36,8 @@ import { clearPositionRuntimeState } from '../app/positionRuntimeState.js';
 import { checkGasGuard } from '../safety/gasGuard.js';
 import { assertRangeDoesNotRequireBinArrayInit, inspectRangeBinArrayInitStatus } from '../solana/meteora.js';
 import { BIN_ARRAY_SIZE, selectRentFreeRange } from '../utils/binRangePolicy.js';
-import { getExitDisplayMeta, normalizeExitReason } from '../utils/exitReasons.js';
+import { normalizeExitReason } from '../utils/exitReasons.js';
+import { buildClosedPositionReport } from '../utils/exitReport.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const HARVEST_LOG = join(__dirname, '../../harvest.log');
@@ -5633,6 +5634,7 @@ export async function exitPosition(positionPubkey, reason = 'MANUAL') {
       let estimatedFeeXRaw = '0';
       let preClosePositionValueSol = 0;
       let preClosePositionValueSource = 'none';
+      let inRangeAtClose = typeof reg?.inRange === 'boolean' ? reg.inRange : null;
       const preCloseTokenXRaw = await getTokenBalanceRaw(reg.tokenXMint).catch(() => '0');
       try {
         const pd = activePos.positionData;
@@ -5641,6 +5643,15 @@ export async function exitPosition(positionPubkey, reason = 'MANUAL') {
         const xDec = xMeta.decimals || 9;
         const yDec = yMeta.decimals || 9;
         const activeBin = await dlmmPool.getActiveBin().catch(() => null);
+        if (
+          Number.isSafeInteger(Number(activeBin?.binId)) &&
+          Number.isFinite(Number(reg?.rangeMin)) &&
+          Number.isFinite(Number(reg?.rangeMax))
+        ) {
+          inRangeAtClose =
+            Number(activeBin.binId) >= Number(reg.rangeMin) &&
+            Number(activeBin.binId) <= Number(reg.rangeMax);
+        }
         const valueSnapshot = await estimatePositionValueSolFromPositionData({
           positionData: pd,
           tokenXMint: reg.tokenXMint,
@@ -5896,6 +5907,7 @@ export async function exitPosition(positionPubkey, reason = 'MANUAL') {
       const pricePnlSol = pnlTotalSol - feePnlSol;
       const finalPnlPct = finalAccounting.realizedTradingPnlPct;
       const normalizedReason = normalizeExitReason(reason, { pnlPct: finalPnlPct, pnlSol: pnlTotalSol });
+      const closedAt = nowIso();
       appendHarvestLog({
         token:          tokenSymbol,
         positionPubkey,
@@ -5908,7 +5920,7 @@ export async function exitPosition(positionPubkey, reason = 'MANUAL') {
         poolAddress: reg.poolAddress || '',
         tokenMint: reg.tokenXMint || '',
         openedAt: reg.deployedAt || null,
-        closedAt: nowIso(),
+        closedAt,
         reason,
         capitalInSol: reg.deploySol || 0,
         capitalOutSol: finalAccounting.positionValueSol,
@@ -5985,6 +5997,11 @@ export async function exitPosition(positionPubkey, reason = 'MANUAL') {
 
       return {
         solRecovered: finalAccounting.walletNetDeltaSol,
+        symbol: reg?.symbol || reg?.patternLearningEntry?.symbol || tokenSymbol,
+        deploySol: reg.deploySol,
+        openedAt: reg.deployedAt || null,
+        closedAt,
+        inRangeAtClose,
         positionValueSol: finalAccounting.positionValueSol,
         walletNetDeltaSol: finalAccounting.walletNetDeltaSol,
         rentRefundSol: finalAccounting.rentRefundSol,
@@ -6139,26 +6156,26 @@ export async function markPositionManuallyClosed(positionPubkey, reason = 'MANUA
   });
 
   const symbol = reg.tokenXMint?.slice(0, 8) || 'UNKNOWN';
-  const pool   = reg.poolAddress?.slice(0, 8) || 'UNKNOWN';
-  const exitMeta = getExitDisplayMeta(reason, normalizedReason);
-  await notify(
-    `ℹ️ <b>Manual close terdeteksi</b>\n` +
-    `Token: <b>${symbol}</b>\n` +
-    `Position: <code>${positionPubkey.slice(0, 8)}</code>\n` +
-    `Pool: <code>${pool}</code>\n` +
-    `Reason: <code>${exitMeta.reasonLabel}</code>\n` +
-    (
-      manualAccounting.accountingStatus === 'manual_close_reconciled_from_snapshot'
-        ? `Total PnL: <code>${manualAccounting.pnlTotalSol.toFixed(6)} SOL / ${manualAccounting.pnlTotalPct > 0 ? '+' : ''}${manualAccounting.pnlTotalPct.toFixed(2)}%</code>\n` +
-          `Fee PnL: <code>${manualAccounting.feePnlSol.toFixed(6)} SOL / ${manualAccounting.feePnlPct > 0 ? '+' : ''}${manualAccounting.feePnlPct.toFixed(2)}%</code>\n` +
-          `Position Value: <code>${manualAccounting.positionValueSol.toFixed(4)} SOL</code>\n` +
-          `<i>PnL manual close direkonsiliasi dari snapshot terakhir bot.</i>`
-        : `Total PnL: <code>n/a</code>\n` +
-          `Fee PnL: <code>${manualAccounting.feePnlSol.toFixed(6)} SOL / ${manualAccounting.feePnlPct > 0 ? '+' : ''}${manualAccounting.feePnlPct.toFixed(2)}%</code>\n` +
-          `Position Value: <code>${manualAccounting.positionValueSol.toFixed(4)} SOL</code>\n` +
-          `<i>PnL manual close belum bisa direkonsiliasi; disimpan sebagai unknown.</i>`
-    )
-  );
+  const reportSymbol =
+    reg?.symbol ||
+    reg?.patternLearningEntry?.symbol ||
+    symbol;
+  const hasReconciledSnapshot = manualAccounting.accountingStatus === 'manual_close_reconciled_from_snapshot';
+  await notify(buildClosedPositionReport({
+    tokenLabel: reportSymbol,
+    pnlSol: hasReconciledSnapshot ? manualAccounting.pnlTotalSol : null,
+    pnlPct: hasReconciledSnapshot ? manualAccounting.pnlTotalPct : null,
+    feesSol: manualAccounting.feePnlAvailable ? manualAccounting.feePnlSol : null,
+    depositSol: manualAccounting.deploySol,
+    takeHomeSol: hasReconciledSnapshot ? manualAccounting.positionValueSol : null,
+    exitLabel: 'Manual Close via Meteora',
+    openedAt: reg.deployedAt || null,
+    closedAt: Date.now(),
+    inRange: typeof reg?.inRange === 'boolean' ? reg.inRange : null,
+    rangeLabel: 'Range at Last Check',
+    estimated: hasReconciledSnapshot,
+    feesFromLastSnapshot: manualAccounting.feePnlAvailable,
+  }));
   console.log(`[evilPanda] Manual close recorded: ${positionPubkey.slice(0,8)} | token=${symbol} | reason=${reason}`);
   return {
     ok: true,
@@ -6298,6 +6315,7 @@ export async function reconcileStartupPositions() {
           row?.entryCanonicalSnapshot?.source ||
           ''
         ),
+        symbol: String(row?.symbol || row?.patternLearningEntry?.symbol || ''),
         currentValueSol: safeNum(row.currentValueSol, 0),
         pnlPct: safeNum(row.pnlPct, 0),
         feePnlSol: Math.max(0, safeNum(row.feePnlSol, 0)),

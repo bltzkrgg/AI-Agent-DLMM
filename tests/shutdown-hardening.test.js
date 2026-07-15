@@ -53,11 +53,11 @@ test('manual close helper records manual withdrawals when called explicitly', ()
   assert.match(evilPandaSrc, /function buildManualCloseAccounting/);
   assert.match(evilPandaSrc, /manual_close_reconciled_from_snapshot/);
   assert.match(evilPandaSrc, /manual_close_pnl_unknown/);
-  assert.match(evilPandaSrc, /Total PnL: <code>/);
-  assert.match(evilPandaSrc, /PnL manual close direkonsiliasi dari snapshot terakhir bot/);
-  assert.match(evilPandaSrc, /PnL manual close belum bisa direkonsiliasi; disimpan sebagai unknown/);
-  assert.match(evilPandaSrc, /getExitDisplayMeta\(reason, normalizedReason\)/);
-  assert.match(evilPandaSrc, /Reason: <code>\$\{exitMeta\.reasonLabel\}<\/code>/);
+  assert.match(evilPandaSrc, /buildClosedPositionReport\(\{/);
+  assert.match(evilPandaSrc, /exitLabel: 'Manual Close via Meteora'/);
+  assert.match(evilPandaSrc, /rangeLabel: 'Range at Last Check'/);
+  assert.match(evilPandaSrc, /estimated: hasReconciledSnapshot/);
+  assert.match(evilPandaSrc, /feesFromLastSnapshot: manualAccounting\.feePnlAvailable/);
   assert.match(hunterSrc, /function resolveTrackedFeeSnapshot/);
   assert.match(hunterSrc, /if \(hasTrackedFeeSnapshot\(status\)\)/);
   assert.match(evilPandaSrc, /appendHarvestLog\(\{\n\s*token: tokenSymbol,\n\s*positionPubkey,/);
@@ -654,22 +654,31 @@ test('exit telegram messages display Meteora fee-only PnL', () => {
 
 test('exit close notifications use unified display metadata for all close families', () => {
   const hunterSrc = readFileSync(hunterPath, 'utf8');
+  const evilPandaSrc = readFileSync(evilPandaPath, 'utf8');
   const exitReasonsSrc = readFileSync(resolve(process.cwd(), 'src/utils/exitReasons.js'), 'utf8');
+  const exitReportSrc = readFileSync(resolve(process.cwd(), 'src/utils/exitReport.js'), 'utf8');
 
   assert.match(hunterSrc, /getExitDisplayMeta/);
   assert.match(hunterSrc, /function buildExitTriggerNotification/);
   assert.match(hunterSrc, /function buildExitClosedNotification/);
+  assert.match(hunterSrc, /buildClosedPositionReport\(\{/);
   assert.match(hunterSrc, /function formatAutoSwapStatusLine/);
   assert.match(hunterSrc, /function formatResidualBalanceLines/);
   assert.match(hunterSrc, /buildExitTriggerNotification\(\{/);
   assert.match(hunterSrc, /buildExitClosedNotification\(\{ positionPubkey, exitMeta, exitResult, balance \}\)/);
-  assert.match(hunterSrc, /Posisi Di Tutup \(\$\{exitMeta\.title\}\)/);
-  assert.match(hunterSrc, /Token : <b>\$\{tokenLabel\}<\/b>/);
+  assert.match(hunterSrc, /isUnifiedPerformanceClose/);
+  assert.match(evilPandaSrc, /symbol: reg\?\.symbol \|\| reg\?\.patternLearningEntry\?\.symbol \|\| tokenSymbol/);
+  assert.match(hunterSrc, /depositSol: exitResult\?\.deploySol/);
+  assert.match(hunterSrc, /inRange: exitResult\?\.inRangeAtClose/);
   assert.match(hunterSrc, /lines\.push\(`Reason: <code>\$\{escapeHTML\(reasonLabel\)\}<\/code>`\)/);
-  assert.match(hunterSrc, /escapeHTML\(exitMeta\.reasonLabel \|\| 'Trailing Profit Trigger'\)/);
   assert.match(hunterSrc, /Reason: <code>\$\{escapeHTML\(exitMeta\.reasonLabel\)\}<\/code>/);
   assert.match(hunterSrc, /Auto Swap: <code>\$\{completionLabel\}<\/code> \| Fee: <code>\$\{feeLabel\}<\/code> \| Residual: <code>\$\{residualLabel\}<\/code>/);
   assert.match(hunterSrc, /Residual Token: <code>/);
+  assert.match(exitReportSrc, /🟢/);
+  assert.match(exitReportSrc, /🔴/);
+  assert.match(exitReportSrc, /⚪/);
+  assert.match(exitReportSrc, /Take Home Pay/);
+  assert.match(exitReportSrc, /Range at Close/);
   assert.match(exitReasonsSrc, /export function getExitDisplayMeta/);
   assert.match(exitReasonsSrc, /Trailing Profit Trigger/);
   assert.match(exitReasonsSrc, /Defensive Exit Trigger/);
