@@ -1278,6 +1278,11 @@ export async function getFinalSupertrendDeployDecision({
 export async function ensureFinalSupertrendBullish(args = {}) {
   const decision = await getFinalSupertrendDeployDecision(args);
   const { meta = {}, pool = {}, now = Date.now() } = args || {};
+  const liveSafety = readLiveSupertrendSafetyState(args?.liveSnapshot, args?.currentPrice);
+  const liveDiagnostics =
+    `livePrice=${Number.isFinite(liveSafety.liveSpotPrice) ? liveSafety.liveSpotPrice.toFixed(10) : 'na'} ` +
+    `stLine=${Number.isFinite(liveSafety.supertrendValue) ? liveSafety.supertrendValue.toFixed(10) : 'na'} ` +
+    `distance=${Number.isFinite(liveSafety.distancePct) ? formatPct(liveSafety.distancePct) : 'UNKNOWN'}`;
   if (decision.direction === 'BULLISH' || decision.direction === 'BEARISH') {
     const stampDirection = decision.direction;
     const stampAt = Number.isFinite(Number(now)) ? Number(now) : Date.now();
@@ -1302,13 +1307,15 @@ export async function ensureFinalSupertrendBullish(args = {}) {
   const label = args.symbol || args.mint?.slice?.(0, 8) || 'UNKNOWN';
   const mintShort = args.mint?.slice?.(0, 8) || 'UNKNOWN';
   if (decision.action === 'ALLOW') {
-    console.log(`[QUEUE] FINAL_ST_GATE_PASS ${label}/${mintShort} source=${decision.source} reason=${decision.reason}`);
+    console.log(`[QUEUE] FINAL_ST_GATE_PASS ${label}/${mintShort} source=${decision.source} ${liveDiagnostics} reason=${decision.reason}`);
   } else if (decision.action === 'VETO') {
-    console.log(`[QUEUE] FINAL_ST_GATE_VETO ${label}/${mintShort} source=${decision.source} direction=${decision.direction} reason=${decision.reason}`);
+    console.log(`[QUEUE] FINAL_ST_GATE_VETO ${label}/${mintShort} source=${decision.source} direction=${decision.direction} ${liveDiagnostics} reason=${decision.reason}`);
+  } else if (decision.source === 'live_snapshot') {
+    console.log(`[QUEUE] FINAL_ST_GATE_HOLD_RULE ${label}/${mintShort} source=${decision.source} direction=${decision.direction} ${liveDiagnostics} reason=${decision.reason}`);
   } else if (decision.source === 'fresh_fetch' || decision.source === 'unknown') {
-    console.log(`[QUEUE] FINAL_ST_GATE_HOLD_ERROR ${label}/${mintShort} source=${decision.source} reason=${decision.reason}`);
+    console.log(`[QUEUE] FINAL_ST_GATE_HOLD_ERROR ${label}/${mintShort} source=${decision.source} ${liveDiagnostics} reason=${decision.reason}`);
   } else {
-    console.log(`[QUEUE] FINAL_ST_GATE_HOLD_STALE ${label}/${mintShort} source=${decision.source} reason=${decision.reason}`);
+    console.log(`[QUEUE] FINAL_ST_GATE_HOLD_STALE ${label}/${mintShort} source=${decision.source} ${liveDiagnostics} reason=${decision.reason}`);
   }
   return decision;
 }

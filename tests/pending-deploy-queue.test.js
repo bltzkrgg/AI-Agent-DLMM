@@ -18,6 +18,7 @@ import {
   getFinalEntryProximityDecision,
   getDeployQueueLiveSnapshot,
   ensureFinalEntryCandleSanity,
+  ensureFinalSupertrendBullish,
   getFinalSupertrendDeployDecision,
   getQueueSize,
   getLiveSnapshotReliability,
@@ -850,6 +851,101 @@ test('final Supertrend deploy gate holds bullish metadata when live spot is belo
   assert.equal(decision.source, 'live_snapshot');
   assert.match(decision.reason, /live spot price is below Supertrend 15m line/i);
   assert.equal(calls, 0);
+});
+
+test('explosive volume cannot bypass the final live Supertrend price invariant', async () => {
+  const now = 1_700_000_000_000;
+  const logs = [];
+  const originalLog = console.log;
+  console.log = (...args) => logs.push(args.join(' '));
+  try {
+    const decision = await ensureFinalSupertrendBullish({
+      mint: 'Mint111111111111111111111111111111111111111',
+      symbol: 'VOLUME',
+      meta: {
+        queueTrustedWatch: true,
+        entryTimingState: 'BREAKOUT',
+        entryReadiness: 'HIGH',
+        breakoutQuality: 'STRONG',
+        volumeTrend: 'ACCELERATING',
+        volume24h: 10_000_000,
+      },
+      now,
+      liveSnapshot: {
+        snapshotAt: now,
+        dataSource: 'meteora-dlmm-ohlcv',
+        quality: { taTrend: 'BULLISH' },
+        ohlcv: {
+          source: 'meteora-dlmm-ohlcv',
+          historySuccess: true,
+          currentPrice: 105,
+          liveSpotPrice: 99,
+          priceChangeM5: 20,
+          volume24h: 10_000_000,
+        },
+        pool: { activeBinId: 120 },
+        ta: { supertrend: { trend: 'BULLISH', value: 100 } },
+      },
+      currentPrice: 105,
+      checkFn: async () => ({ veto: false, direction: 'BULLISH', reason: 'PASS (should not run)' }),
+    });
+
+    assert.equal(decision.action, 'HOLD');
+    assert.match(decision.reason, /live spot price is below Supertrend 15m line/i);
+  } finally {
+    console.log = originalLog;
+  }
+
+  const holdLine = logs.find((line) => line.includes('FINAL_ST_GATE_HOLD_RULE')) || '';
+  assert.match(holdLine, /livePrice=99\.0000000000/);
+  assert.match(holdLine, /stLine=100\.0000000000/);
+  assert.match(holdLine, /distance=-1\.00%/);
+  assert.doesNotMatch(holdLine, /FINAL_ST_GATE_HOLD_STALE/);
+});
+
+test('explosive volume cannot bypass incomplete closed M15 reclaim', async () => {
+  const now = 1_700_000_000_000;
+  const entryCandles5m = makeDerivedM15Backed5m({
+    nowSec: Math.floor(now / 1000),
+    m15Series: [
+      { open: 95, close: 97, volume: 100 },
+      { open: 97, close: 99, volume: 100 },
+      { open: 99, close: 101, volume: 1_000_000 },
+    ],
+  });
+
+  const decision = await getFinalSupertrendDeployDecision({
+    mint: 'Mint111111111111111111111111111111111111111',
+    meta: {
+      queueTrustedWatch: true,
+      entryTimingState: 'ATH_BREAK',
+      entryReadiness: 'HIGH',
+      breakoutQuality: 'STRONG',
+      volumeTrend: 'ACCELERATING',
+      volume24h: 10_000_000,
+    },
+    now,
+    liveSnapshot: {
+      snapshotAt: now,
+      dataSource: 'meteora-dlmm-ohlcv',
+      quality: { taTrend: 'BULLISH' },
+      ohlcv: {
+        source: 'meteora-dlmm-ohlcv',
+        historySuccess: true,
+        currentPrice: 101,
+        liveSpotPrice: 101,
+        priceChangeM5: 20,
+        volume24h: 10_000_000,
+        entryCandles5m,
+      },
+      pool: { activeBinId: 120 },
+      ta: { supertrend: { trend: 'BULLISH', value: 100 } },
+    },
+    checkFn: async () => ({ veto: false, direction: 'BULLISH', reason: 'PASS (should not run)' }),
+  });
+
+  assert.equal(decision.action, 'HOLD');
+  assert.equal(decision.reason, 'closed M15 reclaim needs at least 2 candles above Supertrend; waiting confirmation');
 });
 
 test('final Supertrend deploy gate still holds non-trusted LP candidate when reclaim is not fully confirmed', async () => {
