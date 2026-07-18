@@ -40,6 +40,16 @@ test('/ca handler is registered and exposed in /start help', () => {
   assert.match(content, /bot\.on\('message'/);
 });
 
+test('/paper handler is registered and exposed in /start help', () => {
+  const indexPath = join(__dirname, '../src/index.js');
+  const content = readFileSync(indexPath, 'utf-8');
+
+  assert.match(content, /bot\.onText\(\/\\\/paper\$\//);
+  assert.match(content, /\/paper — laporan posisi paper/);
+  assert.match(content, /formatPaperPositionsTelegram/);
+  assert.match(content, /callback_data: 'cmd:\/paper'/);
+});
+
 test('/strategy_report uses sendLong transport to avoid Telegram length limit issues', () => {
   const indexPath = join(__dirname, '../src/index.js');
   const content = readFileSync(indexPath, 'utf-8');
@@ -92,7 +102,8 @@ test('startup and shutdown banners use the simplified AI-Agent-DLMM text', () =>
   assert.match(content, /\/autoscreen — on\/off auto-screening/);
   assert.match(content, /\/manualexit — on\/off TA-only exit untuk \/ca manual/);
   assert.match(content, /🛑 <b>AI-Agent-DLMM Shutdown<\/b>/);
-  assert.match(content, /Tidak ada posisi aktif\./);
+  assert.match(content, /Tidak ada posisi real aktif\./);
+  assert.match(content, /Paper preserved:/);
   assert.match(content, /✅ AI-Agent-DLMM ready\. Balance:/);
 });
 

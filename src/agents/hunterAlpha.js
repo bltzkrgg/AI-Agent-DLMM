@@ -37,6 +37,7 @@ import pendingStore               from '../utils/pendingStore.js';
 import { enqueueForDeploy, ensureFinalEntryCandleSanity, ensureFinalSupertrendBullish, getDeployQueueLiveSnapshot, getFinalEntryProximityDecision, isFreshDeployMeta, isReliableLiveSnapshot, startDeployQueueWatcher, setDeployQueueNotifyFn, setDeployQueueMonitorFn } from '../utils/pendingDeployQueue.js';
 import { getDeploySlotUsage, reserveDeploySlot, releaseDeploySlot } from '../utils/deploySlotGuard.js';
 import { createPaperPosition, updatePaperPosition, closePaperPosition, getPaperPosition, listPaperPositions, hasPaperPoolPosition } from '../paper/paperPositions.js';
+import { formatPaperOpenedNotification, formatPaperRealtimeNotification, formatPaperClosedNotification } from '../paper/paperReporting.js';
 import { evaluatePositionExitPolicy } from '../utils/positionExitPolicy.js';
 
 const WSOL_MINT = 'So11111111111111111111111111111111111111112';
@@ -3142,15 +3143,12 @@ async function openPaperPositionFromDeployPlan(plan = {}, {
       ? 'quote_only_bin_progress_v1'
       : 'price_proxy_v1',
   });
-  await notify(
-    `🧪 <b>PAPER POSITION OPENED</b>\n` +
-    `Token: <b>${escapeHTML(position.symbol)}</b>\n` +
-    `Pool: <code>${safePoolAddress.slice(0, 8)}</code>\n` +
-    `Paper ID: <code>${position.id.slice(0, 20)}</code>\n` +
-    `Virtual Deposit: <code>${Number(position.deploySol || 0).toFixed(4)} SOL</code>\n` +
-    `Range: <code>${position.rangeMin}-${position.rangeMax}</code>\n` +
-    `<i>Tidak ada modal atau transaksi on-chain.</i>`
+  console.log(
+    `[PAPER] OPEN id=${position.id} symbol=${position.symbol} ` +
+    `pool=${safePoolAddress} deposit=${Number(position.deploySol || 0).toFixed(4)} ` +
+    `range=[${position.rangeMin},${position.rangeMax}]`
   );
+  await notify(formatPaperOpenedNotification(position));
   paperMonitorLoop(position.id).catch((error) => {
     console.error(`[PAPER] monitor crash ${position.symbol}: ${error.message}`);
   });
@@ -3289,21 +3287,26 @@ async function paperMonitorLoop(positionId) {
             feeEstimateMethod: 'unavailable_core_v1',
             feeEstimateConfidence: 'none',
           });
-          const icon = Number(closed?.pnlPct || 0) >= 0 ? '🟢' : '🔴';
-          await notify(
-            `${icon} <b>PAPER CLOSED | ${escapeHTML(position.symbol)}-SOL</b>\n` +
-            `Estimated PnL: <code>${Number(closed?.pnlSol || 0).toFixed(6)} SOL / ` +
-            `${Number(closed?.pnlPct || 0) >= 0 ? '+' : ''}${Number(closed?.pnlPct || 0).toFixed(2)}%</code>\n` +
-            `Estimated Fees: <code>unavailable</code>\n` +
-            `Virtual Deposit: <code>${Number(position.deploySol || 0).toFixed(4)} SOL</code>\n` +
-            `Exit: <code>${escapeHTML(finalAction)}</code>\n` +
-            `<i>${escapeHTML(finalReason)}</i>`
+          console.log(
+            `[PAPER] CLOSE id=${positionId} symbol=${position.symbol} action=${finalAction} ` +
+            `pnlPct=${Number(closed?.pnlPct || 0).toFixed(2)} feeModel=unavailable`
           );
+          await notify(formatPaperClosedNotification({
+            position,
+            closed,
+            action: finalAction,
+            reason: finalReason,
+          }));
           return;
         }
 
         if (shouldLogRealtimePnl(positionId)) {
           logRealtimePnl({ positionPubkey: positionId, symbol: position.symbol, status: finalStatus });
+          await notify(formatPaperRealtimeNotification({
+            position,
+            status: finalStatus,
+            intervalSec: Math.round(getRealtimePnlIntervalMs() / 1000),
+          }));
         }
       } catch (error) {
         console.warn(`[PAPER] monitor data hold ${position.symbol}: ${error.message}`);
@@ -4984,6 +4987,24 @@ export function spawnMonitorForRestoredPositions() {
     spawned++;
   }
   return spawned;
+}
+
+export function getPaperPositions() {
+  return listPaperPositions();
+}
+
+export function spawnMonitorForRestoredPaperPositions() {
+  const active = listPaperPositions();
+  let spawned = 0;
+  for (const position of active) {
+    if (!position?.id || _paperMonitoredPositions.has(position.id)) continue;
+    paperMonitorLoop(position.id).catch((error) => {
+      console.error(`[PAPER] restored monitor crash ${position.symbol || position.id}: ${error.message}`);
+    });
+    spawned++;
+  }
+  console.log(`[PAPER] RESTORE scanned=${active.length} monitorsStarted=${spawned}`);
+  return { scanned: active.length, spawned };
 }
 
 // ── Exit helper ───────────────────────────────────────────────────

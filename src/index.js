@@ -18,7 +18,7 @@ import TelegramBot              from 'node-telegram-bot-api';
 import { existsSync, readFileSync, writeFileSync, unlinkSync } from 'fs';
 import { initSolana, getWalletBalance }   from './solana/wallet.js';
 import { getConfig, updateConfig, isConfigKeySupported, resolveNestedKey, SETCONFIG_WHITELIST } from './config.js';
-import { runLinearLoop, stopLoop, setNotifyFn, setNotifyMuted, isRunning, getCurrentPosition, getActivePositions, setShutdownInProgress, closeAllActivePositionsByUser, closeAllActivePositionsForShutdown, retryFailedShutdownPositions, runAutoscreening, spawnMonitorForRestoredPositions, startManualCloseWatcher, startPendingTaRadarWatcher, stopPendingTaRadarWatcher, startTaWatchWatcher, stopTaWatchWatcher, scanAndDeploy, updatePnlStatus, inventoryManagement, submitManualCaPool } from './agents/hunterAlpha.js';
+import { runLinearLoop, stopLoop, setNotifyFn, setNotifyMuted, isRunning, getCurrentPosition, getActivePositions, getPaperPositions, setShutdownInProgress, closeAllActivePositionsByUser, closeAllActivePositionsForShutdown, retryFailedShutdownPositions, runAutoscreening, spawnMonitorForRestoredPositions, spawnMonitorForRestoredPaperPositions, startManualCloseWatcher, startPendingTaRadarWatcher, stopPendingTaRadarWatcher, startTaWatchWatcher, stopTaWatchWatcher, scanAndDeploy, updatePnlStatus, inventoryManagement, submitManualCaPool } from './agents/hunterAlpha.js';
 import { getActivePositionCount, reconcileStartupPositions, EP_CONFIG } from './sniper/evilPanda.js';
 import { analyzePerformance, formatEvolutionReport }     from './learn/statelessEvolve.js';
 import { generateBriefing, formatActivePositionsTelegram } from './telegram/briefing.js';
@@ -33,6 +33,7 @@ import { deleteRuntimeState, getRuntimeState, setRuntimeState } from './runtime/
 import { startDeployQueueWatcher, stopDeployQueueWatcher, setDeployQueueNotifyFn, setDeployQueueDeployFn, setDeployQueueMonitorFn } from './utils/pendingDeployQueue.js';
 import { deployPosition } from './sniper/evilPanda.js';
 import { sendImmediateTopPoolsReport }    from './agents/hunterAlpha.js';
+import { formatPaperPositionsTelegram }  from './paper/paperReporting.js';
 
 // ── PID Lock — cegah multiple instance ───────────────────────────
 const PID_FILE = new URL('../bot.pid', import.meta.url).pathname;
@@ -332,6 +333,7 @@ function buildStartCommandPanel() {
       `/block — block token manual\n` +
       `/unblock — unblock token dari blacklist\n` +
       `/dryrun — toggle dry run\n` +
+      `/paper — laporan posisi paper\n` +
       `/stop — hentikan loop\n` +
       `/exit — force exit posisi aktif`,
     opts: {
@@ -365,9 +367,10 @@ function buildStartCommandPanel() {
           ],
           [
             { text: '/dryrun', callback_data: 'cmd:/dryrun' },
-            { text: '/stop', callback_data: 'cmd:/stop' },
+            { text: '/paper', callback_data: 'cmd:/paper' },
           ],
           [
+            { text: '/stop', callback_data: 'cmd:/stop' },
             { text: '/exit', callback_data: 'cmd:/exit' },
           ],
         ],
@@ -790,6 +793,7 @@ bot.onText(/\/status/, async (msg) => {
   const running  = isRunning();
   const posKey   = getCurrentPosition();
   const active   = Array.isArray(getActivePositions()) ? getActivePositions() : [];
+  const paper    = Array.isArray(getPaperPositions()) ? getPaperPositions() : [];
   const balance  = await getWalletBalance();
   const cfg      = getConfig();
 
@@ -805,6 +809,7 @@ bot.onText(/\/status/, async (msg) => {
     `Deploy Amount: <code>${cfg.deployAmountSol || 0.1} SOL</code>\n` +
     `${formatTakeProfitRiskLabel(cfg.takeProfitMinNetPnlPct, cfg.stopLossPct)}\n` +
     `Manual TA Exit: <code>${cfg.manualTAExitEnabled ? 'ON' : 'OFF'}</code> <i>(/ca manual attach-only)</i>\n` +
+    `Paper: <code>${paper.length}</code> active | New Entry: <code>${cfg.dryRun ? 'PAPER' : 'REAL'}</code>\n` +
     `Anchor: <code>DLMM active bin</code> | Source: <code>frozen/live fallback</code>\n` +
     `TA: <code>defensive bearish (RSI ref ${cfg.smartExitRsi || 90})</code>`,
     { parse_mode: 'HTML' }
@@ -1209,16 +1214,36 @@ bot.onText(/\/dryrun(?:\s+(on|off))?/, (msg, match) => {
   const chatId  = msg.chat.id;
   const toggle  = match[1]?.toLowerCase();
   if (!toggle) {
+    const paperCount = getPaperPositions().length;
     bot.sendMessage(chatId,
-      `🟡 dryRun: <code>${getConfig().dryRun ? 'ON' : 'OFF'}</code>\n\nGunakan <code>/dryrun on</code> atau <code>/dryrun off</code>`,
+      `🧪 <b>Dry Run</b>\n` +
+      `New Entry: <code>${getConfig().dryRun ? 'PAPER' : 'REAL'}</code>\n` +
+      `Active Paper: <code>${paperCount}</code>\n\n` +
+      `Gunakan <code>/dryrun on</code> atau <code>/dryrun off</code>`,
       { parse_mode: 'HTML' }
     );
     return;
   }
   const enable = toggle === 'on';
   updateConfig({ dryRun: enable });
+  const paperCount = getPaperPositions().length;
   bot.sendMessage(chatId,
-    `${enable ? '🟡' : '🔴'} <b>Dry Run: ${enable ? 'ON' : 'OFF'}</b>`,
+    `🧪 <b>Dry Run: ${enable ? 'ON' : 'OFF'}</b>\n` +
+    `New positions: <code>${enable ? 'PAPER' : 'REAL'}</code>\n` +
+    `Active paper positions: <code>${paperCount}</code>\n` +
+    `<i>Posisi yang sudah terbuka tetap memakai mode awalnya.</i>`,
+    { parse_mode: 'HTML' }
+  );
+});
+
+// /paper — laporan posisi paper aktif
+bot.onText(/\/paper$/, async (msg) => {
+  if (!guard(msg)) return;
+  await sendLong(
+    msg.chat.id,
+    formatPaperPositionsTelegram(getPaperPositions(), {
+      dryRun: getConfig().dryRun === true,
+    }),
     { parse_mode: 'HTML' }
   );
 });
@@ -1716,6 +1741,7 @@ async function restoreAutoScreeningOnStartup({
 
 async function shutdown(signal) {
   console.log(`\n🛑 ${signal} — shutting down...`);
+  const paperCount = getPaperPositions().length;
   setShutdownInProgress(true);
   stopLoop();
   stopScreeningLoop();
@@ -1726,7 +1752,8 @@ async function shutdown(signal) {
   if (active.length > 0) {
     await notify(
       `⚠️ <b>AI-Agent-DLMM Shutdown</b>\n` +
-      `Menutup <code>${active.length}</code> posisi aktif sebelum exit...`
+      `Menutup <code>${active.length}</code> posisi real sebelum exit...\n` +
+      `Paper preserved: <code>${paperCount}</code>`
     ).catch(() => {});
     const summary = await closeAllActivePositionsForShutdown(signal, 10_000);
     if (summary.failed.length > 0) {
@@ -1756,7 +1783,12 @@ async function shutdown(signal) {
       await notify(`✅ <b>Shutdown Complete</b>\nClosed: <code>${summary.closed}/${summary.total}</code>`).catch(() => {});
     }
   } else {
-    await notify(`🛑 <b>AI-Agent-DLMM Shutdown</b>\nTidak ada posisi aktif.`).catch(() => {});
+    await notify(
+      `🛑 <b>AI-Agent-DLMM Shutdown</b>\n` +
+      `Tidak ada posisi real aktif.\n` +
+      `Paper preserved: <code>${paperCount}</code>\n` +
+      `<i>Monitor paper akan dilanjutkan saat agent hidup kembali.</i>`
+    ).catch(() => {});
   }
 
   bot.stopPolling();
@@ -1788,6 +1820,7 @@ setTimeout(async () => {
   try {
     const reconcile = await reconcileStartupPositions();
     const restoredMonitors = spawnMonitorForRestoredPositions();
+    const paperRestore = spawnMonitorForRestoredPaperPositions();
     const manualCloseWatcherStarted = startManualCloseWatcher();
     const balance = await getWalletBalance();
     const cfg     = getConfig();
@@ -1809,6 +1842,7 @@ setTimeout(async () => {
       `${formatTakeProfitRiskLabel(cfg.takeProfitMinNetPnlPct, cfg.stopLossPct)}\n` +
     `Manual TA Exit: <code>${cfg.manualTAExitEnabled ? 'ON' : 'OFF'}</code> <i>(/ca manual attach-only)</i>\n` +
       `Reconcile: <code>${reconcile.restored}/${reconcile.scanned}</code>\n` +
+    `Paper Restore: <code>${paperRestore.spawned}/${paperRestore.scanned}</code>\n` +
     `Watch Layer: <code>${cfg.taWatchEnabled === false ? 'OFF' : 'ON'}</code> | ` +
     `Radar: <code>${cfg.pendingRetestEnabled === false ? 'OFF' : 'ON'}</code>\n` +
     `Auto Screen: <code>${discoveryPaused ? 'OFF by /stop' : autoScr ? `ON (${cfg.screeningIntervalMin}m)` : 'OFF'}</code>\n` +

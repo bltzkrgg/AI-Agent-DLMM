@@ -13,6 +13,8 @@ test('shutdown orchestration calls close + retry helpers', () => {
   assert.match(src, /closeAllActivePositionsForShutdown/);
   assert.match(src, /retryFailedShutdownPositions/);
   assert.match(src, /setShutdownInProgress\(true\)/);
+  assert.match(src, /const paperCount = getPaperPositions\(\)\.length/);
+  assert.match(src, /Paper preserved: <code>\$\{paperCount\}<\/code>/);
 });
 
 test('hunter has shutdown guard and closing idempotency guard', () => {

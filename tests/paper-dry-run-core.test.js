@@ -89,3 +89,26 @@ test('deploy execution no longer branches on the mutable global dry-run toggle',
   assert.doesNotMatch(src, /isDryRun\(\)/);
   assert.match(src, /const paperMode = executionMode === 'paper'/);
 });
+
+test('paper monitors restore after restart and remain isolated from real shutdown closes', () => {
+  const hunterSrc = readFileSync(hunterPath, 'utf8');
+
+  assert.match(hunterSrc, /export function spawnMonitorForRestoredPaperPositions\(\)/);
+  assert.match(hunterSrc, /paperMonitorLoop\(position\.id\)/);
+  assert.match(hunterSrc, /\[PAPER\] RESTORE scanned=/);
+  const restoreAt = hunterSrc.indexOf('export function spawnMonitorForRestoredPaperPositions');
+  const restoreBlock = hunterSrc.slice(restoreAt, hunterSrc.indexOf('// ── Exit helper', restoreAt));
+  assert.doesNotMatch(restoreBlock, /safeExit\(/);
+  assert.doesNotMatch(restoreBlock, /exitPosition\(/);
+});
+
+test('paper monitor sends realtime paper reporting on the configured interval', () => {
+  const hunterSrc = readFileSync(hunterPath, 'utf8');
+  const monitorAt = hunterSrc.indexOf('async function paperMonitorLoop');
+  const monitorEnd = hunterSrc.indexOf('function getIdleDelayMin', monitorAt);
+  const monitorBlock = hunterSrc.slice(monitorAt, monitorEnd);
+
+  assert.match(monitorBlock, /shouldLogRealtimePnl\(positionId\)/);
+  assert.match(monitorBlock, /formatPaperRealtimeNotification/);
+  assert.match(monitorBlock, /getRealtimePnlIntervalMs\(\)/);
+});

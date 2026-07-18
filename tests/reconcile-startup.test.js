@@ -27,6 +27,8 @@ test('index boot sequence calls reconcileStartupPositions and reports summary', 
   assert.match(src, /reconcileStartupPositions/);
   assert.match(src, /const reconcile = await reconcileStartupPositions\(\)/);
   assert.match(src, /Reconcile: <code>\$\{reconcile\.restored\}\/\$\{reconcile\.scanned\}<\/code>/);
+  assert.match(src, /const paperRestore = spawnMonitorForRestoredPaperPositions\(\)/);
+  assert.match(src, /Paper Restore: <code>\$\{paperRestore\.spawned\}\/\$\{paperRestore\.scanned\}<\/code>/);
   assert.match(src, /async function restoreAutoScreeningOnStartup/);
   const restoreStart = src.indexOf('async function restoreAutoScreeningOnStartup');
   assert.notEqual(restoreStart, -1);
