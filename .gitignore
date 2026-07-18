@@ -12,6 +12,7 @@ runtime-state.json
 decision.log
 harvest.log
 position-ledger.jsonl
+paper-position-ledger.jsonl
 tmp/
 .DS_Store
 src/.DS_Store

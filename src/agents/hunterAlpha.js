@@ -19,7 +19,7 @@ import { runMeridianVeto, discoverHighFeePoolsMeridian, isSupportedQuoteToken, g
 import { getMarketSnapshot }      from '../market/oracle.js';
 import { classifyVolumeTrend, evaluatePoolReentryDiscipline, getPoolMemorySignal, recordPoolDecision, recordPoolVolumeSnapshot } from '../market/poolMemory.js';
 import { getPoolInfo }            from '../solana/meteora.js';
-import { deployPosition, monitorPnL, exitPosition, markPositionManuallyClosed, setEvilPandaNotifyFn, setPositionLifecycle, getPositionOnChainStatus, EP_CONFIG, getActivePositionKeys, getPositionMeta, reconcileZombiePositions } from '../sniper/evilPanda.js';
+import { deployPosition, monitorPnL, exitPosition, markPositionManuallyClosed, setEvilPandaNotifyFn, setPositionLifecycle, getPositionOnChainStatus, getAgentDefensiveExitDecision, getNewEntryExecutionMode, EP_CONFIG, getActivePositionKeys, getPositionMeta, reconcileZombiePositions } from '../sniper/evilPanda.js';
 import { createMessage }          from '../agent/provider.js';
 import { getConnection, getWallet, getWalletBalance } from '../solana/wallet.js';
 import { appendDecisionLog }      from '../learn/decisionLog.js';
@@ -36,6 +36,8 @@ import reportManager              from '../utils/reportManager.js';
 import pendingStore               from '../utils/pendingStore.js';
 import { enqueueForDeploy, ensureFinalEntryCandleSanity, ensureFinalSupertrendBullish, getDeployQueueLiveSnapshot, getFinalEntryProximityDecision, isFreshDeployMeta, isReliableLiveSnapshot, startDeployQueueWatcher, setDeployQueueNotifyFn, setDeployQueueMonitorFn } from '../utils/pendingDeployQueue.js';
 import { getDeploySlotUsage, reserveDeploySlot, releaseDeploySlot } from '../utils/deploySlotGuard.js';
+import { createPaperPosition, updatePaperPosition, closePaperPosition, getPaperPosition, listPaperPositions, hasPaperPoolPosition } from '../paper/paperPositions.js';
+import { evaluatePositionExitPolicy } from '../utils/positionExitPolicy.js';
 
 const WSOL_MINT = 'So11111111111111111111111111111111111111112';
 const DLMM_POOL_SEARCH_BASE = 'https://dlmm.datapi.meteora.ag/pools';
@@ -240,7 +242,17 @@ export function setNotifyFn(fn) {
   // Wire deploy queue notify fn agar notif real-time bisa keluar
   setDeployQueueNotifyFn(fn);
   // Wire monitor fn ke deploy queue agar posisi hasil queue masuk monitor loop
-  setDeployQueueMonitorFn((pubkey, sym, poolAddr) => monitorLoop(pubkey, sym, poolAddr));
+  setDeployQueueMonitorFn((positionOrPlan, sym, poolAddr, context = {}) => {
+    if (positionOrPlan && typeof positionOrPlan === 'object' && positionOrPlan.paper === true) {
+      return openPaperPositionFromDeployPlan(positionOrPlan, {
+        symbol: sym,
+        tokenMint: context?.tokenMint || '',
+        poolAddress: poolAddr,
+        entryMetadata: context?.meta || {},
+      });
+    }
+    return monitorLoop(positionOrPlan, sym, poolAddr);
+  });
 }
 export function setNotifyMuted(value) {
   _notifyMuted = Boolean(value);
@@ -429,6 +441,7 @@ let _shutdownInProgress = false;
 const _closingPositions = new Set();
 const _positionLabels = new Map(); // pubkey -> { symbol }
 const _monitoredPositions = new Set();
+const _paperMonitoredPositions = new Set();
 const _lastRealtimePnlLogAt = new Map();
 const _pendingRetestQueue = new Map(); // mint -> { pool, symbol, reason, attempts, nextCheckAt, expiresAt }
 const _taWatchQueue = new Map(); // mint -> { pool, symbol, reason, attempts, nextCheckAt, expiresAt, source }
@@ -474,6 +487,14 @@ function listActivePositions() {
   });
 }
 
+function getEntryExecutionMode(cfg = getConfig()) {
+  return getNewEntryExecutionMode(cfg);
+}
+
+function getEntrySlotUsage(cfg = getConfig()) {
+  return getDeploySlotUsage({ executionMode: getEntryExecutionMode(cfg) });
+}
+
 function isWatcherModeActive() {
   const cfg = getConfig();
   return isRunning() || cfg.autoScreeningEnabled === true || _pendingRetestQueue.size > 0 || _taWatchQueue.size > 0;
@@ -488,12 +509,14 @@ function isAutoScreeningRuntimeEnabled() {
 
 function hasActiveMint(mint) {
   if (!mint) return false;
-  return listActivePositions().some((p) => p.mint === mint);
+  return listActivePositions().some((p) => p.mint === mint) ||
+    listPaperPositions().some((p) => p.tokenMint === mint || p.tokenXMint === mint);
 }
 
 function hasActivePoolAddress(poolAddress) {
   if (!poolAddress) return false;
-  return listActivePositions().some((p) => p.poolAddress === poolAddress);
+  return listActivePositions().some((p) => p.poolAddress === poolAddress) ||
+    hasPaperPoolPosition(poolAddress);
 }
 
 function findManualTaExitAttachmentTarget(activePositions = [], {
@@ -910,7 +933,7 @@ function formatMemorySignal(signal = {}) {
   return `memory=${signal.reason || 'NO_MEMORY'} delta=${delta} lookup=${lookupMs}ms`;
 }
 
-function isDeploySlotSaturated(slotUsage = getDeploySlotUsage()) {
+function isDeploySlotSaturated(slotUsage = getEntrySlotUsage()) {
   const maxPositions = Number(slotUsage?.maxPositions || 0);
   const active = Number(slotUsage?.active || 0);
   const reserved = Number(slotUsage?.reserved || 0);
@@ -920,7 +943,7 @@ function isDeploySlotSaturated(slotUsage = getDeploySlotUsage()) {
 function addWatchPassTa(pool, reason = 'TA PASS', source = 'TA') {
   const cfg = getConfig();
   const watchCfg = getWatchConfig(cfg);
-  const slotUsage = getDeploySlotUsage();
+  const slotUsage = getEntrySlotUsage(cfg);
 
   const mint = getPoolMint(pool);
   if (!mint || hasActiveMint(mint)) return { admitted: false, reason: 'Mint aktif / tidak valid', row: null, evicted: null };
@@ -2766,7 +2789,7 @@ export function startPendingTaRadarWatcher() {
       if (cfg.pendingRetestEnabled === false) return;
       console.log(`[RADAR] 🛰️ heartbeat pending=${_pendingRetestQueue.size} watch=${_taWatchQueue.size}`);
       const ready = await processPendingTaRadar(cfg);
-      const slotUsage = getDeploySlotUsage();
+      const slotUsage = getEntrySlotUsage(cfg);
       const slotSaturated = isDeploySlotSaturated(slotUsage);
       reportManager.setSlotSaturatedSummaryOnly(slotSaturated);
       for (const item of ready) {
@@ -2848,9 +2871,9 @@ async function processTaWatchQueue(cfg = getConfig()) {
     const watchSignals = pool?._entrySignals || {};
     const poolAddress = pool.address || pool.poolAddress || pool.pool || pool.pubkey || '';
     const tokenMint = pool.tokenXMint || pool.tokenX || pool.mint || '';
-    const slotCfg = getDeploySlotUsage();
+    const slotCfg = getEntrySlotUsage(cfg);
     const maxPositions = Number(cfg.maxPositions || slotCfg.maxPositions || 1);
-    const activeCount = getActivePositionKeys().length + Number(slotCfg.reserved || 0);
+    const activeCount = Number(slotCfg.active || 0) + Number(slotCfg.reserved || 0);
 
     if (activeCount >= maxPositions) {
       row.lastReason = `Slot penuh: ${activeCount}/${maxPositions}`;
@@ -3003,6 +3026,298 @@ async function notifyRealtimePnl({ positionPubkey, symbol, status }) {
     `Action: <code>${escapeHTML(status?.action || 'UNKNOWN')}</code>\n` +
     `Interval: <code>${intervalSec}s</code>`
   );
+}
+
+function clamp(value, min = 0, max = 1) {
+  return Math.max(min, Math.min(max, Number(value) || 0));
+}
+
+export function evaluatePaperPositionValue(position = {}, {
+  activeBinId = null,
+  activePrice = null,
+} = {}) {
+  const deploySol = Math.max(0, toFiniteNumber(position?.deploySol, 0));
+  const entryPrice = toFiniteNumber(position?.entryPrice, null);
+  const entryActiveBin = toFiniteNumber(position?.entryActiveBin, null);
+  const currentPrice = toFiniteNumber(activePrice, null);
+  const currentBin = toFiniteNumber(activeBinId, null);
+  const rangeMin = toFiniteNumber(position?.rangeMin, null);
+  const rangeMax = toFiniteNumber(position?.rangeMax, null);
+  const binStep = Math.max(0, toFiniteNumber(position?.binStep, 0));
+  if (
+    !Number.isFinite(entryPrice) ||
+    entryPrice <= 0 ||
+    !Number.isFinite(currentPrice) ||
+    currentPrice <= 0 ||
+    !Number.isSafeInteger(currentBin)
+  ) {
+    return { ok: false, reason: 'PAPER_MARKET_DATA_UNAVAILABLE' };
+  }
+
+  const quoteOnly = String(position?.amountXRaw || '0') === '0';
+  let currentValueSol = deploySol;
+  let virtualTokenFraction = 0;
+  let valuationModel = 'price_proxy_v1';
+
+  if (
+    quoteOnly &&
+    Number.isSafeInteger(entryActiveBin) &&
+    Number.isSafeInteger(rangeMin) &&
+    rangeMin <= entryActiveBin
+  ) {
+    const coveredBins = Math.max(1, entryActiveBin - rangeMin);
+    virtualTokenFraction = clamp((entryActiveBin - currentBin) / coveredBins);
+    const lowestTouchedBin = Math.max(rangeMin, Math.min(entryActiveBin, currentBin));
+    const averageFillBin = entryActiveBin - ((entryActiveBin - lowestTouchedBin) / 2);
+    const averageFillPrice = binStep > 0
+      ? entryPrice * Math.pow(1 + (binStep / 10_000), averageFillBin - entryActiveBin)
+      : entryPrice;
+    const convertedSol = deploySol * virtualTokenFraction;
+    const tokenAmount = averageFillPrice > 0 ? convertedSol / averageFillPrice : 0;
+    currentValueSol = (deploySol - convertedSol) + (tokenAmount * currentPrice);
+    valuationModel = 'quote_only_bin_progress_v1';
+  } else {
+    const seedFraction = clamp(Number(position?.seedPct || 0) / 100);
+    const tokenExposure = seedFraction > 0 ? seedFraction : 0.5;
+    currentValueSol = deploySol * ((1 - tokenExposure) + tokenExposure * (currentPrice / entryPrice));
+  }
+
+  const pnlSol = currentValueSol - deploySol;
+  const pnlPct = deploySol > 0 ? (pnlSol / deploySol) * 100 : 0;
+  const inRange = Number.isSafeInteger(rangeMin) && Number.isSafeInteger(rangeMax)
+    ? currentBin >= rangeMin && currentBin <= rangeMax
+    : false;
+  const outOfRangeSide = inRange
+    ? 'IN_RANGE'
+    : currentBin < rangeMin
+      ? 'LOW'
+      : currentBin > rangeMax
+        ? 'HIGH'
+        : 'UNKNOWN';
+
+  return {
+    ok: true,
+    currentValueSol,
+    pnlSol,
+    pnlPct,
+    pricePnlSol: pnlSol,
+    feePnlSol: 0,
+    feePnlPct: 0,
+    feePnlAvailable: false,
+    feePnlSource: 'paper_estimate_unavailable',
+    activeBinId: currentBin,
+    activePrice: currentPrice,
+    inRange,
+    outOfRangeSide,
+    virtualTokenFraction,
+    valuationModel,
+  };
+}
+
+async function openPaperPositionFromDeployPlan(plan = {}, {
+  symbol = '',
+  tokenMint = '',
+  poolAddress = '',
+  entryMetadata = {},
+} = {}) {
+  const safePoolAddress = String(plan?.poolAddress || poolAddress || '');
+  if (!safePoolAddress) throw new Error('PAPER_DEPLOY_PLAN_MISSING_POOL');
+  if (hasPaperPoolPosition(safePoolAddress)) {
+    throw new Error(`PAPER_POOL_ALREADY_ACTIVE_${safePoolAddress.slice(0, 8)}`);
+  }
+  const position = createPaperPosition({
+    ...plan,
+    poolAddress: safePoolAddress,
+    tokenMint: String(tokenMint || plan?.tokenXMint || ''),
+    tokenXMint: String(plan?.tokenXMint || tokenMint || ''),
+    tokenYMint: String(plan?.tokenYMint || WSOL_MINT),
+    symbol: symbol || String(plan?.tokenXMint || '').slice(0, 8) || 'UNKNOWN',
+    activeBinId: plan?.entryActiveBin,
+    activePrice: plan?.entryPrice,
+    inRange: true,
+    entryMetadata,
+    feeEstimateMethod: 'unavailable_core_v1',
+    feeEstimateConfidence: 'none',
+    valuationModel: String(plan?.amountXRaw || '0') === '0'
+      ? 'quote_only_bin_progress_v1'
+      : 'price_proxy_v1',
+  });
+  await notify(
+    `🧪 <b>PAPER POSITION OPENED</b>\n` +
+    `Token: <b>${escapeHTML(position.symbol)}</b>\n` +
+    `Pool: <code>${safePoolAddress.slice(0, 8)}</code>\n` +
+    `Paper ID: <code>${position.id.slice(0, 20)}</code>\n` +
+    `Virtual Deposit: <code>${Number(position.deploySol || 0).toFixed(4)} SOL</code>\n` +
+    `Range: <code>${position.rangeMin}-${position.rangeMax}</code>\n` +
+    `<i>Tidak ada modal atau transaksi on-chain.</i>`
+  );
+  paperMonitorLoop(position.id).catch((error) => {
+    console.error(`[PAPER] monitor crash ${position.symbol}: ${error.message}`);
+  });
+  return position;
+}
+
+async function paperMonitorLoop(positionId) {
+  if (_paperMonitoredPositions.has(positionId)) return;
+  _paperMonitoredPositions.add(positionId);
+  try {
+    while (!_shutdownInProgress && getPaperPosition(positionId)) {
+      const position = getPaperPosition(positionId);
+      if (!position) return;
+      try {
+        const poolInfo = await getPoolInfo(position.poolAddress);
+        const marked = evaluatePaperPositionValue(position, {
+          activeBinId: poolInfo?.activeBinId,
+          activePrice: poolInfo?.activePrice,
+        });
+        if (!marked.ok) {
+          updatePaperPosition(positionId, {
+            dataState: 'DATA_HOLD',
+            dataHoldReason: marked.reason,
+          });
+          await sleep(EP_CONFIG.MONITOR_INTERVAL_MS);
+          continue;
+        }
+
+        const now = Date.now();
+        const previousSampleAt = Number(position.lastSampleAt || now);
+        const elapsedMs = Math.max(0, now - previousSampleAt);
+        const rangeChecks = Number(position.rangeChecks || 0) + 1;
+        const inRangeChecks = Number(position.inRangeChecks || 0) + (marked.inRange ? 1 : 0);
+        const outOfRangeChecks = Number(position.outOfRangeChecks || 0) + (marked.inRange ? 0 : 1);
+        const poolImpactSamples = [
+          ...(Array.isArray(position.poolImpactSamples) ? position.poolImpactSamples.slice(-19) : []),
+          { activeBin: marked.activeBinId, price: marked.activePrice, at: now },
+        ];
+        const cfg = getConfig();
+        const deterministicExit = evaluatePositionExitPolicy({
+          pnlPct: marked.pnlPct,
+          hwmPct: position.hwmPct,
+          deployedAt: position.deployedAt,
+          nowMs: now,
+          stopLossPct: cfg.stopLossPct,
+          maxHoldHours: cfg.maxHoldHours,
+          takeProfitPct: cfg.trailingStopPct,
+          trailingTriggerPct: cfg.trailingTriggerPct,
+          trailingDropPct: cfg.trailingDropPct,
+        });
+        const status = {
+          ...marked,
+          action: deterministicExit.action,
+          exitScenario: deterministicExit.scenario || null,
+          exitReason: deterministicExit.reason,
+          entryActiveBin: position.entryActiveBin,
+          entryPrice: position.entryPrice,
+          rangeMin: position.rangeMin,
+          rangeMax: position.rangeMax,
+        };
+        const oorState = evaluateOutOfRangeMonitorState({
+          positionPubkey: positionId,
+          symbol: position.symbol,
+          status,
+          runtimeState: position,
+          cfg,
+        });
+        const impactDecision = evaluatePoolImpactGuard({
+          entryActiveBin: position.entryActiveBin,
+          currentActiveBin: marked.activeBinId,
+          previousActiveBin: position.poolImpactSamples?.at(-1)?.activeBin,
+          entryPrice: position.entryPrice,
+          currentPrice: marked.activePrice,
+          previousPrice: position.poolImpactSamples?.at(-1)?.price,
+          lowerBin: position.rangeMin,
+          upperBin: position.rangeMax,
+          recentSamples: poolImpactSamples,
+          config: cfg,
+        });
+
+        let finalAction = deterministicExit.action;
+        let finalReason = deterministicExit.reason;
+        let exitScenario = deterministicExit.scenario || null;
+        if (finalAction === 'HOLD') {
+          const defensive = await getAgentDefensiveExitDecision(position.tokenXMint || position.tokenMint, {
+            ageMs: deterministicExit.ageMs,
+          });
+          if (defensive.shouldExit) {
+            finalAction = 'TAKE_PROFIT';
+            exitScenario = `DEFENSIVE_${defensive.scenario || 'TA'}`;
+            finalReason = defensive.reason;
+          } else if (impactDecision.action === 'FORCE_EXIT') {
+            finalAction = 'POOL_IMPACT_GUARD';
+            finalReason = impactDecision.reasons.join(', ') || 'POOL_IMPACT_GUARD';
+          } else if (oorState.shouldExit) {
+            finalAction = 'OUT_OF_RANGE';
+            finalReason = oorState.exitReason || 'OUT_OF_RANGE';
+          }
+        }
+
+        const finalStatus = {
+          ...status,
+          action: finalAction,
+          exitReason: finalReason,
+          exitScenario,
+        };
+        updatePaperPosition(positionId, {
+          ...marked,
+          ...(oorState.runtimePatch || {}),
+          action: finalAction,
+          exitReason: finalReason,
+          exitScenario,
+          hwmPct: deterministicExit.nextHwmPct,
+          trailingActive: deterministicExit.trailingArmed === true,
+          poolImpactSamples,
+          rangeChecks,
+          inRangeChecks,
+          outOfRangeChecks,
+          inRangePct: rangeChecks > 0 ? (inRangeChecks / rangeChecks) * 100 : null,
+          inRangeMs: Number(position.inRangeMs || 0) + (marked.inRange ? elapsedMs : 0),
+          outOfRangeMs: Number(position.outOfRangeMs || 0) + (marked.inRange ? 0 : elapsedMs),
+          lastSampleAt: now,
+          dataState: 'LIVE',
+        });
+
+        if (finalAction !== 'HOLD') {
+          const closed = closePaperPosition(positionId, {
+            ...marked,
+            action: finalAction,
+            reason: finalAction,
+            closeReason: finalAction,
+            exitReason: finalReason,
+            exitScenario,
+            hwmPct: deterministicExit.nextHwmPct,
+            accountingStatus: 'paper_estimate',
+            feeEstimateMethod: 'unavailable_core_v1',
+            feeEstimateConfidence: 'none',
+          });
+          const icon = Number(closed?.pnlPct || 0) >= 0 ? '🟢' : '🔴';
+          await notify(
+            `${icon} <b>PAPER CLOSED | ${escapeHTML(position.symbol)}-SOL</b>\n` +
+            `Estimated PnL: <code>${Number(closed?.pnlSol || 0).toFixed(6)} SOL / ` +
+            `${Number(closed?.pnlPct || 0) >= 0 ? '+' : ''}${Number(closed?.pnlPct || 0).toFixed(2)}%</code>\n` +
+            `Estimated Fees: <code>unavailable</code>\n` +
+            `Virtual Deposit: <code>${Number(position.deploySol || 0).toFixed(4)} SOL</code>\n` +
+            `Exit: <code>${escapeHTML(finalAction)}</code>\n` +
+            `<i>${escapeHTML(finalReason)}</i>`
+          );
+          return;
+        }
+
+        if (shouldLogRealtimePnl(positionId)) {
+          logRealtimePnl({ positionPubkey: positionId, symbol: position.symbol, status: finalStatus });
+        }
+      } catch (error) {
+        console.warn(`[PAPER] monitor data hold ${position.symbol}: ${error.message}`);
+        updatePaperPosition(positionId, {
+          dataState: 'DATA_HOLD',
+          dataHoldReason: error.message,
+        });
+      }
+      await sleep(EP_CONFIG.MONITOR_INTERVAL_MS);
+    }
+  } finally {
+    _paperMonitoredPositions.delete(positionId);
+    _lastRealtimePnlLogAt.delete(positionId);
+  }
 }
 
 function getIdleDelayMin(cfg = getConfig()) {
@@ -3183,7 +3498,7 @@ export async function scanAndDeploy({ emitFinalReport = true } = {}) {
   };
 
   let winners = [];
-  const slotUsageAtCycleStart = getDeploySlotUsage();
+  const slotUsageAtCycleStart = getEntrySlotUsage(cfg);
   reportManager.setSlotSaturatedSummaryOnly(isDeploySlotSaturated(slotUsageAtCycleStart));
   reportManager.newCycle({ preserveSlotSaturatedSummaryOnly: true });
 
@@ -3400,11 +3715,11 @@ export async function scanAndDeploy({ emitFinalReport = true } = {}) {
     // winners.length = slot yang sudah di-booking siklus ini tapi belum on-chain
     // (anti-race-condition: tanpa ini, 2 token bisa PASS bersamaan di maxPositions=1)
     const slotCfg      = getConfig();
-    const slotUsage    = getDeploySlotUsage();
+    const slotUsage    = getEntrySlotUsage(slotCfg);
     const maxPositions = Number(slotCfg.maxPositions || slotUsage.maxPositions || 1);
-    const activeCount  = getActivePositionKeys().length + winners.length + slotUsage.reserved;
+    const activeCount  = Number(slotUsage.active || 0) + winners.length + slotUsage.reserved;
     if (activeCount >= maxPositions) {
-      const slotReason = `Slot penuh: ${activeCount}/${maxPositions} (${getActivePositionKeys().length} on-chain + ${winners.length} booked + ${slotUsage.reserved} reserved)`;
+      const slotReason = `Slot penuh: ${activeCount}/${maxPositions} (${slotUsage.active} ${slotUsage.executionMode} active + ${winners.length} booked + ${slotUsage.reserved} reserved)`;
       console.log(`[hunter] 🚫 SLOT LIMIT — ${tokenSymbol}: ${slotReason}. LLM di-skip.`);
       reportManager.updateGate(tokenSymbol, 'SCOUT_AGENT', 'DEFER', slotReason);
       reportManager.setFinalVerdict(tokenSymbol, 'DEFERRED', slotReason);
@@ -3558,7 +3873,7 @@ FORMAT JAWABAN (WAJIB JSON VALID, TANPA MARKDOWN):
           if (watchResult.evicted?.pool) {
             addPendingRetest(watchResult.evicted.pool, 'WATCH digeser oleh prioritas lebih kuat');
           }
-          const slotUsage = getDeploySlotUsage();
+          const slotUsage = getEntrySlotUsage(cfg);
           if (!isDeploySlotSaturated(slotUsage)) {
             const slotActive = Number(slotUsage?.active || 0);
             const slotReserved = Number(slotUsage?.reserved || 0);
@@ -3810,7 +4125,7 @@ Balas HANYA JSON valid tanpa Markdown.`;
   const cfg2        = getConfig();
   
   // 1. Kapasitas Slot
-  const usage0 = getDeploySlotUsage();
+  const usage0 = getEntrySlotUsage(cfg2);
   const maxPositions = usage0.maxPositions;
   const activePositionsCount = usage0.active + usage0.reserved;
   let availableSlots = usage0.available;
@@ -3892,7 +4207,8 @@ Balas HANYA JSON valid tanpa Markdown.`;
 
     const deployed = await withDeployLock(async () => {
       const currentCfg = getConfig();
-      const slotUsage = getDeploySlotUsage();
+      const executionMode = getEntryExecutionMode(currentCfg);
+      const slotUsage = getDeploySlotUsage({ executionMode });
       const maxPositionsNow = slotUsage.maxPositions;
       const slotsNow = slotUsage.available;
       if (slotsNow <= 0) {
@@ -4102,6 +4418,7 @@ Balas HANYA JSON valid tanpa Markdown.`;
         symbol,
         poolAddress,
         source: 'scanAndDeploy',
+        executionMode,
         ttlMs: Number(currentCfg.deployTimeoutMs || 180_000) + 60_000,
       });
       if (!slotReservation.ok) {
@@ -4128,6 +4445,7 @@ Balas HANYA JSON valid tanpa Markdown.`;
         let positionPubkey;
         const deployResult = await withTimeout(
           deployPosition(poolAddress, {
+            executionMode,
             hasNonRefundableFees:
               winner?.hasNonRefundableFees ??
               marketSnapshot?.pool?.hasNonRefundableFees ??
@@ -4143,6 +4461,21 @@ Balas HANYA JSON valid tanpa Markdown.`;
           Number(currentCfg.deployTimeoutMs || 180_000),
           'DEPLOY'
         );
+        if (deployResult && typeof deployResult === 'object' && deployResult.paper === true) {
+          const paperPosition = await openPaperPositionFromDeployPlan(deployResult, {
+            symbol,
+            tokenMint,
+            poolAddress,
+            entryMetadata: finalCanonicalEntrySnapshot,
+          });
+          if (winner._record) {
+            recordGate(winner._record, 'SCOUT_AGENT', 'PASS', 'Paper position opened', {
+              executionMode: 'paper',
+              paperPositionId: paperPosition.id,
+            });
+          }
+          return true;
+        }
         if (deployResult && typeof deployResult === 'object' && deployResult.dryRun) {
           if (winner._record) {
             recordGate(winner._record, 'SCOUT_AGENT', 'DEFER', 'Dry-run simulation');
@@ -4265,7 +4598,7 @@ Balas HANYA JSON valid tanpa Markdown.`;
       console.log('[hunter] Final cycle report disenyapkan untuk first-run autoscreen.');
       return;
     }
-    if (isDeploySlotSaturated(getDeploySlotUsage())) {
+    if (isDeploySlotSaturated(getEntrySlotUsage())) {
       console.log('[hunter] Final cycle report disenyapkan karena slot penuh.');
       return;
     }
@@ -5053,7 +5386,7 @@ export async function sendImmediateTopPoolsReport(chatId) {
     }
 
     const screeningTopPoolsLimit = Math.max(1, Number(cfg.screeningTopPoolsLimit) || 5);
-    const slotSaturated = isDeploySlotSaturated(getDeploySlotUsage());
+    const slotSaturated = isDeploySlotSaturated(getEntrySlotUsage(cfg));
     const screeningRankContext = buildScreeningRankContext(rawPools);
     rawPools.forEach((pool) => annotatePoolScreeningRank(pool, screeningRankContext));
 

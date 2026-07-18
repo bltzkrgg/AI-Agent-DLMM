@@ -2,6 +2,7 @@
 
 import { getConfig } from '../config.js';
 import { getActivePositionKeys } from '../sniper/evilPanda.js';
+import { getPaperPositionCount } from '../paper/paperPositions.js';
 import { flushRuntimeState, getRuntimeState, setRuntimeState } from '../runtime/state.js';
 
 const SLOT_STATE_KEY = 'deploySlotReservations';
@@ -29,6 +30,7 @@ function normalizeRow(row = {}) {
     symbol: String(row.symbol || ''),
     poolAddress: String(row.poolAddress || ''),
     source: String(row.source || 'unknown'),
+    executionMode: String(row.executionMode || '').toLowerCase() === 'paper' ? 'paper' : 'real',
     reservedAt: Number(row.reservedAt || nowMs()),
     expiresAt: Number(row.expiresAt || (nowMs() + DEFAULT_TTL_MS)),
   };
@@ -43,26 +45,44 @@ export function cleanupExpiredDeploySlots(now = nowMs()) {
   return { removed: rows.length - fresh.length, remaining: fresh.length };
 }
 
-export function getDeploySlotUsage() {
+function normalizeExecutionMode(value = '') {
+  return String(value || '').toLowerCase() === 'paper' ? 'paper' : 'real';
+}
+
+export function getDeploySlotUsage({ executionMode = 'real' } = {}) {
   const cfg = getConfig();
+  const mode = normalizeExecutionMode(executionMode);
   const maxPositions = Math.max(1, Number(cfg.maxPositions || 1));
-  const active = getActivePositionKeys().length;
-  const reserved = cleanupExpiredDeploySlots().remaining;
+  const active = mode === 'paper' ? getPaperPositionCount() : getActivePositionKeys().length;
+  const reserved = readReservations()
+    .map(normalizeRow)
+    .filter((row) => row.expiresAt > nowMs() && row.executionMode === mode)
+    .length;
+  cleanupExpiredDeploySlots();
   const available = Math.max(0, maxPositions - active - reserved);
-  return { maxPositions, active, reserved, available };
+  return { executionMode: mode, maxPositions, active, reserved, available };
 }
 
 export function canReserveDeploySlot(extra = {}) {
-  const usage = getDeploySlotUsage();
+  const usage = getDeploySlotUsage({ executionMode: extra?.executionMode });
   if (usage.available <= 0) {
     return { ok: false, reason: `Slot penuh: ${usage.active + usage.reserved}/${usage.maxPositions}` };
   }
   return reserveDeploySlot(extra);
 }
 
-export function reserveDeploySlot({ owner = 'unknown', mint = '', symbol = '', poolAddress = '', ttlMs = DEFAULT_TTL_MS, source = 'unknown' } = {}) {
+export function reserveDeploySlot({
+  owner = 'unknown',
+  mint = '',
+  symbol = '',
+  poolAddress = '',
+  ttlMs = DEFAULT_TTL_MS,
+  source = 'unknown',
+  executionMode = 'real',
+} = {}) {
+  const mode = normalizeExecutionMode(executionMode);
   if (_reserveLock) {
-    const usage = getDeploySlotUsage();
+    const usage = getDeploySlotUsage({ executionMode: mode });
     return { ok: false, reason: `Slot reservation locked`, usage };
   }
 
@@ -70,7 +90,7 @@ export function reserveDeploySlot({ owner = 'unknown', mint = '', symbol = '', p
   try {
     const cfg = getConfig();
     const maxPositions = Math.max(1, Number(cfg.maxPositions || 1));
-    const active = getActivePositionKeys().length;
+    const active = mode === 'paper' ? getPaperPositionCount() : getActivePositionKeys().length;
 
     const current = readReservations().map(normalizeRow);
     const now = nowMs();
@@ -79,14 +99,14 @@ export function reserveDeploySlot({ owner = 'unknown', mint = '', symbol = '', p
       writeReservations(fresh);
     }
 
-    const reserved = fresh.length;
+    const reserved = fresh.filter((row) => row.executionMode === mode).length;
     const available = Math.max(0, maxPositions - active - reserved);
     const usage = { maxPositions, active, reserved, available };
     if (available <= 0) {
       return { ok: false, reason: `Slot penuh: ${active + reserved}/${maxPositions}`, usage };
     }
 
-    const id = `${owner}:${mint || symbol || poolAddress || 'slot'}:${now}:${Math.random().toString(36).slice(2, 8)}`;
+    const id = `${mode}:${owner}:${mint || symbol || poolAddress || 'slot'}:${now}:${Math.random().toString(36).slice(2, 8)}`;
     const nextRows = [...fresh, normalizeRow({
       id,
       owner,
@@ -94,6 +114,7 @@ export function reserveDeploySlot({ owner = 'unknown', mint = '', symbol = '', p
       symbol,
       poolAddress,
       source,
+      executionMode: mode,
       reservedAt: now,
       expiresAt: now + Math.max(30_000, Number(ttlMs) || DEFAULT_TTL_MS),
     })];
@@ -102,8 +123,9 @@ export function reserveDeploySlot({ owner = 'unknown', mint = '', symbol = '', p
     const usageAfter = {
       maxPositions,
       active,
-      reserved: nextRows.length,
-      available: Math.max(0, maxPositions - active - nextRows.length),
+      executionMode: mode,
+      reserved: reserved + 1,
+      available: Math.max(0, maxPositions - active - reserved - 1),
     };
     return { ok: true, id, usage: usageAfter };
   } finally {

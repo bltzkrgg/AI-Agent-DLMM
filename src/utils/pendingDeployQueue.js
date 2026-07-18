@@ -281,6 +281,9 @@ function buildDeployAttemptId({ mint = '', poolAddress = '', now = Date.now() } 
 }
 
 export function classifyDeployAttemptResult(result) {
+  if (result && typeof result === 'object' && result.paper === true) {
+    return { status: 'PAPER_PLAN', ok: true, detail: result };
+  }
   if (result && typeof result === 'object' && result.dryRun) {
     return { status: 'DRY_RUN', ok: true, detail: result };
   }
@@ -463,8 +466,12 @@ function isSlotSaturationHoldReason(reason = '') {
   return String(reason || '').includes('SLOT_SATURATED_PROMOTION_PAUSED');
 }
 
-function isDeploySlotSaturated() {
-  return getDeploySlotUsage().available <= 0;
+function getQueueExecutionMode(cfg = getConfig()) {
+  return cfg?.dryRun === true ? 'paper' : 'real';
+}
+
+function isDeploySlotSaturated(cfg = getConfig()) {
+  return getDeploySlotUsage({ executionMode: getQueueExecutionMode(cfg) }).available <= 0;
 }
 
 function readLiveSnapshotAtMs(liveSnapshot = null, meta = {}, pool = {}) {
@@ -2090,17 +2097,20 @@ async function runWatcher() {
       }
 
       const cfg = getConfig();
+      const executionMode = getQueueExecutionMode(cfg);
       const solAmount = cfg.deployAmountSol || 0.1;
-      recordPoolDeploy({
-        pool,
-        reason: meta?.scoutReason || 'QUEUE_DEPLOY',
-        source: 'DEPLOY_QUEUE',
-        snapshot: {
-          ...meta,
-          recentTrend: check.liveTrend,
-          recentM5: check.liveM5,
-        },
-      });
+      if (executionMode === 'real') {
+        recordPoolDeploy({
+          pool,
+          reason: meta?.scoutReason || 'QUEUE_DEPLOY',
+          source: 'DEPLOY_QUEUE',
+          snapshot: {
+            ...meta,
+            recentTrend: check.liveTrend,
+            recentM5: check.liveM5,
+          },
+        });
+      }
       const canonicalMeta = readCanonicalEntryMeta(meta);
       const intentBin = Number.isFinite(Number(canonicalMeta.entryActiveBin)) ? Number(canonicalMeta.entryActiveBin) : null;
       const intentPrice = Number.isFinite(Number(canonicalMeta.entryPrice)) ? Number(canonicalMeta.entryPrice) : null;
@@ -2133,6 +2143,7 @@ async function runWatcher() {
         symbol,
         poolAddress,
         source: isRetest ? 'retestQueue' : 'deployQueue',
+        executionMode,
         ttlMs: Number(cfg.deployTimeoutMs || 180_000) + 60_000,
       });
 
@@ -2175,6 +2186,7 @@ async function runWatcher() {
 
         const deployTimeoutMs = Number(cfg.deployTimeoutMs || 180_000);
         const result = await withTimeout(_deployFn(poolAddress, {
+          executionMode,
           hasNonRefundableFees:
             pool?._marketSnapshot?.pool?.hasNonRefundableFees ??
             pool?.hasNonRefundableFees ??
@@ -2211,6 +2223,24 @@ async function runWatcher() {
         }), deployTimeoutMs, 'DEPLOY_QUEUE');
 
         const classifiedResult = classifyDeployAttemptResult(result);
+
+        if (classifiedResult.status === 'PAPER_PLAN') {
+          if (!_monitorFn) {
+            throw new Error('paper monitor fn belum di-set ke DeployQueue');
+          }
+          const paperPosition = await _monitorFn(result, symbol, poolAddress, {
+            tokenMint: mint,
+            meta,
+          });
+          logDeployAttemptOutcome({
+            attemptId,
+            status: 'PAPER_OPEN',
+            symbol,
+            poolAddress,
+            message: `paperPosition=${paperPosition?.id || 'unknown'}`,
+          });
+          continue;
+        }
 
         if (classifiedResult.status === 'DRY_RUN') {
           logDeployAttemptOutcome({

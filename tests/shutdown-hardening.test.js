@@ -222,7 +222,7 @@ test('autoscreen scheduler no longer pauses just because active positions exist'
 
 test('evilPanda uses monolith positions with one Meteora account for the full range', () => {
   const src = readFileSync(evilPandaPath, 'utf8');
-  assert.match(src, /(?:const|let) posKp = Keypair\.generate\(\)/);
+  assert.match(src, /let posKp = paperMode \? null : Keypair\.generate\(\)/);
   assert.match(src, /const desiredRangeMin = activeBinId \+ minOffset;/);
   assert.match(src, /const desiredRangeMax = activeBinId \+ maxOffset;/);
   assert.match(src, /function getConfiguredDeployRangeMaxBins\(cfg = getConfig\(\)\)/);
@@ -486,15 +486,19 @@ test('deploy path blocks duplicate pool entries before opening a second position
   assert.match(hunterSrc, /\|\| hasActivePoolAddress\(poolAddress\)/);
 });
 
-test('dryRun mode only simulates tx in evilPanda and hunter', () => {
+test('dryRun creates isolated paper positions while real exits remain real', () => {
   const evilPandaSrc = readFileSync(evilPandaPath, 'utf8');
   const hunterSrc = readFileSync(hunterPath, 'utf8');
-  assert.match(evilPandaSrc, /if \(isDryRun\(\)\) \{/);
-  assert.match(evilPandaSrc, /simulateTransaction\(tx, \{ commitment: 'processed' \}\)/);
-  assert.match(evilPandaSrc, /DRY_RUN_SIMULATION_FAILED/);
-  assert.match(hunterSrc, /Dry-run deploy disimulasikan/);
-  assert.match(hunterSrc, /Dry-run exit disimulasikan/);
-  assert.match(hunterSrc, /Tidak ada transaksi real yang dikirim karena mode dryRun aktif/);
+  assert.match(evilPandaSrc, /const paperMode = executionMode === 'paper'/);
+  assert.match(evilPandaSrc, /if \(paperMode\) \{[\s\S]*paper:\s*true,[\s\S]*executionMode:\s*'paper'/);
+  assert.match(evilPandaSrc, /if \(normalizeExecutionMode\(reg\?\.executionMode\) !== 'real'\)/);
+  const exitStart = evilPandaSrc.indexOf('export async function exitPosition');
+  const exitEnd = evilPandaSrc.indexOf('export async function reconcileStartupPositions', exitStart);
+  const exitBlock = evilPandaSrc.slice(exitStart, exitEnd);
+  assert.doesNotMatch(exitBlock, /isDryRun\(\)/);
+  assert.match(hunterSrc, /openPaperPositionFromDeployPlan/);
+  assert.match(hunterSrc, /paperMonitorLoop/);
+  assert.match(hunterSrc, /closePaperPosition\(positionId,/);
 });
 
 test('hunter sends realtime PnL snapshots to Telegram on configured interval', () => {
@@ -589,7 +593,7 @@ test('instant scan report includes freshness labels for auditability', () => {
 
 test('final scan report is suppressed when deploy slots are saturated', () => {
   const src = readFileSync(hunterPath, 'utf8');
-  assert.match(src, /if \(isDeploySlotSaturated\(getDeploySlotUsage\(\)\)\) \{/);
+  assert.match(src, /if \(isDeploySlotSaturated\(getEntrySlotUsage\(\)\)\) \{/);
   assert.match(src, /Final cycle report disenyapkan karena slot penuh/);
 });
 
@@ -614,7 +618,7 @@ test('deploy natural failures are silenced from Telegram notifications', () => {
 
 test('slot-saturated watch promotion stays quiet for new radar candidates', () => {
   const src = readFileSync(hunterPath, 'utf8');
-  assert.match(src, /function isDeploySlotSaturated\(slotUsage = getDeploySlotUsage\(\)\)/);
+  assert.match(src, /function isDeploySlotSaturated\(slotUsage = getEntrySlotUsage\(\)\)/);
   assert.match(src, /SLOT_SATURATED_PROMOTION_PAUSED/);
   assert.match(src, /if \(!isDeploySlotSaturated\(slotUsage\)\) \{/);
   assert.match(src, /await notify\(\s*`👀 <b>WATCH<\/b>/);

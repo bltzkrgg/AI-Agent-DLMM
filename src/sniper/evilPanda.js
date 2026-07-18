@@ -20,7 +20,7 @@ import { appendFileSync, mkdirSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { getConnection, getWallet, getTokenBalanceRaw } from '../solana/wallet.js';
-import { getConfig, isDryRun } from '../config.js';
+import { getConfig } from '../config.js';
 import { getJupiterQuote } from '../solana/jupiter.js';
 import { getSwapQuoteToSol, swapToSol } from '../utils/jupiter.js';
 import { safeNum, withExponentialBackoff, fetchWithTimeout } from '../utils/safeJson.js';
@@ -107,6 +107,14 @@ function normalizeTrackedTrendDirection(value = '') {
   const trend = String(value || '').toUpperCase();
   if (trend === 'BULLISH' || trend === 'BEARISH') return trend;
   return 'UNKNOWN';
+}
+
+export function normalizeExecutionMode(value = '') {
+  return String(value || '').trim().toLowerCase() === 'paper' ? 'paper' : 'real';
+}
+
+export function getNewEntryExecutionMode(cfg = getConfig()) {
+  return cfg?.dryRun === true ? 'paper' : 'real';
 }
 
 function isManualTaExitPosition(reg = {}, cfg = getConfig()) {
@@ -3752,28 +3760,35 @@ export async function deployPosition(poolAddress, deployOptions = {}) {
   const cfg        = getConfig();
   const deploySol  = cfg.deployAmountSol || 0.1;
   const connection = getConnection();
-  const wallet     = getWallet();
-  const deployBudgetReservation = await reserveDeployBudgetAgainstWallet({
-    connection,
-    walletPublicKey: wallet.publicKey,
-    deploySol,
-    cfg,
-    poolAddress,
-    owner: 'deployPosition',
-  });
-  if (!deployBudgetReservation.ok) {
-    const walletCheck = deployBudgetReservation.walletCheck || evaluateDeployWalletFunds({
-      walletLamports: Number(deployBudgetReservation.walletLamports || 0),
+  const executionMode = normalizeExecutionMode(
+    deployOptions?.executionMode || getNewEntryExecutionMode(cfg)
+  );
+  const paperMode = executionMode === 'paper';
+  const wallet = paperMode ? null : getWallet();
+  let deployBudgetReservation = null;
+  if (!paperMode) {
+    deployBudgetReservation = await reserveDeployBudgetAgainstWallet({
+      connection,
+      walletPublicKey: wallet.publicKey,
       deploySol,
       cfg,
-      reservedLamports: Number(deployBudgetReservation.reservedLamports || 0),
-    });
-    return buildInsufficientBalanceBlockedResult({
-      walletCheck,
       poolAddress,
-      strategyShape: normalizeDlmmLiquidityShape(cfg.dlmmLiquidityShape),
-      strategyType: getDlmmStrategyTypeFromConfig(cfg),
+      owner: 'deployPosition',
     });
+    if (!deployBudgetReservation.ok) {
+      const walletCheck = deployBudgetReservation.walletCheck || evaluateDeployWalletFunds({
+        walletLamports: Number(deployBudgetReservation.walletLamports || 0),
+        deploySol,
+        cfg,
+        reservedLamports: Number(deployBudgetReservation.reservedLamports || 0),
+      });
+      return buildInsufficientBalanceBlockedResult({
+        walletCheck,
+        poolAddress,
+        strategyShape: normalizeDlmmLiquidityShape(cfg.dlmmLiquidityShape),
+        strategyType: getDlmmStrategyTypeFromConfig(cfg),
+      });
+    }
   }
   const poolPubkey = new PublicKey(poolAddress);
   const hasNonRefundableFees = await resolveNonRefundableFeeFlag(
@@ -3811,11 +3826,13 @@ export async function deployPosition(poolAddress, deployOptions = {}) {
   try {
     return await withPermanentAwareBackoff(async () => {
       console.log('[evilPanda] TIP_TRANSFER_DISABLED');
-      await reconcileZombiePositions().catch((e) => {
-        console.warn(`[evilPanda] Zombie reconcile non-fatal: ${e.message}`);
-      });
+      if (!paperMode) {
+        await reconcileZombiePositions().catch((e) => {
+          console.warn(`[evilPanda] Zombie reconcile non-fatal: ${e.message}`);
+        });
+      }
 
-    if (hasTrackedPoolPosition(poolAddress)) {
+    if (!paperMode && hasTrackedPoolPosition(poolAddress)) {
       throw new Error(`[evilPanda] Pool ${poolAddress.slice(0,8)} already has an active or pending position`);
     }
 
@@ -3973,36 +3990,38 @@ export async function deployPosition(poolAddress, deployOptions = {}) {
     let rentCheckedRangeMax = null;
 
     const totalBins = rangeMax - rangeMin + 1;
-    const microLamports = await getPriorityFee();
     const { Keypair } = await import('@solana/web3.js');
-    let posKp = Keypair.generate();
-    let positionPubkey = posKp.publicKey.toString();
+    let microLamports = null;
+    let posKp = paperMode ? null : Keypair.generate();
+    let positionPubkey = posKp ? posKp.publicKey.toString() : null;
     const slippageBps   = Number(cfg2.slippageBps) || 250;
     const slippagePct   = slippageBps / 100;
     const totalLamports = Math.floor(deploySol * 1e9);
     const dlmmShapeDebug = getDlmmLiquidityShapeDebug(cfg2);
     const dlmmStrategyType = getDlmmStrategyTypeFromConfig(cfg2);
     const dlmmLiquidityShape = dlmmShapeDebug.normalized;
-    const walletLamports = await connection.getBalance(wallet.publicKey).catch(() => 0);
-    const walletCheck = evaluateDeployWalletFunds({
-      walletLamports,
-      deploySol,
-      cfg: cfg2,
-      reservedLamports: getReservedDeployBudgetLamports({ excludeId: deployBudgetReservation.id }),
-    });
-    if (!walletCheck.ok) {
-      console.warn(
-      `[evilPanda] DEPLOY_BLOCK_INSUFFICIENT_SOL pool=${poolAddress.slice(0,8)} ` +
-      `available=${walletCheck.availableSol.toFixed(6)} required=${walletCheck.requiredSol.toFixed(6)} ` +
-      `deploy=${walletCheck.deploySol.toFixed(6)} reserve=${walletCheck.gasReserveSol.toFixed(6)} ` +
-      `shape=${dlmmLiquidityShape} strategyType=${dlmmStrategyType}`
-      );
-      return buildInsufficientBalanceBlockedResult({
-        walletCheck,
-        poolAddress,
-        strategyShape: dlmmLiquidityShape,
-        strategyType: dlmmStrategyType,
+    if (!paperMode) {
+      const walletLamports = await connection.getBalance(wallet.publicKey).catch(() => 0);
+      const walletCheck = evaluateDeployWalletFunds({
+        walletLamports,
+        deploySol,
+        cfg: cfg2,
+        reservedLamports: getReservedDeployBudgetLamports({ excludeId: deployBudgetReservation?.id }),
       });
+      if (!walletCheck.ok) {
+        console.warn(
+        `[evilPanda] DEPLOY_BLOCK_INSUFFICIENT_SOL pool=${poolAddress.slice(0,8)} ` +
+        `available=${walletCheck.availableSol.toFixed(6)} required=${walletCheck.requiredSol.toFixed(6)} ` +
+        `deploy=${walletCheck.deploySol.toFixed(6)} reserve=${walletCheck.gasReserveSol.toFixed(6)} ` +
+        `shape=${dlmmLiquidityShape} strategyType=${dlmmStrategyType}`
+        );
+        return buildInsufficientBalanceBlockedResult({
+          walletCheck,
+          poolAddress,
+          strategyShape: dlmmLiquidityShape,
+          strategyType: dlmmStrategyType,
+        });
+      }
     }
 
     const seedPlan = deriveSpotBidAskSeedPlan({
@@ -4205,7 +4224,7 @@ export async function deployPosition(poolAddress, deployOptions = {}) {
       };
     }
 
-    if (!isDryRun() && shouldSeedTokenX && seedLamports >= 1_000_000 && seedLamports < totalLamports) {
+    if (!paperMode && shouldSeedTokenX && seedLamports >= 1_000_000 && seedLamports < totalLamports) {
       console.log(
         `[evilPanda] Spot/Bid-Ask seed enabled: ${seedPct}% SOL → TOKENX ` +
         `(seedLamports=${seedLamports}, range=[${rangeMin},${rangeMax}], active=${activeBin.binId})`
@@ -4225,7 +4244,7 @@ export async function deployPosition(poolAddress, deployOptions = {}) {
         amountXBn = new BN('0');
         amountYBn = new BN(String(totalLamports));
       }
-    } else if (isDryRun() && shouldSeedTokenX && seedLamports >= 1_000_000 && seedLamports < totalLamports) {
+    } else if (paperMode && shouldSeedTokenX && seedLamports >= 1_000_000 && seedLamports < totalLamports) {
       console.log(
         `[DRY RUN] Spot/Bid-Ask seed planned: ${seedPct}% SOL → TOKENX ` +
         `(seedLamports=${seedLamports}, range=[${rangeMin},${rangeMax}], active=${activeBin.binId})`
@@ -4275,6 +4294,54 @@ export async function deployPosition(poolAddress, deployOptions = {}) {
     }
     deployArgs = preRefreshRentGuard.deployArgs;
 
+    if (paperMode) {
+      const paperCanonicalEntrySnapshot = buildRuntimeCanonicalEntrySnapshot({
+        baseSnapshot: entryCanonicalSnapshot,
+        entryActiveBin: safeNum(activeBin.binId, null),
+        entryPrice: safeNum(activeBin.pricePerToken, null),
+        finalTrendStamp: {
+          direction: finalTrendDirection,
+          source: finalTrendSource,
+          reason: finalTrendReason,
+          checkedAt: finalTrendAt,
+        },
+        anchorMetadata,
+        rangeAdjustReason: anchorMetadata.rangeAdjustReason || null,
+      });
+      console.log(
+        `[PAPER] deploy plan ready pool=${poolAddress.slice(0,8)} ` +
+        `range=[${Number(deployArgs.rangeMin)},${Number(deployArgs.rangeMax)}] active=${Number(deployArgs.activeBinId)}`
+      );
+      return {
+        dryRun: true,
+        paper: true,
+        executionMode: 'paper',
+        simulated: false,
+        poolAddress,
+        tokenXMint: xMint,
+        tokenYMint: yMint,
+        deploySol,
+        rangeMin: Number(deployArgs.rangeMin),
+        rangeMax: Number(deployArgs.rangeMax),
+        entryActiveBin: safeNum(activeBin.binId, null),
+        entryPrice: safeNum(activeBin.pricePerToken, null),
+        binStep: Number(binStep || 0),
+        liquidityShape: dlmmLiquidityShape,
+        strategyType: dlmmStrategyType,
+        amountXRaw: String(deployArgs.amountXBn?.toString?.() || '0'),
+        amountYRaw: String(deployArgs.amountYBn?.toString?.() || '0'),
+        seedPct: Number(seedPct || 0),
+        entryCanonicalSnapshot: paperCanonicalEntrySnapshot,
+        finalTrendStamp: {
+          direction: finalTrendDirection,
+          source: finalTrendSource,
+          reason: finalTrendReason,
+          checkedAt: finalTrendAt,
+        },
+      };
+    }
+
+    microLamports = await getPriorityFee();
     const buildPreparedAttemptState = async ({
       baseDeployArgs = {},
       currentRentGuard = null,
@@ -4400,25 +4467,12 @@ export async function deployPosition(poolAddress, deployOptions = {}) {
             assertNoCombinedWeightForQuoteOnly({
               deployArgs: args,
               sdkPath,
-              sdkMethod: isDryRun() ? 'dryRunPlan' : 'addLiquidityByWeight',
+              sdkMethod: 'addLiquidityByWeight',
             });
             console.log(
               `[evilPanda] DLMM_WEIGHT_DIST pool=${poolAddress.slice(0,8)} bins=${distribution.length} totalYBps=${totalYBps.toString()} ` +
               `attempt=${Number(state?.attempt || 0)}`
             );
-            if (isDryRun()) {
-              const dryRunPlan = buildQuoteOnlyDryRunPlan({
-                poolAddress,
-                deployArgs: args,
-                xYAmountDistribution: distribution,
-                finalArgsContext: state?.finalArgsContext || {},
-              });
-              state.finalArgsContext = {
-                ...(state?.finalArgsContext || {}),
-                ...(dryRunPlan?.context || {}),
-              };
-              return dryRunPlan;
-            }
             await guardDlmmCostBeforeSend({
               connection,
               poolPubkey,
@@ -4613,51 +4667,6 @@ export async function deployPosition(poolAddress, deployOptions = {}) {
         : null,
     });
 
-      if (isDryRun()) {
-        for (const tx of txList) {
-          injectPriorityFee(tx, { units: EP_CONFIG.COMPUTE_UNITS, microLamports });
-          if (finalSdkPath === DLMM_SDK_PATH_WEIGHT_QUOTE_ONLY) {
-            const filteredSigners = filterKnownTransactionSigners(tx, [posKp], { txStage: 'addLiquidity' });
-            try {
-              if (tx instanceof VersionedTransaction) {
-                tx.sign([wallet, ...filteredSigners]);
-              } else {
-                tx.sign(...filteredSigners, wallet);
-              }
-            } catch (drySignErr) {
-              throw wrapQuoteOnlySignerError({
-                error: drySignErr,
-                finalArgsContext: {
-                  ...(finalDeployState?.finalArgsContext || {}),
-                  sdkPath: finalSdkPath,
-                  positionPubkey,
-                },
-                txStage: 'addLiquidity',
-                attemptedSigner: posKp.publicKey.toString(),
-              });
-            }
-          } else if (tx instanceof VersionedTransaction) {
-            tx.sign([wallet, posKp]);
-          } else {
-            tx.sign(posKp, wallet);
-          }
-          const sim = await connection.simulateTransaction(tx, { commitment: 'processed' });
-          if (sim?.value?.err) {
-            throw new Error(`DRY_RUN_SIMULATION_FAILED: ${JSON.stringify(sim.value.err)}`);
-          }
-        }
-        console.log(`[DRY RUN] deployPosition simulated only: pool=${poolAddress.slice(0,8)} pos=${positionPubkey.slice(0,8)} txs=${txList.length}`);
-        return {
-          dryRun: true,
-          simulated: true,
-          positionPubkey,
-          poolAddress,
-          rangeMin: safeRangeMin,
-          rangeMax: safeRangeMax,
-          txCount: txList.length,
-        };
-      }
-
       const runtimeCanonicalEntrySnapshot = buildRuntimeCanonicalEntrySnapshot({
         baseSnapshot: entryCanonicalSnapshot,
         entryActiveBin: safeNum(activeBin.binId, null),
@@ -4691,6 +4700,7 @@ export async function deployPosition(poolAddress, deployOptions = {}) {
       );
 
       await setPositionLifecycle(positionPubkey, 'deploying', {
+        executionMode: 'real',
         poolAddress,
         deploySol,
         deployedAt: nowIso(),
@@ -4795,6 +4805,7 @@ export async function deployPosition(poolAddress, deployOptions = {}) {
       }
 
     await setPositionLifecycle(positionPubkey, 'open', {
+      executionMode: 'real',
       poolAddress,
       deploySol,
       deployedAt:  nowIso(),
@@ -4838,7 +4849,9 @@ export async function deployPosition(poolAddress, deployOptions = {}) {
 
     }, { maxRetries: 3, baseDelay: 3000, maxDelay: 12_000 });
   } finally {
-    releaseDeployBudget(deployBudgetReservation.id);
+    if (deployBudgetReservation?.id) {
+      releaseDeployBudget(deployBudgetReservation.id);
+    }
   }
 }
 
@@ -5003,6 +5016,11 @@ function evaluateAgentDefensiveTaExit(signal, { ageMs = 0 } = {}) {
     scenario: null,
     reason: `Bearish ST active but TA confirmation not met (RSI=${rsi?.toFixed(1) ?? 'n/a'})`,
   };
+}
+
+export async function getAgentDefensiveExitDecision(tokenXMint, { ageMs = 0 } = {}) {
+  const signal = await fetchExitSignal(tokenXMint);
+  return evaluateAgentDefensiveTaExit(signal, { ageMs });
 }
 
 function evaluateDefensiveExitConfirmation({
@@ -5562,6 +5580,9 @@ export async function getPositionOnChainStatus(positionPubkey) {
 export async function exitPosition(positionPubkey, reason = 'MANUAL') {
   const reg = _activePositions.get(positionPubkey);
   if (!reg) throw new Error(`[evilPanda] exitPosition: ${positionPubkey.slice(0,8)} not in registry`);
+  if (normalizeExecutionMode(reg?.executionMode) !== 'real') {
+    throw new Error(`[evilPanda] exitPosition: paper position must use virtual close path`);
+  }
 
   console.log(`[evilPanda] ▶ exitPosition ${positionPubkey.slice(0,8)} reason=${reason}`);
 
@@ -5583,18 +5604,10 @@ export async function exitPosition(positionPubkey, reason = 'MANUAL') {
       const activePos = userPositions.find(p => p.publicKey.toString() === positionPubkey);
 
       if (!activePos) {
-        if (isDryRun()) {
-          console.log(`[DRY RUN] exitPosition skipped: ${positionPubkey.slice(0,8)} not found on-chain`);
-          return { dryRun: true, skipped: true, reason: 'POSITION_NOT_FOUND_ON_CHAIN' };
-        }
         return await markPositionManuallyClosed(positionPubkey, 'MANUAL_WITHDRAW_DETECTED_DURING_EXIT');
       }
 
       if (!activePos.positionData || activePos.positionData.lowerBinId === undefined) {
-        if (isDryRun()) {
-          console.log(`[DRY RUN] exitPosition skipped: ${positionPubkey.slice(0,8)} position data incomplete`);
-          return { dryRun: true, skipped: true, reason: 'POSITION_DATA_INCOMPLETE' };
-        }
         const msg = `POSITION_STATE_AMBIGUOUS_${positionPubkey.slice(0,8)}`;
         console.log(`[evilPanda] ❌ ${msg}: Data posisi tidak lengkap / undefined. Registry ditahan untuk manual reconcile.`);
         await setPositionLifecycle(positionPubkey, 'needs_manual_reconcile', {
@@ -5602,26 +5615,6 @@ export async function exitPosition(positionPubkey, reason = 'MANUAL') {
           closeReason: reason,
         }, { flush: true });
         throw buildPermanentExitError(msg, 'POSITION_STATE_AMBIGUOUS');
-      }
-
-      if (isDryRun()) {
-        const dryRunTxList = await buildZapOutCloseTxs(dlmmPool, wallet, activePos);
-        console.log(`[DRY RUN] exitPosition path=ZAP_OUT pos=${positionPubkey.slice(0,8)}`);
-        for (const tx of dryRunTxList) {
-          injectPriorityFee(tx, { units: EP_CONFIG.EXIT_COMPUTE_UNITS, microLamports: isEmergencyExit ? Math.max(microLamports * 5, microLamports) : microLamports });
-          if (tx instanceof VersionedTransaction) {
-            tx.sign([wallet]);
-          } else {
-            tx.sign(wallet);
-          }
-          const sim = await connection.simulateTransaction(tx, { commitment: 'processed' });
-          if (sim?.value?.err) {
-            throw new Error(`DRY_RUN_SIMULATION_FAILED: ${JSON.stringify(sim.value.err)}`);
-          }
-        }
-
-        console.log(`[DRY RUN] exitPosition simulated only: pos=${positionPubkey.slice(0,8)} txs=${dryRunTxList.length}`);
-        return { dryRun: true, solRecovered: 0, simulated: true, txCount: dryRunTxList.length };
       }
 
       await setPositionLifecycle(positionPubkey, 'closing', { closeReason: reason }, { flush: true });
@@ -6289,6 +6282,7 @@ export async function reconcileStartupPositions() {
         continue;
       }
       _activePositions.set(pubkey, {
+        executionMode: normalizeExecutionMode(row.executionMode),
         poolAddress,
         deploySol: safeNum(row.deploySol, 0),
         deployedAt: row.deployedAt || nowIso(),

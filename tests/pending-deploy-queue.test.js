@@ -2300,6 +2300,7 @@ test('deploy queue hold dedupe state is cleaned when candidate is removed', () =
 });
 
 test('classifyDeployAttemptResult fails closed on ambiguous deploy results', () => {
+  assert.equal(classifyDeployAttemptResult({ dryRun: true, paper: true }).status, 'PAPER_PLAN');
   assert.equal(classifyDeployAttemptResult({ dryRun: true }).status, 'DRY_RUN');
   assert.equal(classifyDeployAttemptResult({ blocked: true, reason: 'NOPE' }).status, 'BLOCKED');
   assert.equal(classifyDeployAttemptResult('Pos111111111111111111111111111111111111111').status, 'SUCCESS');
@@ -2458,7 +2459,8 @@ test('pre-attempt final deploy holds stay silent until a real deploy attempt sta
 
 test('slot saturated queue suppresses hold/drop noise for new candidates', () => {
   const src = readFileSync(new URL('../src/utils/pendingDeployQueue.js', import.meta.url), 'utf8');
-  assert.match(src, /function isDeploySlotSaturated\(\)/);
+  assert.match(src, /function isDeploySlotSaturated\(cfg = getConfig\(\)\)/);
+  assert.match(src, /getDeploySlotUsage\(\{ executionMode: getQueueExecutionMode\(cfg\) \}\)/);
   assert.match(src, /if \(isDeploySlotSaturated\(\)\) \{/);
   assert.match(src, /Slot saturated, suppressing hold\/drop noise/);
   assert.match(src, /if \(isSlotSaturationHoldReason\(finalCandle\.reason\) \|\| isDeploySlotSaturated\(\)\) \{/);
