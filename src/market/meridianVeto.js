@@ -391,15 +391,134 @@ function getDiscoveryActivityPriorityMode(category = '') {
   return 'fee_first';
 }
 
+function readNonNegativeMetric(...values) {
+  for (const value of values) {
+    if (value === null || value === undefined || value === '') continue;
+    const numeric = Number(value);
+    if (Number.isFinite(numeric) && numeric >= 0) {
+      return { available: true, value: numeric };
+    }
+  }
+  return { available: false, value: null };
+}
+
+function readSignedMetric(...values) {
+  for (const value of values) {
+    if (value === null || value === undefined || value === '') continue;
+    const numeric = Number(value);
+    if (Number.isFinite(numeric)) return numeric;
+  }
+  return null;
+}
+
+function readWindowMetric(pool = {}, key = '', window = '', flatValues = []) {
+  const nested = pool?.[key];
+  const nestedValue = nested && typeof nested === 'object' && !Array.isArray(nested)
+    ? nested?.[window]
+    : null;
+  const scalarValue = window === '24h' && (typeof nested === 'number' || typeof nested === 'string')
+    ? nested
+    : null;
+  return readNonNegativeMetric(nestedValue, ...flatValues, scalarValue);
+}
+
+function getActivityStateRank(pool = {}) {
+  const state = String(pool?.activityState || pool?._activityState || 'UNKNOWN_ACTIVITY').toUpperCase();
+  if (state === 'OBSERVED_ACTIVE') return 3;
+  if (state === 'UNKNOWN_ACTIVITY') return 2;
+  return 0;
+}
+
+function getDiscoveryFlowTrendScore(pool = {}) {
+  const values = [
+    pool?.feeChangePct,
+    pool?.swapCountChangePct,
+    pool?.volumeChangePct,
+  ].map(Number).filter(Number.isFinite);
+  if (values.length === 0) return 0;
+  const average = values.reduce((sum, value) => sum + value, 0) / values.length;
+  return Math.max(-100, Math.min(100, average));
+}
+
+function isObservedDryDiscoveryPool(pool = {}) {
+  const state = String(pool?.activityState || pool?._activityState || '').toUpperCase();
+  return state === 'OBSERVED_DRY' || state === 'STALE_SPIKE';
+}
+
+function classifyDiscoveryActivity({
+  volume1h = { available: false, value: null },
+  fees1h = { available: false, value: null },
+  swaps1h = { available: false, value: null },
+  volume24h = { available: false, value: null },
+  fees24h = { available: false, value: null },
+  swaps24h = { available: false, value: null },
+  windowLabel = '24h',
+} = {}) {
+  if (swaps1h.available && swaps1h.value > 0) {
+    return { state: 'OBSERVED_ACTIVE', window: '1h', reason: 'recent activity is positive' };
+  }
+  if (
+    fees1h.available &&
+    fees1h.value === 0 &&
+    swaps1h.available &&
+    swaps1h.value === 0
+  ) {
+    const historicalPositive = [volume24h, fees24h, swaps24h]
+      .some((metric) => metric?.available && metric.value > 0);
+    return {
+      state: historicalPositive ? 'STALE_SPIKE' : 'OBSERVED_DRY',
+      window: '1h',
+      reason: historicalPositive ? 'historical flow exists but recent activity is zero' : 'recent activity is zero',
+    };
+  }
+
+  if (swaps24h.available && swaps24h.value > 0) {
+    return { state: 'OBSERVED_ACTIVE', window: windowLabel, reason: 'discovery-window swaps are positive' };
+  }
+  if (
+    fees24h.available &&
+    fees24h.value === 0 &&
+    swaps24h.available &&
+    swaps24h.value === 0
+  ) {
+    return {
+      state: volume24h.available && volume24h.value > 0 ? 'STALE_SPIKE' : 'OBSERVED_DRY',
+      window: '24h',
+      reason: volume24h.available && volume24h.value > 0
+        ? 'volume is present without fee or swap support'
+        : 'fee and swap activity are explicitly zero',
+    };
+  }
+
+  return { state: 'UNKNOWN_ACTIVITY', window: null, reason: 'recent activity evidence is incomplete' };
+}
+
 function getDiscoveryActivityBiasScore(pool = {}) {
   const volume24h = Number(pool?.volume24h || 0);
+  const volume1h = Number(pool?.volume1h || 0);
   const feeRatio = Number(pool?.feeActiveTvlRatio || 0);
   const fees24h = Number(pool?.fees24h || 0);
+  const fees1h = Number(pool?.fees1h || 0);
   const txns24h = Number(pool?.swapCount24h || 0);
   const tvl = Number(pool?.activeTvl || pool?.totalTvl || 0);
   const volumeTvlRatio = tvl > 0 ? volume24h / tvl : 0;
+  const activityRank = getActivityStateRank(pool);
+  const flowTrendScore = getDiscoveryFlowTrendScore(pool);
 
   let score = 0;
+
+  if (activityRank === 3) score += 5;
+  if (isObservedDryDiscoveryPool(pool)) score -= 20;
+  if (flowTrendScore >= 20) score += 3;
+  else if (flowTrendScore < 0) score -= 3;
+
+  if (volume1h >= 50_000) score += 4;
+  else if (volume1h >= 10_000) score += 2;
+  else if (volume1h > 0) score += 1;
+
+  if (fees1h >= 300) score += 4;
+  else if (fees1h >= 50) score += 2;
+  else if (fees1h > 0) score += 1;
 
   if (volume24h >= 500_000) score += 4;
   else if (volume24h >= 150_000) score += 2;
@@ -425,13 +544,35 @@ function getDiscoveryActivityBiasScore(pool = {}) {
 
 function getDiscoveryLivingFlowScore(pool = {}) {
   const volume24h = Number(pool?.volume24h || 0);
+  const volume1h = Number(pool?.volume1h || 0);
   const feeRatio = Number(pool?.feeActiveTvlRatio || 0);
   const fees24h = Number(pool?.fees24h || 0);
+  const fees1h = Number(pool?.fees1h || 0);
   const txns24h = Number(pool?.swapCount24h || 0);
+  const txns1h = Number(pool?.swapCount1h || 0);
   const tvl = Number(pool?.activeTvl || pool?.totalTvl || 0);
   const volumeTvlRatio = tvl > 0 ? volume24h / tvl : 0;
+  const flowTrendScore = getDiscoveryFlowTrendScore(pool);
+
+  if (isObservedDryDiscoveryPool(pool)) return -100;
 
   let score = 0;
+
+  if (getActivityStateRank(pool) === 3) score += 12;
+  score += Math.round(flowTrendScore / 20);
+
+  if (volume1h >= 100_000) score += 10;
+  else if (volume1h >= 30_000) score += 7;
+  else if (volume1h >= 10_000) score += 4;
+  else if (volume1h > 0) score += 1;
+
+  if (fees1h >= 300) score += 5;
+  else if (fees1h >= 50) score += 3;
+  else if (fees1h > 0) score += 1;
+
+  if (txns1h >= 300) score += 4;
+  else if (txns1h >= 50) score += 2;
+  else if (txns1h > 0) score += 1;
 
   if (volume24h >= 900_000) score += 10;
   else if (volume24h >= 500_000) score += 7;
@@ -463,52 +604,70 @@ function compareDiscoveryPriority(a = {}, b = {}, {
   binStepPriority = [],
   priorityMode = 'fee_first',
 } = {}) {
-  const aPrio = binStepPriority.indexOf(Number(a?.binStep || 0));
-  const bPrio = binStepPriority.indexOf(Number(b?.binStep || 0));
-  const aBinRank = aPrio >= 0 ? aPrio : Number.MAX_SAFE_INTEGER;
-  const bBinRank = bPrio >= 0 ? bPrio : Number.MAX_SAFE_INTEGER;
-  if (aBinRank !== bBinRank) return aBinRank - bBinRank;
-
   const aVolume = Number(a?.volume24h || 0);
   const bVolume = Number(b?.volume24h || 0);
+  const aRecentVolume = Number(a?.volume1h || 0);
+  const bRecentVolume = Number(b?.volume1h || 0);
   const aFeeRatio = Number(a?.feeActiveTvlRatio || 0);
   const bFeeRatio = Number(b?.feeActiveTvlRatio || 0);
+  const aRecentFees = Number(a?.fees1h || 0);
+  const bRecentFees = Number(b?.fees1h || 0);
   const aTxns = Number(a?.swapCount24h || 0);
   const bTxns = Number(b?.swapCount24h || 0);
+  const aRecentTxns = Number(a?.swapCount1h || 0);
+  const bRecentTxns = Number(b?.swapCount1h || 0);
   const aTvl = Number(a?.activeTvl || a?.totalTvl || 0);
   const bTvl = Number(b?.activeTvl || b?.totalTvl || 0);
+  const aActivityRank = getActivityStateRank(a);
+  const bActivityRank = getActivityStateRank(b);
+  const aFlowTrend = getDiscoveryFlowTrendScore(a);
+  const bFlowTrend = getDiscoveryFlowTrendScore(b);
+  const aAvgSwaps = Number(a?.avgSwapCount || 0);
+  const bAvgSwaps = Number(b?.avgSwapCount || 0);
+  const aAvgFees = Number(a?.avgFee || 0);
+  const bAvgFees = Number(b?.avgFee || 0);
+  const aAvgVolume = Number(a?.avgVolume || 0);
+  const bAvgVolume = Number(b?.avgVolume || 0);
   const aActivityBias = getDiscoveryActivityBiasScore(a);
   const bActivityBias = getDiscoveryActivityBiasScore(b);
   const aLivingFlow = getDiscoveryLivingFlowScore(a);
   const bLivingFlow = getDiscoveryLivingFlowScore(b);
 
-  if (priorityMode === 'trend_activity') {
-    if (aLivingFlow !== bLivingFlow) return bLivingFlow - aLivingFlow;
-    if (aVolume !== bVolume) return bVolume - aVolume;
-    if (aActivityBias !== bActivityBias) return bActivityBias - aActivityBias;
-    if (aTxns !== bTxns) return bTxns - aTxns;
-    if (aFeeRatio !== bFeeRatio) return bFeeRatio - aFeeRatio;
-    if (aTvl !== bTvl) return bTvl - aTvl;
-    return 0;
-  }
-
-  if (priorityMode === 'performance_activity') {
-    if (aLivingFlow !== bLivingFlow) return bLivingFlow - aLivingFlow;
-    if (aActivityBias !== bActivityBias) return bActivityBias - aActivityBias;
-    if (aFeeRatio !== bFeeRatio) return bFeeRatio - aFeeRatio;
-    if (aVolume !== bVolume) return bVolume - aVolume;
-    if (aTxns !== bTxns) return bTxns - aTxns;
-    if (aTvl !== bTvl) return bTvl - aTvl;
-    return 0;
-  }
-
+  if (aActivityRank !== bActivityRank) return bActivityRank - aActivityRank;
+  if (aRecentTxns !== bRecentTxns) return bRecentTxns - aRecentTxns;
+  if (aRecentFees !== bRecentFees) return bRecentFees - aRecentFees;
+  if (aRecentVolume !== bRecentVolume) return bRecentVolume - aRecentVolume;
+  if (aFlowTrend !== bFlowTrend) return bFlowTrend - aFlowTrend;
   if (aLivingFlow !== bLivingFlow) return bLivingFlow - aLivingFlow;
-  if (aActivityBias !== bActivityBias) return bActivityBias - aActivityBias;
-  if (aVolume !== bVolume) return bVolume - aVolume;
-  if (aTxns !== bTxns) return bTxns - aTxns;
-  if (aFeeRatio !== bFeeRatio) return bFeeRatio - aFeeRatio;
-  if (aTvl !== bTvl) return bTvl - aTvl;
-  return 0;
+  if (aAvgSwaps !== bAvgSwaps) return bAvgSwaps - aAvgSwaps;
+  if (aAvgFees !== bAvgFees) return bAvgFees - aAvgFees;
+  if (aAvgVolume !== bAvgVolume) return bAvgVolume - aAvgVolume;
+
+  if (priorityMode === 'trend_activity') {
+    if (aActivityBias !== bActivityBias) return bActivityBias - aActivityBias;
+    if (aTxns !== bTxns) return bTxns - aTxns;
+    if (aVolume !== bVolume) return bVolume - aVolume;
+    if (aFeeRatio !== bFeeRatio) return bFeeRatio - aFeeRatio;
+    if (aTvl !== bTvl) return bTvl - aTvl;
+  } else if (priorityMode === 'performance_activity') {
+    if (aActivityBias !== bActivityBias) return bActivityBias - aActivityBias;
+    if (aFeeRatio !== bFeeRatio) return bFeeRatio - aFeeRatio;
+    if (aVolume !== bVolume) return bVolume - aVolume;
+    if (aTxns !== bTxns) return bTxns - aTxns;
+    if (aTvl !== bTvl) return bTvl - aTvl;
+  } else {
+    if (aActivityBias !== bActivityBias) return bActivityBias - aActivityBias;
+    if (aTxns !== bTxns) return bTxns - aTxns;
+    if (aVolume !== bVolume) return bVolume - aVolume;
+    if (aFeeRatio !== bFeeRatio) return bFeeRatio - aFeeRatio;
+    if (aTvl !== bTvl) return bTvl - aTvl;
+  }
+
+  const aPrio = binStepPriority.indexOf(Number(a?.binStep || 0));
+  const bPrio = binStepPriority.indexOf(Number(b?.binStep || 0));
+  const aBinRank = aPrio >= 0 ? aPrio : Number.MAX_SAFE_INTEGER;
+  const bBinRank = bPrio >= 0 ? bPrio : Number.MAX_SAFE_INTEGER;
+  return aBinRank - bBinRank;
 }
 
 /**
@@ -574,11 +733,11 @@ export async function discoverHighFeePoolsMeridian({ limit = 50 } = {}) {
   if (rawPools.length === 0) return [];
 
   const normalized = rawPools
-    .map((p) => normalizePool(p, discoverySource))
+    .map((p) => normalizePool(p, discoverySource, timeframe))
     .filter(p => {
       if (!isSupportedQuoteToken(p)) return false;
-      // Hanya pool dengan binStep yang ada di priority list
-      return binStepPriority.includes(p.binStep);
+      if (!binStepPriority.includes(p.binStep)) return false;
+      return !isObservedDryDiscoveryPool(p);
     })
     .sort((a, b) => compareDiscoveryPriority(a, b, { binStepPriority, priorityMode }))
     .slice(0, limit);
@@ -588,10 +747,87 @@ export async function discoverHighFeePoolsMeridian({ limit = 50 } = {}) {
 
 // ── Pool normalizer ───────────────────────────────────────────────
 
-function normalizePool(p, discoverySource = 'MERIDIAN') {
-  const binStep = Number(p.dlmm_params?.bin_step || p.bin_step || p.binStep || 0);
-  const feeTvl  = Number(p.fee_active_tvl_ratio || 0) ||
-    (Number(p.active_tvl) > 0 ? (Number(p.fee || 0) / Number(p.active_tvl)) * 100 : 0);
+function normalizePool(p, discoverySource = 'MERIDIAN', timeframe = '24h') {
+  const normalizedTimeframe = String(timeframe || '24h').trim().toLowerCase();
+  const usesFlatOneHourWindow = normalizedTimeframe === '1h';
+  const binStep = Number(p.pool_config?.bin_step || p.dlmm_params?.bin_step || p.bin_step || p.binStep || 0);
+  const volume1hExplicit = readWindowMetric(p, 'volume', '1h', [
+    p.volume1h,
+    p.volume_1h,
+    p.trade_volume_1h,
+    p.tradeVolume1h,
+    p.v1h,
+  ]);
+  const volume1h = volume1hExplicit.available || !usesFlatOneHourWindow
+    ? volume1hExplicit
+    : readNonNegativeMetric(p.volume);
+  const volume24h = readWindowMetric(p, 'volume', '24h', [
+    p.volume24h,
+    p.volume_24h,
+    p.trade_volume_24h,
+    p.tradeVolume24h,
+    p.v24h,
+  ]);
+  const fees1hExplicit = readWindowMetric(p, 'fees', '1h', [
+    p.fees1h,
+    p.fee1h,
+    p.fee_1h,
+  ]);
+  const fees1h = fees1hExplicit.available || !usesFlatOneHourWindow
+    ? fees1hExplicit
+    : readNonNegativeMetric(p.fee);
+  const fees24h = readWindowMetric(p, 'fees', '24h', [
+    p.fees24h,
+    p.fee24h,
+    p.fee_24h,
+    p.fee,
+  ]);
+  const swaps1hExplicit = readNonNegativeMetric(p.swap_count_1h, p.swapCount1h, p.txns1h);
+  const swaps1h = swaps1hExplicit.available || !usesFlatOneHourWindow
+    ? swaps1hExplicit
+    : readNonNegativeMetric(p.swap_count, p.swapCount);
+  const swaps24h = readNonNegativeMetric(p.swap_count, p.swapCount, p.txns24h);
+  const feeRatio1hExplicit = readWindowMetric(p, 'fee_tvl_ratio', '1h', [
+    p.fee_tvl_ratio_1h,
+    p.feeTvlRatio1h,
+  ]);
+  const feeRatio1h = feeRatio1hExplicit.available || !usesFlatOneHourWindow
+    ? feeRatio1hExplicit
+    : readNonNegativeMetric(p.fee_active_tvl_ratio, p.feeActiveTvlRatio);
+  const feeRatio24h = readWindowMetric(p, 'fee_tvl_ratio', '24h', [
+    p.fee_active_tvl_ratio,
+    p.fee_tvl_ratio_24h,
+    p.feeTvlRatio,
+    p.feeActiveTvlRatio,
+  ]);
+  const activeTvl = Number(p.active_tvl || p.activeTvl || 0);
+  const totalTvl = Number(p.tvl || p.total_tvl || p.totalTvl || activeTvl || 0);
+  const ratioTvl = activeTvl > 0 ? activeTvl : totalTvl;
+  const derivedFeeRatio = ratioTvl > 0 && fees24h.available
+    ? fees24h.value / ratioTvl
+    : null;
+  const activity = classifyDiscoveryActivity({
+    volume1h,
+    fees1h,
+    swaps1h,
+    volume24h,
+    fees24h,
+    swaps24h,
+    windowLabel: timeframe,
+  });
+  const volumeChangePct = readSignedMetric(p.volume_change_pct, p.volumeChangePct);
+  const feeChangePct = readSignedMetric(p.fee_change_pct, p.feeChangePct);
+  const swapCountChangePct = readSignedMetric(p.swap_count_change_pct, p.swapCountChangePct);
+  const createdAtRaw = p.created_at ?? p.pool_created_at ?? p.token_x?.created_at ?? null;
+  const createdAtNumeric = createdAtRaw === null || createdAtRaw === undefined || createdAtRaw === ''
+    ? NaN
+    : Number(createdAtRaw);
+  const createdAtMs = Number.isFinite(createdAtNumeric)
+    ? (createdAtNumeric < 10_000_000_000 ? createdAtNumeric * 1000 : createdAtNumeric)
+    : (createdAtRaw ? Date.parse(createdAtRaw) : NaN);
+  const poolAgeHours = Number.isFinite(createdAtMs)
+    ? Math.max(0, (Date.now() - createdAtMs) / 3_600_000)
+    : null;
 
   return {
     address:           p.pool_address || p.address || p.pool || '',
@@ -604,20 +840,36 @@ function normalizePool(p, discoverySource = 'MERIDIAN') {
     quoteSymbol:       p.token_y?.symbol || p.quote?.symbol || p.quoteSymbol || '',
     binStep,
     feePct:            Number(p.fee_pct || 0),
-    feeActiveTvlRatio: parseFloat(feeTvl.toFixed(6)),
-    activeTvl:         Number(p.active_tvl || 0),
+    feeTvlRatio1h:     feeRatio1h.available ? feeRatio1h.value : null,
+    feeActiveTvlRatio: feeRatio24h.available ? feeRatio24h.value : derivedFeeRatio,
+    activeTvl,
     // total_tvl: dipakai oleh dominance check — seluruh TVL pool (bukan hanya active bins)
-    totalTvl:          Number(p.tvl || p.total_tvl || p.active_tvl || 0),
-    volume24h:         Number(p.volume24h || p.volume_24h || p.trade_volume_24h || p.tradeVolume24h || p.volume || p.v24h || 0),
-    fees24h:           Number(p.fees?.['24h'] || p.fees24h || p.fee24h || p.fee_24h || p.fee || 0),
-    swapCount24h:      Number(p.swap_count || p.swapCount || p.txns24h || 0),
+    totalTvl,
+    volume1h:          volume1h.available ? volume1h.value : null,
+    volume24h:         volume24h.available ? volume24h.value : null,
+    fees1h:            fees1h.available ? fees1h.value : null,
+    fees24h:           fees24h.available ? fees24h.value : null,
+    swapCount1h:       swaps1h.available ? swaps1h.value : null,
+    swapCount24h:      swaps24h.available ? swaps24h.value : null,
+    avgVolume:         readNonNegativeMetric(p.avg_volume, p.avgVolume).value,
+    avgFee:            readNonNegativeMetric(p.avg_fee, p.avgFee).value,
+    avgSwapCount:      readNonNegativeMetric(p.avg_swap_count, p.avgSwapCount).value,
+    volumeChangePct,
+    feeChangePct,
+    swapCountChangePct,
+    flowTrendScore:    getDiscoveryFlowTrendScore({ volumeChangePct, feeChangePct, swapCountChangePct }),
+    activityState:     activity.state,
+    activityWindow:    activity.window,
+    activityReason:    activity.reason,
+    activityEvidenceAvailable: activity.state !== 'UNKNOWN_ACTIVITY',
+    discoveryTimeframe: normalizedTimeframe,
     mcap:              Number(p.token_x?.market_cap || p.mcap || 0),
     holders:           Number(p.base_token_holders || p.holders || 0),
     organicScore:      Number(p.token_x?.organic_score || p.organic_score || 0),
-    tokenAgeHours:     p.token_x?.created_at
-      ? Math.floor((Date.now() - p.token_x.created_at) / 3_600_000)
-      : null,
-    price:             Number(p.pool_price || p.price || 0),
+    tokenAgeHours:     poolAgeHours,
+    poolAgeHours,
+    createdAt:         Number.isFinite(createdAtMs) ? createdAtMs : null,
+    price:             Number(p.current_price || p.pool_price || p.price || 0),
     priceChangePct:    Number(p.pool_price_change_pct || 0),
     priceTrend:        p.price_trend || null,
     DISCOVERY_SOURCE:  discoverySource,
@@ -636,6 +888,14 @@ export function __getDiscoveryActivityBiasScoreForTests(pool = {}) {
 
 export function __getDiscoveryLivingFlowScoreForTests(pool = {}) {
   return getDiscoveryLivingFlowScore(pool);
+}
+
+export function __normalizeDiscoveryPoolForTests(pool = {}, discoverySource = 'TEST', timeframe = '24h') {
+  return normalizePool(pool, discoverySource, timeframe);
+}
+
+export function __isObservedDryDiscoveryPoolForTests(pool = {}) {
+  return isObservedDryDiscoveryPool(pool);
 }
 
 // ── Composite VETO runner ─────────────────────────────────────────

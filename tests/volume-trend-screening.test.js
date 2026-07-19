@@ -114,6 +114,35 @@ test('hunter pool selector prefers living flow over dry higher fee ratio pool', 
   );
 });
 
+test('hunter selector lets active cross-bin pool beat a stale preferred-bin pool', async () => {
+  const hunter = await importFresh(join(repoRoot, 'src/agents/hunterAlpha.js'));
+  const stalePreferredBin = {
+    binStep: 100,
+    volume24h: 900000,
+    fees24h: 0,
+    swapCount24h: 0,
+    activityState: 'STALE_SPIKE',
+    activeTvl: 30000,
+  };
+  const activeOtherBin = {
+    binStep: 125,
+    volume1h: 52000,
+    volume24h: 120000,
+    fees1h: 95,
+    fees24h: 240,
+    swapCount1h: 180,
+    swapCount24h: 700,
+    activityState: 'OBSERVED_ACTIVE',
+    activeTvl: 18000,
+  };
+
+  assert.equal(hunter.__isObservedDryPoolForTests(stalePreferredBin), true);
+  assert.equal(
+    hunter.__comparePoolsByFeeGenerationForTests(activeOtherBin, stalePreferredBin, [100, 125, 200]) < 0,
+    true,
+  );
+});
+
 test('hunter screening rank uses batch percentile as ranking only, not a gate', async () => {
   const hunter = await importFresh(join(repoRoot, 'src/agents/hunterAlpha.js'));
   const active = {

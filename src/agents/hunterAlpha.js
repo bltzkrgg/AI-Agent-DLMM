@@ -55,14 +55,96 @@ const POOL_DISCOVERY_BASE = 'https://pool-discovery-api.datapi.meteora.ag/pools'
 
 function normalizePoolFees24h(pool = {}) {
   const value = pool?.fees?.['24h'] ?? pool?.fees24h ?? pool?.fee24h ?? pool?.fee_24h ?? null;
+  if (value === null || value === undefined || value === '') return null;
+  const numeric = Number(value);
+  return Number.isFinite(numeric) && numeric >= 0 ? numeric : null;
+}
+
+function normalizePoolFees1h(pool = {}) {
+  const value = pool?.fees?.['1h'] ?? pool?.fees1h ?? pool?.fee1h ?? pool?.fee_1h ?? null;
+  if (value === null || value === undefined || value === '') return null;
   const numeric = Number(value);
   return Number.isFinite(numeric) && numeric >= 0 ? numeric : null;
 }
 
 function normalizePoolVolume24h(pool = {}) {
-  const value = pool?.volume24h ?? pool?.volume_24h ?? pool?.trade_volume_24h ?? pool?.tradeVolume24h ?? pool?.volume24hRaw ?? pool?.volume ?? pool?.v24h ?? null;
+  const canonical = pool?.volume && typeof pool.volume === 'object' ? pool.volume?.['24h'] : null;
+  const scalarVolume = typeof pool?.volume === 'number' || typeof pool?.volume === 'string'
+    ? pool.volume
+    : null;
+  const value = canonical ?? pool?.volume24h ?? pool?.volume_24h ?? pool?.trade_volume_24h ?? pool?.tradeVolume24h ?? pool?.volume24hRaw ?? scalarVolume ?? pool?.v24h ?? null;
+  if (value === null || value === undefined || value === '') return null;
   const numeric = Number(value);
-  return Number.isFinite(numeric) && numeric >= 0 ? numeric : 0;
+  return Number.isFinite(numeric) && numeric >= 0 ? numeric : null;
+}
+
+function normalizePoolVolume1h(pool = {}) {
+  const canonical = pool?.volume && typeof pool.volume === 'object' ? pool.volume?.['1h'] : null;
+  const value = canonical ?? pool?.volume1h ?? pool?.volume_1h ?? pool?.trade_volume_1h ?? pool?.tradeVolume1h ?? pool?.v1h ?? null;
+  if (value === null || value === undefined || value === '') return null;
+  const numeric = Number(value);
+  return Number.isFinite(numeric) && numeric >= 0 ? numeric : null;
+}
+
+function normalizePoolSwapCount(pool = {}, window = '24h') {
+  const values = window === '1h'
+    ? [pool?.swapCount1h, pool?.swap_count_1h, pool?.txns1h]
+    : [pool?.swapCount24h, pool?.swap_count, pool?.txns24hRaw, pool?.txns24h];
+  for (const value of values) {
+    if (value === null || value === undefined || value === '') continue;
+    const numeric = Number(value);
+    if (Number.isFinite(numeric) && numeric >= 0) return numeric;
+  }
+  return null;
+}
+
+function getPoolActivityState(pool = {}) {
+  const explicit = String(pool?.activityState || pool?._activityState || '').trim().toUpperCase();
+  if (explicit) return explicit;
+
+  const recentFees = normalizePoolFees1h(pool);
+  const recentSwaps = normalizePoolSwapCount(pool, '1h');
+  if (recentSwaps !== null && recentSwaps > 0) {
+    return 'OBSERVED_ACTIVE';
+  }
+  if (recentFees === 0 && recentSwaps === 0) {
+    return Number(normalizePoolVolume24h(pool) || 0) > 0 ? 'STALE_SPIKE' : 'OBSERVED_DRY';
+  }
+
+  const fees24h = normalizePoolFees24h(pool);
+  const swaps24h = normalizePoolSwapCount(pool, '24h');
+  if (swaps24h !== null && swaps24h > 0) {
+    return 'OBSERVED_ACTIVE';
+  }
+  if (fees24h === 0 && swaps24h === 0) {
+    return Number(normalizePoolVolume24h(pool) || 0) > 0 ? 'STALE_SPIKE' : 'OBSERVED_DRY';
+  }
+  return 'UNKNOWN_ACTIVITY';
+}
+
+function getPoolActivityStateRank(pool = {}) {
+  const state = getPoolActivityState(pool);
+  if (state === 'OBSERVED_ACTIVE') return 3;
+  if (state === 'UNKNOWN_ACTIVITY') return 2;
+  return 0;
+}
+
+function getPoolFlowTrendScore(pool = {}) {
+  const direct = Number(pool?.flowTrendScore);
+  if (Number.isFinite(direct)) return Math.max(-100, Math.min(100, direct));
+  const values = [
+    pool?.feeChangePct ?? pool?.fee_change_pct,
+    pool?.swapCountChangePct ?? pool?.swap_count_change_pct,
+    pool?.volumeChangePct ?? pool?.volume_change_pct,
+  ].map(Number).filter(Number.isFinite);
+  if (values.length === 0) return 0;
+  const average = values.reduce((sum, value) => sum + value, 0) / values.length;
+  return Math.max(-100, Math.min(100, average));
+}
+
+function isObservedDryPool(pool = {}) {
+  const state = getPoolActivityState(pool);
+  return state === 'OBSERVED_DRY' || state === 'STALE_SPIKE';
 }
 
 function normalizePoolTotalTvl(pool = {}) {
@@ -72,14 +154,30 @@ function normalizePoolTotalTvl(pool = {}) {
 }
 
 function getPoolActivityBiasScore(pool = {}) {
-  const volume24h = normalizePoolVolume24h(pool);
+  const volume24h = Number(normalizePoolVolume24h(pool) || 0);
+  const volume1h = Number(normalizePoolVolume1h(pool) || 0);
   const feeRatio = Number(normalizeMeteoraFeeTvlRatio(pool) || 0);
   const fees24h = Number(normalizePoolFees24h(pool) || 0);
+  const fees1h = Number(normalizePoolFees1h(pool) || 0);
   const tvl = normalizePoolTotalTvl(pool);
   const volumeTvlRatio = tvl > 0 ? volume24h / tvl : 0;
   const trendState = String(pool?._volumeTrendSignal?.state || '').toUpperCase();
+  const flowTrendScore = getPoolFlowTrendScore(pool);
 
   let score = 0;
+
+  if (getPoolActivityStateRank(pool) === 3) score += 5;
+  if (isObservedDryPool(pool)) score -= 20;
+  if (flowTrendScore >= 20) score += 3;
+  else if (flowTrendScore < 0) score -= 3;
+
+  if (volume1h >= 50_000) score += 4;
+  else if (volume1h >= 10_000) score += 2;
+  else if (volume1h > 0) score += 1;
+
+  if (fees1h >= 300) score += 4;
+  else if (fees1h >= 50) score += 2;
+  else if (fees1h > 0) score += 1;
 
   if (volume24h >= 500_000) score += 4;
   else if (volume24h >= 150_000) score += 2;
@@ -104,15 +202,37 @@ function getPoolActivityBiasScore(pool = {}) {
 }
 
 function getPoolLivingFlowScore(pool = {}) {
-  const volume24h = normalizePoolVolume24h(pool);
+  const volume24h = Number(normalizePoolVolume24h(pool) || 0);
+  const volume1h = Number(normalizePoolVolume1h(pool) || 0);
   const feeRatio = Number(normalizeMeteoraFeeTvlRatio(pool) || 0);
   const fees24h = Number(normalizePoolFees24h(pool) || 0);
+  const fees1h = Number(normalizePoolFees1h(pool) || 0);
   const tvl = normalizePoolTotalTvl(pool);
   const volumeTvlRatio = tvl > 0 ? volume24h / tvl : 0;
   const trendState = String(pool?._volumeTrendSignal?.state || '').toUpperCase();
-  const txns24h = Number(pool?.swapCount24h || pool?.txns24hRaw || pool?.txns24h || 0);
+  const txns24h = Number(normalizePoolSwapCount(pool, '24h') || 0);
+  const txns1h = Number(normalizePoolSwapCount(pool, '1h') || 0);
+  const flowTrendScore = getPoolFlowTrendScore(pool);
+
+  if (isObservedDryPool(pool)) return -100;
 
   let score = 0;
+
+  if (getPoolActivityStateRank(pool) === 3) score += 12;
+  score += Math.round(flowTrendScore / 20);
+
+  if (volume1h >= 100_000) score += 10;
+  else if (volume1h >= 30_000) score += 7;
+  else if (volume1h >= 10_000) score += 4;
+  else if (volume1h > 0) score += 1;
+
+  if (fees1h >= 300) score += 5;
+  else if (fees1h >= 50) score += 3;
+  else if (fees1h > 0) score += 1;
+
+  if (txns1h >= 300) score += 4;
+  else if (txns1h >= 50) score += 2;
+  else if (txns1h > 0) score += 1;
 
   if (volume24h >= 900_000) score += 10;
   else if (volume24h >= 500_000) score += 7;
@@ -144,16 +264,40 @@ function getPoolLivingFlowScore(pool = {}) {
 }
 
 function comparePoolsByFeeGeneration(a = {}, b = {}, binStepCandidates = []) {
+  const aActivityRank = getPoolActivityStateRank(a);
+  const bActivityRank = getPoolActivityStateRank(b);
+  if (aActivityRank !== bActivityRank) return bActivityRank - aActivityRank;
+
+  const aTxns1h = Number(normalizePoolSwapCount(a, '1h') || 0);
+  const bTxns1h = Number(normalizePoolSwapCount(b, '1h') || 0);
+  if (aTxns1h !== bTxns1h) return bTxns1h - aTxns1h;
+
+  const aFees1h = Number(normalizePoolFees1h(a) || 0);
+  const bFees1h = Number(normalizePoolFees1h(b) || 0);
+  if (aFees1h !== bFees1h) return bFees1h - aFees1h;
+
+  const aVolume1h = Number(normalizePoolVolume1h(a) || 0);
+  const bVolume1h = Number(normalizePoolVolume1h(b) || 0);
+  if (aVolume1h !== bVolume1h) return bVolume1h - aVolume1h;
+
+  const aFlowTrend = getPoolFlowTrendScore(a);
+  const bFlowTrend = getPoolFlowTrendScore(b);
+  if (aFlowTrend !== bFlowTrend) return bFlowTrend - aFlowTrend;
+
   const aLivingFlow = getPoolLivingFlowScore(a);
   const bLivingFlow = getPoolLivingFlowScore(b);
   if (aLivingFlow !== bLivingFlow) return bLivingFlow - aLivingFlow;
 
-  const aVolume24h = normalizePoolVolume24h(a);
-  const bVolume24h = normalizePoolVolume24h(b);
-  if (aVolume24h !== bVolume24h) return bVolume24h - aVolume24h;
+  const aAvgSwaps = Number(a?.avgSwapCount || a?.avg_swap_count || 0);
+  const bAvgSwaps = Number(b?.avgSwapCount || b?.avg_swap_count || 0);
+  if (aAvgSwaps !== bAvgSwaps) return bAvgSwaps - aAvgSwaps;
 
-  const aTxns24h = Number(a?.swapCount24h || a?.txns24hRaw || a?.txns24h || 0);
-  const bTxns24h = Number(b?.swapCount24h || b?.txns24hRaw || b?.txns24h || 0);
+  const aAvgFees = Number(a?.avgFee || a?.avg_fee || 0);
+  const bAvgFees = Number(b?.avgFee || b?.avg_fee || 0);
+  if (aAvgFees !== bAvgFees) return bAvgFees - aAvgFees;
+
+  const aTxns24h = Number(normalizePoolSwapCount(a, '24h') || 0);
+  const bTxns24h = Number(normalizePoolSwapCount(b, '24h') || 0);
   if (aTxns24h !== bTxns24h) return bTxns24h - aTxns24h;
 
   const aFees24h = normalizePoolFees24h(a);
@@ -162,6 +306,10 @@ function comparePoolsByFeeGeneration(a = {}, b = {}, binStepCandidates = []) {
   const bHasFees24h = bFees24h !== null;
   if (aHasFees24h !== bHasFees24h) return (bHasFees24h ? 1 : 0) - (aHasFees24h ? 1 : 0);
   if (aHasFees24h && bHasFees24h && aFees24h !== bFees24h) return bFees24h - aFees24h;
+
+  const aVolume24h = Number(normalizePoolVolume24h(a) || 0);
+  const bVolume24h = Number(normalizePoolVolume24h(b) || 0);
+  if (aVolume24h !== bVolume24h) return bVolume24h - aVolume24h;
 
   const aFeeRatio = normalizeMeteoraFeeTvlRatio(a) ?? -1;
   const bFeeRatio = normalizeMeteoraFeeTvlRatio(b) ?? -1;
@@ -196,6 +344,7 @@ function deduplicatePoolsByToken(pools, binStepPriority) {
   // Group by tokenXMint
   const byMint = new Map();
   for (const pool of pools) {
+    if (isObservedDryPool(pool)) continue;
     const mint = pool.tokenXMint || '';
     if (!mint) continue;
     if (!byMint.has(mint)) byMint.set(mint, []);
@@ -783,7 +932,7 @@ function percentileRank(value, sortedValues = []) {
 }
 
 function buildScreeningRankContext(pools = []) {
-  const activePools = Array.isArray(pools) ? pools.filter(Boolean) : [];
+  const activePools = Array.isArray(pools) ? pools.filter((pool) => pool && !isObservedDryPool(pool)) : [];
   const metricSeries = {
     volume24h: [],
     fees24h: [],
@@ -799,7 +948,7 @@ function buildScreeningRankContext(pools = []) {
     const feeRatio = Number(normalizeMeteoraFeeTvlRatio(pool) || 0);
     const tvl = normalizePoolTotalTvl(pool);
     const volumeTvlRatio = tvl > 0 ? volume24h / tvl : 0;
-    const swapCount24h = Number(pool?.swapCount24h || pool?.txns24hRaw || pool?.txns24h || 0);
+    const swapCount24h = normalizePoolSwapCount(pool, '24h');
     const momentumScore = getDiscoveryMomentumScore(pool);
     const activityBias = getPoolActivityBiasScore(pool);
     const volumeTrend = getPoolVolumeTrendSortDelta(pool);
@@ -859,6 +1008,7 @@ function buildScreeningRankContext(pools = []) {
     const score =
       Math.round(activityPercentile * 1000) +
       freshness.priorityDelta +
+      (getPoolLivingFlowScore(pool) * 12) +
       (metrics.activityBias * 10) +
       (metrics.momentumScore * 8) +
       (metrics.volumeTrend * 6);
@@ -926,6 +1076,14 @@ export function __screeningRankScoreForTests(pool = {}, pools = []) {
 
 export function __classifyScreeningFreshnessForTests(input = {}) {
   return classifyScreeningFreshness(input);
+}
+
+export function __poolActivityStateForTests(pool = {}) {
+  return getPoolActivityState(pool);
+}
+
+export function __isObservedDryPoolForTests(pool = {}) {
+  return isObservedDryPool(pool);
 }
 
 function formatMemorySignal(signal = {}) {
@@ -3467,6 +3625,11 @@ export async function scanAndDeploy({ emitFinalReport = true } = {}) {
     // Filosofi LP: resource screening fokus ke pool yang bukan cuma valid, tapi juga masih hidup.
     // Pool di luar batas ini TIDAK dievaluasi sama sekali (hemat API & waktu).
     pools = pools.sort((a, b) => {
+      const activityStateDelta = getPoolActivityStateRank(b) - getPoolActivityStateRank(a);
+      if (activityStateDelta !== 0) return activityStateDelta;
+      const flowTrendDelta = getPoolFlowTrendScore(b) - getPoolFlowTrendScore(a);
+      if (flowTrendDelta !== 0) return flowTrendDelta;
+
       const aRank = getScreeningRankScore(a, screeningRankContext).score;
       const bRank = getScreeningRankScore(b, screeningRankContext).score;
       if (aRank !== bRank) return bRank - aRank;
@@ -5413,6 +5576,11 @@ export async function sendImmediateTopPoolsReport(chatId) {
 
     // Sort by efficiency (Vol/TVL) — top pool configurable ke Telegram, sisanya console
     const sorted = [...rawPools].sort((a, b) => {
+      const activityStateDelta = getPoolActivityStateRank(b) - getPoolActivityStateRank(a);
+      if (activityStateDelta !== 0) return activityStateDelta;
+      const flowTrendDelta = getPoolFlowTrendScore(b) - getPoolFlowTrendScore(a);
+      if (flowTrendDelta !== 0) return flowTrendDelta;
+
       const aRank = getScreeningRankScore(a, screeningRankContext).score;
       const bRank = getScreeningRankScore(b, screeningRankContext).score;
       if (aRank !== bRank) return bRank - aRank;
