@@ -18,7 +18,7 @@ import TelegramBot              from 'node-telegram-bot-api';
 import { existsSync, readFileSync, writeFileSync, unlinkSync } from 'fs';
 import { initSolana, getWalletBalance }   from './solana/wallet.js';
 import { getConfig, updateConfig, isConfigKeySupported, resolveNestedKey, SETCONFIG_WHITELIST } from './config.js';
-import { runLinearLoop, stopLoop, setNotifyFn, setNotifyMuted, isRunning, getCurrentPosition, getActivePositions, getPaperPositions, setShutdownInProgress, closeAllActivePositionsByUser, closeAllActivePositionsForShutdown, retryFailedShutdownPositions, runAutoscreening, spawnMonitorForRestoredPositions, startPaperPositionMonitors, stopPaperPositionMonitors, startManualCloseWatcher, startPendingTaRadarWatcher, stopPendingTaRadarWatcher, startTaWatchWatcher, stopTaWatchWatcher, scanAndDeploy, updatePnlStatus, inventoryManagement, submitManualCaPool } from './agents/hunterAlpha.js';
+import { runLinearLoop, stopLoop, setNotifyFn, setNotifyMuted, isRunning, getCurrentPosition, getActivePositions, getPaperPositions, closePaperPositionByOperator, setShutdownInProgress, closeAllActivePositionsByUser, closeAllActivePositionsForShutdown, retryFailedShutdownPositions, runAutoscreening, spawnMonitorForRestoredPositions, startPaperPositionMonitors, stopPaperPositionMonitors, startManualCloseWatcher, startPendingTaRadarWatcher, stopPendingTaRadarWatcher, startTaWatchWatcher, stopTaWatchWatcher, scanAndDeploy, updatePnlStatus, inventoryManagement, submitManualCaPool } from './agents/hunterAlpha.js';
 import { getActivePositionCount, reconcileStartupPositions, EP_CONFIG } from './sniper/evilPanda.js';
 import { analyzePerformance, formatEvolutionReport }     from './learn/statelessEvolve.js';
 import { generateBriefing, formatActivePositionsTelegram } from './telegram/briefing.js';
@@ -334,6 +334,7 @@ function buildStartCommandPanel() {
       `/unblock — unblock token dari blacklist\n` +
       `/dryrun — toggle dry run\n` +
       `/paper — laporan posisi paper\n` +
+      `/paperclose — close posisi paper\n` +
       `/stop — hentikan loop\n` +
       `/exit — force exit posisi aktif`,
     opts: {
@@ -368,6 +369,9 @@ function buildStartCommandPanel() {
           [
             { text: '/dryrun', callback_data: 'cmd:/dryrun' },
             { text: '/paper', callback_data: 'cmd:/paper' },
+          ],
+          [
+            { text: '/paperclose', callback_data: 'cmd:/paperclose' },
           ],
           [
             { text: '/stop', callback_data: 'cmd:/stop' },
@@ -1274,6 +1278,70 @@ bot.onText(/\/paper$/, async (msg) => {
     formatPaperPositionsTelegram(getPaperPositions(), {
       dryRun: getConfig().dryRun === true,
     }),
+    { parse_mode: 'HTML' }
+  );
+});
+
+// /paperclose [paper_id|pool_address] — close posisi paper tanpa transaksi on-chain
+bot.onText(/\/paperclose(?:\s+(\S+))?$/, async (msg, match) => {
+  if (!guard(msg)) return;
+  const chatId = msg.chat.id;
+  const selector = String(match?.[1] || '').trim();
+
+  if (getConfig().dryRun !== true) {
+    await bot.sendMessage(
+      chatId,
+      `⛔ <b>Paper Close ditolak</b>\n` +
+      `Dry Run: <code>OFF</code>\n` +
+      `<i>Aktifkan <code>/dryrun on</code> sebelum menutup posisi paper.</i>`,
+      { parse_mode: 'HTML' }
+    );
+    return;
+  }
+
+  const result = await closePaperPositionByOperator(selector);
+  if (result.ok) {
+    await bot.sendMessage(chatId, result.notification, { parse_mode: 'HTML' });
+    return;
+  }
+
+  if (result.status === 'NO_ACTIVE') {
+    await bot.sendMessage(chatId, 'ℹ️ Tidak ada posisi paper aktif.', { parse_mode: 'HTML' });
+    return;
+  }
+  if (result.status === 'AMBIGUOUS') {
+    await bot.sendMessage(
+      chatId,
+      `⚠️ <b>Pilih posisi paper</b>\n` +
+      `Ada <code>${result.matches?.length || getPaperPositions().length}</code> posisi yang cocok.\n` +
+      `Gunakan <code>/paper</code>, lalu kirim:\n` +
+      `<code>/paperclose &lt;paper-id atau pool&gt;</code>`,
+      { parse_mode: 'HTML' }
+    );
+    return;
+  }
+  if (result.status === 'DRY_RUN_OFF') {
+    await bot.sendMessage(chatId, '⛔ Dry Run sudah OFF. Paper position tidak ditutup.', { parse_mode: 'HTML' });
+    return;
+  }
+  if (result.status === 'ALREADY_CLOSED') {
+    await bot.sendMessage(chatId, 'ℹ️ Posisi paper sudah tertutup.', { parse_mode: 'HTML' });
+    return;
+  }
+  if (result.status === 'ERROR') {
+    await bot.sendMessage(
+      chatId,
+      `❌ <b>Paper close gagal</b>\n` +
+      `<i>Posisi paper tetap aktif. Coba ulangi command.</i>`,
+      { parse_mode: 'HTML' }
+    );
+    return;
+  }
+
+  await bot.sendMessage(
+    chatId,
+    `❌ Posisi paper tidak ditemukan.\n` +
+    `<i>Gunakan <code>/paper</code> untuk melihat Paper ID dan pool aktif.</i>`,
     { parse_mode: 'HTML' }
   );
 });

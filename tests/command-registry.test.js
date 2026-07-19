@@ -50,6 +50,18 @@ test('/paper handler is registered and exposed in /start help', () => {
   assert.match(content, /callback_data: 'cmd:\/paper'/);
 });
 
+test('/paperclose is dry-run-only and exposed in Telegram help', () => {
+  const indexPath = join(__dirname, '../src/index.js');
+  const content = readFileSync(indexPath, 'utf-8');
+
+  assert.match(content, /bot\.onText\(\/\\\/paperclose/);
+  assert.match(content, /\/paperclose — close posisi paper/);
+  assert.match(content, /callback_data: 'cmd:\/paperclose'/);
+  assert.match(content, /getConfig\(\)\.dryRun !== true/);
+  assert.match(content, /closePaperPositionByOperator\(selector\)/);
+  assert.match(content, /Aktifkan <code>\/dryrun on<\/code>/);
+});
+
 test('/strategy_report uses sendLong transport to avoid Telegram length limit issues', () => {
   const indexPath = join(__dirname, '../src/index.js');
   const content = readFileSync(indexPath, 'utf-8');

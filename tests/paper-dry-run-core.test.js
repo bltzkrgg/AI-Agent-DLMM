@@ -118,6 +118,23 @@ test('paper monitors require explicit runtime enable and remain isolated from re
   assert.doesNotMatch(runtimeBlock, /exitPosition\(/);
 });
 
+test('manual paper close uses only paper state and is gated by dry-run runtime', () => {
+  const hunterSrc = readFileSync(hunterPath, 'utf8');
+  const closeAt = hunterSrc.indexOf('export async function closePaperPositionByOperator');
+  const startAt = hunterSrc.indexOf('export function startPaperPositionMonitors', closeAt);
+  const closeBlock = hunterSrc.slice(closeAt, startAt);
+
+  assert.match(closeBlock, /getConfig\(\)\.dryRun !== true/);
+  assert.match(closeBlock, /!_paperMonitoringEnabled/);
+  assert.match(closeBlock, /getPoolInfo\(selected\.poolAddress\)/);
+  assert.match(closeBlock, /closePaperPosition\(selected\.id,/);
+  assert.match(closeBlock, /action: 'MANUAL_CLOSE'/);
+  assert.match(closeBlock, /formatPaperClosedNotification/);
+  assert.doesNotMatch(closeBlock, /safeExit\(/);
+  assert.doesNotMatch(closeBlock, /exitPosition\(/);
+  assert.doesNotMatch(closeBlock, /closeAllActivePositions/);
+});
+
 test('paper monitor sends realtime paper reporting on the configured interval', () => {
   const hunterSrc = readFileSync(hunterPath, 'utf8');
   const monitorAt = hunterSrc.indexOf('async function paperMonitorLoop');
@@ -127,4 +144,5 @@ test('paper monitor sends realtime paper reporting on the configured interval', 
   assert.match(monitorBlock, /shouldLogRealtimePnl\(positionId\)/);
   assert.match(monitorBlock, /formatPaperRealtimeNotification/);
   assert.match(monitorBlock, /getRealtimePnlIntervalMs\(\)/);
+  assert.match(monitorBlock, /!getPaperPosition\(positionId\)/);
 });

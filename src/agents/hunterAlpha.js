@@ -3360,7 +3360,7 @@ async function paperMonitorLoop(positionId) {
       if (!position) return;
       try {
         const poolInfo = await getPoolInfo(position.poolAddress);
-        if (!_paperMonitoringEnabled || _shutdownInProgress) return;
+        if (!_paperMonitoringEnabled || _shutdownInProgress || !getPaperPosition(positionId)) return;
         const marked = evaluatePaperPositionValue(position, {
           activeBinId: poolInfo?.activeBinId,
           activePrice: poolInfo?.activePrice,
@@ -3445,7 +3445,7 @@ async function paperMonitorLoop(positionId) {
             finalReason = oorState.exitReason || 'OUT_OF_RANGE';
           }
         }
-        if (!_paperMonitoringEnabled || _shutdownInProgress) return;
+        if (!_paperMonitoringEnabled || _shutdownInProgress || !getPaperPosition(positionId)) return;
 
         const finalStatus = {
           ...status,
@@ -5200,6 +5200,115 @@ export function spawnMonitorForRestoredPositions() {
 
 export function getPaperPositions() {
   return listPaperPositions();
+}
+
+function resolvePaperPositionForOperator(selector = '') {
+  const active = listPaperPositions();
+  const query = String(selector || '').trim();
+  if (!query) {
+    if (active.length === 1) return { status: 'FOUND', position: active[0], active };
+    return { status: active.length === 0 ? 'NO_ACTIVE' : 'AMBIGUOUS', position: null, active };
+  }
+
+  const queryLower = query.toLowerCase();
+  const exact = active.filter((position) =>
+    String(position?.id || '') === query ||
+    String(position?.poolAddress || '') === query ||
+    String(position?.tokenMint || position?.tokenXMint || '') === query ||
+    String(position?.symbol || '').toLowerCase() === queryLower
+  );
+  if (exact.length === 1) return { status: 'FOUND', position: exact[0], active };
+  if (exact.length > 1) return { status: 'AMBIGUOUS', position: null, active: exact };
+
+  const prefix = active.filter((position) =>
+    String(position?.id || '').startsWith(query) ||
+    String(position?.poolAddress || '').startsWith(query) ||
+    String(position?.tokenMint || position?.tokenXMint || '').startsWith(query)
+  );
+  if (prefix.length === 1) return { status: 'FOUND', position: prefix[0], active };
+  return { status: prefix.length > 1 ? 'AMBIGUOUS' : 'NOT_FOUND', position: null, active: prefix };
+}
+
+export async function closePaperPositionByOperator(selector = '') {
+  if (getConfig().dryRun !== true || !_paperMonitoringEnabled || _shutdownInProgress) {
+    return { ok: false, status: 'DRY_RUN_OFF' };
+  }
+
+  const resolved = resolvePaperPositionForOperator(selector);
+  if (resolved.status !== 'FOUND') {
+    return {
+      ok: false,
+      status: resolved.status,
+      matches: resolved.active.map((position) => ({
+        id: position.id,
+        poolAddress: position.poolAddress,
+        symbol: position.symbol,
+      })),
+    };
+  }
+
+  const selected = resolved.position;
+  let latestMark = null;
+  let snapshotSource = 'last_paper_snapshot';
+  try {
+    const poolInfo = await withTimeout(
+      getPoolInfo(selected.poolAddress),
+      10_000,
+      'PAPER_MANUAL_CLOSE_REFRESH'
+    );
+    const latestPosition = getPaperPosition(selected.id);
+    if (!latestPosition) return { ok: false, status: 'ALREADY_CLOSED' };
+    const marked = evaluatePaperPositionValue(latestPosition, {
+      activeBinId: poolInfo?.activeBinId,
+      activePrice: poolInfo?.activePrice,
+    });
+    if (marked.ok) {
+      latestMark = marked;
+      snapshotSource = 'live_pool_refresh';
+    }
+  } catch (error) {
+    console.warn(`[PAPER] manual close refresh fallback ${selected.symbol || selected.id}: ${error.message}`);
+  }
+
+  const position = getPaperPosition(selected.id);
+  if (!position) return { ok: false, status: 'ALREADY_CLOSED' };
+  let closed;
+  try {
+    closed = closePaperPosition(selected.id, {
+      ...(latestMark || {}),
+      action: 'MANUAL_CLOSE',
+      reason: 'MANUAL_CLOSE',
+      closeReason: 'MANUAL_CLOSE',
+      exitReason: 'Manual Paper Close',
+      accountingStatus: 'paper_estimate',
+      feeEstimateMethod: 'unavailable_core_v1',
+      feeEstimateConfidence: 'none',
+    });
+  } catch (error) {
+    console.error(`[PAPER] manual close failed ${selected.symbol || selected.id}: ${error.message}`);
+    return { ok: false, status: 'ERROR', reason: error.message };
+  }
+  if (!closed) return { ok: false, status: 'ALREADY_CLOSED' };
+
+  console.log(
+    `[PAPER] MANUAL_CLOSE id=${selected.id} symbol=${selected.symbol || 'UNKNOWN'} ` +
+    `pnlPct=${Number(closed.pnlPct || 0).toFixed(2)} source=${snapshotSource}`
+  );
+  return {
+    ok: true,
+    status: 'CLOSED',
+    position,
+    closed,
+    snapshotSource,
+    notification: formatPaperClosedNotification({
+      position,
+      closed,
+      action: 'MANUAL_CLOSE',
+      reason: snapshotSource === 'live_pool_refresh'
+        ? 'Manual paper close memakai snapshot pool terbaru.'
+        : 'Manual paper close memakai snapshot paper terakhir.',
+    }),
+  };
 }
 
 export function startPaperPositionMonitors() {
