@@ -72,6 +72,8 @@ test('paper monitor closes only through paper ledger path', () => {
   const monitorBlock = src.slice(monitorAt, nextSectionAt);
 
   assert.match(monitorBlock, /evaluatePositionExitPolicy\(\{/);
+  assert.match(monitorBlock, /pnlPct: marked\.pnlPct/);
+  assert.doesNotMatch(monitorBlock, /pnlPct: markedWithFees\.estimatedNetPnlPct/);
   assert.match(monitorBlock, /evaluateOutOfRangeMonitorState\(\{/);
   assert.match(monitorBlock, /evaluatePoolImpactGuard\(\{/);
   assert.match(monitorBlock, /closePaperPosition\(positionId,/);

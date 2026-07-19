@@ -27,14 +27,24 @@ const position = {
   openedAt: '2026-07-18T00:00:00.000Z',
 };
 
+const estimatedPosition = {
+  ...position,
+  feePnlSol: 0.006,
+  feePnlPct: 1,
+  feePnlAvailable: true,
+  feePnlSource: 'paper_pool_fee_tvl_estimate_v1',
+  estimatedNetPnlSol: 0.036,
+  estimatedNetPnlPct: 6,
+  estimatedNetValueSol: 0.636,
+};
+
 test('paper status report exposes execution mode and keeps fees unavailable', () => {
   const report = formatPaperPositionsTelegram([position], { dryRun: true });
 
   assert.match(report, /New Entry Mode: <code>PAPER<\/code>/);
   assert.match(report, /Active Paper Positions: <code>1<\/code>/);
   assert.match(report, /Price PnL: <code>\+0\.030000 SOL \/ \+5\.00%<\/code>/);
-  assert.match(report, /Fees: <code>N\/A<\/code>/);
-  assert.doesNotMatch(report, /Estimated Fees/);
+  assert.match(report, /Estimated Fees: <code>N\/A<\/code>/);
 });
 
 test('paper open notification states that no on-chain transaction occurs', () => {
@@ -45,24 +55,26 @@ test('paper open notification states that no on-chain transaction occurs', () =>
   assert.match(report, /Tidak ada modal, signing, atau transaksi on-chain/);
 });
 
-test('paper realtime report remains price-only', () => {
+test('paper realtime report separates estimated fees from price pnl', () => {
   const report = formatPaperRealtimeNotification({
-    position,
-    status: position,
+    position: estimatedPosition,
+    status: estimatedPosition,
     intervalSec: 15,
   });
 
   assert.match(report, /PAPER REALTIME \| TEST-SOL/);
-  assert.match(report, /Price PnL/);
-  assert.match(report, /Fees: <code>N\/A<\/code>/);
+  assert.match(report, /Price PnL: <code>\+0\.030000 SOL \/ \+5\.00%<\/code>/);
+  assert.match(report, /Estimated Fees: <code>\+0\.006000 SOL<\/code> <i>\[ESTIMATED\]<\/i>/);
+  assert.match(report, /Estimated Net PnL: <code>\+0\.036000 SOL \/ \+6\.00%<\/code> <i>\[ESTIMATED\]<\/i>/);
+  assert.match(report, /Estimated Net Value: <code>0\.6360 SOL<\/code> <i>\[ESTIMATED\]<\/i>/);
   assert.match(report, /Interval: <code>15s<\/code>/);
 });
 
-test('paper close report shows virtual exit value and no fake fee income', () => {
+test('paper close report keeps estimated fees explicit', () => {
   const report = formatPaperClosedNotification({
-    position,
+    position: estimatedPosition,
     closed: {
-      ...position,
+      ...estimatedPosition,
       closedAt: '2026-07-18T02:29:00.000Z',
     },
     action: 'TAKE_PROFIT',
@@ -70,8 +82,10 @@ test('paper close report shows virtual exit value and no fake fee income', () =>
   });
 
   assert.match(report, /PAPER CLOSED \| TEST-SOL/);
-  assert.match(report, /Virtual Value at Exit: <code>0\.6300 SOL<\/code>/);
+  assert.match(report, /Virtual Value at Exit \(Price\): <code>0\.6300 SOL<\/code>/);
+  assert.match(report, /Estimated Fees: <code>\+0\.006000 SOL<\/code> <i>\[ESTIMATED\]<\/i>/);
+  assert.match(report, /Estimated Net Value at Exit: <code>0\.6360 SOL<\/code> <i>\[ESTIMATED\]<\/i>/);
   assert.match(report, /Exit: <code>TAKE_PROFIT<\/code>/);
   assert.match(report, /Duration: <code>2h 29m<\/code>/);
-  assert.match(report, /fee income is not estimated/);
+  assert.match(report, /bukan fee aktual per bin/);
 });
