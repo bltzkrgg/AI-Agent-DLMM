@@ -589,6 +589,8 @@ test('/autoscreen uses single final scan report flow', () => {
 test('instant scan report includes freshness labels for auditability', () => {
   const src = readFileSync(hunterPath, 'utf8');
   assert.match(src, /Freshness: <code>\$\{escapeHTML\(String\(pool\?._screeningRank\?\.freshnessState \|\| 'UNKNOWN'\)\.toUpperCase\(\)\)\}<\/code>/);
+  assert.match(src, /Activity: <code>\$\{escapeHTML\(activityDisplay\.state\)\}<\/code>/);
+  assert.match(src, /Swaps: <code>\$\{activitySwapText\}<\/code> \| Flow: <code>\$\{activityFlowText\}<\/code>/);
   assert.match(src, /freshnessPriorityDelta/);
   assert.match(src, /activityPercentile/);
 });

@@ -143,6 +143,37 @@ test('hunter selector lets active cross-bin pool beat a stale preferred-bin pool
   );
 });
 
+test('hunter activity display keeps unavailable evidence as N/A', async () => {
+  const hunter = await importFresh(join(repoRoot, 'src/agents/hunterAlpha.js'));
+
+  const active = hunter.__poolActivityDisplayMetaForTests({
+    activityState: 'OBSERVED_ACTIVE',
+    activityWindow: '1h',
+    swapCount1h: 2504,
+    flowTrendEvidenceAvailable: true,
+    flowTrendScore: 76,
+  });
+  const unknown = hunter.__poolActivityDisplayMetaForTests({
+    activityState: 'UNKNOWN_ACTIVITY',
+    discoveryTimeframe: '1h',
+    swapCount1h: null,
+    flowTrendEvidenceAvailable: false,
+  });
+
+  assert.deepEqual(active, {
+    state: 'ACTIVE',
+    window: '1h',
+    swapCount: 2504,
+    flowTrendScore: 76,
+  });
+  assert.deepEqual(unknown, {
+    state: 'UNKNOWN',
+    window: '1h',
+    swapCount: null,
+    flowTrendScore: null,
+  });
+});
+
 test('hunter screening rank uses batch percentile as ranking only, not a gate', async () => {
   const hunter = await importFresh(join(repoRoot, 'src/agents/hunterAlpha.js'));
   const active = {

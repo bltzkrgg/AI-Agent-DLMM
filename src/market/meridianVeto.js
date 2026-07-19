@@ -818,6 +818,8 @@ function normalizePool(p, discoverySource = 'MERIDIAN', timeframe = '24h') {
   const volumeChangePct = readSignedMetric(p.volume_change_pct, p.volumeChangePct);
   const feeChangePct = readSignedMetric(p.fee_change_pct, p.feeChangePct);
   const swapCountChangePct = readSignedMetric(p.swap_count_change_pct, p.swapCountChangePct);
+  const flowTrendEvidenceAvailable = [volumeChangePct, feeChangePct, swapCountChangePct]
+    .some((value) => Number.isFinite(value));
   const createdAtRaw = p.created_at ?? p.pool_created_at ?? p.token_x?.created_at ?? null;
   const createdAtNumeric = createdAtRaw === null || createdAtRaw === undefined || createdAtRaw === ''
     ? NaN
@@ -858,6 +860,7 @@ function normalizePool(p, discoverySource = 'MERIDIAN', timeframe = '24h') {
     feeChangePct,
     swapCountChangePct,
     flowTrendScore:    getDiscoveryFlowTrendScore({ volumeChangePct, feeChangePct, swapCountChangePct }),
+    flowTrendEvidenceAvailable,
     activityState:     activity.state,
     activityWindow:    activity.window,
     activityReason:    activity.reason,

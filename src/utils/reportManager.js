@@ -55,6 +55,10 @@ class ReportManager {
       freshnessState: null,
       freshnessPriorityDelta: null,
       activityPercentile: null,
+      activityState: null,
+      activityWindow: null,
+      activitySwapCount: null,
+      flowTrendScore: null,
     };
     this.currentCycle.push(tokenReport);
     return tokenReport;
@@ -74,6 +78,10 @@ class ReportManager {
     freshnessState = null,
     freshnessPriorityDelta = null,
     activityPercentile = null,
+    activityState = null,
+    activityWindow = null,
+    activitySwapCount = null,
+    flowTrendScore = null,
   } = {}) {
     const token = this.currentCycle.find(t => t.name === tokenName);
     if (!token) return;
@@ -106,6 +114,18 @@ class ReportManager {
     }
     if (activityPercentile != null && Number.isFinite(Number(activityPercentile))) {
       token.activityPercentile = Number(activityPercentile);
+    }
+    if (activityState != null && activityState !== '') {
+      token.activityState = String(activityState).toUpperCase();
+    }
+    if (activityWindow != null && activityWindow !== '') {
+      token.activityWindow = String(activityWindow).toLowerCase();
+    }
+    if (activitySwapCount != null && Number.isFinite(Number(activitySwapCount))) {
+      token.activitySwapCount = Number(activitySwapCount);
+    }
+    if (flowTrendScore != null && Number.isFinite(Number(flowTrendScore))) {
+      token.flowTrendScore = Number(flowTrendScore);
     }
   }
 
@@ -198,6 +218,21 @@ class ReportManager {
       gmgnLine.push(freshnessParts.join(' | '));
     }
     vLines.push(gmgnLine.join(' | '));
+    if (pool.activityState) {
+      const activityParts = [`Activity ${String(pool.activityState).toUpperCase()}`];
+      activityParts.push(`Window ${pool.activityWindow || 'N/A'}`);
+      activityParts.push(
+        `Swaps ${Number.isFinite(Number(pool.activitySwapCount))
+          ? Number(pool.activitySwapCount).toLocaleString('en-US')
+          : 'N/A'}`,
+      );
+      activityParts.push(
+        `Flow ${Number.isFinite(Number(pool.flowTrendScore))
+          ? `${Number(pool.flowTrendScore) >= 0 ? '+' : ''}${Number(pool.flowTrendScore).toFixed(0)}`
+          : 'N/A'}`,
+      );
+      vLines.push(activityParts.join(' | '));
+    }
     const isRejected = pool.rejected || pool.status === 'REJECTED';
     if (isRejected) {
       const firstFailedGate = this.getFirstFailedGate(pool);

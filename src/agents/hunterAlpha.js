@@ -147,6 +147,34 @@ function isObservedDryPool(pool = {}) {
   return state === 'OBSERVED_DRY' || state === 'STALE_SPIKE';
 }
 
+function getPoolActivityDisplayMeta(pool = {}) {
+  const rawState = getPoolActivityState(pool);
+  const stateLabels = {
+    OBSERVED_ACTIVE: 'ACTIVE',
+    UNKNOWN_ACTIVITY: 'UNKNOWN',
+    OBSERVED_DRY: 'DRY',
+    STALE_SPIKE: 'STALE_SPIKE',
+  };
+  const window = String(pool?.activityWindow || pool?.discoveryTimeframe || '').trim().toLowerCase() || null;
+  const swapCount = window === '1h'
+    ? normalizePoolSwapCount(pool, '1h')
+    : normalizePoolSwapCount(pool, '24h');
+  const flowInputs = [
+    pool?.feeChangePct ?? pool?.fee_change_pct,
+    pool?.swapCountChangePct ?? pool?.swap_count_change_pct,
+    pool?.volumeChangePct ?? pool?.volume_change_pct,
+  ];
+  const hasFlowEvidence = pool?.flowTrendEvidenceAvailable === true ||
+    flowInputs.some((value) => value !== null && value !== undefined && Number.isFinite(Number(value)));
+
+  return {
+    state: stateLabels[rawState] || rawState || 'UNKNOWN',
+    window,
+    swapCount,
+    flowTrendScore: hasFlowEvidence ? getPoolFlowTrendScore(pool) : null,
+  };
+}
+
 function normalizePoolTotalTvl(pool = {}) {
   const value = pool?.totalTvl ?? pool?.activeTvl ?? pool?.total_tvl ?? pool?.active_tvl ?? pool?.tvl ?? pool?.liquidityUsd ?? null;
   const numeric = Number(value);
@@ -1084,6 +1112,10 @@ export function __poolActivityStateForTests(pool = {}) {
 
 export function __isObservedDryPoolForTests(pool = {}) {
   return isObservedDryPool(pool);
+}
+
+export function __poolActivityDisplayMetaForTests(pool = {}) {
+  return getPoolActivityDisplayMeta(pool);
 }
 
 function formatMemorySignal(signal = {}) {
@@ -3714,6 +3746,7 @@ export async function scanAndDeploy({ emitFinalReport = true } = {}) {
       const tokenMint   = pool.tokenXMint || pool.tokenX || pool.mint;
       const tokenSymbol = pool.tokenXSymbol || pool.name?.split('-')[0] || '';
       const volumeTrendSignal = buildPoolVolumeTrendSignal(pool);
+      const activityDisplay = getPoolActivityDisplayMeta(pool);
       pool._volumeTrendSignal = volumeTrendSignal;
       recordPoolVolumeSnapshot({
         pool,
@@ -3740,6 +3773,10 @@ export async function scanAndDeploy({ emitFinalReport = true } = {}) {
         freshnessState: pool?._screeningRank?.freshnessState || 'UNKNOWN',
         freshnessPriorityDelta: pool?._screeningRank?.freshnessPriorityDelta ?? null,
         activityPercentile: pool?._screeningRank?.activityPercentile ?? null,
+        activityState: activityDisplay.state,
+        activityWindow: activityDisplay.window,
+        activitySwapCount: activityDisplay.swapCount,
+        flowTrendScore: activityDisplay.flowTrendScore,
       });
     if (!isSupportedQuoteToken(pool)) {
       const quoteReason = `Unsupported quote token ${getQuoteTokenLabel(pool)}; expected SOL/WSOL`;
@@ -5638,6 +5675,13 @@ export async function sendImmediateTopPoolsReport(chatId) {
       if (gmgnInfo.insiderPct != null) gmgnParts.push(`Insider ${formatMaybePct(gmgnInfo.insiderPct, 1)}`);
       if (gmgnInfo.bundlerPct != null) gmgnParts.push(`Bundler ${formatMaybePct(gmgnInfo.bundlerPct, 1)}`);
       const signalScore = Number.isFinite(Number(pool.signalScore)) ? Math.max(0, Math.min(100, Math.round(Number(pool.signalScore)))) : null;
+      const activityDisplay = getPoolActivityDisplayMeta(pool);
+      const activityFlowText = Number.isFinite(Number(activityDisplay.flowTrendScore))
+        ? `${Number(activityDisplay.flowTrendScore) >= 0 ? '+' : ''}${Number(activityDisplay.flowTrendScore).toFixed(0)}`
+        : 'N/A';
+      const activitySwapText = Number.isFinite(Number(activityDisplay.swapCount))
+        ? Number(activityDisplay.swapCount).toLocaleString('en-US')
+        : 'N/A';
 
       // Simulasikan gate trace untuk laporan instan
       // STAGE_0..JUPITER = PASS (lolos discovery), MERIDIAN_VETO = hasil veto, sisanya = NOT_STARTED
@@ -5674,6 +5718,8 @@ export async function sendImmediateTopPoolsReport(chatId) {
         `Fees24h: <code>${Number(pool.fees24h || pool.fee24h || 0) > 0 ? `◎${Number(pool.fees24h || pool.fee24h || 0).toFixed(2)}` : 'N/A'}</code>\n` +
         `Fee/TVL: <code>${feeRatio}%</code> | Bin: <code>${escapeHTML(String(binStep))}</code> | MCap: <code>$${safeNum(mcapRaw,0).toLocaleString('en-US')}</code>\n` +
         `Signal: <code>${gmgnParts.length ? escapeHTML(gmgnParts.join(' | ')) : 'N/A'}</code>${signalScore != null ? ` | LP Score: <code>${signalScore}/100</code>` : ''}\n` +
+        `Activity: <code>${escapeHTML(activityDisplay.state)}</code> | Window: <code>${escapeHTML(activityDisplay.window || 'N/A')}</code> | ` +
+        `Swaps: <code>${activitySwapText}</code> | Flow: <code>${activityFlowText}</code>\n` +
         `Freshness: <code>${escapeHTML(String(pool?._screeningRank?.freshnessState || 'UNKNOWN').toUpperCase())}</code>` +
         `${Number.isFinite(Number(pool?._screeningRank?.freshnessPriorityDelta)) ? ` | Rank: <code>${Number(pool._screeningRank.freshnessPriorityDelta) >= 0 ? '+' : ''}${Number(pool._screeningRank.freshnessPriorityDelta)}</code>` : ''}` +
         `${Number.isFinite(Number(pool?._screeningRank?.activityPercentile)) ? ` | Activity Pctl: <code>${Math.round(Number(pool._screeningRank.activityPercentile) * 100)}%</code>` : ''}\n` +
