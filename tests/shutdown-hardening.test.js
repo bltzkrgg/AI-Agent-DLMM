@@ -13,8 +13,11 @@ test('shutdown orchestration calls close + retry helpers', () => {
   assert.match(src, /closeAllActivePositionsForShutdown/);
   assert.match(src, /retryFailedShutdownPositions/);
   assert.match(src, /setShutdownInProgress\(true\)/);
+  assert.match(src, /stopPaperPositionMonitors\(\)/);
+  assert.match(src, /updateConfig\(\{ dryRun: false \}\)/);
   assert.match(src, /const paperCount = getPaperPositions\(\)\.length/);
-  assert.match(src, /Paper preserved: <code>\$\{paperCount\}<\/code>/);
+  assert.match(src, /Paper tersimpan\/inaktif: <code>\$\{paperCount\}<\/code>/);
+  assert.doesNotMatch(src, /Monitor paper akan dilanjutkan saat agent hidup kembali/);
 });
 
 test('hunter has shutdown guard and closing idempotency guard', () => {
@@ -170,6 +173,9 @@ test('/stop pauses autonomous discovery without disabling operator commands', ()
   assert.match(indexSrc, /function resumeDiscovery/);
   assert.match(stopBlock, /pauseDiscovery\('TELEGRAM_STOP'\)/);
   assert.match(stopBlock, /stopAutoScreeningRuntime\(\)/);
+  assert.match(stopBlock, /updateConfig\(\{ dryRun: false \}\)/);
+  assert.match(stopBlock, /stopPaperPositionMonitors\(\)/);
+  assert.match(stopBlock, /Paper monitoring: <code>OFF<\/code>/);
   assert.match(stopBlock, /Existing positions are not force-closed/);
   assert.doesNotMatch(stopBlock, /bot\.stopPolling\(/);
   assert.doesNotMatch(stopBlock, /closeAllActivePositions/);

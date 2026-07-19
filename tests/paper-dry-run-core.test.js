@@ -34,6 +34,16 @@ test('direct paper deploy opens paper state before real learning lifecycle', () 
   assert.match(src.slice(paperBranchAt, learningAt), /return true;/);
 });
 
+test('paper deploy fails closed when runtime monitoring has been stopped', () => {
+  const src = readFileSync(hunterPath, 'utf8');
+  const openAt = src.indexOf('async function openPaperPositionFromDeployPlan');
+  const monitorAt = src.indexOf('async function paperMonitorLoop', openAt);
+  const openBlock = src.slice(openAt, monitorAt);
+
+  assert.match(openBlock, /if \(!_paperMonitoringEnabled \|\| _shutdownInProgress\)/);
+  assert.match(openBlock, /throw new Error\('PAPER_MONITORING_DISABLED'\)/);
+});
+
 test('queue carries execution mode through slot reservation and deploy call', () => {
   const src = readFileSync(queuePath, 'utf8');
 
@@ -90,16 +100,22 @@ test('deploy execution no longer branches on the mutable global dry-run toggle',
   assert.match(src, /const paperMode = executionMode === 'paper'/);
 });
 
-test('paper monitors restore after restart and remain isolated from real shutdown closes', () => {
+test('paper monitors require explicit runtime enable and remain isolated from real shutdown closes', () => {
   const hunterSrc = readFileSync(hunterPath, 'utf8');
 
-  assert.match(hunterSrc, /export function spawnMonitorForRestoredPaperPositions\(\)/);
-  assert.match(hunterSrc, /paperMonitorLoop\(position\.id\)/);
-  assert.match(hunterSrc, /\[PAPER\] RESTORE scanned=/);
-  const restoreAt = hunterSrc.indexOf('export function spawnMonitorForRestoredPaperPositions');
-  const restoreBlock = hunterSrc.slice(restoreAt, hunterSrc.indexOf('// ── Exit helper', restoreAt));
-  assert.doesNotMatch(restoreBlock, /safeExit\(/);
-  assert.doesNotMatch(restoreBlock, /exitPosition\(/);
+  assert.match(hunterSrc, /let _paperMonitoringEnabled = false/);
+  assert.match(hunterSrc, /while \(_paperMonitoringEnabled && !_shutdownInProgress && getPaperPosition\(positionId\)\)/);
+  assert.match(hunterSrc, /export function startPaperPositionMonitors\(\)/);
+  assert.match(hunterSrc, /export function stopPaperPositionMonitors\(\)/);
+  assert.match(hunterSrc, /_paperMonitoringEnabled = true/);
+  assert.match(hunterSrc, /_paperMonitoringEnabled = false/);
+  assert.match(hunterSrc, /\[PAPER\] MONITORS_ON scanned=/);
+  assert.match(hunterSrc, /\[PAPER\] MONITORS_OFF active=/);
+  const runtimeAt = hunterSrc.indexOf('export function startPaperPositionMonitors');
+  const runtimeBlock = hunterSrc.slice(runtimeAt, hunterSrc.indexOf('// ── Exit helper', runtimeAt));
+  assert.match(runtimeBlock, /paperMonitorLoop\(position\.id\)/);
+  assert.doesNotMatch(runtimeBlock, /safeExit\(/);
+  assert.doesNotMatch(runtimeBlock, /exitPosition\(/);
 });
 
 test('paper monitor sends realtime paper reporting on the configured interval', () => {

@@ -620,6 +620,7 @@ const _closingPositions = new Set();
 const _positionLabels = new Map(); // pubkey -> { symbol }
 const _monitoredPositions = new Set();
 const _paperMonitoredPositions = new Set();
+let _paperMonitoringEnabled = false;
 const _lastRealtimePnlLogAt = new Map();
 const _pendingRetestQueue = new Map(); // mint -> { pool, symbol, reason, attempts, nextCheckAt, expiresAt }
 const _taWatchQueue = new Map(); // mint -> { pool, symbol, reason, attempts, nextCheckAt, expiresAt, source }
@@ -3311,6 +3312,9 @@ async function openPaperPositionFromDeployPlan(plan = {}, {
   poolAddress = '',
   entryMetadata = {},
 } = {}) {
+  if (!_paperMonitoringEnabled || _shutdownInProgress) {
+    throw new Error('PAPER_MONITORING_DISABLED');
+  }
   const safePoolAddress = String(plan?.poolAddress || poolAddress || '');
   if (!safePoolAddress) throw new Error('PAPER_DEPLOY_PLAN_MISSING_POOL');
   if (hasPaperPoolPosition(safePoolAddress)) {
@@ -3339,9 +3343,11 @@ async function openPaperPositionFromDeployPlan(plan = {}, {
     `range=[${position.rangeMin},${position.rangeMax}]`
   );
   await notify(formatPaperOpenedNotification(position));
-  paperMonitorLoop(position.id).catch((error) => {
-    console.error(`[PAPER] monitor crash ${position.symbol}: ${error.message}`);
-  });
+  if (_paperMonitoringEnabled) {
+    paperMonitorLoop(position.id).catch((error) => {
+      console.error(`[PAPER] monitor crash ${position.symbol}: ${error.message}`);
+    });
+  }
   return position;
 }
 
@@ -3349,11 +3355,12 @@ async function paperMonitorLoop(positionId) {
   if (_paperMonitoredPositions.has(positionId)) return;
   _paperMonitoredPositions.add(positionId);
   try {
-    while (!_shutdownInProgress && getPaperPosition(positionId)) {
+    while (_paperMonitoringEnabled && !_shutdownInProgress && getPaperPosition(positionId)) {
       const position = getPaperPosition(positionId);
       if (!position) return;
       try {
         const poolInfo = await getPoolInfo(position.poolAddress);
+        if (!_paperMonitoringEnabled || _shutdownInProgress) return;
         const marked = evaluatePaperPositionValue(position, {
           activeBinId: poolInfo?.activeBinId,
           activePrice: poolInfo?.activePrice,
@@ -3438,6 +3445,7 @@ async function paperMonitorLoop(positionId) {
             finalReason = oorState.exitReason || 'OUT_OF_RANGE';
           }
         }
+        if (!_paperMonitoringEnabled || _shutdownInProgress) return;
 
         const finalStatus = {
           ...status,
@@ -3499,6 +3507,7 @@ async function paperMonitorLoop(positionId) {
           }));
         }
       } catch (error) {
+        if (!_paperMonitoringEnabled || _shutdownInProgress) return;
         console.warn(`[PAPER] monitor data hold ${position.symbol}: ${error.message}`);
         updatePaperPosition(positionId, {
           dataState: 'DATA_HOLD',
@@ -5193,7 +5202,8 @@ export function getPaperPositions() {
   return listPaperPositions();
 }
 
-export function spawnMonitorForRestoredPaperPositions() {
+export function startPaperPositionMonitors() {
+  _paperMonitoringEnabled = true;
   const active = listPaperPositions();
   let spawned = 0;
   for (const position of active) {
@@ -5203,8 +5213,14 @@ export function spawnMonitorForRestoredPaperPositions() {
     });
     spawned++;
   }
-  console.log(`[PAPER] RESTORE scanned=${active.length} monitorsStarted=${spawned}`);
+  console.log(`[PAPER] MONITORS_ON scanned=${active.length} monitorsStarted=${spawned}`);
   return { scanned: active.length, spawned };
+}
+
+export function stopPaperPositionMonitors() {
+  _paperMonitoringEnabled = false;
+  console.log(`[PAPER] MONITORS_OFF active=${_paperMonitoredPositions.size}`);
+  return { active: _paperMonitoredPositions.size };
 }
 
 // ── Exit helper ───────────────────────────────────────────────────

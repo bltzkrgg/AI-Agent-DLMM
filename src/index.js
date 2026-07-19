@@ -18,7 +18,7 @@ import TelegramBot              from 'node-telegram-bot-api';
 import { existsSync, readFileSync, writeFileSync, unlinkSync } from 'fs';
 import { initSolana, getWalletBalance }   from './solana/wallet.js';
 import { getConfig, updateConfig, isConfigKeySupported, resolveNestedKey, SETCONFIG_WHITELIST } from './config.js';
-import { runLinearLoop, stopLoop, setNotifyFn, setNotifyMuted, isRunning, getCurrentPosition, getActivePositions, getPaperPositions, setShutdownInProgress, closeAllActivePositionsByUser, closeAllActivePositionsForShutdown, retryFailedShutdownPositions, runAutoscreening, spawnMonitorForRestoredPositions, spawnMonitorForRestoredPaperPositions, startManualCloseWatcher, startPendingTaRadarWatcher, stopPendingTaRadarWatcher, startTaWatchWatcher, stopTaWatchWatcher, scanAndDeploy, updatePnlStatus, inventoryManagement, submitManualCaPool } from './agents/hunterAlpha.js';
+import { runLinearLoop, stopLoop, setNotifyFn, setNotifyMuted, isRunning, getCurrentPosition, getActivePositions, getPaperPositions, setShutdownInProgress, closeAllActivePositionsByUser, closeAllActivePositionsForShutdown, retryFailedShutdownPositions, runAutoscreening, spawnMonitorForRestoredPositions, startPaperPositionMonitors, stopPaperPositionMonitors, startManualCloseWatcher, startPendingTaRadarWatcher, stopPendingTaRadarWatcher, startTaWatchWatcher, stopTaWatchWatcher, scanAndDeploy, updatePnlStatus, inventoryManagement, submitManualCaPool } from './agents/hunterAlpha.js';
 import { getActivePositionCount, reconcileStartupPositions, EP_CONFIG } from './sniper/evilPanda.js';
 import { analyzePerformance, formatEvolutionReport }     from './learn/statelessEvolve.js';
 import { generateBriefing, formatActivePositionsTelegram } from './telegram/briefing.js';
@@ -809,7 +809,7 @@ bot.onText(/\/status/, async (msg) => {
     `Deploy Amount: <code>${cfg.deployAmountSol || 0.1} SOL</code>\n` +
     `${formatTakeProfitRiskLabel(cfg.takeProfitMinNetPnlPct, cfg.stopLossPct)}\n` +
     `Manual TA Exit: <code>${cfg.manualTAExitEnabled ? 'ON' : 'OFF'}</code> <i>(/ca manual attach-only)</i>\n` +
-    `Paper: <code>${paper.length}</code> active | New Entry: <code>${cfg.dryRun ? 'PAPER' : 'REAL'}</code>\n` +
+    `Paper: <code>${paper.length}</code> stored | Monitor: <code>${cfg.dryRun ? 'ON' : 'OFF'}</code> | New Entry: <code>${cfg.dryRun ? 'PAPER' : 'REAL'}</code>\n` +
     `Anchor: <code>DLMM active bin</code> | Source: <code>frozen/live fallback</code>\n` +
     `TA: <code>defensive bearish (RSI ref ${cfg.smartExitRsi || 90})</code>`,
     { parse_mode: 'HTML' }
@@ -891,9 +891,13 @@ bot.onText(/\/stop$/, async (msg) => {
   pauseDiscovery('TELEGRAM_STOP');
   stopLoop();
   stopAutoScreeningRuntime();
+  updateConfig({ dryRun: false });
+  stopPaperPositionMonitors();
+  const paperCount = getPaperPositions().length;
   bot.sendMessage(msg.chat.id,
     `⏹ <b>Autonomous discovery/deploy paused.</b>\n\n` +
     `Existing positions are not force-closed.\n` +
+    `Dry Run: <code>OFF</code> | Paper monitoring: <code>OFF</code> (${paperCount} tersimpan)\n` +
     `Use <code>/autoscreen on</code>, <code>/hunt</code>, or <code>/screening on</code> to resume.\n` +
     `Use <code>/exit</code> only if you want to force-close active positions.`,
     { parse_mode: 'HTML' }
@@ -1181,6 +1185,24 @@ bot.onText(/\/setconfig(?:\s+(\S+))?(?:\s+(.+))?/, async (msg, match) => {
     return;
   }
 
+  if (flatKey === 'dryRun') {
+    const paperCount = getPaperPositions().length;
+    const monitorState = parsed === true
+      ? startPaperPositionMonitors()
+      : stopPaperPositionMonitors();
+    bot.sendMessage(chatId,
+      `🧪 <b>Dry Run: ${parsed === true ? 'ON' : 'OFF'}</b>\n` +
+      `New positions: <code>${parsed === true ? 'PAPER' : 'REAL'}</code>\n` +
+      `Paper monitoring: <code>${parsed === true ? 'ON' : 'OFF'}</code>\n` +
+      `Paper tersimpan: <code>${paperCount}</code>` +
+      (parsed === true
+        ? ` | monitor started: <code>${monitorState.spawned}/${monitorState.scanned}</code>`
+        : ''),
+      { parse_mode: 'HTML' }
+    );
+    return;
+  }
+
   // ── Efek samping khusus: screeningIntervalMin ─────────────────────
   if (flatKey === 'screeningIntervalMin' && result.autoScreeningEnabled) {
     // Restart loop dengan interval baru
@@ -1218,7 +1240,8 @@ bot.onText(/\/dryrun(?:\s+(on|off))?/, (msg, match) => {
     bot.sendMessage(chatId,
       `🧪 <b>Dry Run</b>\n` +
       `New Entry: <code>${getConfig().dryRun ? 'PAPER' : 'REAL'}</code>\n` +
-      `Active Paper: <code>${paperCount}</code>\n\n` +
+      `Paper Monitoring: <code>${getConfig().dryRun ? 'ON' : 'OFF'}</code>\n` +
+      `Paper Tersimpan: <code>${paperCount}</code>\n\n` +
       `Gunakan <code>/dryrun on</code> atau <code>/dryrun off</code>`,
       { parse_mode: 'HTML' }
     );
@@ -1227,11 +1250,18 @@ bot.onText(/\/dryrun(?:\s+(on|off))?/, (msg, match) => {
   const enable = toggle === 'on';
   updateConfig({ dryRun: enable });
   const paperCount = getPaperPositions().length;
+  const monitorState = enable
+    ? startPaperPositionMonitors()
+    : stopPaperPositionMonitors();
   bot.sendMessage(chatId,
     `🧪 <b>Dry Run: ${enable ? 'ON' : 'OFF'}</b>\n` +
     `New positions: <code>${enable ? 'PAPER' : 'REAL'}</code>\n` +
-    `Active paper positions: <code>${paperCount}</code>\n` +
-    `<i>Posisi yang sudah terbuka tetap memakai mode awalnya.</i>`,
+    `Paper monitoring: <code>${enable ? 'ON' : 'OFF'}</code>\n` +
+    `Paper tersimpan: <code>${paperCount}</code>` +
+    (enable
+      ? ` | monitor started: <code>${monitorState.spawned}/${monitorState.scanned}</code>\n`
+      : `\n`) +
+    `<i>Posisi paper tetap tersimpan dan hanya dimonitor lagi setelah <code>/dryrun on</code>.</i>`,
     { parse_mode: 'HTML' }
   );
 });
@@ -1743,6 +1773,8 @@ async function shutdown(signal) {
   console.log(`\n🛑 ${signal} — shutting down...`);
   const paperCount = getPaperPositions().length;
   setShutdownInProgress(true);
+  updateConfig({ dryRun: false });
+  stopPaperPositionMonitors();
   stopLoop();
   stopScreeningLoop();
   stopPendingTaRadarWatcher();
@@ -1753,7 +1785,7 @@ async function shutdown(signal) {
     await notify(
       `⚠️ <b>AI-Agent-DLMM Shutdown</b>\n` +
       `Menutup <code>${active.length}</code> posisi real sebelum exit...\n` +
-      `Paper preserved: <code>${paperCount}</code>`
+      `Paper tersimpan/inaktif: <code>${paperCount}</code>`
     ).catch(() => {});
     const summary = await closeAllActivePositionsForShutdown(signal, 10_000);
     if (summary.failed.length > 0) {
@@ -1786,8 +1818,8 @@ async function shutdown(signal) {
     await notify(
       `🛑 <b>AI-Agent-DLMM Shutdown</b>\n` +
       `Tidak ada posisi real aktif.\n` +
-      `Paper preserved: <code>${paperCount}</code>\n` +
-      `<i>Monitor paper akan dilanjutkan saat agent hidup kembali.</i>`
+      `Paper tersimpan/inaktif: <code>${paperCount}</code>\n` +
+      `<i>Dry Run tetap OFF saat agent hidup kembali.</i>`
     ).catch(() => {});
   }
 
@@ -1818,9 +1850,10 @@ bot.on('polling_error', (e) => {
 // ── Boot ──────────────────────────────────────────────────────────
 setTimeout(async () => {
   try {
+    updateConfig({ dryRun: false });
     const reconcile = await reconcileStartupPositions();
     const restoredMonitors = spawnMonitorForRestoredPositions();
-    const paperRestore = spawnMonitorForRestoredPaperPositions();
+    const paperInactiveCount = getPaperPositions().length;
     const manualCloseWatcherStarted = startManualCloseWatcher();
     const balance = await getWalletBalance();
     const cfg     = getConfig();
@@ -1842,7 +1875,7 @@ setTimeout(async () => {
       `${formatTakeProfitRiskLabel(cfg.takeProfitMinNetPnlPct, cfg.stopLossPct)}\n` +
     `Manual TA Exit: <code>${cfg.manualTAExitEnabled ? 'ON' : 'OFF'}</code> <i>(/ca manual attach-only)</i>\n` +
       `Reconcile: <code>${reconcile.restored}/${reconcile.scanned}</code>\n` +
-    `Paper Restore: <code>${paperRestore.spawned}/${paperRestore.scanned}</code>\n` +
+    `Dry Run: <code>OFF</code> | Paper Inactive: <code>${paperInactiveCount}</code>\n` +
     `Watch Layer: <code>${cfg.taWatchEnabled === false ? 'OFF' : 'ON'}</code> | ` +
     `Radar: <code>${cfg.pendingRetestEnabled === false ? 'OFF' : 'ON'}</code>\n` +
     `Auto Screen: <code>${discoveryPaused ? 'OFF by /stop' : autoScr ? `ON (${cfg.screeningIntervalMin}m)` : 'OFF'}</code>\n` +

@@ -25,10 +25,12 @@ test('startup reconcile validates saved positions against on-chain state', () =>
 test('index boot sequence calls reconcileStartupPositions and reports summary', () => {
   const src = readFileSync(indexPath, 'utf8');
   assert.match(src, /reconcileStartupPositions/);
+  assert.match(src, /updateConfig\(\{ dryRun: false \}\)/);
   assert.match(src, /const reconcile = await reconcileStartupPositions\(\)/);
   assert.match(src, /Reconcile: <code>\$\{reconcile\.restored\}\/\$\{reconcile\.scanned\}<\/code>/);
-  assert.match(src, /const paperRestore = spawnMonitorForRestoredPaperPositions\(\)/);
-  assert.match(src, /Paper Restore: <code>\$\{paperRestore\.spawned\}\/\$\{paperRestore\.scanned\}<\/code>/);
+  assert.match(src, /const paperInactiveCount = getPaperPositions\(\)\.length/);
+  assert.match(src, /Dry Run: <code>OFF<\/code> \| Paper Inactive: <code>\$\{paperInactiveCount\}<\/code>/);
+  assert.doesNotMatch(src, /spawnMonitorForRestoredPaperPositions/);
   assert.match(src, /async function restoreAutoScreeningOnStartup/);
   const restoreStart = src.indexOf('async function restoreAutoScreeningOnStartup');
   assert.notEqual(restoreStart, -1);

@@ -103,7 +103,8 @@ test('startup and shutdown banners use the simplified AI-Agent-DLMM text', () =>
   assert.match(content, /\/manualexit — on\/off TA-only exit untuk \/ca manual/);
   assert.match(content, /🛑 <b>AI-Agent-DLMM Shutdown<\/b>/);
   assert.match(content, /Tidak ada posisi real aktif\./);
-  assert.match(content, /Paper preserved:/);
+  assert.match(content, /Paper tersimpan\/inaktif:/);
+  assert.match(content, /Dry Run tetap OFF saat agent hidup kembali/);
   assert.match(content, /✅ AI-Agent-DLMM ready\. Balance:/);
 });
 
