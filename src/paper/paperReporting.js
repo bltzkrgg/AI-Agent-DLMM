@@ -48,39 +48,6 @@ function getPnlIcon(pnlSol, pnlPct) {
   return value > 0 ? '🟢' : value < 0 ? '🔴' : '⚪';
 }
 
-function getPaperFeeEstimate(position = {}) {
-  const available = position.feePnlAvailable === true &&
-    String(position.feePnlSource || '').startsWith('paper_pool_fee_tvl_estimate');
-  const feePnlSol = available ? finiteNumber(position.feePnlSol) : null;
-  const feePnlPct = available ? finiteNumber(position.feePnlPct) : null;
-  const netPnlSol = available
-    ? finiteNumber(position.estimatedNetPnlSol)
-    : null;
-  const netPnlPct = available
-    ? finiteNumber(position.estimatedNetPnlPct)
-    : null;
-  const netValueSol = available
-    ? finiteNumber(position.estimatedNetValueSol)
-    : null;
-  return {
-    available,
-    feePnlSol,
-    feePnlPct,
-    netPnlSol,
-    netPnlPct,
-    netValueSol,
-  };
-}
-
-function formatEstimatedFee(value) {
-  return value === null ? 'N/A' : formatSignedSol(value);
-}
-
-function formatEstimatedPnl(sol, pct) {
-  if (sol === null || pct === null) return 'N/A';
-  return `${formatSignedSol(sol)} / ${formatSignedPct(pct)}`;
-}
-
 export function formatPaperPositionsTelegram(positions = [], {
   dryRun = false,
   maxItems = 8,
@@ -90,7 +57,7 @@ export function formatPaperPositionsTelegram(positions = [], {
     `🧪 <b>PAPER LP STATUS</b>`,
     `New Entry Mode: <code>${dryRun ? 'PAPER' : 'REAL'}</code>`,
     `Active Paper Positions: <code>${rows.length}</code>`,
-    `Accounting: <code>PRICE + ESTIMATED FEES</code>`,
+    `Accounting: <code>FULL-NOTIONAL MARK-TO-MARKET</code>`,
   ];
 
   if (rows.length === 0) {
@@ -105,17 +72,13 @@ export function formatPaperPositionsTelegram(positions = [], {
     const currentBin = finiteNumber(position.activeBinId);
     const rangeMin = finiteNumber(position.rangeMin);
     const rangeMax = finiteNumber(position.rangeMax);
-    const feeEstimate = getPaperFeeEstimate(position);
     lines.push(
       '',
       `${index + 1}. ${getPnlIcon(pnlSol, pnlPct)} <b>${escapeHTML(getPairLabel(position))}</b>`,
       `Paper ID: <code>${escapeHTML(String(position.id || 'UNKNOWN').slice(0, 28))}</code>`,
       `Virtual Deposit: <code>${formatSol(position.deploySol, 4)}</code>`,
-      `Virtual Value (Price): <code>${formatSol(position.currentValueSol, 4)}</code>`,
+      `Virtual Value: <code>${formatSol(position.currentValueSol, 4)}</code>`,
       `Price PnL: <code>${formatSignedSol(pnlSol)} / ${formatSignedPct(pnlPct)}</code>`,
-      `Estimated Fees: <code>${formatEstimatedFee(feeEstimate.feePnlSol)}</code>${feeEstimate.available ? ' <i>[ESTIMATED]</i>' : ''}`,
-      `Estimated Net PnL: <code>${formatEstimatedPnl(feeEstimate.netPnlSol, feeEstimate.netPnlPct)}</code>${feeEstimate.available ? ' <i>[ESTIMATED]</i>' : ''}`,
-      `Estimated Net Value: <code>${formatSol(feeEstimate.netValueSol, 4)}</code>${feeEstimate.available ? ' <i>[ESTIMATED]</i>' : ''}`,
       `Bin: <code>${currentBin ?? 'N/A'}</code> | Range: <code>${rangeMin ?? 'N/A'}-${rangeMax ?? 'N/A'}</code>`,
       `Status: <code>${getRangeStatus(position)}</code> | Action: <code>${escapeHTML(position.action || 'HOLD')}</code>`,
       `Data: <code>${escapeHTML(position.dataState || 'WAITING')}</code>`
@@ -125,7 +88,6 @@ export function formatPaperPositionsTelegram(positions = [], {
   if (rows.length > safeLimit) {
     lines.push('', `<i>${rows.length - safeLimit} posisi paper lainnya tidak ditampilkan.</i>`);
   }
-  lines.push('', '<i>Fee paper adalah estimasi berbasis fee/TVL pool saat posisi berada dalam range.</i>');
   return lines.join('\n');
 }
 
@@ -138,7 +100,6 @@ export function formatPaperOpenedNotification(position = {}) {
     `Entry Price: <code>${finiteNumber(position.entryPrice)?.toPrecision(8) ?? 'N/A'}</code>`,
     `Entry Bin: <code>${finiteNumber(position.entryActiveBin) ?? 'N/A'}</code>`,
     `Range: <code>${finiteNumber(position.rangeMin) ?? 'N/A'}-${finiteNumber(position.rangeMax) ?? 'N/A'}</code>`,
-    `Fees: <code>N/A</code>`,
     `<i>Simulasi aktif. Tidak ada modal, signing, atau transaksi on-chain.</i>`,
   ].join('\n');
 }
@@ -150,14 +111,10 @@ export function formatPaperRealtimeNotification({
 } = {}) {
   const pnlSol = finiteNumber(status.pnlSol ?? status.pnlTotalSol);
   const pnlPct = finiteNumber(status.pnlPct ?? status.pnlTotalPct);
-  const feeEstimate = getPaperFeeEstimate(status);
   return [
     `📊 <b>PAPER REALTIME | ${escapeHTML(getPairLabel(position))}</b>`,
     `Price PnL: <code>${formatSignedSol(pnlSol)} / ${formatSignedPct(pnlPct)}</code>`,
-    `Virtual Value (Price): <code>${formatSol(status.currentValueSol, 4)}</code>`,
-    `Estimated Fees: <code>${formatEstimatedFee(feeEstimate.feePnlSol)}</code>${feeEstimate.available ? ' <i>[ESTIMATED]</i>' : ''}`,
-    `Estimated Net PnL: <code>${formatEstimatedPnl(feeEstimate.netPnlSol, feeEstimate.netPnlPct)}</code>${feeEstimate.available ? ' <i>[ESTIMATED]</i>' : ''}`,
-    `Estimated Net Value: <code>${formatSol(feeEstimate.netValueSol, 4)}</code>${feeEstimate.available ? ' <i>[ESTIMATED]</i>' : ''}`,
+    `Virtual Value: <code>${formatSol(status.currentValueSol, 4)}</code>`,
     `Active Bin: <code>${finiteNumber(status.activeBinId) ?? 'N/A'}</code>`,
     `Range: <code>${getRangeStatus(status)}</code>`,
     `Action: <code>${escapeHTML(status.action || 'HOLD')}</code>`,
@@ -174,19 +131,14 @@ export function formatPaperClosedNotification({
   const pnlSol = finiteNumber(closed.pnlSol ?? closed.pnlTotalSol);
   const pnlPct = finiteNumber(closed.pnlPct ?? closed.pnlTotalPct);
   const icon = getPnlIcon(pnlSol, pnlPct);
-  const feeEstimate = getPaperFeeEstimate(closed);
   return [
     `${icon} <b>PAPER CLOSED | ${escapeHTML(getPairLabel(position))}</b>`,
     `Price PnL: <code>${formatSignedSol(pnlSol)} / ${formatSignedPct(pnlPct)}</code>`,
-    `Estimated Fees: <code>${formatEstimatedFee(feeEstimate.feePnlSol)}</code>${feeEstimate.available ? ' <i>[ESTIMATED]</i>' : ''}`,
-    `Estimated Net PnL: <code>${formatEstimatedPnl(feeEstimate.netPnlSol, feeEstimate.netPnlPct)}</code>${feeEstimate.available ? ' <i>[ESTIMATED]</i>' : ''}`,
     `Virtual Deposit: <code>${formatSol(position.deploySol, 4)}</code>`,
-    `Virtual Value at Exit (Price): <code>${formatSol(closed.currentValueSol, 4)}</code>`,
-    `Estimated Net Value at Exit: <code>${formatSol(feeEstimate.netValueSol, 4)}</code>${feeEstimate.available ? ' <i>[ESTIMATED]</i>' : ''}`,
+    `Virtual Value at Exit: <code>${formatSol(closed.currentValueSol, 4)}</code>`,
     `Exit: <code>${escapeHTML(action)}</code>`,
     `Duration: <code>${formatClosedPositionDuration(position.openedAt, closed.closedAt || Date.now())}</code> | ` +
       `Range: <code>${getRangeStatus(closed)}</code>`,
     `<i>${escapeHTML(reason || 'Paper exit policy triggered.')}</i>`,
-    `<i>Fee estimate memakai fee/TVL pool selama posisi berada dalam range; bukan fee aktual per bin.</i>`,
   ].join('\n');
 }

@@ -38,7 +38,6 @@ import { enqueueForDeploy, ensureFinalEntryCandleSanity, ensureFinalSupertrendBu
 import { getDeploySlotUsage, reserveDeploySlot, releaseDeploySlot } from '../utils/deploySlotGuard.js';
 import { createPaperPosition, updatePaperPosition, closePaperPosition, getPaperPosition, listPaperPositions, hasPaperPoolPosition } from '../paper/paperPositions.js';
 import { formatPaperOpenedNotification, formatPaperRealtimeNotification, formatPaperClosedNotification } from '../paper/paperReporting.js';
-import { estimatePaperFeeAccrual } from '../paper/paperFeeEstimate.js';
 import { evaluatePositionExitPolicy } from '../utils/positionExitPolicy.js';
 
 const WSOL_MINT = 'So11111111111111111111111111111111111111112';
@@ -3221,22 +3220,16 @@ async function notifyRealtimePnl({ positionPubkey, symbol, status }) {
   );
 }
 
-function clamp(value, min = 0, max = 1) {
-  return Math.max(min, Math.min(max, Number(value) || 0));
-}
-
 export function evaluatePaperPositionValue(position = {}, {
   activeBinId = null,
   activePrice = null,
 } = {}) {
   const deploySol = Math.max(0, toFiniteNumber(position?.deploySol, 0));
   const entryPrice = toFiniteNumber(position?.entryPrice, null);
-  const entryActiveBin = toFiniteNumber(position?.entryActiveBin, null);
   const currentPrice = toFiniteNumber(activePrice, null);
   const currentBin = toFiniteNumber(activeBinId, null);
   const rangeMin = toFiniteNumber(position?.rangeMin, null);
   const rangeMax = toFiniteNumber(position?.rangeMax, null);
-  const binStep = Math.max(0, toFiniteNumber(position?.binStep, 0));
   if (
     !Number.isFinite(entryPrice) ||
     entryPrice <= 0 ||
@@ -3247,34 +3240,7 @@ export function evaluatePaperPositionValue(position = {}, {
     return { ok: false, reason: 'PAPER_MARKET_DATA_UNAVAILABLE' };
   }
 
-  const quoteOnly = String(position?.amountXRaw || '0') === '0';
-  let currentValueSol = deploySol;
-  let virtualTokenFraction = 0;
-  let valuationModel = 'price_proxy_v1';
-
-  if (
-    quoteOnly &&
-    Number.isSafeInteger(entryActiveBin) &&
-    Number.isSafeInteger(rangeMin) &&
-    rangeMin <= entryActiveBin
-  ) {
-    const coveredBins = Math.max(1, entryActiveBin - rangeMin);
-    virtualTokenFraction = clamp((entryActiveBin - currentBin) / coveredBins);
-    const lowestTouchedBin = Math.max(rangeMin, Math.min(entryActiveBin, currentBin));
-    const averageFillBin = entryActiveBin - ((entryActiveBin - lowestTouchedBin) / 2);
-    const averageFillPrice = binStep > 0
-      ? entryPrice * Math.pow(1 + (binStep / 10_000), averageFillBin - entryActiveBin)
-      : entryPrice;
-    const convertedSol = deploySol * virtualTokenFraction;
-    const tokenAmount = averageFillPrice > 0 ? convertedSol / averageFillPrice : 0;
-    currentValueSol = (deploySol - convertedSol) + (tokenAmount * currentPrice);
-    valuationModel = 'quote_only_bin_progress_v1';
-  } else {
-    const seedFraction = clamp(Number(position?.seedPct || 0) / 100);
-    const tokenExposure = seedFraction > 0 ? seedFraction : 0.5;
-    currentValueSol = deploySol * ((1 - tokenExposure) + tokenExposure * (currentPrice / entryPrice));
-  }
-
+  const currentValueSol = deploySol * (currentPrice / entryPrice);
   const pnlSol = currentValueSol - deploySol;
   const pnlPct = deploySol > 0 ? (pnlSol / deploySol) * 100 : 0;
   const inRange = Number.isSafeInteger(rangeMin) && Number.isSafeInteger(rangeMax)
@@ -3294,52 +3260,11 @@ export function evaluatePaperPositionValue(position = {}, {
     pnlSol,
     pnlPct,
     pricePnlSol: pnlSol,
-    feePnlSol: 0,
-    feePnlPct: 0,
-    feePnlAvailable: false,
-    feePnlSource: 'paper_estimate_unavailable',
     activeBinId: currentBin,
     activePrice: currentPrice,
     inRange,
     outOfRangeSide,
-    virtualTokenFraction,
-    valuationModel,
-  };
-}
-
-function attachPaperFeeEstimate(position = {}, marked = {}, poolInfo = {}, nowMs = Date.now()) {
-  const deploySol = Math.max(0, toFiniteNumber(position?.deploySol, 0));
-  const checkpoint = toFiniteNumber(position?.lastFeeEstimateAt, nowMs);
-  const feeEstimate = estimatePaperFeeAccrual({
-    previousFeeSol: position?.feePnlSol,
-    previousAvailable: position?.feePnlAvailable === true,
-    capitalSol: marked?.currentValueSol,
-    fees24h: poolInfo?.fees24h,
-    tvl: poolInfo?.tvl,
-    elapsedMs: Math.max(0, nowMs - checkpoint),
-    inRange: marked?.inRange === true,
-  });
-  const feePnlPct = deploySol > 0 ? (feeEstimate.feeSol / deploySol) * 100 : 0;
-  const pricePnlSol = toFiniteNumber(marked?.pricePnlSol ?? marked?.pnlSol, 0);
-  const estimatedNetPnlSol = pricePnlSol + feeEstimate.feeSol;
-  const estimatedNetPnlPct = deploySol > 0 ? (estimatedNetPnlSol / deploySol) * 100 : 0;
-
-  return {
-    ...marked,
-    feePnlSol: feeEstimate.feeSol,
-    feePnlPct,
-    feePnlAvailable: feeEstimate.available,
-    feePnlSource: feeEstimate.source,
-    feeEstimateMethod: feeEstimate.available
-      ? 'pool_fee_tvl_time_weighted_v1'
-      : 'unavailable_core_v1',
-    feeEstimateConfidence: feeEstimate.available ? 'low' : 'none',
-    feeEstimateIncrementSol: feeEstimate.incrementSol,
-    feeEstimateDailyRatio: feeEstimate.dailyFeeTvlRatio,
-    lastFeeEstimateAt: nowMs,
-    estimatedNetPnlSol,
-    estimatedNetPnlPct,
-    estimatedNetValueSol: toFiniteNumber(marked?.currentValueSol, deploySol) + feeEstimate.feeSol,
+    valuationModel: 'full_notional_mark_to_market_v1',
   };
 }
 
@@ -3368,16 +3293,7 @@ async function openPaperPositionFromDeployPlan(plan = {}, {
     activePrice: plan?.entryPrice,
     inRange: true,
     entryMetadata,
-    feePnlSol: 0,
-    feePnlPct: 0,
-    feePnlAvailable: false,
-    feePnlSource: 'paper_estimate_unavailable',
-    feeEstimateMethod: 'unavailable_core_v1',
-    feeEstimateConfidence: 'none',
-    lastFeeEstimateAt: Date.now(),
-    valuationModel: String(plan?.amountXRaw || '0') === '0'
-      ? 'quote_only_bin_progress_v1'
-      : 'price_proxy_v1',
+    valuationModel: 'full_notional_mark_to_market_v1',
   });
   console.log(
     `[PAPER] OPEN id=${position.id} symbol=${position.symbol} ` +
@@ -3417,7 +3333,6 @@ async function paperMonitorLoop(positionId) {
         }
 
         const now = Date.now();
-        const markedWithFees = attachPaperFeeEstimate(position, marked, poolInfo, now);
         const previousSampleAt = Number(position.lastSampleAt || now);
         const elapsedMs = Math.max(0, now - previousSampleAt);
         const rangeChecks = Number(position.rangeChecks || 0) + 1;
@@ -3440,7 +3355,7 @@ async function paperMonitorLoop(positionId) {
           trailingDropPct: cfg.trailingDropPct,
         });
         const status = {
-          ...markedWithFees,
+          ...marked,
           action: deterministicExit.action,
           exitScenario: deterministicExit.scenario || null,
           exitReason: deterministicExit.reason,
@@ -3497,7 +3412,7 @@ async function paperMonitorLoop(positionId) {
           exitScenario,
         };
         updatePaperPosition(positionId, {
-          ...markedWithFees,
+          ...marked,
           ...(oorState.runtimePatch || {}),
           action: finalAction,
           exitReason: finalReason,
@@ -3517,22 +3432,19 @@ async function paperMonitorLoop(positionId) {
 
         if (finalAction !== 'HOLD') {
           const closed = closePaperPosition(positionId, {
-            ...markedWithFees,
+            ...marked,
             action: finalAction,
             reason: finalAction,
             closeReason: finalAction,
             exitReason: finalReason,
             exitScenario,
             hwmPct: deterministicExit.nextHwmPct,
-            accountingStatus: 'paper_estimate',
-            feeEstimateMethod: markedWithFees.feeEstimateMethod,
-            feeEstimateConfidence: markedWithFees.feeEstimateConfidence,
+            accountingStatus: 'paper_mark_to_market',
           });
           console.log(
             `[PAPER] CLOSE id=${positionId} symbol=${position.symbol} action=${finalAction} ` +
             `pnlPct=${Number(closed?.pnlPct || 0).toFixed(2)} ` +
-            `estimatedFeeSol=${Number(closed?.feePnlSol || 0).toFixed(6)} ` +
-            `feeModel=${closed?.feeEstimateMethod || 'unavailable'}`
+            `valuation=${closed?.valuationModel || 'unknown'}`
           );
           await notify(formatPaperClosedNotification({
             position,
@@ -5308,7 +5220,7 @@ export async function closePaperPositionByOperator(selector = '') {
       activePrice: poolInfo?.activePrice,
     });
     if (marked.ok) {
-      latestMark = attachPaperFeeEstimate(latestPosition, marked, poolInfo, Date.now());
+      latestMark = marked;
       snapshotSource = 'live_pool_refresh';
     }
   } catch (error) {
@@ -5325,9 +5237,7 @@ export async function closePaperPositionByOperator(selector = '') {
       reason: 'MANUAL_CLOSE',
       closeReason: 'MANUAL_CLOSE',
       exitReason: 'Manual Paper Close',
-      accountingStatus: 'paper_estimate',
-      feeEstimateMethod: latestMark?.feeEstimateMethod || position.feeEstimateMethod || 'unavailable_core_v1',
-      feeEstimateConfidence: latestMark?.feeEstimateConfidence || position.feeEstimateConfidence || 'none',
+      accountingStatus: 'paper_mark_to_market',
     });
   } catch (error) {
     console.error(`[PAPER] manual close failed ${selected.symbol || selected.id}: ${error.message}`);
@@ -5359,12 +5269,9 @@ export async function closePaperPositionByOperator(selector = '') {
 export function startPaperPositionMonitors() {
   _paperMonitoringEnabled = true;
   const active = listPaperPositions();
-  const monitorStartedAt = Date.now();
   let spawned = 0;
   for (const position of active) {
-    if (!position?.id) continue;
-    updatePaperPosition(position.id, { lastFeeEstimateAt: monitorStartedAt });
-    if (_paperMonitoredPositions.has(position.id)) continue;
+    if (!position?.id || _paperMonitoredPositions.has(position.id)) continue;
     paperMonitorLoop(position.id).catch((error) => {
       console.error(`[PAPER] restored monitor crash ${position.symbol || position.id}: ${error.message}`);
     });

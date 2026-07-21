@@ -73,7 +73,7 @@ test('paper monitor closes only through paper ledger path', () => {
 
   assert.match(monitorBlock, /evaluatePositionExitPolicy\(\{/);
   assert.match(monitorBlock, /pnlPct: marked\.pnlPct/);
-  assert.doesNotMatch(monitorBlock, /pnlPct: markedWithFees\.estimatedNetPnlPct/);
+  assert.doesNotMatch(monitorBlock, /estimatedNetPnlPct/);
   assert.match(monitorBlock, /evaluateOutOfRangeMonitorState\(\{/);
   assert.match(monitorBlock, /evaluatePoolImpactGuard\(\{/);
   assert.match(monitorBlock, /closePaperPosition\(positionId,/);
@@ -92,6 +92,38 @@ test('paper valuation rejects missing live price and active bin instead of coerc
   assert.match(valuationBlock, /const currentBin = toFiniteNumber\(activeBinId, null\)/);
   assert.doesNotMatch(valuationBlock, /const currentPrice = Number\(activePrice\)/);
   assert.doesNotMatch(valuationBlock, /const currentBin = Number\(activeBinId\)/);
+});
+
+test('paper valuation marks the full virtual capital against live price movement', () => {
+  const src = readFileSync(hunterPath, 'utf8');
+  const valuationAt = src.indexOf('export function evaluatePaperPositionValue');
+  const monitorAt = src.indexOf('async function openPaperPositionFromDeployPlan', valuationAt);
+  const valuationBlock = src.slice(valuationAt, monitorAt);
+
+  assert.match(valuationBlock, /const currentValueSol = deploySol \* \(currentPrice \/ entryPrice\)/);
+  assert.match(valuationBlock, /valuationModel: 'full_notional_mark_to_market_v1'/);
+  assert.doesNotMatch(valuationBlock, /virtualTokenFraction/);
+  assert.doesNotMatch(valuationBlock, /quote_only_bin_progress_v1/);
+});
+
+test('paper valuation keeps moving while the virtual position is out of range', async () => {
+  const { evaluatePaperPositionValue } = await import('../src/agents/hunterAlpha.js');
+  const marked = evaluatePaperPositionValue({
+    deploySol: 0.1,
+    entryPrice: 1,
+    rangeMin: -60,
+    rangeMax: 0,
+  }, {
+    activeBinId: 1,
+    activePrice: 0.9993,
+  });
+
+  assert.equal(marked.ok, true);
+  assert.equal(marked.inRange, false);
+  assert.equal(marked.outOfRangeSide, 'HIGH');
+  assert.ok(Math.abs(marked.currentValueSol - 0.09993) < 1e-12);
+  assert.ok(Math.abs(marked.pnlSol - (-0.00007)) < 1e-12);
+  assert.ok(Math.abs(marked.pnlPct - (-0.07)) < 1e-12);
 });
 
 test('deploy execution no longer branches on the mutable global dry-run toggle', () => {
