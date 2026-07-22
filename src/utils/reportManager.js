@@ -1,4 +1,5 @@
 import { getConfig } from '../config.js';
+import { escapeHTML } from './safeJson.js';
 
 class ReportManager {
   constructor() {
@@ -178,70 +179,87 @@ class ReportManager {
     return `${pct.toFixed(digits)}%`;
   }
 
+  _getDisplayStatus(pool = {}, detail = '') {
+    if (pool.finalVerdict === 'DEPLOYED' || pool.status === 'DEPLOYED') {
+      return { icon: '✅', label: 'DEPLOYED' };
+    }
+    const normalized = String(detail || pool.reason || '').toLowerCase();
+    const isDeferred = pool.status === 'DEFERRED' ||
+      Object.values(pool.gates || {}).some(status => status === 'DEFER');
+    const isTemporary = [
+      'breakout fresh belum terkonfirmasi',
+      'fresh breakout belum terkonfirmasi',
+      'reclaim valid',
+      'menunggu',
+      'waiting for',
+      'stale market snapshot',
+      'live confirmation',
+      'slot full',
+    ].some(marker => normalized.includes(marker));
+    return isDeferred || isTemporary
+      ? { icon: '⏸', label: 'WAIT' }
+      : { icon: '❌', label: 'REJECT' };
+  }
+
+  _formatDisplayReason(detail = '') {
+    const text = String(detail || '').trim();
+    if (!text) return '';
+    if (/reclaim valid.*breakout fresh belum terkonfirmasi/i.test(text)) {
+      return 'Reclaim valid, menunggu breakout fresh';
+    }
+    if (/^veto:\s*trend 15m bearish via meridian api$/i.test(text)) {
+      return 'Trend 15m bearish via Meridian';
+    }
+    return text;
+  }
+
+  _formatReportTimestamp(date = new Date()) {
+    const parts = new Intl.DateTimeFormat('en-GB', {
+      timeZone: 'Asia/Jakarta',
+      day: '2-digit',
+      month: 'short',
+      year: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: false,
+    }).formatToParts(date);
+    const read = type => parts.find(part => part.type === type)?.value || '';
+    return `${read('day')} ${read('month')} ${read('year')} · ${read('hour')}:${read('minute')} WIB`;
+  }
+
   _buildTopPoolBlock(pool = {}, idx = 0) {
     const name = pool.name || pool.symbol || pool.tokenName || 'UNKNOWN';
-    const mcap = pool.mcap ?? pool.marketCap ?? 0;
     const tvl = pool.tvl ?? pool.liquidityUsd ?? pool.activeTvl ?? 0;
     const vol24h = pool.vol24h ?? pool.volume24h ?? pool.trade_volume_24h ?? pool.vol ?? 0;
     const feeTvl = pool.feeTvlRatio ?? pool.feeTVLRatio ?? pool.fee_tvl_ratio ?? pool.feeRatio ?? null;
-    const binStep = pool.binStep ?? pool.bin_step ?? 'N/A';
-    const holders = pool.holders ?? pool.holderCount ?? 'N/A';
     const gmgn = pool.gmgn || {};
-    const gmgnParts = [];
     const vLines = [];
 
     if (feeTvl == null) {
       console.log(`[ReportManager] pool ${name} missing Meteora Fee/TVL ratio; rendering N/A`);
     }
 
-    vLines.push(`${idx + 1}. <b>${name}</b>`);
-    vLines.push(`TVL ${this._formatUsdShort(tvl)} | Vol24h ${this._formatUsdShort(vol24h)}`);
-    vLines.push(`Fee/TVL ${this._formatRatioPct(feeTvl, 1)} | Bin ${binStep}`);
-    if (gmgn.top10Pct != null) gmgnParts.push(`Top10 ${this._formatPct(gmgn.top10Pct, 1)}`);
-    if (gmgn.devHoldPct != null) gmgnParts.push(`Dev ${this._formatPct(gmgn.devHoldPct, 1)}`);
-    if (gmgn.insiderPct != null) gmgnParts.push(`Insider ${this._formatPct(gmgn.insiderPct, 1)}`);
-    if (gmgn.bundlerPct != null) gmgnParts.push(`Bundler ${this._formatPct(gmgn.bundlerPct, 1)}`);
-    const gmgnLine = [`GMGN ${holders} holders`];
-    if (gmgnParts.length > 0) gmgnLine.push(gmgnParts.join(' | '));
-    const volumeTrend = String(pool.volumeTrend || '').toUpperCase();
-    if (volumeTrend && volumeTrend !== 'UNKNOWN') gmgnLine.push(`VolTrend ${volumeTrend}`);
-    const freshnessState = String(pool.freshnessState || '').toUpperCase();
-    if (freshnessState) {
-      const freshnessParts = [`Freshness ${freshnessState}`];
-      if (Number.isFinite(Number(pool.freshnessPriorityDelta))) {
-        const delta = Number(pool.freshnessPriorityDelta);
-        freshnessParts.push(`Rank ${delta >= 0 ? '+' : ''}${delta}`);
-      }
-      if (Number.isFinite(Number(pool.activityPercentile))) {
-        freshnessParts.push(`Activity Pctl ${Math.round(Number(pool.activityPercentile) * 100)}%`);
-      }
-      gmgnLine.push(freshnessParts.join(' | '));
-    }
-    vLines.push(gmgnLine.join(' | '));
-    if (pool.activityState) {
-      const activityParts = [`Activity ${String(pool.activityState).toUpperCase()}`];
-      activityParts.push(`Window ${pool.activityWindow || 'N/A'}`);
-      activityParts.push(
-        `Swaps ${Number.isFinite(Number(pool.activitySwapCount))
-          ? Number(pool.activitySwapCount).toLocaleString('en-US')
-          : 'N/A'}`,
-      );
-      activityParts.push(
-        `Flow ${Number.isFinite(Number(pool.flowTrendScore))
-          ? `${Number(pool.flowTrendScore) >= 0 ? '+' : ''}${Number(pool.flowTrendScore).toFixed(0)}`
-          : 'N/A'}`,
-      );
-      vLines.push(activityParts.join(' | '));
-    }
-    const isRejected = pool.rejected || pool.status === 'REJECTED';
-    if (isRejected) {
-      const firstFailedGate = this.getFirstFailedGate(pool);
-      const rejectionDetail = this.getGateDetailsText(pool, firstFailedGate) || pool.reason || firstFailedGate || '';
-      const rejectionText = rejectionDetail ? `REJECTED — ${rejectionDetail}` : 'REJECTED';
-      vLines.push(`Status ${rejectionText}`);
-    } else {
-      vLines.push(`Status ${pool.status || 'WATCH'}`);
-    }
+    const swaps = pool.activitySwapCount != null && Number.isFinite(Number(pool.activitySwapCount))
+      ? Number(pool.activitySwapCount).toLocaleString('en-US')
+      : 'N/A';
+    const firstFailedGate = this.getFirstFailedGate(pool);
+    const detail = this.getGateDetailsText(pool, firstFailedGate) || pool.reason || firstFailedGate || '';
+    const displayStatus = this._getDisplayStatus(pool, detail);
+    const displayReason = this._formatDisplayReason(detail);
+
+    vLines.push(`<b>${idx + 1}. ${escapeHTML(name)}</b>`);
+    vLines.push(
+      `TVL ${this._formatUsdShort(tvl)} · Vol ${this._formatUsdShort(vol24h)} · ` +
+      `Fee/TVL ${this._formatRatioPct(feeTvl, 1)}`,
+    );
+    vLines.push(
+      `Swaps ${swaps} · Top10 ${this._formatPct(gmgn.top10Pct, 1)} · ` +
+      `Bundler ${this._formatPct(gmgn.bundlerPct, 1)}`,
+    );
+    vLines.push(
+      `${displayStatus.icon} <b>${displayStatus.label}</b>` +
+      `${displayReason ? ` — ${escapeHTML(displayReason)}` : ''}`,
+    );
     return vLines.join('\n');
   }
 
@@ -265,11 +283,6 @@ class ReportManager {
       return '🚫 Tidak ada deploy pada siklus ini.';
     }
 
-    const deferredTokens  = this.currentCycle.filter(t => t.status === 'DEFERRED' || Object.values(t.gates).some(s => s === 'DEFER'));
-    const rejectedTokens  = this.currentCycle.filter(t => t.finalVerdict !== 'DEPLOYED' && t.status !== 'DEFERRED' && !Object.values(t.gates).some(s => s === 'DEFER'));
-
-    const nowStr = new Date().toLocaleString('id-ID', { timeZone: 'Asia/Jakarta', dateStyle: 'full', timeStyle: 'long' });
-
     // Hanya kirim Top 5 ke Telegram — deployed dulu, lalu sort by gate progress
     const sortedCycle = [...this.currentCycle].sort((a, b) => {
       const aDeployed = a.finalVerdict === 'DEPLOYED' ? 1 : 0;
@@ -282,15 +295,17 @@ class ReportManager {
     const top5Cycle = sortedCycle.slice(0, 5);
     const cfg = getConfig();
     const nextScreenMin = cfg.intervals?.screeningIntervalMin || cfg.screeningIntervalMin || 15;
-    const slotText = this.slotSaturatedSummaryOnly ? 'FULL 1/1' : `${deferredTokens.length > 0 ? 'WATCH' : 'AVAILABLE'}`;
-    let report = `<b>📊 AI-Agent Scanner Result</b>\n`;
-    report += `📅 ${nowStr}\n\n`;
-    report += `<b>[ TOP 5 ]</b>\n\n`;
+    const hasWaitCandidate = this.currentCycle.some((pool) => {
+      const firstFailedGate = this.getFirstFailedGate(pool);
+      const detail = this.getGateDetailsText(pool, firstFailedGate) || pool.reason || firstFailedGate || '';
+      return this._getDisplayStatus(pool, detail).label === 'WAIT';
+    });
+    const slotText = this.slotSaturatedSummaryOnly ? 'FULL 1/1' : `${hasWaitCandidate ? 'WATCH' : 'AVAILABLE'}`;
+    let report = `<b>📊 DLMM SCANNER</b>\n`;
+    report += `🕒 ${this._formatReportTimestamp()}\n`;
+    report += `Slot: <b>${slotText}</b> · Next: <b>${nextScreenMin}m</b>\n\n`;
     report += `${top5Cycle.map((pool, idx) => this._buildTopPoolBlock(pool, idx)).join('\n\n')}\n\n`;
-    report += `<b>[ STATUS ]</b>\n`;
-    report += `<b>Slot:</b> ${slotText}\n`;
-    report += `<b>Action:</b> HOLD new entries\n`;
-    report += `<b>Next scan:</b> ${nextScreenMin}m`;
+    report += `<b>Action:</b> HOLD new entries`;
 
     return report;
   }
