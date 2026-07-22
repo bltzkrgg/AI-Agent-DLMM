@@ -108,18 +108,16 @@ test('index logs full runtime error details for uncaughtException and unhandledR
   assert.match(indexSrc, /reason\.message \|\| 'unknown error'/);
   assert.match(indexSrc, /console\.error\('❌ uncaughtException:\\n', formatRuntimeErrorForLog\(e\)\)/);
   assert.match(indexSrc, /console\.error\('❌ unhandledRejection:\\n', formatRuntimeErrorForLog\(reason\)\)/);
+  assert.match(indexSrc, /RUNTIME_ERROR_NOTIFY_COOLDOWN_MS = 5 \* 60_000/);
+  assert.match(indexSrc, /notifyRuntimeErrorOnce\('UNCAUGHT_EXCEPTION'/);
+  assert.match(indexSrc, /notifyRuntimeErrorOnce\('UNHANDLED_REJECTION'/);
 });
 
-test('WATCH telegram banner shows candidate status values instead of generic PASS labels', () => {
+test('routine scout WATCH admission stays silent while genuine radar promotion remains visible', () => {
   const hunterSrc = readFileSync(hunterPath, 'utf8');
-  assert.match(hunterSrc, /- Slot: <code>\$\{slotUsed\}\/\$\{slotMax\}<\/code>/);
-  assert.match(hunterSrc, /- Trend M15: <code>\$\{entrySignals\.taTrend \|\| 'UNKNOWN'\}<\/code>/);
-  assert.match(hunterSrc, /- Timing: <code>\$\{entrySignals\.entryTimingState \|\| 'UNKNOWN'\}<\/code>/);
-  assert.match(hunterSrc, /- Safety: <code>SCOUT_OK<\/code>/);
-  assert.match(hunterSrc, /Watcher aktif - kandidat dipantau\./);
-  assert.doesNotMatch(hunterSrc, /- Trend M15: PASS/);
-  assert.doesNotMatch(hunterSrc, /- Timing: PASS/);
-  assert.doesNotMatch(hunterSrc, /- Safety: PASS/);
+  assert.doesNotMatch(hunterSrc, /👀 <b>WATCH<\/b>/);
+  assert.doesNotMatch(hunterSrc, /KANDIDAT DITUNDA/);
+  assert.match(hunterSrc, /TA Radar Ready → WATCH/);
 });
 
 test('WATCH and ready queue both honor reentry discipline for same-mint post-loss retries', () => {
@@ -144,7 +142,10 @@ test('direct deploy path refreshes final market snapshot before final ST and can
   assert.match(hunterSrc, /ensureFinalSupertrendBullish\(\{\s*mint: tokenMint,\s*symbol,\s*pool: winner,\s*meta: \{\},\s*liveSnapshot: finalMarketSnapshot \|\| null,\s*currentPrice: finalCurrentPrice,\s*\}\)/s);
   assert.match(hunterSrc, /ensureFinalEntryCandleSanity\(\{\s*mint: tokenMint,\s*symbol,\s*pool: winner,\s*meta: \{\},\s*liveSnapshot: finalMarketSnapshot \|\| null,\s*\}\)/s);
   assert.match(hunterSrc, /const proximityDecision = getFinalEntryProximityDecision\(/);
-  assert.match(hunterSrc, /FINAL_PROXIMITY_HOLD/);
+  assert.doesNotMatch(hunterSrc, /FINAL_SNAPSHOT_HOLD/);
+  assert.doesNotMatch(hunterSrc, /FINAL_BREAKOUT_HOLD/);
+  assert.doesNotMatch(hunterSrc, /FINAL_PROXIMITY_HOLD/);
+  assert.match(hunterSrc, /buildDeployTriggeredTelegramMessage\(\{/);
 });
 
 test('telegram exit command closes all active positions with verification summary', () => {
@@ -260,10 +261,8 @@ test('operator-facing TP labels no longer describe trailing as the exit driver',
   const configSrc = readFileSync(resolve(process.cwd(), 'src/config.js'), 'utf8');
 
   assert.match(indexSrc, /formatTakeProfitRiskLabel\(cfg\.takeProfitMinNetPnlPct, cfg\.stopLossPct\)/);
-  assert.match(hunterSrc, /formatTakeProfitRiskLabel\(currentCfg\.takeProfitMinNetPnlPct, currentCfg\.stopLossPct\)/);
   assert.match(briefingSrc, /formatTakeProfitRiskLabel\(cfg\.takeProfitMinNetPnlPct, cfg\.stopLossPct\)/);
   assert.match(indexSrc, /Anchor: <code>DLMM active bin<\/code> \| Source: <code>frozen\/live fallback<\/code>/);
-  assert.match(hunterSrc, /Anchor: DLMM active bin \| Source: frozen\/live fallback/);
   assert.match(briefingSrc, /Anchor\s*:.*DLMM active bin.*Source:.*frozen\/live fallback/s);
   assert.match(indexSrc, /TA: <code>defensive bearish \(RSI ref \$\{cfg\.smartExitRsi \|\| 90\}\)<\/code>/);
   assert.match(briefingSrc, /\| TA: <code>defensive bearish<\/code>/);
@@ -281,12 +280,13 @@ test('blocked deploy results are handled by hunter and queue callers', () => {
   const hunterSrc = readFileSync(hunterPath, 'utf8');
   const queueSrc = readFileSync(resolve(process.cwd(), 'src/utils/pendingDeployQueue.js'), 'utf8');
   assert.match(hunterSrc, /deployResult && typeof deployResult === 'object' && deployResult\.blocked/);
-  assert.match(hunterSrc, /Deploy Ditolak/);
+  assert.match(hunterSrc, /buildDeployFinalOutcomeTelegramMessage\(\{/);
   assert.match(hunterSrc, /recordGate\(winner\._record, 'SCOUT_AGENT', 'DEFER'/);
   assert.match(queueSrc, /result && typeof result === 'object' && result\.blocked/);
   assert.match(queueSrc, /buildDeployFinalOutcomeTelegramMessage\(/);
-  assert.match(queueSrc, /FINAL_DEPLOY_BLOCKED/);
-  assert.match(queueSrc, /unwrap dan close manual dulu/);
+  assert.match(queueSrc, /DEPLOY BLOCKED \|/);
+  assert.match(queueSrc, /Agent tidak membuka posisi/);
+  assert.doesNotMatch(queueSrc, /unwrap dan close manual dulu/);
   assert.match(queueSrc, /Adjust range gagal untuk pool\/range ini\. Pool lain tetap normal\./);
   assert.doesNotMatch(queueSrc, /Queue menghormati veto non-refundable rent/);
 });
@@ -393,7 +393,7 @@ test('monitor exit policy keeps trailing primary and adds bearish defensive TA f
   assert.doesNotMatch(evilPandaSrc, /const takeProfitMinNetPnlPct = getConfiguredTakeProfitMinNetPnlPct\(\)/);
   assert.doesNotMatch(evilPandaSrc, /pnlPct < takeProfitMinNetPnlPct/);
   assert.match(hunterSrc, /getExitDisplayMeta/);
-  assert.match(hunterSrc, /Posisi Di Tutup \(\$\{exitMeta\.title\}\)/);
+  assert.match(hunterSrc, /buildClosedPositionReport\(\{/);
   assert.match(hunterSrc, /function buildExitTriggerNotification/);
   assert.match(hunterSrc, /reasonLabel = ''/);
   assert.match(hunterSrc, /if \(action === 'MAX_HOLD'\)/);
@@ -616,22 +616,23 @@ test('active position analyst prompt holds through healthy bullish momentum', ()
   assert.match(src, /range_health_status/);
 });
 
-test('deploy natural failures are silenced from Telegram notifications', () => {
+test('deploy natural failures emit a terminal result after the attempt starts', () => {
   const src = readFileSync(hunterPath, 'utf8');
   assert.match(src, /function isNaturalDeployError/);
   assert.match(src, /'simulation failed'/);
   assert.match(src, /'slippage'/);
   assert.match(src, /'timeout'/);
   assert.match(src, /'blockhash'/);
-  assert.match(src, /deployPosition natural fail silenced/);
+  assert.match(src, /deployPosition natural fail:/);
+  assert.match(src, /DEPLOY FAILED \| \$\{escapeHTML\(formatSolPairLabel\(symbol\)\)\}/);
+  assert.match(src, /partialDeployAlreadyReported/);
 });
 
 test('slot-saturated watch promotion stays quiet for new radar candidates', () => {
   const src = readFileSync(hunterPath, 'utf8');
   assert.match(src, /function isDeploySlotSaturated\(slotUsage = getEntrySlotUsage\(\)\)/);
   assert.match(src, /SLOT_SATURATED_PROMOTION_PAUSED/);
-  assert.match(src, /if \(!isDeploySlotSaturated\(slotUsage\)\) \{/);
-  assert.match(src, /await notify\(\s*`👀 <b>WATCH<\/b>/);
+  assert.doesNotMatch(src, /await notify\(\s*`👀 <b>WATCH<\/b>/);
   assert.match(src, /if \(slotSaturated\) continue;/);
   assert.match(src, /reportManager\.setSlotSaturatedSummaryOnly\(slotSaturated\)/);
 });
@@ -642,7 +643,7 @@ test('single-slot deploy mode selects one winner and leaves runners-up on standb
   assert.match(src, /const selectedWinner = singleSlotMode/);
   assert.match(src, /const deployCandidates = singleSlotMode/);
   assert.match(src, /const standbyCandidates = singleSlotMode/);
-  assert.match(src, /Mode 1 slot: 1 kandidat terbaik dipilih untuk deploy/);
+  assert.match(src, /kandidat deploy tersedia/);
   assert.match(src, /for \(const winner of deployCandidates\)/);
   assert.match(src, /if \(singleSlotMode\) \{\s*break;\s*\}/);
   assert.doesNotMatch(src, /for \(const winner of eligibleWinners\)/);
@@ -659,7 +660,6 @@ test('exit telegram messages display Meteora fee-only PnL', () => {
 
   assert.match(hunterSrc, /function buildExitTriggerNotification/);
   assert.match(hunterSrc, /Fee PnL: <code>\$\{Number\(feePnlSol\)\.toFixed\(6\)\} SOL \/ \$\{feeSign\}\$\{Number\(feePnlPct\)\.toFixed\(2\)\}%<\/code>/);
-  assert.match(hunterSrc, /Fee PnL: <code>unavailable<\/code>/);
   assert.match(hunterSrc, /Position Value: <code>\$\{Number\(currentValueSol\)\.toFixed\(4\)\} SOL<\/code>/);
   assert.match(hunterSrc, /Total Exposure PnL: <code>/);
   assert.match(hunterSrc, /return \{ ok: true, \.\.\.exitResult \}/);
@@ -680,14 +680,19 @@ test('exit close notifications use unified display metadata for all close famili
   assert.match(hunterSrc, /function formatResidualBalanceLines/);
   assert.match(hunterSrc, /buildExitTriggerNotification\(\{/);
   assert.match(hunterSrc, /buildExitClosedNotification\(\{ positionPubkey, exitMeta, exitResult, balance \}\)/);
-  assert.match(hunterSrc, /isUnifiedPerformanceClose/);
+  assert.doesNotMatch(hunterSrc, /isUnifiedPerformanceClose/);
   assert.match(evilPandaSrc, /symbol: reg\?\.symbol \|\| reg\?\.patternLearningEntry\?\.symbol \|\| tokenSymbol/);
   assert.match(hunterSrc, /depositSol: exitResult\?\.deploySol/);
   assert.match(hunterSrc, /inRange: exitResult\?\.inRangeAtClose/);
   assert.match(hunterSrc, /lines\.push\(`Reason: <code>\$\{escapeHTML\(reasonLabel\)\}<\/code>`\)/);
-  assert.match(hunterSrc, /Reason: <code>\$\{escapeHTML\(exitMeta\.reasonLabel\)\}<\/code>/);
   assert.match(hunterSrc, /Auto Swap: <code>\$\{completionLabel\}<\/code> \| Fee: <code>\$\{feeLabel\}<\/code> \| Residual: <code>\$\{residualLabel\}<\/code>/);
   assert.match(hunterSrc, /Residual Token: <code>/);
+  assert.match(hunterSrc, /normalizedExitTitle === 'OUT OF RANGE'/);
+  assert.match(hunterSrc, /exitFallbackUsed === true/);
+  assert.match(evilPandaSrc, /exitFallbackUsed: exitPathStats\.fallbackUsed === true/);
+  assert.doesNotMatch(evilPandaSrc, /Exit pakai fallback darurat/);
+  assert.match(hunterSrc, /if \(!shouldAlertManualClose\) \{/);
+  assert.match(hunterSrc, /⚠️ <b>EXIT FAILED<\/b>/);
   assert.match(exitReportSrc, /🟢/);
   assert.match(exitReportSrc, /🔴/);
   assert.match(exitReportSrc, /⚪/);
@@ -702,23 +707,17 @@ test('exit close notifications use unified display metadata for all close famili
   assert.match(exitReasonsSrc, /Pool Impact Trigger/);
 });
 
-test('out-of-range close notifications use the compact minimal layout', () => {
+test('out-of-range close notifications use the canonical accounting layout', () => {
   const hunterSrc = readFileSync(hunterPath, 'utf8');
-  const branchStart = hunterSrc.indexOf("if (normalizedExitTitle === 'OUT OF RANGE')");
-  const branchEnd = hunterSrc.indexOf('const lines = [', branchStart + 1);
-  const branchSrc = branchStart >= 0 && branchEnd > branchStart
-    ? hunterSrc.slice(branchStart, branchEnd + 500)
-    : hunterSrc;
+  const functionStart = hunterSrc.indexOf('function buildExitClosedNotification');
+  const functionEnd = hunterSrc.indexOf('\n}', functionStart);
+  const functionSrc = hunterSrc.slice(functionStart, functionEnd + 2);
 
-  assert.match(branchSrc, /normalizedExitTitle === 'OUT OF RANGE'/);
-  assert.match(branchSrc, /✅ <b>Posisi Di Tutup \(OUT OF RANGE\)<\/b>/);
-  assert.match(branchSrc, /Token: <b>\$\{tokenLabel\}<\/b>/);
-  assert.match(branchSrc, /Reason: <code>\$\{escapeHTML\(exitMeta\.reasonLabel \|\| 'Out of Range Trigger'\)\}<\/code>/);
-  assert.match(branchSrc, /Balance: <code>\$\{balanceNum\} SOL<\/code>/);
-  assert.doesNotMatch(branchSrc, /Position: <code>/);
-  assert.doesNotMatch(branchSrc, /Fee PnL:/);
-  assert.doesNotMatch(branchSrc, /Position Value:/);
-  assert.doesNotMatch(branchSrc, /Total Exposure PnL:/);
-  assert.doesNotMatch(branchSrc, /Wallet Net Delta:/);
-  assert.doesNotMatch(branchSrc, /Rent Refund/);
+  assert.match(functionSrc, /normalizedExitTitle === 'OUT OF RANGE'/);
+  assert.match(functionSrc, /\? 'Out of Range'/);
+  assert.match(functionSrc, /buildClosedPositionReport\(\{/);
+  assert.match(functionSrc, /pnlSol: exitResult\?\.pnlTotalSol/);
+  assert.match(functionSrc, /feesSol: hasFeePnlData\(exitResult\)/);
+  assert.match(functionSrc, /depositSol: exitResult\?\.deploySol/);
+  assert.match(functionSrc, /takeHomeSol: exitResult\?\.positionValueSol/);
 });

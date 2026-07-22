@@ -8,6 +8,7 @@ import { checkSupertrendVeto } from '../src/market/meridianVeto.js';
 import {
   __resetDeployQueueHoldNotifyState,
   applyFinalEntryIntentResync,
+  buildDeployQueueRemovalTelegramMessage,
   buildDeployTriggeredTelegramMessage,
   buildDeployFinalOutcomeTelegramMessage,
   buildUnreliableLiveSnapshotLog,
@@ -2320,9 +2321,9 @@ test('deploy attempt telegram message is explicit that position is still opening
     cfg: { entryDecisionMode: 'strict' },
   });
 
-  assert.match(line, /DEPLOY ATTEMPT/);
-  assert.match(line, /Attempt ID:/);
-  assert.match(line, /Sedang membuka posisi 0\.5 SOL/);
+  assert.match(line, /DEPLOYING \| TEST-SOL/);
+  assert.match(line, /Attempt: <code>mint-pool-abc123<\/code>/);
+  assert.match(line, /Amount: <code>0\.5 SOL<\/code>/);
 });
 
 test('final deploy outcome messages are explicit for stale hold, success, blocked, and reconcile', () => {
@@ -2333,9 +2334,9 @@ test('final deploy outcome messages are explicit for stale hold, success, blocke
     outcome: 'HOLD',
     reason: 'Final snapshot unavailable; waiting fresh market snapshot',
   });
-  assert.match(holdMsg, /FINAL_DEPLOY_HOLD/);
+  assert.match(holdMsg, /DEPLOY HOLD \| TEST-SOL/);
   assert.match(holdMsg, /final snapshot unavailable/i);
-  assert.match(holdMsg, /Final snapshot belum layak/i);
+  assert.match(holdMsg, /menahan deploy sebelum transaksi dimulai/i);
 
   const unreliableMsg = buildDeployFinalOutcomeTelegramMessage({
     symbol: 'TEST',
@@ -2354,7 +2355,7 @@ test('final deploy outcome messages are explicit for stale hold, success, blocke
     reason: 'entry proximity unavailable; waiting fresh live price/bin snapshot',
   });
   assert.match(proximityMsg, /final live price\/bin unavailable/i);
-  assert.match(proximityMsg, /Final snapshot belum layak/i);
+  assert.match(proximityMsg, /menahan deploy sebelum transaksi dimulai/i);
 
   const driftMsg = buildDeployFinalOutcomeTelegramMessage({
     symbol: 'TEST',
@@ -2381,9 +2382,10 @@ test('final deploy outcome messages are explicit for stale hold, success, blocke
     outcome: 'SUCCESS',
     positionPubkey: 'Pos111111111111111111111111111111111111111',
   });
-  assert.match(successMsg, /final deploy success/i);
-  assert.match(successMsg, /DEPLOYED/);
-  assert.match(successMsg, /Masuk mode monitor/i);
+  assert.match(successMsg, /DEPLOYED \| TEST-SOL/);
+  assert.match(successMsg, /Position: <code>Pos11111<\/code>/);
+  assert.match(successMsg, /Status: <code>MONITORING<\/code>/);
+  assert.doesNotMatch(successMsg, /final deploy success/i);
 
   const blockedMsg = buildDeployFinalOutcomeTelegramMessage({
     symbol: 'TEST',
@@ -2393,8 +2395,9 @@ test('final deploy outcome messages are explicit for stale hold, success, blocke
     reason: 'VETO_NON_REFUNDABLE_RENT',
     detail: 'rent guard veto',
   });
-  assert.match(blockedMsg, /FINAL_DEPLOY_BLOCKED/);
-  assert.match(blockedMsg, /unwrap dan close manual/i);
+  assert.match(blockedMsg, /DEPLOY BLOCKED \| TEST-SOL/);
+  assert.match(blockedMsg, /Agent tidak membuka posisi/i);
+  assert.doesNotMatch(blockedMsg, /unwrap|close manual/i);
 
   const reconcileMsg = buildDeployFinalOutcomeTelegramMessage({
     symbol: 'TEST',
@@ -2403,8 +2406,30 @@ test('final deploy outcome messages are explicit for stale hold, success, blocke
     outcome: 'RECONCILE',
     reason: 'DEPLOY_RESULT_UNKNOWN_RECONCILE',
   });
-  assert.match(reconcileMsg, /FINAL_DEPLOY_RECONCILE/);
-  assert.match(reconcileMsg, /Cek on-chain sebelum retry manual/i);
+  assert.match(reconcileMsg, /DEPLOY RECONCILE \| TEST-SOL/);
+  assert.match(reconcileMsg, /Cek posisi on-chain sebelum melakukan retry/i);
+});
+
+test('queue removal report distinguishes expired intent from terminal drop', () => {
+  const expired = buildDeployQueueRemovalTelegramMessage({
+    symbol: 'brain',
+    decision: 'EXPIRED',
+    reason: 'Token expired dari antrian (> 30 menit)',
+  });
+  assert.match(expired, /QUEUE EXPIRED \| brain/);
+  assert.match(expired, /screening berikutnya/);
+  assert.doesNotMatch(expired, /QUEUE DROP/);
+
+  const dropped = buildDeployQueueRemovalTelegramMessage({
+    symbol: 'brain',
+    decision: 'DROP',
+    reason: 'Supertrend 15m bearish',
+    liveTrend: 'BEARISH',
+    trendSource: 'live',
+  });
+  assert.match(dropped, /QUEUE DROP \| brain/);
+  assert.match(dropped, /Supertrend 15m bearish/);
+  assert.match(dropped, /Position: <code>NOT OPENED<\/code>/);
 });
 
 test('deploy/drop notifications are not gated by hold dedupe helper', () => {
@@ -2423,9 +2448,9 @@ test('deploy/drop notifications are not gated by hold dedupe helper', () => {
   assert.doesNotMatch(proximityHoldSection, /buildDeployFinalOutcomeTelegramMessage\(/);
 
   assert.match(src, /shouldSendDeployQueueHoldNotification\(/);
-  assert.match(src, /Deploy Queue Drop/);
-  assert.match(src, /DEPLOY ATTEMPT/);
-  assert.match(src, /Deploy Reconcile Required/);
+  assert.match(src, /buildDeployQueueRemovalTelegramMessage\(/);
+  assert.match(src, /DEPLOYING \|/);
+  assert.match(src, /DEPLOY RECONCILE \|/);
   assert.match(src, /function logDeployAttemptOutcome/);
   assert.match(src, /status:\s*'UNKNOWN'/);
 });

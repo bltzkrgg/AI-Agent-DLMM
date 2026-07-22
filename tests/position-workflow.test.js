@@ -70,7 +70,8 @@ test('out-of-range monitor state waits, expires, and clears correctly', async ()
 
   assert.equal(waiting.shouldExit, false);
   assert.equal(waiting.runtimePatch.oorSince, 0);
-  assert.match(waiting.notifyMessage, /OOR Watch/);
+  assert.match(waiting.notifyMessage, /OOR \| OOR1-SOL/);
+  assert.match(waiting.notifyMessage, /Duration: <code>0\.0 menit<\/code> \/ <code>1\.0 menit<\/code>/);
 
   const expired = evaluateOutOfRangeMonitorState({
     positionPubkey: 'pos-oor-1',
@@ -83,7 +84,8 @@ test('out-of-range monitor state waits, expires, and clears correctly', async ()
 
   assert.equal(expired.shouldExit, true);
   assert.equal(expired.exitReason, 'OUT_OF_RANGE_1M');
-  assert.match(expired.notifyMessage, /OOR Timeout/);
+  assert.match(expired.notifyMessage, /OOR LIMIT REACHED \| OOR1-SOL/);
+  assert.match(expired.notifyMessage, /Action: <code>CLOSING<\/code>/);
 
   const recovered = evaluateOutOfRangeMonitorState({
     positionPubkey: 'pos-oor-1',
@@ -96,10 +98,11 @@ test('out-of-range monitor state waits, expires, and clears correctly', async ()
 
   assert.equal(recovered.clearOorMarkers, true);
   assert.deepEqual(recovered.runtimePatch, { oorSince: null, lastOorAlertAt: null });
-  assert.match(recovered.notifyMessage, /OOR recovered/);
+  assert.match(recovered.notifyMessage, /RANGE RECOVERED \| OOR1-SOL/);
+  assert.match(recovered.notifyMessage, /Duration OOR: <code>1\.5 menit<\/code>/);
 });
 
-test('out-of-range monitor state can display 5 minutes while config remains 30 minutes', async () => {
+test('out-of-range monitor display keeps alert cadence separate from the actual 30 minute close limit', async () => {
   const { evaluateOutOfRangeMonitorState } = await importFresh(join(repoRoot, 'src/agents/hunterAlpha.js'));
 
   const waiting = evaluateOutOfRangeMonitorState({
@@ -112,9 +115,10 @@ test('out-of-range monitor state can display 5 minutes while config remains 30 m
   });
 
   assert.equal(waiting.shouldExit, false);
-  assert.match(waiting.notifyMessage, /OOR Watch/);
-  assert.match(waiting.notifyMessage, /Status: monitoring/);
-  assert.match(waiting.notifyMessage, /Next check: 5m/);
+  assert.match(waiting.notifyMessage, /OOR \| OOR2-SOL/);
+  assert.match(waiting.notifyMessage, /Duration: <code>0\.0 menit<\/code> \/ <code>30 menit<\/code>/);
+  assert.match(waiting.notifyMessage, /Status: <code>MONITORING<\/code>/);
+  assert.doesNotMatch(waiting.notifyMessage, /Next check/);
 
   const expired = evaluateOutOfRangeMonitorState({
     positionPubkey: 'pos-oor-2',
@@ -127,8 +131,9 @@ test('out-of-range monitor state can display 5 minutes while config remains 30 m
 
   assert.equal(expired.shouldExit, true);
   assert.equal(expired.exitReason, 'OUT_OF_RANGE_30M');
-  assert.match(expired.logMessage, /wait=300000ms/);
-  assert.match(expired.logMessage, /config=1800000ms/);
+  assert.match(expired.notifyMessage, /Duration: <code>30 menit<\/code> \/ <code>30 menit<\/code>/);
+  assert.match(expired.logMessage, /wait=1800000ms/);
+  assert.match(expired.logMessage, /alertCooldown=300000ms/);
 });
 
 test('out-of-range monitor state throttles OOR watch alerts by display wait minutes', async () => {
@@ -146,7 +151,7 @@ test('out-of-range monitor state throttles OOR watch alerts by display wait minu
   });
 
   assert.equal(first.shouldExit, false);
-  assert.match(first.notifyMessage, /OOR Watch/);
+  assert.match(first.notifyMessage, /OOR \| OOR3-SOL/);
 
   const second = evaluateOutOfRangeMonitorState({
     positionPubkey: 'pos-oor-3',
@@ -171,7 +176,8 @@ test('out-of-range monitor state throttles OOR watch alerts by display wait minu
   });
 
   assert.equal(third.shouldExit, false);
-  assert.match(third.notifyMessage, /OOR Watch/);
+  assert.match(third.notifyMessage, /OOR \| OOR3-SOL/);
+  assert.match(third.notifyMessage, /Duration: <code>5\.0 menit<\/code> \/ <code>45 menit<\/code>/);
 });
 
 test('out-of-range monitor state can suppress OOR watch display while keeping exit logic', async () => {
@@ -201,7 +207,7 @@ test('out-of-range monitor state can suppress OOR watch display while keeping ex
 
   assert.equal(expired.shouldExit, true);
   assert.equal(expired.exitReason, 'OUT_OF_RANGE_1M');
-  assert.match(expired.notifyMessage, /OOR Timeout/);
+  assert.match(expired.notifyMessage, /OOR LIMIT REACHED \| OOR4-SOL/);
 });
 
 test('invalid tracked pool registry falls back to manual withdrawn when position account is gone', async () => {
@@ -327,7 +333,7 @@ test('out-of-range monitor state trusts canonical active bin range over stale in
 
   assert.equal(recovered.clearOorMarkers, true);
   assert.deepEqual(recovered.runtimePatch, { oorSince: null, lastOorAlertAt: null });
-  assert.match(recovered.notifyMessage, /OOR recovered/);
+  assert.match(recovered.notifyMessage, /RANGE RECOVERED \| OORC-SOL/);
 });
 
 test('position lifecycle state is stored alongside close records', async (t) => {

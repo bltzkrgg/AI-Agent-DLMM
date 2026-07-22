@@ -231,6 +231,25 @@ async function notify(msg, opts = {}) {
   } catch {}
 }
 
+const _runtimeErrorNotifyAt = new Map();
+const RUNTIME_ERROR_NOTIFY_COOLDOWN_MS = 5 * 60_000;
+
+async function notifyRuntimeErrorOnce(kind = 'RUNTIME_ERROR', reason = '') {
+  const message = String(reason || 'unknown error');
+  const key = `${kind}:${message}`;
+  const now = Date.now();
+  const lastAt = Number(_runtimeErrorNotifyAt.get(key) || 0);
+  if (lastAt && (now - lastAt) < RUNTIME_ERROR_NOTIFY_COOLDOWN_MS) return false;
+  _runtimeErrorNotifyAt.set(key, now);
+  await notify(
+    `⚠️ <b>AGENT RUNTIME ERROR</b>\n` +
+    `Type: <code>${escapeHTML(kind)}</code>\n` +
+    `Reason: <code>${escapeHTML(message.slice(0, 240))}</code>\n` +
+    `<i>Detail lengkap tersedia di log VPS. Error yang sama disenyapkan selama 5 menit.</i>`
+  );
+  return true;
+}
+
 function buildSetconfigHelpSections() {
   const bySection = (section) => Object.entries(SETCONFIG_WHITELIST)
     .filter(([, m]) => m.section === section)
@@ -1900,13 +1919,13 @@ process.on('SIGTERM', () => shutdown('SIGTERM'));
 
 process.on('uncaughtException', (e) => {
   console.error('❌ uncaughtException:\n', formatRuntimeErrorForLog(e));
-  notify(`⚠️ <b>Uncaught error:</b>\n<code>${escapeHTML(e?.message || String(e))}</code>`).catch(() => {});
+  notifyRuntimeErrorOnce('UNCAUGHT_EXCEPTION', e?.message || String(e)).catch(() => {});
 });
 
 process.on('unhandledRejection', (reason) => {
   const msg = reason instanceof Error ? reason.message : String(reason);
   console.error('❌ unhandledRejection:\n', formatRuntimeErrorForLog(reason));
-  notify(`⚠️ <b>Unhandled rejection:</b>\n<code>${escapeHTML(msg)}</code>`).catch(() => {});
+  notifyRuntimeErrorOnce('UNHANDLED_REJECTION', msg).catch(() => {});
 });
 
 // ── Polling error handler ─────────────────────────────────────────

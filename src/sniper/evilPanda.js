@@ -2823,13 +2823,26 @@ async function handleQuoteOnlyPartialDeployFailure({
 
   const tokenLabel = String(marker?.tokenXMint || poolAddress || 'unknown').slice(0, 8) || 'UNKNOWN';
   const poolLabel = String(poolAddress || marker?.poolAddress || 'unknown').slice(0, 8) || 'UNKNOWN';
-  await notify(
-    `⚠️ <b>Deploy gagal tuntas</b>\n` +
-    `Token: <b>${escapeHTML(tokenLabel)}</b>\n` +
-    `Position: <code>${safePositionPubkey.slice(0,8)}</code>\n` +
-    `Pool: <code>${escapeHTML(poolLabel)}</code>\n` +
-    `Cleanup: <code>${escapeHTML(cleanup?.reason || 'UNKNOWN')}</code>\n` +
-    `<b>Action:</b> <i>cek wallet, unwrap, lalu close manual di Meteora.</i>`
+  const positionConfirmedClosed = cleanup?.cleaned === true ||
+    cleanup?.closeConfirmed === true ||
+    cleanup?.reason === 'POSITION_NOT_FOUND';
+  await notify(positionConfirmedClosed
+    ? (
+      `❌ <b>DEPLOY FAILED | ${escapeHTML(tokenLabel)}-SOL</b>\n` +
+      `Position: <code>${safePositionPubkey.slice(0,8)}</code>\n` +
+      `Pool: <code>${escapeHTML(poolLabel)}</code>\n` +
+      `Status: <code>NO ACTIVE POSITION</code>\n` +
+      `Reason: <code>${escapeHTML(cleanup?.reason || 'DEPLOY_FAILED')}</code>\n` +
+      `<i>Tidak ada posisi aktif yang perlu ditutup.</i>`
+    )
+    : (
+      `⚠️ <b>DEPLOY INCOMPLETE | ${escapeHTML(tokenLabel)}-SOL</b>\n` +
+      `Position: <code>${safePositionPubkey.slice(0,8)}</code>\n` +
+      `Pool: <code>${escapeHTML(poolLabel)}</code>\n` +
+      `Status: <code>POSITION STILL OPEN OR UNCERTAIN</code>\n` +
+      `Reason: <code>${escapeHTML(cleanup?.reason || 'DEPLOY_INCOMPLETE')}</code>\n` +
+      `<b>Action:</b> <i>cek wallet, unwrap, lalu close manual di Meteora.</i>`
+    )
   );
 
   if (cleanup?.cleaned === true || cleanup?.reason === 'POSITION_NOT_FOUND') {
@@ -5883,14 +5896,6 @@ export async function exitPosition(positionPubkey, reason = 'MANUAL') {
       await persistActivePositionsStateNow();
       clearPositionRuntimeState(positionPubkey);
       clearQuoteOnlyDeployMarker(positionPubkey);
-      if (exitPathStats.fallbackUsed) {
-        await notify(
-          `⚠️ <b>Exit pakai fallback darurat</b>\n` +
-          `Posisi: <code>${positionPubkey.slice(0, 8)}</code>\n` +
-          `Reason: <code>${escapeHTML(reason)}</code>\n` +
-          `<i>Zap-Out tidak full sukses di semua tahap. Cek liquidity/impact pool.</i>`
-        );
-      }
       console.log(`[evilPanda] ✅ Position closed & verified: ${positionPubkey.slice(0,8)} | reason=${reason}`);
 
       // 5. Harvest Log + Ledger + Blacklist
@@ -6010,6 +6015,7 @@ export async function exitPosition(positionPubkey, reason = 'MANUAL') {
         swapCompletionStatus,
         swapFailureReason,
         residualTokenBalances,
+        exitFallbackUsed: exitPathStats.fallbackUsed === true,
         tpFullSweep: isTakeProfitExitReason(reason, normalizedExitReason),
         feePnlSol,
         feePnlPct: estimatedFeePct,

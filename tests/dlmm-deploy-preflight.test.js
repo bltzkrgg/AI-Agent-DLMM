@@ -1798,6 +1798,10 @@ test('partial quote-only cleanup closes empty on-chain position before unlocking
   });
 
   const wallet = { publicKey: Keypair.generate().publicKey };
+  const messages = [];
+  setEvilPandaNotifyFn(async (msg) => {
+    messages.push(String(msg || ''));
+  });
   const closeTx = {
     instructions: [],
   };
@@ -1860,8 +1864,13 @@ test('partial quote-only cleanup closes empty on-chain position before unlocking
   const status = await getPositionOnChainStatus(positionPubkey);
   assert.equal(status.reason, 'BOT_DEPLOY_PARTIAL_EMPTY_POSITION');
   assert.equal(status.manualWithdrawn, false);
+  assert.match(messages[0], /DEPLOY FAILED \| Mint1111-SOL/);
+  assert.match(messages[0], /NO ACTIVE POSITION/);
+  assert.match(messages[0], /Tidak ada posisi aktif yang perlu ditutup/);
+  assert.doesNotMatch(messages[0], /unwrap|close manual/i);
 
   __setQuoteOnlyDeployMarkerForTests(positionPubkey, null);
+  setEvilPandaNotifyFn(null);
 });
 
 test('partial quote-only cleanup does not unlock when empty-position close cannot be confirmed', async () => {
@@ -1983,7 +1992,8 @@ test('partial quote-only cleanup emits manual-close notification when deploy fai
 
   assert.equal(cleanup?.reason, 'CLOSE_NOT_CONFIRMED');
   assert.ok(messages.length > 0);
-  assert.match(messages[0], /Deploy gagal tuntas/);
+  assert.match(messages[0], /DEPLOY INCOMPLETE \| Mint1111-SOL/);
+  assert.match(messages[0], /POSITION STILL OPEN OR UNCERTAIN/);
   assert.match(messages[0], /unwrap, lalu close manual di Meteora/);
 
   __setQuoteOnlyDeployMarkerForTests(positionPubkey, null);

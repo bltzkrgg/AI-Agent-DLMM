@@ -34,7 +34,7 @@ import { evaluateClosedM15SupertrendReclaim } from '../utils/entryCandleSanity.j
 import { escapeHTML, safeParseAI, fetchWithTimeout } from '../utils/safeJson.js';
 import reportManager              from '../utils/reportManager.js';
 import pendingStore               from '../utils/pendingStore.js';
-import { enqueueForDeploy, ensureFinalEntryCandleSanity, ensureFinalSupertrendBullish, getDeployQueueLiveSnapshot, getFinalEntryProximityDecision, isFreshDeployMeta, isReliableLiveSnapshot, startDeployQueueWatcher, setDeployQueueNotifyFn, setDeployQueueMonitorFn } from '../utils/pendingDeployQueue.js';
+import { buildDeployFinalOutcomeTelegramMessage, buildDeployTriggeredTelegramMessage, enqueueForDeploy, ensureFinalEntryCandleSanity, ensureFinalSupertrendBullish, getDeployQueueLiveSnapshot, getFinalEntryProximityDecision, isFreshDeployMeta, isReliableLiveSnapshot, startDeployQueueWatcher, setDeployQueueNotifyFn, setDeployQueueMonitorFn } from '../utils/pendingDeployQueue.js';
 import { getDeploySlotUsage, reserveDeploySlot, releaseDeploySlot } from '../utils/deploySlotGuard.js';
 import { createPaperPosition, updatePaperPosition, closePaperPosition, getPaperPosition, listPaperPositions, hasPaperPoolPosition } from '../paper/paperPositions.js';
 import { formatPaperOpenedNotification, formatPaperRealtimeNotification, formatPaperClosedNotification } from '../paper/paperReporting.js';
@@ -483,39 +483,42 @@ function formatDurationFromMs(ms = 0) {
   return `${minutes.toFixed(1)} menit`;
 }
 
+function formatSolPairLabel(symbol = '') {
+  const label = String(symbol || 'UNKNOWN');
+  return label.toUpperCase().endsWith('-SOL') ? label : `${label}-SOL`;
+}
+
 function buildOorWaitingMessage({ symbol, positionPubkey, elapsedMs, waitMs, currentValueSol, pnlPct }) {
   const sign = pnlPct >= 0 ? '+' : '';
   return (
-    `⏳ <b>OOR Watch</b>\n` +
-    `Token: <b>${escapeHTML(symbol)}</b>\n` +
+    `⏳ <b>OOR | ${escapeHTML(formatSolPairLabel(symbol))}</b>\n` +
     `Position: <code>${positionPubkey.slice(0, 8)}</code>\n` +
     `PnL: <code>${sign}${pnlPct.toFixed(2)}%</code>\n` +
     `Value: <code>${currentValueSol.toFixed(4)} SOL</code>\n` +
-    `<i>Status: monitoring</i>\n` +
-    `<i>Next check: 5m</i>`
+    `Duration: <code>${formatDurationFromMs(elapsedMs)}</code> / <code>${formatDurationFromMs(waitMs)}</code>\n` +
+    `Status: <code>MONITORING</code>`
   );
 }
 
 function buildOorExpiredMessage({ symbol, positionPubkey, elapsedMs, waitMs, currentValueSol, pnlPct, inRange }) {
   const sign = pnlPct >= 0 ? '+' : '';
   return (
-    `⏱️ <b>OOR Timeout</b>\n` +
-    `Token: <b>${escapeHTML(symbol)}</b>\n` +
+    `⏱️ <b>OOR LIMIT REACHED | ${escapeHTML(formatSolPairLabel(symbol))}</b>\n` +
     `Position: <code>${positionPubkey.slice(0, 8)}</code>\n` +
     `PnL: <code>${sign}${pnlPct.toFixed(2)}%</code>\n` +
     `Value: <code>${currentValueSol.toFixed(4)} SOL</code>\n` +
     `Range: <code>${inRange ? 'IN_RANGE' : 'OUT_OF_RANGE'}</code>\n` +
-    `Durasi OOR: <code>${formatDurationFromMs(elapsedMs)}</code> / batas <code>${formatDurationFromMs(waitMs)}</code>\n` +
-    `<i>Config OOR sudah lewat, posisi akan ditutup sekarang.</i>`
+    `Duration: <code>${formatDurationFromMs(elapsedMs)}</code> / <code>${formatDurationFromMs(waitMs)}</code>\n` +
+    `Action: <code>CLOSING</code>`
   );
 }
 
-function buildOorRecoveredMessage({ symbol, positionPubkey }) {
+function buildOorRecoveredMessage({ symbol, positionPubkey, elapsedMs = 0 }) {
   return (
-    `↩️ <b>OOR recovered</b>\n` +
-    `Token: <b>${escapeHTML(symbol)}</b>\n` +
+    `↩️ <b>RANGE RECOVERED | ${escapeHTML(formatSolPairLabel(symbol))}</b>\n` +
     `Position: <code>${positionPubkey.slice(0, 8)}</code>\n` +
-    `<i>Posisi kembali masuk range, countdown OOR dibersihkan.</i>`
+    `Duration OOR: <code>${formatDurationFromMs(elapsedMs)}</code>\n` +
+    `Status: <code>IN_RANGE</code>`
   );
 }
 
@@ -543,17 +546,17 @@ export function evaluateOutOfRangeMonitorState({
 } = {}) {
   const inRange = resolveCanonicalMonitorInRange(status);
   const waitMs = getOutOfRangeWaitMs(cfg);
-  const displayWaitMs = getDisplayedOutOfRangeWaitMs(cfg);
   const oorSince = Number.isFinite(runtimeState?.oorSince) ? runtimeState.oorSince : null;
   const lastOorAlertAt = Number.isFinite(runtimeState?.lastOorAlertAt) ? runtimeState.lastOorAlertAt : null;
 
   if (inRange) {
     if (oorSince !== null || lastOorAlertAt !== null) {
+      const elapsedMs = oorSince === null ? 0 : Math.max(0, now - oorSince);
       return {
         shouldExit: false,
         clearOorMarkers: true,
         runtimePatch: { oorSince: null, lastOorAlertAt: null },
-        notifyMessage: buildOorRecoveredMessage({ symbol, positionPubkey }),
+        notifyMessage: buildOorRecoveredMessage({ symbol, positionPubkey, elapsedMs }),
         logMessage: `[hunter] ${symbol} kembali IN_RANGE, OOR timer dibersihkan.`,
       };
     }
@@ -585,12 +588,12 @@ export function evaluateOutOfRangeMonitorState({
         symbol,
         positionPubkey,
         elapsedMs,
-        waitMs: displayWaitMs,
+        waitMs,
         currentValueSol: Number(status?.currentValueSol) || 0,
         pnlPct: Number(status?.pnlPct) || 0,
         inRange,
       }),
-      logMessage: `[hunter] ${symbol} OOR timeout: elapsed=${elapsedMs}ms wait=${displayWaitMs}ms remaining=${Math.max(0, displayWaitMs - elapsedMs)}ms (config=${waitMs}ms)`,
+      logMessage: `[hunter] ${symbol} OOR timeout: elapsed=${elapsedMs}ms wait=${waitMs}ms remaining=${Math.max(0, waitMs - elapsedMs)}ms alertCooldown=${alertCooldownMs}ms`,
       exitReason: `OUT_OF_RANGE_${Math.round(waitMs / 60_000)}M`,
     };
   }
@@ -603,11 +606,11 @@ export function evaluateOutOfRangeMonitorState({
       symbol,
       positionPubkey,
       elapsedMs,
-      waitMs: displayWaitMs,
+      waitMs,
       currentValueSol: Number(status?.currentValueSol) || 0,
       pnlPct: Number(status?.pnlPct) || 0,
     }) : null,
-    logMessage: shouldAlert ? `[hunter] ${symbol} OOR wait: elapsed=${elapsedMs}ms remaining=${Math.max(0, displayWaitMs - elapsedMs)}ms wait=${displayWaitMs}ms (config=${waitMs}ms)` : null,
+    logMessage: shouldAlert ? `[hunter] ${symbol} OOR wait: elapsed=${elapsedMs}ms remaining=${Math.max(0, waitMs - elapsedMs)}ms wait=${waitMs}ms alertCooldown=${alertCooldownMs}ms` : null,
     exitReason: null,
   };
 }
@@ -2044,33 +2047,6 @@ function resolveTrackedFeeSnapshot(status = {}, meta = {}) {
   };
 }
 
-function formatFeePnlLine(result = {}) {
-  if (!hasFeePnlData(result)) return 'Fee PnL: <code>unavailable</code>\n';
-  const feePnlSol = Math.max(0, Number(result?.feePnlSol || 0));
-  const feePnlPct = Math.max(0, Number(result?.feePnlPct || 0));
-  const sign = feePnlPct > 0 ? '+' : '';
-  return `Fee PnL: <code>${feePnlSol.toFixed(6)} SOL / ${sign}${feePnlPct.toFixed(2)}%</code>\n`;
-}
-
-function formatExposurePnlLine(result = {}) {
-  const totalPct = Number(result?.pnlTotalPct);
-  if (!Number.isFinite(totalPct)) return '';
-  const sign = totalPct >= 0 ? '+' : '';
-  return `Total Exposure PnL: <code>${sign}${totalPct.toFixed(2)}%</code>\n`;
-}
-
-function formatWalletDeltaLine(result = {}) {
-  const walletNetDeltaSol = Number(result?.walletNetDeltaSol);
-  if (!Number.isFinite(walletNetDeltaSol)) return '';
-  return `Wallet Net Delta: <code>${walletNetDeltaSol.toFixed(6)} SOL</code>\n`;
-}
-
-function formatRentRefundLine(result = {}) {
-  const rentRefundSol = Number(result?.rentRefundSol);
-  if (!Number.isFinite(rentRefundSol)) return '';
-  return `Rent Refund (est): <code>${rentRefundSol.toFixed(6)} SOL</code>\n`;
-}
-
 function formatAutoSwapStatusLine(result = {}) {
   const completion = String(result?.swapCompletionStatus || '').trim().toLowerCase();
   const feeStatus = String(result?.feeSwapStatus || '').trim().toLowerCase();
@@ -2147,6 +2123,7 @@ function buildExitTriggerNotification({
 }
 
 function buildExitClosedNotification({ positionPubkey, exitMeta, exitResult, balance }) {
+  void balance;
   const tokenLabel = escapeHTML(
     _positionLabels.get(positionPubkey)?.symbol ||
     exitResult?.symbol ||
@@ -2158,80 +2135,49 @@ function buildExitClosedNotification({ positionPubkey, exitMeta, exitResult, bal
   );
   const normalizedExitTitle = String(exitMeta?.title || '').toUpperCase();
   const normalizedExitReason = String(exitMeta?.reasonLabel || '').toUpperCase();
-  const isTakeProfitFamily = normalizedExitTitle === 'TAKE PROFIT' || normalizedExitReason.includes('PROFIT TRIGGER');
-  const isUnifiedPerformanceClose =
-    isTakeProfitFamily ||
-    normalizedExitTitle === 'STOP LOSS' ||
-    normalizedExitTitle === 'MANUAL CLOSE';
-  if (isUnifiedPerformanceClose) {
-    const exitLabel = normalizedExitTitle === 'STOP LOSS'
-      ? 'Stop Loss'
-      : normalizedExitTitle === 'MANUAL CLOSE'
-        ? 'Manual Close'
-        : normalizedExitReason.includes('TRAILING')
-          ? 'Trailing Profit'
-          : 'Take Profit';
-    const extraLines = [];
-    const swapCompletion = String(exitResult?.swapCompletionStatus || '').trim().toLowerCase();
-    const autoSwapLine = formatAutoSwapStatusLine(exitResult).trimEnd();
-    if (autoSwapLine && swapCompletion && swapCompletion !== 'full') {
-      extraLines.push(autoSwapLine);
-    }
-    extraLines.push(...formatResidualBalanceLines(exitResult));
-    return buildClosedPositionReport({
-      tokenLabel,
-      pnlSol: exitResult?.pnlTotalSol ?? exitResult?.realizedTradingPnlSol,
-      pnlPct: exitResult?.pnlTotalPct ?? exitResult?.realizedTradingPnlPct,
-      feesSol: hasFeePnlData(exitResult) ? exitResult?.feePnlSol : null,
-      depositSol: exitResult?.deploySol,
-      takeHomeSol: exitResult?.positionValueSol,
-      exitLabel,
-      openedAt: exitResult?.openedAt,
-      closedAt: exitResult?.closedAt,
-      inRange: exitResult?.inRangeAtClose,
-      rangeLabel: 'Range at Close',
-      extraLines,
-    });
+  const exitLabel = normalizedExitReason.includes('TRAILING')
+    ? 'Trailing Profit'
+    : normalizedExitReason.includes('DEFENSIVE')
+      ? 'Defensive Exit'
+      : normalizedExitTitle === 'TAKE PROFIT'
+        ? 'Take Profit'
+        : normalizedExitTitle === 'STOP LOSS'
+          ? 'Stop Loss'
+          : normalizedExitTitle === 'MANUAL CLOSE'
+            ? 'Manual Close'
+            : normalizedExitTitle === 'OUT OF RANGE'
+              ? 'Out of Range'
+              : normalizedExitTitle === 'MAX HOLD EXIT'
+                ? 'Max Hold'
+                : normalizedExitTitle === 'POOL IMPACT EXIT'
+                  ? 'Pool Impact Guard'
+                  : normalizedExitTitle === 'SAFE EXIT'
+                    ? 'Safe Exit'
+                    : (exitMeta?.reasonLabel || exitMeta?.title || 'Exit');
+  const extraLines = [];
+  if (exitResult?.exitFallbackUsed === true) {
+    extraLines.push('Exit Path: <code>EMERGENCY FALLBACK</code>');
   }
-  if (normalizedExitTitle === 'OUT OF RANGE') {
-    const lines = [
-      `✅ <b>Posisi Di Tutup (OUT OF RANGE)</b>`,
-      `Token: <b>${tokenLabel}</b>`,
-      `Reason: <code>${escapeHTML(exitMeta.reasonLabel || 'Out of Range Trigger')}</code>`,
-    ];
-    const balanceNum = Number(balance);
-    if (Number.isFinite(balanceNum)) {
-      lines.push(`Balance: <code>${balanceNum} SOL</code>`);
-    } else {
-      lines.push(`Balance: <code>${balance} SOL</code>`);
-    }
-    return `${lines.join('\n')}`;
-  }
-  const lines = [
-    `✅ <b>Posisi Di Tutup (${exitMeta.title})</b>`,
-    `Token: <b>${tokenLabel}</b>`,
-    `Position: <code>${positionPubkey.slice(0,8)}</code>`,
-    `Reason: <code>${escapeHTML(exitMeta.reasonLabel)}</code>`,
-  ];
-  const feeLine = formatFeePnlLine(exitResult).trimEnd();
-  if (feeLine) lines.push(feeLine);
-  const positionValue = Number(exitResult?.positionValueSol);
-  if (Number.isFinite(positionValue)) {
-    lines.push(`Position Value: <code>${positionValue.toFixed(6)} SOL</code>`);
-  }
-  const exposureLine = formatExposurePnlLine(exitResult).trimEnd();
-  if (exposureLine) lines.push(exposureLine);
-  const walletLine = formatWalletDeltaLine(exitResult).trimEnd();
-  if (walletLine) lines.push(walletLine);
-  const rentLine = formatRentRefundLine(exitResult).trimEnd();
-  if (rentLine) lines.push(rentLine);
+  const swapCompletion = String(exitResult?.swapCompletionStatus || '').trim().toLowerCase();
   const autoSwapLine = formatAutoSwapStatusLine(exitResult).trimEnd();
-  if (autoSwapLine) lines.push(autoSwapLine);
-  for (const line of formatResidualBalanceLines(exitResult)) {
-    lines.push(line);
+  if (autoSwapLine && swapCompletion && swapCompletion !== 'full') {
+    extraLines.push(autoSwapLine);
   }
-  lines.push(`Balance: <code>${balance} SOL</code>`);
-  return `${lines.join('\n')}`;
+  extraLines.push(...formatResidualBalanceLines(exitResult));
+  return buildClosedPositionReport({
+    tokenLabel,
+    pnlSol: exitResult?.pnlTotalSol ?? exitResult?.realizedTradingPnlSol,
+    pnlPct: exitResult?.pnlTotalPct ?? exitResult?.realizedTradingPnlPct,
+    feesSol: hasFeePnlData(exitResult) ? exitResult?.feePnlSol : null,
+    depositSol: exitResult?.deploySol,
+    takeHomeSol: exitResult?.positionValueSol,
+    exitLabel,
+    openedAt: exitResult?.openedAt,
+    closedAt: exitResult?.closedAt,
+    inRange: exitResult?.inRangeAtClose,
+    rangeLabel: 'Range at Close',
+    extraLines,
+  });
 }
 
 function formatMaybePct(value, digits = 2) {
@@ -3511,13 +3457,6 @@ export async function runLinearLoop() {
     _running = true;
     console.log('[hunter] ▶ Linear Sniper Loop dimulai');
 
-    const startCfg = getConfig();
-    if (!startCfg.autoScreeningEnabled) {
-      await notify('🟢 <b>AI-Agent-DLMM Scan Ready</b>\n⚠️ <i>Auto Screen OFF. Ketik <code>/autoscreen on</code> untuk mulai.</i>');
-    } else {
-      await notify('🟢 <b>AI-Agent-DLMM Scan Ready</b>\n🔍 <i>Memulai scan real-time...</i>');
-    }
-
     // Loop is now managed by src/index.js multi-agent scheduler
     console.log('[hunter] Scheduler initialized. Delegating to index.js async loops.');
   } catch (error) {
@@ -3576,16 +3515,9 @@ export async function scanAndDeploy({ emitFinalReport = true } = {}) {
     const limit = cfg.meteoraDiscoveryLimit || 50;
 
     console.log(`[SCREEN] 🔍 SCAN — High-Fee Hunter (binStep candidates: ${(cfg.binStepPriority || [200,125,100]).join('/')} | select highest fee flow)...`);
-    await notify('🔍 <b>AI-Agent-DLMM Scan</b>\nMengambil data, mohon tunggu.');
-
-
   const radarTransitions = await collectReadyRetestPools(cfg);
   if (radarTransitions.length > 0) {
     console.log(`[WATCH] ${radarTransitions.length} kandidat retest naik ke WATCH.`);
-    await notify(
-      `👀 <b>Watch Layer</b>\n` +
-      `${radarTransitions.length} kandidat TA siap watch dan menunggu slot deploy.`
-    );
   }
 
   let pools = [];
@@ -4042,24 +3974,6 @@ FORMAT JAWABAN (WAJIB JSON VALID, TANPA MARKDOWN):
           if (watchResult.evicted?.pool) {
             addPendingRetest(watchResult.evicted.pool, 'WATCH digeser oleh prioritas lebih kuat');
           }
-          const slotUsage = getEntrySlotUsage(cfg);
-          if (!isDeploySlotSaturated(slotUsage)) {
-            const slotActive = Number(slotUsage?.active || 0);
-            const slotReserved = Number(slotUsage?.reserved || 0);
-            const slotMax = Number(slotUsage?.maxPositions || getConfig().maxPositions || 1);
-            const slotUsed = Math.max(0, slotActive + slotReserved);
-            await notify(
-              `👀 <b>WATCH</b>\n` +
-              `Token: <b>${tokenSymbol}</b>\n` +
-              `Entry: <b>${entryReadiness || 'N/A'}</b> | Breakout: <b>${breakoutQuality || 'N/A'}</b>\n` +
-              `- Slot: <code>${slotUsed}/${slotMax}</code>\n` +
-              `- Trend M15: <code>${entrySignals.taTrend || 'UNKNOWN'}</code>\n` +
-              `- Timing: <code>${entrySignals.entryTimingState || 'UNKNOWN'}</code>\n` +
-              `- Vol Trend: <code>${volumeTrendSignal.state || 'UNKNOWN'}</code>\n` +
-              `- Safety: <code>SCOUT_OK</code>\n\n` +
-              `Watcher aktif - kandidat dipantau.`
-            );
-          }
           return { ok: true, pool, symbol: tokenSymbol || 'UNKNOWN' };
         }
 
@@ -4069,15 +3983,6 @@ FORMAT JAWABAN (WAJIB JSON VALID, TANPA MARKDOWN):
         pendingStore.add(tokenMint || '', tokenSymbol, 0, 0, pool);
         addPendingRetest(pool, watchFallbackReason);
         console.log(`[SCREEN] ⏳ ${tokenSymbol} → pending retest (WATCH fallback: ${watchFallbackReason})`);
-        if (!String(watchFallbackReason).includes('SLOT_SATURATED_PROMOTION_PAUSED')) {
-          await notify(
-            `⏳ <b>KANDIDAT DITUNDA</b>\n` +
-            `Token: <b>${tokenSymbol}</b>\n` +
-            `Entry: <code>${entryReadiness || 'N/A'}</code> | Breakout: <code>${breakoutQuality || 'N/A'}</code>\n` +
-            `Alasan: <i>${watchFallbackReason}</i>\n` +
-            `👁️‍🗨️ <i>Radar menunggu slot WATCH tersedia.</i>`
-          );
-        }
         return { ok: false, symbol: tokenSymbol || 'UNKNOWN', stage: 'SCOUT_AGENT', reason: watchFallbackReason };
       }
       const isDeferred = decision.includes('DEFER');
@@ -4091,13 +3996,6 @@ FORMAT JAWABAN (WAJIB JSON VALID, TANPA MARKDOWN):
         pendingStore.add(tokenMint || '', tokenSymbol, 0, 0, pool);
         addPendingRetest(pool, reason);
         console.log(`[SCREEN] ⏳ ${tokenSymbol} → pending retest (Scout DEFER: ${reason})`);
-        await notify(
-          `⏳ <b>KANDIDAT DITUNDA</b>\n` +
-          `Token: <b>${tokenSymbol}</b>\n` +
-          `Entry: <code>${entryReadiness || 'N/A'}</code> | Breakout: <code>${breakoutQuality || 'N/A'}</code>\n` +
-          `Alasan: <i>${reason}</i>\n` +
-          `👁️‍🗨️ <i>Radar memantau sampai konfirmasi berikutnya.</i>`
-        );
       }
 
       return { ok: false, symbol: tokenSymbol || 'UNKNOWN', stage: 'SCOUT_AGENT', reason };
@@ -4296,17 +4194,11 @@ Balas HANYA JSON valid tanpa Markdown.`;
   // 1. Kapasitas Slot
   const usage0 = getEntrySlotUsage(cfg2);
   const maxPositions = usage0.maxPositions;
-  const activePositionsCount = usage0.active + usage0.reserved;
   let availableSlots = usage0.available;
   const singleSlotMode = maxPositions <= 1;
 
   if (availableSlots <= 0) {
     console.log(`[hunter] ⚠️ Kapasitas penuh (Max ${maxPositions}). Bot standby memantau exit...`);
-    await notify(
-      `⚠️ <b>Deploy ditahan</b>\n` +
-      `Tahap: <code>SLOT_CAPACITY</code>\n` +
-      `Alasan: Slot penuh (<code>${activePositionsCount}/${maxPositions}</code>).`
-    );
     await sleep(15_000);
     return;
   }
@@ -4321,11 +4213,6 @@ Balas HANYA JSON valid tanpa Markdown.`;
 
   if (eligibleWinners.length === 0) {
     console.log(`[hunter] Semua kandidat Top-${screeningTopPoolsLimit} sudah ada di posisi aktif. Standby...`);
-    await notify(
-      `⚠️ <b>Deploy ditahan</b>\n` +
-      `Tahap: <code>DEDUPLICATION</code>\n` +
-      `Alasan: Semua kandidat sudah jadi posisi aktif (anti double-entry).`
-    );
     await sleep(15_000);
     return;
   }
@@ -4349,26 +4236,9 @@ Balas HANYA JSON valid tanpa Markdown.`;
     ? eligibleWinners.filter((candidate) => candidate !== deployCandidates[0])
     : eligibleWinners.slice(deployCandidates.length);
 
-  const candidateListStr = eligibleWinners.map((p, i) => {
-    const sym   = p.name || p.tokenXMint?.slice(0, 8) || 'UNKNOWN';
-    const ratio = ((p.feeActiveTvlRatio || 0) * 100).toFixed(2);
-    const tvlRaw= Number(p.totalTvl || p.activeTvl || 0);
-    const volRaw= Number(p.volume24h || p.volume_24h || p.trade_volume_24h || p.tradeVolume24h || p.volume || p.v24h || 0);
-    const mcap  = Math.round(p.mcap || 0).toLocaleString('en-US');
-    const effValue = volRaw / (tvlRaw || 1);
-    const eff   = effValue > 1000 ? '>1000' : effValue.toFixed(2);
-    const mark  = i === 0 ? '🏆' : '✅';
-    return `${i+1}. ${mark} <b>${sym}</b> [${p.binStep || '?'}] — Eff: <code>${eff}x</code>\n   Fee/TVL: <code>${ratio}%</code> | MCap: <code>$${mcap}</code>`;
-  }).join('\n\n');
-
-  await notify(
-    `🎯 <b>Top ${eligibleWinners.length} Kandidat Tersedia (Deduplicated)</b>\n\n` +
-    `${candidateListStr}\n\n` +
-    (
-      singleSlotMode
-        ? `Mode 1 slot: 1 kandidat terbaik dipilih untuk deploy${standbyCandidates.length > 0 ? `, ${standbyCandidates.length} kandidat standby.` : '.'}`
-        : `Mengeksekusi kandidat yang tersedia...`
-    )
+  console.log(
+    `[hunter] ${eligibleWinners.length} kandidat deploy tersedia; ` +
+    `${deployCandidates.length} dipilih, ${standbyCandidates.length} standby.`
   );
 
   // 3. Iterative Deployment
@@ -4410,12 +4280,6 @@ Balas HANYA JSON valid tanpa Markdown.`;
           recordGate(winner._record, 'SCOUT_AGENT', 'DEFER', reasonText);
         }
         addPendingRetest(winner, reasonText);
-        await notify(
-          `⏸️ <b>Deploy Ditahan</b>\n` +
-          `<b>${escapeHTML(symbol)}</b> — <code>FINAL_SNAPSHOT_HOLD</code>\n` +
-          `Reason: <code>${escapeHTML(reasonText)}</code>\n` +
-          `<i>Agent menunggu snapshot Meteora/live yang benar-benar fresh.</i>`
-        );
         return false;
       }
       if (!isReliableLiveSnapshot(finalMarketSnapshot)) {
@@ -4425,12 +4289,6 @@ Balas HANYA JSON valid tanpa Markdown.`;
           recordGate(winner._record, 'SCOUT_AGENT', 'DEFER', reasonText);
         }
         addPendingRetest(winner, reasonText);
-        await notify(
-          `⏸️ <b>Deploy Ditahan</b>\n` +
-          `<b>${escapeHTML(symbol)}</b> — <code>FINAL_SNAPSHOT_HOLD</code>\n` +
-          `Reason: <code>${escapeHTML(reasonText)}</code>\n` +
-          `Snapshot: <code>${escapeHTML(String(finalMarketSnapshot?.ohlcv?.source || finalMarketSnapshot?.dataSource || 'unknown'))}</code>`
-        );
         return false;
       }
       if (finalMarketSnapshot && winner && typeof winner === 'object') {
@@ -4468,12 +4326,6 @@ Balas HANYA JSON valid tanpa Markdown.`;
           recordGate(winner._record, 'SCOUT_AGENT', 'DEFER', reasonText);
         }
         addPendingRetest(winner, reasonText);
-        await notify(
-          `⏸️ <b>Deploy Ditahan</b>\n` +
-          `<b>${escapeHTML(symbol)}</b> — <code>FINAL_BREAKOUT_HOLD</code>\n` +
-          `Timing: <code>${escapeHTML(finalTimingState)}</code>\n` +
-          `<i>${escapeHTML(reasonText)}</i>`
-        );
         return false;
       }
       const finalCurrentPrice =
@@ -4501,12 +4353,6 @@ Balas HANYA JSON valid tanpa Markdown.`;
         if (finalSt.action !== 'VETO') {
           addPendingRetest(winner, reasonText);
         }
-        await notify(
-          `${finalSt.action === 'VETO' ? '⛔ <b>Deploy Ditolak</b>' : '⏸️ <b>Deploy Ditahan</b>'}\n` +
-          `<b>${escapeHTML(symbol)}</b> — <code>FINAL_ST_GATE_${finalSt.action}</code>\n` +
-          `ST 15m: <code>${escapeHTML(finalSt.direction || 'UNKNOWN')}</code> (<code>${escapeHTML(finalSt.source || 'unknown')}</code>)\n` +
-          `<i>${escapeHTML(reasonText)}</i>`
-        );
         return false;
       }
 
@@ -4524,12 +4370,6 @@ Balas HANYA JSON valid tanpa Markdown.`;
           recordGate(winner._record, 'SCOUT_AGENT', 'DEFER', reasonText);
         }
         addPendingRetest(winner, reasonText);
-        await notify(
-          `⏸️ <b>Deploy Ditahan</b>\n` +
-          `<b>${escapeHTML(symbol)}</b> — <code>FINAL_CANDLE_GATE_HOLD</code>\n` +
-          `Candle: <code>${escapeHTML(finalCandle.source || 'unknown')}</code>\n` +
-          `<i>${escapeHTML(reasonText)}</i>`
-        );
         return false;
       }
 
@@ -4571,13 +4411,6 @@ Balas HANYA JSON valid tanpa Markdown.`;
           recordGate(winner._record, 'SCOUT_AGENT', 'DEFER', reasonText);
         }
         addPendingRetest(winner, reasonText);
-        await notify(
-          `⏸️ <b>Deploy Ditahan</b>\n` +
-          `<b>${escapeHTML(symbol)}</b> — <code>FINAL_PROXIMITY_HOLD</code>\n` +
-          `Reason: <code>${escapeHTML(reasonText)}</code>\n` +
-          `Drift: <code>${Number.isFinite(proximityDecision.priceDriftPct) ? `${Number(proximityDecision.priceDriftPct).toFixed(2)}%` : 'na'}</code> | ` +
-          `Bin: <code>${Number.isFinite(proximityDecision.binDelta) ? proximityDecision.binDelta : 'na'}</code>`
-        );
         return false;
       }
 
@@ -4595,21 +4428,30 @@ Balas HANYA JSON valid tanpa Markdown.`;
         return false;
       }
       const reservationId = slotReservation.id;
+      const attemptId = `${String(tokenMint || 'unknown').slice(0, 4)}-${String(poolAddress || 'nopool').slice(0, 4)}-${Date.now().toString(36).slice(-6)}`;
 
       try {
-        await notify(
-          `Mengeksekusi <b>${symbol}</b>...\n` +
-          `Tahap lolos:\n<pre>${escapeHTML((winner._gateSummary || [
-            'BLACKLIST_LOCAL: PASS',
-            'STAGE_1_PUBLIC: PASS',
-            'STAGE_2_GMGN: PASS',
-            'STAGE_3_JUPITER: PASS',
-            'SCOUT_AGENT: PASS',
-            'GENERAL_AGENT: DEPLOY',
-          ]).join('\n'))}</pre>\n` +
-          `Deploy: <code>${currentCfg.deployAmountSol || 0.1} SOL</code>\n` +
-          `⏳ <i>Membuka posisi pada pool <code>${poolAddress.slice(0,8)}</code>...</i>`
-        );
+        await notify(buildDeployTriggeredTelegramMessage({
+          symbol,
+          attemptId,
+          poolAddress,
+          check: {
+            liveTrend: finalSt.direction || winner?._entrySignals?.taTrend || 'UNKNOWN',
+            liveM5: winner?._entrySignals?.priceChangeM5,
+            m5Source: 'live',
+          },
+          entry: {
+            pool: winner,
+            meta: {
+              entryReadiness: winner?._entrySignals?.entryReadiness,
+              breakoutQuality: winner?._entrySignals?.breakoutQuality,
+              entryTimingState: winner?._entrySignals?.entryTimingState,
+            },
+          },
+          solAmount: currentCfg.deployAmountSol || 0.1,
+          cfg: currentCfg,
+          finalCandle,
+        }));
 
         let positionPubkey;
         const deployResult = await withTimeout(
@@ -4661,7 +4503,6 @@ Balas HANYA JSON valid tanpa Markdown.`;
         }
         if (deployResult && typeof deployResult === 'object' && deployResult.blocked) {
           const reasonText = deployResult.reason || 'DEPLOY_BLOCKED';
-          const detailText = deployResult.detail ? `\nDetail: <code>${escapeHTML(String(deployResult.detail).slice(0, 240))}</code>` : '';
           const blockedByBalance = String(reasonText).includes('INSUFFICIENT_SOL_BALANCE');
           if (winner._record) {
             recordGate(winner._record, 'SCOUT_AGENT', 'DEFER', reasonText, {
@@ -4672,22 +4513,18 @@ Balas HANYA JSON valid tanpa Markdown.`;
               rangeMaxBins: deployResult.rangeMaxBins,
             });
           }
-          await notify(
-            `${blockedByBalance ? '⏸️ <b>Deploy Ditahan</b>' : '⛔ <b>Deploy Ditolak</b>'}\n` +
-            `<b>${escapeHTML(symbol)}</b> — <code>${reasonText}</code>\n` +
-            `Pool: <code>${poolAddress.slice(0,8)}</code>\n` +
-            (
-              Number.isFinite(Number(deployResult.rangeMin)) && Number.isFinite(Number(deployResult.rangeMax))
-                ? `Range: <code>${deployResult.rangeMin}-${deployResult.rangeMax}</code> (max ${deployResult.rangeMaxBins ?? 'n/a'} bin)\n`
-                : ''
-            ) +
-            `${detailText}\n` +
-            (
-              blockedByBalance
-                ? `<i>Saldo belum cukup untuk deploy aman. Top-up atau turunkan deployAmountSol.</i>`
-                : `<i>Pool/range ini tidak dideploy karena memicu non-refundable rent. Pool lain tetap normal.</i>`
-            )
-          );
+          await notify(buildDeployFinalOutcomeTelegramMessage({
+            symbol,
+            attemptId,
+            poolAddress,
+            outcome: 'BLOCKED',
+            reason: reasonText,
+            detail: deployResult.detail || '',
+          }) + (
+            blockedByBalance
+              ? '\n<i>Saldo belum cukup. Top-up atau turunkan deployAmountSol.</i>'
+              : '\n<i>Agent menghormati veto deploy dan tidak membuka posisi.</i>'
+          ));
           return false;
         }
         positionPubkey = deployResult;
@@ -4710,19 +4547,13 @@ Balas HANYA JSON valid tanpa Markdown.`;
           symbol,
         });
         _positionLabels.set(positionPubkey, { symbol });
-        await notify(
-          `✅ <b>Posisi terbuka!</b>\n` +
-          `<b>${escapeHTML(symbol)}</b> — <code>DEPLOYED</code>\n` +
-          `Tahap lolos ringkas: <code>${escapeHTML(toGateCompact(winner._gateSummary || []))}</code>\n` +
-          `Status: <code>DEPLOYED</code>\n` +
-          `Tahap: <code>EXECUTION_SUCCESS</code>\n` +
-          `Position: <code>${positionPubkey.slice(0,8)}</code>\n` +
-          `Pool: <code>${poolAddress.slice(0,8)}</code>\n` +
-          `${formatTakeProfitRiskLabel(currentCfg.takeProfitMinNetPnlPct, currentCfg.stopLossPct)}\n\n` +
-          `Final snapshot: <code>${escapeHTML(String(finalMarketSnapshot?.ohlcv?.source || finalMarketSnapshot?.dataSource || 'live'))}</code>\n` +
-          `Anchor: DLMM active bin | Source: frozen/live fallback\n` +
-          `🔒 <i>Masuk mode monitor (Background)...</i>`
-        );
+        await notify(buildDeployFinalOutcomeTelegramMessage({
+          symbol,
+          attemptId,
+          poolAddress,
+          outcome: 'SUCCESS',
+          positionPubkey,
+        }));
 
         monitorLoop(positionPubkey, symbol, poolAddress).catch(err => {
           console.error(`[hunter] Monitor loop crash untuk ${symbol}:`, err);
@@ -4733,10 +4564,18 @@ Balas HANYA JSON valid tanpa Markdown.`;
         if (String(e.message || '').includes('TIMEOUT')) {
           await reconcileZombiePositions({ minAgeMs: 180_000 }).catch(() => {});
         }
+        const partialDeployAlreadyReported = Boolean(e?.dlmmContextExtra?.botDeployPartialCleanup);
         if (isNaturalDeployError(e)) {
-          console.warn(`[hunter] deployPosition natural fail silenced: ${e.message}`);
-        } else {
-          await notify(`❌ <b>Deploy gagal:</b>\n<code>${e.message}</code>\n\n<i>Lanjut ke kandidat berikutnya...</i>`);
+          console.warn(`[hunter] deployPosition natural fail: ${e.message}`);
+        }
+        if (!partialDeployAlreadyReported) {
+          await notify(
+            `❌ <b>DEPLOY FAILED | ${escapeHTML(formatSolPairLabel(symbol))}</b>\n` +
+            `Attempt ID: <code>${attemptId}</code>\n` +
+            `Pool: <code>${poolAddress.slice(0,8)}</code>\n` +
+            `Status: <code>NO VERIFIED POSITION</code>\n` +
+            `Reason: <code>${escapeHTML(String(e.message || 'UNKNOWN').slice(0, 240))}</code>`
+          );
         }
         if (winner._record) {
           recordGate(winner._record, 'SCOUT_AGENT', 'FAIL', `EXECUTION_FAILED: ${e.message}`);
@@ -5346,11 +5185,15 @@ async function safeExit(positionPubkey, reason) {
       }
     }
     console.error(`[hunter] exitPosition error: ${e.message}`);
-    await notify(
-      `⚠️ <b>Exit gagal:</b>\n` +
-      `<code>${escapeHTML(summarizeExitError(e))}</code>\n\n` +
-      `<i>Posisi mungkin masih terbuka on-chain dan registry lokal tidak dihapus.</i>`
-    );
+    if (!shouldAlertManualClose) {
+      await notify(
+        `⚠️ <b>EXIT FAILED</b>\n` +
+        `Position: <code>${positionPubkey.slice(0,8)}</code>\n` +
+        `Status: <code>NOT VERIFIED CLOSED</code>\n` +
+        `Reason: <code>${escapeHTML(summarizeExitError(e))}</code>\n` +
+        `<i>Registry lokal dipertahankan. Agent akan tetap menganggap posisi aktif.</i>`
+      );
+    }
     throw e;
   } finally {
     if (success) _positionLabels.delete(positionPubkey);

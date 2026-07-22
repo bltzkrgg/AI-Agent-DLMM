@@ -45,6 +45,11 @@ function escapeHTML(text = '') {
     .replace(/'/g, '&#39;');
 }
 
+function formatPairLabel(symbol = '') {
+  const label = String(symbol || 'UNKNOWN');
+  return label.toUpperCase().endsWith('-SOL') ? label : `${label}-SOL`;
+}
+
 function withTimeout(promise, ms, label = 'operation') {
   return new Promise((resolve, reject) => {
     const timer = setTimeout(() => reject(new Error(`${label}_TIMEOUT_${ms}ms`)), ms);
@@ -87,17 +92,16 @@ export function buildDeployTriggeredTelegramMessage({
     : `M5: <code>${formatPct(check.liveM5)}</code> (<code>${check.m5Source || 'unknown'}</code>)\n`;
 
   return (
-    `⏳ <b>DEPLOY ATTEMPT</b>\n` +
-    `Token: <b>${symbol}</b>\n` +
-    `Pool: <code>${poolAddress.slice(0, 8)}</code>\n\n` +
+    `⏳ <b>DEPLOYING | ${escapeHTML(formatPairLabel(symbol))}</b>\n` +
+    `Pool: <code>${poolAddress.slice(0, 8)}</code>\n` +
+    `Amount: <code>${solAmount} SOL</code>\n` +
+    (attemptId ? `Attempt: <code>${attemptId}</code>\n` : '') +
     `Trend: <b>${check.liveTrend || 'UNKNOWN'}</b>\n` +
     m15Line +
     m5Line +
-    `\nEntry: <b>${entry?.meta?.entryReadiness || 'N/A'}</b> | ` +
+    `Entry: <b>${entry?.meta?.entryReadiness || 'N/A'}</b> | ` +
     `Breakout: <b>${entry?.meta?.breakoutQuality || 'N/A'}</b>\n` +
-    `Timing: <code>${entry?.meta?.entryTimingState || 'N/A'}</code>\n` +
-    (attemptId ? `Attempt ID: <code>${attemptId}</code>\n` : '') +
-    `\n⏳ <i>Sedang membuka posisi ${solAmount} SOL...</i>`
+    `Timing: <code>${entry?.meta?.entryTimingState || 'N/A'}</code>`
   );
 }
 
@@ -163,23 +167,13 @@ export function buildDeployFinalOutcomeTelegramMessage({
   positionPubkey = '',
 } = {}) {
   const normalizedOutcome = String(outcome || 'SUCCESS').toUpperCase();
-  const statusCode = normalizedOutcome === 'HOLD'
-    ? 'FINAL_DEPLOY_HOLD'
-    : normalizedOutcome === 'BLOCKED'
-      ? 'FINAL_DEPLOY_BLOCKED'
-      : normalizedOutcome === 'RECONCILE'
-        ? 'FINAL_DEPLOY_RECONCILE'
-        : 'FINAL_DEPLOY_SUCCESS';
   const headline = normalizedOutcome === 'HOLD'
-    ? '⏸️ <b>Deploy Ditahan</b>'
+    ? `⏸️ <b>DEPLOY HOLD | ${escapeHTML(formatPairLabel(symbol))}</b>`
     : normalizedOutcome === 'BLOCKED'
-      ? '⛔ <b>Deploy Diblokir</b>'
+      ? `⛔ <b>DEPLOY BLOCKED | ${escapeHTML(formatPairLabel(symbol))}</b>`
       : normalizedOutcome === 'RECONCILE'
-        ? '⚠️ <b>Deploy Reconcile Required</b>'
-        : '✅ <b>Deploy Selesai</b>';
-  const statusLine = normalizedOutcome === 'SUCCESS'
-    ? `Status: <code>DEPLOYED</code>\n`
-    : `Status: <code>${statusCode}</code>\n`;
+        ? `⚠️ <b>DEPLOY RECONCILE | ${escapeHTML(formatPairLabel(symbol))}</b>`
+        : `✅ <b>DEPLOYED | ${escapeHTML(formatPairLabel(symbol))}</b>`;
   const reasonText = summarizeFinalDeployReason({ outcome: normalizedOutcome, reason, proximityDecision });
   const driftLine = normalizedOutcome === 'HOLD' && proximityDecision
     ? `Drift: <code>${Number.isFinite(Number(proximityDecision.priceDriftPct)) ? `${Number(proximityDecision.priceDriftPct).toFixed(2)}%` : 'na'}</code> | ` +
@@ -189,25 +183,53 @@ export function buildDeployFinalOutcomeTelegramMessage({
     ? `Detail: <code>${escapeHTML(String(detail).slice(0, 240))}</code>\n`
     : '';
   const manualActionLine = normalizedOutcome === 'BLOCKED'
-    ? `<i>Deploy tidak tuntas. Jika sempat ada posisi parsial, unwrap dan close manual dulu.</i>`
+    ? `<i>Agent tidak membuka posisi.</i>`
     : normalizedOutcome === 'RECONCILE'
-      ? `<i>Hasil deploy belum pasti. Cek on-chain sebelum retry manual.</i>`
+      ? `<i>Cek posisi on-chain sebelum melakukan retry.</i>`
       : normalizedOutcome === 'HOLD'
-        ? `<i>Final snapshot belum layak. Agent menahan deploy.</i>`
-        : `<i>Masuk mode monitor...</i>`;
+        ? `<i>Agent menahan deploy sebelum transaksi dimulai.</i>`
+        : `Status: <code>MONITORING</code>`;
+  const reasonLine = normalizedOutcome === 'SUCCESS'
+    ? ''
+    : `Reason: <code>${escapeHTML(reasonText)}</code>\n`;
 
   return (
     `${headline}\n` +
-    `<b>${escapeHTML(symbol)}</b>` +
-    (normalizedOutcome === 'SUCCESS' ? ' — <code>DEPLOYED</code>' : ` — <code>${statusCode}</code>`) + '\n' +
-    (attemptId ? `Attempt ID: <code>${attemptId}</code>\n` : '') +
+    (attemptId ? `Attempt: <code>${attemptId}</code>\n` : '') +
     `Pool: <code>${poolAddress.slice(0, 8)}</code>\n` +
-    statusLine +
     (positionPubkey ? `Position: <code>${positionPubkey.slice(0, 8)}</code>\n` : '') +
-    (normalizedOutcome === 'HOLD' ? `Reason: <code>${escapeHTML(reasonText)}</code>\n` : `Reason: <code>${escapeHTML(reasonText)}</code>\n`) +
+    reasonLine +
     driftLine +
     detailLine +
     manualActionLine
+  );
+}
+
+export function buildDeployQueueRemovalTelegramMessage({
+  symbol = '',
+  decision = 'DROP',
+  reason = '',
+  liveTrend = 'UNKNOWN',
+  trendSource = 'unknown',
+  liveM5 = 0,
+  m5Source = 'unknown',
+} = {}) {
+  const expired = String(decision || '').toUpperCase() === 'EXPIRED' ||
+    String(reason || '').toLowerCase().includes('expired');
+  if (expired) {
+    return (
+      `⌛ <b>QUEUE EXPIRED | ${escapeHTML(symbol || 'UNKNOWN')}</b>\n` +
+      `Reason: <code>${escapeHTML(reason || 'Entry intent expired')}</code>\n` +
+      `Position: <code>NOT OPENED</code>\n` +
+      `<i>Token dapat masuk lagi pada screening berikutnya jika syarat entry kembali terpenuhi.</i>`
+    );
+  }
+  return (
+    `❌ <b>QUEUE DROP | ${escapeHTML(symbol || 'UNKNOWN')}</b>\n` +
+    `Trend: <code>${escapeHTML(liveTrend || 'UNKNOWN')}</code> (<code>${escapeHTML(trendSource || 'unknown')}</code>)\n` +
+    `M5: <code>${formatPct(liveM5)}</code> (<code>${escapeHTML(m5Source || 'unknown')}</code>)\n` +
+    `Reason: <code>${escapeHTML(reason || 'Queue candidate dropped')}</code>\n` +
+    `Position: <code>NOT OPENED</code>`
   );
 }
 
@@ -1866,10 +1888,11 @@ async function runWatcher() {
       if (entry.attempts >= 3) {
         console.log(`[QUEUE] 🗑️ ${symbol} dihapus dari antrian (max attempts)`);
         removeQueueCandidate(mint, entry);
-        await safeSend(
-          `⏱️ <b>Deploy Queue Expired</b>\n` +
-          `<b>${symbol}</b> dihapus setelah 3x gagal evaluate.`
-        );
+        await safeSend(buildDeployQueueRemovalTelegramMessage({
+          symbol,
+          decision: 'EXPIRED',
+          reason: 'Entry intent expired setelah 3x gagal evaluate',
+        }));
         continue;
       }
 
@@ -1891,13 +1914,15 @@ async function runWatcher() {
         }
         if (decision === 'DROP' || check.reason.includes('expired')) {
           removeQueueCandidate(mint, entry);
-          await safeSend(
-            `❌ <b>Deploy Queue ${decision === 'DROP' ? 'Drop' : 'Expired'}</b>\n` +
-            `<b>${symbol}</b>\n` +
-            `Trend: <code>${check.liveTrend || 'UNKNOWN'}</code> (<code>${check.trendSource || 'unknown'}</code>)\n` +
-            `M5: <code>${formatPct(check.liveM5)}</code> (<code>${check.m5Source || 'unknown'}</code>)\n` +
-            `<i>${check.reason}</i>`
-          );
+          await safeSend(buildDeployQueueRemovalTelegramMessage({
+            symbol,
+            decision: check.reason.includes('expired') ? 'EXPIRED' : decision,
+            reason: check.reason,
+            liveTrend: check.liveTrend,
+            trendSource: check.trendSource,
+            liveM5: check.liveM5,
+            m5Source: check.m5Source,
+          }));
         }
         continue;
       }
@@ -1994,12 +2019,15 @@ async function runWatcher() {
         if (finalSt.action === 'VETO') {
           removeQueueCandidate(mint, entry);
           if (!isDeploySlotSaturated()) {
-            await safeSend(
-              `❌ <b>Deploy Queue Drop</b>\n` +
-              `<b>${symbol}</b>\n` +
-              `ST 15m: <code>${finalSt.direction || 'UNKNOWN'}</code> (<code>${finalSt.source}</code>)\n` +
-              `<i>${escapeHTML(finalSt.reason)}</i>`
-            );
+            await safeSend(buildDeployQueueRemovalTelegramMessage({
+              symbol,
+              decision: 'DROP',
+              reason: finalSt.reason,
+              liveTrend: finalSt.direction,
+              trendSource: finalSt.source,
+              liveM5: check.liveM5,
+              m5Source: check.m5Source,
+            }));
           }
         } else {
           entry.nextEligibleAt = Date.now() + 15_000;
