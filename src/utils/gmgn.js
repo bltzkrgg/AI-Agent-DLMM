@@ -6,9 +6,9 @@
  *   Query:      timestamp={unix_seconds}&client_id={uuid}
  *
  * "Trip Wire" Logic:
- *   → Returns null on any error (timeout, 401, rate limit, etc.)
- *   → Callers must treat null as "no evidence" = proceed
- *   → Only EXPLICIT bad values trigger rejections upstream
+ *   → Existing screening callers return null on errors and stay non-blocking.
+ *   → Token Alerts uses strict mode so source failures remain observable.
+ *   → Only EXPLICIT bad values trigger rejections upstream.
  */
 
 import { randomUUID } from 'crypto';
@@ -28,6 +28,20 @@ let _gmgnLastRequestAt = 0;
 let _gmgnQueue = Promise.resolve();
 const _gmgnCache = new Map();
 let _dnsIpv4Forced = false;
+
+export class GmgnApiError extends Error {
+  constructor(code, message, { status = null } = {}) {
+    super(message);
+    this.name = 'GmgnApiError';
+    this.code = code;
+    this.status = status;
+  }
+}
+
+function failGmgnRequest(strict, code, message, details) {
+  if (strict) throw new GmgnApiError(code, message, details);
+  return null;
+}
 
 function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
@@ -89,11 +103,14 @@ function buildUrl(subPath, extraParams = {}) {
 
 // ─── Core fetch wrapper ──────────────────────────────────────────
 
-async function gmgnFetch(subPath, extraParams = {}) {
+async function gmgnFetch(subPath, extraParams = {}, { strict = false } = {}) {
   const apiKey = process.env.GMGN_API_KEY;
   if (!apiKey) {
-    // No key configured — skip silently, don't block deployment
-    return null;
+    return failGmgnRequest(
+      strict,
+      'GMGN_API_KEY_MISSING',
+      'GMGN_API_KEY is not loaded in the running process'
+    );
   }
 
   ensureIpv4First();
@@ -136,7 +153,11 @@ async function gmgnFetch(subPath, extraParams = {}) {
             continue;
           }
           console.warn(`[gmgn] ${subPath} blocked by IPv6-only path after retries — skipping.`);
-          return null;
+          return failGmgnRequest(
+            strict,
+            'GMGN_IPV6_UNSUPPORTED',
+            'GMGN rejected the current IPv6 network path'
+          );
         }
         let json = null;
         if (raw) {
@@ -150,7 +171,12 @@ async function gmgnFetch(subPath, extraParams = {}) {
               continue;
             }
             console.warn(`[gmgn] ${subPath} non-JSON response after retries — skipping.`);
-            return null;
+            return failGmgnRequest(
+              strict,
+              'GMGN_NON_JSON_RESPONSE',
+              `GMGN returned a non-JSON response (HTTP ${res.status})`,
+              { status: res.status }
+            );
           }
         }
 
@@ -164,7 +190,12 @@ async function gmgnFetch(subPath, extraParams = {}) {
             continue;
           }
           console.warn('[gmgn] Rate limited (429) after retries — skipping.');
-          return null;
+          return failGmgnRequest(
+            strict,
+            'GMGN_RATE_LIMITED',
+            'GMGN rate limit reached (HTTP 429)',
+            { status: 429 }
+          );
         }
 
         if (!res.ok) {
@@ -175,7 +206,12 @@ async function gmgnFetch(subPath, extraParams = {}) {
             continue;
           }
           console.warn(`[gmgn] HTTP ${res.status} for ${subPath} — skipping.`);
-          return null;
+          return failGmgnRequest(
+            strict,
+            `GMGN_HTTP_${res.status}`,
+            `GMGN request failed with HTTP ${res.status}`,
+            { status: res.status }
+          );
         }
 
         if (!json) {
@@ -184,17 +220,26 @@ async function gmgnFetch(subPath, extraParams = {}) {
             continue;
           }
           console.warn(`[gmgn] Non-JSON response for ${subPath} — skipping.`);
-          return null;
+          return failGmgnRequest(
+            strict,
+            'GMGN_EMPTY_RESPONSE',
+            'GMGN returned an empty response'
+          );
         }
 
         if (json.code !== 0) {
           // Business error: do not spam retries for deterministic failures.
           console.warn(`[gmgn] API error code=${json.code} msg=${json.message || json.error || 'unknown'} path=${subPath}`);
-          return null;
+          return failGmgnRequest(
+            strict,
+            'GMGN_API_ERROR',
+            `GMGN rejected the request (API code ${json.code})`
+          );
         }
 
         return json.data || null;
       } catch (e) {
+        if (e instanceof GmgnApiError) throw e;
         const retryable = /timeout|network|fetch|socket|econn|eai_again|terminated|enotfound|OpenAPI does not support IPv6/i.test(String(e?.message || ''));
         if (retryable && attempt < maxRetries) {
           const backoffMs = Math.min(10_000, 800 * Math.pow(2, attempt));
@@ -202,10 +247,18 @@ async function gmgnFetch(subPath, extraParams = {}) {
           continue;
         }
         console.warn(`[gmgn] ${subPath} failed: ${e.message} — skipping (non-blocking).`);
-        return null;
+        return failGmgnRequest(
+          strict,
+          'GMGN_NETWORK_ERROR',
+          'GMGN network request failed'
+        );
       }
     }
-    return null;
+    return failGmgnRequest(
+      strict,
+      'GMGN_REQUEST_FAILED',
+      'GMGN request failed after retries'
+    );
   });
 }
 
@@ -221,11 +274,11 @@ async function gmgnFetch(subPath, extraParams = {}) {
  *
  * Returns null if data unavailable — caller proceeds without GMGN screening.
  */
-export async function getGmgnTokenInfo(mint) {
+export async function getGmgnTokenInfo(mint, { strict = false } = {}) {
   if (!mint || typeof mint !== 'string') return null;
   const cached = getCached('/v1/token/info', mint);
   if (cached) return cached;
-  const data = await gmgnFetch('/v1/token/info', { address: mint });
+  const data = await gmgnFetch('/v1/token/info', { address: mint }, { strict });
   if (data) setCached('/v1/token/info', mint, data);
   return data;
 }
@@ -242,6 +295,7 @@ export async function getGmgnTrendingTokens({
   minVolume = 100000,
   minMarketCap = 100000,
   maxCreated = '30m',
+  strict = true,
 } = {}) {
   const data = await gmgnFetch('/v1/market/rank', {
     interval,
@@ -251,7 +305,7 @@ export async function getGmgnTrendingTokens({
     min_volume: String(Math.max(0, Number(minVolume) || 0)),
     min_marketcap: String(Math.max(0, Number(minMarketCap) || 0)),
     max_created: String(maxCreated || '30m'),
-  });
+  }, { strict });
 
   if (Array.isArray(data)) return data;
   const rows = data?.rank || data?.list || data?.items || data?.tokens;

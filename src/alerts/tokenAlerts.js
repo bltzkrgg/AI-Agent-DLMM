@@ -280,6 +280,16 @@ function pruneSeenRecords(records, nowMs) {
   return next;
 }
 
+function recordScanError(summary, error, { partial = false } = {}) {
+  const errorCode = String(error?.code || 'TOKEN_ALERT_PROCESSING_FAILED');
+  const isGmgnError = errorCode.startsWith('GMGN_');
+  summary.status = partial
+    ? isGmgnError ? 'GMGN_PARTIAL_FAILURE' : 'TOKEN_ALERT_PARTIAL_FAILURE'
+    : isGmgnError ? 'GMGN_FAILED' : 'TOKEN_ALERT_FAILED';
+  summary.errorCode ||= errorCode;
+  summary.error ||= String(error?.message || 'Token Alerts scan failed');
+}
+
 export function createTokenAlertService({
   fetchTrending,
   fetchTokenInfo,
@@ -302,6 +312,7 @@ export function createTokenAlertService({
         source,
         blocked: true,
         reason: 'SCAN_IN_FLIGHT',
+        status: 'SCAN_IN_FLIGHT',
         fetched: 0,
         eligible: 0,
         alerted: 0,
@@ -320,6 +331,7 @@ export function createTokenAlertService({
       alerted: 0,
       skipped: 0,
       failed: 0,
+      status: 'GMGN_OK',
     };
 
     try {
@@ -336,6 +348,7 @@ export function createTokenAlertService({
       });
       const candidates = Array.isArray(rows) ? rows : [];
       summary.fetched = candidates.length;
+      summary.status = candidates.length > 0 ? 'GMGN_OK' : 'GMGN_OK_NO_RESULTS';
 
       const preliminaryCandidates = candidates
         .map((candidate) => ({ candidate, result: evaluateRankCandidate(candidate, config, startedAt) }))
@@ -354,7 +367,7 @@ export function createTokenAlertService({
       for (const { candidate, result: rankResult } of preliminary) {
         const mint = rankResult.normalized.mint;
         try {
-          const tokenInfo = await fetchTokenInfo(mint);
+          const tokenInfo = await fetchTokenInfo(mint, { strict: true });
           const totalFeesSol = extractGmgnTotalFeesSol(tokenInfo);
           const fullResult = evaluateTokenAlertCandidate(
             { ...candidate, totalFeesSol, alertedAt: seen[mint]?.alertedAt || null },
@@ -396,7 +409,9 @@ export function createTokenAlertService({
             alert: fullResult.normalized,
           });
           if (sent === false) {
-            throw new Error('TELEGRAM_SEND_FAILED');
+            const error = new Error('Telegram alert delivery failed');
+            error.code = 'TELEGRAM_SEND_FAILED';
+            throw error;
           }
 
           seen[mint] = {
@@ -407,12 +422,13 @@ export function createTokenAlertService({
           summary.alerted += 1;
         } catch (error) {
           summary.failed += 1;
+          recordScanError(summary, error, { partial: true });
           console.warn(`[token-alerts] candidate failed mint=${mint}: ${error.message}`);
         }
       }
     } catch (error) {
       summary.failed += 1;
-      summary.error = error.message;
+      recordScanError(summary, error);
       console.warn(`[token-alerts] scan failed source=${source}: ${error.message}`);
     } finally {
       lastScanAt = now();

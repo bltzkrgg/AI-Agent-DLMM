@@ -113,6 +113,8 @@ Default eligibility requires every gate to pass:
 
 The feature is disabled by default. Use `/tokenalerts on` to persist the setting, start the 60-second poller, and run an immediate scan. `/tokenalerts scan` performs one read-only scan even while recurring alerts are disabled. Successful alerts include a clickable GMGN token link; failed Telegram sends remain retryable and are not marked as delivered.
 
+Scan summaries distinguish a healthy empty result (`GMGN_OK_NO_RESULTS`) from source failures such as a missing key, HTTP rejection, rate limit, invalid response, or network error. Required token-info failures are reported as `GMGN_PARTIAL_FAILURE`; optional holder enrichment remains best-effort and renders `TH: N/A`.
+
 Independent config keys:
 
 ```json

@@ -948,8 +948,14 @@ bot.onText(/\/tokenalerts(?:\s+(status|on|off|scan))?$/, async (msg, match) => {
     chatId,
     `💊 <b>Token Alerts Scan</b>\n` +
     `Fetched: <code>${summary.fetched}</code> | Eligible: <code>${summary.eligible}</code>\n` +
-    `Alerted: <code>${summary.alerted}</code> | Skipped: <code>${summary.skipped}</code> | Failed: <code>${summary.failed}</code>` +
-    (summary.blocked ? `\nStatus: <code>${escapeHTML(summary.reason || 'BLOCKED')}</code>` : ''),
+    `Alerted: <code>${summary.alerted}</code> | Skipped: <code>${summary.skipped}</code> | Failed: <code>${summary.failed}</code>\n` +
+    `Status: <code>${escapeHTML(summary.status || summary.reason || 'UNKNOWN')}</code>` +
+    (summary.errorCode
+      ? `\nError: <code>${escapeHTML(summary.errorCode)}</code>`
+      : '') +
+    (summary.error
+      ? `\nDetail: <code>${escapeHTML(summary.error)}</code>`
+      : ''),
     { parse_mode: 'HTML' }
   );
 });

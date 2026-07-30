@@ -73,6 +73,9 @@ test('/tokenalerts is registered once and exposed in Telegram menus', () => {
   assert.match(content, /callback_data: 'cmd:\/tokenalerts on'/);
   assert.match(content, /setconfig_section:tokenAlerts/);
   assert.match(content, /Read-only: tidak masuk WATCH, queue, Jupiter, atau deploy Meteora/);
+  assert.match(content, /Status: <code>\$\{escapeHTML\(summary\.status/);
+  assert.match(content, /Error: <code>\$\{escapeHTML\(summary\.errorCode\)/);
+  assert.match(content, /Detail: <code>\$\{escapeHTML\(summary\.error\)/);
 });
 
 test('/strategy_report uses sendLong transport to avoid Telegram length limit issues', () => {

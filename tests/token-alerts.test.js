@@ -222,6 +222,8 @@ test('failed Telegram send does not persist alertedAt and stays retryable', asyn
   const record = harness.state.tokenAlertsSeen[MINT];
   assert.equal(first.alerted, 0);
   assert.equal(first.failed, 1);
+  assert.equal(first.status, 'TOKEN_ALERT_PARTIAL_FAILURE');
+  assert.equal(first.errorCode, 'TELEGRAM_SEND_FAILED');
   assert.equal(record.firstSeenAt, NOW);
   assert.equal(record.alertedAt, undefined);
 
@@ -350,4 +352,66 @@ test('expired dedupe records are pruned during scan', async () => {
   await harness.service.scanOnce({ source: 'prune' });
   assert.equal('expired' in harness.state.tokenAlertsSeen, false);
   assert.equal('active' in harness.state.tokenAlertsSeen, true);
+});
+
+test('healthy empty GMGN result is distinguished from an upstream failure', async () => {
+  const harness = createServiceHarness({ rows: [] });
+  const summary = await harness.service.scanOnce({ source: 'empty' });
+  assert.equal(summary.fetched, 0);
+  assert.equal(summary.failed, 0);
+  assert.equal(summary.status, 'GMGN_OK_NO_RESULTS');
+  assert.equal(summary.errorCode, undefined);
+});
+
+test('GMGN rank failure is surfaced with a structured error code', async () => {
+  const error = Object.assign(new Error('GMGN request failed with HTTP 403'), {
+    code: 'GMGN_HTTP_403',
+  });
+  const service = createTokenAlertService({
+    fetchTrending: async () => {
+      throw error;
+    },
+    fetchTokenInfo: async () => ({}),
+    fetchHolders: async () => [],
+    sendAlert: async () => true,
+    getConfig: () => CONFIG,
+    getState: () => ({}),
+    setState: () => {},
+    now: () => NOW,
+  });
+
+  const summary = await service.scanOnce({ source: 'rank-error' });
+  assert.equal(summary.fetched, 0);
+  assert.equal(summary.failed, 1);
+  assert.equal(summary.status, 'GMGN_FAILED');
+  assert.equal(summary.errorCode, 'GMGN_HTTP_403');
+  assert.equal(summary.error, 'GMGN request failed with HTTP 403');
+});
+
+test('required token-info failure is reported as a partial GMGN failure', async () => {
+  const error = Object.assign(new Error('GMGN rate limit reached (HTTP 429)'), {
+    code: 'GMGN_RATE_LIMITED',
+  });
+  const state = {};
+  const service = createTokenAlertService({
+    fetchTrending: async () => [candidate()],
+    fetchTokenInfo: async () => {
+      throw error;
+    },
+    fetchHolders: async () => [],
+    sendAlert: async () => true,
+    getConfig: () => CONFIG,
+    getState: (key) => state[key] || {},
+    setState: (key, value) => {
+      state[key] = value;
+    },
+    now: () => NOW,
+  });
+
+  const summary = await service.scanOnce({ source: 'token-info-error' });
+  assert.equal(summary.fetched, 1);
+  assert.equal(summary.alerted, 0);
+  assert.equal(summary.failed, 1);
+  assert.equal(summary.status, 'GMGN_PARTIAL_FAILURE');
+  assert.equal(summary.errorCode, 'GMGN_RATE_LIMITED');
 });
