@@ -42,4 +42,7 @@ test('index boot sequence calls reconcileStartupPositions and reports summary', 
   assert.doesNotMatch(restoreBlock, /runSilentScan/);
   assert.doesNotMatch(restoreBlock, /runScreeningLoop/);
   assert.match(src, /await restoreAutoScreeningOnStartup\(\{/);
+  assert.match(src, /const tokenAlertsConfigured = cfg\.tokenAlertsEnabled === true/);
+  assert.match(src, /if \(tokenAlertsConfigured\) \{\s*startTokenAlerts\(\);/);
+  assert.match(src, /tokenAlertService\.scanOnce\(\{ source: 'startup' \}\)\.catch/);
 });

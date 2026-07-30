@@ -165,6 +165,15 @@ const DEFAULTS = {
   maxTvlMcapRatio:        0.20,
   maxPriceImpactPct:      1.5,
 
+  // ── Read-only GMGN Token Alerts ──────────────────────────────────────────
+  tokenAlertsEnabled:             false,
+  tokenAlertsPollIntervalSec:     60,
+  tokenAlertsMinVolume5mUsd:      100000,
+  tokenAlertsMinMarketCapUsd:     100000,
+  tokenAlertsMinTotalFeesSol:     10,
+  tokenAlertsMaxAgeMin:           30,
+  tokenAlertsMaxPerScan:          5,
+
   // ── Evil Panda Position ───────────────────────────────────────────────────
   slippageBps:            250,
   dlmmLiquidityShape:     'spot',
@@ -287,6 +296,13 @@ const CONFIG_BOUNDS = {
   bannedNarratives:       { type: 'array' },
   maxTvlMcapRatio:        { min: 0.01,  max: 1.0 },
   maxPriceImpactPct:      { min: 0.1,   max: 5 },
+  tokenAlertsEnabled:             { type: 'boolean' },
+  tokenAlertsPollIntervalSec:     { min: 15, max: 300 },
+  tokenAlertsMinVolume5mUsd:      { min: 0, max: 1_000_000_000 },
+  tokenAlertsMinMarketCapUsd:     { min: 0, max: 10_000_000_000 },
+  tokenAlertsMinTotalFeesSol:     { min: 0, max: 1_000_000 },
+  tokenAlertsMaxAgeMin:           { min: 1, max: 1440 },
+  tokenAlertsMaxPerScan:          { min: 1, max: 20 },
   slippageBps:            { min: 10,    max: 1000 },
   dlmmLiquidityShape:     { type: 'string' },
   stopLossPct:            { min: 1,     max: 50 },
@@ -467,6 +483,16 @@ const NESTED_SECTION_MAP = {
     washTradeMaxPct:    'gmgnWashTradeMaxPct',
     minAgeHours:        'gmgnMinAgeHours',
     maxAgeHours:        'gmgnMaxAgeHours',
+  },
+
+  tokenAlerts: {
+    enabled:            'tokenAlertsEnabled',
+    pollIntervalSec:    'tokenAlertsPollIntervalSec',
+    minVolume5mUsd:     'tokenAlertsMinVolume5mUsd',
+    minMarketCapUsd:    'tokenAlertsMinMarketCapUsd',
+    minTotalFeesSol:    'tokenAlertsMinTotalFeesSol',
+    maxAgeMin:          'tokenAlertsMaxAgeMin',
+    maxPerScan:         'tokenAlertsMaxPerScan',
   },
 
   // llm: override oleh process.env (lihat akhir flattenUserConfig)
@@ -671,6 +697,15 @@ export const SETCONFIG_WHITELIST = {
   minMcap:                { section: 'discovery',          type: 'number',  desc: 'Market Cap minimum token (USD, 0 = tidak filter)' },
   maxMcap:                { section: 'discovery',          type: 'number',  desc: 'Market Cap maksimum token (USD, 0 = tidak filter)' },
   discoveryCategory:      { section: 'discovery',          type: 'string',  desc: 'Kategori discovery Meteora (mis. trending, top performers)' },
+
+  // ── Read-only Token Alerts ──────────────────────────────────────
+  tokenAlertsEnabled:             { section: 'tokenAlerts', type: 'boolean', desc: 'Aktifkan alert token baru dari GMGN' },
+  tokenAlertsPollIntervalSec:     { section: 'tokenAlerts', type: 'number',  desc: 'Interval polling GMGN (detik, 15–300)' },
+  tokenAlertsMinVolume5mUsd:      { section: 'tokenAlerts', type: 'number',  desc: 'Minimum volume rolling 5 menit (USD)' },
+  tokenAlertsMinMarketCapUsd:     { section: 'tokenAlerts', type: 'number',  desc: 'Market cap harus lebih besar dari nilai ini (USD)' },
+  tokenAlertsMinTotalFeesSol:     { section: 'tokenAlerts', type: 'number',  desc: 'Minimum total fees GMGN (SOL)' },
+  tokenAlertsMaxAgeMin:           { section: 'tokenAlerts', type: 'number',  desc: 'Umur maksimum sejak DEX open/migration (menit)' },
+  tokenAlertsMaxPerScan:          { section: 'tokenAlerts', type: 'number',  desc: 'Maksimum alert yang diproses per scan' },
 
   // ── Entry Final Sanity ─────────────────────────────────────────
   entryDecisionMode:      { section: 'entry',              type: 'string',  desc: 'Mode keputusan entry: strict/lp_simple_m15' },

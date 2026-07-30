@@ -31,6 +31,14 @@ test('config rejects unknown keys and merges nested signal weights safely', asyn
   assert.equal(configModule.isConfigKeySupported('takeProfitMinNetPnlPct'), true);
   assert.equal(configModule.isConfigKeySupported('smartExitRsi'), true);
   assert.equal(configModule.isConfigKeySupported('manualTAExitEnabled'), true);
+  assert.equal(configModule.isConfigKeySupported('tokenAlertsEnabled'), true);
+  assert.equal(configModule.resolveNestedKey('tokenAlerts.enabled')?.flatKey, 'tokenAlertsEnabled');
+  assert.equal(configModule.resolveNestedKey('tokenAlerts.pollIntervalSec')?.flatKey, 'tokenAlertsPollIntervalSec');
+  assert.equal(configModule.resolveNestedKey('tokenAlerts.minVolume5mUsd')?.flatKey, 'tokenAlertsMinVolume5mUsd');
+  assert.equal(configModule.resolveNestedKey('tokenAlerts.minMarketCapUsd')?.flatKey, 'tokenAlertsMinMarketCapUsd');
+  assert.equal(configModule.resolveNestedKey('tokenAlerts.minTotalFeesSol')?.flatKey, 'tokenAlertsMinTotalFeesSol');
+  assert.equal(configModule.resolveNestedKey('tokenAlerts.maxAgeMin')?.flatKey, 'tokenAlertsMaxAgeMin');
+  assert.equal(configModule.resolveNestedKey('tokenAlerts.maxPerScan')?.flatKey, 'tokenAlertsMaxPerScan');
   assert.equal(configModule.isConfigKeySupported('totallyUnknownKey'), false);
 
   assert.equal(configModule.resolveNestedKey('strategy.outOfRangeWaitMinutes')?.flatKey, 'outOfRangeWaitMinutes');
@@ -186,6 +194,13 @@ test('safer defaults stay conservative for real-capital usage', async () => {
   assert.equal(cfg.deployRangeMinBinOffset, -60);
   assert.equal(cfg.deployRangeMaxBinOffset, 0);
   assert.deepEqual(cfg.allowedBinSteps, [100, 125]);
+  assert.equal(cfg.tokenAlertsEnabled, false);
+  assert.equal(cfg.tokenAlertsPollIntervalSec, 60);
+  assert.equal(cfg.tokenAlertsMinVolume5mUsd, 100000);
+  assert.equal(cfg.tokenAlertsMinMarketCapUsd, 100000);
+  assert.equal(cfg.tokenAlertsMinTotalFeesSol, 10);
+  assert.equal(cfg.tokenAlertsMaxAgeMin, 30);
+  assert.equal(cfg.tokenAlertsMaxPerScan, 5);
 });
 
 test('user-config.example includes pool pattern learning keys', () => {
@@ -227,6 +242,13 @@ test('user-config.example includes pool pattern learning keys', () => {
   assert.equal(parsed.monitorFastLaneUsePoolAccount, true);
   assert.equal(parsed.monitorFastLaneUsePositionAccount, true);
   assert.equal(parsed.maxMcap, 0);
+  assert.equal(parsed.tokenAlertsEnabled, false);
+  assert.equal(parsed.tokenAlertsPollIntervalSec, 60);
+  assert.equal(parsed.tokenAlertsMinVolume5mUsd, 100000);
+  assert.equal(parsed.tokenAlertsMinMarketCapUsd, 100000);
+  assert.equal(parsed.tokenAlertsMinTotalFeesSol, 10);
+  assert.equal(parsed.tokenAlertsMaxAgeMin, 30);
+  assert.equal(parsed.tokenAlertsMaxPerScan, 5);
 });
 
 test('entry candle sanity keys can be overridden from user-config.json', async () => {

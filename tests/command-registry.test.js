@@ -62,6 +62,19 @@ test('/paperclose is dry-run-only and exposed in Telegram help', () => {
   assert.match(content, /Aktifkan <code>\/dryrun on<\/code>/);
 });
 
+test('/tokenalerts is registered once and exposed in Telegram menus', () => {
+  const indexPath = join(__dirname, '../src/index.js');
+  const content = readFileSync(indexPath, 'utf-8');
+  const matches = content.match(/bot\.onText\(\/\\\/tokenalerts/g) || [];
+
+  assert.equal(matches.length, 1);
+  assert.match(content, /\/tokenalerts — alert token baru GMGN/);
+  assert.match(content, /callback_data: 'cmd:\/tokenalerts'/);
+  assert.match(content, /callback_data: 'cmd:\/tokenalerts on'/);
+  assert.match(content, /setconfig_section:tokenAlerts/);
+  assert.match(content, /Read-only: tidak masuk WATCH, queue, Jupiter, atau deploy Meteora/);
+});
+
 test('/strategy_report uses sendLong transport to avoid Telegram length limit issues', () => {
   const indexPath = join(__dirname, '../src/index.js');
   const content = readFileSync(indexPath, 'utf-8');

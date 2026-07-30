@@ -18,6 +18,10 @@ test('shutdown orchestration calls close + retry helpers', () => {
   assert.match(src, /const paperCount = getPaperPositions\(\)\.length/);
   assert.match(src, /Paper tersimpan\/inaktif: <code>\$\{paperCount\}<\/code>/);
   assert.doesNotMatch(src, /Monitor paper akan dilanjutkan saat agent hidup kembali/);
+  const stopTokenAlertsAt = src.indexOf('stopTokenAlerts();', src.indexOf('async function shutdown'));
+  const stopPollingAt = src.indexOf('bot.stopPolling();', src.indexOf('async function shutdown'));
+  assert.ok(stopTokenAlertsAt > 0);
+  assert.ok(stopTokenAlertsAt < stopPollingAt);
 });
 
 test('hunter has shutdown guard and closing idempotency guard', () => {

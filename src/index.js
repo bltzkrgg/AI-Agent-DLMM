@@ -29,11 +29,13 @@ import { formatTakeProfitRiskLabel }      from './utils/exitReasons.js';
 import { initializeRpcManager }           from './utils/helius.js';
 import { createMessageTransport }         from './telegram/messageTransport.js';
 import { getTodayResults }                from './db/database.js';
-import { deleteRuntimeState, getRuntimeState, setRuntimeState } from './runtime/state.js';
+import { deleteRuntimeState, getRuntimeCollection, getRuntimeState, setRuntimeCollection, setRuntimeState } from './runtime/state.js';
 import { startDeployQueueWatcher, stopDeployQueueWatcher, setDeployQueueNotifyFn, setDeployQueueDeployFn, setDeployQueueMonitorFn } from './utils/pendingDeployQueue.js';
 import { deployPosition } from './sniper/evilPanda.js';
 import { sendImmediateTopPoolsReport }    from './agents/hunterAlpha.js';
 import { formatPaperPositionsTelegram }  from './paper/paperReporting.js';
+import { getGmgnTopHolders, getGmgnTokenInfo, getGmgnTrendingTokens } from './utils/gmgn.js';
+import { createTokenAlertService } from './alerts/tokenAlerts.js';
 
 // ── PID Lock — cegah multiple instance ───────────────────────────
 const PID_FILE = new URL('../bot.pid', import.meta.url).pathname;
@@ -262,7 +264,7 @@ function buildSetconfigHelpSections() {
     `atau:   <code>/setconfig [section].[key] [value]</code>\n\n` +
     `<b>💰 Finance:</b>\n${bySection('finance')}\n\n` +
     `<b>🔍 Discovery:</b>\n${bySection('discovery')}\n\n` +
-    `<b>🆕 Alerts:</b>\n${bySection('alerts')}\n\n` +
+    `<b>💊 Token Alerts:</b>\n${bySection('tokenAlerts')}\n\n` +
     `<b>🎯 Strategy:</b>\n${bySection('strategy')}`,
     `<b>🕯️ Entry:</b>\n${bySection('entry')}\n\n` +
     `<b>👀 Watch:</b>\n${bySection('watch')}\n\n` +
@@ -272,7 +274,7 @@ function buildSetconfigHelpSections() {
     `<i>Contoh:\n` +
     `/setconfig deployAmountSol 1.5\n` +
     `/setconfig minTvl 50000\n` +
-    `/setconfig alerts.intervalMin 5\n` +
+    `/setconfig tokenAlerts.pollIntervalSec 60\n` +
     `/setconfig strategy.liquidityShape bidask\n` +
     `/setconfig strategy.liquidityShape spot\n` +
     `Catatan: shape ini global, jadi sekali diubah akan dipakai semua jalur deploy berikutnya.\n` +
@@ -293,7 +295,7 @@ function buildSetconfigSectionMenu() {
     text: `⚙️ <b>AI-Agent-DLMM Config</b>\n\n` +
       `Pilih section:\n` +
       `[ Finance ] [ Discovery ]\n` +
-      `[ Alerts ] [ Strategy ]\n` +
+      `[ Token Alerts ] [ Strategy ]\n` +
       `[ Entry ] [ Watch ]\n` +
       `[ OOR ]\n` +
       `[ Pool Impact Guard ]\n` +
@@ -309,7 +311,7 @@ function buildSetconfigSectionMenu() {
             { text: 'Discovery', callback_data: 'setconfig_section:discovery' },
           ],
           [
-            { text: 'Alerts', callback_data: 'setconfig_section:alerts' },
+            { text: 'Token Alerts', callback_data: 'setconfig_section:tokenAlerts' },
             { text: 'Strategy', callback_data: 'setconfig_section:strategy' },
           ],
           [
@@ -343,6 +345,7 @@ function buildStartCommandPanel() {
       `/hunt — mulai loop\n` +
       `/screening — scan manual top pool\n` +
       `/autoscreen — on/off auto-screening\n` +
+      `/tokenalerts — alert token baru GMGN\n` +
       `/manualexit — on/off TA-only exit untuk /ca manual\n` +
       `/ca — kirim CA / pool Meteora / cek posisi aktif\n` +
       `/evolve — saran config dari harvest.log\n` +
@@ -370,6 +373,9 @@ function buildStartCommandPanel() {
           ],
           [
             { text: '/autoscreen', callback_data: 'cmd:/autoscreen' },
+            { text: '/tokenalerts', callback_data: 'cmd:/tokenalerts' },
+          ],
+          [
             { text: '/manualexit', callback_data: 'cmd:/manualexit' },
           ],
           [
@@ -418,6 +424,9 @@ function buildActivationLaunchPanel() {
             { text: 'Autoscreen ON', callback_data: 'cmd:/autoscreen on' },
           ],
           [
+            { text: 'Token Alerts ON', callback_data: 'cmd:/tokenalerts on' },
+          ],
+          [
             { text: 'Start', callback_data: 'cmd:/start' },
           ],
         ],
@@ -430,6 +439,7 @@ function buildSetconfigSectionDetail(section) {
   const titleMap = {
     finance: '💰 Finance',
     discovery: '🔍 Discovery',
+    tokenAlerts: '💊 Token Alerts',
     strategy: '🎯 Strategy',
     entry: '🕯️ Entry',
     watch: '👀 Watch',
@@ -455,6 +465,15 @@ function buildSetconfigSectionDetail(section) {
       '/setconfig maxMcap 1000000',
       '/setconfig discovery.category trending',
       '/setconfig discovery.category top performers',
+    ],
+    tokenAlerts: [
+      '/setconfig tokenAlerts.enabled true',
+      '/setconfig tokenAlerts.pollIntervalSec 60',
+      '/setconfig tokenAlerts.minVolume5mUsd 100000',
+      '/setconfig tokenAlerts.minMarketCapUsd 100000',
+      '/setconfig tokenAlerts.minTotalFeesSol 10',
+      '/setconfig tokenAlerts.maxAgeMin 30',
+      '/setconfig tokenAlerts.maxPerScan 5',
     ],
     strategy: [
       '/setconfig strategy.liquidityShape bidask',
@@ -623,6 +642,52 @@ async function resumeAutoScreeningRuntime(chatId, { snapshotTopPools = false, so
 
 async function urgentNotify(msg) {
   await notify(msg);
+}
+
+const tokenAlertService = createTokenAlertService({
+  fetchTrending: getGmgnTrendingTokens,
+  fetchTokenInfo: getGmgnTokenInfo,
+  fetchHolders: getGmgnTopHolders,
+  sendAlert: (message) => sendLong(CHAT_ID, message, {
+    parse_mode: 'HTML',
+    disable_web_page_preview: true,
+  }),
+  getConfig,
+  getState: (key) => getRuntimeCollection(key),
+  setState: (key, value) => setRuntimeCollection(key, value),
+});
+
+function startTokenAlerts() {
+  return tokenAlertService.start();
+}
+
+function stopTokenAlerts() {
+  return tokenAlertService.stop();
+}
+
+function formatCompactThreshold(value) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return 'N/A';
+  if (numeric >= 1_000_000) return `$${(numeric / 1_000_000).toFixed(1).replace(/\.0$/, '')}M`;
+  if (numeric >= 1_000) return `$${(numeric / 1_000).toFixed(1).replace(/\.0$/, '')}K`;
+  return `$${numeric}`;
+}
+
+function formatTokenAlertsStatus() {
+  const cfg = getConfig();
+  const runtime = tokenAlertService.status();
+  return (
+    `💊 <b>Token Alerts</b>\n\n` +
+    `Configured: <code>${cfg.tokenAlertsEnabled ? 'ON' : 'OFF'}</code>\n` +
+    `Runtime: <code>${runtime.running ? 'RUNNING' : 'STOPPED'}</code>\n` +
+    `Source: <code>GMGN / Solana</code>\n` +
+    `Volume 5m: <code>&gt;= ${formatCompactThreshold(cfg.tokenAlertsMinVolume5mUsd)}</code>\n` +
+    `Market Cap: <code>&gt; ${formatCompactThreshold(cfg.tokenAlertsMinMarketCapUsd)}</code>\n` +
+    `Total Fees: <code>&gt;= ${cfg.tokenAlertsMinTotalFeesSol} SOL</code>\n` +
+    `Max Age: <code>&lt;= ${cfg.tokenAlertsMaxAgeMin}m</code>\n` +
+    `Poll: <code>${cfg.tokenAlertsPollIntervalSec}s</code> | Max/scan: <code>${cfg.tokenAlertsMaxPerScan}</code>\n` +
+    `<i>Read-only: tidak masuk WATCH, queue, Jupiter, atau deploy Meteora.</i>`
+  );
 }
 
 // Register notify ke hunterAlpha
@@ -835,6 +900,56 @@ bot.onText(/\/status/, async (msg) => {
     `Paper: <code>${paper.length}</code> stored | Monitor: <code>${cfg.dryRun ? 'ON' : 'OFF'}</code> | New Entry: <code>${cfg.dryRun ? 'PAPER' : 'REAL'}</code>\n` +
     `Anchor: <code>DLMM active bin</code> | Source: <code>frozen/live fallback</code>\n` +
     `TA: <code>defensive bearish (RSI ref ${cfg.smartExitRsi || 90})</code>`,
+    { parse_mode: 'HTML' }
+  );
+});
+
+bot.onText(/\/tokenalerts(?:\s+(status|on|off|scan))?$/, async (msg, match) => {
+  if (!guard(msg)) return;
+  const chatId = msg.chat.id;
+  const action = String(match?.[1] || 'status').toLowerCase();
+
+  if (action === 'status') {
+    await bot.sendMessage(chatId, formatTokenAlertsStatus(), { parse_mode: 'HTML' });
+    return;
+  }
+
+  if (action === 'off') {
+    updateConfig({ tokenAlertsEnabled: false });
+    stopTokenAlerts();
+    await bot.sendMessage(
+      chatId,
+      `🔕 <b>Token Alerts: OFF</b>\n` +
+      `<i>Dedupe token yang sudah terkirim tetap disimpan.</i>`,
+      { parse_mode: 'HTML' }
+    );
+    return;
+  }
+
+  if (action === 'on') {
+    const cfg = updateConfig({ tokenAlertsEnabled: true });
+    startTokenAlerts();
+    await bot.sendMessage(
+      chatId,
+      `💊 <b>Token Alerts: ON</b>\n` +
+      `5m vol &gt;= <code>${formatCompactThreshold(cfg.tokenAlertsMinVolume5mUsd)}</code> | ` +
+      `MC &gt; <code>${formatCompactThreshold(cfg.tokenAlertsMinMarketCapUsd)}</code> | ` +
+      `fees &gt;= <code>${cfg.tokenAlertsMinTotalFeesSol} SOL</code> | ` +
+      `age &lt;= <code>${cfg.tokenAlertsMaxAgeMin}m</code>\n` +
+      `<i>Read-only. Menjalankan scan pertama sekarang...</i>`,
+      { parse_mode: 'HTML' }
+    );
+  }
+
+  const summary = await tokenAlertService.scanOnce({
+    source: action === 'on' ? 'telegram_on' : 'telegram_scan',
+  });
+  await bot.sendMessage(
+    chatId,
+    `💊 <b>Token Alerts Scan</b>\n` +
+    `Fetched: <code>${summary.fetched}</code> | Eligible: <code>${summary.eligible}</code>\n` +
+    `Alerted: <code>${summary.alerted}</code> | Skipped: <code>${summary.skipped}</code> | Failed: <code>${summary.failed}</code>` +
+    (summary.blocked ? `\nStatus: <code>${escapeHTML(summary.reason || 'BLOCKED')}</code>` : ''),
     { parse_mode: 'HTML' }
   );
 });
@@ -1052,11 +1167,22 @@ bot.onText(/\/config/, (msg) => {
     `positionUpdateMin     = ${cfg.positionUpdateIntervalMin}`,
     `realtimePnlSec        = ${cfg.realtimePnlIntervalSec}`,
   ].join('\n');
+  const tokenAlerts = [
+    `enabled               = ${cfg.tokenAlertsEnabled}`,
+    `runtime               = ${tokenAlertService.status().running ? 'RUNNING' : 'STOPPED'}`,
+    `minVolume5mUsd        = ${cfg.tokenAlertsMinVolume5mUsd}`,
+    `minMarketCapUsd       = ${cfg.tokenAlertsMinMarketCapUsd} (strict >)`,
+    `minTotalFeesSol       = ${cfg.tokenAlertsMinTotalFeesSol}`,
+    `maxAgeMin             = ${cfg.tokenAlertsMaxAgeMin}`,
+    `pollIntervalSec       = ${cfg.tokenAlertsPollIntervalSec}`,
+    `maxPerScan            = ${cfg.tokenAlertsMaxPerScan}`,
+  ].join('\n');
 
   bot.sendMessage(msg.chat.id,
     `⚙️ <b>AI-Agent-DLMM Config</b>\n\n` +
     `<b>💰 Finance</b>\n<pre><code>${finance}</code></pre>\n` +
     `<b>🔍 Discovery</b>\n<pre><code>${discovery}</code></pre>\n` +
+    `<b>💊 Token Alerts</b>\n<pre><code>${tokenAlerts}</code></pre>\n` +
     `<b>🎯 Strategy</b>\n<pre><code>${strategy}</code></pre>\n` +
     `<b>📉 OOR</b>\n<pre><code>${oor}</code></pre>\n` +
     `<b>🩺 Management</b>\n<pre><code>${management}</code></pre>\n` +
@@ -1205,6 +1331,39 @@ bot.onText(/\/setconfig(?:\s+(\S+))?(?:\s+(.+))?/, async (msg, match) => {
         { parse_mode: 'HTML' }
       );
     }
+    return;
+  }
+
+  if (flatKey === 'tokenAlertsEnabled') {
+    if (parsed === true) {
+      startTokenAlerts();
+      const summary = await tokenAlertService.scanOnce({ source: 'setconfig_on' });
+      bot.sendMessage(
+        chatId,
+        `💊 <b>Token Alerts: ON</b>\n` +
+        `Runtime aktif. Scan awal: <code>${summary.alerted}</code> alert terkirim.`,
+        { parse_mode: 'HTML' }
+      );
+    } else {
+      stopTokenAlerts();
+      bot.sendMessage(
+        chatId,
+        `🔕 <b>Token Alerts: OFF</b>\n<i>Dedupe tetap disimpan.</i>`,
+        { parse_mode: 'HTML' }
+      );
+    }
+    return;
+  }
+
+  if (flatKey === 'tokenAlertsPollIntervalSec' && tokenAlertService.status().running) {
+    stopTokenAlerts();
+    startTokenAlerts();
+    bot.sendMessage(
+      chatId,
+      `✅ <b>Token Alerts interval diupdate</b>\n` +
+      `Sebelum: <code>${before}s</code> | Sesudah: <code>${after}s</code>`,
+      { parse_mode: 'HTML' }
+    );
     return;
   }
 
@@ -1867,6 +2026,7 @@ async function shutdown(signal) {
   stopPendingTaRadarWatcher();
   stopTaWatchWatcher();
   stopDeployQueueWatcher();
+  stopTokenAlerts();
   const active = Array.isArray(getActivePositions()) ? getActivePositions() : [];
   if (active.length > 0) {
     await notify(
@@ -1947,6 +2107,10 @@ setTimeout(async () => {
     const autoScr = cfg.autoScreeningEnabled;
     const discoveryPaused = isDiscoveryPaused();
     const intervalMin = Number(cfg.screeningIntervalMin) || 15;
+    const tokenAlertsConfigured = cfg.tokenAlertsEnabled === true;
+    if (tokenAlertsConfigured) {
+      startTokenAlerts();
+    }
 
     // Log startup Jupiter
     console.log(`✅ Jupiter V1 Direct — api.jup.ag/swap/v1 (fallback: lite-api.jup.ag)`);
@@ -1966,6 +2130,12 @@ setTimeout(async () => {
     `Watch Layer: <code>${cfg.taWatchEnabled === false ? 'OFF' : 'ON'}</code> | ` +
     `Radar: <code>${cfg.pendingRetestEnabled === false ? 'OFF' : 'ON'}</code>\n` +
     `Auto Screen: <code>${discoveryPaused ? 'OFF by /stop' : autoScr ? `ON (${cfg.screeningIntervalMin}m)` : 'OFF'}</code>\n` +
+    `Token Alerts: <code>${tokenAlertsConfigured ? 'ON' : 'OFF'}</code>` +
+    (tokenAlertsConfigured
+      ? ` <i>(5m vol &gt;= ${formatCompactThreshold(cfg.tokenAlertsMinVolume5mUsd)}, ` +
+        `MC &gt; ${formatCompactThreshold(cfg.tokenAlertsMinMarketCapUsd)}, ` +
+        `fees &gt;= ${cfg.tokenAlertsMinTotalFeesSol} SOL, age &lt;= ${cfg.tokenAlertsMaxAgeMin}m)</i>\n`
+      : '\n') +
     `Discovery Priority: <code>${
       String(cfg.discoveryCategory || '').toLowerCase() === 'trending'
         ? 'activity-first'
@@ -1983,6 +2153,12 @@ setTimeout(async () => {
       discoveryPaused,
       intervalMin,
     });
+
+    if (tokenAlertsConfigured) {
+      tokenAlertService.scanOnce({ source: 'startup' }).catch((error) => {
+        console.warn(`[token-alerts] startup scan failed: ${error.message}`);
+      });
+    }
 
     console.log(`✅ AI-Agent-DLMM ready. Balance: ${balance} SOL`);
   } catch (e) {

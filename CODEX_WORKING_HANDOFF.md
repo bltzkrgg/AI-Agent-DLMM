@@ -16,9 +16,10 @@ prefer the explicit user request, then update this file after the change lands.
 - Focus: surgical fixes only.
 - Goal: avoid changing unrelated entry, exit, close, or config behavior.
 - Preference: preserve existing behavior unless the user explicitly asks otherwise.
-- Planned next feature: independent read-only GMGN Solana Token Alerts. Canonical
-  GPT-5.4 plan: `docs/TOKEN_ALERTS_PATCH_PLAN_5_4.md`.
-- Confirmed GPT-5.4 Mini follow-up:
+- GPT-5.4 core for independent read-only GMGN Solana Token Alerts is complete
+  and awaiting explicit confirmation before the GPT-5.4 Mini follow-up.
+  Canonical plan: `docs/TOKEN_ALERTS_PATCH_PLAN_5_4.md`.
+- Confirmed but not yet executed GPT-5.4 Mini follow-up:
   `docs/TOKEN_ALERTS_PATCH_PLAN_5_4_MINI.md`. Mini scope is limited to pure
   helpers, formatting, config, focused tests, and documentation; lifecycle,
   GMGN request wiring, and runtime ownership remain with GPT-5.4.
@@ -47,6 +48,25 @@ prefer the explicit user request, then update this file after the change lands.
 
 ## Recently completed changes
 
+- 2026-07-30: Completed GPT-5.4 core implementation for independent read-only
+  GMGN Solana Token Alerts. Added uncached 5-minute rank and cached holder
+  wrappers to the existing serialized 2 RPS GMGN client; added
+  `src/alerts/tokenAlerts.js` with strict local gates (`volume >= $100K`,
+  `market cap > $100K`, `total fees >= 10 SOL`, age `<= 30m`), canonical
+  migration/open/creation timestamp handling, Solana mint validation, optional
+  holder enrichment, HTML-safe Telegram formatting, persistent one-successful-
+  alert-per-mint dedupe, 48-hour pruning, one-timer/one-scan guards, and
+  send-success-only `alertedAt`. Added independent config keys and
+  `/tokenalerts status|on|off|scan`, Token Alerts menus/config output,
+  startup auto-resume, and shutdown cleanup. `/stop`, WATCH, deploy queue,
+  Jupiter, Meteora, and existing pool-screening thresholds are unchanged.
+  Focused tests pass 107/107; lint and `git diff --check` pass. Full suite:
+  536 pass, 2 confirmed pre-existing failures
+  (`tests/manual-ca-resolver.test.js` fee-ratio selection and
+  `tests/metadata-propagation.test.js` stale `LP_LIVE` source assertion),
+  16 skips. A direct live GMGN smoke request was attempted but could not run
+  because the workspace escalation approval service rejected the command; no
+  Telegram message or wallet/transaction path was invoked.
 - 2026-07-30: Added and confirmed implementation-only planning artifacts for
   GMGN Token Alerts. The GPT-5.4 core plan locks API contracts, independent
   config/state, Telegram UX, startup/shutdown ownership, tests, and acceptance

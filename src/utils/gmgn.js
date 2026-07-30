@@ -231,6 +231,59 @@ export async function getGmgnTokenInfo(mint) {
 }
 
 /**
+ * Get fresh GMGN Solana market rank rows.
+ *
+ * Rank responses intentionally bypass the 90-second address cache because
+ * Token Alerts polls a rolling 5-minute window every minute.
+ */
+export async function getGmgnTrendingTokens({
+  interval = '5m',
+  limit = 100,
+  minVolume = 100000,
+  minMarketCap = 100000,
+  maxCreated = '30m',
+} = {}) {
+  const data = await gmgnFetch('/v1/market/rank', {
+    interval,
+    order_by: 'volume',
+    direction: 'desc',
+    limit: String(Math.max(1, Math.min(100, Number(limit) || 100))),
+    min_volume: String(Math.max(0, Number(minVolume) || 0)),
+    min_marketcap: String(Math.max(0, Number(minMarketCap) || 0)),
+    max_created: String(maxCreated || '30m'),
+  });
+
+  if (Array.isArray(data)) return data;
+  const rows = data?.rank || data?.list || data?.items || data?.tokens;
+  return Array.isArray(rows) ? rows : [];
+}
+
+/**
+ * Get GMGN top holder rows for optional Token Alerts enrichment.
+ */
+export async function getGmgnTopHolders(mint, { limit = 20 } = {}) {
+  if (!mint || typeof mint !== 'string') return [];
+  const cacheAddress = `${mint}:${Math.max(1, Number(limit) || 20)}`;
+  const cached = getCached('/v1/market/token_top_holders', cacheAddress);
+  if (cached) return cached;
+
+  const data = await gmgnFetch('/v1/market/token_top_holders', {
+    address: mint,
+    limit: String(Math.max(1, Math.min(100, Number(limit) || 20))),
+    order_by: 'amount_percentage',
+    direction: 'desc',
+  });
+  const rows = Array.isArray(data)
+    ? data
+    : data?.holders || data?.list || data?.items || data?.data;
+  const normalized = Array.isArray(rows) ? rows : [];
+  if (normalized.length > 0) {
+    setCached('/v1/market/token_top_holders', cacheAddress, normalized);
+  }
+  return normalized;
+}
+
+/**
  * Get GMGN token security metrics.
  *
  * Key fields:
