@@ -115,6 +115,8 @@ The feature is disabled by default. Use `/tokenalerts on` to persist the setting
 
 Scan summaries distinguish a healthy empty result (`GMGN_OK_NO_RESULTS`) from source failures such as a missing key, HTTP rejection, rate limit, invalid response, or network error. Required token-info failures are reported as `GMGN_PARTIAL_FAILURE`; optional holder enrichment remains best-effort and renders `TH: N/A`.
 
+GMGN responses are normalized through both the outer gateway envelope and the inner API envelope before Token Alerts reads `rank`, token info, or holder data. Inner API errors remain visible instead of being mistaken for an empty result.
+
 The rank request fetches the broad GMGN 5-minute top-100 page. Volume, market-cap, age, dedupe, and fee thresholds are applied locally so Telegram can report rejection counts such as `VOLUME_BELOW_MIN`, `MCAP_NOT_ABOVE_MIN`, `TOKEN_TOO_OLD`, or `TOTAL_FEES_BELOW_MIN`. Every automatic and manual scan also writes one compact `[token-alerts] scan ...` line to the process log.
 
 Independent config keys:

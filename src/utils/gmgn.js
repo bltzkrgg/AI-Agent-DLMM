@@ -43,6 +43,48 @@ function failGmgnRequest(strict, code, message, details) {
   return null;
 }
 
+function unwrapGmgnEnvelope(json, subPath, strict) {
+  let envelope = json;
+
+  for (let depth = 0; depth < 4; depth++) {
+    if (!envelope || typeof envelope !== 'object' || Array.isArray(envelope)) {
+      return envelope ?? null;
+    }
+
+    if (Object.hasOwn(envelope, 'code') && Number(envelope.code) !== 0) {
+      const apiCode = String(envelope.code).slice(0, 32);
+      const apiMessage = envelope.message || envelope.error || envelope.reason || 'unknown';
+      console.warn(`[gmgn] API error code=${apiCode} msg=${apiMessage} path=${subPath}`);
+      return failGmgnRequest(
+        strict,
+        'GMGN_API_ERROR',
+        `GMGN rejected the request (API code ${apiCode})`
+      );
+    }
+
+    if (!Object.hasOwn(envelope, 'data')) {
+      return envelope;
+    }
+
+    const data = envelope.data;
+    const isNestedEnvelope = (
+      data &&
+      typeof data === 'object' &&
+      !Array.isArray(data) &&
+      Object.hasOwn(data, 'code') &&
+      Object.hasOwn(data, 'data')
+    );
+    if (!isNestedEnvelope) return data ?? null;
+    envelope = data;
+  }
+
+  return failGmgnRequest(
+    strict,
+    'GMGN_RESPONSE_NESTING_INVALID',
+    'GMGN response nesting exceeded the supported depth'
+  );
+}
+
 function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
@@ -227,17 +269,7 @@ async function gmgnFetch(subPath, extraParams = {}, { strict = false } = {}) {
           );
         }
 
-        if (json.code !== 0) {
-          // Business error: do not spam retries for deterministic failures.
-          console.warn(`[gmgn] API error code=${json.code} msg=${json.message || json.error || 'unknown'} path=${subPath}`);
-          return failGmgnRequest(
-            strict,
-            'GMGN_API_ERROR',
-            `GMGN rejected the request (API code ${json.code})`
-          );
-        }
-
-        return json.data || null;
+        return unwrapGmgnEnvelope(json, subPath, strict);
       } catch (e) {
         if (e instanceof GmgnApiError) throw e;
         const retryable = /timeout|network|fetch|socket|econn|eai_again|terminated|enotfound|OpenAPI does not support IPv6/i.test(String(e?.message || ''));

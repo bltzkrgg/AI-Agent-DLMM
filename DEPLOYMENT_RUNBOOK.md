@@ -534,6 +534,8 @@ Operational checks:
 8. If Telegram delivery fails, the mint is not marked delivered and can retry on the next scan.
 9. `/stop` does not disable Token Alerts; use `/tokenalerts off` explicitly.
 
+The GMGN client unwraps the current nested response form (`outer.data -> inner.data`) before reading rank rows. A non-zero inner API code is reported as `GMGN_API_ERROR`, not `GMGN_OK_NO_RESULTS`.
+
 Token Alerts dedupe is stored in `runtime-state.json` under `tokenAlertsSeen`. Do not delete it during normal restarts unless duplicate alerts are intentionally desired.
 
 ---
