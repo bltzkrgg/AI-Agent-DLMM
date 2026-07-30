@@ -86,6 +86,8 @@ test('GMGN total fee extraction follows precedence and rejects trade_fee', () =>
   assert.equal(extractGmgnTotalFeesSol({ fee: { total_sol: 10 } }), 10);
   assert.equal(extractGmgnTotalFeesSol({ trade_fee: 500 }), null);
   assert.equal(extractGmgnTotalFeesSol({ total_fee: -1 }), null);
+  assert.equal(extractGmgnTotalFeesSol({ total_fee: '   ' }), null);
+  assert.equal(extractGmgnTotalFeesSol({ total_fee: true }), null);
 });
 
 test('migration timestamp takes precedence with open and creation fallbacks', () => {
@@ -160,6 +162,15 @@ test('formatter escapes GMGN text, renders optional holder fallback, and links v
   assert.match(message, /TH:\s+<b>N\/A<\/b>/);
   assert.match(message, /Dex Paid:\s+<b>🟢<\/b>/);
   assert.match(message, new RegExp(`https://gmgn\\.ai/sol/token/${MINT}`));
+});
+
+test('formatter ignores malformed holder percentages', () => {
+  const normalized = evaluateTokenAlertCandidate(candidate(), CONFIG, NOW).normalized;
+  const message = formatTokenAlertMessage({
+    ...normalized,
+    topHolderPercentages: [null, 'bad', 0, -1],
+  });
+  assert.match(message, /TH:\s+<b>N\/A<\/b>/);
 });
 
 function createServiceHarness({

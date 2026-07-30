@@ -10,6 +10,7 @@ Autonomous Meteora DLMM liquidity-provider bot with Telegram control, Meridian/G
 | Helius API key | Required for Solana RPC |
 | Telegram bot token | Required for bot control |
 | OpenRouter API key | Required when LLM screening is enabled |
+| GMGN API key | Required by the current runtime and for Token Alerts |
 | Dedicated wallet | Strongly recommended. Do not use a main wallet. |
 
 ## Setup
@@ -30,6 +31,7 @@ WALLET_PRIVATE_KEY=...
 TELEGRAM_BOT_TOKEN=...
 ALLOWED_TELEGRAM_ID=...
 OPENROUTER_API_KEY=...
+GMGN_API_KEY=...
 ```
 
 Run locally:
@@ -40,7 +42,7 @@ npm start
 
 ## Configuration
 
-The runtime config is flat in `user-config.example.json`. Nested `finance.*`, `strategy.*`, `discovery.*`, and `meridian.*` input is still accepted by the loader, but user-facing keys are the flat keys shown by `/config` and `/setconfig ?`.
+The runtime config is flat in `user-config.example.json`. Nested `finance.*`, `strategy.*`, `discovery.*`, `tokenAlerts.*`, and `meridian.*` input is still accepted by the loader, but user-facing keys are the flat keys shown by `/config` and `/setconfig ?`.
 
 Important operational keys:
 
@@ -96,6 +98,36 @@ For OOR timing:
 - `outOfRangeWaitMinutes` is the actual wait before the position is closed when it stays out of range.
 - `oorDisplayWaitMinutes` only controls how often the OOR status is shown in logs and Telegram.
 - If you set `outOfRangeWaitMinutes` to 30 and `oorDisplayWaitMinutes` to 5, the position can stay open for 30 minutes while the log only reminds you every 5 minutes.
+
+## GMGN Token Alerts
+
+Token Alerts is an independent read-only feed for newly opened or migrated Solana tokens. It does not add candidates to WATCH, the deploy queue, Jupiter simulation, or Meteora deployment.
+
+Default eligibility requires every gate to pass:
+
+- GMGN rolling 5-minute volume `>= $100,000`.
+- Market cap strictly `> $100,000`.
+- GMGN total fees `>= 10 SOL`.
+- Age from migration/open time `<= 30 minutes`.
+- The mint has not already produced a successful alert.
+
+The feature is disabled by default. Use `/tokenalerts on` to persist the setting, start the 60-second poller, and run an immediate scan. `/tokenalerts scan` performs one read-only scan even while recurring alerts are disabled. Successful alerts include a clickable GMGN token link; failed Telegram sends remain retryable and are not marked as delivered.
+
+Independent config keys:
+
+```json
+{
+  "tokenAlertsEnabled": false,
+  "tokenAlertsPollIntervalSec": 60,
+  "tokenAlertsMinVolume5mUsd": 100000,
+  "tokenAlertsMinMarketCapUsd": 100000,
+  "tokenAlertsMinTotalFeesSol": 10,
+  "tokenAlertsMaxAgeMin": 30,
+  "tokenAlertsMaxPerScan": 5
+}
+```
+
+These values do not reuse or change pool-screening keys such as `minVolume`, `minMcap`, or `gmgnMinTotalFeesSol`.
 
 ## Strategy Scope
 
@@ -214,6 +246,10 @@ Run in shadow mode first so the bot records pattern deltas without applying them
 | `/hunt` | Start scheduler |
 | `/screening` | Run manual screening |
 | `/autoscreen` | Toggle auto-screening |
+| `/tokenalerts` | Show Token Alerts status |
+| `/tokenalerts on` | Enable recurring read-only alerts and scan immediately |
+| `/tokenalerts off` | Disable recurring alerts without clearing dedupe |
+| `/tokenalerts scan` | Run one read-only scan |
 | `/ca <address>` | Submit token/pool to manual WATCH/QUEUE flow |
 | `/stop` | Pause autonomous discovery/deploy without force-closing positions |
 | `/exit` | Manual force-close active positions |
@@ -223,7 +259,7 @@ Run in shadow mode first so the bot records pattern deltas without applying them
 | `/briefing` | 24h briefing |
 | `/evolve` | Analyze `harvest.log` and suggest config changes |
 
-Curated `/setconfig` sections include finance, discovery, entry, watch, OOR, Pool Impact Guard, and Pool Pattern Learning. Sensitive or structural keys such as wallet, LLM provider, API credentials, range internals, and deprecated aliases are intentionally not editable from Telegram.
+Curated `/setconfig` sections include finance, discovery, Token Alerts, entry, watch, OOR, Pool Impact Guard, and Pool Pattern Learning. Sensitive or structural keys such as wallet, LLM provider, API credentials, range internals, and deprecated aliases are intentionally not editable from Telegram.
 
 Close policy tuning is also exposed for live ops:
 
@@ -240,6 +276,8 @@ Examples:
 ```text
 /setconfig deployAmountSol 0.75
 /setconfig maxMcap 5000000
+/setconfig tokenAlerts.enabled true
+/setconfig tokenAlerts.minTotalFeesSol 10
 /setconfig entryCandleSanityEnabled true
 /setconfig entryMinVolumeRatio 1.8
 /setconfig strategy.closeSwapMode fee_only

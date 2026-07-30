@@ -501,8 +501,36 @@ If the agent has Supertrend BULLISH but still no entries, check which gate is fi
 | `/strategy_report` | Per-strategy stats: trades, win rate, avg PnL %, confidence % |
 | `/autoscreen on [N]` | Start auto-screening every N minutes (default: config interval) |
 | `/autoscreen off` | Stop auto-screening |
+| `/tokenalerts` | Show persisted and runtime Token Alerts status |
+| `/tokenalerts on` | Enable recurring GMGN Token Alerts and run an immediate scan |
+| `/tokenalerts off` | Stop recurring alerts without clearing delivered-mint dedupe |
+| `/tokenalerts scan` | Run one read-only GMGN scan even when recurring alerts are off |
 | `/stage <level> [n]` | Set deployment stage: `shadow`, `canary [n]`, `full` |
 | `/zap_out <posAddr>` | Close position + swap all tokens to SOL |
+
+### Token Alerts Operations
+
+Token Alerts requires `GMGN_API_KEY` and is read-only. It never enters WATCH, reserves a deploy slot, calls Jupiter simulation, or opens Meteora liquidity.
+
+Default alert gates:
+
+```text
+5m volume >= $100,000
+market cap > $100,000
+GMGN total fees >= 10 SOL
+age from DEX migration/open <= 30 minutes
+one successful alert per mint
+```
+
+Operational checks:
+
+1. Run `/tokenalerts` and confirm `Configured: ON` matches `Runtime: RUNNING`.
+2. Run `/tokenalerts scan` and check `Fetched`, `Eligible`, `Alerted`, `Skipped`, and `Failed`.
+3. If `Fetched: 0`, verify `GMGN_API_KEY`, outbound access to GMGN, and API rate-limit logs.
+4. If Telegram delivery fails, the mint is not marked delivered and can retry on the next scan.
+5. `/stop` does not disable Token Alerts; use `/tokenalerts off` explicitly.
+
+Token Alerts dedupe is stored in `runtime-state.json` under `tokenAlertsSeen`. Do not delete it during normal restarts unless duplicate alerts are intentionally desired.
 
 ---
 

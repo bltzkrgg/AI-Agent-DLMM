@@ -201,6 +201,9 @@ test('safer defaults stay conservative for real-capital usage', async () => {
   assert.equal(cfg.tokenAlertsMinTotalFeesSol, 10);
   assert.equal(cfg.tokenAlertsMaxAgeMin, 30);
   assert.equal(cfg.tokenAlertsMaxPerScan, 5);
+  assert.equal(cfg.gmgnEnabled, true);
+  assert.equal(cfg.gmgnMinTotalFeesSol, 30);
+  assert.equal(cfg.gmgnTop10HolderMaxPct, 30);
 });
 
 test('user-config.example includes pool pattern learning keys', () => {
@@ -249,6 +252,9 @@ test('user-config.example includes pool pattern learning keys', () => {
   assert.equal(parsed.tokenAlertsMinTotalFeesSol, 10);
   assert.equal(parsed.tokenAlertsMaxAgeMin, 30);
   assert.equal(parsed.tokenAlertsMaxPerScan, 5);
+  assert.equal(parsed.gmgnEnabled, true);
+  assert.equal(parsed.gmgnMinTotalFeesSol, 30);
+  assert.equal(parsed.gmgnTop10HolderMaxPct, 30);
 });
 
 test('entry candle sanity keys can be overridden from user-config.json', async () => {
@@ -653,6 +659,13 @@ test('/setconfig whitelist is curated for operational keys only', async () => {
   assert.equal(keys.includes('entryM5HardGateEnabled'), true);
   assert.equal(keys.includes('entryDeferOnM15PreviousUnknown'), true);
   assert.equal(keys.includes('deployQueueHoldNotifyCooldownSec'), true);
+  assert.equal(keys.includes('tokenAlertsEnabled'), true);
+  assert.equal(keys.includes('tokenAlertsPollIntervalSec'), true);
+  assert.equal(keys.includes('tokenAlertsMinVolume5mUsd'), true);
+  assert.equal(keys.includes('tokenAlertsMinMarketCapUsd'), true);
+  assert.equal(keys.includes('tokenAlertsMinTotalFeesSol'), true);
+  assert.equal(keys.includes('tokenAlertsMaxAgeMin'), true);
+  assert.equal(keys.includes('tokenAlertsMaxPerScan'), true);
   assert.equal(keys.includes('entryRequireGreenCandle'), false);
   assert.equal(keys.includes('entryVolumeLookbackCandles'), false);
 

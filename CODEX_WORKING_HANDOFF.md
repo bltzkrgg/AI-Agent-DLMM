@@ -16,13 +16,10 @@ prefer the explicit user request, then update this file after the change lands.
 - Focus: surgical fixes only.
 - Goal: avoid changing unrelated entry, exit, close, or config behavior.
 - Preference: preserve existing behavior unless the user explicitly asks otherwise.
-- GPT-5.4 core for independent read-only GMGN Solana Token Alerts is complete
-  and awaiting explicit confirmation before the GPT-5.4 Mini follow-up.
-  Canonical plan: `docs/TOKEN_ALERTS_PATCH_PLAN_5_4.md`.
-- Confirmed but not yet executed GPT-5.4 Mini follow-up:
-  `docs/TOKEN_ALERTS_PATCH_PLAN_5_4_MINI.md`. Mini scope is limited to pure
-  helpers, formatting, config, focused tests, and documentation; lifecycle,
-  GMGN request wiring, and runtime ownership remain with GPT-5.4.
+- GPT-5.4 core and the confirmed GPT-5.4 Mini follow-up for independent
+  read-only GMGN Solana Token Alerts are complete. Canonical plans:
+  `docs/TOKEN_ALERTS_PATCH_PLAN_5_4.md` and
+  `docs/TOKEN_ALERTS_PATCH_PLAN_5_4_MINI.md`.
 - Locked Token Alerts gates: 5-minute volume `>= $100K`, market cap `> $100K`,
   GMGN total fees `>= 10 SOL`, token age `<= 30m` from migration/open time, and
   one successful alert per mint. The feature must never enter WATCH, queue, or
@@ -48,6 +45,20 @@ prefer the explicit user request, then update this file after the change lands.
 
 ## Recently completed changes
 
+- 2026-07-30: Completed the confirmed GPT-5.4 Mini follow-up for GMGN Token
+  Alerts. Pure numeric parsing now rejects booleans and whitespace-only strings
+  instead of coercing them to numbers, and the Telegram formatter drops
+  malformed holder percentages to `TH: N/A`. Focused tests now explicitly pin
+  invalid total-fee inputs, malformed TH values, all Token Alerts whitelist
+  keys, and independence of the existing pool GMGN defaults
+  (`gmgnMinTotalFeesSol=30`, `gmgnTop10HolderMaxPct=30`). Added README,
+  deployment runbook, and environment documentation for commands, thresholds,
+  `GMGN_API_KEY`, dedupe, startup behavior, and the read-only boundary. No
+  lifecycle, GMGN request wrapper, autoscreen, WATCH, queue, Jupiter, Meteora,
+  deploy, or position-management file changed. Focused Mini suite passes 59/59;
+  lint and `git diff --check` pass. Full suite: 537 pass, 2 confirmed
+  pre-existing failures (`tests/manual-ca-resolver.test.js` fee-ratio selection
+  and `tests/metadata-propagation.test.js` stale `LP_LIVE` assertion), 16 skips.
 - 2026-07-30: Completed GPT-5.4 core implementation for independent read-only
   GMGN Solana Token Alerts. Added uncached 5-minute rank and cached holder
   wrappers to the existing serialized 2 RPS GMGN client; added

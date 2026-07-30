@@ -5,8 +5,9 @@ const TOKEN_ALERTS_STATE_KEY = 'tokenAlertsSeen';
 const TOKEN_ALERTS_STATE_TTL_MS = 48 * 60 * 60 * 1000;
 
 function finiteNumber(value) {
-  if (value == null || value === '') return null;
-  const parsed = Number(value);
+  if (typeof value !== 'number' && typeof value !== 'string') return null;
+  if (typeof value === 'string' && value.trim() === '') return null;
+  const parsed = Number(typeof value === 'string' ? value.trim() : value);
   return Number.isFinite(parsed) ? parsed : null;
 }
 
@@ -238,7 +239,7 @@ export function formatTokenAlertMessage(alert = {}) {
     throw new Error('INVALID_MINT');
   }
   const holders = Array.isArray(alert.topHolderPercentages)
-    ? alert.topHolderPercentages
+    ? alert.topHolderPercentages.filter((value) => Number.isFinite(Number(value)) && Number(value) > 0)
     : [];
   const holderText = holders.length > 0
     ? holders.map((value) => Number(value).toFixed(1).replace(/\.0$/, '')).join(' | ')

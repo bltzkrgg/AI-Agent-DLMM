@@ -96,6 +96,7 @@ test('/config and startup messages expose realtime PnL interval', () => {
   assert.match(content, /reply_markup:\s*\{\s*inline_keyboard:/);
   assert.match(content, /setconfig_section:finance/);
   assert.match(content, /setconfig_section:discovery/);
+  assert.match(content, /setconfig_section:tokenAlerts/);
   assert.match(content, /setconfig_section:strategy/);
   assert.match(content, /setconfig_section:entry/);
   assert.match(content, /setconfig_section:watch/);
