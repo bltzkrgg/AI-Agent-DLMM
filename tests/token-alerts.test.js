@@ -415,3 +415,41 @@ test('required token-info failure is reported as a partial GMGN failure', async 
   assert.equal(summary.status, 'GMGN_PARTIAL_FAILURE');
   assert.equal(summary.errorCode, 'GMGN_RATE_LIMITED');
 });
+
+test('scan fetches a broad rank page and applies configured thresholds locally', async () => {
+  let request = null;
+  const service = createTokenAlertService({
+    fetchTrending: async (options) => {
+      request = options;
+      return [
+        candidate({ volume: 99999 }),
+        candidate({
+          address: OTHER_MINTS[0],
+          market_cap: 100000,
+        }),
+        candidate({
+          address: OTHER_MINTS[1],
+          migrated_timestamp: (NOW - 31 * 60_000) / 1000,
+        }),
+      ];
+    },
+    fetchTokenInfo: async () => ({ total_fee: 10 }),
+    fetchHolders: async () => [],
+    sendAlert: async () => true,
+    getConfig: () => CONFIG,
+    getState: () => ({}),
+    setState: () => {},
+    now: () => NOW,
+  });
+
+  const summary = await service.scanOnce({ source: 'local-filters' });
+  assert.deepEqual(request, { interval: '5m', limit: 100 });
+  assert.equal(summary.fetched, 3);
+  assert.equal(summary.skipped, 3);
+  assert.equal(summary.status, 'GMGN_OK_FILTERED_OUT');
+  assert.deepEqual(summary.rejected, {
+    VOLUME_BELOW_MIN: 1,
+    MCAP_NOT_ABOVE_MIN: 1,
+    TOKEN_TOO_OLD: 1,
+  });
+});

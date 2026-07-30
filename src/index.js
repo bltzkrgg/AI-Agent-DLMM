@@ -690,6 +690,15 @@ function formatTokenAlertsStatus() {
   );
 }
 
+function formatTokenAlertRejections(rejected = {}) {
+  return Object.entries(rejected)
+    .filter(([, count]) => Number(count) > 0)
+    .sort((a, b) => Number(b[1]) - Number(a[1]))
+    .slice(0, 6)
+    .map(([reason, count]) => `${reason}=${count}`)
+    .join(' | ');
+}
+
 // Register notify ke hunterAlpha
 setNotifyFn(notify);
 setDeployQueueDeployFn(deployPosition);
@@ -944,12 +953,16 @@ bot.onText(/\/tokenalerts(?:\s+(status|on|off|scan))?$/, async (msg, match) => {
   const summary = await tokenAlertService.scanOnce({
     source: action === 'on' ? 'telegram_on' : 'telegram_scan',
   });
+  const rejected = formatTokenAlertRejections(summary.rejected);
   await bot.sendMessage(
     chatId,
     `💊 <b>Token Alerts Scan</b>\n` +
     `Fetched: <code>${summary.fetched}</code> | Eligible: <code>${summary.eligible}</code>\n` +
     `Alerted: <code>${summary.alerted}</code> | Skipped: <code>${summary.skipped}</code> | Failed: <code>${summary.failed}</code>\n` +
     `Status: <code>${escapeHTML(summary.status || summary.reason || 'UNKNOWN')}</code>` +
+    (rejected
+      ? `\nRejected: <code>${escapeHTML(rejected)}</code>`
+      : '') +
     (summary.errorCode
       ? `\nError: <code>${escapeHTML(summary.errorCode)}</code>`
       : '') +

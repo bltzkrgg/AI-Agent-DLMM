@@ -527,11 +527,12 @@ Operational checks:
 1. Run `/tokenalerts` and confirm `Configured: ON` matches `Runtime: RUNNING`.
 2. Run `/tokenalerts scan` and check `Fetched`, `Eligible`, `Alerted`, `Skipped`, and `Failed`.
 3. `GMGN_OK_NO_RESULTS` means GMGN responded successfully but returned no matching rows.
-4. `GMGN_FAILED` means the rank request failed; use the displayed `Error` and `Detail` fields to distinguish missing key, HTTP rejection, rate limit, invalid response, or network failure.
-5. `GMGN_PARTIAL_FAILURE` means the rank request returned candidates but a required token-info lookup failed for at least one candidate.
-6. If `Fetched: 0`, verify `GMGN_API_KEY`, outbound access to GMGN, and API rate-limit logs.
-7. If Telegram delivery fails, the mint is not marked delivered and can retry on the next scan.
-8. `/stop` does not disable Token Alerts; use `/tokenalerts off` explicitly.
+4. `GMGN_OK_FILTERED_OUT` means the broad rank page returned rows but all were rejected locally. Read the `Rejected` line for the dominant gate.
+5. `GMGN_FAILED` means the rank request failed; use the displayed `Error` and `Detail` fields to distinguish missing key, HTTP rejection, rate limit, invalid response, or network failure.
+6. `GMGN_PARTIAL_FAILURE` means the rank request returned candidates but a required token-info lookup failed for at least one candidate.
+7. If `Fetched: 0`, verify `GMGN_API_KEY`, outbound access to GMGN, API rate-limit logs, and the `[token-alerts] scan` process-log line.
+8. If Telegram delivery fails, the mint is not marked delivered and can retry on the next scan.
+9. `/stop` does not disable Token Alerts; use `/tokenalerts off` explicitly.
 
 Token Alerts dedupe is stored in `runtime-state.json` under `tokenAlertsSeen`. Do not delete it during normal restarts unless duplicate alerts are intentionally desired.
 

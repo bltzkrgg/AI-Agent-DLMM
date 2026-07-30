@@ -290,6 +290,11 @@ function recordScanError(summary, error, { partial = false } = {}) {
   summary.error ||= String(error?.message || 'Token Alerts scan failed');
 }
 
+function recordRejection(summary, reason, count = 1) {
+  const key = String(reason || 'UNKNOWN_REJECTION');
+  summary.rejected[key] = (summary.rejected[key] || 0) + count;
+}
+
 export function createTokenAlertService({
   fetchTrending,
   fetchTokenInfo,
@@ -318,6 +323,7 @@ export function createTokenAlertService({
         alerted: 0,
         skipped: 0,
         failed: 0,
+        rejected: {},
       };
     }
 
@@ -332,6 +338,7 @@ export function createTokenAlertService({
       skipped: 0,
       failed: 0,
       status: 'GMGN_OK',
+      rejected: {},
     };
 
     try {
@@ -342,9 +349,6 @@ export function createTokenAlertService({
       const rows = await fetchTrending({
         interval: '5m',
         limit: 100,
-        minVolume: config.tokenAlertsMinVolume5mUsd,
-        minMarketCap: config.tokenAlertsMinMarketCapUsd,
-        maxCreated: `${config.tokenAlertsMaxAgeMin}m`,
       });
       const candidates = Array.isArray(rows) ? rows : [];
       summary.fetched = candidates.length;
@@ -353,8 +357,14 @@ export function createTokenAlertService({
       const preliminaryCandidates = candidates
         .map((candidate) => ({ candidate, result: evaluateRankCandidate(candidate, config, startedAt) }))
         .filter(({ result }) => {
-          if (!result.eligible || seen[result.normalized.mint]?.alertedAt) {
+          if (!result.eligible) {
             summary.skipped += 1;
+            recordRejection(summary, result.reason);
+            return false;
+          }
+          if (seen[result.normalized.mint]?.alertedAt) {
+            summary.skipped += 1;
+            recordRejection(summary, 'ALREADY_ALERTED');
             return false;
           }
           return true;
@@ -362,7 +372,9 @@ export function createTokenAlertService({
         .sort((a, b) => b.result.normalized.volume5mUsd - a.result.normalized.volume5mUsd);
       const maxPerScan = Math.max(1, Number(config.tokenAlertsMaxPerScan) || 5);
       const preliminary = preliminaryCandidates.slice(0, maxPerScan);
-      summary.skipped += Math.max(0, preliminaryCandidates.length - preliminary.length);
+      const scanLimitSkipped = Math.max(0, preliminaryCandidates.length - preliminary.length);
+      summary.skipped += scanLimitSkipped;
+      if (scanLimitSkipped > 0) recordRejection(summary, 'SCAN_LIMIT', scanLimitSkipped);
 
       for (const { candidate, result: rankResult } of preliminary) {
         const mint = rankResult.normalized.mint;
@@ -376,6 +388,7 @@ export function createTokenAlertService({
           );
           if (!fullResult.eligible) {
             summary.skipped += 1;
+            recordRejection(summary, fullResult.reason);
             continue;
           }
 
@@ -426,6 +439,13 @@ export function createTokenAlertService({
           console.warn(`[token-alerts] candidate failed mint=${mint}: ${error.message}`);
         }
       }
+      if (
+        summary.fetched > 0 &&
+        summary.eligible === 0 &&
+        summary.failed === 0
+      ) {
+        summary.status = 'GMGN_OK_FILTERED_OUT';
+      }
     } catch (error) {
       summary.failed += 1;
       recordScanError(summary, error);
@@ -433,6 +453,15 @@ export function createTokenAlertService({
     } finally {
       lastScanAt = now();
       scanInFlight = false;
+      const rejected = Object.entries(summary.rejected)
+        .map(([reason, count]) => `${reason}:${count}`)
+        .join(',');
+      console.log(
+        `[token-alerts] scan source=${source} status=${summary.status} ` +
+        `fetched=${summary.fetched} eligible=${summary.eligible} alerted=${summary.alerted} ` +
+        `skipped=${summary.skipped} failed=${summary.failed}` +
+        (rejected ? ` rejected=${rejected}` : '')
+      );
     }
     return summary;
   }

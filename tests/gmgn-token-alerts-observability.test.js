@@ -25,15 +25,19 @@ test('GMGN market rank exposes HTTP status without leaking the API key', async (
   const originalFetch = global.fetch;
   const originalKey = process.env.GMGN_API_KEY;
   const originalRetries = process.env.GMGN_MAX_RETRIES;
+  let requestedUrl = '';
   process.env.GMGN_API_KEY = 'test-secret-key';
   process.env.GMGN_MAX_RETRIES = '0';
-  global.fetch = async () => new Response(
+  global.fetch = async (url) => {
+    requestedUrl = String(url);
+    return new Response(
     JSON.stringify({ message: 'Forbidden' }),
     {
       status: 403,
       headers: { 'content-type': 'application/json' },
     }
-  );
+    );
+  };
 
   try {
     await assert.rejects(
@@ -45,6 +49,7 @@ test('GMGN market rank exposes HTTP status without leaking the API key', async (
         return true;
       }
     );
+    assert.doesNotMatch(requestedUrl, /min_volume|min_marketcap|max_created/);
   } finally {
     global.fetch = originalFetch;
     if (originalKey == null) delete process.env.GMGN_API_KEY;

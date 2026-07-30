@@ -292,9 +292,6 @@ export async function getGmgnTokenInfo(mint, { strict = false } = {}) {
 export async function getGmgnTrendingTokens({
   interval = '5m',
   limit = 100,
-  minVolume = 100000,
-  minMarketCap = 100000,
-  maxCreated = '30m',
   strict = true,
 } = {}) {
   const data = await gmgnFetch('/v1/market/rank', {
@@ -302,9 +299,6 @@ export async function getGmgnTrendingTokens({
     order_by: 'volume',
     direction: 'desc',
     limit: String(Math.max(1, Math.min(100, Number(limit) || 100))),
-    min_volume: String(Math.max(0, Number(minVolume) || 0)),
-    min_marketcap: String(Math.max(0, Number(minMarketCap) || 0)),
-    max_created: String(maxCreated || '30m'),
   }, { strict });
 
   if (Array.isArray(data)) return data;
