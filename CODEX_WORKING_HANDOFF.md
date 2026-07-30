@@ -16,6 +16,16 @@ prefer the explicit user request, then update this file after the change lands.
 - Focus: surgical fixes only.
 - Goal: avoid changing unrelated entry, exit, close, or config behavior.
 - Preference: preserve existing behavior unless the user explicitly asks otherwise.
+- Planned next feature: independent read-only GMGN Solana Token Alerts. Canonical
+  GPT-5.4 plan: `docs/TOKEN_ALERTS_PATCH_PLAN_5_4.md`.
+- Confirmed GPT-5.4 Mini follow-up:
+  `docs/TOKEN_ALERTS_PATCH_PLAN_5_4_MINI.md`. Mini scope is limited to pure
+  helpers, formatting, config, focused tests, and documentation; lifecycle,
+  GMGN request wiring, and runtime ownership remain with GPT-5.4.
+- Locked Token Alerts gates: 5-minute volume `>= $100K`, market cap `> $100K`,
+  GMGN total fees `>= 10 SOL`, token age `<= 30m` from migration/open time, and
+  one successful alert per mint. The feature must never enter WATCH, queue, or
+  deploy.
 
 ## Final decisions
 
@@ -37,6 +47,12 @@ prefer the explicit user request, then update this file after the change lands.
 
 ## Recently completed changes
 
+- 2026-07-30: Added and confirmed implementation-only planning artifacts for
+  GMGN Token Alerts. The GPT-5.4 core plan locks API contracts, independent
+  config/state, Telegram UX, startup/shutdown ownership, tests, and acceptance
+  criteria. The GPT-5.4 Mini confirmation restricts follow-up work to isolated
+  helpers, formatting, config, tests, and docs. No runtime code or trading
+  behavior changed.
 - 2026-07-22: Streamlined the Telegram position/deploy lifecycle without changing trading gates or on-chain transaction behavior. OOR alerts now separate display cadence from the real close threshold, show actual OOR duration on recovery, and all successful TP/trailing/SL/OOR/max-hold/pool-impact/manual-safe exits use the canonical closed-position accounting report. Successful emergency fallback is folded into that final report; failed exits emit either one explicit manual-close-required alert or one generic failure, not both. Quote-only partial deploy reporting now distinguishes verified `NO ACTIVE POSITION` from an open/uncertain position that genuinely requires manual unwrap/close. Routine scan-start, aggregate WATCH, scout WATCH, deferred-candidate, slot-full, dedupe, top-candidate, and direct pre-attempt final HOLD messages are silent; genuine radar promotions, deploy attempts, terminal deploy results, critical reconciliation alerts, and the compact scanner report remain visible. Queue removals now distinguish `QUEUE EXPIRED` (eligible to re-enter later) from terminal `QUEUE DROP`, deploy messages use one shared format, and duplicate runtime errors are rate-limited in Telegram for five minutes while full errors remain in VPS logs. Focused notification/exit/deploy tests pass 259/259; lint, syntax, and diff checks pass. Full suite: 516 pass, 2 known pre-existing failures (`tests/manual-ca-resolver.test.js`, `tests/metadata-propagation.test.js`), 16 skips.
 - 2026-07-22: Simplified the Telegram scanner report to the compact `DLMM SCANNER` operational layout. Each top candidate now shows only TVL, volume, Fee/TVL, swaps, Top10, Bundler, and one clear outcome line. Temporary timing/data reasons such as unconfirmed fresh breakout, valid reclaim waiting for breakout, live-confirmation wait, and stale market snapshot render as `⏸ WAIT`; bearish Supertrend, Meridian veto, bundler/risk failures, and other hard failures remain `❌ REJECT`. This is display-only classification: internal gate verdicts, ranking, WATCH/deploy behavior, and safety policy are unchanged. The header now combines Jakarta timestamp, slot, and next-scan cadence, while redundant freshness/rank/activity/flow blocks and `[TOP 5]/[STATUS]` wrappers were removed. Focused report/workflow tests pass 33/33, lint/diff checks pass, and the full suite remains at 515 pass / 2 known pre-existing failures / 16 skips.
 - 2026-07-21: Replaced paper LP bin-progress/fee-estimate accounting with a simple full-notional realtime mark-to-market model. Every paper position now values the full virtual deposit as `deploySol * currentPrice / entryPrice`, so profit/loss continues moving with live pool price even when the configured DLMM range is out of range. The resulting `pnlPct` remains the single source used by paper TP, trailing, SL, manual close, and realtime/closed reports. Removed all estimated fee/net fields, the fee estimator module/tests, and related Telegram copy; no new RPC/API calls or real/on-chain behavior were added. This intentionally measures entry/exit timing like a fully exposed virtual position, not actual Meteora per-bin inventory, fee income, or IL. Regression coverage includes a 0.07% price decline producing approximately `-0.000070 SOL / -0.07%` on a `0.1 SOL` paper position while `OUT_OF_RANGE HIGH`. Focused tests pass 73/73, lint and diff checks pass, and the full suite remains at 514 pass / 2 known pre-existing failures / 16 skips.
