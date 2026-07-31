@@ -220,17 +220,15 @@ function formatDex(exchange) {
   return raw || 'Unknown';
 }
 
-function top10Indicator(value) {
-  if (!Number.isFinite(value)) return '⚪ N/A';
-  if (value <= 20) return `🟢 ${value.toFixed(1).replace(/\.0$/, '')}%`;
-  if (value <= 30) return `🟡 ${value.toFixed(1).replace(/\.0$/, '')}%`;
-  return `🔴 ${value.toFixed(1).replace(/\.0$/, '')}%`;
+function formatPercentage(value) {
+  if (!Number.isFinite(value)) return 'N/A';
+  return `${value.toFixed(1).replace(/\.0$/, '')}%`;
 }
 
 function formatFlow(buys, sells) {
   if (!Number.isFinite(buys) || !Number.isFinite(sells) || (buys + sells) <= 0) return 'N/A';
   const buyPct = Math.round((buys / (buys + sells)) * 100);
-  return `Buy ${buyPct}% | Sell ${100 - buyPct}%`;
+  return `Buy ${buyPct}% • Sell ${100 - buyPct}%`;
 }
 
 export function formatTokenAlertMessage(alert = {}) {
@@ -242,30 +240,42 @@ export function formatTokenAlertMessage(alert = {}) {
     ? alert.topHolderPercentages.filter((value) => Number.isFinite(Number(value)) && Number(value) > 0)
     : [];
   const holderText = holders.length > 0
-    ? holders.map((value) => Number(value).toFixed(1).replace(/\.0$/, '')).join(' | ')
+    ? holders.map((value) => Number(value).toFixed(1).replace(/\.0$/, '')).join(' • ')
     : 'N/A';
   const ageMin = Number.isFinite(alert.ageMin) ? Math.floor(alert.ageMin) : null;
-  const swaps = Number.isFinite(alert.swaps5m) ? Math.round(alert.swaps5m) : 'N/A';
+  const swaps = Number.isFinite(alert.swaps5m)
+    ? Math.round(alert.swaps5m).toLocaleString('en-US')
+    : 'N/A';
+  const symbol = escapeHTML(alert.symbol || 'UNKNOWN');
+  const name = escapeHTML(alert.name || 'Unknown');
+  const dex = escapeHTML(formatDex(alert.exchange));
 
   return [
-    `💊 <code>${mint}</code>`,
+    `<b>💊 ${symbol} • ${ageMin == null ? 'N/A' : `${ageMin}m`}</b>`,
+    `${name} | ${dex}`,
     '',
-    `┌ <b>${escapeHTML(alert.name || 'Unknown')} (${escapeHTML(alert.symbol || 'UNKNOWN')})</b>`,
-    `├ USD:       <b>${formatPrice(alert.priceUsd)}</b>`,
-    `├ MC:        <b>${formatUsdShort(alert.marketCapUsd)}</b> 🟢`,
-    `├ Vol 5m:    <b>${formatUsdShort(alert.volume5mUsd)}</b> 🟢`,
-    `├ Fees:      <b>${Number(alert.totalFeesSol).toFixed(2)} SOL</b> 🟢`,
-    `├ Age:       <b>${ageMin == null ? 'N/A' : `${ageMin}m`}</b>`,
-    `├ Seen:      <b>just now</b>`,
-    `├ Dex:       <b>${escapeHTML(formatDex(alert.exchange))}</b>`,
-    `├ Dex Paid:  <b>${alert.dexPaid ? '🟢' : '🔴'}</b>`,
-    `├ Holder:    Top 10: <b>${top10Indicator(alert.top10Pct)}</b>`,
-    `├ Flow:      <b>${escapeHTML(formatFlow(alert.buys5m, alert.sells5m))}</b>`,
-    `└ TH:        <b>${escapeHTML(holderText)}</b>`,
+    `┌ <b>MARKET</b>`,
+    `├ <code>Price     :</code> <b>${formatPrice(alert.priceUsd)}</b>`,
+    `├ <code>MC        :</code> <b>${formatUsdShort(alert.marketCapUsd)}</b>`,
+    `├ <code>Vol 5m    :</code> <b>${formatUsdShort(alert.volume5mUsd)}</b>`,
+    `├ <code>Swaps 5m  :</code> <b>${swaps}</b>`,
+    `├ <code>Fees      :</code> <b>${Number(alert.totalFeesSol).toFixed(2)} SOL</b>`,
+    `└ <code>Liquidity :</code> <b>${formatUsdShort(alert.liquidityUsd)}</b>`,
     '',
-    `Swaps 5m: <b>${swaps}</b> | Liquidity: <b>${formatUsdShort(alert.liquidityUsd)}</b>`,
+    `┌ <b>ACTIVITY</b>`,
+    `├ <code>Flow      :</code> <b>${escapeHTML(formatFlow(alert.buys5m, alert.sells5m))}</b>`,
+    `├ <code>Top 10    :</code> <b>${formatPercentage(alert.top10Pct)}</b>`,
+    `├ <code>Wallets   :</code> <b>${escapeHTML(holderText)}</b>`,
+    `└ <code>Dex Paid  :</code> <b>${alert.dexPaid ? 'Yes' : 'No'}</b>`,
     '',
-    `🌐 <a href="https://gmgn.ai/sol/token/${mint}">GMGN</a>`,
+    `┌ <b>STATUS</b>`,
+    `└ 🟢 <b>QUALIFIED</b>`,
+    `   <code>VOL • MC • FEES • AGE</code>`,
+    '',
+    `<b>CA</b>`,
+    `<code>${mint}</code>`,
+    '',
+    `🌐 <a href="https://gmgn.ai/sol/token/${mint}">GMGN ↗</a>`,
   ].join('\n');
 }
 

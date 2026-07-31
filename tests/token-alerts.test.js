@@ -145,7 +145,7 @@ test('holder extraction removes pools, exchanges, invalid rows, and sorts wallet
   assert.deepEqual(result, [9.4, 3, 2.1]);
 });
 
-test('formatter escapes GMGN text, renders optional holder fallback, and links validated mint', () => {
+test('formatter renders the bold compact scanner layout and escapes GMGN text', () => {
   const normalized = evaluateTokenAlertCandidate(candidate({
     name: '<script>alert(1)</script>',
     symbol: 'R&K',
@@ -158,9 +158,14 @@ test('formatter escapes GMGN text, renders optional holder fallback, and links v
 
   assert.doesNotMatch(message, /<script>/);
   assert.match(message, /&lt;script&gt;alert\(1\)&lt;\/script&gt;/);
-  assert.match(message, /R&amp;K/);
-  assert.match(message, /TH:\s+<b>N\/A<\/b>/);
-  assert.match(message, /Dex Paid:\s+<b>🟢<\/b>/);
+  assert.match(message, /<b>💊 R&amp;K • 30m<\/b>/);
+  assert.match(message, /┌ <b>MARKET<\/b>/);
+  assert.match(message, /┌ <b>ACTIVITY<\/b>/);
+  assert.match(message, /┌ <b>STATUS<\/b>/);
+  assert.match(message, /<code>Wallets\s+:<\/code> <b>N\/A<\/b>/);
+  assert.match(message, /<code>Dex Paid\s+:<\/code> <b>Yes<\/b>/);
+  assert.match(message, /└ 🟢 <b>QUALIFIED<\/b>/);
+  assert.match(message, /<b>CA<\/b>\n<code>Gt8Jhih/);
   assert.match(message, new RegExp(`https://gmgn\\.ai/sol/token/${MINT}`));
 });
 
@@ -170,7 +175,7 @@ test('formatter ignores malformed holder percentages', () => {
     ...normalized,
     topHolderPercentages: [null, 'bad', 0, -1],
   });
-  assert.match(message, /TH:\s+<b>N\/A<\/b>/);
+  assert.match(message, /<code>Wallets\s+:<\/code> <b>N\/A<\/b>/);
 });
 
 function createServiceHarness({
@@ -267,7 +272,7 @@ test('total-fees gate runs before optional holder enrichment', async () => {
   assert.equal(holderCalls, 0);
 });
 
-test('holder enrichment failure still sends alert with TH N/A', async () => {
+test('holder enrichment failure still sends alert with Wallets N/A', async () => {
   let message = '';
   const state = {};
   const service = createTokenAlertService({
@@ -290,7 +295,7 @@ test('holder enrichment failure still sends alert with TH N/A', async () => {
 
   const summary = await service.scanOnce({ source: 'holder-optional' });
   assert.equal(summary.alerted, 1);
-  assert.match(message, /TH:\s+<b>N\/A<\/b>/);
+  assert.match(message, /<code>Wallets\s+:<\/code> <b>N\/A<\/b>/);
 });
 
 test('scan sorts by volume and processes no more than maxPerScan', async () => {
