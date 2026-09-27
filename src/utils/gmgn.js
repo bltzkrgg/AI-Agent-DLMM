@@ -89,12 +89,12 @@ function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
-function cacheKey(subPath, address) {
-  return `${subPath}:${address || ''}`;
+function cacheKey(subPath, address, chain = GMGN_CHAIN) {
+  return `${chain}:${subPath}:${address || ''}`;
 }
 
-function getCached(subPath, address) {
-  const key = cacheKey(subPath, address);
+function getCached(subPath, address, chain = GMGN_CHAIN) {
+  const key = cacheKey(subPath, address, chain);
   const item = _gmgnCache.get(key);
   if (!item) return null;
   if ((Date.now() - item.ts) > GMGN_CACHE_TTL_MS) {
@@ -104,8 +104,8 @@ function getCached(subPath, address) {
   return item.value;
 }
 
-function setCached(subPath, address, value) {
-  const key = cacheKey(subPath, address);
+function setCached(subPath, address, value, chain = GMGN_CHAIN) {
+  const key = cacheKey(subPath, address, chain);
   _gmgnCache.set(key, { ts: Date.now(), value });
 }
 
@@ -134,9 +134,9 @@ function buildAuthParams() {
   };
 }
 
-function buildUrl(subPath, extraParams = {}) {
+function buildUrl(subPath, extraParams = {}, chain = GMGN_CHAIN) {
   const params = new URLSearchParams({
-    chain: GMGN_CHAIN,
+    chain,
     ...extraParams,
     ...buildAuthParams(),
   });
@@ -145,7 +145,7 @@ function buildUrl(subPath, extraParams = {}) {
 
 // ─── Core fetch wrapper ──────────────────────────────────────────
 
-async function gmgnFetch(subPath, extraParams = {}, { strict = false } = {}) {
+async function gmgnFetch(subPath, extraParams = {}, { strict = false, chain = GMGN_CHAIN } = {}) {
   const apiKey = process.env.GMGN_API_KEY;
   if (!apiKey) {
     return failGmgnRequest(
@@ -174,7 +174,7 @@ async function gmgnFetch(subPath, extraParams = {}, { strict = false } = {}) {
       if (waitMs > 0) await sleep(waitMs);
 
       try {
-        const url = buildUrl(subPath, extraParams);
+        const url = buildUrl(subPath, extraParams, chain);
         _gmgnLastRequestAt = Date.now();
         const res = await fetchWithTimeout(url, {
           headers: {
@@ -359,6 +359,66 @@ export async function getGmgnTopHolders(mint, { limit = 20 } = {}) {
   const normalized = Array.isArray(rows) ? rows : [];
   if (normalized.length > 0) {
     setCached('/v1/market/token_top_holders', cacheAddress, normalized);
+  }
+  return normalized;
+}
+
+/**
+ * Robinhood Chain variants use the same OpenAPI endpoints with chain=robinhood.
+ */
+export async function getGmgnRobinhoodTokenInfo(address, { strict = false } = {}) {
+  if (!address || typeof address !== 'string') return null;
+  const chain = 'robinhood';
+  const cached = getCached('/v1/token/info', address, chain);
+  if (cached) return cached;
+  const data = await gmgnFetch('/v1/token/info', { address }, { strict, chain });
+  if (data) setCached('/v1/token/info', address, data, chain);
+  return data;
+}
+
+export async function getGmgnRobinhoodTrendingTokens({
+  interval = '5m',
+  limit = 100,
+  minVolumeUsd,
+  minTotalFeesEth,
+  strict = true,
+} = {}) {
+  const filters = {};
+  if (Number.isFinite(Number(minVolumeUsd))) filters.min_volume = String(Number(minVolumeUsd));
+  if (Number.isFinite(Number(minTotalFeesEth))) filters.min_total_fee = String(Number(minTotalFeesEth));
+
+  const data = await gmgnFetch('/v1/market/rank', {
+    interval,
+    order_by: 'volume',
+    direction: 'desc',
+    limit: String(Math.max(1, Math.min(100, Number(limit) || 100))),
+    ...filters,
+  }, { strict, chain: 'robinhood' });
+
+  if (Array.isArray(data)) return data;
+  const rows = data?.rank || data?.list || data?.items || data?.tokens;
+  return Array.isArray(rows) ? rows : [];
+}
+
+export async function getGmgnRobinhoodTopHolders(address, { limit = 20 } = {}) {
+  if (!address || typeof address !== 'string') return [];
+  const chain = 'robinhood';
+  const cacheAddress = `${address}:${Math.max(1, Number(limit) || 20)}`;
+  const cached = getCached('/v1/market/token_top_holders', cacheAddress, chain);
+  if (cached) return cached;
+
+  const data = await gmgnFetch('/v1/market/token_top_holders', {
+    address,
+    limit: String(Math.max(1, Math.min(100, Number(limit) || 20))),
+    order_by: 'amount_percentage',
+    direction: 'desc',
+  }, { chain });
+  const rows = Array.isArray(data)
+    ? data
+    : data?.holders || data?.list || data?.items || data?.data;
+  const normalized = Array.isArray(rows) ? rows : [];
+  if (normalized.length > 0) {
+    setCached('/v1/market/token_top_holders', cacheAddress, normalized, chain);
   }
   return normalized;
 }

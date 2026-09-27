@@ -174,6 +174,13 @@ const DEFAULTS = {
   tokenAlertsMaxAgeMin:           30,
   tokenAlertsMaxPerScan:          5,
 
+  // ── Read-only GMGN Robinhood Chain Alerts ────────────────────────────────
+  robinhoodAlertsEnabled:             false,
+  robinhoodAlertsPollIntervalSec:     60,
+  robinhoodAlertsMinVolume5mUsd:      100000,
+  robinhoodAlertsMinTotalFeesEth:     0.1,
+  robinhoodAlertsMaxPerScan:          5,
+
   // ── Evil Panda Position ───────────────────────────────────────────────────
   slippageBps:            250,
   dlmmLiquidityShape:     'spot',
@@ -303,6 +310,11 @@ const CONFIG_BOUNDS = {
   tokenAlertsMinTotalFeesSol:     { min: 0, max: 1_000_000 },
   tokenAlertsMaxAgeMin:           { min: 1, max: 1440 },
   tokenAlertsMaxPerScan:          { min: 1, max: 20 },
+  robinhoodAlertsEnabled:             { type: 'boolean' },
+  robinhoodAlertsPollIntervalSec:     { min: 15, max: 300 },
+  robinhoodAlertsMinVolume5mUsd:      { min: 0, max: 1_000_000_000 },
+  robinhoodAlertsMinTotalFeesEth:     { min: 0, max: 1_000_000 },
+  robinhoodAlertsMaxPerScan:          { min: 1, max: 20 },
   slippageBps:            { min: 10,    max: 1000 },
   dlmmLiquidityShape:     { type: 'string' },
   stopLossPct:            { min: 1,     max: 50 },
@@ -493,6 +505,14 @@ const NESTED_SECTION_MAP = {
     minTotalFeesSol:    'tokenAlertsMinTotalFeesSol',
     maxAgeMin:          'tokenAlertsMaxAgeMin',
     maxPerScan:         'tokenAlertsMaxPerScan',
+  },
+
+  robinhoodAlerts: {
+    enabled:            'robinhoodAlertsEnabled',
+    pollIntervalSec:    'robinhoodAlertsPollIntervalSec',
+    minVolume5mUsd:     'robinhoodAlertsMinVolume5mUsd',
+    minTotalFeesEth:    'robinhoodAlertsMinTotalFeesEth',
+    maxPerScan:         'robinhoodAlertsMaxPerScan',
   },
 
   // llm: override oleh process.env (lihat akhir flattenUserConfig)
@@ -706,6 +726,11 @@ export const SETCONFIG_WHITELIST = {
   tokenAlertsMinTotalFeesSol:     { section: 'tokenAlerts', type: 'number',  desc: 'Minimum total fees GMGN (SOL)' },
   tokenAlertsMaxAgeMin:           { section: 'tokenAlerts', type: 'number',  desc: 'Umur maksimum sejak DEX open/migration (menit)' },
   tokenAlertsMaxPerScan:          { section: 'tokenAlerts', type: 'number',  desc: 'Maksimum alert yang diproses per scan' },
+  robinhoodAlertsEnabled:             { section: 'robinhoodAlerts', type: 'boolean', desc: 'Aktifkan runner token GMGN Robinhood Chain' },
+  robinhoodAlertsPollIntervalSec:     { section: 'robinhoodAlerts', type: 'number',  desc: 'Interval polling GMGN Robinhood (detik, 15–300)' },
+  robinhoodAlertsMinVolume5mUsd:      { section: 'robinhoodAlerts', type: 'number',  desc: 'Minimum volume rolling 5 menit (USD)' },
+  robinhoodAlertsMinTotalFeesEth:     { section: 'robinhoodAlerts', type: 'number',  desc: 'Minimum total fees GMGN (ETH)' },
+  robinhoodAlertsMaxPerScan:          { section: 'robinhoodAlerts', type: 'number',  desc: 'Maksimum alert Robinhood per scan' },
 
   // ── Entry Final Sanity ─────────────────────────────────────────
   entryDecisionMode:      { section: 'entry',              type: 'string',  desc: 'Mode keputusan entry: strict/lp_simple_m15' },

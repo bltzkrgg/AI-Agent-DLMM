@@ -39,6 +39,10 @@ test('config rejects unknown keys and merges nested signal weights safely', asyn
   assert.equal(configModule.resolveNestedKey('tokenAlerts.minTotalFeesSol')?.flatKey, 'tokenAlertsMinTotalFeesSol');
   assert.equal(configModule.resolveNestedKey('tokenAlerts.maxAgeMin')?.flatKey, 'tokenAlertsMaxAgeMin');
   assert.equal(configModule.resolveNestedKey('tokenAlerts.maxPerScan')?.flatKey, 'tokenAlertsMaxPerScan');
+  assert.equal(configModule.isConfigKeySupported('robinhoodAlertsEnabled'), true);
+  assert.equal(configModule.resolveNestedKey('robinhoodAlerts.enabled')?.flatKey, 'robinhoodAlertsEnabled');
+  assert.equal(configModule.resolveNestedKey('robinhoodAlerts.minVolume5mUsd')?.flatKey, 'robinhoodAlertsMinVolume5mUsd');
+  assert.equal(configModule.resolveNestedKey('robinhoodAlerts.minTotalFeesEth')?.flatKey, 'robinhoodAlertsMinTotalFeesEth');
   assert.equal(configModule.isConfigKeySupported('totallyUnknownKey'), false);
 
   assert.equal(configModule.resolveNestedKey('strategy.outOfRangeWaitMinutes')?.flatKey, 'outOfRangeWaitMinutes');
@@ -201,6 +205,11 @@ test('safer defaults stay conservative for real-capital usage', async () => {
   assert.equal(cfg.tokenAlertsMinTotalFeesSol, 10);
   assert.equal(cfg.tokenAlertsMaxAgeMin, 30);
   assert.equal(cfg.tokenAlertsMaxPerScan, 5);
+  assert.equal(cfg.robinhoodAlertsEnabled, false);
+  assert.equal(cfg.robinhoodAlertsPollIntervalSec, 60);
+  assert.equal(cfg.robinhoodAlertsMinVolume5mUsd, 100000);
+  assert.equal(cfg.robinhoodAlertsMinTotalFeesEth, 0.1);
+  assert.equal(cfg.robinhoodAlertsMaxPerScan, 5);
   assert.equal(cfg.gmgnEnabled, true);
   assert.equal(cfg.gmgnMinTotalFeesSol, 30);
   assert.equal(cfg.gmgnTop10HolderMaxPct, 30);
@@ -252,6 +261,11 @@ test('user-config.example includes pool pattern learning keys', () => {
   assert.equal(parsed.tokenAlertsMinTotalFeesSol, 10);
   assert.equal(parsed.tokenAlertsMaxAgeMin, 30);
   assert.equal(parsed.tokenAlertsMaxPerScan, 5);
+  assert.equal(parsed.robinhoodAlertsEnabled, false);
+  assert.equal(parsed.robinhoodAlertsPollIntervalSec, 60);
+  assert.equal(parsed.robinhoodAlertsMinVolume5mUsd, 100000);
+  assert.equal(parsed.robinhoodAlertsMinTotalFeesEth, 0.1);
+  assert.equal(parsed.robinhoodAlertsMaxPerScan, 5);
   assert.equal(parsed.gmgnEnabled, true);
   assert.equal(parsed.gmgnMinTotalFeesSol, 30);
   assert.equal(parsed.gmgnTop10HolderMaxPct, 30);
@@ -666,6 +680,11 @@ test('/setconfig whitelist is curated for operational keys only', async () => {
   assert.equal(keys.includes('tokenAlertsMinTotalFeesSol'), true);
   assert.equal(keys.includes('tokenAlertsMaxAgeMin'), true);
   assert.equal(keys.includes('tokenAlertsMaxPerScan'), true);
+  assert.equal(keys.includes('robinhoodAlertsEnabled'), true);
+  assert.equal(keys.includes('robinhoodAlertsPollIntervalSec'), true);
+  assert.equal(keys.includes('robinhoodAlertsMinVolume5mUsd'), true);
+  assert.equal(keys.includes('robinhoodAlertsMinTotalFeesEth'), true);
+  assert.equal(keys.includes('robinhoodAlertsMaxPerScan'), true);
   assert.equal(keys.includes('entryRequireGreenCandle'), false);
   assert.equal(keys.includes('entryVolumeLookbackCandles'), false);
 

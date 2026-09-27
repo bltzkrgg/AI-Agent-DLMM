@@ -34,8 +34,16 @@ import { startDeployQueueWatcher, stopDeployQueueWatcher, setDeployQueueNotifyFn
 import { deployPosition } from './sniper/evilPanda.js';
 import { sendImmediateTopPoolsReport }    from './agents/hunterAlpha.js';
 import { formatPaperPositionsTelegram }  from './paper/paperReporting.js';
-import { getGmgnTopHolders, getGmgnTokenInfo, getGmgnTrendingTokens } from './utils/gmgn.js';
+import {
+  getGmgnRobinhoodTokenInfo,
+  getGmgnRobinhoodTopHolders,
+  getGmgnRobinhoodTrendingTokens,
+  getGmgnTopHolders,
+  getGmgnTokenInfo,
+  getGmgnTrendingTokens,
+} from './utils/gmgn.js';
 import { createTokenAlertService } from './alerts/tokenAlerts.js';
+import { createRobinhoodTokenAlertService } from './alerts/robinhoodTokenAlerts.js';
 
 // ── PID Lock — cegah multiple instance ───────────────────────────
 const PID_FILE = new URL('../bot.pid', import.meta.url).pathname;
@@ -265,6 +273,7 @@ function buildSetconfigHelpSections() {
     `<b>💰 Finance:</b>\n${bySection('finance')}\n\n` +
     `<b>🔍 Discovery:</b>\n${bySection('discovery')}\n\n` +
     `<b>💊 Token Alerts:</b>\n${bySection('tokenAlerts')}\n\n` +
+    `<b>🏹 Robinhood Runner:</b>\n${bySection('robinhoodAlerts')}\n\n` +
     `<b>🎯 Strategy:</b>\n${bySection('strategy')}`,
     `<b>🕯️ Entry:</b>\n${bySection('entry')}\n\n` +
     `<b>👀 Watch:</b>\n${bySection('watch')}\n\n` +
@@ -295,7 +304,8 @@ function buildSetconfigSectionMenu() {
     text: `⚙️ <b>AI-Agent-DLMM Config</b>\n\n` +
       `Pilih section:\n` +
       `[ Finance ] [ Discovery ]\n` +
-      `[ Token Alerts ] [ Strategy ]\n` +
+      `[ Token Alerts ] [ Robinhood ]\n` +
+      `[ Strategy ]\n` +
       `[ Entry ] [ Watch ]\n` +
       `[ OOR ]\n` +
       `[ Pool Impact Guard ]\n` +
@@ -312,6 +322,9 @@ function buildSetconfigSectionMenu() {
           ],
           [
             { text: 'Token Alerts', callback_data: 'setconfig_section:tokenAlerts' },
+            { text: 'Robinhood', callback_data: 'setconfig_section:robinhoodAlerts' },
+          ],
+          [
             { text: 'Strategy', callback_data: 'setconfig_section:strategy' },
           ],
           [
@@ -346,6 +359,7 @@ function buildStartCommandPanel() {
       `/screening — scan manual top pool\n` +
       `/autoscreen — on/off auto-screening\n` +
       `/tokenalerts — alert token baru GMGN\n` +
+      `/robinhood — runner token Robinhood Chain\n` +
       `/manualexit — on/off TA-only exit untuk /ca manual\n` +
       `/ca — kirim CA / pool Meteora / cek posisi aktif\n` +
       `/evolve — saran config dari harvest.log\n` +
@@ -374,6 +388,9 @@ function buildStartCommandPanel() {
           [
             { text: '/autoscreen', callback_data: 'cmd:/autoscreen' },
             { text: '/tokenalerts', callback_data: 'cmd:/tokenalerts' },
+          ],
+          [
+            { text: '/robinhood', callback_data: 'cmd:/robinhood' },
           ],
           [
             { text: '/manualexit', callback_data: 'cmd:/manualexit' },
@@ -427,6 +444,9 @@ function buildActivationLaunchPanel() {
             { text: 'Token Alerts ON', callback_data: 'cmd:/tokenalerts on' },
           ],
           [
+            { text: 'Robinhood Runner ON', callback_data: 'cmd:/robinhood on' },
+          ],
+          [
             { text: 'Start', callback_data: 'cmd:/start' },
           ],
         ],
@@ -440,6 +460,7 @@ function buildSetconfigSectionDetail(section) {
     finance: '💰 Finance',
     discovery: '🔍 Discovery',
     tokenAlerts: '💊 Token Alerts',
+    robinhoodAlerts: '🏹 Robinhood Runner',
     strategy: '🎯 Strategy',
     entry: '🕯️ Entry',
     watch: '👀 Watch',
@@ -474,6 +495,13 @@ function buildSetconfigSectionDetail(section) {
       '/setconfig tokenAlerts.minTotalFeesSol 10',
       '/setconfig tokenAlerts.maxAgeMin 30',
       '/setconfig tokenAlerts.maxPerScan 5',
+    ],
+    robinhoodAlerts: [
+      '/setconfig robinhoodAlerts.enabled true',
+      '/setconfig robinhoodAlerts.pollIntervalSec 60',
+      '/setconfig robinhoodAlerts.minVolume5mUsd 100000',
+      '/setconfig robinhoodAlerts.minTotalFeesEth 0.1',
+      '/setconfig robinhoodAlerts.maxPerScan 5',
     ],
     strategy: [
       '/setconfig strategy.liquidityShape bidask',
@@ -657,12 +685,39 @@ const tokenAlertService = createTokenAlertService({
   setState: (key, value) => setRuntimeCollection(key, value),
 });
 
+const robinhoodAlertService = createRobinhoodTokenAlertService({
+  fetchTrending: getGmgnRobinhoodTrendingTokens,
+  fetchTokenInfo: getGmgnRobinhoodTokenInfo,
+  fetchHolders: getGmgnRobinhoodTopHolders,
+  sendAlert: (message, { address }) => sendLong(CHAT_ID, message, {
+    parse_mode: 'HTML',
+    disable_web_page_preview: true,
+    reply_markup: {
+      inline_keyboard: [[
+        { text: 'GMGN', url: `https://gmgn.ai/robinhood/token/${address}` },
+        { text: 'Explorer', url: `https://robinhoodchain.blockscout.com/address/${address}` },
+      ]],
+    },
+  }),
+  getConfig,
+  getState: (key) => getRuntimeCollection(key),
+  setState: (key, value) => setRuntimeCollection(key, value),
+});
+
 function startTokenAlerts() {
   return tokenAlertService.start();
 }
 
 function stopTokenAlerts() {
   return tokenAlertService.stop();
+}
+
+function startRobinhoodAlerts() {
+  return robinhoodAlertService.start();
+}
+
+function stopRobinhoodAlerts() {
+  return robinhoodAlertService.stop();
 }
 
 function formatCompactThreshold(value) {
@@ -697,6 +752,35 @@ function formatTokenAlertRejections(rejected = {}) {
     .slice(0, 6)
     .map(([reason, count]) => `${reason}=${count}`)
     .join(' | ');
+}
+
+function buildRobinhoodAlertsPanel() {
+  const cfg = getConfig();
+  const runtime = robinhoodAlertService.status();
+  const enabled = cfg.robinhoodAlertsEnabled === true;
+  return {
+    text:
+      `💊 <b>Robinhood Token Runner</b>\n\n` +
+      `Status: <code>${enabled ? 'ON' : 'OFF'}</code>\n` +
+      `Runtime: <code>${runtime.running ? 'RUNNING' : 'STOPPED'}</code>\n` +
+      `Source: <code>GMGN / Robinhood Chain</code>\n` +
+      `Volume 5m: <code>&gt;= ${formatCompactThreshold(cfg.robinhoodAlertsMinVolume5mUsd)}</code>\n` +
+      `Total Fees: <code>&gt;= ${cfg.robinhoodAlertsMinTotalFeesEth} ETH</code>\n` +
+      `Poll: <code>${cfg.robinhoodAlertsPollIntervalSec}s</code>\n\n` +
+      `<i>Saat ON, runner memantau otomatis dan hanya mengirim token yang lolos. Read-only.</i>`,
+    opts: {
+      parse_mode: 'HTML',
+      reply_markup: {
+        inline_keyboard: [
+          [{
+            text: enabled ? 'Stop Runner' : 'Activate Runner',
+            callback_data: enabled ? 'cmd:/robinhood off' : 'cmd:/robinhood on',
+          }],
+          [{ text: 'Scan Now', callback_data: 'cmd:/robinhood scan' }],
+        ],
+      },
+    },
+  };
 }
 
 // Register notify ke hunterAlpha
@@ -973,6 +1057,50 @@ bot.onText(/\/tokenalerts(?:\s+(status|on|off|scan))?$/, async (msg, match) => {
   );
 });
 
+bot.onText(/\/robinhood(?:\s+(status|on|off|scan))?$/, async (msg, match) => {
+  if (!guard(msg)) return;
+  const chatId = msg.chat.id;
+  const action = String(match?.[1] || 'status').toLowerCase();
+
+  if (action === 'status') {
+    const panel = buildRobinhoodAlertsPanel();
+    await bot.sendMessage(chatId, panel.text, panel.opts);
+    return;
+  }
+
+  if (action === 'off') {
+    updateConfig({ robinhoodAlertsEnabled: false });
+    stopRobinhoodAlerts();
+    const panel = buildRobinhoodAlertsPanel();
+    await bot.sendMessage(chatId, panel.text, panel.opts);
+    return;
+  }
+
+  if (action === 'on') {
+    updateConfig({ robinhoodAlertsEnabled: true });
+    startRobinhoodAlerts();
+    const panel = buildRobinhoodAlertsPanel();
+    await bot.sendMessage(chatId, panel.text, panel.opts);
+    robinhoodAlertService.scanOnce({ source: 'telegram_on' }).catch((error) => {
+      console.warn(`[robinhood-alerts] activation scan failed: ${error.message}`);
+    });
+    return;
+  }
+
+  const summary = await robinhoodAlertService.scanOnce({ source: 'telegram_scan' });
+  const rejected = formatTokenAlertRejections(summary.rejected);
+  await bot.sendMessage(
+    chatId,
+    `💊 <b>Robinhood Scan</b>\n` +
+    `Fetched: <code>${summary.fetched}</code> | Qualified: <code>${summary.eligible}</code>\n` +
+    `Alerted: <code>${summary.alerted}</code> | Skipped: <code>${summary.skipped}</code> | Failed: <code>${summary.failed}</code>\n` +
+    `Status: <code>${escapeHTML(summary.status || 'UNKNOWN')}</code>` +
+    (rejected ? `\nRejected: <code>${escapeHTML(rejected)}</code>` : '') +
+    (summary.errorCode ? `\nError: <code>${escapeHTML(summary.errorCode)}</code>` : ''),
+    { parse_mode: 'HTML' }
+  );
+});
+
 // /hunt — mulai loop
 bot.onText(/\/hunt/, async (msg) => {
   if (!guard(msg)) return;
@@ -1196,12 +1324,21 @@ bot.onText(/\/config/, (msg) => {
     `pollIntervalSec       = ${cfg.tokenAlertsPollIntervalSec}`,
     `maxPerScan            = ${cfg.tokenAlertsMaxPerScan}`,
   ].join('\n');
+  const robinhoodAlerts = [
+    `enabled               = ${cfg.robinhoodAlertsEnabled}`,
+    `runtime               = ${robinhoodAlertService.status().running ? 'RUNNING' : 'STOPPED'}`,
+    `minVolume5mUsd        = ${cfg.robinhoodAlertsMinVolume5mUsd}`,
+    `minTotalFeesEth       = ${cfg.robinhoodAlertsMinTotalFeesEth}`,
+    `pollIntervalSec       = ${cfg.robinhoodAlertsPollIntervalSec}`,
+    `maxPerScan            = ${cfg.robinhoodAlertsMaxPerScan}`,
+  ].join('\n');
 
   bot.sendMessage(msg.chat.id,
     `⚙️ <b>AI-Agent-DLMM Config</b>\n\n` +
     `<b>💰 Finance</b>\n<pre><code>${finance}</code></pre>\n` +
     `<b>🔍 Discovery</b>\n<pre><code>${discovery}</code></pre>\n` +
     `<b>💊 Token Alerts</b>\n<pre><code>${tokenAlerts}</code></pre>\n` +
+    `<b>🏹 Robinhood Runner</b>\n<pre><code>${robinhoodAlerts}</code></pre>\n` +
     `<b>🎯 Strategy</b>\n<pre><code>${strategy}</code></pre>\n` +
     `<b>📉 OOR</b>\n<pre><code>${oor}</code></pre>\n` +
     `<b>🩺 Management</b>\n<pre><code>${management}</code></pre>\n` +
@@ -1380,6 +1517,32 @@ bot.onText(/\/setconfig(?:\s+(\S+))?(?:\s+(.+))?/, async (msg, match) => {
     bot.sendMessage(
       chatId,
       `✅ <b>Token Alerts interval diupdate</b>\n` +
+      `Sebelum: <code>${before}s</code> | Sesudah: <code>${after}s</code>`,
+      { parse_mode: 'HTML' }
+    );
+    return;
+  }
+
+  if (flatKey === 'robinhoodAlertsEnabled') {
+    if (parsed === true) {
+      startRobinhoodAlerts();
+      robinhoodAlertService.scanOnce({ source: 'setconfig_on' }).catch((error) => {
+        console.warn(`[robinhood-alerts] setconfig activation scan failed: ${error.message}`);
+      });
+    } else {
+      stopRobinhoodAlerts();
+    }
+    const panel = buildRobinhoodAlertsPanel();
+    await bot.sendMessage(chatId, panel.text, panel.opts);
+    return;
+  }
+
+  if (flatKey === 'robinhoodAlertsPollIntervalSec' && robinhoodAlertService.status().running) {
+    stopRobinhoodAlerts();
+    startRobinhoodAlerts();
+    bot.sendMessage(
+      chatId,
+      `✅ <b>Robinhood Runner interval diupdate</b>\n` +
       `Sebelum: <code>${before}s</code> | Sesudah: <code>${after}s</code>`,
       { parse_mode: 'HTML' }
     );
@@ -2046,6 +2209,7 @@ async function shutdown(signal) {
   stopTaWatchWatcher();
   stopDeployQueueWatcher();
   stopTokenAlerts();
+  stopRobinhoodAlerts();
   const active = Array.isArray(getActivePositions()) ? getActivePositions() : [];
   if (active.length > 0) {
     await notify(
@@ -2127,8 +2291,12 @@ setTimeout(async () => {
     const discoveryPaused = isDiscoveryPaused();
     const intervalMin = Number(cfg.screeningIntervalMin) || 15;
     const tokenAlertsConfigured = cfg.tokenAlertsEnabled === true;
+    const robinhoodAlertsConfigured = cfg.robinhoodAlertsEnabled === true;
     if (tokenAlertsConfigured) {
       startTokenAlerts();
+    }
+    if (robinhoodAlertsConfigured) {
+      startRobinhoodAlerts();
     }
 
     // Log startup Jupiter
@@ -2155,6 +2323,11 @@ setTimeout(async () => {
         `MC &gt; ${formatCompactThreshold(cfg.tokenAlertsMinMarketCapUsd)}, ` +
         `fees &gt;= ${cfg.tokenAlertsMinTotalFeesSol} SOL, age &lt;= ${cfg.tokenAlertsMaxAgeMin}m)</i>\n`
       : '\n') +
+    `Robinhood Runner: <code>${robinhoodAlertsConfigured ? 'ON' : 'OFF'}</code>` +
+    (robinhoodAlertsConfigured
+      ? ` <i>(5m vol &gt;= ${formatCompactThreshold(cfg.robinhoodAlertsMinVolume5mUsd)}, ` +
+        `fees &gt;= ${cfg.robinhoodAlertsMinTotalFeesEth} ETH)</i>\n`
+      : '\n') +
     `Discovery Priority: <code>${
       String(cfg.discoveryCategory || '').toLowerCase() === 'trending'
         ? 'activity-first'
@@ -2176,6 +2349,11 @@ setTimeout(async () => {
     if (tokenAlertsConfigured) {
       tokenAlertService.scanOnce({ source: 'startup' }).catch((error) => {
         console.warn(`[token-alerts] startup scan failed: ${error.message}`);
+      });
+    }
+    if (robinhoodAlertsConfigured) {
+      robinhoodAlertService.scanOnce({ source: 'startup' }).catch((error) => {
+        console.warn(`[robinhood-alerts] startup scan failed: ${error.message}`);
       });
     }
 

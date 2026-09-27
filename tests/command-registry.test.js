@@ -79,6 +79,21 @@ test('/tokenalerts is registered once and exposed in Telegram menus', () => {
   assert.match(content, /Detail: <code>\$\{escapeHTML\(summary\.error\)/);
 });
 
+test('/robinhood runner is registered once with activation and scan buttons', () => {
+  const indexPath = join(__dirname, '../src/index.js');
+  const content = readFileSync(indexPath, 'utf-8');
+  const matches = content.match(/bot\.onText\(\/\\\/robinhood/g) || [];
+
+  assert.equal(matches.length, 1);
+  assert.match(content, /\/robinhood — runner token Robinhood Chain/);
+  assert.match(content, /callback_data: 'cmd:\/robinhood'/);
+  assert.match(content, /callback_data: 'cmd:\/robinhood on'/);
+  assert.match(content, /callback_data: 'cmd:\/robinhood scan'/);
+  assert.match(content, /setconfig_section:robinhoodAlerts/);
+  assert.match(content, /Robinhood Runner: <code>\$\{robinhoodAlertsConfigured/);
+  assert.match(content, /robinhoodAlertService\.scanOnce\(\{ source: 'startup' \}\)/);
+});
+
 test('/strategy_report uses sendLong transport to avoid Telegram length limit issues', () => {
   const indexPath = join(__dirname, '../src/index.js');
   const content = readFileSync(indexPath, 'utf-8');
@@ -101,6 +116,7 @@ test('/config and startup messages expose realtime PnL interval', () => {
   assert.match(content, /setconfig_section:finance/);
   assert.match(content, /setconfig_section:discovery/);
   assert.match(content, /setconfig_section:tokenAlerts/);
+  assert.match(content, /setconfig_section:robinhoodAlerts/);
   assert.match(content, /setconfig_section:strategy/);
   assert.match(content, /setconfig_section:entry/);
   assert.match(content, /setconfig_section:watch/);

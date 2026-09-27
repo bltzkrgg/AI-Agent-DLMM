@@ -1,9 +1,45 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  getGmgnRobinhoodTrendingTokens,
   getGmgnTokenInfo,
   getGmgnTrendingTokens,
 } from '../src/utils/gmgn.js';
+
+test('GMGN Robinhood rank sends chain and both qualification filters', async () => {
+  const originalFetch = global.fetch;
+  const originalKey = process.env.GMGN_API_KEY;
+  const originalRetries = process.env.GMGN_MAX_RETRIES;
+  let requestedUrl = '';
+  process.env.GMGN_API_KEY = 'test-secret-key';
+  process.env.GMGN_MAX_RETRIES = '0';
+  global.fetch = async (url) => {
+    requestedUrl = String(url);
+    return new Response(JSON.stringify({ code: 0, data: { rank: [] } }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    });
+  };
+
+  try {
+    await getGmgnRobinhoodTrendingTokens({
+      minVolumeUsd: 100000,
+      minTotalFeesEth: 0.1,
+    });
+    const url = new URL(requestedUrl);
+    assert.equal(url.pathname, '/v1/market/rank');
+    assert.equal(url.searchParams.get('chain'), 'robinhood');
+    assert.equal(url.searchParams.get('interval'), '5m');
+    assert.equal(url.searchParams.get('min_volume'), '100000');
+    assert.equal(url.searchParams.get('min_total_fee'), '0.1');
+  } finally {
+    global.fetch = originalFetch;
+    if (originalKey == null) delete process.env.GMGN_API_KEY;
+    else process.env.GMGN_API_KEY = originalKey;
+    if (originalRetries == null) delete process.env.GMGN_MAX_RETRIES;
+    else process.env.GMGN_MAX_RETRIES = originalRetries;
+  }
+});
 
 test('GMGN market rank fails visibly when the API key is missing', async () => {
   const originalKey = process.env.GMGN_API_KEY;
