@@ -17,24 +17,27 @@ import { fetchWithTimeout } from './safeJson.js';
 
 const GMGN_HOST   = 'https://openapi.gmgn.ai';
 const GMGN_CHAIN  = 'sol';
-const GMGN_MAX_RPS = 2;
-const GMGN_MIN_INTERVAL_MS = Math.ceil(1000 / GMGN_MAX_RPS);
+const GMGN_MIN_INTERVAL_MS = 1400;
 const GMGN_CACHE_TTL_MS = 90_000;
 const GMGN_DEFAULT_TIMEOUT_MS = 8000;
 const GMGN_DEFAULT_MAX_RETRIES = 2;
 const GMGN_DEFAULT_REQUEST_DELAY_MS = GMGN_MIN_INTERVAL_MS;
+const GMGN_RATE_LIMIT_FALLBACK_MS = 5 * 60_000;
+const GMGN_RATE_LIMIT_BUFFER_MS = 1000;
 
 let _gmgnLastRequestAt = 0;
+let _gmgnRateLimitedUntil = 0;
 let _gmgnQueue = Promise.resolve();
 const _gmgnCache = new Map();
 let _dnsIpv4Forced = false;
 
 export class GmgnApiError extends Error {
-  constructor(code, message, { status = null } = {}) {
+  constructor(code, message, { status = null, retryAt = null } = {}) {
     super(message);
     this.name = 'GmgnApiError';
     this.code = code;
     this.status = status;
+    this.retryAt = retryAt;
   }
 }
 
@@ -87,6 +90,43 @@ function unwrapGmgnEnvelope(json, subPath, strict) {
 
 function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+function normalizeResetAtMs(value) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric) || numeric <= 0) return null;
+  return numeric < 10_000_000_000 ? numeric * 1000 : numeric;
+}
+
+function parseRetryAfterMs(value, nowMs) {
+  if (value == null || String(value).trim() === '') return null;
+  const seconds = Number(value);
+  if (Number.isFinite(seconds) && seconds >= 0) return nowMs + seconds * 1000;
+  const timestamp = Date.parse(String(value));
+  return Number.isFinite(timestamp) ? timestamp : null;
+}
+
+function findRateLimitPayload(json) {
+  let payload = json;
+  for (let depth = 0; depth < 4; depth++) {
+    if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return null;
+    const error = String(payload.error || payload.reason || '').toUpperCase();
+    if (Number(payload.code) === 429 || error.includes('RATE_LIMIT')) return payload;
+    payload = payload.data;
+  }
+  return null;
+}
+
+function getRateLimitResetAtMs(res, payload, nowMs = Date.now()) {
+  const candidates = [
+    normalizeResetAtMs(res.headers.get('x-ratelimit-reset')),
+    normalizeResetAtMs(payload?.reset_at),
+    parseRetryAfterMs(res.headers.get('retry-after'), nowMs),
+  ].filter((value) => Number.isFinite(value) && value > nowMs);
+  const resetAt = candidates.length > 0
+    ? Math.max(...candidates)
+    : nowMs + GMGN_RATE_LIMIT_FALLBACK_MS;
+  return resetAt + GMGN_RATE_LIMIT_BUFFER_MS;
 }
 
 function cacheKey(subPath, address, chain = GMGN_CHAIN) {
@@ -168,6 +208,16 @@ async function gmgnFetch(subPath, extraParams = {}, { strict = false, chain = GM
       ? Math.max(GMGN_MIN_INTERVAL_MS, Number(process.env.GMGN_REQUEST_DELAY_MS))
       : GMGN_DEFAULT_REQUEST_DELAY_MS;
 
+    if (Date.now() < _gmgnRateLimitedUntil) {
+      const retryAt = new Date(_gmgnRateLimitedUntil).toISOString();
+      return failGmgnRequest(
+        strict,
+        'GMGN_RATE_LIMITED',
+        `GMGN rate limit cooldown active until ${retryAt}`,
+        { status: 429, retryAt: _gmgnRateLimitedUntil }
+      );
+    }
+
     for (let attempt = 0; attempt <= maxRetries; attempt++) {
       const sinceLast = Date.now() - _gmgnLastRequestAt;
       const waitMs = Math.max(0, requestDelayMs - sinceLast);
@@ -206,37 +256,37 @@ async function gmgnFetch(subPath, extraParams = {}, { strict = false, chain = GM
           try {
             json = JSON.parse(raw);
           } catch {
-            console.warn(`[gmgn] ${subPath} non-JSON response. Status: ${res.status}. Body: ${raw.slice(0, 150)}`);
-            if (attempt < maxRetries) {
-              const backoffMs = Math.min(6_000, 700 * Math.pow(2, attempt));
-              await sleep(backoffMs);
-              continue;
+            if (res.status !== 429) {
+              console.warn(`[gmgn] ${subPath} non-JSON response. Status: ${res.status}. Body: ${raw.slice(0, 150)}`);
+              if (attempt < maxRetries) {
+                const backoffMs = Math.min(6_000, 700 * Math.pow(2, attempt));
+                await sleep(backoffMs);
+                continue;
+              }
+              console.warn(`[gmgn] ${subPath} non-JSON response after retries — skipping.`);
+              return failGmgnRequest(
+                strict,
+                'GMGN_NON_JSON_RESPONSE',
+                `GMGN returned a non-JSON response (HTTP ${res.status})`,
+                { status: res.status }
+              );
             }
-            console.warn(`[gmgn] ${subPath} non-JSON response after retries — skipping.`);
-            return failGmgnRequest(
-              strict,
-              'GMGN_NON_JSON_RESPONSE',
-              `GMGN returned a non-JSON response (HTTP ${res.status})`,
-              { status: res.status }
-            );
           }
         }
 
-        if (res.status === 429) {
-          if (attempt < maxRetries) {
-            const retryAfterSec = Number(res.headers.get('retry-after'));
-            const backoffMs = Number.isFinite(retryAfterSec)
-              ? retryAfterSec * 1000
-              : Math.min(15_000, 1_000 * Math.pow(2, attempt));
-            await sleep(backoffMs);
-            continue;
-          }
-          console.warn('[gmgn] Rate limited (429) after retries — skipping.');
+        const rateLimitPayload = findRateLimitPayload(json);
+        if (res.status === 429 || rateLimitPayload) {
+          _gmgnRateLimitedUntil = Math.max(
+            _gmgnRateLimitedUntil,
+            getRateLimitResetAtMs(res, rateLimitPayload || json)
+          );
+          const retryAt = new Date(_gmgnRateLimitedUntil).toISOString();
+          console.warn(`[gmgn] Rate limited; all GMGN requests paused until ${retryAt}.`);
           return failGmgnRequest(
             strict,
             'GMGN_RATE_LIMITED',
-            'GMGN rate limit reached (HTTP 429)',
-            { status: 429 }
+            `GMGN rate limit active until ${retryAt}`,
+            { status: 429, retryAt: _gmgnRateLimitedUntil }
           );
         }
 

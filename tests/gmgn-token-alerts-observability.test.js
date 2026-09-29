@@ -178,3 +178,55 @@ test('GMGN nested API errors remain visible to Token Alerts', async () => {
     else process.env.GMGN_MAX_RETRIES = originalRetries;
   }
 });
+
+test('GMGN rate limit creates a shared cooldown without retrying or extending the ban', async () => {
+  const originalFetch = global.fetch;
+  const originalKey = process.env.GMGN_API_KEY;
+  const originalRetries = process.env.GMGN_MAX_RETRIES;
+  const resetAt = Math.floor(Date.now() / 1000) + 60;
+  let fetchCalls = 0;
+  process.env.GMGN_API_KEY = 'test-secret-key';
+  process.env.GMGN_MAX_RETRIES = '2';
+  global.fetch = async () => {
+    fetchCalls += 1;
+    return new Response(JSON.stringify({
+      code: 429,
+      error: 'RATE_LIMIT_BANNED',
+      message: 'Too many requests',
+      reset_at: resetAt,
+    }), {
+      status: 429,
+      headers: {
+        'content-type': 'application/json',
+        'x-ratelimit-reset': String(resetAt),
+      },
+    });
+  };
+
+  try {
+    await assert.rejects(
+      getGmgnTrendingTokens(),
+      (error) => {
+        assert.equal(error?.code, 'GMGN_RATE_LIMITED');
+        assert.equal(error?.status, 429);
+        assert.ok(error?.retryAt >= resetAt * 1000);
+        return true;
+      }
+    );
+    await assert.rejects(
+      getGmgnRobinhoodTrendingTokens(),
+      (error) => {
+        assert.equal(error?.code, 'GMGN_RATE_LIMITED');
+        assert.match(error?.message || '', /cooldown active until/);
+        return true;
+      }
+    );
+    assert.equal(fetchCalls, 1);
+  } finally {
+    global.fetch = originalFetch;
+    if (originalKey == null) delete process.env.GMGN_API_KEY;
+    else process.env.GMGN_API_KEY = originalKey;
+    if (originalRetries == null) delete process.env.GMGN_MAX_RETRIES;
+    else process.env.GMGN_MAX_RETRIES = originalRetries;
+  }
+});

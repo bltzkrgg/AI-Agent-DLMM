@@ -1102,7 +1102,8 @@ bot.onText(/\/robinhood(?:\s+(status|on|off|scan))?$/, async (msg, match) => {
     `Alerted: <code>${summary.alerted}</code> | Skipped: <code>${summary.skipped}</code> | Failed: <code>${summary.failed}</code>\n` +
     `Status: <code>${escapeHTML(summary.status || 'UNKNOWN')}</code>` +
     (rejected ? `\nRejected: <code>${escapeHTML(rejected)}</code>` : '') +
-    (summary.errorCode ? `\nError: <code>${escapeHTML(summary.errorCode)}</code>` : ''),
+    (summary.errorCode ? `\nError: <code>${escapeHTML(summary.errorCode)}</code>` : '') +
+    (summary.error ? `\nDetail: <code>${escapeHTML(summary.error)}</code>` : ''),
     { parse_mode: 'HTML' }
   );
 });
