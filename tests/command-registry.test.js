@@ -68,9 +68,11 @@ test('/tokenalerts is registered once and exposed in Telegram menus', () => {
   const matches = content.match(/bot\.onText\(\/\\\/tokenalerts/g) || [];
 
   assert.equal(matches.length, 1);
-  assert.match(content, /\/tokenalerts — alert token baru GMGN/);
+  assert.match(content, /\/tokenalerts — runner token Solana/);
   assert.match(content, /callback_data: 'cmd:\/tokenalerts'/);
   assert.match(content, /callback_data: 'cmd:\/tokenalerts on'/);
+  assert.match(content, /Solana Token Runner/);
+  assert.match(content, /https:\/\/solscan\.io\/token\/\$\{mint\}/);
   assert.match(content, /setconfig_section:tokenAlerts/);
   assert.match(content, /Read-only: tidak masuk WATCH, queue, Jupiter, atau deploy Meteora/);
   assert.match(content, /Status: <code>\$\{escapeHTML\(summary\.status/);

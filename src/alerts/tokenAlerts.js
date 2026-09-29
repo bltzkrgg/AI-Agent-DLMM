@@ -251,6 +251,8 @@ export function formatTokenAlertMessage(alert = {}) {
   const dex = escapeHTML(formatDex(alert.exchange));
 
   return [
+    `🟣 <b>SOLANA TOKEN RUNNER</b>`,
+    '',
     `<b>💊 ${symbol} • ${ageMin == null ? 'N/A' : `${ageMin}m`}</b>`,
     `${name} | ${dex}`,
     '',
@@ -269,13 +271,11 @@ export function formatTokenAlertMessage(alert = {}) {
     `└ <code>Dex Paid  :</code> <b>${alert.dexPaid ? 'Yes' : 'No'}</b>`,
     '',
     `┌ <b>STATUS</b>`,
-    `└ 🟢 <b>QUALIFIED</b>`,
+    `└ 🟢 <b>SOLANA QUALIFIED</b>`,
     `   <code>VOL • MC • FEES • AGE</code>`,
     '',
     `<b>CA</b>`,
     `<code>${mint}</code>`,
-    '',
-    `🌐 <a href="https://gmgn.ai/sol/token/${mint}">GMGN ↗</a>`,
   ].join('\n');
 }
 

@@ -158,15 +158,16 @@ test('formatter renders the bold compact scanner layout and escapes GMGN text', 
 
   assert.doesNotMatch(message, /<script>/);
   assert.match(message, /&lt;script&gt;alert\(1\)&lt;\/script&gt;/);
+  assert.match(message, /🟣 <b>SOLANA TOKEN RUNNER<\/b>/);
   assert.match(message, /<b>💊 R&amp;K • 30m<\/b>/);
   assert.match(message, /┌ <b>MARKET<\/b>/);
   assert.match(message, /┌ <b>ACTIVITY<\/b>/);
   assert.match(message, /┌ <b>STATUS<\/b>/);
   assert.match(message, /<code>Wallets\s+:<\/code> <b>N\/A<\/b>/);
   assert.match(message, /<code>Dex Paid\s+:<\/code> <b>Yes<\/b>/);
-  assert.match(message, /└ 🟢 <b>QUALIFIED<\/b>/);
+  assert.match(message, /└ 🟢 <b>SOLANA QUALIFIED<\/b>/);
   assert.match(message, /<b>CA<\/b>\n<code>Gt8Jhih/);
-  assert.match(message, new RegExp(`https://gmgn\\.ai/sol/token/${MINT}`));
+  assert.doesNotMatch(message, /https?:\/\//);
 });
 
 test('formatter ignores malformed holder percentages', () => {

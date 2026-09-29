@@ -85,11 +85,13 @@ test('formatter renders Robinhood card, optional N/A fields, and escaped text', 
   }), CONFIG, {}, NOW).normalized;
   const message = formatRobinhoodTokenAlertMessage({ ...normalized, topHolderPercentages: [3.2, 2.5] });
 
+  assert.match(message, /🟢 <b>ROBINHOOD TOKEN RUNNER<\/b>/);
   assert.match(message, /<b>💊 R&amp;N • N\/A<\/b>/);
   assert.match(message, /&lt;Runner&gt; \| Uniswap V3/);
   assert.match(message, /<code>MC\s+:<\/code> <b>N\/A<\/b>/);
   assert.match(message, /<code>Fees\s+:<\/code> <b>0\.1 ETH<\/b>/);
   assert.match(message, /<code>VOL • FEES<\/code>/);
+  assert.match(message, /└ 🟢 <b>ROBINHOOD QUALIFIED<\/b>/);
   assert.match(message, new RegExp(`<code>${ADDRESS}</code>`));
 });
 

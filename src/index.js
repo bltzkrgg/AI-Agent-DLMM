@@ -272,8 +272,8 @@ function buildSetconfigHelpSections() {
     `atau:   <code>/setconfig [section].[key] [value]</code>\n\n` +
     `<b>💰 Finance:</b>\n${bySection('finance')}\n\n` +
     `<b>🔍 Discovery:</b>\n${bySection('discovery')}\n\n` +
-    `<b>💊 Token Alerts:</b>\n${bySection('tokenAlerts')}\n\n` +
-    `<b>🏹 Robinhood Runner:</b>\n${bySection('robinhoodAlerts')}\n\n` +
+    `<b>🟣 Solana Runner:</b>\n${bySection('tokenAlerts')}\n\n` +
+    `<b>🟢 Robinhood Runner:</b>\n${bySection('robinhoodAlerts')}\n\n` +
     `<b>🎯 Strategy:</b>\n${bySection('strategy')}`,
     `<b>🕯️ Entry:</b>\n${bySection('entry')}\n\n` +
     `<b>👀 Watch:</b>\n${bySection('watch')}\n\n` +
@@ -304,7 +304,7 @@ function buildSetconfigSectionMenu() {
     text: `⚙️ <b>AI-Agent-DLMM Config</b>\n\n` +
       `Pilih section:\n` +
       `[ Finance ] [ Discovery ]\n` +
-      `[ Token Alerts ] [ Robinhood ]\n` +
+      `[ Solana Runner ] [ Robinhood ]\n` +
       `[ Strategy ]\n` +
       `[ Entry ] [ Watch ]\n` +
       `[ OOR ]\n` +
@@ -321,7 +321,7 @@ function buildSetconfigSectionMenu() {
             { text: 'Discovery', callback_data: 'setconfig_section:discovery' },
           ],
           [
-            { text: 'Token Alerts', callback_data: 'setconfig_section:tokenAlerts' },
+            { text: 'Solana Runner', callback_data: 'setconfig_section:tokenAlerts' },
             { text: 'Robinhood', callback_data: 'setconfig_section:robinhoodAlerts' },
           ],
           [
@@ -358,7 +358,7 @@ function buildStartCommandPanel() {
       `/hunt — mulai loop\n` +
       `/screening — scan manual top pool\n` +
       `/autoscreen — on/off auto-screening\n` +
-      `/tokenalerts — alert token baru GMGN\n` +
+      `/tokenalerts — runner token Solana\n` +
       `/robinhood — runner token Robinhood Chain\n` +
       `/manualexit — on/off TA-only exit untuk /ca manual\n` +
       `/ca — kirim CA / pool Meteora / cek posisi aktif\n` +
@@ -441,7 +441,7 @@ function buildActivationLaunchPanel() {
             { text: 'Autoscreen ON', callback_data: 'cmd:/autoscreen on' },
           ],
           [
-            { text: 'Token Alerts ON', callback_data: 'cmd:/tokenalerts on' },
+            { text: 'Solana Runner ON', callback_data: 'cmd:/tokenalerts on' },
           ],
           [
             { text: 'Robinhood Runner ON', callback_data: 'cmd:/robinhood on' },
@@ -459,8 +459,8 @@ function buildSetconfigSectionDetail(section) {
   const titleMap = {
     finance: '💰 Finance',
     discovery: '🔍 Discovery',
-    tokenAlerts: '💊 Token Alerts',
-    robinhoodAlerts: '🏹 Robinhood Runner',
+    tokenAlerts: '🟣 Solana Runner',
+    robinhoodAlerts: '🟢 Robinhood Runner',
     strategy: '🎯 Strategy',
     entry: '🕯️ Entry',
     watch: '👀 Watch',
@@ -676,9 +676,15 @@ const tokenAlertService = createTokenAlertService({
   fetchTrending: getGmgnTrendingTokens,
   fetchTokenInfo: getGmgnTokenInfo,
   fetchHolders: getGmgnTopHolders,
-  sendAlert: (message) => sendLong(CHAT_ID, message, {
+  sendAlert: (message, { mint }) => sendLong(CHAT_ID, message, {
     parse_mode: 'HTML',
     disable_web_page_preview: true,
+    reply_markup: {
+      inline_keyboard: [[
+        { text: 'GMGN', url: `https://gmgn.ai/sol/token/${mint}` },
+        { text: 'Solscan', url: `https://solscan.io/token/${mint}` },
+      ]],
+    },
   }),
   getConfig,
   getState: (key) => getRuntimeCollection(key),
@@ -732,7 +738,7 @@ function formatTokenAlertsStatus() {
   const cfg = getConfig();
   const runtime = tokenAlertService.status();
   return (
-    `💊 <b>Token Alerts</b>\n\n` +
+    `🟣 <b>Solana Token Runner</b>\n\n` +
     `Configured: <code>${cfg.tokenAlertsEnabled ? 'ON' : 'OFF'}</code>\n` +
     `Runtime: <code>${runtime.running ? 'RUNNING' : 'STOPPED'}</code>\n` +
     `Source: <code>GMGN / Solana</code>\n` +
@@ -760,7 +766,7 @@ function buildRobinhoodAlertsPanel() {
   const enabled = cfg.robinhoodAlertsEnabled === true;
   return {
     text:
-      `💊 <b>Robinhood Token Runner</b>\n\n` +
+      `🟢 <b>Robinhood Token Runner</b>\n\n` +
       `Status: <code>${enabled ? 'ON' : 'OFF'}</code>\n` +
       `Runtime: <code>${runtime.running ? 'RUNNING' : 'STOPPED'}</code>\n` +
       `Source: <code>GMGN / Robinhood Chain</code>\n` +
@@ -1012,7 +1018,7 @@ bot.onText(/\/tokenalerts(?:\s+(status|on|off|scan))?$/, async (msg, match) => {
     stopTokenAlerts();
     await bot.sendMessage(
       chatId,
-      `🔕 <b>Token Alerts: OFF</b>\n` +
+      `🔕 <b>Solana Token Runner: OFF</b>\n` +
       `<i>Dedupe token yang sudah terkirim tetap disimpan.</i>`,
       { parse_mode: 'HTML' }
     );
@@ -1024,7 +1030,7 @@ bot.onText(/\/tokenalerts(?:\s+(status|on|off|scan))?$/, async (msg, match) => {
     startTokenAlerts();
     await bot.sendMessage(
       chatId,
-      `💊 <b>Token Alerts: ON</b>\n` +
+      `🟣 <b>Solana Token Runner: ON</b>\n` +
       `5m vol &gt;= <code>${formatCompactThreshold(cfg.tokenAlertsMinVolume5mUsd)}</code> | ` +
       `MC &gt; <code>${formatCompactThreshold(cfg.tokenAlertsMinMarketCapUsd)}</code> | ` +
       `fees &gt;= <code>${cfg.tokenAlertsMinTotalFeesSol} SOL</code> | ` +
@@ -1040,7 +1046,7 @@ bot.onText(/\/tokenalerts(?:\s+(status|on|off|scan))?$/, async (msg, match) => {
   const rejected = formatTokenAlertRejections(summary.rejected);
   await bot.sendMessage(
     chatId,
-    `💊 <b>Token Alerts Scan</b>\n` +
+    `🟣 <b>Solana Runner Scan</b>\n` +
     `Fetched: <code>${summary.fetched}</code> | Eligible: <code>${summary.eligible}</code>\n` +
     `Alerted: <code>${summary.alerted}</code> | Skipped: <code>${summary.skipped}</code> | Failed: <code>${summary.failed}</code>\n` +
     `Status: <code>${escapeHTML(summary.status || summary.reason || 'UNKNOWN')}</code>` +
@@ -1337,8 +1343,8 @@ bot.onText(/\/config/, (msg) => {
     `⚙️ <b>AI-Agent-DLMM Config</b>\n\n` +
     `<b>💰 Finance</b>\n<pre><code>${finance}</code></pre>\n` +
     `<b>🔍 Discovery</b>\n<pre><code>${discovery}</code></pre>\n` +
-    `<b>💊 Token Alerts</b>\n<pre><code>${tokenAlerts}</code></pre>\n` +
-    `<b>🏹 Robinhood Runner</b>\n<pre><code>${robinhoodAlerts}</code></pre>\n` +
+    `<b>🟣 Solana Runner</b>\n<pre><code>${tokenAlerts}</code></pre>\n` +
+    `<b>🟢 Robinhood Runner</b>\n<pre><code>${robinhoodAlerts}</code></pre>\n` +
     `<b>🎯 Strategy</b>\n<pre><code>${strategy}</code></pre>\n` +
     `<b>📉 OOR</b>\n<pre><code>${oor}</code></pre>\n` +
     `<b>🩺 Management</b>\n<pre><code>${management}</code></pre>\n` +
@@ -1496,7 +1502,7 @@ bot.onText(/\/setconfig(?:\s+(\S+))?(?:\s+(.+))?/, async (msg, match) => {
       const summary = await tokenAlertService.scanOnce({ source: 'setconfig_on' });
       bot.sendMessage(
         chatId,
-        `💊 <b>Token Alerts: ON</b>\n` +
+        `🟣 <b>Solana Token Runner: ON</b>\n` +
         `Runtime aktif. Scan awal: <code>${summary.alerted}</code> alert terkirim.`,
         { parse_mode: 'HTML' }
       );
@@ -1504,7 +1510,7 @@ bot.onText(/\/setconfig(?:\s+(\S+))?(?:\s+(.+))?/, async (msg, match) => {
       stopTokenAlerts();
       bot.sendMessage(
         chatId,
-        `🔕 <b>Token Alerts: OFF</b>\n<i>Dedupe tetap disimpan.</i>`,
+        `🔕 <b>Solana Token Runner: OFF</b>\n<i>Dedupe tetap disimpan.</i>`,
         { parse_mode: 'HTML' }
       );
     }
@@ -1516,7 +1522,7 @@ bot.onText(/\/setconfig(?:\s+(\S+))?(?:\s+(.+))?/, async (msg, match) => {
     startTokenAlerts();
     bot.sendMessage(
       chatId,
-      `✅ <b>Token Alerts interval diupdate</b>\n` +
+      `✅ <b>Solana Runner interval diupdate</b>\n` +
       `Sebelum: <code>${before}s</code> | Sesudah: <code>${after}s</code>`,
       { parse_mode: 'HTML' }
     );
@@ -2317,7 +2323,7 @@ setTimeout(async () => {
     `Watch Layer: <code>${cfg.taWatchEnabled === false ? 'OFF' : 'ON'}</code> | ` +
     `Radar: <code>${cfg.pendingRetestEnabled === false ? 'OFF' : 'ON'}</code>\n` +
     `Auto Screen: <code>${discoveryPaused ? 'OFF by /stop' : autoScr ? `ON (${cfg.screeningIntervalMin}m)` : 'OFF'}</code>\n` +
-    `Token Alerts: <code>${tokenAlertsConfigured ? 'ON' : 'OFF'}</code>` +
+    `Solana Runner: <code>${tokenAlertsConfigured ? 'ON' : 'OFF'}</code>` +
     (tokenAlertsConfigured
       ? ` <i>(5m vol &gt;= ${formatCompactThreshold(cfg.tokenAlertsMinVolume5mUsd)}, ` +
         `MC &gt; ${formatCompactThreshold(cfg.tokenAlertsMinMarketCapUsd)}, ` +

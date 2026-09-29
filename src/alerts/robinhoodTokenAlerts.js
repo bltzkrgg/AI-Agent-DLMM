@@ -164,6 +164,8 @@ export function formatRobinhoodTokenAlertMessage(alert = {}) {
     : '';
 
   return [
+    '🟢 <b>ROBINHOOD TOKEN RUNNER</b>',
+    '',
     `<b>💊 ${escapeHTML(alert.symbol || 'UNKNOWN')} • ${age}</b>`,
     `${escapeHTML(alert.name || 'Unknown')} | ${escapeHTML(formatDex(alert.exchange))}`,
     '',
@@ -182,7 +184,7 @@ export function formatRobinhoodTokenAlertMessage(alert = {}) {
     `└ <code>Dex Paid  :</code> <b>${alert.dexPaid ? 'Yes' : 'No'}</b>`,
     '',
     '┌ <b>STATUS</b>',
-    '└ 🟢 <b>QUALIFIED</b>',
+    '└ 🟢 <b>ROBINHOOD QUALIFIED</b>',
     '   <code>VOL • FEES</code>',
     '',
     '<b>CA</b>',
