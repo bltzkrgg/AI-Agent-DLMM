@@ -22,6 +22,7 @@ import { runLinearLoop, stopLoop, setNotifyFn, setNotifyMuted, isRunning, getCur
 import { getActivePositionCount, reconcileStartupPositions, EP_CONFIG } from './sniper/evilPanda.js';
 import { analyzePerformance, formatEvolutionReport }     from './learn/statelessEvolve.js';
 import { generateBriefing, formatActivePositionsTelegram } from './telegram/briefing.js';
+import { registerTelegramCommandMenu } from './telegram/commandMenu.js';
 import { readBlacklist, removeFromBlacklist, addToBlacklist, addToUnblocklist, isUnblocked, readUnblocklist, removeFromUnblocklist } from './learn/tokenBlacklist.js';
 import { validateRuntimeEnv }             from './runtime/env.js';
 import { safeNum, escapeHTML }            from './utils/safeJson.js';
@@ -2287,6 +2288,13 @@ bot.on('polling_error', (e) => {
 // ── Boot ──────────────────────────────────────────────────────────
 setTimeout(async () => {
   try {
+    try {
+      await registerTelegramCommandMenu(bot, CHAT_ID);
+      console.log('✅ Telegram command menu registered.');
+    } catch (error) {
+      console.warn(`[telegram] command menu registration failed: ${error.message}`);
+    }
+
     updateConfig({ dryRun: false });
     const reconcile = await reconcileStartupPositions();
     const restoredMonitors = spawnMonitorForRestoredPositions();
