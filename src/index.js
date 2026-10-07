@@ -744,6 +744,7 @@ function formatTokenAlertsStatus() {
     `Runtime: <code>${runtime.running ? 'RUNNING' : 'STOPPED'}</code>\n` +
     `Source: <code>GMGN / Solana</code>\n` +
     `Volume 5m: <code>&gt;= ${formatCompactThreshold(cfg.tokenAlertsMinVolume5mUsd)}</code>\n` +
+    `Volume Spike: <code>NEW TOP-100 atau &gt;= 3x baseline</code> | <code>&gt;= 50 swaps</code> | <code>&gt;= $10K liq</code>\n` +
     `Market Cap: <code>&gt; ${formatCompactThreshold(cfg.tokenAlertsMinMarketCapUsd)}</code>\n` +
     `Total Fees: <code>&gt;= ${cfg.tokenAlertsMinTotalFeesSol} SOL</code>\n` +
     `Max Age: <code>&lt;= ${cfg.tokenAlertsMaxAgeMin}m</code>\n` +
@@ -1049,7 +1050,7 @@ bot.onText(/\/tokenalerts(?:\s+(status|on|off|scan))?$/, async (msg, match) => {
     chatId,
     `🟣 <b>Solana Runner Scan</b>\n` +
     `Fetched: <code>${summary.fetched}</code> | Eligible: <code>${summary.eligible}</code>\n` +
-    `Alerted: <code>${summary.alerted}</code> | Skipped: <code>${summary.skipped}</code> | Failed: <code>${summary.failed}</code>\n` +
+    `Alerted: <code>${summary.alerted}</code> | Spikes: <code>${summary.spikeAlerted || 0}</code> | Skipped: <code>${summary.skipped}</code> | Failed: <code>${summary.failed}</code>\n` +
     `Status: <code>${escapeHTML(summary.status || summary.reason || 'UNKNOWN')}</code>` +
     (rejected
       ? `\nRejected: <code>${escapeHTML(rejected)}</code>`

@@ -3,6 +3,13 @@ import { escapeHTML } from '../utils/safeJson.js';
 
 const TOKEN_ALERTS_STATE_KEY = 'tokenAlertsSeen';
 const TOKEN_ALERTS_STATE_TTL_MS = 48 * 60 * 60 * 1000;
+const TOKEN_ALERTS_VOLUME_STATE_KEY = 'tokenAlertsVolumeSpikeState';
+const VOLUME_SPIKE_HISTORY_TTL_MS = 24 * 60 * 60 * 1000;
+const VOLUME_SPIKE_COOLDOWN_MS = 6 * 60 * 60 * 1000;
+const VOLUME_SPIKE_MIN_MULTIPLIER = 3;
+const VOLUME_SPIKE_MIN_SWAPS = 50;
+const VOLUME_SPIKE_MIN_LIQUIDITY_USD = 10_000;
+const VOLUME_SPIKE_HISTORY_LIMIT = 5;
 
 function finiteNumber(value) {
   if (typeof value !== 'number' && typeof value !== 'string') return null;
@@ -77,6 +84,11 @@ export function getTokenReferenceTimestamp(candidate = {}) {
   return normalizeTimestampMs(candidate.migrated_timestamp) ??
     normalizeTimestampMs(candidate.open_timestamp) ??
     normalizeTimestampMs(candidate.creation_timestamp);
+}
+
+function getMigrationTimestamp(candidate = {}) {
+  return normalizeTimestampMs(candidate.migrated_timestamp) ??
+    normalizeTimestampMs(candidate.open_timestamp);
 }
 
 function normalizeRankCandidate(candidate = {}, nowMs = Date.now()) {
@@ -167,6 +179,71 @@ export function evaluateTokenAlertCandidate(candidate, config = {}, nowMs = Date
     return { ...rankResult, eligible: false, reason: 'ALREADY_ALERTED' };
   }
   return rankResult;
+}
+
+function median(values) {
+  const sorted = values.filter(Number.isFinite).sort((a, b) => a - b);
+  if (sorted.length === 0) return null;
+  const middle = Math.floor(sorted.length / 2);
+  return sorted.length % 2 === 0
+    ? (sorted[middle - 1] + sorted[middle]) / 2
+    : sorted[middle];
+}
+
+export function evaluateVolumeSpikeCandidate(
+  candidate,
+  previousRecord,
+  config = {},
+  { nowMs = Date.now(), isNewListing = false, rank = null } = {}
+) {
+  const normalized = normalizeRankCandidate(candidate, nowMs);
+  const migrationTimestamp = getMigrationTimestamp(candidate);
+  const minVolume = Number(config?.tokenAlertsMinVolume5mUsd ?? 100000);
+  const previousVolumes = Array.isArray(previousRecord?.samples)
+    ? previousRecord.samples.map((sample) => finiteNumber(sample?.volume5mUsd))
+    : [];
+  const baselineVolume5mUsd = median(previousVolumes);
+  const spikeMultiplier = baselineVolume5mUsd != null && baselineVolume5mUsd > 0
+    ? normalized.volume5mUsd / baselineVolume5mUsd
+    : null;
+
+  const result = {
+    eligible: false,
+    reason: 'NO_VOLUME_SPIKE',
+    normalized: {
+      ...normalized,
+      migrationTimestamp,
+      migrationAgeMin: migrationTimestamp == null ? null : (nowMs - migrationTimestamp) / 60_000,
+      baselineVolume5mUsd,
+      spikeMultiplier,
+      rank: Number.isFinite(Number(rank)) ? Number(rank) : null,
+      trigger: isNewListing ? 'NEW_TOP_100_ENTRY' : 'VOLUME_SPIKE',
+    },
+  };
+
+  if (!isValidSolanaMint(normalized.mint)) return { ...result, reason: 'INVALID_MINT' };
+  if (migrationTimestamp == null || result.normalized.migrationAgeMin < 0) {
+    return { ...result, reason: 'NOT_MIGRATED' };
+  }
+  if (normalized.volume5mUsd == null || normalized.volume5mUsd < minVolume) {
+    return { ...result, reason: 'SPIKE_VOLUME_BELOW_MIN' };
+  }
+  if (normalized.swaps5m == null || normalized.swaps5m < VOLUME_SPIKE_MIN_SWAPS) {
+    return { ...result, reason: 'SPIKE_SWAPS_BELOW_MIN' };
+  }
+  if (normalized.liquidityUsd == null || normalized.liquidityUsd < VOLUME_SPIKE_MIN_LIQUIDITY_USD) {
+    return { ...result, reason: 'SPIKE_LIQUIDITY_BELOW_MIN' };
+  }
+  if (
+    Number(previousRecord?.spikeAlertedAt) > 0 &&
+    (nowMs - Number(previousRecord.spikeAlertedAt)) < VOLUME_SPIKE_COOLDOWN_MS
+  ) {
+    return { ...result, reason: 'SPIKE_COOLDOWN' };
+  }
+  if (!isNewListing && (spikeMultiplier == null || spikeMultiplier < VOLUME_SPIKE_MIN_MULTIPLIER)) {
+    return result;
+  }
+  return { ...result, eligible: true, reason: 'PASS' };
 }
 
 export function extractGmgnTotalFeesSol(tokenInfo = {}) {
@@ -279,6 +356,54 @@ export function formatTokenAlertMessage(alert = {}) {
   ].join('\n');
 }
 
+function formatAge(ageMin) {
+  if (!Number.isFinite(ageMin)) return 'N/A';
+  const minutes = Math.max(0, Math.floor(ageMin));
+  if (minutes < 60) return `${minutes}m`;
+  const hours = Math.floor(minutes / 60);
+  const remainder = minutes % 60;
+  return remainder > 0 ? `${hours}h ${remainder}m` : `${hours}h`;
+}
+
+export function formatVolumeSpikeAlertMessage(alert = {}) {
+  const mint = getCandidateMint(alert);
+  if (!isValidSolanaMint(mint)) throw new Error('INVALID_MINT');
+  const swaps = Number.isFinite(alert.swaps5m)
+    ? Math.round(alert.swaps5m).toLocaleString('en-US')
+    : 'N/A';
+  const multiplier = Number.isFinite(alert.spikeMultiplier)
+    ? `${alert.spikeMultiplier.toFixed(1)}x`
+    : 'NEW';
+  const rank = Number.isFinite(alert.rank) ? `#${alert.rank}` : 'N/A';
+
+  return [
+    `🟠 <b>SOLANA VOLUME SPIKE</b>`,
+    '',
+    `<b>💊 ${escapeHTML(alert.symbol || 'UNKNOWN')} • Migrated ${formatAge(alert.migrationAgeMin)}</b>`,
+    `${escapeHTML(alert.name || 'Unknown')} | ${escapeHTML(formatDex(alert.exchange))}`,
+    '',
+    `┌ <b>MARKET</b>`,
+    `├ <code>Price     :</code> <b>${formatPrice(alert.priceUsd)}</b>`,
+    `├ <code>MC        :</code> <b>${formatUsdShort(alert.marketCapUsd)}</b>`,
+    `├ <code>Vol 5m    :</code> <b>${formatUsdShort(alert.volume5mUsd)}</b>`,
+    `├ <code>Baseline  :</code> <b>${formatUsdShort(alert.baselineVolume5mUsd)}</b>`,
+    `├ <code>Spike     :</code> <b>${multiplier}</b>`,
+    `├ <code>Swaps 5m  :</code> <b>${swaps}</b>`,
+    `└ <code>Liquidity :</code> <b>${formatUsdShort(alert.liquidityUsd)}</b>`,
+    '',
+    `┌ <b>MOMENTUM</b>`,
+    `├ <code>Rank      :</code> <b>${rank}</b>`,
+    `├ <code>Flow      :</code> <b>${escapeHTML(formatFlow(alert.buys5m, alert.sells5m))}</b>`,
+    `└ <code>Trigger   :</code> <b>${escapeHTML(alert.trigger || 'VOLUME_SPIKE')}</b>`,
+    '',
+    `┌ <b>STATUS</b>`,
+    `└ 🟠 <b>MIGRATED TOKEN HEATING UP</b>`,
+    '',
+    `<b>CA</b>`,
+    `<code>${mint}</code>`,
+  ].join('\n');
+}
+
 function pruneSeenRecords(records, nowMs) {
   const next = {};
   for (const [mint, record] of Object.entries(records || {})) {
@@ -288,6 +413,23 @@ function pruneSeenRecords(records, nowMs) {
     }
   }
   return next;
+}
+
+function normalizeVolumeSpikeState(rawState, nowMs) {
+  const rawTokens = rawState?.tokens && typeof rawState.tokens === 'object'
+    ? rawState.tokens
+    : {};
+  const tokens = {};
+  for (const [mint, record] of Object.entries(rawTokens)) {
+    if ((nowMs - Number(record?.lastSeenAt || 0)) <= VOLUME_SPIKE_HISTORY_TTL_MS) {
+      tokens[mint] = record;
+    }
+  }
+  return {
+    lastScanAt: finiteNumber(rawState?.lastScanAt),
+    lastScanCount: Math.max(0, finiteNumber(rawState?.lastScanCount) || 0),
+    tokens,
+  };
 }
 
 function recordScanError(summary, error, { partial = false } = {}) {
@@ -331,6 +473,7 @@ export function createTokenAlertService({
         fetched: 0,
         eligible: 0,
         alerted: 0,
+        spikeAlerted: 0,
         skipped: 0,
         failed: 0,
         rejected: {},
@@ -345,6 +488,7 @@ export function createTokenAlertService({
       fetched: 0,
       eligible: 0,
       alerted: 0,
+      spikeAlerted: 0,
       skipped: 0,
       failed: 0,
       status: 'GMGN_OK',
@@ -363,6 +507,47 @@ export function createTokenAlertService({
       const candidates = Array.isArray(rows) ? rows : [];
       summary.fetched = candidates.length;
       summary.status = candidates.length > 0 ? 'GMGN_OK' : 'GMGN_OK_NO_RESULTS';
+      const volumeState = normalizeVolumeSpikeState(
+        getState(TOKEN_ALERTS_VOLUME_STATE_KEY) || {},
+        startedAt
+      );
+      const pollIntervalMs = Math.max(15, Number(config.tokenAlertsPollIntervalSec) || 60) * 1000;
+      const hasContinuousBaseline = volumeState.lastScanCount > 0 &&
+        volumeState.lastScanAt != null &&
+        (startedAt - volumeState.lastScanAt) <= Math.max(180_000, pollIntervalMs * 3);
+      const spikeCandidates = [];
+      const nextVolumeTokens = { ...volumeState.tokens };
+
+      candidates.forEach((candidate, index) => {
+        const mint = getCandidateMint(candidate);
+        if (!isValidSolanaMint(mint)) return;
+        const previousRecord = volumeState.tokens[mint] || null;
+        const wasInPreviousScan = hasContinuousBaseline &&
+          Number(previousRecord?.lastSeenAt) === Number(volumeState.lastScanAt);
+        const result = evaluateVolumeSpikeCandidate(candidate, previousRecord, config, {
+          nowMs: startedAt,
+          isNewListing: hasContinuousBaseline && !wasInPreviousScan,
+          rank: index + 1,
+        });
+        if (result.eligible) spikeCandidates.push(result.normalized);
+
+        const samples = [
+          ...(Array.isArray(previousRecord?.samples) ? previousRecord.samples : []),
+          { at: startedAt, volume5mUsd: result.normalized.volume5mUsd },
+        ].filter((sample) => Number.isFinite(sample.volume5mUsd)).slice(-VOLUME_SPIKE_HISTORY_LIMIT);
+        nextVolumeTokens[mint] = {
+          ...previousRecord,
+          lastSeenAt: startedAt,
+          lastRank: index + 1,
+          samples,
+        };
+      });
+      let nextVolumeState = {
+        lastScanAt: startedAt,
+        lastScanCount: candidates.length,
+        tokens: nextVolumeTokens,
+      };
+      setState(TOKEN_ALERTS_VOLUME_STATE_KEY, nextVolumeState);
 
       const preliminaryCandidates = candidates
         .map((candidate) => ({ candidate, result: evaluateRankCandidate(candidate, config, startedAt) }))
@@ -449,6 +634,63 @@ export function createTokenAlertService({
           console.warn(`[token-alerts] candidate failed mint=${mint}: ${error.message}`);
         }
       }
+
+      const queuedSpikeCandidates = spikeCandidates.slice(0, maxPerScan);
+      const deferredSpikeCandidates = spikeCandidates.slice(maxPerScan);
+      for (const alert of deferredSpikeCandidates) {
+        const previousRecord = volumeState.tokens[alert.mint];
+        if (previousRecord) {
+          nextVolumeState.tokens[alert.mint] = previousRecord;
+        } else {
+          delete nextVolumeState.tokens[alert.mint];
+        }
+      }
+      if (deferredSpikeCandidates.length > 0) {
+        setState(TOKEN_ALERTS_VOLUME_STATE_KEY, nextVolumeState);
+      }
+
+      for (const alert of queuedSpikeCandidates) {
+        const mint = alert.mint;
+        if (seen[mint]?.alertedAt) continue;
+        summary.eligible += 1;
+        try {
+          const sent = await sendAlert(formatVolumeSpikeAlertMessage(alert), {
+            mint,
+            source,
+            alert,
+            alertType: 'VOLUME_SPIKE',
+          });
+          if (sent === false) {
+            const error = new Error('Telegram volume spike alert delivery failed');
+            error.code = 'TELEGRAM_SEND_FAILED';
+            throw error;
+          }
+          nextVolumeState = {
+            ...nextVolumeState,
+            tokens: {
+              ...nextVolumeState.tokens,
+              [mint]: {
+                ...nextVolumeState.tokens[mint],
+                spikeAlertedAt: now(),
+              },
+            },
+          };
+          setState(TOKEN_ALERTS_VOLUME_STATE_KEY, nextVolumeState);
+          summary.alerted += 1;
+          summary.spikeAlerted += 1;
+        } catch (error) {
+          const previousRecord = volumeState.tokens[mint];
+          if (previousRecord) {
+            nextVolumeState.tokens[mint] = previousRecord;
+          } else {
+            delete nextVolumeState.tokens[mint];
+          }
+          setState(TOKEN_ALERTS_VOLUME_STATE_KEY, nextVolumeState);
+          summary.failed += 1;
+          recordScanError(summary, error, { partial: true });
+          console.warn(`[token-alerts] volume spike failed mint=${mint}: ${error.message}`);
+        }
+      }
       if (
         summary.fetched > 0 &&
         summary.eligible === 0 &&
@@ -469,7 +711,7 @@ export function createTokenAlertService({
       console.log(
         `[token-alerts] scan source=${source} status=${summary.status} ` +
         `fetched=${summary.fetched} eligible=${summary.eligible} alerted=${summary.alerted} ` +
-        `skipped=${summary.skipped} failed=${summary.failed}` +
+        `spikes=${summary.spikeAlerted || 0} skipped=${summary.skipped} failed=${summary.failed}` +
         (rejected ? ` rejected=${rejected}` : '')
       );
     }

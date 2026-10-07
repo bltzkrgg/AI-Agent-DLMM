@@ -119,6 +119,8 @@ GMGN responses are normalized through both the outer gateway envelope and the in
 
 The rank request fetches the broad GMGN 5-minute top-100 page. Volume, market-cap, age, dedupe, and fee thresholds are applied locally so Telegram can report rejection counts such as `VOLUME_BELOW_MIN`, `MCAP_NOT_ABOVE_MIN`, `TOKEN_TOO_OLD`, or `TOTAL_FEES_BELOW_MIN`. Every automatic and manual scan also writes one compact `[token-alerts] scan ...` line to the process log.
 
+The Solana runner also keeps five local rank snapshots for migrated-token momentum. After the first warm-up scan, it sends a separate `SOLANA VOLUME SPIKE` alert when a migrated token newly enters the top 100 or reaches at least 3x its rolling snapshot baseline, provided 5-minute volume is above the configured minimum, swaps are at least 50, and liquidity is at least $10K. Spike alerts have a six-hour per-token cooldown and reuse the existing rank response, so they add no GMGN request.
+
 Independent config keys:
 
 ```json

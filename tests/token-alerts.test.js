@@ -3,9 +3,11 @@ import assert from 'node:assert/strict';
 import {
   createTokenAlertService,
   evaluateTokenAlertCandidate,
+  evaluateVolumeSpikeCandidate,
   extractGmgnTotalFeesSol,
   extractTopHolderPercentages,
   formatTokenAlertMessage,
+  formatVolumeSpikeAlertMessage,
   getTokenReferenceTimestamp,
 } from '../src/alerts/tokenAlerts.js';
 
@@ -133,6 +135,65 @@ test('already alerted candidate is rejected', () => {
   assert.equal(result.reason, 'ALREADY_ALERTED');
 });
 
+test('migrated token passes volume spike gate at 3x historical baseline', () => {
+  const result = evaluateVolumeSpikeCandidate(
+    candidate({
+      volume: 150000,
+      swaps: 100,
+      liquidity: 20000,
+      migrated_timestamp: (NOW - 4 * 60 * 60_000) / 1000,
+    }),
+    {
+      samples: [
+        { volume5mUsd: 40000 },
+        { volume5mUsd: 50000 },
+        { volume5mUsd: 60000 },
+      ],
+    },
+    CONFIG,
+    { nowMs: NOW, rank: 12 }
+  );
+
+  assert.equal(result.eligible, true);
+  assert.equal(result.normalized.baselineVolume5mUsd, 50000);
+  assert.equal(result.normalized.spikeMultiplier, 3);
+  assert.equal(result.normalized.rank, 12);
+});
+
+test('volume spike requires an open-market timestamp and activity floors', () => {
+  const notMigrated = evaluateVolumeSpikeCandidate(candidate({
+    migrated_timestamp: null,
+    open_timestamp: null,
+    creation_timestamp: (NOW - 60_000) / 1000,
+    volume: 200000,
+    swaps: 100,
+    liquidity: 20000,
+  }), null, CONFIG, { nowMs: NOW, isNewListing: true });
+  const thinLiquidity = evaluateVolumeSpikeCandidate(candidate({
+    volume: 200000,
+    swaps: 100,
+    liquidity: 9999,
+  }), null, CONFIG, { nowMs: NOW, isNewListing: true });
+
+  assert.equal(notMigrated.reason, 'NOT_MIGRATED');
+  assert.equal(thinLiquidity.reason, 'SPIKE_LIQUIDITY_BELOW_MIN');
+});
+
+test('volume spike formatter labels migrated momentum without qualified status', () => {
+  const message = formatVolumeSpikeAlertMessage({
+    ...evaluateVolumeSpikeCandidate(candidate({
+      volume: 150000,
+      swaps: 100,
+      liquidity: 20000,
+    }), { samples: [{ volume5mUsd: 50000 }] }, CONFIG, { nowMs: NOW, rank: 9 }).normalized,
+  });
+
+  assert.match(message, /SOLANA VOLUME SPIKE/);
+  assert.match(message, /Spike\s+:<\/code> <b>3\.0x<\/b>/);
+  assert.match(message, /MIGRATED TOKEN HEATING UP/);
+  assert.doesNotMatch(message, /SOLANA QUALIFIED/);
+});
+
 test('holder extraction removes pools, exchanges, invalid rows, and sorts wallets', () => {
   const result = extractTopHolderPercentages([
     { addr_type: 0, amount_percentage: 0.021 },
@@ -246,6 +307,219 @@ test('successful send persists alertedAt and suppresses duplicate mint', async (
   assert.equal(harness.state.tokenAlertsSeen[MINT].alertedAt, NOW);
   assert.equal(second.alerted, 0);
   assert.equal(harness.sent.length, 1);
+});
+
+test('volume spike lane warms up, alerts on 3x volume, and applies cooldown', async () => {
+  let nowMs = NOW;
+  let rows = [candidate({
+    volume: 30000,
+    swaps: 100,
+    migrated_timestamp: (NOW - 4 * 60 * 60_000) / 1000,
+  })];
+  const harness = createServiceHarness({
+    rows: [],
+    now: () => nowMs,
+  });
+  harness.service = createTokenAlertService({
+    fetchTrending: async () => rows,
+    fetchTokenInfo: async () => ({ total_fee: 10 }),
+    fetchHolders: async () => [],
+    sendAlert: async (...args) => {
+      harness.sent.push(args);
+      return true;
+    },
+    getConfig: () => CONFIG,
+    getState: (key) => harness.state[key] || {},
+    setState: (key, value) => {
+      harness.state[key] = value;
+    },
+    now: () => nowMs,
+  });
+
+  const warmup = await harness.service.scanOnce({ source: 'warmup' });
+  assert.equal(warmup.spikeAlerted, 0);
+  assert.equal(harness.sent.length, 0);
+
+  nowMs += 60_000;
+  rows = [candidate({
+    volume: 120000,
+    swaps: 100,
+    migrated_timestamp: (NOW - 4 * 60 * 60_000) / 1000,
+  })];
+  const spike = await harness.service.scanOnce({ source: 'spike' });
+  assert.equal(spike.spikeAlerted, 1);
+  assert.equal(spike.alerted, 1);
+  assert.match(harness.sent[0][0], /SOLANA VOLUME SPIKE/);
+
+  nowMs += 60_000;
+  const cooldown = await harness.service.scanOnce({ source: 'cooldown' });
+  assert.equal(cooldown.spikeAlerted, 0);
+  assert.equal(harness.sent.length, 1);
+});
+
+test('new migrated top-100 entrant alerts after a continuous warm-up scan', async () => {
+  let nowMs = NOW;
+  let rows = [candidate({
+    address: OTHER_MINTS[0],
+    volume: 120000,
+    swaps: 100,
+    migrated_timestamp: (NOW - 4 * 60 * 60_000) / 1000,
+  })];
+  const state = {};
+  const sent = [];
+  const service = createTokenAlertService({
+    fetchTrending: async () => rows,
+    fetchTokenInfo: async () => ({ total_fee: 10 }),
+    fetchHolders: async () => [],
+    sendAlert: async (...args) => {
+      sent.push(args);
+      return true;
+    },
+    getConfig: () => CONFIG,
+    getState: (key) => state[key] || {},
+    setState: (key, value) => {
+      state[key] = value;
+    },
+    now: () => nowMs,
+  });
+
+  await service.scanOnce({ source: 'warmup' });
+  nowMs += 60_000;
+  rows = [...rows, candidate({
+    volume: 120000,
+    swaps: 100,
+    migrated_timestamp: (NOW - 4 * 60 * 60_000) / 1000,
+  })];
+  const summary = await service.scanOnce({ source: 'new-entry' });
+
+  assert.equal(summary.spikeAlerted, 1);
+  assert.equal(sent.length, 1);
+  assert.match(sent[0][0], /NEW_TOP_100_ENTRY/);
+});
+
+test('empty rank response does not make the next full page look newly listed', async () => {
+  let nowMs = NOW;
+  let rows = [candidate({
+    volume: 120000,
+    swaps: 100,
+    migrated_timestamp: (NOW - 4 * 60 * 60_000) / 1000,
+  })];
+  const state = {};
+  const sent = [];
+  const service = createTokenAlertService({
+    fetchTrending: async () => rows,
+    fetchTokenInfo: async () => ({ total_fee: 10 }),
+    fetchHolders: async () => [],
+    sendAlert: async (...args) => {
+      sent.push(args);
+      return true;
+    },
+    getConfig: () => CONFIG,
+    getState: (key) => state[key] || {},
+    setState: (key, value) => {
+      state[key] = value;
+    },
+    now: () => nowMs,
+  });
+
+  await service.scanOnce({ source: 'warmup' });
+  nowMs += 60_000;
+  rows = [];
+  await service.scanOnce({ source: 'empty' });
+  nowMs += 60_000;
+  rows = [candidate({
+    volume: 120000,
+    swaps: 100,
+    migrated_timestamp: (NOW - 4 * 60 * 60_000) / 1000,
+  })];
+  const summary = await service.scanOnce({ source: 'recovered' });
+
+  assert.equal(summary.spikeAlerted, 0);
+  assert.equal(sent.length, 0);
+});
+
+test('failed volume spike delivery remains retryable on the next scan', async () => {
+  let nowMs = NOW;
+  let rows = [candidate({
+    address: OTHER_MINTS[0],
+    volume: 120000,
+    swaps: 100,
+    migrated_timestamp: (NOW - 4 * 60 * 60_000) / 1000,
+  })];
+  const state = {};
+  let sendAttempts = 0;
+  const service = createTokenAlertService({
+    fetchTrending: async () => rows,
+    fetchTokenInfo: async () => ({ total_fee: 10 }),
+    fetchHolders: async () => [],
+    sendAlert: async () => {
+      sendAttempts += 1;
+      return sendAttempts > 1;
+    },
+    getConfig: () => CONFIG,
+    getState: (key) => state[key] || {},
+    setState: (key, value) => {
+      state[key] = value;
+    },
+    now: () => nowMs,
+  });
+
+  await service.scanOnce({ source: 'warmup' });
+  nowMs += 60_000;
+  rows = [...rows, candidate({
+    volume: 120000,
+    swaps: 100,
+    migrated_timestamp: (NOW - 4 * 60 * 60_000) / 1000,
+  })];
+  const failed = await service.scanOnce({ source: 'send-failed' });
+  nowMs += 60_000;
+  const retried = await service.scanOnce({ source: 'retry' });
+
+  assert.equal(failed.spikeAlerted, 0);
+  assert.equal(failed.failed, 1);
+  assert.equal(retried.spikeAlerted, 1);
+  assert.equal(sendAttempts, 2);
+});
+
+test('qualified alert suppresses a duplicate spike card in the same scan', async () => {
+  let nowMs = NOW;
+  const migratedTimestamp = (NOW - 10 * 60_000) / 1000;
+  let rows = [candidate({
+    volume: 30000,
+    swaps: 100,
+    migrated_timestamp: migratedTimestamp,
+  })];
+  const state = {};
+  const sent = [];
+  const service = createTokenAlertService({
+    fetchTrending: async () => rows,
+    fetchTokenInfo: async () => ({ total_fee: 10 }),
+    fetchHolders: async () => [],
+    sendAlert: async (...args) => {
+      sent.push(args);
+      return true;
+    },
+    getConfig: () => CONFIG,
+    getState: (key) => state[key] || {},
+    setState: (key, value) => {
+      state[key] = value;
+    },
+    now: () => nowMs,
+  });
+
+  await service.scanOnce({ source: 'warmup' });
+  nowMs += 60_000;
+  rows = [candidate({
+    volume: 120000,
+    swaps: 100,
+    migrated_timestamp: migratedTimestamp,
+  })];
+  const summary = await service.scanOnce({ source: 'qualified-and-spike' });
+
+  assert.equal(summary.alerted, 1);
+  assert.equal(summary.spikeAlerted, 0);
+  assert.equal(sent.length, 1);
+  assert.match(sent[0][0], /SOLANA QUALIFIED/);
 });
 
 test('total-fees gate runs before optional holder enrichment', async () => {
