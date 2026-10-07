@@ -496,6 +496,10 @@ function buildSetconfigSectionDetail(section) {
       '/setconfig tokenAlerts.minTotalFeesSol 10',
       '/setconfig tokenAlerts.maxAgeMin 30',
       '/setconfig tokenAlerts.maxPerScan 5',
+      '/setconfig tokenAlerts.volumeSpikeMultiplier 3',
+      '/setconfig tokenAlerts.volumeSpikeMinSwaps5m 50',
+      '/setconfig tokenAlerts.volumeSpikeMinLiquidityUsd 10000',
+      '/setconfig tokenAlerts.volumeSpikeCooldownMin 360',
     ],
     robinhoodAlerts: [
       '/setconfig robinhoodAlerts.enabled true',
@@ -744,7 +748,10 @@ function formatTokenAlertsStatus() {
     `Runtime: <code>${runtime.running ? 'RUNNING' : 'STOPPED'}</code>\n` +
     `Source: <code>GMGN / Solana</code>\n` +
     `Volume 5m: <code>&gt;= ${formatCompactThreshold(cfg.tokenAlertsMinVolume5mUsd)}</code>\n` +
-    `Volume Spike: <code>NEW TOP-100 atau &gt;= 3x baseline</code> | <code>&gt;= 50 swaps</code> | <code>&gt;= $10K liq</code>\n` +
+    `Volume Spike: <code>NEW TOP-100 atau &gt;= ${cfg.tokenAlertsVolumeSpikeMultiplier}x baseline</code> | ` +
+    `<code>&gt;= ${cfg.tokenAlertsVolumeSpikeMinSwaps5m} swaps</code> | ` +
+    `<code>&gt;= ${formatCompactThreshold(cfg.tokenAlertsVolumeSpikeMinLiquidityUsd)} liq</code> | ` +
+    `<code>${cfg.tokenAlertsVolumeSpikeCooldownMin}m cooldown</code>\n` +
     `Market Cap: <code>&gt; ${formatCompactThreshold(cfg.tokenAlertsMinMarketCapUsd)}</code>\n` +
     `Total Fees: <code>&gt;= ${cfg.tokenAlertsMinTotalFeesSol} SOL</code>\n` +
     `Max Age: <code>&lt;= ${cfg.tokenAlertsMaxAgeMin}m</code>\n` +
@@ -1332,6 +1339,10 @@ bot.onText(/\/config/, (msg) => {
     `maxAgeMin             = ${cfg.tokenAlertsMaxAgeMin}`,
     `pollIntervalSec       = ${cfg.tokenAlertsPollIntervalSec}`,
     `maxPerScan            = ${cfg.tokenAlertsMaxPerScan}`,
+    `spikeMultiplier       = ${cfg.tokenAlertsVolumeSpikeMultiplier}x`,
+    `spikeMinSwaps5m       = ${cfg.tokenAlertsVolumeSpikeMinSwaps5m}`,
+    `spikeMinLiquidityUsd  = ${cfg.tokenAlertsVolumeSpikeMinLiquidityUsd}`,
+    `spikeCooldownMin      = ${cfg.tokenAlertsVolumeSpikeCooldownMin}`,
   ].join('\n');
   const robinhoodAlerts = [
     `enabled               = ${cfg.robinhoodAlertsEnabled}`,

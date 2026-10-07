@@ -173,6 +173,10 @@ const DEFAULTS = {
   tokenAlertsMinTotalFeesSol:     10,
   tokenAlertsMaxAgeMin:           30,
   tokenAlertsMaxPerScan:          5,
+  tokenAlertsVolumeSpikeMultiplier:       3,
+  tokenAlertsVolumeSpikeMinSwaps5m:       50,
+  tokenAlertsVolumeSpikeMinLiquidityUsd:  10000,
+  tokenAlertsVolumeSpikeCooldownMin:      360,
 
   // ── Read-only GMGN Robinhood Chain Alerts ────────────────────────────────
   robinhoodAlertsEnabled:             false,
@@ -310,6 +314,10 @@ const CONFIG_BOUNDS = {
   tokenAlertsMinTotalFeesSol:     { min: 0, max: 1_000_000 },
   tokenAlertsMaxAgeMin:           { min: 1, max: 1440 },
   tokenAlertsMaxPerScan:          { min: 1, max: 20 },
+  tokenAlertsVolumeSpikeMultiplier:      { min: 1, max: 100 },
+  tokenAlertsVolumeSpikeMinSwaps5m:      { min: 0, max: 1_000_000_000 },
+  tokenAlertsVolumeSpikeMinLiquidityUsd: { min: 0, max: 1_000_000_000 },
+  tokenAlertsVolumeSpikeCooldownMin:     { min: 1, max: 10080 },
   robinhoodAlertsEnabled:             { type: 'boolean' },
   robinhoodAlertsPollIntervalSec:     { min: 15, max: 300 },
   robinhoodAlertsMinVolume5mUsd:      { min: 0, max: 1_000_000_000 },
@@ -505,6 +513,10 @@ const NESTED_SECTION_MAP = {
     minTotalFeesSol:    'tokenAlertsMinTotalFeesSol',
     maxAgeMin:          'tokenAlertsMaxAgeMin',
     maxPerScan:         'tokenAlertsMaxPerScan',
+    volumeSpikeMultiplier:       'tokenAlertsVolumeSpikeMultiplier',
+    volumeSpikeMinSwaps5m:       'tokenAlertsVolumeSpikeMinSwaps5m',
+    volumeSpikeMinLiquidityUsd:  'tokenAlertsVolumeSpikeMinLiquidityUsd',
+    volumeSpikeCooldownMin:      'tokenAlertsVolumeSpikeCooldownMin',
   },
 
   robinhoodAlerts: {
@@ -726,6 +738,10 @@ export const SETCONFIG_WHITELIST = {
   tokenAlertsMinTotalFeesSol:     { section: 'tokenAlerts', type: 'number',  desc: 'Minimum total fees GMGN (SOL)' },
   tokenAlertsMaxAgeMin:           { section: 'tokenAlerts', type: 'number',  desc: 'Umur maksimum sejak DEX open/migration (menit)' },
   tokenAlertsMaxPerScan:          { section: 'tokenAlerts', type: 'number',  desc: 'Maksimum alert yang diproses per scan' },
+  tokenAlertsVolumeSpikeMultiplier:      { section: 'tokenAlerts', type: 'number', desc: 'Minimum lonjakan volume vs baseline untuk spike alert' },
+  tokenAlertsVolumeSpikeMinSwaps5m:      { section: 'tokenAlerts', type: 'number', desc: 'Minimum swaps 5 menit untuk spike alert' },
+  tokenAlertsVolumeSpikeMinLiquidityUsd: { section: 'tokenAlerts', type: 'number', desc: 'Minimum liquidity USD untuk spike alert' },
+  tokenAlertsVolumeSpikeCooldownMin:     { section: 'tokenAlerts', type: 'number', desc: 'Cooldown spike alert per token dalam menit' },
   robinhoodAlertsEnabled:             { section: 'robinhoodAlerts', type: 'boolean', desc: 'Aktifkan runner token GMGN Robinhood Chain' },
   robinhoodAlertsPollIntervalSec:     { section: 'robinhoodAlerts', type: 'number',  desc: 'Interval polling GMGN Robinhood (detik, 15–300)' },
   robinhoodAlertsMinVolume5mUsd:      { section: 'robinhoodAlerts', type: 'number',  desc: 'Minimum volume rolling 5 menit (USD)' },

@@ -5,10 +5,6 @@ const TOKEN_ALERTS_STATE_KEY = 'tokenAlertsSeen';
 const TOKEN_ALERTS_STATE_TTL_MS = 48 * 60 * 60 * 1000;
 const TOKEN_ALERTS_VOLUME_STATE_KEY = 'tokenAlertsVolumeSpikeState';
 const VOLUME_SPIKE_HISTORY_TTL_MS = 24 * 60 * 60 * 1000;
-const VOLUME_SPIKE_COOLDOWN_MS = 6 * 60 * 60 * 1000;
-const VOLUME_SPIKE_MIN_MULTIPLIER = 3;
-const VOLUME_SPIKE_MIN_SWAPS = 50;
-const VOLUME_SPIKE_MIN_LIQUIDITY_USD = 10_000;
 const VOLUME_SPIKE_HISTORY_LIMIT = 5;
 
 function finiteNumber(value) {
@@ -199,6 +195,11 @@ export function evaluateVolumeSpikeCandidate(
   const normalized = normalizeRankCandidate(candidate, nowMs);
   const migrationTimestamp = getMigrationTimestamp(candidate);
   const minVolume = Number(config?.tokenAlertsMinVolume5mUsd ?? 100000);
+  const minMarketCap = Number(config?.tokenAlertsMinMarketCapUsd ?? 100000);
+  const minMultiplier = Number(config?.tokenAlertsVolumeSpikeMultiplier ?? 3);
+  const minSwaps = Number(config?.tokenAlertsVolumeSpikeMinSwaps5m ?? 50);
+  const minLiquidity = Number(config?.tokenAlertsVolumeSpikeMinLiquidityUsd ?? 10000);
+  const cooldownMs = Number(config?.tokenAlertsVolumeSpikeCooldownMin ?? 360) * 60_000;
   const previousVolumes = Array.isArray(previousRecord?.samples)
     ? previousRecord.samples.map((sample) => finiteNumber(sample?.volume5mUsd))
     : [];
@@ -228,19 +229,22 @@ export function evaluateVolumeSpikeCandidate(
   if (normalized.volume5mUsd == null || normalized.volume5mUsd < minVolume) {
     return { ...result, reason: 'SPIKE_VOLUME_BELOW_MIN' };
   }
-  if (normalized.swaps5m == null || normalized.swaps5m < VOLUME_SPIKE_MIN_SWAPS) {
+  if (normalized.marketCapUsd == null || normalized.marketCapUsd <= minMarketCap) {
+    return { ...result, reason: 'SPIKE_MCAP_NOT_ABOVE_MIN' };
+  }
+  if (normalized.swaps5m == null || normalized.swaps5m < minSwaps) {
     return { ...result, reason: 'SPIKE_SWAPS_BELOW_MIN' };
   }
-  if (normalized.liquidityUsd == null || normalized.liquidityUsd < VOLUME_SPIKE_MIN_LIQUIDITY_USD) {
+  if (normalized.liquidityUsd == null || normalized.liquidityUsd < minLiquidity) {
     return { ...result, reason: 'SPIKE_LIQUIDITY_BELOW_MIN' };
   }
   if (
     Number(previousRecord?.spikeAlertedAt) > 0 &&
-    (nowMs - Number(previousRecord.spikeAlertedAt)) < VOLUME_SPIKE_COOLDOWN_MS
+    (nowMs - Number(previousRecord.spikeAlertedAt)) < cooldownMs
   ) {
     return { ...result, reason: 'SPIKE_COOLDOWN' };
   }
-  if (!isNewListing && (spikeMultiplier == null || spikeMultiplier < VOLUME_SPIKE_MIN_MULTIPLIER)) {
+  if (!isNewListing && (spikeMultiplier == null || spikeMultiplier < minMultiplier)) {
     return result;
   }
   return { ...result, eligible: true, reason: 'PASS' };

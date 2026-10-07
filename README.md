@@ -119,7 +119,7 @@ GMGN responses are normalized through both the outer gateway envelope and the in
 
 The rank request fetches the broad GMGN 5-minute top-100 page. Volume, market-cap, age, dedupe, and fee thresholds are applied locally so Telegram can report rejection counts such as `VOLUME_BELOW_MIN`, `MCAP_NOT_ABOVE_MIN`, `TOKEN_TOO_OLD`, or `TOTAL_FEES_BELOW_MIN`. Every automatic and manual scan also writes one compact `[token-alerts] scan ...` line to the process log.
 
-The Solana runner also keeps five local rank snapshots for migrated-token momentum. After the first warm-up scan, it sends a separate `SOLANA VOLUME SPIKE` alert when a migrated token newly enters the top 100 or reaches at least 3x its rolling snapshot baseline, provided 5-minute volume is above the configured minimum, swaps are at least 50, and liquidity is at least $10K. Spike alerts have a six-hour per-token cooldown and reuse the existing rank response, so they add no GMGN request.
+The Solana runner also keeps five local rank snapshots for migrated-token momentum. After the first warm-up scan, it sends a separate `SOLANA VOLUME SPIKE` alert when a migrated token newly enters the top 100 or reaches the configured rolling-baseline multiplier. Spike candidates must pass the configured 5-minute volume and market-cap thresholds plus the spike-specific swaps and liquidity floors. The per-token cooldown is configurable, and the detector reuses the existing rank response, so it adds no GMGN request.
 
 Independent config keys:
 
@@ -131,7 +131,11 @@ Independent config keys:
   "tokenAlertsMinMarketCapUsd": 100000,
   "tokenAlertsMinTotalFeesSol": 10,
   "tokenAlertsMaxAgeMin": 30,
-  "tokenAlertsMaxPerScan": 5
+  "tokenAlertsMaxPerScan": 5,
+  "tokenAlertsVolumeSpikeMultiplier": 3,
+  "tokenAlertsVolumeSpikeMinSwaps5m": 50,
+  "tokenAlertsVolumeSpikeMinLiquidityUsd": 10000,
+  "tokenAlertsVolumeSpikeCooldownMin": 360
 }
 ```
 
@@ -286,6 +290,8 @@ Examples:
 /setconfig maxMcap 5000000
 /setconfig tokenAlerts.enabled true
 /setconfig tokenAlerts.minTotalFeesSol 10
+/setconfig tokenAlerts.volumeSpikeMultiplier 3
+/setconfig tokenAlerts.volumeSpikeMinLiquidityUsd 10000
 /setconfig entryCandleSanityEnabled true
 /setconfig entryMinVolumeRatio 1.8
 /setconfig strategy.closeSwapMode fee_only

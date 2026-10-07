@@ -28,6 +28,10 @@ const CONFIG = {
   tokenAlertsMinTotalFeesSol: 10,
   tokenAlertsMaxAgeMin: 30,
   tokenAlertsMaxPerScan: 5,
+  tokenAlertsVolumeSpikeMultiplier: 3,
+  tokenAlertsVolumeSpikeMinSwaps5m: 50,
+  tokenAlertsVolumeSpikeMinLiquidityUsd: 10000,
+  tokenAlertsVolumeSpikeCooldownMin: 360,
 };
 
 function candidate(overrides = {}) {
@@ -177,6 +181,37 @@ test('volume spike requires an open-market timestamp and activity floors', () =>
 
   assert.equal(notMigrated.reason, 'NOT_MIGRATED');
   assert.equal(thinLiquidity.reason, 'SPIKE_LIQUIDITY_BELOW_MIN');
+});
+
+test('volume spike follows market-cap and spike-specific setconfig thresholds', () => {
+  const baseCandidate = candidate({
+    market_cap: 80600,
+    volume: 153400,
+    swaps: 2570,
+    liquidity: 22900,
+  });
+  const previousRecord = { samples: [{ volume5mUsd: 30500 }] };
+  const rejectedByMcap = evaluateVolumeSpikeCandidate(
+    baseCandidate,
+    previousRecord,
+    CONFIG,
+    { nowMs: NOW }
+  );
+  const acceptedByOverride = evaluateVolumeSpikeCandidate(
+    baseCandidate,
+    previousRecord,
+    {
+      ...CONFIG,
+      tokenAlertsMinMarketCapUsd: 75000,
+      tokenAlertsVolumeSpikeMultiplier: 5,
+      tokenAlertsVolumeSpikeMinSwaps5m: 2500,
+      tokenAlertsVolumeSpikeMinLiquidityUsd: 22000,
+    },
+    { nowMs: NOW }
+  );
+
+  assert.equal(rejectedByMcap.reason, 'SPIKE_MCAP_NOT_ABOVE_MIN');
+  assert.equal(acceptedByOverride.eligible, true);
 });
 
 test('volume spike formatter labels migrated momentum without qualified status', () => {
