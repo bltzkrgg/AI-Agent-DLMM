@@ -145,7 +145,7 @@ test('migrated token passes volume spike gate at 3x historical baseline', () => 
       volume: 150000,
       swaps: 100,
       liquidity: 20000,
-      migrated_timestamp: (NOW - 4 * 60 * 60_000) / 1000,
+      migrated_timestamp: (NOW - 10 * 60_000) / 1000,
     }),
     {
       samples: [
@@ -210,8 +210,31 @@ test('volume spike follows market-cap and spike-specific setconfig thresholds', 
     { nowMs: NOW }
   );
 
-  assert.equal(rejectedByMcap.reason, 'SPIKE_MCAP_NOT_ABOVE_MIN');
+  assert.equal(rejectedByMcap.reason, 'MCAP_NOT_ABOVE_MIN');
   assert.equal(acceptedByOverride.eligible, true);
+});
+
+test('volume spike follows shared total-fees and age config', () => {
+  const previousRecord = { samples: [{ volume5mUsd: 40000 }] };
+  const belowFees = evaluateVolumeSpikeCandidate(
+    candidate({ volume: 120000, swaps: 100, totalFeesSol: 9.99 }),
+    previousRecord,
+    CONFIG,
+    { nowMs: NOW }
+  );
+  const tooOld = evaluateVolumeSpikeCandidate(
+    candidate({
+      volume: 120000,
+      swaps: 100,
+      migrated_timestamp: (NOW - 31 * 60_000) / 1000,
+    }),
+    previousRecord,
+    CONFIG,
+    { nowMs: NOW }
+  );
+
+  assert.equal(belowFees.reason, 'TOTAL_FEES_BELOW_MIN');
+  assert.equal(tooOld.reason, 'TOKEN_TOO_OLD');
 });
 
 test('volume spike formatter labels migrated momentum without qualified status', () => {
@@ -225,6 +248,7 @@ test('volume spike formatter labels migrated momentum without qualified status',
 
   assert.match(message, /SOLANA VOLUME SPIKE/);
   assert.match(message, /Spike\s+:<\/code> <b>3\.0x<\/b>/);
+  assert.match(message, /Fees\s+:<\/code> <b>10\.00 SOL<\/b>/);
   assert.match(message, /MIGRATED TOKEN HEATING UP/);
   assert.doesNotMatch(message, /SOLANA QUALIFIED/);
 });
@@ -349,7 +373,7 @@ test('volume spike lane warms up, alerts on 3x volume, and applies cooldown', as
   let rows = [candidate({
     volume: 30000,
     swaps: 100,
-    migrated_timestamp: (NOW - 4 * 60 * 60_000) / 1000,
+    migrated_timestamp: (NOW - 10 * 60_000) / 1000,
   })];
   const harness = createServiceHarness({
     rows: [],
@@ -379,7 +403,7 @@ test('volume spike lane warms up, alerts on 3x volume, and applies cooldown', as
   rows = [candidate({
     volume: 120000,
     swaps: 100,
-    migrated_timestamp: (NOW - 4 * 60 * 60_000) / 1000,
+    migrated_timestamp: (NOW - 10 * 60_000) / 1000,
   })];
   const spike = await harness.service.scanOnce({ source: 'spike' });
   assert.equal(spike.spikeAlerted, 1);
@@ -396,9 +420,9 @@ test('new migrated top-100 entrant alerts after a continuous warm-up scan', asyn
   let nowMs = NOW;
   let rows = [candidate({
     address: OTHER_MINTS[0],
-    volume: 120000,
+    volume: 30000,
     swaps: 100,
-    migrated_timestamp: (NOW - 4 * 60 * 60_000) / 1000,
+    migrated_timestamp: (NOW - 10 * 60_000) / 1000,
   })];
   const state = {};
   const sent = [];
@@ -423,7 +447,7 @@ test('new migrated top-100 entrant alerts after a continuous warm-up scan', asyn
   rows = [...rows, candidate({
     volume: 120000,
     swaps: 100,
-    migrated_timestamp: (NOW - 4 * 60 * 60_000) / 1000,
+    migrated_timestamp: (NOW - 10 * 60_000) / 1000,
   })];
   const summary = await service.scanOnce({ source: 'new-entry' });
 
@@ -432,18 +456,54 @@ test('new migrated top-100 entrant alerts after a continuous warm-up scan', asyn
   assert.match(sent[0][0], /NEW_TOP_100_ENTRY/);
 });
 
-test('empty rank response does not make the next full page look newly listed', async () => {
+test('new top-100 entrant below configured total fees does not alert', async () => {
   let nowMs = NOW;
+  const migratedTimestamp = (NOW - 10 * 60_000) / 1000;
   let rows = [candidate({
-    volume: 120000,
-    swaps: 100,
-    migrated_timestamp: (NOW - 4 * 60 * 60_000) / 1000,
+    address: OTHER_MINTS[0],
+    migrated_timestamp: migratedTimestamp,
   })];
   const state = {};
   const sent = [];
   const service = createTokenAlertService({
     fetchTrending: async () => rows,
-    fetchTokenInfo: async () => ({ total_fee: 10 }),
+    fetchTokenInfo: async () => ({ total_fee: 9.99 }),
+    fetchHolders: async () => [],
+    sendAlert: async (...args) => {
+      sent.push(args);
+      return true;
+    },
+    getConfig: () => CONFIG,
+    getState: (key) => state[key] || {},
+    setState: (key, value) => {
+      state[key] = value;
+    },
+    now: () => nowMs,
+  });
+
+  await service.scanOnce({ source: 'warmup' });
+  nowMs += 60_000;
+  rows = [...rows, candidate({ migrated_timestamp: migratedTimestamp })];
+  const summary = await service.scanOnce({ source: 'new-entry-low-fees' });
+
+  assert.equal(summary.spikeAlerted, 0);
+  assert.equal(summary.alerted, 0);
+  assert.equal(sent.length, 0);
+  assert.equal(summary.rejected.TOTAL_FEES_BELOW_MIN, 2);
+});
+
+test('empty rank response does not make the next full page look newly listed', async () => {
+  let nowMs = NOW;
+  let rows = [candidate({
+    volume: 120000,
+    swaps: 100,
+    migrated_timestamp: (NOW - 10 * 60_000) / 1000,
+  })];
+  const state = {};
+  const sent = [];
+  const service = createTokenAlertService({
+    fetchTrending: async () => rows,
+    fetchTokenInfo: async () => ({ total_fee: 9.99 }),
     fetchHolders: async () => [],
     sendAlert: async (...args) => {
       sent.push(args);
@@ -465,7 +525,7 @@ test('empty rank response does not make the next full page look newly listed', a
   rows = [candidate({
     volume: 120000,
     swaps: 100,
-    migrated_timestamp: (NOW - 4 * 60 * 60_000) / 1000,
+    migrated_timestamp: (NOW - 10 * 60_000) / 1000,
   })];
   const summary = await service.scanOnce({ source: 'recovered' });
 
@@ -477,9 +537,9 @@ test('failed volume spike delivery remains retryable on the next scan', async ()
   let nowMs = NOW;
   let rows = [candidate({
     address: OTHER_MINTS[0],
-    volume: 120000,
+    volume: 30000,
     swaps: 100,
-    migrated_timestamp: (NOW - 4 * 60 * 60_000) / 1000,
+    migrated_timestamp: (NOW - 10 * 60_000) / 1000,
   })];
   const state = {};
   let sendAttempts = 0;
@@ -504,7 +564,7 @@ test('failed volume spike delivery remains retryable on the next scan', async ()
   rows = [...rows, candidate({
     volume: 120000,
     swaps: 100,
-    migrated_timestamp: (NOW - 4 * 60 * 60_000) / 1000,
+    migrated_timestamp: (NOW - 10 * 60_000) / 1000,
   })];
   const failed = await service.scanOnce({ source: 'send-failed' });
   nowMs += 60_000;
@@ -516,7 +576,7 @@ test('failed volume spike delivery remains retryable on the next scan', async ()
   assert.equal(sendAttempts, 2);
 });
 
-test('qualified alert suppresses a duplicate spike card in the same scan', async () => {
+test('spike card takes priority over a duplicate qualified card in the same scan', async () => {
   let nowMs = NOW;
   const migratedTimestamp = (NOW - 10 * 60_000) / 1000;
   let rows = [candidate({
@@ -552,9 +612,9 @@ test('qualified alert suppresses a duplicate spike card in the same scan', async
   const summary = await service.scanOnce({ source: 'qualified-and-spike' });
 
   assert.equal(summary.alerted, 1);
-  assert.equal(summary.spikeAlerted, 0);
+  assert.equal(summary.spikeAlerted, 1);
   assert.equal(sent.length, 1);
-  assert.match(sent[0][0], /SOLANA QUALIFIED/);
+  assert.match(sent[0][0], /SOLANA VOLUME SPIKE/);
 });
 
 test('total-fees gate runs before optional holder enrichment', async () => {

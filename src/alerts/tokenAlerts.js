@@ -186,7 +186,7 @@ function median(values) {
     : sorted[middle];
 }
 
-export function evaluateVolumeSpikeCandidate(
+function evaluateVolumeSpikeMomentumCandidate(
   candidate,
   previousRecord,
   config = {},
@@ -248,6 +248,21 @@ export function evaluateVolumeSpikeCandidate(
     return result;
   }
   return { ...result, eligible: true, reason: 'PASS' };
+}
+
+export function evaluateVolumeSpikeCandidate(
+  candidate,
+  previousRecord,
+  config = {},
+  options = {}
+) {
+  const qualification = evaluateTokenAlertCandidate(
+    candidate,
+    config,
+    options.nowMs ?? Date.now()
+  );
+  if (!qualification.eligible) return qualification;
+  return evaluateVolumeSpikeMomentumCandidate(candidate, previousRecord, config, options);
 }
 
 export function extractGmgnTotalFeesSol(tokenInfo = {}) {
@@ -393,6 +408,7 @@ export function formatVolumeSpikeAlertMessage(alert = {}) {
     `├ <code>Baseline  :</code> <b>${formatUsdShort(alert.baselineVolume5mUsd)}</b>`,
     `├ <code>Spike     :</code> <b>${multiplier}</b>`,
     `├ <code>Swaps 5m  :</code> <b>${swaps}</b>`,
+    `├ <code>Fees      :</code> <b>${Number(alert.totalFeesSol).toFixed(2)} SOL</b>`,
     `└ <code>Liquidity :</code> <b>${formatUsdShort(alert.liquidityUsd)}</b>`,
     '',
     `┌ <b>MOMENTUM</b>`,
@@ -528,12 +544,25 @@ export function createTokenAlertService({
         const previousRecord = volumeState.tokens[mint] || null;
         const wasInPreviousScan = hasContinuousBaseline &&
           Number(previousRecord?.lastSeenAt) === Number(volumeState.lastScanAt);
-        const result = evaluateVolumeSpikeCandidate(candidate, previousRecord, config, {
+        const spikeOptions = {
           nowMs: startedAt,
           isNewListing: hasContinuousBaseline && !wasInPreviousScan,
           rank: index + 1,
-        });
-        if (result.eligible) spikeCandidates.push(result.normalized);
+        };
+        const result = evaluateVolumeSpikeMomentumCandidate(
+          candidate,
+          previousRecord,
+          config,
+          spikeOptions
+        );
+        const sharedRankResult = evaluateRankCandidate(candidate, config, startedAt);
+        if (
+          result.eligible &&
+          sharedRankResult.eligible &&
+          !seen[mint]?.alertedAt
+        ) {
+          spikeCandidates.push({ candidate, previousRecord, options: spikeOptions });
+        }
 
         const samples = [
           ...(Array.isArray(previousRecord?.samples) ? previousRecord.samples : []),
@@ -552,6 +581,12 @@ export function createTokenAlertService({
         tokens: nextVolumeTokens,
       };
       setState(TOKEN_ALERTS_VOLUME_STATE_KEY, nextVolumeState);
+      const spikeMints = new Set(
+        spikeCandidates.map(({ candidate }) => getCandidateMint(candidate))
+      );
+      const maxPerScan = Math.max(1, Number(config.tokenAlertsMaxPerScan) || 5);
+      const queuedSpikeCandidates = spikeCandidates.slice(0, maxPerScan);
+      const deferredSpikeCandidates = spikeCandidates.slice(maxPerScan);
 
       const preliminaryCandidates = candidates
         .map((candidate) => ({ candidate, result: evaluateRankCandidate(candidate, config, startedAt) }))
@@ -566,11 +601,14 @@ export function createTokenAlertService({
             recordRejection(summary, 'ALREADY_ALERTED');
             return false;
           }
+          if (spikeMints.has(result.normalized.mint)) return false;
           return true;
         })
         .sort((a, b) => b.result.normalized.volume5mUsd - a.result.normalized.volume5mUsd);
-      const maxPerScan = Math.max(1, Number(config.tokenAlertsMaxPerScan) || 5);
-      const preliminary = preliminaryCandidates.slice(0, maxPerScan);
+      const preliminary = preliminaryCandidates.slice(
+        0,
+        Math.max(0, maxPerScan - queuedSpikeCandidates.length)
+      );
       const scanLimitSkipped = Math.max(0, preliminaryCandidates.length - preliminary.length);
       summary.skipped += scanLimitSkipped;
       if (scanLimitSkipped > 0) recordRejection(summary, 'SCAN_LIMIT', scanLimitSkipped);
@@ -639,25 +677,43 @@ export function createTokenAlertService({
         }
       }
 
-      const queuedSpikeCandidates = spikeCandidates.slice(0, maxPerScan);
-      const deferredSpikeCandidates = spikeCandidates.slice(maxPerScan);
-      for (const alert of deferredSpikeCandidates) {
-        const previousRecord = volumeState.tokens[alert.mint];
+      for (const { candidate } of deferredSpikeCandidates) {
+        const mint = getCandidateMint(candidate);
+        const previousRecord = volumeState.tokens[mint];
         if (previousRecord) {
-          nextVolumeState.tokens[alert.mint] = previousRecord;
+          nextVolumeState.tokens[mint] = previousRecord;
         } else {
-          delete nextVolumeState.tokens[alert.mint];
+          delete nextVolumeState.tokens[mint];
         }
       }
       if (deferredSpikeCandidates.length > 0) {
         setState(TOKEN_ALERTS_VOLUME_STATE_KEY, nextVolumeState);
       }
 
-      for (const alert of queuedSpikeCandidates) {
-        const mint = alert.mint;
+      for (const spikeCandidate of queuedSpikeCandidates) {
+        const mint = getCandidateMint(spikeCandidate.candidate);
         if (seen[mint]?.alertedAt) continue;
-        summary.eligible += 1;
         try {
+          const tokenInfo = await fetchTokenInfo(mint, { strict: true });
+          const totalFeesSol = extractGmgnTotalFeesSol(tokenInfo);
+          const fullResult = evaluateVolumeSpikeCandidate(
+            {
+              ...spikeCandidate.candidate,
+              totalFeesSol,
+              alertedAt: seen[mint]?.alertedAt || null,
+            },
+            spikeCandidate.previousRecord,
+            config,
+            spikeCandidate.options
+          );
+          if (!fullResult.eligible) {
+            summary.skipped += 1;
+            recordRejection(summary, fullResult.reason);
+            continue;
+          }
+
+          const alert = fullResult.normalized;
+          summary.eligible += 1;
           const sent = await sendAlert(formatVolumeSpikeAlertMessage(alert), {
             mint,
             source,
@@ -680,6 +736,17 @@ export function createTokenAlertService({
             },
           };
           setState(TOKEN_ALERTS_VOLUME_STATE_KEY, nextVolumeState);
+          const currentSeen = seen[mint] || {};
+          seen[mint] = {
+            ...currentSeen,
+            firstSeenAt: currentSeen.firstSeenAt || startedAt,
+            referenceTimestamp: Math.floor(fullResult.normalized.referenceTimestamp / 1000),
+            volume5mUsd: fullResult.normalized.volume5mUsd,
+            marketCapUsd: fullResult.normalized.marketCapUsd,
+            totalFeesSol,
+            alertedAt: now(),
+          };
+          setState(TOKEN_ALERTS_STATE_KEY, { ...seen });
           summary.alerted += 1;
           summary.spikeAlerted += 1;
         } catch (error) {
